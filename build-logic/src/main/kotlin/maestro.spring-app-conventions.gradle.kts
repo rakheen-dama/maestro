@@ -1,0 +1,13 @@
+plugins {
+    id("maestro.java-conventions")
+    id("org.springframework.boot")
+    id("io.spring.dependency-management")
+}
+
+val springBootBomVersion = "4.0.0-RC2"
+
+dependencyManagement {
+    imports {
+        mavenBom("org.springframework.boot:spring-boot-dependencies:$springBootBomVersion")
+    }
+}
