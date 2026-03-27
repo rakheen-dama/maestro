@@ -1,6 +1,7 @@
 package io.maestro.core.context;
 
 import io.maestro.core.engine.WorkflowOperations;
+import io.maestro.core.retry.RetryUntilOptions;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,6 +12,8 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 /**
  * Per-workflow-instance context bound to the workflow's virtual thread.
@@ -370,6 +373,25 @@ public final class WorkflowContext {
      */
     public String randomUUID() {
         return requireOperations().randomUUID();
+    }
+
+    /**
+     * Polls a supplier until a predicate is satisfied, with durable backoff.
+     *
+     * <p>The supplier should be a memoized activity call. Each backoff interval
+     * creates a durable timer, so the entire retry loop survives JVM restarts.
+     *
+     * @param supplier  the operation to poll (should be a memoized activity call)
+     * @param predicate the condition to satisfy
+     * @param options   retry configuration
+     * @param <T>       the result type
+     * @return the first result that satisfies the predicate
+     * @throws io.maestro.core.exception.RetryExhaustedException if exhausted
+     * @throws IllegalStateException if operations are not configured
+     * @see WorkflowOperations#retryUntil(Supplier, Predicate, RetryUntilOptions)
+     */
+    public <T> T retryUntil(Supplier<T> supplier, Predicate<T> predicate, RetryUntilOptions options) {
+        return requireOperations().retryUntil(supplier, predicate, options);
     }
 
     /**

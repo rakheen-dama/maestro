@@ -217,4 +217,15 @@ public interface WorkflowStore {
      * @param timerId the timer UUID to mark as fired
      */
     void markTimerFired(UUID timerId);
+
+    /**
+     * Marks a timer as cancelled.
+     *
+     * <p>Updates the timer status from {@code PENDING} to {@code CANCELLED}.
+     * If the timer has already been fired or cancelled, this is a no-op
+     * (idempotent).
+     *
+     * @param timerId the timer UUID to cancel
+     */
+    void markTimerCancelled(UUID timerId);
 }

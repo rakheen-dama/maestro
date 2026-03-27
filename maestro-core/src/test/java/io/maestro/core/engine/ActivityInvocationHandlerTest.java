@@ -518,6 +518,11 @@ class ActivityInvocationHandlerTest {
         public void markTimerFired(UUID timerId) {
             throw new UnsupportedOperationException();
         }
+
+        @Override
+        public void markTimerCancelled(UUID timerId) {
+            throw new UnsupportedOperationException();
+        }
     }
 
     /**

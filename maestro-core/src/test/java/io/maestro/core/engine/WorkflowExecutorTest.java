@@ -448,8 +448,21 @@ class WorkflowExecutorTest {
                 var t = timers.get(i);
                 if (t.id().equals(timerId)) {
                     timers.set(i, new WorkflowTimer(
-                            t.id(), t.workflowInstanceId(), t.timerId(),
+                            t.id(), t.workflowInstanceId(), t.workflowId(), t.timerId(),
                             t.fireAt(), TimerStatus.FIRED, t.createdAt()));
+                    return;
+                }
+            }
+        }
+
+        @Override
+        public void markTimerCancelled(UUID timerId) {
+            for (int i = 0; i < timers.size(); i++) {
+                var t = timers.get(i);
+                if (t.id().equals(timerId) && t.status() == TimerStatus.PENDING) {
+                    timers.set(i, new WorkflowTimer(
+                            t.id(), t.workflowInstanceId(), t.workflowId(), t.timerId(),
+                            t.fireAt(), TimerStatus.CANCELLED, t.createdAt()));
                     return;
                 }
             }

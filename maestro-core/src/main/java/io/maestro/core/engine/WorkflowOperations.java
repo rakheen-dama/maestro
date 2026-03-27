@@ -1,9 +1,13 @@
 package io.maestro.core.engine;
 
+import io.maestro.core.retry.RetryUntilOptions;
+
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 /**
  * Internal contract for durable workflow operations.
@@ -105,6 +109,29 @@ public sealed interface WorkflowOperations permits DefaultWorkflowOperations {
      * @return a UUID string (live) or the stored UUID string (replay)
      */
     String randomUUID();
+
+    /**
+     * Polls a supplier until a predicate is satisfied, with durable backoff.
+     *
+     * <p>Each iteration calls the supplier (which should be a memoized activity
+     * call), tests the result against the predicate, and if unsatisfied, durably
+     * sleeps with exponential backoff before retrying. All operations (supplier
+     * call, time checks, sleeps) are memoized — the entire loop replays correctly
+     * across JVM restarts.
+     *
+     * <p><b>Important:</b> The {@code supplier} must be a memoized operation
+     * (typically an activity call through the proxy). Passing a raw lambda
+     * that performs I/O will break deterministic replay.
+     *
+     * @param supplier  the operation to poll (should be a memoized activity call)
+     * @param predicate the condition to satisfy
+     * @param options   retry configuration (attempts, duration, backoff)
+     * @param <T>       the result type
+     * @return the first result that satisfies the predicate
+     * @throws io.maestro.core.exception.RetryExhaustedException if all attempts
+     *         are exhausted or the maximum duration is exceeded
+     */
+    <T> T retryUntil(Supplier<T> supplier, Predicate<T> predicate, RetryUntilOptions options);
 
     /**
      * Pushes a compensation action onto the compensation stack.

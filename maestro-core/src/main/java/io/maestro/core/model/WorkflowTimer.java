@@ -16,6 +16,7 @@ import java.util.UUID;
  *
  * @param id                  primary key
  * @param workflowInstanceId  owning workflow instance UUID
+ * @param workflowId          business workflow ID (e.g., {@code "order-abc"}) for timer fire routing
  * @param timerId             logical timer identifier within the workflow
  * @param fireAt              when the timer should fire
  * @param status              current timer lifecycle state
@@ -26,6 +27,7 @@ import java.util.UUID;
 public record WorkflowTimer(
         UUID id,
         UUID workflowInstanceId,
+        String workflowId,
         String timerId,
         Instant fireAt,
         TimerStatus status,
