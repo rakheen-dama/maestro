@@ -3,7 +3,6 @@ package io.maestro.core.engine;
 import io.maestro.core.context.WorkflowContext;
 import io.maestro.core.exception.SignalTimeoutException;
 import io.maestro.core.model.EventType;
-import io.maestro.core.model.WorkflowSignal;
 import io.maestro.core.model.WorkflowTimer;
 import io.maestro.core.model.TimerStatus;
 import io.maestro.core.model.WorkflowEvent;
@@ -26,7 +25,6 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -66,6 +64,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
     private final PayloadSerializer serializer;
     private final ParkingLot parkingLot;
     private final Deque<Runnable> compensationStack;
+    private final SignalManager signalManager;
 
     /**
      * @param store             workflow store for event persistence and signal management
@@ -74,6 +73,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
      * @param serializer        Jackson serializer for payloads
      * @param parkingLot        virtual thread parking mechanism
      * @param compensationStack LIFO compensation stack (shared with WorkflowExecutor)
+     * @param signalManager     signal lifecycle manager for await/consume operations
      */
     public DefaultWorkflowOperations(
             WorkflowStore store,
@@ -81,7 +81,8 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             @Nullable WorkflowMessaging messaging,
             PayloadSerializer serializer,
             ParkingLot parkingLot,
-            Deque<Runnable> compensationStack
+            Deque<Runnable> compensationStack,
+            SignalManager signalManager
     ) {
         this.store = store;
         this.distributedLock = distributedLock;
@@ -89,6 +90,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         this.serializer = serializer;
         this.parkingLot = parkingLot;
         this.compensationStack = compensationStack;
+        this.signalManager = signalManager;
     }
 
     // ── sleep ──────────────────────────────────────────────────────────
@@ -182,68 +184,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
     @Override
     public <T> T awaitSignal(String signalName, Class<T> type, Duration timeout) {
         var ctx = WorkflowContext.current();
-        var seq = ctx.nextSequence();
-        var stepName = "$maestro:awaitSignal:" + signalName;
-
-        // Replay check: look for SIGNAL_RECEIVED at this sequence
-        var storedEvent = store.getEventBySequence(ctx.workflowInstanceId(), seq);
-        if (storedEvent.isPresent() && storedEvent.get().eventType() == EventType.SIGNAL_RECEIVED) {
-            logger.debug("Replaying signal '{}' at seq {}", signalName, seq);
-            return serializer.deserialize(storedEvent.get().payload(), type);
-        }
-
-        // Live path
-        ctx.setReplaying(false);
-
-        // Check for already-arrived signals (self-recovery)
-        var unconsumed = store.getUnconsumedSignals(ctx.workflowId(), signalName);
-        if (!unconsumed.isEmpty()) {
-            var signal = unconsumed.getFirst();
-            return consumeSignal(ctx, seq, stepName, signalName, signal, type);
-        }
-
-        // No signal yet — park and wait
-        updateInstanceStatus(ctx, WorkflowStatus.WAITING_SIGNAL);
-
-        var parkKey = ctx.workflowId() + ":signal:" + signalName;
-        logger.debug("Workflow '{}' waiting for signal '{}' (timeout={})", ctx.workflowId(), signalName, timeout);
-
-        try {
-            parkingLot.parkWithTimeout(parkKey, timeout);
-        } catch (TimeoutException e) {
-            // Re-check store: signal may have arrived between our check and parking
-            var lateSignals = store.getUnconsumedSignals(ctx.workflowId(), signalName);
-            if (!lateSignals.isEmpty()) {
-                var result = consumeSignal(ctx, seq, stepName, signalName, lateSignals.getFirst(), type);
-                updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
-                return result;
-            }
-            updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
-            throw new SignalTimeoutException(ctx.workflowId(), signalName, timeout);
-        }
-
-        // Woke up — signal should now be in the store
-        var signals = store.getUnconsumedSignals(ctx.workflowId(), signalName);
-        if (signals.isEmpty()) {
-            // Shouldn't happen normally — defensive fallback
-            updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
-            throw new SignalTimeoutException(ctx.workflowId(), signalName, timeout);
-        }
-
-        var result = consumeSignal(ctx, seq, stepName, signalName, signals.getFirst(), type);
-        updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
-        return result;
-    }
-
-    private <T> T consumeSignal(
-            WorkflowContext ctx, int seq, String stepName,
-            String signalName, WorkflowSignal signal, Class<T> type
-    ) {
-        store.markSignalConsumed(signal.id());
-        appendEvent(ctx, seq, EventType.SIGNAL_RECEIVED, stepName, signal.payload());
-        publishLifecycleEvent(ctx, stepName, LifecycleEventType.SIGNAL_RECEIVED);
-        logger.debug("Consumed signal '{}' for workflow '{}'", signalName, ctx.workflowId());
-        return serializer.deserialize(signal.payload(), type);
+        return signalManager.awaitSignal(ctx, signalName, type, timeout);
     }
 
     // ── collectSignals ─────────────────────────────────────────────────
