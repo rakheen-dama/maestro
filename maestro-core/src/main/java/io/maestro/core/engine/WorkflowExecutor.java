@@ -1,0 +1,594 @@
+package io.maestro.core.engine;
+
+import io.maestro.core.context.WorkflowContext;
+import io.maestro.core.exception.WorkflowAlreadyExistsException;
+import io.maestro.core.exception.WorkflowExecutionException;
+import io.maestro.core.model.EventType;
+import io.maestro.core.model.WorkflowEvent;
+import io.maestro.core.model.WorkflowInstance;
+import io.maestro.core.model.WorkflowSignal;
+import io.maestro.core.model.WorkflowStatus;
+import io.maestro.core.spi.DistributedLock;
+import io.maestro.core.spi.LifecycleEventType;
+import io.maestro.core.spi.WorkflowLifecycleEvent;
+import io.maestro.core.spi.WorkflowMessaging;
+import io.maestro.core.spi.WorkflowStore;
+import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import tools.jackson.databind.JsonNode;
+
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Deque;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+/**
+ * Central orchestrator that runs workflow methods on Java 21 virtual threads.
+ *
+ * <p>The WorkflowExecutor manages the full lifecycle of durable workflows:
+ * <ul>
+ *   <li><b>Start:</b> Creates a workflow instance, spawns a virtual thread,
+ *       and invokes the workflow method.</li>
+ *   <li><b>Resume:</b> Re-invokes the workflow method in replay mode after
+ *       a signal delivery or timer fire.</li>
+ *   <li><b>Recovery:</b> At startup, queries for recoverable workflows and
+ *       re-invokes each in replay mode.</li>
+ *   <li><b>Signal delivery:</b> Persists signals and unparks waiting workflows.</li>
+ *   <li><b>Timer fire:</b> Marks timers as fired and unparks sleeping workflows.</li>
+ *   <li><b>Shutdown:</b> Stops accepting new work and waits for in-flight
+ *       workflows to complete.</li>
+ * </ul>
+ *
+ * <h2>Virtual Thread Model</h2>
+ * <p>Each workflow runs on its own virtual thread, named
+ * {@code maestro-workflow-{type}-{workflowId}}. The thread is cheap —
+ * it yields its carrier thread when parked on sleep or signal await.
+ *
+ * <h2>Thread Safety</h2>
+ * <p>All public methods are thread-safe. The executor can handle concurrent
+ * starts, signal deliveries, and timer fires from multiple threads.
+ *
+ * @see WorkflowContext
+ * @see DefaultWorkflowOperations
+ * @see ParkingLot
+ */
+public final class WorkflowExecutor {
+
+    private static final Logger logger = LoggerFactory.getLogger(WorkflowExecutor.class);
+    private static final Duration SHUTDOWN_TIMEOUT = Duration.ofSeconds(30);
+
+    private final WorkflowStore store;
+    private final @Nullable DistributedLock distributedLock;
+    private final @Nullable WorkflowMessaging messaging;
+    private final PayloadSerializer serializer;
+    private final String serviceName;
+    private final ParkingLot parkingLot;
+    private final ConcurrentHashMap<String, RunningWorkflow> runningWorkflows;
+    private final AtomicBoolean shuttingDown;
+
+    /**
+     * Creates a new workflow executor.
+     *
+     * @param store           workflow store for persistence
+     * @param distributedLock optional distributed lock backend
+     * @param messaging       optional messaging for lifecycle events
+     * @param serializer      Jackson serializer for payloads
+     * @param serviceName     the name of the owning service
+     */
+    public WorkflowExecutor(
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            @Nullable WorkflowMessaging messaging,
+            PayloadSerializer serializer,
+            String serviceName
+    ) {
+        this.store = store;
+        this.distributedLock = distributedLock;
+        this.messaging = messaging;
+        this.serializer = serializer;
+        this.serviceName = serviceName;
+        this.parkingLot = new ParkingLot();
+        this.runningWorkflows = new ConcurrentHashMap<>();
+        this.shuttingDown = new AtomicBoolean(false);
+    }
+
+    // ── Start workflow ─────────────────────────────────────────────────
+
+    /**
+     * Starts a new workflow on a virtual thread.
+     *
+     * <p>Creates a {@link WorkflowInstance}, persists it, spawns a virtual
+     * thread, and invokes the workflow method. The workflow method runs
+     * to completion (or parks on sleep/signal await).
+     *
+     * @param workflowId   the business workflow ID (e.g., {@code "order-abc"})
+     * @param workflowType the workflow type name
+     * @param taskQueue    the task queue name
+     * @param input        the workflow input, or {@code null}
+     * @param workflowImpl the workflow implementation instance
+     * @param workflowMethod the entry-point method
+     * @return the workflow instance UUID
+     * @throws IllegalStateException        if the executor is shutting down
+     * @throws WorkflowAlreadyExistsException if a workflow with this ID exists
+     */
+    public UUID startWorkflow(
+            String workflowId,
+            String workflowType,
+            String taskQueue,
+            @Nullable Object input,
+            Object workflowImpl,
+            Method workflowMethod
+    ) {
+        if (shuttingDown.get()) {
+            throw new IllegalStateException(
+                    "WorkflowExecutor is shutting down — cannot start workflow '%s'".formatted(workflowId));
+        }
+
+        var now = Instant.now();
+        var instanceId = UUID.randomUUID();
+        var runId = UUID.randomUUID();
+        var inputPayload = input != null ? serializer.serialize(input) : null;
+
+        var instance = WorkflowInstance.builder()
+                .id(instanceId)
+                .workflowId(workflowId)
+                .runId(runId)
+                .workflowType(workflowType)
+                .taskQueue(taskQueue)
+                .status(WorkflowStatus.RUNNING)
+                .input(inputPayload)
+                .serviceName(serviceName)
+                .eventSequence(0)
+                .startedAt(now)
+                .updatedAt(now)
+                .version(0)
+                .build();
+
+        // Persist instance (also adopts orphaned signals)
+        store.createInstance(instance);
+
+        // Publish WORKFLOW_STARTED lifecycle event
+        publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_STARTED, null);
+
+        // Launch on virtual thread
+        launchWorkflow(instance, workflowImpl, workflowMethod, inputPayload, false);
+
+        logger.info("Started workflow '{}' (type={}, id={})", workflowId, workflowType, instanceId);
+        return instanceId;
+    }
+
+    // ── Resume workflow ────────────────────────────────────────────────
+
+    /**
+     * Resumes a workflow by re-invoking its method in replay mode.
+     *
+     * <p>Used after signal delivery or timer fire when the workflow's
+     * virtual thread is no longer alive (e.g., after a JVM restart).
+     * The activity proxy returns stored results (fast-forward), and
+     * execution continues from where it left off.
+     *
+     * @param instance       the workflow instance to resume
+     * @param workflowImpl   the workflow implementation instance
+     * @param workflowMethod the entry-point method
+     */
+    public void resumeWorkflow(
+            WorkflowInstance instance,
+            Object workflowImpl,
+            Method workflowMethod
+    ) {
+        if (runningWorkflows.containsKey(instance.workflowId())) {
+            logger.debug("Workflow '{}' is already running — skipping resume", instance.workflowId());
+            return;
+        }
+
+        logger.info("Resuming workflow '{}' (type={}, status={})",
+                instance.workflowId(), instance.workflowType(), instance.status());
+        launchWorkflow(instance, workflowImpl, workflowMethod, instance.input(), true);
+    }
+
+    // ── Recovery ───────────────────────────────────────────────────────
+
+    /**
+     * Recovers all workflows that were active when the service last stopped.
+     *
+     * <p>Queries the store for recoverable instances (status IN RUNNING,
+     * WAITING_SIGNAL, WAITING_TIMER) and re-invokes each in replay mode.
+     *
+     * @param registrations map of workflow type → registration metadata
+     * @return the number of workflows recovered
+     */
+    public int recoverWorkflows(Map<String, WorkflowRegistration> registrations) {
+        var recoverable = store.getRecoverableInstances();
+        var count = 0;
+
+        for (var instance : recoverable) {
+            var reg = registrations.get(instance.workflowType());
+            if (reg == null) {
+                logger.warn("No registration for workflow type '{}', skipping recovery of '{}'",
+                        instance.workflowType(), instance.workflowId());
+                continue;
+            }
+            resumeWorkflow(instance, reg.workflowImpl(), reg.workflowMethod());
+            count++;
+        }
+
+        logger.info("Recovered {} workflow(s) from {} recoverable instance(s)",
+                count, recoverable.size());
+        return count;
+    }
+
+    // ── Signal delivery ────────────────────────────────────────────────
+
+    /**
+     * Delivers a signal to a workflow.
+     *
+     * <p>Persists the signal to the store and unparks the workflow if it
+     * is currently waiting for this signal. If the workflow hasn't reached
+     * the await point yet, the signal is stored and consumed when the
+     * workflow calls {@code awaitSignal()}.
+     *
+     * @param workflowId the target workflow's business ID
+     * @param signalName the signal name
+     * @param payload    the signal payload, or {@code null}
+     */
+    public void deliverSignal(String workflowId, String signalName, @Nullable Object payload) {
+        // Determine workflow instance ID (may be null for pre-delivery)
+        UUID workflowInstanceId = null;
+        var instance = store.getInstance(workflowId);
+        if (instance.isPresent()) {
+            workflowInstanceId = instance.get().id();
+        }
+
+        // Persist the signal
+        var signalPayload = payload != null ? serializer.serialize(payload) : null;
+        var signal = new WorkflowSignal(
+                UUID.randomUUID(),
+                workflowInstanceId,
+                workflowId,
+                signalName,
+                signalPayload,
+                false,
+                Instant.now()
+        );
+        store.saveSignal(signal);
+
+        // Unpark if waiting
+        var parkKey = workflowId + ":signal:" + signalName;
+        parkingLot.unpark(parkKey, signalPayload);
+
+        logger.debug("Delivered signal '{}' to workflow '{}'", signalName, workflowId);
+    }
+
+    // ── Timer fire ─────────────────────────────────────────────────────
+
+    /**
+     * Fires a timer, resuming a sleeping workflow.
+     *
+     * <p>Called by the timer poller when a due timer is found. Marks the
+     * timer as fired in the store and unparks the workflow's virtual thread.
+     *
+     * @param workflowId the workflow's business ID
+     * @param timerId    the timer's logical ID (e.g., {@code "sleep-5"})
+     */
+    public void fireTimer(String workflowId, String timerId) {
+        var parkKey = workflowId + ":timer:" + timerId;
+        parkingLot.unpark(parkKey, null);
+        logger.debug("Fired timer '{}' for workflow '{}'", timerId, workflowId);
+    }
+
+    // ── Shutdown ───────────────────────────────────────────────────────
+
+    /**
+     * Gracefully shuts down the executor.
+     *
+     * <p>Stops accepting new workflows, cancels all parked futures
+     * (unblocking sleeping/waiting threads), and waits up to 30 seconds
+     * for in-flight workflows to complete.
+     */
+    public void shutdown() {
+        if (!shuttingDown.compareAndSet(false, true)) {
+            logger.info("Shutdown already in progress");
+            return;
+        }
+
+        logger.info("Shutting down WorkflowExecutor, {} workflow(s) in-flight",
+                runningWorkflows.size());
+
+        // Cancel all parked futures so threads can exit
+        for (var entry : runningWorkflows.entrySet()) {
+            parkingLot.unparkAll(entry.getKey());
+        }
+
+        // Wait for in-flight workflows with a deadline
+        var deadline = Instant.now().plus(SHUTDOWN_TIMEOUT);
+        for (var entry : runningWorkflows.entrySet()) {
+            try {
+                var remaining = Duration.between(Instant.now(), deadline);
+                if (remaining.isPositive()) {
+                    entry.getValue().thread().join(remaining);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                logger.warn("Interrupted while waiting for workflow '{}' during shutdown", entry.getKey());
+                break;
+            }
+        }
+
+        var remaining = runningWorkflows.size();
+        if (remaining > 0) {
+            logger.warn("WorkflowExecutor shutdown complete with {} workflow(s) still running", remaining);
+        } else {
+            logger.info("WorkflowExecutor shutdown complete — all workflows finished");
+        }
+    }
+
+    // ── Query ──────────────────────────────────────────────────────────
+
+    /**
+     * Returns whether a workflow with the given ID is currently running
+     * on this executor.
+     *
+     * @param workflowId the workflow's business ID
+     * @return {@code true} if the workflow is active on this executor
+     */
+    public boolean isRunning(String workflowId) {
+        return runningWorkflows.containsKey(workflowId);
+    }
+
+    /**
+     * Returns the number of currently running workflows.
+     *
+     * @return the count of active workflows
+     */
+    public int runningCount() {
+        return runningWorkflows.size();
+    }
+
+    // ── Internal: workflow launch ──────────────────────────────────────
+
+    private void launchWorkflow(
+            WorkflowInstance instance,
+            Object workflowImpl,
+            Method workflowMethod,
+            @Nullable JsonNode inputPayload,
+            boolean replaying
+    ) {
+        var compensationStack = new ConcurrentLinkedDeque<Runnable>();
+        var operations = new DefaultWorkflowOperations(
+                store, distributedLock, messaging, serializer, parkingLot, compensationStack);
+
+        var ctx = new WorkflowContext(
+                instance.id(),
+                instance.workflowId(),
+                instance.runId(),
+                instance.workflowType(),
+                instance.taskQueue(),
+                serviceName,
+                0,
+                replaying,
+                operations
+        );
+
+        var thread = Thread.ofVirtual()
+                .name("maestro-workflow-%s-%s".formatted(instance.workflowType(), instance.workflowId()))
+                .start(() -> executeWorkflow(ctx, instance, workflowImpl, workflowMethod,
+                        inputPayload, compensationStack));
+
+        runningWorkflows.put(instance.workflowId(),
+                new RunningWorkflow(thread, instance, instance.workflowType()));
+    }
+
+    // ── Internal: workflow execution (virtual thread body) ─────────────
+
+    private void executeWorkflow(
+            WorkflowContext ctx,
+            WorkflowInstance instance,
+            Object workflowImpl,
+            Method workflowMethod,
+            @Nullable JsonNode inputPayload,
+            Deque<Runnable> compensationStack
+    ) {
+        MDC.put("workflowId", ctx.workflowId());
+        MDC.put("runId", ctx.runId().toString());
+        MDC.put("workflowType", ctx.workflowType());
+
+        WorkflowContext.bind(ctx);
+        try {
+            // Deserialize input and invoke the workflow method
+            Object result = invokeWorkflowMethod(workflowImpl, workflowMethod, inputPayload);
+
+            // Success — re-read instance for latest version (DefaultWorkflowOperations
+            // may have bumped the version via status transitions)
+            var outputPayload = result != null ? serializer.serialize(result) : null;
+            var latest = store.getInstance(ctx.workflowId()).orElse(instance);
+            var updated = latest.toBuilder()
+                    .status(WorkflowStatus.COMPLETED)
+                    .output(outputPayload)
+                    .completedAt(Instant.now())
+                    .updatedAt(Instant.now())
+                    .eventSequence(ctx.currentSequence())
+                    .version(latest.version() + 1)
+                    .build();
+            store.updateInstance(updated);
+
+            // Append WORKFLOW_COMPLETED event
+            appendEvent(ctx, EventType.WORKFLOW_COMPLETED, null, outputPayload);
+            publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_COMPLETED, null);
+
+            logger.info("Workflow '{}' completed successfully", ctx.workflowId());
+
+        } catch (Exception e) {
+            handleWorkflowFailure(ctx, instance, e, compensationStack);
+        } finally {
+            WorkflowContext.clear();
+            runningWorkflows.remove(ctx.workflowId());
+            MDC.remove("workflowId");
+            MDC.remove("runId");
+            MDC.remove("workflowType");
+        }
+    }
+
+    private @Nullable Object invokeWorkflowMethod(
+            Object workflowImpl, Method workflowMethod, @Nullable JsonNode inputPayload
+    ) throws Exception {
+        try {
+            if (workflowMethod.getParameterCount() == 0) {
+                return workflowMethod.invoke(workflowImpl);
+            } else {
+                // Deserialize input to the method's parameter type
+                var paramType = workflowMethod.getParameterTypes()[0];
+                var input = inputPayload != null ? serializer.deserialize(inputPayload, paramType) : null;
+                return workflowMethod.invoke(workflowImpl, input);
+            }
+        } catch (InvocationTargetException e) {
+            var cause = e.getCause();
+            if (cause instanceof Exception ex) throw ex;
+            throw new RuntimeException(cause);
+        }
+    }
+
+    // ── Internal: failure handling ─────────────────────────────────────
+
+    private void handleWorkflowFailure(
+            WorkflowContext ctx,
+            WorkflowInstance instance,
+            Exception exception,
+            Deque<Runnable> compensationStack
+    ) {
+        logger.error("Workflow '{}' failed: {}", ctx.workflowId(), exception.getMessage(), exception);
+
+        // Run compensations in LIFO order if any
+        if (!compensationStack.isEmpty()) {
+            runCompensations(ctx, instance, compensationStack);
+        }
+
+        // Update instance to FAILED
+        try {
+            var errorPayload = serializer.serialize(new ErrorDetail(
+                    exception.getClass().getName(),
+                    exception.getMessage()
+            ));
+            // Re-read for latest version (compensations or status transitions may have bumped it)
+            var latest = store.getInstance(ctx.workflowId()).orElse(instance);
+            var updated = latest.toBuilder()
+                    .status(WorkflowStatus.FAILED)
+                    .output(errorPayload)
+                    .completedAt(Instant.now())
+                    .updatedAt(Instant.now())
+                    .eventSequence(ctx.currentSequence())
+                    .version(latest.version() + 1)
+                    .build();
+            store.updateInstance(updated);
+
+            appendEvent(ctx, EventType.WORKFLOW_FAILED, null, errorPayload);
+            publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_FAILED, null);
+        } catch (Exception updateError) {
+            logger.error("Failed to update workflow '{}' status to FAILED",
+                    ctx.workflowId(), updateError);
+        }
+    }
+
+    private void runCompensations(
+            WorkflowContext ctx,
+            WorkflowInstance instance,
+            Deque<Runnable> compensationStack
+    ) {
+        logger.info("Running {} compensation(s) for workflow '{}' in LIFO order",
+                compensationStack.size(), ctx.workflowId());
+
+        // Update status to COMPENSATING (re-read for latest version)
+        try {
+            var latest = store.getInstance(ctx.workflowId()).orElse(instance);
+            var compensating = latest.toBuilder()
+                    .status(WorkflowStatus.COMPENSATING)
+                    .updatedAt(Instant.now())
+                    .version(latest.version() + 1)
+                    .build();
+            store.updateInstance(compensating);
+        } catch (Exception e) {
+            logger.warn("Failed to update workflow '{}' status to COMPENSATING", ctx.workflowId(), e);
+        }
+
+        appendEvent(ctx, EventType.COMPENSATION_STARTED, null, null);
+
+        var compensationIndex = 0;
+        while (!compensationStack.isEmpty()) {
+            var compensation = compensationStack.pop();
+            try {
+                compensation.run();
+                logger.debug("Compensation {} completed for workflow '{}'", compensationIndex, ctx.workflowId());
+            } catch (Exception e) {
+                logger.error("Compensation {} failed for workflow '{}': {}",
+                        compensationIndex, ctx.workflowId(), e.getMessage(), e);
+                // Continue with remaining compensations — don't let one failure stop others
+            }
+            compensationIndex++;
+        }
+
+        appendEvent(ctx, EventType.COMPENSATION_COMPLETED, null, null);
+        logger.info("All compensations completed for workflow '{}'", ctx.workflowId());
+    }
+
+    // ── Internal: event and lifecycle helpers ──────────────────────────
+
+    private void appendEvent(WorkflowContext ctx, EventType type,
+                             @Nullable String stepName, @Nullable JsonNode payload) {
+        try {
+            var event = new WorkflowEvent(
+                    UUID.randomUUID(),
+                    ctx.workflowInstanceId(),
+                    ctx.nextSequence(),
+                    type,
+                    stepName,
+                    payload,
+                    Instant.now()
+            );
+            store.appendEvent(event);
+        } catch (Exception e) {
+            logger.warn("Failed to append {} event for workflow '{}'", type, ctx.workflowId(), e);
+        }
+    }
+
+    private void publishLifecycleEvent(
+            WorkflowInstance instance, LifecycleEventType eventType,
+            @Nullable String stepName
+    ) {
+        if (messaging == null) return;
+        try {
+            messaging.publishLifecycleEvent(new WorkflowLifecycleEvent(
+                    instance.id(),
+                    instance.workflowId(),
+                    instance.workflowType(),
+                    serviceName,
+                    instance.taskQueue(),
+                    eventType,
+                    stepName,
+                    null,
+                    Instant.now()
+            ));
+        } catch (Exception e) {
+            logger.warn("Failed to publish {} lifecycle event for workflow '{}'",
+                    eventType, instance.workflowId(), e);
+        }
+    }
+
+    // ── Internal records ───────────────────────────────────────────────
+
+    /**
+     * Tracks a currently running workflow for shutdown coordination.
+     */
+    record RunningWorkflow(Thread thread, WorkflowInstance instance, String workflowType) {}
+
+    /**
+     * Error detail stored in the workflow output on failure.
+     */
+    private record ErrorDetail(String exceptionType, @Nullable String message) {}
+}

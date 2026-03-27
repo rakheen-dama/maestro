@@ -4,6 +4,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -181,5 +182,56 @@ class WorkflowContextTest {
         // Verify the context is still accessible on this thread
         assertEquals(ctx, WorkflowContext.current(),
                 "Context should still be accessible on the original thread");
+    }
+
+    // ── Workflow API delegation tests ───────────────────────────────────
+
+    @Test
+    @DisplayName("workflow() is an alias for current()")
+    void workflowAliasForCurrent() {
+        var ctx = createContext(0, false);
+        WorkflowContext.bind(ctx);
+
+        assertEquals(ctx, WorkflowContext.workflow(),
+                "workflow() should return the same context as current()");
+    }
+
+    @Test
+    @DisplayName("Workflow API methods throw without operations configured")
+    void apiMethodsThrowWithoutOperations() {
+        var ctx = createContext(0, false);
+        WorkflowContext.bind(ctx);
+
+        assertThrows(IllegalStateException.class, () -> ctx.sleep(Duration.ofSeconds(1)),
+                "sleep() should throw when operations not configured");
+        assertThrows(IllegalStateException.class, () -> ctx.awaitSignal("foo", String.class, Duration.ofSeconds(1)),
+                "awaitSignal() should throw when operations not configured");
+        assertThrows(IllegalStateException.class, ctx::currentTime,
+                "currentTime() should throw when operations not configured");
+        assertThrows(IllegalStateException.class, ctx::randomUUID,
+                "randomUUID() should throw when operations not configured");
+        assertThrows(IllegalStateException.class, () -> ctx.addCompensation(() -> {}),
+                "addCompensation() should throw when operations not configured");
+    }
+
+    @Test
+    @DisplayName("Old 8-param constructor still works (backward compat)")
+    void oldConstructorBackwardCompat() {
+        var ctx = new WorkflowContext(
+                UUID.fromString("11111111-1111-1111-1111-111111111111"),
+                "test-workflow",
+                UUID.fromString("22222222-2222-2222-2222-222222222222"),
+                "TestWorkflow",
+                "test-queue",
+                "test-service",
+                0,
+                false
+        );
+
+        assertEquals("test-workflow", ctx.workflowId());
+        assertEquals(1, ctx.nextSequence());
+        assertFalse(ctx.isReplaying());
+        // API methods should throw since operations is null
+        assertThrows(IllegalStateException.class, ctx::currentTime);
     }
 }

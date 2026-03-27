@@ -1,9 +1,15 @@
 package io.maestro.core.context;
 
+import io.maestro.core.engine.WorkflowOperations;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -28,7 +34,20 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <p>Each workflow runs on its own virtual thread. The context is bound
  * to that thread via {@link ThreadLocal}. The sequence counter uses
  * {@link AtomicInteger} as a defensive measure against accidental
- * misuse from parallel branches (a future enhancement).
+ * misuse from parallel branches.
+ *
+ * <h2>Workflow API</h2>
+ * <p>Workflow authors interact with the engine through methods on this class:
+ * <pre>{@code
+ * var workflow = WorkflowContext.current();
+ * workflow.sleep(Duration.ofMinutes(5));
+ * PaymentResult result = workflow.awaitSignal("payment.result",
+ *         PaymentResult.class, Duration.ofHours(1));
+ * }</pre>
+ *
+ * <p>These methods delegate to a {@link WorkflowOperations} instance provided
+ * by the {@code WorkflowExecutor}. When constructed without operations
+ * (e.g., in tests), calling workflow API methods throws {@link IllegalStateException}.
  */
 public final class WorkflowContext {
 
@@ -43,9 +62,14 @@ public final class WorkflowContext {
     private final String serviceName;
     private final AtomicInteger sequenceCounter;
     private volatile boolean replaying;
+    private final @Nullable WorkflowOperations operations;
 
     /**
-     * Creates a new workflow context.
+     * Creates a new workflow context without workflow operations.
+     *
+     * <p>Use this constructor in tests or when only sequence/replay
+     * tracking is needed. Calling workflow API methods (sleep, awaitSignal,
+     * etc.) will throw {@link IllegalStateException}.
      *
      * @param workflowInstanceId the workflow instance UUID (primary key)
      * @param workflowId         the business workflow ID (e.g., {@code "order-abc"})
@@ -66,6 +90,37 @@ public final class WorkflowContext {
             int initialSequence,
             boolean replaying
     ) {
+        this(workflowInstanceId, workflowId, runId, workflowType, taskQueue,
+                serviceName, initialSequence, replaying, null);
+    }
+
+    /**
+     * Creates a new workflow context with workflow operations support.
+     *
+     * <p>Used by the {@code WorkflowExecutor} to create fully operational
+     * contexts where workflow API methods (sleep, awaitSignal, etc.) are available.
+     *
+     * @param workflowInstanceId the workflow instance UUID (primary key)
+     * @param workflowId         the business workflow ID (e.g., {@code "order-abc"})
+     * @param runId              the current run ID (changes on manual retry)
+     * @param workflowType       the workflow type name
+     * @param taskQueue          the task queue name
+     * @param serviceName        the owning service name
+     * @param initialSequence    the starting sequence number (0 for new, higher for resumed)
+     * @param replaying          whether this execution is replaying stored events
+     * @param operations         the workflow operations delegate, or {@code null} for test contexts
+     */
+    public WorkflowContext(
+            UUID workflowInstanceId,
+            String workflowId,
+            UUID runId,
+            String workflowType,
+            String taskQueue,
+            String serviceName,
+            int initialSequence,
+            boolean replaying,
+            @Nullable WorkflowOperations operations
+    ) {
         this.workflowInstanceId = workflowInstanceId;
         this.workflowId = workflowId;
         this.runId = runId;
@@ -74,6 +129,7 @@ public final class WorkflowContext {
         this.serviceName = serviceName;
         this.sequenceCounter = new AtomicInteger(initialSequence);
         this.replaying = replaying;
+        this.operations = operations;
     }
 
     // ── Thread-local management ───────────────────────────────────────
@@ -197,5 +253,140 @@ public final class WorkflowContext {
     /** Returns the owning service name. */
     public String serviceName() {
         return serviceName;
+    }
+
+    /**
+     * Sets the sequence counter to a specific value.
+     *
+     * <p>Used internally by the engine for parallel branch contexts,
+     * where each branch needs its own sequence space. Not intended
+     * for use by workflow authors.
+     *
+     * @param sequence the sequence value to set
+     */
+    public void setSequence(int sequence) {
+        sequenceCounter.set(sequence);
+    }
+
+    // ── Workflow API methods (delegate to operations) ─────────────────
+
+    /**
+     * Convenience alias for {@link #current()}.
+     *
+     * <p>Enables the idiomatic workflow pattern:
+     * <pre>{@code
+     * var workflow = WorkflowContext.workflow();
+     * workflow.sleep(Duration.ofMinutes(5));
+     * }</pre>
+     *
+     * @return the current workflow context
+     * @throws IllegalStateException if no context is bound
+     */
+    public static WorkflowContext workflow() {
+        return current();
+    }
+
+    /**
+     * Durably sleeps for the specified duration.
+     *
+     * @param duration the duration to sleep
+     * @throws IllegalStateException if operations are not configured
+     * @see WorkflowOperations#sleep(Duration)
+     */
+    public void sleep(Duration duration) {
+        requireOperations().sleep(duration);
+    }
+
+    /**
+     * Waits for a named signal to be delivered to this workflow.
+     *
+     * @param signalName the signal name to wait for
+     * @param type       the expected payload type
+     * @param timeout    maximum time to wait
+     * @param <T>        the payload type
+     * @return the signal payload
+     * @throws io.maestro.core.exception.SignalTimeoutException if the timeout elapses
+     * @throws IllegalStateException if operations are not configured
+     * @see WorkflowOperations#awaitSignal(String, Class, Duration)
+     */
+    public <T> T awaitSignal(String signalName, Class<T> type, Duration timeout) {
+        return requireOperations().awaitSignal(signalName, type, timeout);
+    }
+
+    /**
+     * Collects exactly {@code count} signals with the given name.
+     *
+     * @param signalName the signal name to collect
+     * @param type       the expected payload type
+     * @param count      the number of signals to collect
+     * @param timeout    maximum total time to wait
+     * @param <T>        the payload type
+     * @return the collected signal payloads
+     * @throws io.maestro.core.exception.SignalTimeoutException if the timeout elapses
+     * @throws IllegalStateException if operations are not configured
+     * @see WorkflowOperations#collectSignals(String, Class, int, Duration)
+     */
+    public <T> List<T> collectSignals(String signalName, Class<T> type, int count, Duration timeout) {
+        return requireOperations().collectSignals(signalName, type, count, timeout);
+    }
+
+    /**
+     * Executes multiple tasks in parallel on separate virtual threads.
+     *
+     * @param tasks the tasks to execute in parallel
+     * @param <T>   the result type
+     * @return the results in the same order as the input tasks
+     * @throws IllegalStateException if operations are not configured
+     * @see WorkflowOperations#parallel(List)
+     */
+    public <T> List<T> parallel(List<Callable<T>> tasks) {
+        return requireOperations().parallel(tasks);
+    }
+
+    /**
+     * Returns the current time, memoized for deterministic replay.
+     *
+     * <p>Use this instead of {@code Instant.now()} in workflow code.
+     *
+     * @return the current time (live) or the stored time (replay)
+     * @throws IllegalStateException if operations are not configured
+     * @see WorkflowOperations#currentTime()
+     */
+    public Instant currentTime() {
+        return requireOperations().currentTime();
+    }
+
+    /**
+     * Returns a new UUID string, memoized for deterministic replay.
+     *
+     * <p>Use this instead of {@code UUID.randomUUID()} in workflow code.
+     *
+     * @return a UUID string
+     * @throws IllegalStateException if operations are not configured
+     * @see WorkflowOperations#randomUUID()
+     */
+    public String randomUUID() {
+        return requireOperations().randomUUID();
+    }
+
+    /**
+     * Pushes a compensation action onto the compensation stack.
+     *
+     * @param compensation the compensation action
+     * @throws IllegalStateException if operations are not configured
+     * @see WorkflowOperations#addCompensation(Runnable)
+     */
+    public void addCompensation(Runnable compensation) {
+        requireOperations().addCompensation(compensation);
+    }
+
+    private WorkflowOperations requireOperations() {
+        if (operations == null) {
+            throw new IllegalStateException(
+                    "Workflow operations not configured. "
+                            + "Workflow API methods (sleep, awaitSignal, etc.) require a fully "
+                            + "configured context created by the WorkflowExecutor.");
+        }
+        return operations;
     }
 }

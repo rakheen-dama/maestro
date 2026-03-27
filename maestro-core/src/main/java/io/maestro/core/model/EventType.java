@@ -42,5 +42,8 @@ public enum EventType {
     WORKFLOW_COMPLETED,
 
     /** Workflow failed (after retries exhausted or compensation finished). */
-    WORKFLOW_FAILED
+    WORKFLOW_FAILED,
+
+    /** A deterministic side-effect was memoized (e.g., currentTime, randomUUID). */
+    SIDE_EFFECT
 }
