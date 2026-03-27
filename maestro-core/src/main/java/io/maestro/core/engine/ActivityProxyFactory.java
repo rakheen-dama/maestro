@@ -12,6 +12,7 @@ import org.jspecify.annotations.Nullable;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -184,7 +185,7 @@ public final class ActivityProxyFactory {
     }
 
     private static List<Method> findMethods(Class<?> iface, String name) {
-        var matches = new java.util.ArrayList<Method>();
+        var matches = new ArrayList<Method>();
         for (var m : iface.getMethods()) {
             if (m.getName().equals(name)) {
                 matches.add(m);

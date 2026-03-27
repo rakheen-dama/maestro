@@ -263,9 +263,11 @@ public final class SagaManager {
             var compensating = latest.toBuilder()
                     .status(WorkflowStatus.COMPENSATING)
                     .updatedAt(Instant.now())
-                    .version(latest.version() + 1)
                     .build();
             store.updateInstance(compensating);
+        } catch (io.maestro.core.exception.OptimisticLockException e) {
+            logger.debug("Optimistic lock conflict updating workflow '{}' to COMPENSATING, continuing",
+                    ctx.workflowId());
         } catch (Exception e) {
             logger.warn("Failed to update workflow '{}' status to COMPENSATING",
                     ctx.workflowId(), e);

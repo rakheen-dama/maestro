@@ -2,6 +2,7 @@ package io.maestro.core.engine;
 
 import io.maestro.core.annotation.Saga;
 import io.maestro.core.context.WorkflowContext;
+import io.maestro.core.exception.CompensationException;
 import io.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.maestro.core.exception.WorkflowExecutionException;
 import io.maestro.core.model.EventType;
@@ -507,7 +508,7 @@ public final class WorkflowExecutor {
         if (!compensationStack.isEmpty()) {
             try {
                 sagaManager.compensate(ctx, instance, compensationStack, parallelCompensation);
-            } catch (io.maestro.core.exception.CompensationException e) {
+            } catch (CompensationException e) {
                 // Partial compensation failure — log and continue to FAILED transition.
                 // The CompensationException details are already recorded in the event log
                 // (COMPENSATION_STEP_FAILED events) by the SagaManager.

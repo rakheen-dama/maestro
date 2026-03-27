@@ -24,8 +24,9 @@ public final class CompensationException extends MaestroException {
     public CompensationException(String workflowId, List<String> failedCompensations) {
         super("Compensation partially failed for workflow '%s': %s"
                 .formatted(workflowId, failedCompensations));
-        this.workflowId = workflowId;
-        this.failedCompensations = List.copyOf(failedCompensations);
+        this.workflowId = java.util.Objects.requireNonNull(workflowId, "workflowId must not be null");
+        this.failedCompensations = List.copyOf(
+                java.util.Objects.requireNonNull(failedCompensations, "failedCompensations must not be null"));
     }
 
     /** Returns the workflow business ID. */

@@ -1,5 +1,7 @@
 package io.maestro.core.saga;
 
+import org.jspecify.annotations.NonNull;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -34,7 +36,7 @@ public final class CompensationStack {
      * @param stepName     the compensation step name for logging and events
      * @param compensation the executable compensation action
      */
-    public void push(String stepName, Runnable compensation) {
+    public void push(@NonNull String stepName, @NonNull Runnable compensation) {
         stack.push(new CompensationEntry(stepName, compensation));
     }
 
@@ -46,7 +48,7 @@ public final class CompensationStack {
      *
      * @param compensation the executable compensation action
      */
-    public void push(Runnable compensation) {
+    public void push(@NonNull Runnable compensation) {
         var index = manualCounter.getAndIncrement();
         stack.push(new CompensationEntry("$compensation:" + index, compensation));
     }
@@ -58,7 +60,7 @@ public final class CompensationStack {
      *
      * @return the compensation entries in reverse registration order
      */
-    public List<CompensationEntry> unwind() {
+    public @NonNull List<@NonNull CompensationEntry> unwind() {
         var entries = new ArrayList<CompensationEntry>();
         CompensationEntry entry;
         while ((entry = stack.poll()) != null) {

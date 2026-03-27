@@ -417,7 +417,8 @@ public final class WorkflowContext {
      * @throws IllegalStateException if operations are not configured
      * @see WorkflowOperations#addCompensation(String, Runnable)
      */
-    public void addCompensation(String stepName, Runnable compensation) {
+    public void addCompensation(@org.jspecify.annotations.NonNull String stepName,
+                               @org.jspecify.annotations.NonNull Runnable compensation) {
         requireOperations().addCompensation(stepName, compensation);
     }
 

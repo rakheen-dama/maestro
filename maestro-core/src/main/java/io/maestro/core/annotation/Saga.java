@@ -13,7 +13,8 @@ import java.lang.annotation.Target;
  * engine automatically runs registered compensations to undo completed
  * activities. Compensations are registered either declaratively via
  * {@link Compensate} on activity methods or manually via
- * {@link io.maestro.core.context.WorkflowContext#addCompensation(Runnable)}.
+ * {@link io.maestro.core.context.WorkflowContext#addCompensation(Runnable)}
+ * or {@link io.maestro.core.context.WorkflowContext#addCompensation(String, Runnable)}.
  *
  * <h2>Usage</h2>
  * <pre>{@code

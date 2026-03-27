@@ -1,5 +1,7 @@
 package io.maestro.core.saga;
 
+import org.jspecify.annotations.NonNull;
+
 /**
  * A single compensation registered during workflow execution.
  *
@@ -8,12 +10,17 @@ package io.maestro.core.saga;
  * activities, the action calls through the activity proxy, making it
  * memoized, retriable, and replayable.
  *
+ * <h2>Thread Safety</h2>
+ * <p>This record is an immutable holder — its fields are assigned once at
+ * construction and never modified. The {@code action} {@link Runnable} itself
+ * is caller-provided and should be safe for execution on any thread.
+ *
  * @param stepName the compensation step name (e.g., {@code "InventoryActivities.releaseReservation"})
  * @param action   the executable compensation action
  */
 public record CompensationEntry(
-        String stepName,
-        Runnable action
+        @NonNull String stepName,
+        @NonNull Runnable action
 ) {
 
     /**
