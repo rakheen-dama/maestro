@@ -33,6 +33,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -68,8 +69,7 @@ class TimerPollerTest {
 
     @Test
     @DisplayName("poller finds due timers and fires them")
-    void pollerFiresDueTimers() throws Exception {
-        // Create a due timer
+    void pollerFiresDueTimers() {
         var timerId = UUID.randomUUID();
         store.saveTimer(new WorkflowTimer(
                 timerId, UUID.randomUUID(), "wf-1", "sleep-1",
@@ -78,17 +78,15 @@ class TimerPollerTest {
         poller = new TimerPoller(store, executor, null, "test-service", pollInterval, 100);
         poller.start();
 
-        // Wait for the poller to fire the timer
-        Thread.sleep(500);
-
-        // Timer should be marked as FIRED
-        var dueTimers = store.getDueTimers(Instant.now().plusSeconds(60), 100);
-        assertTrue(dueTimers.isEmpty(), "Timer should have been fired");
+        await().atMost(Duration.ofSeconds(2)).untilAsserted(() -> {
+            var dueTimers = store.getDueTimers(Instant.now().plusSeconds(60), 100);
+            assertTrue(dueTimers.isEmpty(), "Timer should have been fired");
+        });
     }
 
     @Test
     @DisplayName("poller does not fire future timers")
-    void pollerDoesNotFireFutureTimers() throws Exception {
+    void pollerDoesNotFireFutureTimers() {
         store.saveTimer(new WorkflowTimer(
                 UUID.randomUUID(), UUID.randomUUID(), "wf-1", "sleep-1",
                 Instant.now().plusSeconds(600), TimerStatus.PENDING, Instant.now()));
@@ -96,20 +94,19 @@ class TimerPollerTest {
         poller = new TimerPoller(store, executor, null, "test-service", pollInterval, 100);
         poller.start();
 
-        Thread.sleep(300);
-
-        var dueTimers = store.getDueTimers(Instant.now().plusSeconds(700), 100);
-        assertEquals(1, dueTimers.size(), "Future timer should not have been fired");
-        assertEquals(TimerStatus.PENDING, dueTimers.getFirst().status());
+        // Wait a few poll cycles, then assert the timer is still pending
+        await().during(Duration.ofMillis(300)).atMost(Duration.ofSeconds(2)).untilAsserted(() -> {
+            var dueTimers = store.getDueTimers(Instant.now().plusSeconds(700), 100);
+            assertEquals(1, dueTimers.size(), "Future timer should not have been fired");
+            assertEquals(TimerStatus.PENDING, dueTimers.getFirst().status());
+        });
     }
 
     // ── Error resilience ─────────────────────────────────────────────
 
     @Test
     @DisplayName("one timer fire failure does not stop batch processing")
-    void errorResilienceInBatch() throws Exception {
-        // Create two due timers — both will "fire" (mark as FIRED in store)
-        // even though the executor's unpark won't find a parked thread
+    void errorResilienceInBatch() {
         var timer1 = UUID.randomUUID();
         var timer2 = UUID.randomUUID();
         store.saveTimer(new WorkflowTimer(
@@ -122,19 +119,17 @@ class TimerPollerTest {
         poller = new TimerPoller(store, executor, null, "test-service", pollInterval, 100);
         poller.start();
 
-        Thread.sleep(500);
-
-        // Both timers should have been processed
-        var remaining = store.getDueTimers(Instant.now().plusSeconds(60), 100);
-        assertTrue(remaining.isEmpty(), "All due timers should have been fired");
+        await().atMost(Duration.ofSeconds(2)).untilAsserted(() -> {
+            var remaining = store.getDueTimers(Instant.now().plusSeconds(60), 100);
+            assertTrue(remaining.isEmpty(), "All due timers should have been fired");
+        });
     }
 
     // ── Leader election ──────────────────────────────────────────────
 
     @Test
     @DisplayName("poller does not poll when not leader")
-    void nonLeaderDoesNotPoll() throws Exception {
-        // Lock that always denies leadership
+    void nonLeaderDoesNotPoll() {
         var lock = new DenyingLock();
 
         store.saveTimer(new WorkflowTimer(
@@ -144,16 +139,16 @@ class TimerPollerTest {
         poller = new TimerPoller(store, executor, lock, "test-service", pollInterval, 100);
         poller.start();
 
-        Thread.sleep(500);
-
-        // Timer should NOT have been fired because this instance isn't the leader
-        var dueTimers = store.getDueTimers(Instant.now().plusSeconds(60), 100);
-        assertEquals(1, dueTimers.size(), "Non-leader should not fire timers");
+        // Timer should remain PENDING across several poll cycles
+        await().during(Duration.ofMillis(500)).atMost(Duration.ofSeconds(2)).untilAsserted(() -> {
+            var dueTimers = store.getDueTimers(Instant.now().plusSeconds(60), 100);
+            assertEquals(1, dueTimers.size(), "Non-leader should not fire timers");
+        });
     }
 
     @Test
     @DisplayName("poller polls when it acquires leadership")
-    void leaderPolls() throws Exception {
+    void leaderPolls() {
         var lock = new GrantingLock();
 
         store.saveTimer(new WorkflowTimer(
@@ -163,15 +158,15 @@ class TimerPollerTest {
         poller = new TimerPoller(store, executor, lock, "test-service", pollInterval, 100);
         poller.start();
 
-        Thread.sleep(500);
-
-        var dueTimers = store.getDueTimers(Instant.now().plusSeconds(60), 100);
-        assertTrue(dueTimers.isEmpty(), "Leader should fire timers");
+        await().atMost(Duration.ofSeconds(2)).untilAsserted(() -> {
+            var dueTimers = store.getDueTimers(Instant.now().plusSeconds(60), 100);
+            assertTrue(dueTimers.isEmpty(), "Leader should fire timers");
+        });
     }
 
     @Test
     @DisplayName("null lock — always polls (single-node mode)")
-    void nullLockAlwaysPolls() throws Exception {
+    void nullLockAlwaysPolls() {
         store.saveTimer(new WorkflowTimer(
                 UUID.randomUUID(), UUID.randomUUID(), "wf-1", "sleep-1",
                 Instant.now().minusSeconds(10), TimerStatus.PENDING, Instant.now()));
@@ -179,24 +174,24 @@ class TimerPollerTest {
         poller = new TimerPoller(store, executor, null, "test-service", pollInterval, 100);
         poller.start();
 
-        Thread.sleep(500);
-
-        var dueTimers = store.getDueTimers(Instant.now().plusSeconds(60), 100);
-        assertTrue(dueTimers.isEmpty(), "Null lock should always poll");
+        await().atMost(Duration.ofSeconds(2)).untilAsserted(() -> {
+            var dueTimers = store.getDueTimers(Instant.now().plusSeconds(60), 100);
+            assertTrue(dueTimers.isEmpty(), "Null lock should always poll");
+        });
     }
 
     // ── Graceful stop ────────────────────────────────────────────────
 
     @Test
     @DisplayName("stop terminates the poller")
-    void stopTerminatesPoller() throws Exception {
+    void stopTerminatesPoller() {
         poller = new TimerPoller(store, executor, null, "test-service", pollInterval, 100);
         poller.start();
         assertTrue(poller.isRunning());
 
         poller.stop();
-        Thread.sleep(200);
-        assertFalse(poller.isRunning());
+        await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
+                assertFalse(poller.isRunning()));
     }
 
     // ── Lock implementations ────────────────────────────────────────

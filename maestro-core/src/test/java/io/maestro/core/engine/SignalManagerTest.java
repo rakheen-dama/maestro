@@ -31,6 +31,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -102,9 +103,7 @@ class SignalManagerTest {
             unparkedLatch.countDown();
         });
 
-        // Small delay to ensure thread is parked
-        Thread.sleep(50);
-        assertTrue(parkingLot.isParked(parkKey));
+        await().atMost(Duration.ofSeconds(2)).until(() -> parkingLot.isParked(parkKey));
 
         createInstance("order-1", UUID.randomUUID());
         signalManager.deliverSignal("order-1", "payment.result", "paid");
@@ -193,9 +192,10 @@ class SignalManagerTest {
             }
         });
 
-        // Wait for the thread to start awaiting
+        // Wait for the thread to park on signal await
         assertTrue(awaitingLatch.await(5, TimeUnit.SECONDS));
-        Thread.sleep(100); // Let it park
+        await().atMost(Duration.ofSeconds(2)).until(() ->
+                parkingLot.isParked("order-1:signal:payment.result"));
 
         // Deliver the signal
         signalManager.deliverSignal("order-1", "payment.result", "paid");

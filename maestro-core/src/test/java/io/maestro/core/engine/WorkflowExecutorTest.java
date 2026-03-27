@@ -35,6 +35,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -84,13 +85,12 @@ class WorkflowExecutorTest {
         assertNotNull(instanceId);
         assertTrue(latch.await(5, TimeUnit.SECONDS), "Workflow should complete within timeout");
 
-        // Allow virtual thread to finish post-completion updates
-        Thread.sleep(100);
-
-        var instance = store.getInstance("order-1");
-        assertTrue(instance.isPresent(), "Instance should exist in store");
-        assertEquals(WorkflowStatus.COMPLETED, instance.get().status());
-        assertFalse(executor.isRunning("order-1"), "Workflow should no longer be running");
+        await().atMost(Duration.ofSeconds(2)).untilAsserted(() -> {
+            var instance = store.getInstance("order-1");
+            assertTrue(instance.isPresent(), "Instance should exist in store");
+            assertEquals(WorkflowStatus.COMPLETED, instance.get().status());
+            assertFalse(executor.isRunning("order-1"), "Workflow should no longer be running");
+        });
     }
 
     @Test
@@ -104,11 +104,12 @@ class WorkflowExecutorTest {
                 null, workflow, method);
 
         assertTrue(latch.await(5, TimeUnit.SECONDS));
-        Thread.sleep(100);
 
-        var instance = store.getInstance("order-2");
-        assertTrue(instance.isPresent());
-        assertEquals(WorkflowStatus.COMPLETED, instance.get().status());
+        await().atMost(Duration.ofSeconds(2)).untilAsserted(() -> {
+            var instance = store.getInstance("order-2");
+            assertTrue(instance.isPresent());
+            assertEquals(WorkflowStatus.COMPLETED, instance.get().status());
+        });
     }
 
     // ── Failure handling ───────────────────────────────────────────────
@@ -124,11 +125,12 @@ class WorkflowExecutorTest {
                 "input", workflow, method);
 
         assertTrue(latch.await(5, TimeUnit.SECONDS));
-        Thread.sleep(100);
 
-        var instance = store.getInstance("order-3");
-        assertTrue(instance.isPresent());
-        assertEquals(WorkflowStatus.FAILED, instance.get().status());
+        await().atMost(Duration.ofSeconds(2)).untilAsserted(() -> {
+            var instance = store.getInstance("order-3");
+            assertTrue(instance.isPresent());
+            assertEquals(WorkflowStatus.FAILED, instance.get().status());
+        });
     }
 
     // ── Signal delivery ────────────────────────────────────────────────
@@ -144,9 +146,11 @@ class WorkflowExecutorTest {
         executor.startWorkflow("order-4", "SignalWorkflow", "default",
                 "input", workflow, method);
 
-        // Wait for workflow to reach awaitSignal
+        // Wait for workflow to reach awaitSignal and park
         assertTrue(waitingLatch.await(5, TimeUnit.SECONDS), "Workflow should reach await point");
-        Thread.sleep(100);
+        await().atMost(Duration.ofSeconds(2)).until(() ->
+                !store.getUnconsumedSignals("order-4", "payment.result").isEmpty()
+                || executor.isRunning("order-4"));
 
         // Deliver the signal
         executor.deliverSignal("order-4", "payment.result", "paid");
@@ -185,8 +189,8 @@ class WorkflowExecutorTest {
         assertTrue(executor.isRunning("order-6"));
 
         blockLatch.countDown();
-        Thread.sleep(200);
-        assertFalse(executor.isRunning("order-6"));
+        await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
+                assertFalse(executor.isRunning("order-6")));
     }
 
     @Test
@@ -229,9 +233,9 @@ class WorkflowExecutorTest {
                 "hello", workflow, method);
 
         assertTrue(latch.await(5, TimeUnit.SECONDS));
-        Thread.sleep(100);
 
-        assertFalse(messaging.events.isEmpty(), "Lifecycle events should have been published");
+        await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
+                assertFalse(messaging.events.isEmpty(), "Lifecycle events should have been published"));
     }
 
     // ── Test workflow implementations ──────────────────────────────────
