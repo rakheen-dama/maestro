@@ -26,12 +26,14 @@ tasks.withType<JavaCompile>().configureEach {
 val jspecifyVersion = "1.0.0"
 val slf4jVersion = "2.0.17"
 val junitJupiterVersion = "6.0.1"
+val awaitilityVersion = "4.3.0"
 
 dependencies {
     api("org.jspecify:jspecify:$jspecifyVersion")
     api("org.slf4j:slf4j-api:$slf4jVersion")
 
     testImplementation("org.junit.jupiter:junit-jupiter:$junitJupiterVersion")
+    testImplementation("org.awaitility:awaitility:$awaitilityVersion")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

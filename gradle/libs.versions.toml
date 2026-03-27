@@ -11,6 +11,7 @@ flyway = "11.14.1"
 lettuce = "6.8.1.RELEASE"
 postgresql = "42.7.8"
 testcontainers = "2.0.1"
+awaitility = "4.3.0"
 jspecify = "1.0.0"
 
 [libraries]
@@ -34,6 +35,9 @@ slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
 # JUnit 5
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit-jupiter" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+
+# Awaitility — polling-based test assertions
+awaitility = { module = "org.awaitility:awaitility", version.ref = "awaitility" }
 
 # Testcontainers
 testcontainers-junit5 = { module = "org.testcontainers:junit-jupiter", version.ref = "testcontainers" }

@@ -1,12 +1,14 @@
 package io.maestro.core.engine;
 
 import io.maestro.core.context.WorkflowContext;
+import io.maestro.core.exception.RetryExhaustedException;
 import io.maestro.core.exception.SignalTimeoutException;
 import io.maestro.core.model.EventType;
 import io.maestro.core.model.WorkflowTimer;
 import io.maestro.core.model.TimerStatus;
 import io.maestro.core.model.WorkflowEvent;
 import io.maestro.core.model.WorkflowStatus;
+import io.maestro.core.retry.RetryUntilOptions;
 import io.maestro.core.spi.DistributedLock;
 import io.maestro.core.spi.LifecycleEventType;
 import io.maestro.core.spi.WorkflowLifecycleEvent;
@@ -27,6 +29,8 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 /**
  * Default implementation of {@link WorkflowOperations} providing durable
@@ -134,6 +138,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         var timer = new WorkflowTimer(
                 UUID.randomUUID(),
                 ctx.workflowInstanceId(),
+                ctx.workflowId(),
                 timerId,
                 Instant.now().plus(duration),
                 TimerStatus.PENDING,
@@ -364,6 +369,55 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         var uuid = UUID.randomUUID().toString();
         appendEvent(ctx, seq, EventType.SIDE_EFFECT, "$maestro:randomUUID", serializer.serialize(uuid));
         return uuid;
+    }
+
+    // ── retryUntil ──────────────────────────────────────────────────────
+
+    @Override
+    public <T> T retryUntil(Supplier<T> supplier, Predicate<T> predicate, RetryUntilOptions options) {
+        // Use memoized currentTime() for deterministic deadline on replay
+        var deadline = currentTime().plus(options.maxDuration());
+        var attemptsCompleted = 0;
+
+        for (int attempt = 0; attempt < options.maxAttempts(); attempt++) {
+            // Check deadline before each new attempt (skip first — we always try at least once)
+            if (attempt > 0 && !currentTime().isBefore(deadline)) {
+                break;
+            }
+
+            T result = supplier.get(); // Activity call — memoized by the activity proxy
+            attemptsCompleted++;
+
+            if (predicate.test(result)) {
+                return result;
+            }
+
+            // Check remaining budget and cap the sleep accordingly
+            var remaining = Duration.between(currentTime(), deadline);
+            if (!remaining.isPositive()) {
+                break;
+            }
+
+            // Don't sleep after the last attempt
+            if (attempt < options.maxAttempts() - 1) {
+                var backoff = calculateRetryBackoff(options, attempt);
+                // Cap backoff to remaining budget so we don't overshoot the deadline
+                sleep(backoff.compareTo(remaining) < 0 ? backoff : remaining);
+            }
+        }
+
+        var ctx = WorkflowContext.current();
+        throw new RetryExhaustedException(ctx.workflowId(), attemptsCompleted);
+    }
+
+    private static Duration calculateRetryBackoff(RetryUntilOptions options, int attempt) {
+        // Use double arithmetic throughout to avoid long overflow on large attempt counts.
+        // Math.pow(2.0, 62) * 5000 exceeds Long.MAX_VALUE — capping in double space first
+        // ensures Math.min produces the correct result before the cast to long.
+        double delayMs = options.initialInterval().toMillis()
+                * Math.pow(options.backoffMultiplier(), attempt);
+        double cappedMs = Math.min(delayMs, options.maxInterval().toMillis());
+        return Duration.ofMillis(Math.max((long) cappedMs, 0L));
     }
 
     // ── addCompensation ────────────────────────────────────────────────

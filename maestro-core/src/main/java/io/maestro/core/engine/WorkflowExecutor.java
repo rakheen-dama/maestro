@@ -28,6 +28,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Central orchestrator that runs workflow methods on Java 21 virtual threads.
@@ -73,6 +74,7 @@ public final class WorkflowExecutor {
     private final SignalManager signalManager;
     private final ConcurrentHashMap<String, RunningWorkflow> runningWorkflows;
     private final AtomicBoolean shuttingDown;
+    private final AtomicReference<TimerPoller> timerPoller = new AtomicReference<>();
 
     /**
      * Creates a new workflow executor.
@@ -261,10 +263,44 @@ public final class WorkflowExecutor {
      * @param timerDbId   the timer's database UUID (for store transition)
      */
     public void fireTimer(String workflowId, String timerId, UUID timerDbId) {
-        store.markTimerFired(timerDbId);
-        var parkKey = workflowId + ":timer:" + timerId;
-        parkingLot.unpark(parkKey, null);
-        logger.debug("Fired timer '{}' for workflow '{}'", timerId, workflowId);
+        var fired = store.markTimerFired(timerDbId);
+        if (fired) {
+            var parkKey = workflowId + ":timer:" + timerId;
+            parkingLot.unpark(parkKey, null);
+            logger.debug("Fired timer '{}' for workflow '{}'", timerId, workflowId);
+        } else {
+            logger.debug("Timer '{}' for workflow '{}' already fired or cancelled — skipping unpark",
+                    timerId, workflowId);
+        }
+    }
+
+    // ── Timer poller ────────────────────────────────────────────────────
+
+    /**
+     * Starts the background timer poller.
+     *
+     * <p>The poller scans for due timers at the specified interval and fires
+     * them via {@link #fireTimer(String, String, UUID)}. If a
+     * {@link DistributedLock} was provided, only the elected leader polls.
+     *
+     * <p>If this method is never called, no timer polling occurs — workflows
+     * that call {@code sleep()} will not wake up after a JVM restart until
+     * the poller is started. The Spring Boot starter calls this automatically.
+     *
+     * @param pollInterval interval between polling cycles (e.g., 5 seconds)
+     * @param batchSize    maximum timers to process per cycle (e.g., 100)
+     * @throws IllegalStateException if the timer poller is already started
+     */
+    public void startTimerPoller(Duration pollInterval, int batchSize) {
+        if (shuttingDown.get()) {
+            throw new IllegalStateException(
+                    "WorkflowExecutor is shutting down — cannot start timer poller");
+        }
+        var poller = new TimerPoller(store, this, distributedLock, serviceName, pollInterval, batchSize);
+        if (!timerPoller.compareAndSet(null, poller)) {
+            throw new IllegalStateException("Timer poller already started");
+        }
+        poller.start();
     }
 
     // ── Shutdown ───────────────────────────────────────────────────────
@@ -280,6 +316,12 @@ public final class WorkflowExecutor {
         if (!shuttingDown.compareAndSet(false, true)) {
             logger.info("Shutdown already in progress");
             return;
+        }
+
+        // Stop the timer poller first — no new timers should fire during shutdown
+        var poller = timerPoller.getAndSet(null);
+        if (poller != null) {
+            poller.stop();
         }
 
         logger.info("Shutting down WorkflowExecutor, {} workflow(s) in-flight",

@@ -10,6 +10,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -41,10 +42,7 @@ class ParkingLotTest {
 
         // Wait for thread to park
         assertTrue(parked.await(5, TimeUnit.SECONDS), "Thread should park within timeout");
-        // Small delay to ensure the future is registered
-        Thread.sleep(50);
-
-        assertTrue(parkingLot.isParked(key), "Key should be registered as parked");
+        await().atMost(Duration.ofSeconds(2)).until(() -> parkingLot.isParked(key));
         parkingLot.unpark(key, payload);
 
         thread.join(Duration.ofSeconds(5));
@@ -66,7 +64,7 @@ class ParkingLotTest {
         });
 
         assertTrue(parked.await(5, TimeUnit.SECONDS));
-        Thread.sleep(50);
+        await().atMost(Duration.ofSeconds(2)).until(() -> parkingLot.isParked(key));
 
         parkingLot.unpark(key, null);
         thread.join(Duration.ofSeconds(5));
@@ -92,7 +90,7 @@ class ParkingLotTest {
         });
 
         assertTrue(parked.await(5, TimeUnit.SECONDS));
-        Thread.sleep(50);
+        await().atMost(Duration.ofSeconds(2)).until(() -> parkingLot.isParked(key));
 
         parkingLot.unpark(key, payload);
         thread.join(Duration.ofSeconds(5));
@@ -164,9 +162,7 @@ class ParkingLotTest {
         });
 
         assertTrue(parked.await(5, TimeUnit.SECONDS));
-        Thread.sleep(50);
-
-        assertEquals(2, parkingLot.parkedCount(), "Two futures should be parked");
+        await().atMost(Duration.ofSeconds(2)).until(() -> parkingLot.parkedCount() == 2);
 
         parkingLot.unparkAll("order-abc");
 
@@ -199,16 +195,14 @@ class ParkingLotTest {
         });
 
         assertTrue(parkedBoth.await(5, TimeUnit.SECONDS));
-        Thread.sleep(50);
-
-        assertEquals(2, parkingLot.parkedCount());
+        await().atMost(Duration.ofSeconds(2)).until(() -> parkingLot.parkedCount() == 2);
 
         // Cancel only order-abc
         parkingLot.unparkAll("order-abc");
-        Thread.sleep(50);
 
-        assertTrue(parkingLot.isParked("order-xyz:signal:payment"),
-                "Other workflow should still be parked");
+        await().atMost(Duration.ofSeconds(2)).untilAsserted(() -> assertTrue(
+                parkingLot.isParked("order-xyz:signal:payment"),
+                "Other workflow should still be parked"));
 
         // Clean up the other thread
         parkingLot.unpark("order-xyz:signal:payment", "done");
@@ -232,7 +226,7 @@ class ParkingLotTest {
             });
 
             assertTrue(parked.await(5, TimeUnit.SECONDS));
-            Thread.sleep(50);
+            await().atMost(Duration.ofSeconds(2)).until(() -> parkingLot.isParked(key));
 
             parkingLot.unpark(key, payload);
             thread.join(Duration.ofSeconds(5));
