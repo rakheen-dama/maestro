@@ -22,7 +22,7 @@ import java.util.UUID;
  *
  * @param id                  primary key
  * @param workflowInstanceId  owning workflow instance UUID
- * @param sequenceNumber      position in the memoization log (0-based)
+ * @param sequenceNumber      position in the memoization log (1-based)
  * @param eventType           the type of event
  * @param stepName            name of the activity or step, {@code null} for lifecycle events
  * @param payload             event data (activity result, signal payload, etc.), may be {@code null}
