@@ -6,7 +6,6 @@ import io.maestro.core.exception.WorkflowExecutionException;
 import io.maestro.core.model.EventType;
 import io.maestro.core.model.WorkflowEvent;
 import io.maestro.core.model.WorkflowInstance;
-import io.maestro.core.model.WorkflowSignal;
 import io.maestro.core.model.WorkflowStatus;
 import io.maestro.core.spi.DistributedLock;
 import io.maestro.core.spi.LifecycleEventType;
@@ -71,6 +70,7 @@ public final class WorkflowExecutor {
     private final PayloadSerializer serializer;
     private final String serviceName;
     private final ParkingLot parkingLot;
+    private final SignalManager signalManager;
     private final ConcurrentHashMap<String, RunningWorkflow> runningWorkflows;
     private final AtomicBoolean shuttingDown;
 
@@ -96,6 +96,7 @@ public final class WorkflowExecutor {
         this.serializer = serializer;
         this.serviceName = serviceName;
         this.parkingLot = new ParkingLot();
+        this.signalManager = new SignalManager(store, messaging, serializer, parkingLot);
         this.runningWorkflows = new ConcurrentHashMap<>();
         this.shuttingDown = new AtomicBoolean(false);
     }
@@ -155,7 +156,7 @@ public final class WorkflowExecutor {
         // Persist instance and adopt any pre-delivered signals (self-recovery case 2:
         // signals sent before workflow starts are stored with null instanceId)
         store.createInstance(instance);
-        store.adoptOrphanedSignals(workflowId, instanceId);
+        signalManager.adoptOrphanedSignals(workflowId, instanceId);
 
         // Publish WORKFLOW_STARTED lifecycle event
         publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_STARTED, null);
@@ -242,31 +243,7 @@ public final class WorkflowExecutor {
      * @param payload    the signal payload, or {@code null}
      */
     public void deliverSignal(String workflowId, String signalName, @Nullable Object payload) {
-        // Determine workflow instance ID (may be null for pre-delivery)
-        UUID workflowInstanceId = null;
-        var instance = store.getInstance(workflowId);
-        if (instance.isPresent()) {
-            workflowInstanceId = instance.get().id();
-        }
-
-        // Persist the signal
-        var signalPayload = payload != null ? serializer.serialize(payload) : null;
-        var signal = new WorkflowSignal(
-                UUID.randomUUID(),
-                workflowInstanceId,
-                workflowId,
-                signalName,
-                signalPayload,
-                false,
-                Instant.now()
-        );
-        store.saveSignal(signal);
-
-        // Unpark if waiting
-        var parkKey = workflowId + ":signal:" + signalName;
-        parkingLot.unpark(parkKey, signalPayload);
-
-        logger.debug("Delivered signal '{}' to workflow '{}'", signalName, workflowId);
+        signalManager.deliverSignal(workflowId, signalName, payload);
     }
 
     // ── Timer fire ─────────────────────────────────────────────────────
@@ -365,7 +342,8 @@ public final class WorkflowExecutor {
     ) {
         var compensationStack = new ConcurrentLinkedDeque<Runnable>();
         var operations = new DefaultWorkflowOperations(
-                store, distributedLock, messaging, serializer, parkingLot, compensationStack);
+                store, distributedLock, messaging, serializer, parkingLot, compensationStack,
+                signalManager);
 
         var ctx = new WorkflowContext(
                 instance.id(),
