@@ -56,9 +56,8 @@ final class ParkingLot {
         var future = new CompletableFuture<Object>();
         var existing = futures.putIfAbsent(key, future);
         if (existing != null) {
-            logger.warn("Parking key '{}' already occupied — overwriting. "
-                    + "This may indicate a duplicate park call.", key);
-            futures.put(key, future);
+            throw new IllegalStateException(
+                    "Parking key '%s' already occupied — duplicate park call would orphan the existing waiter".formatted(key));
         }
 
         try {
@@ -84,8 +83,8 @@ final class ParkingLot {
         var future = new CompletableFuture<Object>();
         var existing = futures.putIfAbsent(key, future);
         if (existing != null) {
-            logger.warn("Parking key '{}' already occupied — overwriting.", key);
-            futures.put(key, future);
+            throw new IllegalStateException(
+                    "Parking key '%s' already occupied — duplicate park call would orphan the existing waiter".formatted(key));
         }
 
         try {

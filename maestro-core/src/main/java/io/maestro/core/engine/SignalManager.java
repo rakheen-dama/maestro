@@ -234,8 +234,11 @@ final class SignalManager {
             WorkflowContext ctx, int seq, String stepName,
             String signalName, WorkflowSignal signal, Class<T> type
     ) {
-        store.markSignalConsumed(signal.id());
+        // Persist the SIGNAL_RECEIVED event BEFORE marking consumed.
+        // If appendEvent fails, the signal stays unconsumed and can be
+        // retried on recovery. The reverse order would lose the signal.
         appendEvent(ctx, seq, EventType.SIGNAL_RECEIVED, stepName, signal.payload());
+        store.markSignalConsumed(signal.id());
         publishLifecycleEvent(ctx, stepName, LifecycleEventType.SIGNAL_RECEIVED);
         logger.debug("Consumed signal '{}' for workflow '{}'", signalName, ctx.workflowId());
         return serializer.deserialize(signal.payload(), type);

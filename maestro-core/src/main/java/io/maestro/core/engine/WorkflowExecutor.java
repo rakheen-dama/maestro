@@ -253,11 +253,15 @@ public final class WorkflowExecutor {
      *
      * <p>Called by the timer poller when a due timer is found. Marks the
      * timer as fired in the store and unparks the workflow's virtual thread.
+     * The store transition is persisted before unparking to prevent the
+     * timer poller from redelivering.
      *
-     * @param workflowId the workflow's business ID
-     * @param timerId    the timer's logical ID (e.g., {@code "sleep-5"})
+     * @param workflowId  the workflow's business ID
+     * @param timerId     the timer's logical ID (e.g., {@code "sleep-5"})
+     * @param timerDbId   the timer's database UUID (for store transition)
      */
-    public void fireTimer(String workflowId, String timerId) {
+    public void fireTimer(String workflowId, String timerId, UUID timerDbId) {
+        store.markTimerFired(timerDbId);
         var parkKey = workflowId + ":timer:" + timerId;
         parkingLot.unpark(parkKey, null);
         logger.debug("Fired timer '{}' for workflow '{}'", timerId, workflowId);
@@ -359,11 +363,14 @@ public final class WorkflowExecutor {
 
         var thread = Thread.ofVirtual()
                 .name("maestro-workflow-%s-%s".formatted(instance.workflowType(), instance.workflowId()))
-                .start(() -> executeWorkflow(ctx, instance, workflowImpl, workflowMethod,
+                .unstarted(() -> executeWorkflow(ctx, instance, workflowImpl, workflowMethod,
                         inputPayload, compensationStack));
 
-        runningWorkflows.put(instance.workflowId(),
-                new RunningWorkflow(thread, instance, instance.workflowType()));
+        // Register before starting to prevent the race where a fast workflow
+        // finishes and removes itself before the put() below executes
+        var running = new RunningWorkflow(thread, instance, instance.workflowType());
+        runningWorkflows.put(instance.workflowId(), running);
+        thread.start();
     }
 
     // ── Internal: workflow execution (virtual thread body) ─────────────

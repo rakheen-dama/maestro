@@ -258,9 +258,12 @@ public final class WorkflowContext {
     /**
      * Sets the sequence counter to a specific value.
      *
-     * <p>Used internally by the engine for parallel branch contexts,
-     * where each branch needs its own sequence space. Not intended
-     * for use by workflow authors.
+     * <p><b>Engine-internal method — do not call from workflow code.</b>
+     * Calling this from a workflow method will corrupt the memoization
+     * sequence and break deterministic replay.
+     *
+     * <p>Used by the engine for parallel branch contexts, where each
+     * branch needs its own sequence space.
      *
      * @param sequence the sequence value to set
      */

@@ -121,6 +121,9 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                 parkForTimer(ctx, timerId);
                 // Timer fired — record the TIMER_FIRED event
                 recordTimerFired(ctx);
+                // Restore RUNNING status (matches the live path)
+                updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
+                publishLifecycleEvent(ctx, stepName, LifecycleEventType.TIMER_FIRED);
                 return;
             }
         }
@@ -240,9 +243,14 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         var parentSeq = ctx.nextSequence();
         var branchCount = tasks.size();
 
-        // Record the parallel fork point (for replay validation)
-        appendEvent(ctx, parentSeq, EventType.SIDE_EFFECT, "$maestro:parallel",
-                serializer.serialize(new ParallelDetail(branchCount)));
+        // Replay check: look for existing parallel fork event at this sequence
+        var storedEvent = store.getEventBySequence(ctx.workflowInstanceId(), parentSeq);
+        if (storedEvent.isEmpty() || storedEvent.get().eventType() != EventType.SIDE_EFFECT) {
+            // Live path: record the parallel fork point
+            ctx.setReplaying(false);
+            appendEvent(ctx, parentSeq, EventType.SIDE_EFFECT, "$maestro:parallel",
+                    serializer.serialize(new ParallelDetail(branchCount)));
+        }
 
         var results = new ArrayList<AtomicReference<T>>(branchCount);
         var errors = new ArrayList<AtomicReference<Throwable>>(branchCount);
