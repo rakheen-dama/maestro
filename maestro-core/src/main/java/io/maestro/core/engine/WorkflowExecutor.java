@@ -3,8 +3,11 @@ package io.maestro.core.engine;
 import io.maestro.core.annotation.Saga;
 import io.maestro.core.context.WorkflowContext;
 import io.maestro.core.exception.CompensationException;
+import io.maestro.core.exception.QueryNotDefinedException;
 import io.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.maestro.core.exception.WorkflowExecutionException;
+import io.maestro.core.exception.WorkflowNotQueryableException;
+import io.maestro.core.exception.WorkflowNotFoundException;
 import io.maestro.core.model.EventType;
 import io.maestro.core.model.WorkflowEvent;
 import io.maestro.core.model.WorkflowInstance;
@@ -75,6 +78,7 @@ public final class WorkflowExecutor {
     private final ParkingLot parkingLot;
     private final SignalManager signalManager;
     private final SagaManager sagaManager;
+    private final QueryRegistry queryRegistry;
     private final ConcurrentHashMap<String, RunningWorkflow> runningWorkflows;
     private final AtomicBoolean shuttingDown;
     private final AtomicReference<TimerPoller> timerPoller = new AtomicReference<>();
@@ -103,6 +107,7 @@ public final class WorkflowExecutor {
         this.parkingLot = new ParkingLot();
         this.signalManager = new SignalManager(store, messaging, serializer, parkingLot);
         this.sagaManager = new SagaManager(store, messaging, serializer, serviceName);
+        this.queryRegistry = new QueryRegistry();
         this.runningWorkflows = new ConcurrentHashMap<>();
         this.shuttingDown = new AtomicBoolean(false);
     }
@@ -359,7 +364,71 @@ public final class WorkflowExecutor {
         }
     }
 
-    // ── Query ──────────────────────────────────────────────────────────
+    // ── Query registration ─────────────────────────────────────────────
+
+    /**
+     * Registers query methods for a workflow type.
+     *
+     * <p>Scans the workflow class for {@link io.maestro.core.annotation.QueryMethod}
+     * annotations and stores them in the query registry. Must be called before
+     * {@link #queryWorkflow} can dispatch queries to this workflow type.
+     *
+     * <p>Typically called during startup, alongside workflow registration.
+     *
+     * @param workflowType  the workflow type name
+     * @param workflowClass the workflow class to scan for query methods
+     * @throws IllegalArgumentException if any annotated method violates constraints
+     */
+    public void registerQueries(String workflowType, Class<?> workflowClass) {
+        queryRegistry.register(workflowType, workflowClass);
+    }
+
+    // ── Query dispatch ──────────────────────────────────────────────────
+
+    /**
+     * Queries a running workflow's state by invoking a
+     * {@link io.maestro.core.annotation.QueryMethod} on the workflow instance.
+     *
+     * <p>The query method is invoked from the <b>caller's thread</b>, not the
+     * workflow's virtual thread. The workflow author is responsible for ensuring
+     * visibility of state fields read by query methods (use {@code volatile}
+     * or synchronization).
+     *
+     * <p>Currently only workflows running in-memory on this executor can be
+     * queried. If the workflow is not in-memory (completed, failed, or running
+     * on a different instance), a {@link WorkflowNotQueryableException} is thrown.
+     *
+     * @param workflowId the workflow's business ID
+     * @param queryName  the query name (from {@code @QueryMethod.name()} or the method name)
+     * @param queryArg   the query argument, or {@code null} for no-arg queries
+     * @param resultType the expected result type
+     * @param <T>        the result type
+     * @return the query result
+     * @throws WorkflowNotFoundException      if no workflow with this ID exists
+     * @throws WorkflowNotQueryableException  if the workflow is not in-memory
+     * @throws QueryNotDefinedException       if no query method with this name exists
+     * @throws WorkflowExecutionException     if the query method throws an exception
+     */
+    public <T> T queryWorkflow(String workflowId, String queryName,
+                               @Nullable Object queryArg, Class<T> resultType) {
+        var running = runningWorkflows.get(workflowId);
+        if (running == null) {
+            // Distinguish between "workflow exists but not in-memory" and "workflow doesn't exist"
+            var instance = store.getInstance(workflowId);
+            if (instance.isPresent()) {
+                throw new WorkflowNotQueryableException(workflowId, queryName, instance.get().status());
+            }
+            throw new WorkflowNotFoundException(workflowId);
+        }
+
+        var queryMethod = queryRegistry.getQueryMethod(running.workflowType(), queryName)
+                .orElseThrow(() -> new QueryNotDefinedException(
+                        workflowId, queryName, running.workflowType()));
+
+        return invokeQueryMethod(queryMethod, running.workflowImpl(), queryArg, resultType);
+    }
+
+    // ── Query status ────────────────────────────────────────────────────
 
     /**
      * Returns whether a workflow with the given ID is currently running
@@ -418,7 +487,7 @@ public final class WorkflowExecutor {
 
         // Register before starting to prevent the race where a fast workflow
         // finishes and removes itself before the put() below executes
-        var running = new RunningWorkflow(thread, instance, instance.workflowType());
+        var running = new RunningWorkflow(thread, instance, instance.workflowType(), workflowImpl);
         runningWorkflows.put(instance.workflowId(), running);
         thread.start();
     }
@@ -586,12 +655,59 @@ public final class WorkflowExecutor {
         }
     }
 
+    // ── Internal: query invocation ─────────────────────────────────────
+
+    @SuppressWarnings("unchecked")
+    private <T> T invokeQueryMethod(Method queryMethod, Object workflowImpl,
+                                    @Nullable Object queryArg, Class<T> resultType) {
+        try {
+            Object result;
+            if (queryMethod.getParameterCount() == 0) {
+                result = queryMethod.invoke(workflowImpl);
+            } else {
+                var paramType = queryMethod.getParameterTypes()[0];
+                if (queryArg != null && !paramType.isInstance(queryArg)
+                        && !isBoxingCompatible(paramType, queryArg.getClass())) {
+                    throw new IllegalArgumentException(
+                            "Query '%s' argument type mismatch: expected %s, got %s"
+                                    .formatted(queryMethod.getName(), paramType.getName(),
+                                            queryArg.getClass().getName()));
+                }
+                result = queryMethod.invoke(workflowImpl, queryArg);
+            }
+            return resultType.cast(result);
+        } catch (InvocationTargetException e) {
+            var cause = e.getCause();
+            if (cause instanceof RuntimeException re) throw re;
+            if (cause instanceof Error err) throw err;
+            throw new WorkflowExecutionException(
+                    "Query method '%s' threw a checked exception".formatted(queryMethod.getName()), cause);
+        } catch (IllegalAccessException e) {
+            throw new WorkflowExecutionException(
+                    "Cannot access query method '%s'".formatted(queryMethod.getName()), e);
+        }
+    }
+
+    private static final Map<Class<?>, Class<?>> PRIMITIVE_TO_WRAPPER = Map.of(
+            boolean.class, Boolean.class, byte.class, Byte.class,
+            char.class, Character.class, short.class, Short.class,
+            int.class, Integer.class, long.class, Long.class,
+            float.class, Float.class, double.class, Double.class
+    );
+
+    private static boolean isBoxingCompatible(Class<?> paramType, Class<?> argType) {
+        if (!paramType.isPrimitive()) return false;
+        var wrapper = PRIMITIVE_TO_WRAPPER.get(paramType);
+        return wrapper != null && wrapper.isAssignableFrom(argType);
+    }
+
     // ── Internal records ───────────────────────────────────────────────
 
     /**
-     * Tracks a currently running workflow for shutdown coordination.
+     * Tracks a currently running workflow for shutdown coordination and query dispatch.
      */
-    record RunningWorkflow(Thread thread, WorkflowInstance instance, String workflowType) {}
+    record RunningWorkflow(Thread thread, WorkflowInstance instance, String workflowType,
+                           Object workflowImpl) {}
 
     /**
      * Error detail stored in the workflow output on failure.
