@@ -21,21 +21,17 @@ tasks.withType<JavaCompile>().configureEach {
     ))
 }
 
-// Versions aligned with Spring Boot 4.0.0-RC2 BOM
-val springBootBomVersion = "4.0.0-RC2"
+// Versions pinned explicitly — NO Spring Boot BOM here.
+// This keeps maestro-core's published POM completely free of Spring references.
 val jspecifyVersion = "1.0.0"
+val slf4jVersion = "2.0.17"
+val junitJupiterVersion = "6.0.1"
 
 dependencies {
     api("org.jspecify:jspecify:$jspecifyVersion")
+    api("org.slf4j:slf4j-api:$slf4jVersion")
 
-    // Import Spring Boot BOM for version alignment (SLF4J, JUnit, etc.)
-    // Using implementation scope so the BOM is NOT leaked to consumers' POMs.
-    // This is critical for maestro-core which must never expose Spring in its API surface.
-    implementation(platform("org.springframework.boot:spring-boot-dependencies:$springBootBomVersion"))
-
-    implementation("org.slf4j:slf4j-api")
-
-    testImplementation("org.junit.jupiter:junit-jupiter")
+    testImplementation("org.junit.jupiter:junit-jupiter:$junitJupiterVersion")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

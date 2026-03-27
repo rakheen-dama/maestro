@@ -65,8 +65,8 @@ maestro/
 ├── maestro-admin                   ← Standalone dashboard (Thymeleaf + HTMX, own Postgres).
 ├── maestro-test                    ← In-memory SPIs, controllable clock, TestWorkflowEnvironment.
 ├── maestro-samples/
-│   ├── sample-order-service        ← E-commerce order fulfilment (flagship example)
-│   └── sample-payment-gateway      ← Payment processing with durable retries
+│   ├── sample-stokvel-service      ← Stokvel onboarding (parallel branches, signal collection)
+│   └── sample-core-banking-proxy   ← Core banking proxy with durable retries & saga
 └── docs/
 ```
 
@@ -210,7 +210,7 @@ All under `maestro.*`. Topics are pre-created, declared in config.
 ./gradlew build
 ./gradlew :maestro-core:test
 ./gradlew :maestro-store-postgres:integrationTest
-./gradlew :maestro-samples:sample-order-service:bootRun
+./gradlew :maestro-samples:sample-stokvel-service:bootRun
 ```
 
 ## What NOT To Do

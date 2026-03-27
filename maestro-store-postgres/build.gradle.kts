@@ -15,5 +15,4 @@ dependencies {
 
     testImplementation(libs.testcontainers.junit5)
     testImplementation(libs.testcontainers.postgresql)
-    testRuntimeOnly(libs.postgresql)
 }
