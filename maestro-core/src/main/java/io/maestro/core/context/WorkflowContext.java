@@ -405,6 +405,22 @@ public final class WorkflowContext {
         requireOperations().addCompensation(compensation);
     }
 
+    /**
+     * Pushes a named compensation action onto the compensation stack.
+     *
+     * <p>The step name is used for logging and event recording. This
+     * overload is used by the {@code @Compensate} activity proxy
+     * integration.
+     *
+     * @param stepName     the compensation step name for logging and events
+     * @param compensation the compensation action
+     * @throws IllegalStateException if operations are not configured
+     * @see WorkflowOperations#addCompensation(String, Runnable)
+     */
+    public void addCompensation(String stepName, Runnable compensation) {
+        requireOperations().addCompensation(stepName, compensation);
+    }
+
     private WorkflowOperations requireOperations() {
         if (operations == null) {
             throw new IllegalStateException(

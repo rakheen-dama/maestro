@@ -35,8 +35,14 @@ public enum EventType {
     /** Saga compensation began (unwinding completed activities in reverse order). */
     COMPENSATION_STARTED,
 
-    /** Saga compensation completed for a single activity. */
+    /** Saga compensation completed (all compensations unwound). */
     COMPENSATION_COMPLETED,
+
+    /** An individual compensation step completed successfully. */
+    COMPENSATION_STEP_COMPLETED,
+
+    /** An individual compensation step failed (remaining compensations continue). */
+    COMPENSATION_STEP_FAILED,
 
     /** Workflow completed successfully. */
     WORKFLOW_COMPLETED,

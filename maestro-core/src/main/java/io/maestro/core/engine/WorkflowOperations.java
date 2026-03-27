@@ -143,4 +143,16 @@ public sealed interface WorkflowOperations permits DefaultWorkflowOperations {
      * @param compensation the compensation action to register
      */
     void addCompensation(Runnable compensation);
+
+    /**
+     * Pushes a named compensation action onto the compensation stack.
+     *
+     * <p>The step name is used for logging and event recording. This
+     * overload is used by the {@code @Compensate} integration in the
+     * activity proxy.
+     *
+     * @param stepName     the compensation step name for logging and events
+     * @param compensation the compensation action to register
+     */
+    void addCompensation(String stepName, Runnable compensation);
 }

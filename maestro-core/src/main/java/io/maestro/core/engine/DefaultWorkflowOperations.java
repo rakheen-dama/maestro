@@ -9,6 +9,7 @@ import io.maestro.core.model.TimerStatus;
 import io.maestro.core.model.WorkflowEvent;
 import io.maestro.core.model.WorkflowStatus;
 import io.maestro.core.retry.RetryUntilOptions;
+import io.maestro.core.saga.CompensationStack;
 import io.maestro.core.spi.DistributedLock;
 import io.maestro.core.spi.LifecycleEventType;
 import io.maestro.core.spi.WorkflowLifecycleEvent;
@@ -22,7 +23,6 @@ import tools.jackson.databind.JsonNode;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Deque;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Callable;
@@ -67,7 +67,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
     private final @Nullable WorkflowMessaging messaging;
     private final PayloadSerializer serializer;
     private final ParkingLot parkingLot;
-    private final Deque<Runnable> compensationStack;
+    private final CompensationStack compensationStack;
     private final SignalManager signalManager;
 
     /**
@@ -85,7 +85,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             @Nullable WorkflowMessaging messaging,
             PayloadSerializer serializer,
             ParkingLot parkingLot,
-            Deque<Runnable> compensationStack,
+            CompensationStack compensationStack,
             SignalManager signalManager
     ) {
         this.store = store;
@@ -425,6 +425,11 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
     @Override
     public void addCompensation(Runnable compensation) {
         compensationStack.push(compensation);
+    }
+
+    @Override
+    public void addCompensation(String stepName, Runnable compensation) {
+        compensationStack.push(stepName, compensation);
     }
 
     // ── Internal helpers ───────────────────────────────────────────────
