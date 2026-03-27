@@ -73,7 +73,12 @@ final class QueryRegistry {
         }
 
         if (!queryMethods.isEmpty()) {
-            registry.put(workflowType, Collections.unmodifiableMap(queryMethods));
+            var existing = registry.putIfAbsent(workflowType, Collections.unmodifiableMap(queryMethods));
+            if (existing != null) {
+                throw new IllegalArgumentException(
+                        "Query methods already registered for workflow type '%s'"
+                                .formatted(workflowType));
+            }
             logger.debug("Registered {} query method(s) for workflow type '{}': {}",
                     queryMethods.size(), workflowType, queryMethods.keySet());
         }

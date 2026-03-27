@@ -122,6 +122,16 @@ class QueryRegistryTest {
     }
 
     @Test
+    @DisplayName("Double registration of same workflow type → fails")
+    void doubleRegistrationRejected() {
+        registry.register("OrderWorkflow", WorkflowWithQuery.class);
+
+        var ex = assertThrows(IllegalArgumentException.class,
+                () -> registry.register("OrderWorkflow", WorkflowWithQuery.class));
+        assertTrue(ex.getMessage().contains("already registered"));
+    }
+
+    @Test
     @DisplayName("Duplicate query name → fails at registration")
     void duplicateQueryNameRejected() {
         var ex = assertThrows(IllegalArgumentException.class,

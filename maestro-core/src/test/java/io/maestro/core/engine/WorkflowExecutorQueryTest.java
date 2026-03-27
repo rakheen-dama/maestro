@@ -52,6 +52,7 @@ class WorkflowExecutorQueryTest {
     void setUp() {
         store = new InMemoryWorkflowStore();
         var serializer = new PayloadSerializer(new ObjectMapper());
+        // null = no distributed lock provider needed for single-node tests
         executor = new WorkflowExecutor(store, null, new NoOpMessaging(), serializer, "test-service");
     }
 
@@ -95,15 +96,13 @@ class WorkflowExecutorQueryTest {
         executor.startWorkflow("order-q2", "BlockingQueryableWorkflow", "default",
                 "active", workflow, method);
 
-        // Wait for workflow to start and set state
-        assertTrue(startedLatch.await(5, TimeUnit.SECONDS));
-
-        // Query while workflow is actively running (blocked on latch)
-        var step = executor.queryWorkflow("order-q2", "getCurrentStep", null, String.class);
-        assertEquals("step-1", step);
-
-        // Release workflow to complete
-        blockLatch.countDown();
+        try {
+            assertTrue(startedLatch.await(5, TimeUnit.SECONDS));
+            var step = executor.queryWorkflow("order-q2", "getCurrentStep", null, String.class);
+            assertEquals("step-1", step);
+        } finally {
+            blockLatch.countDown();
+        }
     }
 
     // ── Query with argument ───────────────────────────────────────────
@@ -120,12 +119,13 @@ class WorkflowExecutorQueryTest {
         executor.startWorkflow("order-q3", "WorkflowWithArgQuery", "default",
                 "input", workflow, method);
 
-        assertTrue(startedLatch.await(5, TimeUnit.SECONDS));
-
-        var result = executor.queryWorkflow("order-q3", "getItemByIndex", 2, String.class);
-        assertEquals("item-2", result);
-
-        blockLatch.countDown();
+        try {
+            assertTrue(startedLatch.await(5, TimeUnit.SECONDS));
+            var result = executor.queryWorkflow("order-q3", "getItemByIndex", 2, String.class);
+            assertEquals("item-2", result);
+        } finally {
+            blockLatch.countDown();
+        }
     }
 
     // ── Query with custom name ──────���─────────────────────────────────
@@ -142,12 +142,13 @@ class WorkflowExecutorQueryTest {
         executor.startWorkflow("order-q4", "CustomNameWorkflow", "default",
                 "input", workflow, method);
 
-        assertTrue(startedLatch.await(5, TimeUnit.SECONDS));
-
-        var count = executor.queryWorkflow("order-q4", "progress", null, Integer.class);
-        assertEquals(42, count);
-
-        blockLatch.countDown();
+        try {
+            assertTrue(startedLatch.await(5, TimeUnit.SECONDS));
+            var count = executor.queryWorkflow("order-q4", "progress", null, Integer.class);
+            assertEquals(42, count);
+        } finally {
+            blockLatch.countDown();
+        }
     }
 
     // ── Error cases ────��──────────────────────────────────────────────
@@ -196,14 +197,15 @@ class WorkflowExecutorQueryTest {
         executor.startWorkflow("order-q5", "BlockingQueryableWorkflow", "default",
                 "input", workflow, method);
 
-        assertTrue(startedLatch.await(5, TimeUnit.SECONDS));
-
-        var ex = assertThrows(QueryNotDefinedException.class, () ->
-                executor.queryWorkflow("order-q5", "nonExistentQuery", null, String.class));
-        assertEquals("nonExistentQuery", ex.queryName());
-        assertEquals("BlockingQueryableWorkflow", ex.workflowType());
-
-        blockLatch.countDown();
+        try {
+            assertTrue(startedLatch.await(5, TimeUnit.SECONDS));
+            var ex = assertThrows(QueryNotDefinedException.class, () ->
+                    executor.queryWorkflow("order-q5", "nonExistentQuery", null, String.class));
+            assertEquals("nonExistentQuery", ex.queryName());
+            assertEquals("BlockingQueryableWorkflow", ex.workflowType());
+        } finally {
+            blockLatch.countDown();
+        }
     }
 
     @Test

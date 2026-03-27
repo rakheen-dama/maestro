@@ -27,10 +27,9 @@ public final class WorkflowNotQueryableException extends QueryException {
      */
     public WorkflowNotQueryableException(String workflowId, String queryName,
                                          @Nullable WorkflowStatus status) {
-        super("Workflow '%s' is not running in-memory on this executor (status=%s). "
-                        .formatted(workflowId, status)
-                + "Query '%s' cannot be served. Replay-based queries are planned for a future version."
-                        .formatted(queryName),
+        super(("Workflow '%s' is not running in-memory on this executor (status=%s). " +
+                "Query '%s' cannot be served. Replay-based queries are planned for a future version.")
+                        .formatted(workflowId, status, queryName),
                 workflowId, queryName);
         this.status = status;
     }

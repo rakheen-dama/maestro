@@ -665,6 +665,14 @@ public final class WorkflowExecutor {
             if (queryMethod.getParameterCount() == 0) {
                 result = queryMethod.invoke(workflowImpl);
             } else {
+                var paramType = queryMethod.getParameterTypes()[0];
+                if (queryArg != null && !paramType.isInstance(queryArg)
+                        && !isBoxingCompatible(paramType, queryArg.getClass())) {
+                    throw new IllegalArgumentException(
+                            "Query '%s' argument type mismatch: expected %s, got %s"
+                                    .formatted(queryMethod.getName(), paramType.getName(),
+                                            queryArg.getClass().getName()));
+                }
                 result = queryMethod.invoke(workflowImpl, queryArg);
             }
             return resultType.cast(result);
@@ -678,6 +686,19 @@ public final class WorkflowExecutor {
             throw new WorkflowExecutionException(
                     "Cannot access query method '%s'".formatted(queryMethod.getName()), e);
         }
+    }
+
+    private static final Map<Class<?>, Class<?>> PRIMITIVE_TO_WRAPPER = Map.of(
+            boolean.class, Boolean.class, byte.class, Byte.class,
+            char.class, Character.class, short.class, Short.class,
+            int.class, Integer.class, long.class, Long.class,
+            float.class, Float.class, double.class, Double.class
+    );
+
+    private static boolean isBoxingCompatible(Class<?> paramType, Class<?> argType) {
+        if (!paramType.isPrimitive()) return false;
+        var wrapper = PRIMITIVE_TO_WRAPPER.get(paramType);
+        return wrapper != null && wrapper.isAssignableFrom(argType);
     }
 
     // ── Internal records ───────────────────────────────────────────────
