@@ -204,7 +204,6 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
 
         // No signal yet — park and wait
         updateInstanceStatus(ctx, WorkflowStatus.WAITING_SIGNAL);
-        publishLifecycleEvent(ctx, stepName, LifecycleEventType.SIGNAL_RECEIVED);
 
         var parkKey = ctx.workflowId() + ":signal:" + signalName;
         logger.debug("Workflow '{}' waiting for signal '{}' (timeout={})", ctx.workflowId(), signalName, timeout);
@@ -212,6 +211,13 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         try {
             parkingLot.parkWithTimeout(parkKey, timeout);
         } catch (TimeoutException e) {
+            // Re-check store: signal may have arrived between our check and parking
+            var lateSignals = store.getUnconsumedSignals(ctx.workflowId(), signalName);
+            if (!lateSignals.isEmpty()) {
+                var result = consumeSignal(ctx, seq, stepName, signalName, lateSignals.getFirst(), type);
+                updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
+                return result;
+            }
             updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
             throw new SignalTimeoutException(ctx.workflowId(), signalName, timeout);
         }
@@ -245,10 +251,11 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
     @Override
     public <T> List<T> collectSignals(String signalName, Class<T> type, int count, Duration timeout) {
         var results = new ArrayList<T>(count);
-        var deadline = Instant.now().plus(timeout);
+        // Use memoized currentTime() for deterministic deadline on replay
+        var deadline = currentTime().plus(timeout);
 
         for (int i = 0; i < count; i++) {
-            var remaining = Duration.between(Instant.now(), deadline);
+            var remaining = Duration.between(currentTime(), deadline);
             if (remaining.isNegative() || remaining.isZero()) {
                 var ctx = WorkflowContext.current();
                 throw new SignalTimeoutException(ctx.workflowId(), signalName, timeout);
@@ -277,6 +284,18 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         }
 
         var ctx = WorkflowContext.current();
+
+        // Validate that branch sequence ranges won't overflow Integer.MAX_VALUE
+        var peekParentSeq = ctx.currentSequence() + 1;
+        long maxBranchBase = (long) peekParentSeq * BRANCH_MULTIPLIER
+                + (long) (tasks.size() + 1) * BRANCH_MULTIPLIER;
+        if (maxBranchBase > Integer.MAX_VALUE) {
+            throw new IllegalStateException(
+                    "Parallel execution at sequence %d with %d branches would overflow the integer sequence space. "
+                            .formatted(peekParentSeq, tasks.size())
+                            + "Reduce nesting depth or number of branches.");
+        }
+
         var parentSeq = ctx.nextSequence();
         var branchCount = tasks.size();
 

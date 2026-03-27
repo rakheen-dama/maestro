@@ -152,8 +152,10 @@ public final class WorkflowExecutor {
                 .version(0)
                 .build();
 
-        // Persist instance (also adopts orphaned signals)
+        // Persist instance and adopt any pre-delivered signals (self-recovery case 2:
+        // signals sent before workflow starts are stored with null instanceId)
         store.createInstance(instance);
+        store.adoptOrphanedSignals(workflowId, instanceId);
 
         // Publish WORKFLOW_STARTED lifecycle event
         publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_STARTED, null);
