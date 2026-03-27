@@ -5,6 +5,7 @@ import io.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -28,11 +29,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * ({@code null}), the poller runs unconditionally (single-node mode).
  *
  * <h2>Idempotency</h2>
- * <p>Duplicate timer fires are safe:
+ * <p>Duplicate timer fires are handled safely:
  * <ul>
- *   <li>{@link WorkflowExecutor#fireTimer} marks the timer as {@code FIRED}
- *       before unparking — a second fire finds it already transitioned.</li>
- *   <li>{@link ParkingLot#unpark} is a no-op if no thread is parked.</li>
+ *   <li>{@link WorkflowStore#markTimerFired} uses compare-and-set semantics
+ *       ({@code PENDING → FIRED}) and returns {@code false} if the timer was
+ *       already fired or cancelled.</li>
+ *   <li>{@link WorkflowExecutor#fireTimer} only unparks the workflow when
+ *       the CAS succeeds — a duplicate or cancelled fire is a no-op.</li>
  * </ul>
  *
  * <h2>Thread Safety</h2>
@@ -80,6 +83,17 @@ final class TimerPoller {
             Duration pollInterval,
             int batchSize
     ) {
+        if (store == null) throw new NullPointerException("store must not be null");
+        if (executor == null) throw new NullPointerException("executor must not be null");
+        if (serviceName == null || serviceName.isBlank()) {
+            throw new IllegalArgumentException("serviceName must not be null or blank");
+        }
+        if (pollInterval == null || pollInterval.isNegative() || pollInterval.isZero()) {
+            throw new IllegalArgumentException("pollInterval must be positive, got " + pollInterval);
+        }
+        if (batchSize < 1) {
+            throw new IllegalArgumentException("batchSize must be at least 1, got " + batchSize);
+        }
         this.store = store;
         this.executor = executor;
         this.distributedLock = distributedLock;
@@ -174,12 +188,15 @@ final class TimerPoller {
 
         for (var timer : dueTimers) {
             try {
+                MDC.put("workflowId", timer.workflowId());
                 executor.fireTimer(timer.workflowId(), timer.timerId(), timer.id());
                 fired++;
             } catch (Exception e) {
                 logger.error("Failed to fire timer {} (workflowId='{}', timerId='{}')",
                         timer.id(), timer.workflowId(), timer.timerId(), e);
                 // Continue with remaining timers — don't let one failure stop the batch
+            } finally {
+                MDC.remove("workflowId");
             }
         }
 

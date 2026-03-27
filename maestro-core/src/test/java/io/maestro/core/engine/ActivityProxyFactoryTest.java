@@ -301,7 +301,7 @@ class ActivityProxyFactoryTest {
         }
 
         @Override
-        public void markTimerFired(UUID timerId) {
+        public boolean markTimerFired(UUID timerId) {
             throw new UnsupportedOperationException("stub");
         }
 

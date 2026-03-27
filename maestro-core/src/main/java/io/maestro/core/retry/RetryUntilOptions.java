@@ -57,8 +57,9 @@ public record RetryUntilOptions(
         if (maxInterval.isNegative()) {
             throw new IllegalArgumentException("maxInterval must not be negative, got " + maxInterval);
         }
-        if (backoffMultiplier < 1.0) {
-            throw new IllegalArgumentException("backoffMultiplier must be >= 1.0, got " + backoffMultiplier);
+        if (!Double.isFinite(backoffMultiplier) || backoffMultiplier < 1.0) {
+            throw new IllegalArgumentException(
+                    "backoffMultiplier must be finite and >= 1.0, got " + backoffMultiplier);
         }
     }
 

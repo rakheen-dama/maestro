@@ -380,6 +380,11 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         var attemptsCompleted = 0;
 
         for (int attempt = 0; attempt < options.maxAttempts(); attempt++) {
+            // Check deadline before each new attempt (skip first — we always try at least once)
+            if (attempt > 0 && !currentTime().isBefore(deadline)) {
+                break;
+            }
+
             T result = supplier.get(); // Activity call — memoized by the activity proxy
             attemptsCompleted++;
 
@@ -387,15 +392,17 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                 return result;
             }
 
-            // Check deadline using memoized time
-            if (currentTime().isAfter(deadline)) {
+            // Check remaining budget and cap the sleep accordingly
+            var remaining = Duration.between(currentTime(), deadline);
+            if (!remaining.isPositive()) {
                 break;
             }
 
             // Don't sleep after the last attempt
             if (attempt < options.maxAttempts() - 1) {
                 var backoff = calculateRetryBackoff(options, attempt);
-                sleep(backoff); // Durable sleep — creates a persistent timer
+                // Cap backoff to remaining budget so we don't overshoot the deadline
+                sleep(backoff.compareTo(remaining) < 0 ? backoff : remaining);
             }
         }
 

@@ -110,6 +110,22 @@ class RetryUntilOptionsTest {
     }
 
     @Test
+    @DisplayName("backoffMultiplier NaN throws")
+    void backoffMultiplierNaN() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new RetryUntilOptions(10, Duration.ofHours(1), Duration.ofSeconds(1),
+                        Duration.ofSeconds(10), Double.NaN));
+    }
+
+    @Test
+    @DisplayName("backoffMultiplier Infinity throws")
+    void backoffMultiplierInfinity() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new RetryUntilOptions(10, Duration.ofHours(1), Duration.ofSeconds(1),
+                        Duration.ofSeconds(10), Double.POSITIVE_INFINITY));
+    }
+
+    @Test
     @DisplayName("edge case: maxAttempts = 1 is valid")
     void singleAttemptIsValid() {
         var opts = new RetryUntilOptions(1, Duration.ofHours(1), Duration.ofSeconds(1),

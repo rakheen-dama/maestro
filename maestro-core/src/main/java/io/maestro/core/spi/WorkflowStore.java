@@ -210,13 +210,18 @@ public interface WorkflowStore {
     List<WorkflowTimer> getDueTimers(Instant now, int batchSize);
 
     /**
-     * Marks a timer as fired.
+     * Marks a timer as fired (atomic compare-and-set: PENDING → FIRED).
      *
-     * <p>Updates the timer status from {@code PENDING} to {@code FIRED}.
+     * <p>Only transitions timers in {@code PENDING} status. If the timer
+     * is already {@code FIRED} or {@code CANCELLED}, this is a no-op and
+     * returns {@code false}. This allows callers to detect whether they
+     * won the race (e.g., fire vs. cancel).
      *
      * @param timerId the timer UUID to mark as fired
+     * @return {@code true} if the transition was applied (PENDING → FIRED),
+     *         {@code false} if the timer was already in a terminal state
      */
-    void markTimerFired(UUID timerId);
+    boolean markTimerFired(UUID timerId);
 
     /**
      * Marks a timer as cancelled.

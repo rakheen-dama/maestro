@@ -28,6 +28,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Central orchestrator that runs workflow methods on Java 21 virtual threads.
@@ -73,7 +74,7 @@ public final class WorkflowExecutor {
     private final SignalManager signalManager;
     private final ConcurrentHashMap<String, RunningWorkflow> runningWorkflows;
     private final AtomicBoolean shuttingDown;
-    private @Nullable TimerPoller timerPoller;
+    private final AtomicReference<TimerPoller> timerPoller = new AtomicReference<>();
 
     /**
      * Creates a new workflow executor.
@@ -262,10 +263,15 @@ public final class WorkflowExecutor {
      * @param timerDbId   the timer's database UUID (for store transition)
      */
     public void fireTimer(String workflowId, String timerId, UUID timerDbId) {
-        store.markTimerFired(timerDbId);
-        var parkKey = workflowId + ":timer:" + timerId;
-        parkingLot.unpark(parkKey, null);
-        logger.debug("Fired timer '{}' for workflow '{}'", timerId, workflowId);
+        var fired = store.markTimerFired(timerDbId);
+        if (fired) {
+            var parkKey = workflowId + ":timer:" + timerId;
+            parkingLot.unpark(parkKey, null);
+            logger.debug("Fired timer '{}' for workflow '{}'", timerId, workflowId);
+        } else {
+            logger.debug("Timer '{}' for workflow '{}' already fired or cancelled — skipping unpark",
+                    timerId, workflowId);
+        }
     }
 
     // ── Timer poller ────────────────────────────────────────────────────
@@ -286,11 +292,15 @@ public final class WorkflowExecutor {
      * @throws IllegalStateException if the timer poller is already started
      */
     public void startTimerPoller(Duration pollInterval, int batchSize) {
-        if (timerPoller != null) {
+        if (shuttingDown.get()) {
+            throw new IllegalStateException(
+                    "WorkflowExecutor is shutting down — cannot start timer poller");
+        }
+        var poller = new TimerPoller(store, this, distributedLock, serviceName, pollInterval, batchSize);
+        if (!timerPoller.compareAndSet(null, poller)) {
             throw new IllegalStateException("Timer poller already started");
         }
-        timerPoller = new TimerPoller(store, this, distributedLock, serviceName, pollInterval, batchSize);
-        timerPoller.start();
+        poller.start();
     }
 
     // ── Shutdown ───────────────────────────────────────────────────────
@@ -309,8 +319,9 @@ public final class WorkflowExecutor {
         }
 
         // Stop the timer poller first — no new timers should fire during shutdown
-        if (timerPoller != null) {
-            timerPoller.stop();
+        var poller = timerPoller.getAndSet(null);
+        if (poller != null) {
+            poller.stop();
         }
 
         logger.info("Shutting down WorkflowExecutor, {} workflow(s) in-flight",
