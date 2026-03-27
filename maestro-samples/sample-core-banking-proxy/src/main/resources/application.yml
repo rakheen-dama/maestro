@@ -1,0 +1,6 @@
+spring:
+  application:
+    name: sample-core-banking-proxy
+
+maestro:
+  service-name: core-banking-proxy

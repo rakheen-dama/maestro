@@ -40,3 +40,5 @@ docker-compose.override.yml
 .claude/
 .codex/
 codex/
+/maestro-samples/
+/.serena/
