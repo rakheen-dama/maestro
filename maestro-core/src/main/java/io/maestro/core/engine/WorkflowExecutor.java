@@ -1,12 +1,16 @@
 package io.maestro.core.engine;
 
+import io.maestro.core.annotation.Saga;
 import io.maestro.core.context.WorkflowContext;
+import io.maestro.core.exception.CompensationException;
 import io.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.maestro.core.exception.WorkflowExecutionException;
 import io.maestro.core.model.EventType;
 import io.maestro.core.model.WorkflowEvent;
 import io.maestro.core.model.WorkflowInstance;
 import io.maestro.core.model.WorkflowStatus;
+import io.maestro.core.saga.CompensationStack;
+import io.maestro.core.saga.SagaManager;
 import io.maestro.core.spi.DistributedLock;
 import io.maestro.core.spi.LifecycleEventType;
 import io.maestro.core.spi.WorkflowLifecycleEvent;
@@ -22,11 +26,9 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Deque;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -72,6 +74,7 @@ public final class WorkflowExecutor {
     private final String serviceName;
     private final ParkingLot parkingLot;
     private final SignalManager signalManager;
+    private final SagaManager sagaManager;
     private final ConcurrentHashMap<String, RunningWorkflow> runningWorkflows;
     private final AtomicBoolean shuttingDown;
     private final AtomicReference<TimerPoller> timerPoller = new AtomicReference<>();
@@ -99,6 +102,7 @@ public final class WorkflowExecutor {
         this.serviceName = serviceName;
         this.parkingLot = new ParkingLot();
         this.signalManager = new SignalManager(store, messaging, serializer, parkingLot);
+        this.sagaManager = new SagaManager(store, messaging, serializer, serviceName);
         this.runningWorkflows = new ConcurrentHashMap<>();
         this.shuttingDown = new AtomicBoolean(false);
     }
@@ -386,7 +390,7 @@ public final class WorkflowExecutor {
             @Nullable JsonNode inputPayload,
             boolean replaying
     ) {
-        var compensationStack = new ConcurrentLinkedDeque<Runnable>();
+        var compensationStack = new CompensationStack();
         var operations = new DefaultWorkflowOperations(
                 store, distributedLock, messaging, serializer, parkingLot, compensationStack,
                 signalManager);
@@ -403,10 +407,14 @@ public final class WorkflowExecutor {
                 operations
         );
 
+        // Detect @Saga on the workflow method
+        var sagaAnnotation = workflowMethod.getAnnotation(Saga.class);
+        var parallelCompensation = sagaAnnotation != null && sagaAnnotation.parallelCompensation();
+
         var thread = Thread.ofVirtual()
                 .name("maestro-workflow-%s-%s".formatted(instance.workflowType(), instance.workflowId()))
                 .unstarted(() -> executeWorkflow(ctx, instance, workflowImpl, workflowMethod,
-                        inputPayload, compensationStack));
+                        inputPayload, compensationStack, parallelCompensation));
 
         // Register before starting to prevent the race where a fast workflow
         // finishes and removes itself before the put() below executes
@@ -423,7 +431,8 @@ public final class WorkflowExecutor {
             Object workflowImpl,
             Method workflowMethod,
             @Nullable JsonNode inputPayload,
-            Deque<Runnable> compensationStack
+            CompensationStack compensationStack,
+            boolean parallelCompensation
     ) {
         MDC.put("workflowId", ctx.workflowId());
         MDC.put("runId", ctx.runId().toString());
@@ -455,7 +464,7 @@ public final class WorkflowExecutor {
             logger.info("Workflow '{}' completed successfully", ctx.workflowId());
 
         } catch (Exception e) {
-            handleWorkflowFailure(ctx, instance, e, compensationStack);
+            handleWorkflowFailure(ctx, instance, e, compensationStack, parallelCompensation);
         } finally {
             WorkflowContext.clear();
             runningWorkflows.remove(ctx.workflowId());
@@ -490,13 +499,22 @@ public final class WorkflowExecutor {
             WorkflowContext ctx,
             WorkflowInstance instance,
             Exception exception,
-            Deque<Runnable> compensationStack
+            CompensationStack compensationStack,
+            boolean parallelCompensation
     ) {
         logger.error("Workflow '{}' failed: {}", ctx.workflowId(), exception.getMessage(), exception);
 
-        // Run compensations in LIFO order if any
+        // Run compensations via SagaManager if any are registered
         if (!compensationStack.isEmpty()) {
-            runCompensations(ctx, instance, compensationStack);
+            try {
+                sagaManager.compensate(ctx, instance, compensationStack, parallelCompensation);
+            } catch (CompensationException e) {
+                // Partial compensation failure — log and continue to FAILED transition.
+                // The CompensationException details are already recorded in the event log
+                // (COMPENSATION_STEP_FAILED events) by the SagaManager.
+                logger.warn("Partial compensation failure for workflow '{}': {}",
+                        ctx.workflowId(), e.failedCompensations());
+            }
         }
 
         // Update instance to FAILED
@@ -523,47 +541,6 @@ public final class WorkflowExecutor {
             logger.error("Failed to update workflow '{}' status to FAILED",
                     ctx.workflowId(), updateError);
         }
-    }
-
-    private void runCompensations(
-            WorkflowContext ctx,
-            WorkflowInstance instance,
-            Deque<Runnable> compensationStack
-    ) {
-        logger.info("Running {} compensation(s) for workflow '{}' in LIFO order",
-                compensationStack.size(), ctx.workflowId());
-
-        // Update status to COMPENSATING (re-read for latest version)
-        try {
-            var latest = store.getInstance(ctx.workflowId()).orElse(instance);
-            var compensating = latest.toBuilder()
-                    .status(WorkflowStatus.COMPENSATING)
-                    .updatedAt(Instant.now())
-                    .version(latest.version() + 1)
-                    .build();
-            store.updateInstance(compensating);
-        } catch (Exception e) {
-            logger.warn("Failed to update workflow '{}' status to COMPENSATING", ctx.workflowId(), e);
-        }
-
-        appendEvent(ctx, EventType.COMPENSATION_STARTED, null, null);
-
-        var compensationIndex = 0;
-        while (!compensationStack.isEmpty()) {
-            var compensation = compensationStack.pop();
-            try {
-                compensation.run();
-                logger.debug("Compensation {} completed for workflow '{}'", compensationIndex, ctx.workflowId());
-            } catch (Exception e) {
-                logger.error("Compensation {} failed for workflow '{}': {}",
-                        compensationIndex, ctx.workflowId(), e.getMessage(), e);
-                // Continue with remaining compensations — don't let one failure stop others
-            }
-            compensationIndex++;
-        }
-
-        appendEvent(ctx, EventType.COMPENSATION_COMPLETED, null, null);
-        logger.info("All compensations completed for workflow '{}'", ctx.workflowId());
     }
 
     // ── Internal: event and lifecycle helpers ──────────────────────────

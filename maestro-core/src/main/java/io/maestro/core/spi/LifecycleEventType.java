@@ -49,5 +49,11 @@ public enum LifecycleEventType {
     COMPENSATION_STARTED,
 
     /** Saga compensation completed. */
-    COMPENSATION_COMPLETED
+    COMPENSATION_COMPLETED,
+
+    /** An individual compensation step completed. */
+    COMPENSATION_STEP_COMPLETED,
+
+    /** An individual compensation step failed. */
+    COMPENSATION_STEP_FAILED
 }

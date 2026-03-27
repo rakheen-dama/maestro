@@ -375,6 +375,70 @@ class ActivityInvocationHandlerTest {
         );
     }
 
+    // ── @Compensate argument resolution tests ──────────────────────────
+
+    @Test
+    @DisplayName("resolveCompensationArgs: no params → null args")
+    void resolveCompensationArgs_noParams() throws Exception {
+        var activity = NoArgCompensateActivities.class.getMethod("doWork", String.class);
+        var compensation = NoArgCompensateActivities.class.getMethod("undo");
+
+        var result = ActivityInvocationHandler.resolveCompensationArgs(
+                compensation, activity, new Object[]{"input"}, "result");
+
+        assertNull(result);
+    }
+
+    @Test
+    @DisplayName("resolveCompensationArgs: single param matching return type → return value")
+    void resolveCompensationArgs_returnValue() throws Exception {
+        var activity = ReturnValueCompensateActivities.class.getMethod("reserve", String.class);
+        var compensation = ReturnValueCompensateActivities.class.getMethod("release", String.class);
+
+        var result = ActivityInvocationHandler.resolveCompensationArgs(
+                compensation, activity, new Object[]{"items"}, "reservation-123");
+
+        assertNotNull(result);
+        assertEquals(1, result.length);
+        assertEquals("reservation-123", result[0]);
+    }
+
+    @Test
+    @DisplayName("resolveCompensationArgs: same params as activity → original args")
+    void resolveCompensationArgs_originalArgs() throws Exception {
+        var activity = OriginalArgsCompensateActivities.class.getMethod("charge", String.class, int.class);
+        var compensation = OriginalArgsCompensateActivities.class.getMethod("refund", String.class, int.class);
+
+        var originalArgs = new Object[]{"card-1", 100};
+        var result = ActivityInvocationHandler.resolveCompensationArgs(
+                compensation, activity, originalArgs, "receipt");
+
+        assertNotNull(result);
+        assertEquals(2, result.length);
+        assertEquals("card-1", result[0]);
+        assertEquals(100, result[1]);
+        // Verify defensive copy
+        assertNotSame(originalArgs, result);
+    }
+
+    interface NoArgCompensateActivities {
+        @io.maestro.core.annotation.Compensate("undo")
+        String doWork(String input);
+        void undo();
+    }
+
+    interface ReturnValueCompensateActivities {
+        @io.maestro.core.annotation.Compensate("release")
+        String reserve(String item);
+        void release(String reservation);
+    }
+
+    interface OriginalArgsCompensateActivities {
+        @io.maestro.core.annotation.Compensate("refund")
+        String charge(String cardId, int amount);
+        void refund(String cardId, int amount);
+    }
+
     // ── Test activity interfaces and implementations ──────────────────
 
     record Greeting(String message) {}

@@ -1,5 +1,6 @@
 package io.maestro.core.engine;
 
+import io.maestro.core.annotation.Compensate;
 import io.maestro.core.context.WorkflowContext;
 import io.maestro.core.exception.ActivityExecutionException;
 import io.maestro.core.exception.DuplicateEventException;
@@ -131,12 +132,20 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             var storedEvent = store.getEventBySequence(ctx.workflowInstanceId(), seq);
 
             if (storedEvent.isPresent()) {
-                return handleReplay(storedEvent.get(), method, stepName, ctx, seq);
+                var result = handleReplay(storedEvent.get(), method, stepName, ctx, seq);
+                // Register compensation on successful replay (rebuilds stack during recovery)
+                if (storedEvent.get().eventType() == EventType.ACTIVITY_COMPLETED) {
+                    registerCompensationIfAnnotated(proxy, method, args, result, ctx);
+                }
+                return result;
             }
 
             // ── Live execution ────────────────────────────────────────
             ctx.setReplaying(false);
-            return executeLive(method, args, ctx, seq, stepName);
+            var result = executeLive(method, args, ctx, seq, stepName);
+            // Register compensation after successful live execution
+            registerCompensationIfAnnotated(proxy, method, args, result, ctx);
+            return result;
 
         } finally {
             MDC.remove("workflowId");
@@ -454,6 +463,102 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             logger.warn("Failed to publish {} lifecycle event for activity '{}'",
                     eventType, stepName, e);
         }
+    }
+
+    // ── @Compensate registration ────────────────────────────────
+
+    /**
+     * If the activity method is annotated with {@link Compensate}, registers
+     * a compensation action on the workflow's compensation stack.
+     *
+     * <p>The compensation action calls the compensation method through
+     * the same proxy, so it is memoized, retriable, and replayable.
+     */
+    private void registerCompensationIfAnnotated(
+            Object proxy, Method method,
+            @Nullable Object @Nullable [] args,
+            @Nullable Object result,
+            WorkflowContext ctx
+    ) {
+        var compensate = method.getAnnotation(Compensate.class);
+        if (compensate == null) {
+            return;
+        }
+
+        var compensationMethodName = compensate.value();
+        var compensationMethod = findCompensationMethod(method.getDeclaringClass(), compensationMethodName);
+        var compensationArgs = resolveCompensationArgs(compensationMethod, method, args, result);
+        var compensationStepName = activityName + "." + compensationMethodName;
+
+        ctx.addCompensation(compensationStepName, () -> {
+            try {
+                compensationMethod.invoke(proxy, compensationArgs);
+            } catch (java.lang.reflect.InvocationTargetException e) {
+                var cause = e.getCause();
+                if (cause instanceof RuntimeException re) throw re;
+                throw new RuntimeException("Compensation '%s' failed".formatted(compensationStepName), cause);
+            } catch (IllegalAccessException e) {
+                throw new RuntimeException("Compensation '%s' inaccessible".formatted(compensationStepName), e);
+            }
+        });
+    }
+
+    /**
+     * Finds the compensation method by name on the activity interface.
+     */
+    private static Method findCompensationMethod(Class<?> activityInterface, String methodName) {
+        for (var m : activityInterface.getMethods()) {
+            if (m.getName().equals(methodName)) {
+                return m;
+            }
+        }
+        // Should not happen — validated at proxy creation time
+        throw new IllegalStateException(
+                "Compensation method '%s' not found on %s"
+                        .formatted(methodName, activityInterface.getName()));
+    }
+
+    /**
+     * Resolves the arguments to pass to the compensation method.
+     *
+     * <p>Convention-based resolution:
+     * <ol>
+     *   <li>0 params → no args</li>
+     *   <li>1 param assignable from the activity's return type → pass the return value</li>
+     *   <li>Same parameter types as the activity → pass the original args</li>
+     * </ol>
+     */
+    static @Nullable Object @Nullable [] resolveCompensationArgs(
+            Method compensationMethod, Method activityMethod,
+            @Nullable Object @Nullable [] activityArgs,
+            @Nullable Object activityResult
+    ) {
+        var compensationParams = compensationMethod.getParameterTypes();
+
+        if (compensationParams.length == 0) {
+            return null;
+        }
+
+        // Pattern 1: single param matching the activity's return type → pass the return value
+        var returnType = activityMethod.getReturnType();
+        if (compensationParams.length == 1
+                && returnType != void.class
+                && returnType != Void.class
+                && compensationParams[0].isAssignableFrom(returnType)) {
+            return new Object[]{ activityResult };
+        }
+
+        // Pattern 2: same parameters as the activity → pass the original args
+        var activityParams = activityMethod.getParameterTypes();
+        if (java.util.Arrays.equals(compensationParams, activityParams)) {
+            return activityArgs != null ? activityArgs.clone() : null;
+        }
+
+        // Should not happen — validated at proxy creation time
+        throw new IllegalStateException(
+                "Cannot resolve arguments for compensation method '%s' on %s"
+                        .formatted(compensationMethod.getName(),
+                                compensationMethod.getDeclaringClass().getName()));
     }
 
     // ── Object method pass-through ────────────────────────────────────

@@ -1,6 +1,7 @@
 package io.maestro.core.engine;
 
 import io.maestro.core.annotation.Activity;
+import io.maestro.core.annotation.Compensate;
 import io.maestro.core.model.WorkflowEvent;
 import io.maestro.core.model.WorkflowInstance;
 import io.maestro.core.model.WorkflowSignal;
@@ -224,6 +225,89 @@ class ActivityProxyFactoryTest {
         assertNotNull(proxy);
         assertInstanceOf(NamedActivities.class, proxy);
         assertEquals("ActivityProxy[custom]", proxy.toString());
+    }
+
+    // ── @Compensate validation tests ────────────────────────────────────
+
+    /**
+     * Activity with valid @Compensate — return-value pattern.
+     */
+    @Activity
+    interface ValidCompensateActivities {
+        @Compensate("releaseReservation")
+        String reserve(String item);
+
+        void releaseReservation(String reservation);
+    }
+
+    static class ValidCompensateActivitiesImpl implements ValidCompensateActivities {
+        @Override public String reserve(String item) { return "res-" + item; }
+        @Override public void releaseReservation(String reservation) {}
+    }
+
+    /**
+     * Activity with @Compensate pointing to nonexistent method.
+     */
+    @Activity
+    interface BadCompensateMethodActivities {
+        @Compensate("nonExistentMethod")
+        String doWork(String input);
+    }
+
+    static class BadCompensateMethodActivitiesImpl implements BadCompensateMethodActivities {
+        @Override public String doWork(String input) { return input; }
+    }
+
+    /**
+     * Activity with @Compensate with incompatible parameter types.
+     */
+    @Activity
+    interface BadCompensateParamsActivities {
+        @Compensate("compensate")
+        String doWork(String input);
+
+        void compensate(int wrongType);
+    }
+
+    static class BadCompensateParamsActivitiesImpl implements BadCompensateParamsActivities {
+        @Override public String doWork(String input) { return input; }
+        @Override public void compensate(int wrongType) {}
+    }
+
+    @Test
+    @DisplayName("createProxy accepts valid @Compensate annotations")
+    void validCompensateAccepted() {
+        var proxy = factory.createProxy(
+                ValidCompensateActivities.class,
+                new ValidCompensateActivitiesImpl(),
+                store, lock, messaging,
+                retryPolicy, timeout, serializer, retryExecutor
+        );
+        assertNotNull(proxy);
+    }
+
+    @Test
+    @DisplayName("createProxy rejects @Compensate referencing nonexistent method")
+    void compensateNonexistentMethodRejected() {
+        assertThrows(IllegalArgumentException.class, () ->
+                factory.createProxy(
+                        BadCompensateMethodActivities.class,
+                        new BadCompensateMethodActivitiesImpl(),
+                        store, lock, messaging,
+                        retryPolicy, timeout, serializer, retryExecutor
+                ));
+    }
+
+    @Test
+    @DisplayName("createProxy rejects @Compensate with incompatible parameters")
+    void compensateIncompatibleParamsRejected() {
+        assertThrows(IllegalArgumentException.class, () ->
+                factory.createProxy(
+                        BadCompensateParamsActivities.class,
+                        new BadCompensateParamsActivitiesImpl(),
+                        store, lock, messaging,
+                        retryPolicy, timeout, serializer, retryExecutor
+                ));
     }
 
     // ── Stub SPI implementations ─────────────────────────────────────────

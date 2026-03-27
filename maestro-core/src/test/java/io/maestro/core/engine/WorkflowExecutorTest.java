@@ -238,7 +238,109 @@ class WorkflowExecutorTest {
                 assertFalse(messaging.events.isEmpty(), "Lifecycle events should have been published"));
     }
 
+    // ── Saga compensation tests ──────────────────────────────────────
+
+    @Test
+    @DisplayName("Manual addCompensation runs compensations on failure (no @Saga required)")
+    void manualCompensationRunsOnFailure() throws Exception {
+        var compensationRan = new CountDownLatch(1);
+        var failedLatch = new CountDownLatch(1);
+
+        var workflow = new CompensatingWorkflow(failedLatch, compensationRan);
+        var method = CompensatingWorkflow.class.getMethod("run", String.class);
+
+        executor.startWorkflow("comp-1", "CompensatingWorkflow", "default",
+                "input", workflow, method);
+
+        assertTrue(failedLatch.await(5, TimeUnit.SECONDS));
+
+        // Wait for workflow to fully complete (transition to FAILED)
+        await().atMost(Duration.ofSeconds(2)).untilAsserted(() -> {
+            var inst = store.getInstance("comp-1");
+            assertTrue(inst.isPresent());
+            assertEquals(WorkflowStatus.FAILED, inst.get().status());
+        });
+
+        // Compensation should have run
+        assertTrue(compensationRan.await(2, TimeUnit.SECONDS),
+                "Compensation should have been executed");
+
+        // COMPENSATION_STARTED and COMPENSATION_COMPLETED events should exist
+        var events = store.events.stream()
+                .filter(e -> e.workflowInstanceId().equals(
+                        store.getInstance("comp-1").get().id()))
+                .map(WorkflowEvent::eventType)
+                .toList();
+        assertTrue(events.contains(EventType.COMPENSATION_STARTED));
+        assertTrue(events.contains(EventType.COMPENSATION_COMPLETED));
+    }
+
+    @Test
+    @DisplayName("@Saga workflow runs compensations on failure")
+    void sagaAnnotatedWorkflowRunsCompensationsOnFailure() throws Exception {
+        var compensationRan = new CountDownLatch(1);
+        var failedLatch = new CountDownLatch(1);
+
+        var workflow = new SagaAnnotatedWorkflow(failedLatch, compensationRan);
+        var method = SagaAnnotatedWorkflow.class.getMethod("run", String.class);
+
+        executor.startWorkflow("saga-1", "SagaWorkflow", "default",
+                "input", workflow, method);
+
+        assertTrue(failedLatch.await(5, TimeUnit.SECONDS));
+
+        await().atMost(Duration.ofSeconds(2)).untilAsserted(() -> {
+            var inst = store.getInstance("saga-1");
+            assertTrue(inst.isPresent());
+            assertEquals(WorkflowStatus.FAILED, inst.get().status());
+        });
+
+        assertTrue(compensationRan.await(2, TimeUnit.SECONDS),
+                "Saga compensation should have been executed");
+    }
+
     // ── Test workflow implementations ──────────────────────────────────
+
+    /**
+     * Workflow that registers a manual compensation and then fails.
+     */
+    public static class CompensatingWorkflow {
+        private final CountDownLatch failedLatch;
+        private final CountDownLatch compensationRan;
+
+        public CompensatingWorkflow(CountDownLatch failedLatch, CountDownLatch compensationRan) {
+            this.failedLatch = failedLatch;
+            this.compensationRan = compensationRan;
+        }
+
+        public String run(String input) {
+            var workflow = io.maestro.core.context.WorkflowContext.current();
+            workflow.addCompensation(() -> compensationRan.countDown());
+            failedLatch.countDown();
+            throw new RuntimeException("Intentional failure after compensation registration");
+        }
+    }
+
+    /**
+     * Workflow with @Saga annotation that registers compensation and fails.
+     */
+    public static class SagaAnnotatedWorkflow {
+        private final CountDownLatch failedLatch;
+        private final CountDownLatch compensationRan;
+
+        public SagaAnnotatedWorkflow(CountDownLatch failedLatch, CountDownLatch compensationRan) {
+            this.failedLatch = failedLatch;
+            this.compensationRan = compensationRan;
+        }
+
+        @io.maestro.core.annotation.Saga
+        public String run(String input) {
+            var workflow = io.maestro.core.context.WorkflowContext.current();
+            workflow.addCompensation("manual-comp", () -> compensationRan.countDown());
+            failedLatch.countDown();
+            throw new RuntimeException("Intentional saga failure");
+        }
+    }
 
     /**
      * Simple workflow that returns its input uppercased.

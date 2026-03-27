@@ -30,7 +30,8 @@ public sealed class MaestroException extends RuntimeException
                 SignalTimeoutException,
                 RetryExhaustedException,
                 LockAcquisitionException,
-                SerializationException {
+                SerializationException,
+                CompensationException {
 
     /**
      * Creates a new exception with the given message.

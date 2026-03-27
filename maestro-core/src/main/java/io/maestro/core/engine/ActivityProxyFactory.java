@@ -1,6 +1,7 @@
 package io.maestro.core.engine;
 
 import io.maestro.core.annotation.Activity;
+import io.maestro.core.annotation.Compensate;
 import io.maestro.core.retry.RetryExecutor;
 import io.maestro.core.retry.RetryPolicy;
 import io.maestro.core.spi.DistributedLock;
@@ -8,8 +9,12 @@ import io.maestro.core.spi.WorkflowMessaging;
 import io.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
 
+import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 
 /**
  * Creates JDK dynamic proxies for activity interfaces that implement
@@ -70,6 +75,8 @@ public final class ActivityProxyFactory {
                     "Activity type must be an interface, got: " + activityInterface.getName());
         }
 
+        validateCompensateAnnotations(activityInterface);
+
         var activityName = resolveActivityName(activityInterface);
 
         var handler = new ActivityInvocationHandler(
@@ -103,5 +110,87 @@ public final class ActivityProxyFactory {
             return annotation.name();
         }
         return activityInterface.getSimpleName();
+    }
+
+    /**
+     * Validates all {@link Compensate} annotations on the activity interface
+     * at proxy creation time (fail-fast).
+     *
+     * <p>Checks that:
+     * <ol>
+     *   <li>The referenced compensation method exists on the interface.</li>
+     *   <li>The compensation method's parameters are compatible with
+     *       the activity's return type or parameters.</li>
+     * </ol>
+     *
+     * @param activityInterface the activity interface to validate
+     * @throws IllegalArgumentException if any {@code @Compensate} annotation is misconfigured
+     */
+    private void validateCompensateAnnotations(Class<?> activityInterface) {
+        for (var method : activityInterface.getMethods()) {
+            var compensate = method.getAnnotation(Compensate.class);
+            if (compensate == null) {
+                continue;
+            }
+
+            var compensationName = compensate.value();
+            var compensationMethods = findMethods(activityInterface, compensationName);
+
+            if (compensationMethods.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "@Compensate on %s.%s references '%s', but no method with that name exists on %s"
+                                .formatted(activityInterface.getSimpleName(), method.getName(),
+                                        compensationName, activityInterface.getSimpleName()));
+            }
+
+            if (compensationMethods.size() > 1) {
+                throw new IllegalArgumentException(
+                        "@Compensate on %s.%s references '%s', but %s has %d overloads of '%s'. "
+                                .formatted(activityInterface.getSimpleName(), method.getName(),
+                                        compensationName, activityInterface.getSimpleName(),
+                                        compensationMethods.size(), compensationName)
+                                + "Compensation methods must have a unique name — rename one of the overloads.");
+            }
+
+            var compensationMethod = compensationMethods.getFirst();
+
+            // Validate argument compatibility
+            var compensationParams = compensationMethod.getParameterTypes();
+            if (compensationParams.length == 0) {
+                continue; // No-arg compensation is always valid
+            }
+
+            var returnType = method.getReturnType();
+            // Pattern 1: single param matching return type
+            if (compensationParams.length == 1
+                    && returnType != void.class
+                    && returnType != Void.class
+                    && compensationParams[0].isAssignableFrom(returnType)) {
+                continue;
+            }
+
+            // Pattern 2: same params as the activity
+            if (Arrays.equals(compensationParams, method.getParameterTypes())) {
+                continue;
+            }
+
+            throw new IllegalArgumentException(
+                    "@Compensate on %s.%s references '%s', but the compensation method's parameters "
+                            .formatted(activityInterface.getSimpleName(), method.getName(), compensationName)
+                            + "are incompatible. Expected: no params, a single param matching the return type (%s), "
+                                    .formatted(returnType.getSimpleName())
+                            + "or the same parameters as the activity method %s"
+                                    .formatted(Arrays.toString(method.getParameterTypes())));
+        }
+    }
+
+    private static List<Method> findMethods(Class<?> iface, String name) {
+        var matches = new ArrayList<Method>();
+        for (var m : iface.getMethods()) {
+            if (m.getName().equals(name)) {
+                matches.add(m);
+            }
+        }
+        return matches;
     }
 }
