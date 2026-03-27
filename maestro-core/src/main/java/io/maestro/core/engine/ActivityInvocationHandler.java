@@ -122,6 +122,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         var stepName = activityName + "." + method.getName();
 
         MDC.put("workflowId", ctx.workflowId());
+        MDC.put("runId", ctx.runId().toString());
         MDC.put("activityName", stepName);
         MDC.put("sequence", String.valueOf(seq));
 
@@ -139,6 +140,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
 
         } finally {
             MDC.remove("workflowId");
+            MDC.remove("runId");
             MDC.remove("activityName");
             MDC.remove("sequence");
         }
@@ -180,19 +182,63 @@ public final class ActivityInvocationHandler implements InvocationHandler {
 
     /**
      * Reconstructs an {@link ActivityExecutionException} from a stored failure event.
+     *
+     * <p>Attempts to reconstruct the original exception type via reflection so that
+     * workflow code catching specific exception types behaves consistently between
+     * live execution and replay.
      */
     private ActivityExecutionException reconstructFailure(
             WorkflowEvent event, String stepName, String workflowId
     ) {
         var message = "Replayed failure";
-        if (event.payload() != null && event.payload().has("message")) {
-            var text = event.payload().get("message").stringValue();
-            if (text != null && !text.isEmpty()) {
-                message = text;
+        var exceptionType = (String) null;
+
+        if (event.payload() != null) {
+            if (event.payload().has("message")) {
+                var text = event.payload().get("message").stringValue();
+                if (text != null && !text.isEmpty()) {
+                    message = text;
+                }
+            }
+            if (event.payload().has("exceptionType")) {
+                exceptionType = event.payload().get("exceptionType").stringValue();
             }
         }
-        return new ActivityExecutionException(
-                workflowId, stepName, new RuntimeException(message));
+
+        var cause = tryInstantiateException(exceptionType, message);
+        return new ActivityExecutionException(workflowId, stepName, cause);
+    }
+
+    /**
+     * Attempts to reconstruct an exception by its class name. Falls back to
+     * {@link RuntimeException} if the type cannot be instantiated.
+     */
+    private static Throwable tryInstantiateException(
+            @Nullable String exceptionType, String message
+    ) {
+        if (exceptionType != null) {
+            try {
+                var clazz = Class.forName(exceptionType);
+                if (Throwable.class.isAssignableFrom(clazz)) {
+                    // Try (String) constructor first, then no-arg
+                    try {
+                        var ctor = clazz.getDeclaredConstructor(String.class);
+                        return (Throwable) ctor.newInstance(message);
+                    } catch (NoSuchMethodException ignored) {
+                        try {
+                            var ctor = clazz.getDeclaredConstructor();
+                            return (Throwable) ctor.newInstance();
+                        } catch (NoSuchMethodException alsoIgnored) {
+                            // Fall through to default
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                logger.debug("Could not reconstruct exception type '{}', falling back to RuntimeException",
+                        exceptionType, e);
+            }
+        }
+        return new RuntimeException(message);
     }
 
     // ── Live execution path ───────────────────────────────────────────
@@ -225,8 +271,13 @@ public final class ActivityInvocationHandler implements InvocationHandler {
                 );
             } catch (ActivityExecutionException e) {
                 // Retries exhausted — persist failure
-                persistFailure(ctx, seq, stepName, e);
-                publishLifecycleEvent(ctx, stepName, LifecycleEventType.ACTIVITY_FAILED);
+                boolean failurePersisted = persistFailure(ctx, seq, stepName, e);
+                if (failurePersisted) {
+                    publishLifecycleEvent(ctx, stepName, LifecycleEventType.ACTIVITY_FAILED);
+                }
+                // If failurePersisted is false, a prior ACTIVITY_COMPLETED event exists
+                // at this sequence (DuplicateEventException). Don't publish misleading
+                // ACTIVITY_FAILED lifecycle event — the stored result is a success.
                 throw e;
             }
 
@@ -302,8 +353,11 @@ public final class ActivityInvocationHandler implements InvocationHandler {
 
     /**
      * Persists an ACTIVITY_FAILED event with error details in the payload.
+     *
+     * @return {@code true} if the failure event was actually persisted, {@code false}
+     *         if a prior event already exists at this sequence (DuplicateEventException)
      */
-    private void persistFailure(
+    private boolean persistFailure(
             WorkflowContext ctx, int seq, String stepName,
             ActivityExecutionException exception
     ) {
@@ -319,7 +373,10 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             errorPayload = null;
         }
 
-        appendEventSafe(ctx, seq, EventType.ACTIVITY_FAILED, stepName, errorPayload);
+        var persisted = appendEventSafe(ctx, seq, EventType.ACTIVITY_FAILED, stepName, errorPayload);
+        // If appendEventSafe caught DuplicateEventException, persisted will differ from errorPayload
+        // (it returns the previously stored event's payload). This means the failure was NOT persisted.
+        return persisted == errorPayload;
     }
 
     /**

@@ -228,9 +228,9 @@ class RetryExecutorTest {
         // attempt 0 -> fail -> sleep 50ms (50 * 2^0)
         // attempt 1 -> fail -> sleep 100ms (50 * 2^1)
         // attempt 2 -> fail -> throw
-        // Total minimum sleep: 150ms
-        assertTrue(elapsedMs >= 100,
-                "Expected at least 100ms of backoff sleep, but elapsed was " + elapsedMs + "ms");
+        // Total minimum sleep: 150ms (allow 10ms jitter for scheduling)
+        assertTrue(elapsedMs >= 140,
+                "Expected at least 140ms of backoff sleep, but elapsed was " + elapsedMs + "ms");
     }
 
     @Test

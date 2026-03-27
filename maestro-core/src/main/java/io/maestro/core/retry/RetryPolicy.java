@@ -41,6 +41,18 @@ public record RetryPolicy(
         if (maxAttempts < 1) {
             throw new IllegalArgumentException("maxAttempts must be >= 1, got " + maxAttempts);
         }
+        if (initialInterval == null) {
+            throw new IllegalArgumentException("initialInterval must not be null");
+        }
+        if (maxInterval == null) {
+            throw new IllegalArgumentException("maxInterval must not be null");
+        }
+        if (initialInterval.isNegative()) {
+            throw new IllegalArgumentException("initialInterval must not be negative, got " + initialInterval);
+        }
+        if (maxInterval.isNegative()) {
+            throw new IllegalArgumentException("maxInterval must not be negative, got " + maxInterval);
+        }
         if (backoffMultiplier < 1.0) {
             throw new IllegalArgumentException("backoffMultiplier must be >= 1.0, got " + backoffMultiplier);
         }

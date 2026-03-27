@@ -1,5 +1,8 @@
 package io.maestro.core.context;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -29,6 +32,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public final class WorkflowContext {
 
+    private static final Logger logger = LoggerFactory.getLogger(WorkflowContext.class);
     private static final ThreadLocal<WorkflowContext> CURRENT = new ThreadLocal<>();
 
     private final UUID workflowInstanceId;
@@ -83,6 +87,11 @@ public final class WorkflowContext {
      * @param context the context to bind
      */
     public static void bind(WorkflowContext context) {
+        var existing = CURRENT.get();
+        if (existing != null) {
+            logger.warn("Overwriting existing WorkflowContext for workflow '{}' — potential leak. "
+                    + "Ensure clear() is called before binding a new context.", existing.workflowId());
+        }
         CURRENT.set(context);
     }
 
