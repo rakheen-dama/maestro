@@ -123,8 +123,8 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
 
             if (Modifier.isFinal(field.getModifiers())) {
                 throw new BeanInitializationException(
-                        "@ActivityStub field '%s' on %s must not be final — "
-                                + "Maestro injects the memoizing proxy at runtime via reflection"
+                        ("@ActivityStub field '%s' on %s must not be final — "
+                                + "Maestro injects the memoizing proxy at runtime via reflection")
                                 .formatted(field.getName(), targetClass.getName()));
             }
 

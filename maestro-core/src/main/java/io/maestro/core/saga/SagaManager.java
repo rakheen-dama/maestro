@@ -1,6 +1,7 @@
 package io.maestro.core.saga;
 
 import io.maestro.core.context.WorkflowContext;
+import io.maestro.core.context.WorkflowMDC;
 import io.maestro.core.exception.CompensationException;
 import io.maestro.core.model.EventType;
 import io.maestro.core.model.WorkflowEvent;
@@ -212,6 +213,7 @@ public final class SagaManager {
                                 ctx.isReplaying(),
                                 null // no operations needed — compensations call through proxy directly
                         );
+                        WorkflowMDC.populate(branchCtx);
                         try {
                             ScopedValue.where(WorkflowContext.scopedValue(), branchCtx)
                                     .run(() -> {
@@ -226,6 +228,7 @@ public final class SagaManager {
                                         }
                                     });
                         } finally {
+                            WorkflowMDC.clear();
                             latch.countDown();
                         }
                     });

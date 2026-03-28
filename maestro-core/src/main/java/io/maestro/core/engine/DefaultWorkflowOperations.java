@@ -1,6 +1,7 @@
 package io.maestro.core.engine;
 
 import io.maestro.core.context.WorkflowContext;
+import io.maestro.core.context.WorkflowMDC;
 import io.maestro.core.exception.RetryExhaustedException;
 import io.maestro.core.exception.SignalTimeoutException;
 import io.maestro.core.model.EventType;
@@ -291,6 +292,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                                 ctx.isReplaying(),
                                 DefaultWorkflowOperations.this
                         );
+                        WorkflowMDC.populate(branchCtx);
                         try {
                             ScopedValue.where(WorkflowContext.scopedValue(), branchCtx)
                                     .run(() -> {
@@ -301,6 +303,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                                         }
                                     });
                         } finally {
+                            WorkflowMDC.clear();
                             latch.countDown();
                         }
                     });
