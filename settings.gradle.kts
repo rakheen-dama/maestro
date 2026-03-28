@@ -27,4 +27,6 @@ include(
     "maestro-admin-client",
     "maestro-samples:sample-stokvel-service",
     "maestro-samples:sample-core-banking-proxy",
+    "maestro-samples:sample-order-service",
+    "maestro-samples:sample-payment-gateway",
 )
