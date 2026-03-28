@@ -6,7 +6,7 @@ description = "Maestro Store Postgres — PostgreSQL WorkflowStore with Flyway m
 
 dependencies {
     api(project(":maestro-store-jdbc"))
-    runtimeOnly(libs.postgresql)
+    implementation(libs.postgresql)
 
     // Flyway — this module owns the migration SQL files in src/main/resources/db/migration/
     // Consumers get Flyway transitively so they don't need to declare it separately.
