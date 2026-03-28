@@ -5,7 +5,7 @@ plugins {
 description = "Maestro Messaging Kafka — Spring Kafka WorkflowMessaging implementation"
 
 dependencies {
-    api(project(":maestro-core"))
+    api(project(":maestro-spring-boot-starter"))
     api(libs.spring.kafka)
 
     testImplementation(libs.spring.boot.starter.test)
