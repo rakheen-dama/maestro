@@ -28,7 +28,7 @@ import java.lang.annotation.Target;
  * <h2>Method Contract</h2>
  * <ul>
  *   <li>Must have exactly <b>one parameter</b> — the deserialized Kafka message.</li>
- *   <li>Must return {@link SignalRouting}.</li>
+ *   <li>Must return a <b>non-null</b> {@link SignalRouting}.</li>
  *   <li>Must be {@code public}.</li>
  * </ul>
  *

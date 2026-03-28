@@ -31,7 +31,7 @@ import java.util.concurrent.ExecutionException;
  * Base class for Kafka integration tests.
  *
  * <p>Provides a shared Testcontainers {@link KafkaContainer} (KRaft mode,
- * apache/kafka image), along with pre-configured {@link KafkaTemplate},
+ * confluentinc/cp-kafka image), along with pre-configured {@link KafkaTemplate},
  * {@link ConsumerFactory}, and Jackson 3 {@link ObjectMapper}.
  */
 @Testcontainers

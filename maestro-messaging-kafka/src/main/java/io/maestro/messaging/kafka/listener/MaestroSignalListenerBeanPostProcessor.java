@@ -215,9 +215,10 @@ public class MaestroSignalListenerBeanPostProcessor
             var routing = (SignalRouting) reg.method().invoke(reg.bean(), event);
 
             if (routing == null) {
-                logger.warn("@MaestroSignalListener {}.{} returned null SignalRouting for topic '{}' — skipping",
-                        reg.beanName(), reg.method().getName(), reg.topic());
-                return;
+                throw new IllegalStateException(
+                        "@MaestroSignalListener " + reg.beanName() + "." + reg.method().getName()
+                                + " returned null SignalRouting for topic '" + reg.topic()
+                                + "' — signals must not be discarded");
             }
 
             // Deliver the signal to the workflow engine
@@ -227,13 +228,17 @@ public class MaestroSignalListenerBeanPostProcessor
                     reg.signalName(), routing.workflowId(), reg.beanName(), reg.method().getName());
 
         } catch (InvocationTargetException e) {
-            // Unwrap to log the actual cause from the user's listener method
+            // Unwrap to log the actual cause from the user's listener method.
+            // Re-throw to allow Kafka error handling (retry, DLQ) —
+            // signals must not be silently discarded.
             var cause = e.getCause() != null ? e.getCause() : e;
             logger.error("Error processing message from topic '{}' in @MaestroSignalListener {}.{}: {}",
                     reg.topic(), reg.beanName(), reg.method().getName(), cause.getMessage(), cause);
+            throw new RuntimeException("Signal processing failed — signals must not be discarded", cause);
         } catch (Exception e) {
             logger.error("Error processing message from topic '{}' in @MaestroSignalListener {}.{}: {}",
                     reg.topic(), reg.beanName(), reg.method().getName(), e.getMessage(), e);
+            throw new RuntimeException("Signal processing failed — signals must not be discarded", e);
         }
     }
 

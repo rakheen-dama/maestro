@@ -31,6 +31,13 @@ public record SignalRouting(
 ) {
 
     /**
+     * Canonical constructor — enforces non-null workflowId.
+     */
+    public SignalRouting {
+        Objects.requireNonNull(workflowId, "workflowId");
+    }
+
+    /**
      * Creates a new builder for {@link SignalRouting}.
      *
      * @return a new builder instance

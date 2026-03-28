@@ -102,9 +102,15 @@ public class KafkaMessagingAutoConfiguration {
     public KafkaMessagingConfig maestroKafkaMessagingConfig(MaestroProperties properties) {
         var messaging = properties.getMessaging();
         var topics = messaging.topics();
-        var consumerGroup = messaging.consumerGroup() != null
-                ? messaging.consumerGroup()
-                : "maestro-" + properties.getServiceName();
+        var consumerGroup = messaging.consumerGroup();
+        if (consumerGroup == null) {
+            var serviceName = properties.getServiceName();
+            if (serviceName == null || serviceName.isBlank()) {
+                throw new IllegalStateException(
+                        "maestro.messaging.consumer-group or maestro.service-name must be configured for Kafka messaging");
+            }
+            consumerGroup = "maestro-" + serviceName;
+        }
         return new KafkaMessagingConfig(
                 topics.tasks(),
                 topics.signals(),
