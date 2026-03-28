@@ -212,17 +212,20 @@ public final class SagaManager {
                                 ctx.isReplaying(),
                                 null // no operations needed — compensations call through proxy directly
                         );
-                        WorkflowContext.bind(branchCtx);
                         try {
-                            entry.action().run();
-                            logger.debug("Compensation {} '{}' completed for workflow '{}'",
-                                    index, entry.stepName(), ctx.workflowId());
-                            publishLifecycleEvent(ctx, entry.stepName(),
-                                    LifecycleEventType.COMPENSATION_STEP_COMPLETED);
-                        } catch (Throwable t) {
-                            errors.get(index).set(t);
+                            ScopedValue.where(WorkflowContext.scopedValue(), branchCtx)
+                                    .run(() -> {
+                                        try {
+                                            entry.action().run();
+                                            logger.debug("Compensation {} '{}' completed for workflow '{}'",
+                                                    index, entry.stepName(), ctx.workflowId());
+                                            publishLifecycleEvent(ctx, entry.stepName(),
+                                                    LifecycleEventType.COMPENSATION_STEP_COMPLETED);
+                                        } catch (Throwable t) {
+                                            errors.get(index).set(t);
+                                        }
+                                    });
                         } finally {
-                            WorkflowContext.clear();
                             latch.countDown();
                         }
                     });

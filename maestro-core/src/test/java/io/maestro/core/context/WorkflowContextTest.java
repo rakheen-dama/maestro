@@ -1,9 +1,9 @@
 package io.maestro.core.context;
 
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.lang.ScopedValue;
 import java.time.Duration;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -20,15 +20,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Unit tests for {@link WorkflowContext}.
  *
- * <p>Tests cover the thread-local lifecycle, sequence numbering,
+ * <p>Tests cover the ScopedValue lifecycle, sequence numbering,
  * replay state management, identity accessors, and thread isolation.
  */
 class WorkflowContextTest {
-
-    @AfterEach
-    void cleanUp() {
-        WorkflowContext.clear();
-    }
 
     // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -48,19 +43,17 @@ class WorkflowContextTest {
     // ── Tests ────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("bind/current/clear lifecycle - bind a context, retrieve it, clear it")
-    void bindCurrentClearLifecycle() {
+    @DisplayName("ScopedValue lifecycle - context is available inside scope, gone outside")
+    void scopedValueLifecycle() {
         var ctx = createContext(0, true);
 
-        WorkflowContext.bind(ctx);
-
-        var retrieved = WorkflowContext.current();
-        assertEquals(ctx, retrieved, "current() should return the bound context");
-
-        WorkflowContext.clear();
+        ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() -> {
+            var retrieved = WorkflowContext.current();
+            assertEquals(ctx, retrieved, "current() should return the bound context within scope");
+        });
 
         assertThrows(IllegalStateException.class, WorkflowContext::current,
-                "current() should throw after clear()");
+                "current() should throw outside of ScopedValue scope");
     }
 
     @Test
@@ -145,43 +138,48 @@ class WorkflowContextTest {
     }
 
     @Test
-    @DisplayName("Thread isolation - context bound on one thread is not visible on another")
+    @DisplayName("Thread isolation - context bound via ScopedValue is not visible on another thread")
     void threadIsolation() throws Exception {
         var ctx = createContext(0, true);
-        WorkflowContext.bind(ctx);
 
-        var otherThreadSawContext = new AtomicBoolean(true);
-        var otherThreadException = new AtomicReference<Throwable>();
-        var latch = new CountDownLatch(1);
+        ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() -> {
+            var otherThreadSawContext = new AtomicBoolean(true);
+            var otherThreadException = new AtomicReference<Throwable>();
+            var latch = new CountDownLatch(1);
 
-        var thread = new Thread(() -> {
+            var thread = Thread.ofVirtual().start(() -> {
+                try {
+                    WorkflowContext.current();
+                    // If we reach here, the context leaked across threads
+                    otherThreadSawContext.set(true);
+                } catch (IllegalStateException e) {
+                    // Expected - ScopedValues do not inherit to child threads
+                    otherThreadSawContext.set(false);
+                } catch (Throwable t) {
+                    otherThreadException.set(t);
+                } finally {
+                    latch.countDown();
+                }
+            });
+
             try {
-                WorkflowContext.current();
-                // If we reach here, the context leaked across threads
-                otherThreadSawContext.set(true);
-            } catch (IllegalStateException e) {
-                // Expected - context should not be visible on this thread
-                otherThreadSawContext.set(false);
-            } catch (Throwable t) {
-                otherThreadException.set(t);
-            } finally {
-                latch.countDown();
+                assertTrue(latch.await(5, TimeUnit.SECONDS), "Other thread should complete within timeout");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("Interrupted while waiting for child thread", e);
             }
+
+            if (otherThreadException.get() != null) {
+                throw new AssertionError("Other thread threw unexpected exception", otherThreadException.get());
+            }
+
+            assertFalse(otherThreadSawContext.get(),
+                    "Context bound via ScopedValue should NOT be visible on another thread");
+
+            // Verify the context is still accessible in this scope
+            assertEquals(ctx, WorkflowContext.current(),
+                    "Context should still be accessible in the original scope");
         });
-
-        thread.start();
-        assertTrue(latch.await(5, TimeUnit.SECONDS), "Other thread should complete within timeout");
-
-        if (otherThreadException.get() != null) {
-            throw new AssertionError("Other thread threw unexpected exception", otherThreadException.get());
-        }
-
-        assertFalse(otherThreadSawContext.get(),
-                "Context bound on the main thread should NOT be visible on another thread");
-
-        // Verify the context is still accessible on this thread
-        assertEquals(ctx, WorkflowContext.current(),
-                "Context should still be accessible on the original thread");
     }
 
     // ── Workflow API delegation tests ───────────────────────────────────
@@ -190,28 +188,30 @@ class WorkflowContextTest {
     @DisplayName("workflow() is an alias for current()")
     void workflowAliasForCurrent() {
         var ctx = createContext(0, false);
-        WorkflowContext.bind(ctx);
 
-        assertEquals(ctx, WorkflowContext.workflow(),
-                "workflow() should return the same context as current()");
+        ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() -> {
+            assertEquals(ctx, WorkflowContext.workflow(),
+                    "workflow() should return the same context as current()");
+        });
     }
 
     @Test
     @DisplayName("Workflow API methods throw without operations configured")
     void apiMethodsThrowWithoutOperations() {
         var ctx = createContext(0, false);
-        WorkflowContext.bind(ctx);
 
-        assertThrows(IllegalStateException.class, () -> ctx.sleep(Duration.ofSeconds(1)),
-                "sleep() should throw when operations not configured");
-        assertThrows(IllegalStateException.class, () -> ctx.awaitSignal("foo", String.class, Duration.ofSeconds(1)),
-                "awaitSignal() should throw when operations not configured");
-        assertThrows(IllegalStateException.class, ctx::currentTime,
-                "currentTime() should throw when operations not configured");
-        assertThrows(IllegalStateException.class, ctx::randomUUID,
-                "randomUUID() should throw when operations not configured");
-        assertThrows(IllegalStateException.class, () -> ctx.addCompensation(() -> {}),
-                "addCompensation() should throw when operations not configured");
+        ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() -> {
+            assertThrows(IllegalStateException.class, () -> ctx.sleep(Duration.ofSeconds(1)),
+                    "sleep() should throw when operations not configured");
+            assertThrows(IllegalStateException.class, () -> ctx.awaitSignal("foo", String.class, Duration.ofSeconds(1)),
+                    "awaitSignal() should throw when operations not configured");
+            assertThrows(IllegalStateException.class, ctx::currentTime,
+                    "currentTime() should throw when operations not configured");
+            assertThrows(IllegalStateException.class, ctx::randomUUID,
+                    "randomUUID() should throw when operations not configured");
+            assertThrows(IllegalStateException.class, () -> ctx.addCompensation(() -> {}),
+                    "addCompensation() should throw when operations not configured");
+        });
     }
 
     @Test

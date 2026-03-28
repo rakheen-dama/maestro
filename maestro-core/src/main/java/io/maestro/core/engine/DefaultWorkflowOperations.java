@@ -291,13 +291,16 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                                 ctx.isReplaying(),
                                 DefaultWorkflowOperations.this
                         );
-                        WorkflowContext.bind(branchCtx);
                         try {
-                            results.get(branchIndex).set(task.call());
-                        } catch (Throwable t) {
-                            errors.get(branchIndex).set(t);
+                            ScopedValue.where(WorkflowContext.scopedValue(), branchCtx)
+                                    .run(() -> {
+                                        try {
+                                            results.get(branchIndex).set(task.call());
+                                        } catch (Throwable t) {
+                                            errors.get(branchIndex).set(t);
+                                        }
+                                    });
                         } finally {
-                            WorkflowContext.clear();
                             latch.countDown();
                         }
                     });

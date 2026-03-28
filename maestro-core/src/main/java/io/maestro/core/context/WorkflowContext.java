@@ -6,6 +6,7 @@ import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.lang.ScopedValue;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -25,19 +26,22 @@ import java.util.function.Supplier;
  *
  * <h2>Lifecycle</h2>
  * <ol>
- *   <li>The {@code WorkflowExecutor} creates a context and calls
- *       {@link #bind(WorkflowContext)} on the workflow's virtual thread.</li>
+ *   <li>The {@code WorkflowExecutor} creates a context and runs the
+ *       workflow method inside a {@link ScopedValue} scope via
+ *       {@code ScopedValue.where(scopedValue(), ctx).run(...)}.</li>
  *   <li>The workflow method runs. Each activity call reads the context
  *       via {@link #current()} and increments the sequence.</li>
- *   <li>When the workflow completes (or fails), the executor calls
- *       {@link #clear()} to remove the context from the thread.</li>
+ *   <li>When the scope exits (success or failure), the context is
+ *       automatically unbound — no manual cleanup required.</li>
  * </ol>
  *
  * <h2>Thread Safety</h2>
  * <p>Each workflow runs on its own virtual thread. The context is bound
- * to that thread via {@link ThreadLocal}. The sequence counter uses
- * {@link AtomicInteger} as a defensive measure against accidental
- * misuse from parallel branches.
+ * to that thread via {@link ScopedValue}. ScopedValues do not inherit
+ * to child virtual threads created via {@code Thread.ofVirtual()}, so
+ * parallel branches must explicitly bind their own context. The sequence
+ * counter uses {@link AtomicInteger} as a defensive measure against
+ * accidental misuse from parallel branches.
  *
  * <h2>Workflow API</h2>
  * <p>Workflow authors interact with the engine through methods on this class:
@@ -55,7 +59,7 @@ import java.util.function.Supplier;
 public final class WorkflowContext {
 
     private static final Logger logger = LoggerFactory.getLogger(WorkflowContext.class);
-    private static final ThreadLocal<WorkflowContext> CURRENT = new ThreadLocal<>();
+    private static final ScopedValue<WorkflowContext> CURRENT = ScopedValue.newInstance();
 
     private final UUID workflowInstanceId;
     private final String workflowId;
@@ -135,49 +139,33 @@ public final class WorkflowContext {
         this.operations = operations;
     }
 
-    // ── Thread-local management ───────────────────────────────────────
+    // ── ScopedValue management ─────────────────────────────────────────
 
     /**
-     * Binds this context to the current thread.
+     * Returns the {@link ScopedValue} used to bind workflow contexts.
      *
-     * <p>Must be called on the workflow's virtual thread before the
-     * workflow method starts executing.
+     * <p>Callers use this to establish a scope:
+     * <pre>{@code
+     * ScopedValue.where(WorkflowContext.scopedValue(), ctx)
+     *     .run(() -> { ... });
+     * }</pre>
      *
-     * @param context the context to bind
+     * @return the scoped value instance
      */
-    public static void bind(WorkflowContext context) {
-        var existing = CURRENT.get();
-        if (existing != null) {
-            logger.warn("Overwriting existing WorkflowContext for workflow '{}' — potential leak. "
-                    + "Ensure clear() is called before binding a new context.", existing.workflowId());
-        }
-        CURRENT.set(context);
+    public static ScopedValue<WorkflowContext> scopedValue() {
+        return CURRENT;
     }
 
     /**
-     * Returns the context bound to the current thread.
+     * Returns the context bound in the current scope.
      *
      * @return the current workflow context
-     * @throws IllegalStateException if no context is bound (not on a workflow thread)
+     * @throws IllegalStateException if no context is bound (not in a workflow scope)
      */
     public static WorkflowContext current() {
-        var ctx = CURRENT.get();
-        if (ctx == null) {
-            throw new IllegalStateException(
-                    "No WorkflowContext bound to current thread. "
-                            + "Activity methods can only be called from within a workflow execution.");
-        }
-        return ctx;
-    }
-
-    /**
-     * Removes the context from the current thread.
-     *
-     * <p>Must be called when the workflow execution ends (success or failure)
-     * to prevent thread-local leaks.
-     */
-    public static void clear() {
-        CURRENT.remove();
+        return CURRENT.orElseThrow(() -> new IllegalStateException(
+                "No WorkflowContext bound to current scope. "
+                        + "Activity methods can only be called from within a workflow execution."));
     }
 
     // ── Sequence management ───────────────────────────────────────────

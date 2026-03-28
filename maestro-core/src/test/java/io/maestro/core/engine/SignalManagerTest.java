@@ -21,6 +21,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
 
+import java.lang.ScopedValue;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -166,13 +167,10 @@ class SignalManagerTest {
                 "$maestro:awaitSignal:payment.result", payload, Instant.now()));
 
         var ctx = createContext(instanceId, "order-1", 0, true);
-        WorkflowContext.bind(ctx);
-        try {
+        ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() -> {
             var result = signalManager.awaitSignal(ctx, "payment.result", String.class, Duration.ofSeconds(10));
             assertEquals("paid", result);
-        } finally {
-            WorkflowContext.clear();
-        }
+        });
     }
 
     // ── awaitSignal — live path with pre-arrived signal ────────────────
@@ -190,8 +188,7 @@ class SignalManagerTest {
                 "payment.result", signalPayload, false, Instant.now()));
 
         var ctx = createContext(instanceId, "order-1", 0, false);
-        WorkflowContext.bind(ctx);
-        try {
+        ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() -> {
             var result = signalManager.awaitSignal(ctx, "payment.result", String.class, Duration.ofSeconds(10));
             assertEquals("paid", result);
 
@@ -202,9 +199,7 @@ class SignalManagerTest {
             // SIGNAL_RECEIVED event should be appended
             var events = store.getEvents(instanceId);
             assertTrue(events.stream().anyMatch(e -> e.eventType() == EventType.SIGNAL_RECEIVED));
-        } finally {
-            WorkflowContext.clear();
-        }
+        });
     }
 
     // ── awaitSignal — live path with park and wake ─────────────────────
@@ -221,15 +216,12 @@ class SignalManagerTest {
 
         Thread.ofVirtual().start(() -> {
             var ctx = createContext(instanceId, "order-1", 0, false);
-            WorkflowContext.bind(ctx);
-            try {
+            ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() -> {
                 awaitingLatch.countDown();
                 var result = signalManager.awaitSignal(ctx, "payment.result", String.class, Duration.ofSeconds(10));
                 resultHolder.add(result);
                 completedLatch.countDown();
-            } finally {
-                WorkflowContext.clear();
-            }
+            });
         });
 
         // Wait for the thread to park on signal await
@@ -254,13 +246,9 @@ class SignalManagerTest {
         createInstance("order-1", instanceId);
 
         var ctx = createContext(instanceId, "order-1", 0, false);
-        WorkflowContext.bind(ctx);
-        try {
-            assertThrows(SignalTimeoutException.class, () ->
-                    signalManager.awaitSignal(ctx, "payment.result", String.class, Duration.ofMillis(100)));
-        } finally {
-            WorkflowContext.clear();
-        }
+        ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() ->
+                assertThrows(SignalTimeoutException.class, () ->
+                        signalManager.awaitSignal(ctx, "payment.result", String.class, Duration.ofMillis(100))));
     }
 
     // ── awaitSignal — timeout with late signal (race condition guard) ──
@@ -284,16 +272,15 @@ class SignalManagerTest {
         // With a pre-arrived signal, awaitSignal should find it immediately (self-recovery)
         Thread.ofVirtual().start(() -> {
             var ctx = createContext(instanceId, "order-1", 0, false);
-            WorkflowContext.bind(ctx);
-            try {
-                var result = signalManager.awaitSignal(ctx, "payment.result", String.class, Duration.ofMillis(100));
-                resultHolder.add(result);
-                completedLatch.countDown();
-            } catch (SignalTimeoutException e) {
-                completedLatch.countDown(); // Allow test to proceed even if timeout
-            } finally {
-                WorkflowContext.clear();
-            }
+            ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() -> {
+                try {
+                    var result = signalManager.awaitSignal(ctx, "payment.result", String.class, Duration.ofMillis(100));
+                    resultHolder.add(result);
+                    completedLatch.countDown();
+                } catch (SignalTimeoutException e) {
+                    completedLatch.countDown(); // Allow test to proceed even if timeout
+                }
+            });
         });
 
         assertTrue(completedLatch.await(5, TimeUnit.SECONDS));
@@ -340,12 +327,8 @@ class SignalManagerTest {
                 "payment.result", signalPayload, false, Instant.now()));
 
         var ctx = createContext(instanceId, "order-1", 0, false);
-        WorkflowContext.bind(ctx);
-        try {
-            signalManager.awaitSignal(ctx, "payment.result", String.class, Duration.ofSeconds(10));
-        } finally {
-            WorkflowContext.clear();
-        }
+        ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() ->
+                signalManager.awaitSignal(ctx, "payment.result", String.class, Duration.ofSeconds(10)));
 
         assertFalse(messaging.events.isEmpty(), "Lifecycle event should be published");
         assertTrue(messaging.events.stream()
