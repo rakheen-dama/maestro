@@ -24,9 +24,12 @@ import java.util.concurrent.TimeoutException;
  *     .startAsync(orderInput);
  *
  * // Start and wait for completion
- * Object result = maestro.newWorkflow(OrderWorkflow.class, options)
- *     .startAndWait(orderInput, Duration.ofMinutes(5));
+ * OrderResult result = maestro.newWorkflow(OrderWorkflow.class, options)
+ *     .startAndWait(orderInput, Duration.ofMinutes(5), OrderResult.class);
  * }</pre>
+ *
+ * <p><b>Thread safety:</b> This class is immutable and safe for concurrent use.
+ * The {@link #startAndWait} method blocks the calling thread during polling.
  *
  * @param <T> the workflow class type
  */

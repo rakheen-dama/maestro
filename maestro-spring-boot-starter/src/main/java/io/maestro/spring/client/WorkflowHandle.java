@@ -58,12 +58,12 @@ public class WorkflowHandle {
      * Queries the running workflow by name with an argument.
      *
      * @param queryName  the query name
-     * @param queryArg   the query argument
+     * @param queryArg   the query argument, or {@code null}
      * @param resultType the expected result type
      * @param <R>        the result type
      * @return the query result
      */
-    public <R> R query(String queryName, Object queryArg, Class<R> resultType) {
+    public <R> R query(String queryName, @Nullable Object queryArg, Class<R> resultType) {
         return executor.queryWorkflow(workflowId, queryName, queryArg, resultType);
     }
 
