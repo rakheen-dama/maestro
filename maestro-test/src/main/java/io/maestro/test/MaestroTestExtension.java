@@ -18,7 +18,7 @@ import org.junit.jupiter.api.extension.ParameterResolver;
  *
  * @see MaestroTest
  */
-public class MaestroTestExtension implements BeforeEachCallback, AfterEachCallback, ParameterResolver {
+public final class MaestroTestExtension implements BeforeEachCallback, AfterEachCallback, ParameterResolver {
 
     private static final ExtensionContext.Namespace NAMESPACE =
             ExtensionContext.Namespace.create(MaestroTestExtension.class);

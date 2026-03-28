@@ -12,22 +12,26 @@ import io.maestro.core.model.WorkflowTimer;
 import io.maestro.core.spi.WorkflowStore;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * In-memory {@link WorkflowStore} for fast, deterministic workflow tests.
  *
- * <p>Backed by {@link ConcurrentHashMap} and {@link CopyOnWriteArrayList}.
+ * <p>Backed by {@link ConcurrentHashMap} for instances and events, and
+ * {@code synchronized} {@link ArrayList} for signals and timers.
  * Implements the full SPI contract including optimistic locking, event
  * deduplication, signal adoption, and timer CAS transitions.
  *
- * <p><b>Thread safety:</b> All operations are thread-safe. Safe for
- * concurrent access from multiple virtual threads.
+ * <p><b>Thread safety:</b> All operations are thread-safe. Signal and
+ * timer operations synchronize on dedicated lock objects to prevent
+ * TOCTOU races during check-then-act sequences (e.g., read-by-index
+ * then set-by-index). Instance operations use per-workflowId locks
+ * for optimistic lock version checks.
  *
  * @see TestWorkflowEnvironment
  */
@@ -39,9 +43,13 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
     // instanceId → (sequenceNumber → WorkflowEvent)
     private final ConcurrentHashMap<UUID, ConcurrentHashMap<Integer, WorkflowEvent>> events = new ConcurrentHashMap<>();
 
-    private final CopyOnWriteArrayList<WorkflowSignal> signals = new CopyOnWriteArrayList<>();
+    // Guarded by signalLock
+    private final ArrayList<WorkflowSignal> signals = new ArrayList<>();
+    private final Object signalLock = new Object();
 
-    private final CopyOnWriteArrayList<WorkflowTimer> timers = new CopyOnWriteArrayList<>();
+    // Guarded by timerLock
+    private final ArrayList<WorkflowTimer> timers = new ArrayList<>();
+    private final Object timerLock = new Object();
 
     // Lock object per workflowId for updateInstance optimistic locking
     private final ConcurrentHashMap<String, Object> instanceLocks = new ConcurrentHashMap<>();
@@ -133,52 +141,60 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
 
     @Override
     public void saveSignal(WorkflowSignal signal) {
-        signals.add(signal);
+        synchronized (signalLock) {
+            signals.add(signal);
+        }
     }
 
     @Override
     public List<WorkflowSignal> getUnconsumedSignals(String workflowId, String signalName) {
-        return signals.stream()
-                .filter(s -> workflowId.equals(s.workflowId()))
-                .filter(s -> signalName.equals(s.signalName()))
-                .filter(s -> !s.consumed())
-                .sorted(Comparator.comparing(WorkflowSignal::receivedAt))
-                .toList();
+        synchronized (signalLock) {
+            return signals.stream()
+                    .filter(s -> workflowId.equals(s.workflowId()))
+                    .filter(s -> signalName.equals(s.signalName()))
+                    .filter(s -> !s.consumed())
+                    .sorted(Comparator.comparing(WorkflowSignal::receivedAt))
+                    .toList();
+        }
     }
 
     @Override
     public void markSignalConsumed(UUID signalId) {
-        for (int i = 0; i < signals.size(); i++) {
-            var signal = signals.get(i);
-            if (signal.id().equals(signalId)) {
-                signals.set(i, new WorkflowSignal(
-                        signal.id(),
-                        signal.workflowInstanceId(),
-                        signal.workflowId(),
-                        signal.signalName(),
-                        signal.payload(),
-                        true,
-                        signal.receivedAt()
-                ));
-                return;
+        synchronized (signalLock) {
+            for (int i = 0; i < signals.size(); i++) {
+                var signal = signals.get(i);
+                if (signal.id().equals(signalId)) {
+                    signals.set(i, new WorkflowSignal(
+                            signal.id(),
+                            signal.workflowInstanceId(),
+                            signal.workflowId(),
+                            signal.signalName(),
+                            signal.payload(),
+                            true,
+                            signal.receivedAt()
+                    ));
+                    return;
+                }
             }
         }
     }
 
     @Override
     public void adoptOrphanedSignals(String workflowId, UUID instanceId) {
-        for (int i = 0; i < signals.size(); i++) {
-            var signal = signals.get(i);
-            if (workflowId.equals(signal.workflowId()) && signal.workflowInstanceId() == null) {
-                signals.set(i, new WorkflowSignal(
-                        signal.id(),
-                        instanceId,
-                        signal.workflowId(),
-                        signal.signalName(),
-                        signal.payload(),
-                        signal.consumed(),
-                        signal.receivedAt()
-                ));
+        synchronized (signalLock) {
+            for (int i = 0; i < signals.size(); i++) {
+                var signal = signals.get(i);
+                if (workflowId.equals(signal.workflowId()) && signal.workflowInstanceId() == null) {
+                    signals.set(i, new WorkflowSignal(
+                            signal.id(),
+                            instanceId,
+                            signal.workflowId(),
+                            signal.signalName(),
+                            signal.payload(),
+                            signal.consumed(),
+                            signal.receivedAt()
+                    ));
+                }
             }
         }
     }
@@ -187,57 +203,65 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
 
     @Override
     public void saveTimer(WorkflowTimer timer) {
-        timers.add(timer);
+        synchronized (timerLock) {
+            timers.add(timer);
+        }
     }
 
     @Override
     public List<WorkflowTimer> getDueTimers(Instant now, int batchSize) {
-        return timers.stream()
-                .filter(t -> t.status() == TimerStatus.PENDING)
-                .filter(t -> !t.fireAt().isAfter(now))
-                .sorted(Comparator.comparing(WorkflowTimer::fireAt))
-                .limit(batchSize)
-                .toList();
-    }
-
-    @Override
-    public synchronized boolean markTimerFired(UUID timerId) {
-        for (int i = 0; i < timers.size(); i++) {
-            var timer = timers.get(i);
-            if (timer.id().equals(timerId)) {
-                if (timer.status() != TimerStatus.PENDING) {
-                    return false;
-                }
-                timers.set(i, new WorkflowTimer(
-                        timer.id(),
-                        timer.workflowInstanceId(),
-                        timer.workflowId(),
-                        timer.timerId(),
-                        timer.fireAt(),
-                        TimerStatus.FIRED,
-                        timer.createdAt()
-                ));
-                return true;
-            }
+        synchronized (timerLock) {
+            return timers.stream()
+                    .filter(t -> t.status() == TimerStatus.PENDING)
+                    .filter(t -> !t.fireAt().isAfter(now))
+                    .sorted(Comparator.comparing(WorkflowTimer::fireAt))
+                    .limit(batchSize)
+                    .toList();
         }
-        return false;
     }
 
     @Override
-    public synchronized void markTimerCancelled(UUID timerId) {
-        for (int i = 0; i < timers.size(); i++) {
-            var timer = timers.get(i);
-            if (timer.id().equals(timerId) && timer.status() == TimerStatus.PENDING) {
-                timers.set(i, new WorkflowTimer(
-                        timer.id(),
-                        timer.workflowInstanceId(),
-                        timer.workflowId(),
-                        timer.timerId(),
-                        timer.fireAt(),
-                        TimerStatus.CANCELLED,
-                        timer.createdAt()
-                ));
-                return;
+    public boolean markTimerFired(UUID timerId) {
+        synchronized (timerLock) {
+            for (int i = 0; i < timers.size(); i++) {
+                var timer = timers.get(i);
+                if (timer.id().equals(timerId)) {
+                    if (timer.status() != TimerStatus.PENDING) {
+                        return false;
+                    }
+                    timers.set(i, new WorkflowTimer(
+                            timer.id(),
+                            timer.workflowInstanceId(),
+                            timer.workflowId(),
+                            timer.timerId(),
+                            timer.fireAt(),
+                            TimerStatus.FIRED,
+                            timer.createdAt()
+                    ));
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    @Override
+    public void markTimerCancelled(UUID timerId) {
+        synchronized (timerLock) {
+            for (int i = 0; i < timers.size(); i++) {
+                var timer = timers.get(i);
+                if (timer.id().equals(timerId) && timer.status() == TimerStatus.PENDING) {
+                    timers.set(i, new WorkflowTimer(
+                            timer.id(),
+                            timer.workflowInstanceId(),
+                            timer.workflowId(),
+                            timer.timerId(),
+                            timer.fireAt(),
+                            TimerStatus.CANCELLED,
+                            timer.createdAt()
+                    ));
+                    return;
+                }
             }
         }
     }
@@ -249,7 +273,9 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
      * Useful for test assertions.
      */
     public List<WorkflowSignal> getAllSignals() {
-        return List.copyOf(signals);
+        synchronized (signalLock) {
+            return List.copyOf(signals);
+        }
     }
 
     /**
@@ -257,7 +283,9 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
      * Useful for test assertions.
      */
     public List<WorkflowTimer> getAllTimers() {
-        return List.copyOf(timers);
+        synchronized (timerLock) {
+            return List.copyOf(timers);
+        }
     }
 
     /**
@@ -267,7 +295,11 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
         instances.clear();
         instanceLocks.clear();
         events.clear();
-        signals.clear();
-        timers.clear();
+        synchronized (signalLock) {
+            signals.clear();
+        }
+        synchronized (timerLock) {
+            timers.clear();
+        }
     }
 }
