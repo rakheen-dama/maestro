@@ -51,7 +51,7 @@ public class EventRepository {
                 "SELECT id, workflow_instance_id, workflow_id, event_type, step_name, "
                         + "detail, event_timestamp, received_at "
                         + "FROM admin_event WHERE workflow_instance_id = ? "
-                        + "ORDER BY event_timestamp ASC",
+                        + "ORDER BY event_timestamp ASC, id ASC",
                 ROW_MAPPER,
                 instanceId
         );
@@ -85,7 +85,7 @@ public class EventRepository {
         var selectSql = "SELECT id, workflow_instance_id, workflow_id, event_type, step_name, "
                 + "detail, event_timestamp, received_at "
                 + "FROM admin_event WHERE event_type IN (" + placeholders + ") "
-                + "ORDER BY event_timestamp DESC LIMIT ? OFFSET ?";
+                + "ORDER BY event_timestamp DESC, id DESC LIMIT ? OFFSET ?";
 
         var selectParams = new Object[eventTypes.size() + 2];
         for (int i = 0; i < eventTypes.size(); i++) {

@@ -12,7 +12,9 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * Projects workflow lifecycle events into the admin database tables.
@@ -82,11 +84,18 @@ public class EventProjector {
                 event.eventType(), event.workflowId(), event.workflowInstanceId());
 
         upsertService(event.serviceName(), event.timestamp());
+
+        // Capture the current status BEFORE the upsert overwrites it, so metrics
+        // can decrement the correct previous status rather than hard-coding RUNNING.
+        var oldStatus = isWorkflowStatusEvent(event.eventType())
+                ? queryCurrentStatus(event.workflowInstanceId())
+                : null;
+
         upsertWorkflow(event);
         appendEvent(event);
 
         if (isWorkflowStatusEvent(event.eventType())) {
-            updateMetrics(event);
+            updateMetrics(event.serviceName(), oldStatus, mapStatus(event.eventType()));
         }
 
         logger.debug("Projected event successfully: type={}, workflowId={}",
@@ -213,6 +222,13 @@ public class EventProjector {
 
     /**
      * Appends the event to the {@code admin_event} log table.
+     *
+     * <p><b>Idempotency note:</b> This is an INSERT without deduplication. Under Kafka
+     * redelivery (at-least-once semantics), duplicate timeline entries may be inserted and
+     * the {@code event_count} in {@code admin_workflow} may overcount. The workflow status
+     * and metrics upserts are already idempotent (ON CONFLICT DO UPDATE). The admin dashboard
+     * is for monitoring purposes, so approximate event counts are acceptable. A full fix would
+     * require either a natural unique key for events or a processed-event tracking table.
      */
     private void appendEvent(WorkflowLifecycleEvent event) {
         logger.debug("Appending event: type={}, workflowId={}",
@@ -233,19 +249,36 @@ public class EventProjector {
     }
 
     /**
+     * Queries the current workflow status from admin_workflow before an upsert overwrites it.
+     *
+     * @param workflowInstanceId the workflow instance UUID
+     * @return the current status string, or {@code null} if the workflow has not been projected yet
+     */
+    @Nullable
+    private String queryCurrentStatus(UUID workflowInstanceId) {
+        List<String> results = jdbc.queryForList(
+                "SELECT status FROM admin_workflow WHERE workflow_instance_id = ?",
+                String.class, workflowInstanceId);
+        return results.isEmpty() ? null : results.getFirst();
+    }
+
+    /**
      * Updates the metrics counters for workflow-level status change events.
      *
      * <p>Increments the counter for the new status and decrements the counter
-     * for the previous status (assumed to be {@code RUNNING} for all transitions
-     * except {@code WORKFLOW_STARTED}).
+     * for the actual previous status (queried before the upsert).
+     *
+     * @param serviceName the service name for the metrics row
+     * @param oldStatus   the previous workflow status, or {@code null} if this is a new workflow
+     * @param newStatus   the new workflow status to increment
      */
-    private void updateMetrics(WorkflowLifecycleEvent event) {
-        var eventType = event.eventType();
-        var serviceName = event.serviceName();
-        var newStatus = mapStatus(eventType);
+    private void updateMetrics(String serviceName, @Nullable String oldStatus, @Nullable String newStatus) {
+        if (newStatus == null) {
+            return;
+        }
 
-        logger.debug("Updating metrics: service={}, eventType={}, newStatus={}",
-                serviceName, eventType, newStatus);
+        logger.debug("Updating metrics: service={}, oldStatus={}, newStatus={}",
+                serviceName, oldStatus, newStatus);
 
         // Increment the new status counter
         jdbc.update("""
@@ -258,15 +291,15 @@ public class EventProjector {
                 serviceName,
                 newStatus);
 
-        // Decrement the previous status counter (RUNNING) for all transitions except WORKFLOW_STARTED
-        if (eventType != LifecycleEventType.WORKFLOW_STARTED) {
+        // Decrement the old status counter (if it existed and is different from the new status)
+        if (oldStatus != null && !oldStatus.equals(newStatus)) {
             jdbc.update("""
                     UPDATE admin_metrics
                     SET workflow_count = GREATEST(workflow_count - 1, 0), last_updated_at = NOW()
                     WHERE service_name = ? AND status = ?
                     """,
                     serviceName,
-                    "RUNNING");
+                    oldStatus);
         }
     }
 
@@ -279,6 +312,13 @@ public class EventProjector {
 
     /**
      * Maps a lifecycle event type to the admin workflow status string.
+     *
+     * <p><b>Known limitation:</b> WAITING_SIGNAL and WAITING_TIMER workflow states cannot be
+     * projected because no corresponding lifecycle event types exist in {@link LifecycleEventType}.
+     * When a workflow calls {@code awaitSignal()} or {@code workflow.sleep()}, it transitions to
+     * a waiting state internally, but no lifecycle event is published. Projecting these states
+     * would require adding new lifecycle event types (e.g., WORKFLOW_WAITING_SIGNAL,
+     * WORKFLOW_WAITING_TIMER) to maestro-core.
      *
      * @param eventType the lifecycle event type
      * @return the status string, or {@code null} for non-workflow-level events

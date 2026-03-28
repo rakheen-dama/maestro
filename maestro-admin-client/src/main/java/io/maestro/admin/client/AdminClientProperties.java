@@ -42,6 +42,9 @@ public class AdminClientProperties {
     }
 
     public void setTopic(String topic) {
+        if (topic == null || topic.isBlank()) {
+            throw new IllegalArgumentException("maestro.admin.events.topic must not be blank");
+        }
         this.topic = topic;
     }
 }

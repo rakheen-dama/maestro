@@ -7,6 +7,8 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.servlet.mvc.support.RedirectAttributes;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 /**
  * Controller for admin actions that mutate workflow state.
@@ -24,14 +26,17 @@ import org.springframework.web.servlet.mvc.support.RedirectAttributes;
 public class AdminActionController {
 
     private final AdminCommandService commandService;
+    private final ObjectMapper objectMapper;
 
     /**
      * Creates a new admin action controller.
      *
      * @param commandService service for sending admin commands via Kafka
+     * @param objectMapper   Jackson 3 ObjectMapper for parsing signal payloads
      */
-    public AdminActionController(AdminCommandService commandService) {
+    public AdminActionController(AdminCommandService commandService, ObjectMapper objectMapper) {
         this.commandService = commandService;
+        this.objectMapper = objectMapper;
     }
 
     /**
@@ -81,7 +86,7 @@ public class AdminActionController {
      *
      * @param workflowId    the business workflow ID to signal
      * @param signalName    the signal name
-     * @param payload       optional signal payload (currently unused, reserved for future JSON support)
+     * @param payload       optional signal payload as a JSON string, parsed to a JsonNode
      * @param redirectAttrs flash attributes for the redirect response
      * @return redirect to the workflow detail page
      */
@@ -93,7 +98,11 @@ public class AdminActionController {
             RedirectAttributes redirectAttrs
     ) {
         try {
-            commandService.signal(workflowId, signalName, null);
+            JsonNode payloadNode = null;
+            if (payload != null && !payload.isBlank()) {
+                payloadNode = objectMapper.readTree(payload);
+            }
+            commandService.signal(workflowId, signalName, payloadNode);
             redirectAttrs.addFlashAttribute("message",
                     "Signal '" + signalName + "' sent to workflow " + workflowId);
         } catch (Exception e) {
