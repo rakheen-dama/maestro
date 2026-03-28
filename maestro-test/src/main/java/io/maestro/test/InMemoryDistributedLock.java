@@ -51,9 +51,17 @@ public final class InMemoryDistributedLock implements DistributedLock {
 
     @Override
     public boolean trySetLeader(String electionKey, String candidateId, Duration ttl) {
-        // In single-JVM tests, always succeed as leader
+        // CAS: succeed if no leader exists or this candidate is already leader
         var handle = new LockHandle(electionKey, candidateId, Instant.now().plus(ttl));
-        locks.put(electionKey, handle);
-        return true;
+        var existing = locks.putIfAbsent(electionKey, handle);
+        if (existing == null) {
+            return true;
+        }
+        // Already leader? Renew
+        if (existing.token().equals(candidateId)) {
+            locks.put(electionKey, handle);
+            return true;
+        }
+        return false;
     }
 }

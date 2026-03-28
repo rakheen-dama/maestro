@@ -60,7 +60,6 @@ class TestWorkflowEnvironmentTest {
     @Test
     void signalDeliveryResumesWorkflow() throws TimeoutException {
         env = TestWorkflowEnvironment.create();
-        env.registerActivities(GreetingActivities.class, new GreetingActivitiesImpl());
 
         var handle = env.startWorkflow(SignalWorkflow.class, null);
 
@@ -79,7 +78,6 @@ class TestWorkflowEnvironmentTest {
     @Test
     void preDeliveredSignalConsumedOnStart() throws TimeoutException {
         env = TestWorkflowEnvironment.create();
-        env.registerActivities(GreetingActivities.class, new GreetingActivitiesImpl());
 
         // Pre-deliver signal before workflow starts
         var workflowId = "predelivery-test";
@@ -96,7 +94,6 @@ class TestWorkflowEnvironmentTest {
     @Test
     void advanceTimeFiresSleepTimer() throws TimeoutException {
         env = TestWorkflowEnvironment.create();
-        env.registerActivities(GreetingActivities.class, new GreetingActivitiesImpl());
 
         var handle = env.startWorkflow(SleepWorkflow.class, null);
 
@@ -114,9 +111,8 @@ class TestWorkflowEnvironmentTest {
     // ── Query method ────────────────────────────────────────────────────
 
     @Test
-    void queryReturnsWorkflowState() throws InterruptedException {
+    void queryReturnsWorkflowState() throws TimeoutException {
         env = TestWorkflowEnvironment.create();
-        env.registerActivities(GreetingActivities.class, new GreetingActivitiesImpl());
 
         var handle = env.startWorkflow(QueryableWorkflow.class, null);
 
@@ -126,8 +122,10 @@ class TestWorkflowEnvironmentTest {
         var progress = handle.query("getProgress", null, String.class);
         assertEquals("waiting-for-signal", progress);
 
-        // Complete the workflow
+        // Complete the workflow and verify result
         handle.signal("continue", "go");
+        var result = handle.getResult(String.class, Duration.ofSeconds(5));
+        assertEquals("go", result);
     }
 
     // ── @MaestroTest annotation ─────────────────────────────────────────
@@ -179,9 +177,6 @@ class TestWorkflowEnvironmentTest {
 
     @DurableWorkflow(name = "test-signal", taskQueue = "test")
     public static class SignalWorkflow {
-        @ActivityStub(startToCloseTimeout = "PT5S")
-        private GreetingActivities activities;
-
         @WorkflowMethod
         public String waitForApproval() {
             var workflow = WorkflowContext.current();
@@ -192,9 +187,6 @@ class TestWorkflowEnvironmentTest {
 
     @DurableWorkflow(name = "test-sleep", taskQueue = "test")
     public static class SleepWorkflow {
-        @ActivityStub(startToCloseTimeout = "PT5S")
-        private GreetingActivities activities;
-
         @WorkflowMethod
         public String sleepAndReturn() {
             var workflow = WorkflowContext.current();
@@ -205,9 +197,6 @@ class TestWorkflowEnvironmentTest {
 
     @DurableWorkflow(name = "test-queryable", taskQueue = "test")
     public static class QueryableWorkflow {
-        @ActivityStub(startToCloseTimeout = "PT5S")
-        private GreetingActivities activities;
-
         private volatile String progress = "started";
 
         @WorkflowMethod
