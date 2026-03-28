@@ -93,7 +93,11 @@ Update the version in `gradle.properties` to the next snapshot:
 
 ```bash
 # e.g., after releasing 0.3.0
+# macOS/BSD:
 sed -i '' 's/version=.*/version=0.4.0-SNAPSHOT/' gradle.properties
+# Linux (GNU sed):
+# sed -i 's/version=.*/version=0.4.0-SNAPSHOT/' gradle.properties
+
 git add gradle.properties
 git commit -m "chore: bump version to 0.4.0-SNAPSHOT"
 git push origin main
@@ -140,7 +144,7 @@ During development, `gradle.properties` uses a `-SNAPSHOT` suffix (e.g., `0.4.0-
 
 - **401 Unauthorized**: Check `OSSRH_USERNAME` / `OSSRH_PASSWORD` secrets. Tokens expire — regenerate at central.sonatype.com.
 - **Signing error**: Verify `GPG_SIGNING_KEY` contains the full armored key including headers. Verify `GPG_SIGNING_PASSWORD` matches.
-- **Validation failure**: Maven Central requires: groupId, artifactId, version, name, description, url, license, developers, SCM. All are configured in `maestro.library-conventions.gradle.kts`.
+- **Validation failure**: Maven Central requires: groupId, artifactId, version, name, description, URL, license, developers, SCM. All are configured in `maestro.library-conventions.gradle.kts`.
 
 ### Javadoc workflow fails
 
@@ -149,5 +153,5 @@ During development, `gradle.properties` uses a `-SNAPSHOT` suffix (e.g., `0.4.0-
 
 ### CI build times are too long
 
-- Testcontainers downloads container images on first run. GitHub Actions caches Docker layers across runs on the same runner image.
+- Testcontainers downloads container images on first run. GitHub-hosted runners are ephemeral, so Docker images are re-pulled on each run unless explicit caching is configured.
 - Expected CI time: 8-15 minutes. If consistently over 20 minutes, consider splitting Testcontainers tests into a separate job.

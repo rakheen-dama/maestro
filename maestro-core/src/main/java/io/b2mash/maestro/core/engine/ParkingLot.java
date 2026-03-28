@@ -1,6 +1,5 @@
 package io.b2mash.maestro.core.engine;
 
-import io.b2mash.maestro.core.exception.SignalTimeoutException;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
