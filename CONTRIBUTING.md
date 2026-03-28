@@ -130,13 +130,13 @@ Integration tests use [Testcontainers](https://testcontainers.com/) and **requir
 ### Running a specific test class
 
 ```bash
-./gradlew :maestro-core:test --tests "io.maestro.core.engine.WorkflowExecutorTest"
+./gradlew :maestro-core:test --tests "io.b2mash.maestro.core.engine.WorkflowExecutorTest"
 ```
 
 ### Running a specific test method
 
 ```bash
-./gradlew :maestro-core:test --tests "io.maestro.core.engine.WorkflowExecutorTest.shouldReplayCompletedActivities"
+./gradlew :maestro-core:test --tests "io.b2mash.maestro.core.engine.WorkflowExecutorTest.shouldReplayCompletedActivities"
 ```
 
 ---

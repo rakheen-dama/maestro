@@ -2,7 +2,7 @@ plugins {
     `java-library`
 }
 
-group = "io.maestro"
+group = "io.b2mash.maestro"
 version = property("version") as String
 
 java {

@@ -27,7 +27,7 @@ Add the test dependency:
 ```kotlin
 // build.gradle.kts
 dependencies {
-    testImplementation("io.maestro:maestro-test")
+    testImplementation("io.b2mash.maestro:maestro-test")
 }
 ```
 
@@ -365,8 +365,8 @@ env.getMessaging().clear();
 A complete test class demonstrating the most common testing patterns -- happy path, failure with saga compensation, time control, and event inspection:
 
 ```java
-import io.maestro.test.TestWorkflowEnvironment;
-import io.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.test.TestWorkflowEnvironment;
+import io.b2mash.maestro.core.model.WorkflowStatus;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

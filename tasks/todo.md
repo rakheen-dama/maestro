@@ -3,7 +3,7 @@
 ## Completed
 
 - [x] Generate Gradle 9.2.0 wrapper
-- [x] Create `gradle.properties` (group=io.maestro, version=0.3.0-SNAPSHOT)
+- [x] Create `gradle.properties` (group=io.b2mash.maestro, version=0.3.0-SNAPSHOT)
 - [x] Create `gradle/libs.versions.toml` version catalog (Spring Boot 4.0.0-RC2 BOM, JSpecify 1.0.0)
 - [x] Create `settings.gradle.kts` with all 11 modules + 2 samples
 - [x] Create root `build.gradle.kts`

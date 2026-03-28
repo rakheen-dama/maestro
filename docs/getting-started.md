@@ -39,16 +39,16 @@ repositories {
 
 dependencies {
     // Maestro
-    implementation("io.maestro:maestro-spring-boot-starter")
-    implementation("io.maestro:maestro-store-postgres")
-    implementation("io.maestro:maestro-messaging-kafka")
-    implementation("io.maestro:maestro-lock-valkey")
+    implementation("io.b2mash.maestro:maestro-spring-boot-starter")
+    implementation("io.b2mash.maestro:maestro-store-postgres")
+    implementation("io.b2mash.maestro:maestro-messaging-kafka")
+    implementation("io.b2mash.maestro:maestro-lock-valkey")
 
     // Spring Boot
     implementation("org.springframework.boot:spring-boot-starter-webmvc")
 
     // Test
-    testImplementation("io.maestro:maestro-test")
+    testImplementation("io.b2mash.maestro:maestro-test")
     testImplementation("org.springframework.boot:spring-boot-starter-test")
 }
 ```
@@ -186,7 +186,7 @@ Create the activity interface:
 ```java
 package com.example.demo.activity;
 
-import io.maestro.core.annotation.Activity;
+import io.b2mash.maestro.core.annotation.Activity;
 
 @Activity
 public interface GreetingActivities {
@@ -233,11 +233,11 @@ Key points:
 package com.example.demo.workflow;
 
 import com.example.demo.activity.GreetingActivities;
-import io.maestro.core.annotation.ActivityStub;
-import io.maestro.core.annotation.DurableWorkflow;
-import io.maestro.core.annotation.RetryPolicy;
-import io.maestro.core.annotation.WorkflowMethod;
-import io.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.annotation.ActivityStub;
+import io.b2mash.maestro.core.annotation.DurableWorkflow;
+import io.b2mash.maestro.core.annotation.RetryPolicy;
+import io.b2mash.maestro.core.annotation.WorkflowMethod;
+import io.b2mash.maestro.core.context.WorkflowContext;
 
 import java.time.Duration;
 
@@ -285,8 +285,8 @@ The `workflow.sleep()` call creates a durable timer in Postgres. If the process 
 package com.example.demo.controller;
 
 import com.example.demo.workflow.WelcomeWorkflow;
-import io.maestro.spring.client.MaestroClient;
-import io.maestro.spring.client.WorkflowOptions;
+import io.b2mash.maestro.spring.client.MaestroClient;
+import io.b2mash.maestro.spring.client.WorkflowOptions;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -374,12 +374,12 @@ package com.example.demo.workflow;
 
 import com.example.demo.activity.GreetingActivities;
 import com.example.demo.domain.ApprovalDecision;
-import io.maestro.core.annotation.ActivityStub;
-import io.maestro.core.annotation.DurableWorkflow;
-import io.maestro.core.annotation.QueryMethod;
-import io.maestro.core.annotation.WorkflowMethod;
-import io.maestro.core.context.WorkflowContext;
-import io.maestro.core.exception.SignalTimeoutException;
+import io.b2mash.maestro.core.annotation.ActivityStub;
+import io.b2mash.maestro.core.annotation.DurableWorkflow;
+import io.b2mash.maestro.core.annotation.QueryMethod;
+import io.b2mash.maestro.core.annotation.WorkflowMethod;
+import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.exception.SignalTimeoutException;
 
 import java.time.Duration;
 
@@ -438,8 +438,8 @@ package com.example.demo.controller;
 
 import com.example.demo.domain.ApprovalDecision;
 import com.example.demo.workflow.WelcomeWithApprovalWorkflow;
-import io.maestro.spring.client.MaestroClient;
-import io.maestro.spring.client.WorkflowOptions;
+import io.b2mash.maestro.spring.client.MaestroClient;
+import io.b2mash.maestro.spring.client.WorkflowOptions;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -519,7 +519,7 @@ package com.example.demo.workflow;
 
 import com.example.demo.activity.GreetingActivities;
 import com.example.demo.activity.GreetingActivitiesImpl;
-import io.maestro.test.TestWorkflowEnvironment;
+import io.b2mash.maestro.test.TestWorkflowEnvironment;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

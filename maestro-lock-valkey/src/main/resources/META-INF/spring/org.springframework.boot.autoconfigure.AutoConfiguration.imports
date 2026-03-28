@@ -1,1 +1,1 @@
-io.maestro.lock.valkey.config.ValkeyLockAutoConfiguration
+io.b2mash.maestro.lock.valkey.config.ValkeyLockAutoConfiguration

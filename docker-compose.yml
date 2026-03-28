@@ -12,6 +12,8 @@
 #   - payment-gateway   → PaymentProcessingWorkflow with durable retries (port 8082)
 #   - admin-dashboard   → Maestro Admin monitoring dashboard (port 8090)
 
+name: maestro-infra
+
 services:
 
   # ── Infrastructure ─────────────────────────────────────────────────
