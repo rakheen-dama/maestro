@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+<body>
+<!--
+  Flash message fragments for success and error feedback.
+  Usage: <div th:insert="~{fragments/flash :: messages}"></div>
+-->
+<div th:fragment="messages">
+    <div th:if="${message}" class="flash-message flash-success" th:text="${message}"></div>
+    <div th:if="${error}" class="flash-message flash-error" th:text="${error}"></div>
+</div>
+</body>
+</html>

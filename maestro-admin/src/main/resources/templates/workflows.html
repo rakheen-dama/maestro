@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en" data-theme="light">
+<head th:replace="~{fragments/head :: head('Workflows')}">
+    <title>Workflows — Maestro Admin</title>
+</head>
+<body>
+    <nav th:replace="~{fragments/nav :: nav('workflows')}"></nav>
+
+    <main class="container">
+        <div th:insert="~{fragments/flash :: messages}"></div>
+
+        <hgroup>
+            <h1>Workflows</h1>
+            <p>Browse and filter all workflow instances</p>
+        </hgroup>
+
+        <!-- Filter bar -->
+        <div class="filter-bar">
+            <div class="filter-group">
+                <label for="filter-service">Service</label>
+                <select id="filter-service"
+                        name="service"
+                        hx-get="/admin/fragments/workflows"
+                        hx-trigger="change"
+                        hx-target="#workflow-results"
+                        hx-swap="innerHTML"
+                        hx-include="#filter-status, #filter-search">
+                    <option value="">All services</option>
+                    <option th:each="svc : ${services}"
+                            th:value="${svc.name()}"
+                            th:text="${svc.name()}"
+                            th:selected="${svc.name() == service}">service-name</option>
+                </select>
+            </div>
+
+            <div class="filter-group">
+                <label for="filter-status">Status</label>
+                <select id="filter-status"
+                        name="status"
+                        hx-get="/admin/fragments/workflows"
+                        hx-trigger="change"
+                        hx-target="#workflow-results"
+                        hx-swap="innerHTML"
+                        hx-include="#filter-service, #filter-search">
+                    <option value="">All statuses</option>
+                    <option th:each="s : ${ {'RUNNING','COMPLETED','FAILED','WAITING_SIGNAL','WAITING_TIMER','COMPENSATING','TERMINATED'} }"
+                            th:value="${s}"
+                            th:text="${s}"
+                            th:selected="${s == status}">STATUS</option>
+                </select>
+            </div>
+
+            <div class="filter-group">
+                <label for="filter-search">Search</label>
+                <input type="search"
+                       id="filter-search"
+                       name="search"
+                       placeholder="Workflow ID or type..."
+                       th:value="${search}"
+                       hx-get="/admin/fragments/workflows"
+                       hx-trigger="keyup changed delay:300ms"
+                       hx-target="#workflow-results"
+                       hx-swap="innerHTML"
+                       hx-include="#filter-service, #filter-status">
+            </div>
+        </div>
+
+        <!-- Table + pagination (HTMX swappable) -->
+        <div id="workflow-results">
+            <div th:insert="~{fragments/workflow-table :: content}"></div>
+        </div>
+    </main>
+</body>
+</html>

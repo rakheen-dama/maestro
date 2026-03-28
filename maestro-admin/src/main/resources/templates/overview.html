@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en" data-theme="light">
+<head th:replace="~{fragments/head :: head('Overview')}">
+    <title>Overview — Maestro Admin</title>
+</head>
+<body>
+    <nav th:replace="~{fragments/nav :: nav('overview')}"></nav>
+
+    <main class="container">
+        <div th:insert="~{fragments/flash :: messages}"></div>
+
+        <hgroup>
+            <h1>Overview</h1>
+            <p>Workflow metrics across all connected services</p>
+        </hgroup>
+
+        <!-- Auto-refreshing metrics container -->
+        <div id="overview-metrics"
+             hx-get="/admin/fragments/overview"
+             hx-trigger="every 5s"
+             hx-swap="innerHTML">
+
+            <div th:insert="~{fragments/overview-metrics :: content}"></div>
+        </div>
+    </main>
+</body>
+</html>
