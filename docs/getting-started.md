@@ -10,7 +10,7 @@ Build a crash-recoverable workflow in under 30 minutes. This tutorial takes you 
 
 | Requirement | Why |
 |---|---|
-| **Java 21+** | Virtual threads power the workflow engine |
+| **Java 25+** | Virtual threads and scoped values power the workflow engine |
 | **Docker** | Runs Postgres, Kafka, and Valkey locally |
 | **Gradle 9** | Or use the Gradle wrapper (`./gradlew`) |
 
@@ -18,7 +18,7 @@ Build a crash-recoverable workflow in under 30 minutes. This tutorial takes you 
 
 ## Step 1: Create a Spring Boot 4 Project
 
-Generate a project at [start.spring.io](https://start.spring.io) (Spring Boot 4.x, Java 21) or create the following `build.gradle.kts` manually:
+Generate a project at [start.spring.io](https://start.spring.io) (Spring Boot 4.x, Java 25) or create the following `build.gradle.kts` manually:
 
 ```kotlin
 plugins {
@@ -29,7 +29,7 @@ plugins {
 
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(21)
+        languageVersion = JavaLanguageVersion.of(25)
     }
 }
 

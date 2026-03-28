@@ -1,7 +1,7 @@
 # Maestro
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Java](https://img.shields.io/badge/Java-21%2B-orange.svg)](https://openjdk.org/projects/jdk/21/)
+[![Java](https://img.shields.io/badge/Java-25-orange.svg)](https://openjdk.org/projects/jdk/25/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.x-green.svg)](https://spring.io/projects/spring-boot)
 
 **Embeddable durable workflow engine for Spring Boot.** Add a starter to your microservice and get Temporal-grade workflow durability using your existing Postgres, Kafka, and Valkey infrastructure.
@@ -125,7 +125,7 @@ See the [Getting Started Guide](docs/getting-started.md) for the full step-by-st
 
 Maestro uses **hybrid memoization** to achieve durability:
 
-1. A workflow method runs on a Java 21 virtual thread.
+1. A workflow method runs on a Java virtual thread.
 2. Each activity call is intercepted by a proxy that checks Postgres for a stored result.
 3. **Replay (found):** Return the stored result instantly -- no re-execution.
 4. **Live (not found):** Execute the activity, persist the result, return it.
@@ -277,7 +277,7 @@ See the [Samples README](maestro-samples/README.md) for crash recovery simulatio
 
 | Component | Technology |
 |---|---|
-| Language | Java 21+ (virtual threads) |
+| Language | Java 25 (virtual threads, scoped values) |
 | Framework | Spring Boot 4.x / Spring Framework 7 |
 | Build | Gradle Kotlin DSL (Gradle 9) |
 | Database | PostgreSQL 14+ |
@@ -308,7 +308,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor guide.
 Contributions are welcome! Whether it's bug reports, feature requests, documentation improvements, or code -- we appreciate your help.
 
 Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on:
-- Code standards (Java 21 features, JSpecify, Jackson 3)
+- Code standards (Java 25 features, JSpecify, Jackson 3)
 - Architecture rules (`maestro-core` must never depend on Spring)
 - Pull request process
 - Testing requirements
