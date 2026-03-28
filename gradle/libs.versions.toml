@@ -1,6 +1,6 @@
 [versions]
 # Spring ecosystem
-spring-boot = "4.0.0-RC2"
+spring-boot = "4.0.5"
 spring-dependency-management = "1.1.7"
 
 # Core library versions (explicit — NOT relying on Spring Boot BOM in non-Spring modules)
