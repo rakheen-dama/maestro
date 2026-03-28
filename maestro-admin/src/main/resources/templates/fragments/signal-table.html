@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+<body>
+<!--
+  Signal events table fragment — returned as a partial for HTMX polling and pagination.
+  Model attributes: page (Page<AdminEvent>)
+-->
+<div th:fragment="content">
+
+    <div th:if="${page.total() == 0}" class="empty-state">
+        <p>No signal events recorded yet.</p>
+    </div>
+
+    <div th:unless="${page.total() == 0}">
+        <figure>
+            <table>
+                <thead>
+                    <tr>
+                        <th scope="col">Workflow ID</th>
+                        <th scope="col">Event Type</th>
+                        <th scope="col">Step Name</th>
+                        <th scope="col">Timestamp</th>
+                        <th scope="col">Detail</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr th:each="event : ${page.items()}">
+                        <td>
+                            <a class="text-mono"
+                               th:href="@{/admin/workflows/{id}(id=${event.workflowId()})}"
+                               th:text="${event.workflowId()}">order-12345</a>
+                        </td>
+                        <td>
+                            <span th:replace="~{fragments/status-badge :: badge(${event.eventType()})}"></span>
+                        </td>
+                        <td>
+                            <span th:if="${event.stepName() != null}" th:text="${event.stepName()}">awaitApproval</span>
+                            <span th:if="${event.stepName() == null}" class="text-muted">&mdash;</span>
+                        </td>
+                        <td th:text="${event.eventTimestamp()}">2024-01-01T00:00:00Z</td>
+                        <td>
+                            <details th:if="${event.detail() != null and !event.detail().isEmpty()}">
+                                <summary>Show</summary>
+                                <pre><code th:text="${event.detail()}">{ "key": "value" }</code></pre>
+                            </details>
+                            <span th:if="${event.detail() == null or event.detail().isEmpty()}" class="text-muted">&mdash;</span>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </figure>
+
+        <!-- Pagination -->
+        <div th:replace="~{fragments/pagination :: controls(${page}, '/admin/fragments/signals', 'signal-results', '')}"></div>
+    </div>
+</div>
+</body>
+</html>

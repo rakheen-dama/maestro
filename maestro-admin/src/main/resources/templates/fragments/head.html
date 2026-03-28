@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+<head th:fragment="head(pageTitle)">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title th:text="${pageTitle} + ' &mdash; Maestro Admin'">Maestro Admin</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <style>
+        :root {
+            --maestro-running: #3b82f6;
+            --maestro-completed: #22c55e;
+            --maestro-failed: #ef4444;
+            --maestro-waiting: #f59e0b;
+            --maestro-compensating: #a855f7;
+            --maestro-terminated: #6b7280;
+        }
+
+        /* Navigation */
+        nav.admin-nav { margin-bottom: 2rem; }
+        nav.admin-nav a[aria-current="page"] {
+            font-weight: 700;
+            text-decoration: underline;
+            text-underline-offset: 4px;
+        }
+
+        /* Status badges */
+        .badge {
+            display: inline-block;
+            padding: 0.15rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            color: #fff;
+            white-space: nowrap;
+        }
+        .badge-running         { background: var(--maestro-running); }
+        .badge-completed       { background: var(--maestro-completed); }
+        .badge-failed          { background: var(--maestro-failed); }
+        .badge-waiting_signal  { background: var(--maestro-waiting); }
+        .badge-waiting_timer   { background: var(--maestro-waiting); }
+        .badge-compensating    { background: var(--maestro-compensating); }
+        .badge-terminated      { background: var(--maestro-terminated); }
+
+        /* Metric cards */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        .metric-card {
+            border: 1px solid var(--pico-muted-border-color);
+            border-radius: 8px;
+            padding: 1.25rem;
+        }
+        .metric-card h3 {
+            margin-bottom: 0.75rem;
+            font-size: 1.1rem;
+        }
+        .metric-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.25rem 0;
+        }
+        .metric-row .count {
+            font-size: 1.25rem;
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* Event timeline */
+        .timeline {
+            list-style: none;
+            padding-left: 1.25rem;
+            border-left: 2px solid var(--pico-muted-border-color);
+            margin: 0;
+        }
+        .timeline li {
+            position: relative;
+            padding: 0.75rem 0 0.75rem 1.5rem;
+        }
+        .timeline li::before {
+            content: '';
+            position: absolute;
+            left: -7px;
+            top: 1.15rem;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--pico-primary);
+            border: 2px solid var(--pico-background-color);
+        }
+        .timeline .event-header {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+        .timeline .event-time {
+            font-size: 0.8rem;
+            color: var(--pico-muted-color);
+        }
+        .timeline .event-step {
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        /* Flash messages */
+        .flash-message {
+            padding: 1rem;
+            border-radius: 6px;
+            margin-bottom: 1.5rem;
+            font-size: 0.9rem;
+        }
+        .flash-success { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
+        .flash-error   { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+
+        /* Detail expandable */
+        details summary { cursor: pointer; font-size: 0.8rem; color: var(--pico-muted-color); }
+        details pre {
+            max-height: 300px;
+            overflow: auto;
+            font-size: 0.8rem;
+            margin-top: 0.5rem;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        /* Workflow detail header */
+        .detail-header {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            flex-wrap: wrap;
+            margin-bottom: 1rem;
+        }
+        .detail-meta {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 1.5rem;
+        }
+        .detail-meta dt {
+            font-size: 0.8rem;
+            color: var(--pico-muted-color);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.15rem;
+        }
+        .detail-meta dd {
+            margin: 0;
+            font-weight: 500;
+        }
+
+        /* Actions bar */
+        .actions-bar {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            margin-bottom: 2rem;
+        }
+        .actions-bar form { margin: 0; }
+
+        /* Filter bar */
+        .filter-bar {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+            align-items: end;
+            margin-bottom: 1.5rem;
+        }
+        .filter-bar .filter-group {
+            flex: 1;
+            min-width: 150px;
+        }
+        .filter-bar label {
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        /* Pagination */
+        .pagination {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 1rem;
+            font-size: 0.9rem;
+        }
+        .pagination-links {
+            display: flex;
+            gap: 0.25rem;
+        }
+
+        /* Utilities */
+        .text-muted { color: var(--pico-muted-color); }
+        .text-mono  { font-family: var(--pico-font-family-monospace, monospace); font-size: 0.85em; }
+        .empty-state {
+            text-align: center;
+            padding: 3rem 1rem;
+            color: var(--pico-muted-color);
+        }
+
+        /* Signal form inline */
+        .signal-form {
+            display: flex;
+            gap: 0.5rem;
+            align-items: end;
+        }
+        .signal-form input { margin-bottom: 0; }
+    </style>
+</head>
+<body><!-- not used --></body>
+</html>

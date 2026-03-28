@@ -11,6 +11,8 @@ dependencies {
     implementation(libs.spring.boot.starter.jdbc)
     implementation(libs.spring.boot.starter.actuator)
     implementation(libs.spring.kafka)
+    implementation(libs.flyway.core)
+    runtimeOnly(libs.flyway.postgres)
     runtimeOnly(libs.postgresql)
 
     testImplementation(libs.spring.boot.starter.test)

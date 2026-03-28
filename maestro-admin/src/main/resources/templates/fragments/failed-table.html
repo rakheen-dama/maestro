@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+<body>
+<!--
+  Failed workflows table fragment — returned as a partial for HTMX pagination.
+  Model attributes: page (Page<AdminWorkflow>)
+-->
+<div th:fragment="content">
+
+    <div th:if="${page.total() == 0}" class="empty-state">
+        <p>No failed workflows. Everything is running smoothly.</p>
+    </div>
+
+    <div th:unless="${page.total() == 0}">
+        <figure>
+            <table>
+                <thead>
+                    <tr>
+                        <th scope="col">Workflow ID</th>
+                        <th scope="col">Type</th>
+                        <th scope="col">Service</th>
+                        <th scope="col">Last Step</th>
+                        <th scope="col">Failed At</th>
+                        <th scope="col">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr th:each="wf : ${page.items()}">
+                        <td>
+                            <a class="text-mono"
+                               th:href="@{/admin/workflows/{id}(id=${wf.workflowId()})}"
+                               th:text="${wf.workflowId()}">order-12345</a>
+                        </td>
+                        <td th:text="${wf.workflowType()}">OrderWorkflow</td>
+                        <td th:text="${wf.serviceName()}">order-service</td>
+                        <td>
+                            <span th:if="${wf.lastStepName() != null}" th:text="${wf.lastStepName()}">step</span>
+                            <span th:if="${wf.lastStepName() == null}" class="text-muted">&mdash;</span>
+                        </td>
+                        <td th:text="${wf.updatedAt()}">2024-01-01T00:00:00Z</td>
+                        <td>
+                            <form method="post"
+                                  th:action="@{/admin/workflows/{id}/retry(id=${wf.workflowId()})}"
+                                  style="display: inline; margin: 0;">
+                                <button type="submit" class="outline" style="padding: 0.25rem 0.75rem; font-size: 0.8rem;">
+                                    Retry
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </figure>
+
+        <!-- Pagination -->
+        <div th:replace="~{fragments/pagination :: controls(${page}, '/admin/fragments/failed', 'failed-results', '')}"></div>
+    </div>
+</div>
+</body>
+</html>

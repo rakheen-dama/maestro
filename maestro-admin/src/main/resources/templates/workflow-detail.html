@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en" data-theme="light">
+<head th:replace="~{fragments/head :: head('Workflow ' + ${workflow.workflowId()})}">
+    <title>Workflow Detail — Maestro Admin</title>
+</head>
+<body>
+    <nav th:replace="~{fragments/nav :: nav('workflows')}"></nav>
+
+    <main class="container">
+        <div th:insert="~{fragments/flash :: messages}"></div>
+
+        <!-- Header -->
+        <div class="detail-header">
+            <h1 th:text="${workflow.workflowType()}">OrderWorkflow</h1>
+            <span th:replace="~{fragments/status-badge :: badge(${workflow.status()})}"></span>
+        </div>
+
+        <!-- Metadata -->
+        <dl class="detail-meta">
+            <div>
+                <dt>Workflow ID</dt>
+                <dd class="text-mono" th:text="${workflow.workflowId()}">order-12345</dd>
+            </div>
+            <div>
+                <dt>Instance ID</dt>
+                <dd class="text-mono" th:text="${workflow.workflowInstanceId()}">uuid</dd>
+            </div>
+            <div>
+                <dt>Service</dt>
+                <dd th:text="${workflow.serviceName()}">order-service</dd>
+            </div>
+            <div>
+                <dt>Task Queue</dt>
+                <dd class="text-mono" th:text="${workflow.taskQueue()}">order-tasks</dd>
+            </div>
+            <div>
+                <dt>Started</dt>
+                <dd th:text="${workflow.startedAt()}">2024-01-01T00:00:00Z</dd>
+            </div>
+            <div>
+                <dt>Last Updated</dt>
+                <dd th:text="${workflow.updatedAt()}">2024-01-01T00:00:00Z</dd>
+            </div>
+            <div th:if="${workflow.completedAt() != null}">
+                <dt>Completed</dt>
+                <dd th:text="${workflow.completedAt()}">2024-01-01T00:00:00Z</dd>
+            </div>
+            <div th:if="${workflow.lastStepName() != null}">
+                <dt>Last Step</dt>
+                <dd th:text="${workflow.lastStepName()}">processPayment</dd>
+            </div>
+            <div>
+                <dt>Events</dt>
+                <dd th:text="${workflow.eventCount()}">12</dd>
+            </div>
+        </dl>
+
+        <!-- Action buttons -->
+        <div class="actions-bar">
+            <!-- Retry: shown when FAILED -->
+            <form th:if="${workflow.status() == 'FAILED'}"
+                  method="post"
+                  th:action="@{/admin/workflows/{id}/retry(id=${workflow.workflowId()})}">
+                <button type="submit" class="outline">Retry</button>
+            </form>
+
+            <!-- Terminate: shown when active -->
+            <form th:if="${workflow.status() == 'RUNNING' or workflow.status() == 'WAITING_SIGNAL' or workflow.status() == 'WAITING_TIMER' or workflow.status() == 'COMPENSATING'}"
+                  method="post"
+                  th:action="@{/admin/workflows/{id}/terminate(id=${workflow.workflowId()})}"
+                  onsubmit="return confirm('Are you sure you want to terminate this workflow?');">
+                <button type="submit" class="outline secondary">Terminate</button>
+            </form>
+
+            <!-- Send signal: shown when WAITING_SIGNAL -->
+            <form th:if="${workflow.status() == 'WAITING_SIGNAL'}"
+                  method="post"
+                  th:action="@{/admin/workflows/{id}/signal(id=${workflow.workflowId()})}"
+                  class="signal-form">
+                <input type="text" name="signalName" placeholder="Signal name" required
+                       aria-label="Signal name">
+                <button type="submit" class="outline">Send Signal</button>
+            </form>
+        </div>
+
+        <!-- Event Timeline -->
+        <h2>Event Timeline</h2>
+
+        <div th:if="${#lists.isEmpty(events)}" class="empty-state">
+            <p>No events recorded yet.</p>
+        </div>
+
+        <ul th:unless="${#lists.isEmpty(events)}" class="timeline">
+            <li th:each="event : ${events}">
+                <div class="event-header">
+                    <span th:replace="~{fragments/status-badge :: badge(${event.eventType()})}"></span>
+                    <span th:if="${event.stepName() != null}"
+                          class="event-step"
+                          th:text="${event.stepName()}">processPayment</span>
+                    <span class="event-time" th:text="${event.eventTimestamp()}">2024-01-01T00:00:00Z</span>
+                </div>
+                <details th:if="${event.detail() != null and !event.detail().isEmpty()}">
+                    <summary>Show detail</summary>
+                    <pre><code th:text="${event.detail()}">{ "key": "value" }</code></pre>
+                </details>
+            </li>
+        </ul>
+
+        <!-- Back link -->
+        <p style="margin-top: 2rem;">
+            <a th:href="@{/admin/workflows}">&larr; Back to workflows</a>
+        </p>
+    </main>
+</body>
+</html>

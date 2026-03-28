@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+<body>
+<!--
+  Overview metrics fragment — returned as a partial for HTMX polling.
+  Model attributes: services (List<AdminService>), overview (Map<String, Map<String, Long>>)
+-->
+<div th:fragment="content">
+
+    <div th:if="${#maps.isEmpty(overview)}" class="empty-state">
+        <p>No workflow data yet. Start a workflow-enabled service to see metrics here.</p>
+    </div>
+
+    <div th:unless="${#maps.isEmpty(overview)}" class="metrics-grid">
+        <!-- One card per service -->
+        <article th:each="entry : ${overview}" class="metric-card">
+            <h3 th:text="${entry.key}">service-name</h3>
+
+            <div th:each="statusEntry : ${entry.value}" class="metric-row">
+                <span th:replace="~{fragments/status-badge :: badge(${statusEntry.key})}"></span>
+                <span class="count" th:text="${statusEntry.value}">0</span>
+            </div>
+
+            <!-- Show total -->
+            <hr style="margin: 0.5rem 0;">
+            <div class="metric-row">
+                <span style="font-weight: 600;">Total</span>
+                <span class="count"
+                      th:text="${#aggregates.sum(entry.value.values())}">0</span>
+            </div>
+        </article>
+    </div>
+
+    <!-- Summary stats -->
+    <div th:unless="${#maps.isEmpty(overview)}">
+        <small class="text-muted">
+            <span th:text="${#lists.size(services)}">0</span> service(s) connected
+            &middot; Last refreshed at
+            <span th:text="${T(java.time.Instant).now()}">now</span>
+        </small>
+    </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en" data-theme="light">
+<head th:replace="~{fragments/head :: head('Signal Monitor')}">
+    <title>Signal Monitor — Maestro Admin</title>
+</head>
+<body>
+    <nav th:replace="~{fragments/nav :: nav('signals')}"></nav>
+
+    <main class="container">
+        <div th:insert="~{fragments/flash :: messages}"></div>
+
+        <hgroup>
+            <h1>Signal Monitor</h1>
+            <p>Signal events across all workflows (auto-refreshes every 5s)</p>
+        </hgroup>
+
+        <!-- Auto-refreshing table -->
+        <div id="signal-results"
+             hx-get="/admin/fragments/signals"
+             hx-trigger="every 5s"
+             hx-swap="innerHTML">
+
+            <div th:insert="~{fragments/signal-table :: content}"></div>
+        </div>
+    </main>
+</body>
+</html>
