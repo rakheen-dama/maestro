@@ -483,7 +483,7 @@ specific signal ordering either.
 **Test cross-service flows with TestWorkflowEnvironment.** Each service's
 workflow can be tested independently by simulating signals. You do not need to
 run Kafka or the other service to verify your workflow logic. Use
-`testEnv.advanceTime()` and `handle.signal()` to simulate the full
+`env.advanceTime()` and `handle.signal()` to simulate the full
 asynchronous flow in milliseconds.
 
 ---

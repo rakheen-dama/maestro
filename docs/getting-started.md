@@ -576,10 +576,9 @@ Here is a test for the signal-based approval workflow:
 void shouldWaitForApprovalSignal() throws TimeoutException {
     var handle = env.startWorkflow(WelcomeWithApprovalWorkflow.class, "Bob");
 
-    // Give the workflow a moment to reach the awaitSignal point
-    Thread.yield();
-
-    // Deliver the approval signal
+    // Deliver the approval signal — Maestro persists it immediately.
+    // If the workflow hasn't reached awaitSignal() yet, the signal
+    // waits in the store and is consumed when the await is reached.
     handle.signal("approval", new ApprovalDecision(true, null));
 
     String result = handle.getResult(String.class, Duration.ofSeconds(5));
@@ -590,8 +589,7 @@ void shouldWaitForApprovalSignal() throws TimeoutException {
 void shouldRejectWhenNotApproved() throws TimeoutException {
     var handle = env.startWorkflow(WelcomeWithApprovalWorkflow.class, "Carol");
 
-    Thread.yield();
-
+    // Signal is persisted and delivered when the workflow reaches awaitSignal()
     handle.signal("approval", new ApprovalDecision(false, "Not ready"));
 
     String result = handle.getResult(String.class, Duration.ofSeconds(5));

@@ -228,7 +228,7 @@ graph TB
 The project includes a full e-commerce demo with two Maestro-enabled services and an admin dashboard:
 
 ```bash
-git clone https://github.com/your-org/maestro.git
+git clone https://github.com/rakheen-dama/maestro.git
 cd maestro
 docker-compose up --build
 ```
