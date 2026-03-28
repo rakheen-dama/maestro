@@ -31,13 +31,19 @@ RUN chmod +x gradlew && \
 # ── Stage 2a: Order Service ────────────────────────────────────────────
 FROM eclipse-temurin:25-jre AS order-service
 WORKDIR /app
+RUN addgroup --system --gid 1001 appgroup && \
+    adduser --system --uid 1001 --gid 1001 appuser
 COPY --from=builder /app/maestro-samples/sample-order-service/build/libs/*.jar app.jar
+USER appuser
 EXPOSE 8081
 ENTRYPOINT ["java", "-jar", "app.jar"]
 
 # ── Stage 2b: Payment Gateway ─────────────────────────────────────────
 FROM eclipse-temurin:25-jre AS payment-gateway
 WORKDIR /app
+RUN addgroup --system --gid 1001 appgroup && \
+    adduser --system --uid 1001 --gid 1001 appuser
 COPY --from=builder /app/maestro-samples/sample-payment-gateway/build/libs/*.jar app.jar
+USER appuser
 EXPOSE 8082
 ENTRYPOINT ["java", "-jar", "app.jar"]

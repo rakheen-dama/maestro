@@ -8,4 +8,8 @@ public record OrderInput(
     List<OrderItem> items,
     String paymentMethod,
     String shippingAddress
-) {}
+) {
+    public OrderInput {
+        items = List.copyOf(items);
+    }
+}

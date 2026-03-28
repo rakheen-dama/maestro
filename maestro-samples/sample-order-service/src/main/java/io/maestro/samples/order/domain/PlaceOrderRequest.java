@@ -7,4 +7,8 @@ public record PlaceOrderRequest(
     List<OrderItem> items,
     String paymentMethod,
     String shippingAddress
-) {}
+) {
+    public PlaceOrderRequest {
+        items = List.copyOf(items);
+    }
+}

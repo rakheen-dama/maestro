@@ -143,6 +143,11 @@ io.maestro.admin                      — Dashboard app
 io.maestro.admin.client               — Event publisher
 
 io.maestro.test                       — TestWorkflowEnvironment, in-memory SPIs
+
+io.maestro.samples.order              — Sample order service (e-commerce demo)
+io.maestro.samples.payment            — Sample payment gateway (e-commerce demo)
+io.maestro.samples.stokvel            — Sample stokvel onboarding service
+io.maestro.samples.corebanking        — Sample core banking proxy
 ```
 
 ## Database Tables
