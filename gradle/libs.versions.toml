@@ -39,10 +39,11 @@ junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher
 # Awaitility — polling-based test assertions
 awaitility = { module = "org.awaitility:awaitility", version.ref = "awaitility" }
 
-# Testcontainers
-testcontainers-junit5 = { module = "org.testcontainers:junit-jupiter", version.ref = "testcontainers" }
-testcontainers-postgresql = { module = "org.testcontainers:postgresql", version.ref = "testcontainers" }
-testcontainers-kafka = { module = "org.testcontainers:kafka", version.ref = "testcontainers" }
+# Testcontainers 2.x (artifact names changed from 1.x)
+testcontainers = { module = "org.testcontainers:testcontainers", version.ref = "testcontainers" }
+testcontainers-junit5 = { module = "org.testcontainers:testcontainers-junit-jupiter", version.ref = "testcontainers" }
+testcontainers-postgresql = { module = "org.testcontainers:testcontainers-postgresql", version.ref = "testcontainers" }
+testcontainers-kafka = { module = "org.testcontainers:testcontainers-kafka", version.ref = "testcontainers" }
 
 # Spring Boot starters (versions managed by Spring Boot BOM via dependency-management plugin)
 spring-boot-starter = { module = "org.springframework.boot:spring-boot-starter" }
