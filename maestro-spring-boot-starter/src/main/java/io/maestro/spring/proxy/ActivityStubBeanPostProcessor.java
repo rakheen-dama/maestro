@@ -19,6 +19,7 @@ import org.springframework.context.ApplicationContextAware;
 import org.springframework.util.ClassUtils;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -118,6 +119,13 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
                         "@ActivityStub field '%s' on %s must be an interface type, got %s"
                                 .formatted(field.getName(), targetClass.getName(),
                                         activityInterface.getName()));
+            }
+
+            if (Modifier.isFinal(field.getModifiers())) {
+                throw new BeanInitializationException(
+                        ("@ActivityStub field '%s' on %s must not be final — "
+                                + "Maestro injects the memoizing proxy at runtime via reflection")
+                                .formatted(field.getName(), targetClass.getName()));
             }
 
             // Resolve the Spring bean implementing the activity interface

@@ -2,6 +2,7 @@ package io.maestro.core.engine;
 
 import io.maestro.core.annotation.Saga;
 import io.maestro.core.context.WorkflowContext;
+import io.maestro.core.context.WorkflowMDC;
 import io.maestro.core.exception.CompensationException;
 import io.maestro.core.exception.QueryNotDefinedException;
 import io.maestro.core.exception.WorkflowAlreadyExistsException;
@@ -23,7 +24,6 @@ import io.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
 import tools.jackson.databind.JsonNode;
 
 import java.lang.reflect.InvocationTargetException;
@@ -487,8 +487,16 @@ public final class WorkflowExecutor {
 
         var thread = Thread.ofVirtual()
                 .name("maestro-workflow-%s-%s".formatted(instance.workflowType(), instance.workflowId()))
-                .unstarted(() -> executeWorkflow(ctx, instance, workflowImpl, workflowMethod,
-                        inputPayload, compensationStack, parallelCompensation));
+                .unstarted(() -> {
+                    WorkflowMDC.populate(ctx);
+                    try {
+                        ScopedValue.where(WorkflowContext.scopedValue(), ctx)
+                                .run(() -> executeWorkflow(ctx, instance, workflowImpl, workflowMethod,
+                                        inputPayload, compensationStack, parallelCompensation));
+                    } finally {
+                        WorkflowMDC.clear();
+                    }
+                });
 
         // Register before starting to prevent the race where a fast workflow
         // finishes and removes itself before the put() below executes
@@ -508,11 +516,6 @@ public final class WorkflowExecutor {
             CompensationStack compensationStack,
             boolean parallelCompensation
     ) {
-        MDC.put("workflowId", ctx.workflowId());
-        MDC.put("runId", ctx.runId().toString());
-        MDC.put("workflowType", ctx.workflowType());
-
-        WorkflowContext.bind(ctx);
         try {
             // Deserialize input and invoke the workflow method
             Object result = invokeWorkflowMethod(workflowImpl, workflowMethod, inputPayload);
@@ -540,11 +543,7 @@ public final class WorkflowExecutor {
         } catch (Exception e) {
             handleWorkflowFailure(ctx, instance, e, compensationStack, parallelCompensation);
         } finally {
-            WorkflowContext.clear();
             runningWorkflows.remove(ctx.workflowId());
-            MDC.remove("workflowId");
-            MDC.remove("runId");
-            MDC.remove("workflowType");
         }
     }
 

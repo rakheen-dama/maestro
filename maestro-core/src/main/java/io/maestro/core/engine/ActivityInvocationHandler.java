@@ -122,8 +122,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         var seq = ctx.nextSequence();
         var stepName = activityName + "." + method.getName();
 
-        MDC.put("workflowId", ctx.workflowId());
-        MDC.put("runId", ctx.runId().toString());
+        // Activity-specific MDC keys (base workflow keys are set by the scoped executor)
         MDC.put("activityName", stepName);
         MDC.put("sequence", String.valueOf(seq));
 
@@ -148,8 +147,6 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             return result;
 
         } finally {
-            MDC.remove("workflowId");
-            MDC.remove("runId");
             MDC.remove("activityName");
             MDC.remove("sequence");
         }

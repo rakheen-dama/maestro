@@ -1,6 +1,7 @@
 package io.maestro.core.engine;
 
 import io.maestro.core.context.WorkflowContext;
+import io.maestro.core.context.WorkflowMDC;
 import io.maestro.core.exception.RetryExhaustedException;
 import io.maestro.core.exception.SignalTimeoutException;
 import io.maestro.core.model.EventType;
@@ -291,13 +292,18 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                                 ctx.isReplaying(),
                                 DefaultWorkflowOperations.this
                         );
-                        WorkflowContext.bind(branchCtx);
+                        WorkflowMDC.populate(branchCtx);
                         try {
-                            results.get(branchIndex).set(task.call());
-                        } catch (Throwable t) {
-                            errors.get(branchIndex).set(t);
+                            ScopedValue.where(WorkflowContext.scopedValue(), branchCtx)
+                                    .run(() -> {
+                                        try {
+                                            results.get(branchIndex).set(task.call());
+                                        } catch (Throwable t) {
+                                            errors.get(branchIndex).set(t);
+                                        }
+                                    });
                         } finally {
-                            WorkflowContext.clear();
+                            WorkflowMDC.clear();
                             latch.countDown();
                         }
                     });
