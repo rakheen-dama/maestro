@@ -28,7 +28,8 @@ abstract class PostgresTestSupport {
                     .withUsername("test")
                     .withPassword("test");
 
-    private static volatile boolean migrated = false;
+    private static final Object MIGRATION_LOCK = new Object();
+    private static boolean migrated = false;
 
     protected PGSimpleDataSource dataSource;
     protected PostgresWorkflowStore store;
@@ -42,13 +43,15 @@ abstract class PostgresTestSupport {
         dataSource.setPassword(postgres.getPassword());
 
         // Run migrations once per container lifecycle
-        if (!migrated) {
-            Flyway.configure()
-                    .dataSource(dataSource)
-                    .locations("classpath:db/migration")
-                    .load()
-                    .migrate();
-            migrated = true;
+        synchronized (MIGRATION_LOCK) {
+            if (!migrated) {
+                Flyway.configure()
+                        .dataSource(dataSource)
+                        .locations("classpath:db/migration")
+                        .load()
+                        .migrate();
+                migrated = true;
+            }
         }
 
         objectMapper = JsonMapper.builder().build();

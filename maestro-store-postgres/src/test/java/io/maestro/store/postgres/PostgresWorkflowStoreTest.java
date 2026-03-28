@@ -23,6 +23,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -620,6 +621,7 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
             store.createInstance(instance);
 
             var latch = new CountDownLatch(1);
+            var failureCount = new AtomicInteger(0);
             var error = new AtomicReference<Throwable>();
 
             // Thread 1: update with version 0
@@ -631,7 +633,8 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
                             .updatedAt(Instant.now().truncatedTo(ChronoUnit.MILLIS))
                             .build());
                 } catch (Exception e) {
-                    error.compareAndSet(null, e);
+                    failureCount.incrementAndGet();
+                    error.set(e);
                 }
             });
 
@@ -644,7 +647,8 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
                             .updatedAt(Instant.now().truncatedTo(ChronoUnit.MILLIS))
                             .build());
                 } catch (Exception e) {
-                    error.compareAndSet(null, e);
+                    failureCount.incrementAndGet();
+                    error.set(e);
                 }
             });
 
@@ -652,8 +656,8 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
             t1.join(5000);
             t2.join(5000);
 
-            // One thread should have failed with OptimisticLockException
-            assertNotNull(error.get());
+            // Exactly one thread should have failed with OptimisticLockException
+            assertEquals(1, failureCount.get(), "Exactly one update should fail");
             assertInstanceOf(OptimisticLockException.class, error.get());
         }
 

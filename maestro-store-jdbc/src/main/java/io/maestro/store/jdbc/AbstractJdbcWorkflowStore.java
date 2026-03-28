@@ -28,10 +28,12 @@ import java.sql.Timestamp;
 import java.sql.Types;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * Abstract JDBC implementation of {@link WorkflowStore}.
@@ -64,6 +66,12 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
     /** SQL state for unique constraint violation (standard across Postgres, H2, etc.). */
     private static final String UNIQUE_VIOLATION = "23505";
+
+    /** SQL IN-clause fragment derived from {@link WorkflowStatus#isActive()}. */
+    private static final String ACTIVE_STATUS_SQL = Arrays.stream(WorkflowStatus.values())
+            .filter(WorkflowStatus::isActive)
+            .map(s -> "'" + s.name() + "'")
+            .collect(Collectors.joining(", "));
 
     private final DataSource dataSource;
     private final JdbcStoreConfiguration config;
@@ -111,7 +119,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     protected void setJsonParameter(PreparedStatement ps, int index,
                                     @Nullable JsonNode node) throws SQLException {
         if (node == null || node.isNull()) {
-            ps.setNull(index, Types.OTHER);
+            ps.setNull(index, Types.VARCHAR);
         } else {
             ps.setString(index, toJsonString(node));
         }
@@ -174,7 +182,9 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             }
         } catch (SQLException e) {
             if (UNIQUE_VIOLATION.equals(e.getSQLState())) {
-                throw new WorkflowAlreadyExistsException(instance.workflowId());
+                var ex = new WorkflowAlreadyExistsException(instance.workflowId());
+                ex.initCause(e);
+                throw ex;
             }
             throw new UncheckedSqlException("Failed to create workflow instance: "
                     + instance.workflowId(), e);
@@ -198,7 +208,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         String sql = "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, "
                 + "input, output, service_name, event_sequence, started_at, completed_at, "
                 + "updated_at, version FROM " + tableName("workflow_instance")
-                + " WHERE status IN ('RUNNING', 'WAITING_SIGNAL', 'WAITING_TIMER', 'COMPENSATING')"
+                + " WHERE status IN (" + ACTIVE_STATUS_SQL + ")"
                 + " ORDER BY started_at ASC";
 
         return queryList(sql, ps -> {}, this::mapInstance);
@@ -262,8 +272,10 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         } catch (UncheckedSqlException e) {
             if (e.getCause() instanceof SQLException sqle
                     && UNIQUE_VIOLATION.equals(sqle.getSQLState())) {
-                throw new DuplicateEventException(event.workflowInstanceId(),
+                var ex = new DuplicateEventException(event.workflowInstanceId(),
                         event.sequenceNumber());
+                ex.initCause(sqle);
+                throw ex;
             }
             throw e;
         }
