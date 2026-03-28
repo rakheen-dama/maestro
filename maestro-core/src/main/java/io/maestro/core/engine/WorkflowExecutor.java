@@ -16,6 +16,7 @@ import io.maestro.core.saga.CompensationStack;
 import io.maestro.core.saga.SagaManager;
 import io.maestro.core.spi.DistributedLock;
 import io.maestro.core.spi.LifecycleEventType;
+import io.maestro.core.spi.SignalNotifier;
 import io.maestro.core.spi.WorkflowLifecycleEvent;
 import io.maestro.core.spi.WorkflowMessaging;
 import io.maestro.core.spi.WorkflowStore;
@@ -73,6 +74,7 @@ public final class WorkflowExecutor {
     private final WorkflowStore store;
     private final @Nullable DistributedLock distributedLock;
     private final @Nullable WorkflowMessaging messaging;
+    private final @Nullable SignalNotifier signalNotifier;
     private final PayloadSerializer serializer;
     private final String serviceName;
     private final ParkingLot parkingLot;
@@ -89,6 +91,7 @@ public final class WorkflowExecutor {
      * @param store           workflow store for persistence
      * @param distributedLock optional distributed lock backend
      * @param messaging       optional messaging for lifecycle events
+     * @param signalNotifier  optional cross-instance signal notification
      * @param serializer      Jackson serializer for payloads
      * @param serviceName     the name of the owning service
      */
@@ -96,16 +99,18 @@ public final class WorkflowExecutor {
             WorkflowStore store,
             @Nullable DistributedLock distributedLock,
             @Nullable WorkflowMessaging messaging,
+            @Nullable SignalNotifier signalNotifier,
             PayloadSerializer serializer,
             String serviceName
     ) {
         this.store = store;
         this.distributedLock = distributedLock;
         this.messaging = messaging;
+        this.signalNotifier = signalNotifier;
         this.serializer = serializer;
         this.serviceName = serviceName;
         this.parkingLot = new ParkingLot();
-        this.signalManager = new SignalManager(store, messaging, serializer, parkingLot);
+        this.signalManager = new SignalManager(store, messaging, signalNotifier, serializer, parkingLot);
         this.sagaManager = new SagaManager(store, messaging, serializer, serviceName);
         this.queryRegistry = new QueryRegistry();
         this.runningWorkflows = new ConcurrentHashMap<>();

@@ -5,6 +5,7 @@ import io.maestro.core.engine.PayloadSerializer;
 import io.maestro.core.engine.WorkflowExecutor;
 import io.maestro.core.retry.RetryExecutor;
 import io.maestro.core.spi.DistributedLock;
+import io.maestro.core.spi.SignalNotifier;
 import io.maestro.core.spi.WorkflowMessaging;
 import io.maestro.core.spi.WorkflowStore;
 import io.maestro.spring.client.MaestroClient;
@@ -64,6 +65,7 @@ public class MaestroAutoConfiguration {
             WorkflowStore store,
             @Nullable DistributedLock distributedLock,
             @Nullable WorkflowMessaging messaging,
+            @Nullable SignalNotifier signalNotifier,
             PayloadSerializer serializer,
             MaestroProperties properties
     ) {
@@ -73,7 +75,7 @@ public class MaestroAutoConfiguration {
                     "maestro.service-name must be set. Configure it in application.yml or application.properties.");
         }
         return new WorkflowExecutor(
-                store, distributedLock, messaging, serializer, serviceName
+                store, distributedLock, messaging, signalNotifier, serializer, serviceName
         );
     }
 

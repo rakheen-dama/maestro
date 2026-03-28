@@ -59,7 +59,7 @@ class SignalManagerTest {
         messaging = new RecordingMessaging();
         serializer = new PayloadSerializer(new ObjectMapper());
         parkingLot = new ParkingLot();
-        signalManager = new SignalManager(store, messaging, serializer, parkingLot);
+        signalManager = new SignalManager(store, messaging, null, serializer, parkingLot);
     }
 
     // ── deliverSignal ──────────────────────────────────────────────────

@@ -54,7 +54,7 @@ class TimerPollerTest {
     void setUp() {
         store = new InMemoryWorkflowStore();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = new WorkflowExecutor(store, null, null, serializer, "test-service");
+        executor = new WorkflowExecutor(store, null, null, null, serializer, "test-service");
     }
 
     @AfterEach

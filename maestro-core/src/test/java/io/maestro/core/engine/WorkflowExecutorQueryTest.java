@@ -53,7 +53,7 @@ class WorkflowExecutorQueryTest {
         store = new InMemoryWorkflowStore();
         var serializer = new PayloadSerializer(new ObjectMapper());
         // null = no distributed lock provider needed for single-node tests
-        executor = new WorkflowExecutor(store, null, new NoOpMessaging(), serializer, "test-service");
+        executor = new WorkflowExecutor(store, null, new NoOpMessaging(), null, serializer, "test-service");
     }
 
     @AfterEach

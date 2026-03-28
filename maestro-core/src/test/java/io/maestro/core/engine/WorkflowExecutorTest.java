@@ -60,7 +60,7 @@ class WorkflowExecutorTest {
         store = new InMemoryWorkflowStore();
         messaging = new RecordingMessaging();
         serializer = new PayloadSerializer(new ObjectMapper());
-        executor = new WorkflowExecutor(store, null, messaging, serializer, "test-service");
+        executor = new WorkflowExecutor(store, null, messaging, null, serializer, "test-service");
     }
 
     @AfterEach

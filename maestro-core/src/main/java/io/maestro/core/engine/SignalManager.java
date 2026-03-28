@@ -7,6 +7,7 @@ import io.maestro.core.model.WorkflowEvent;
 import io.maestro.core.model.WorkflowSignal;
 import io.maestro.core.model.WorkflowStatus;
 import io.maestro.core.spi.LifecycleEventType;
+import io.maestro.core.spi.SignalNotifier;
 import io.maestro.core.spi.WorkflowLifecycleEvent;
 import io.maestro.core.spi.WorkflowMessaging;
 import io.maestro.core.spi.WorkflowStore;
@@ -64,25 +65,29 @@ final class SignalManager {
 
     private final WorkflowStore store;
     private final @Nullable WorkflowMessaging messaging;
+    private final @Nullable SignalNotifier signalNotifier;
     private final PayloadSerializer serializer;
     private final ParkingLot parkingLot;
 
     /**
      * Creates a new signal manager.
      *
-     * @param store      workflow store for signal persistence and event memoization
-     * @param messaging  optional messaging for lifecycle event publishing
-     * @param serializer Jackson serializer for signal payloads
-     * @param parkingLot virtual thread parking mechanism for signal await
+     * @param store          workflow store for signal persistence and event memoization
+     * @param messaging      optional messaging for lifecycle event publishing
+     * @param signalNotifier optional cross-instance signal notification (e.g., Valkey pub/sub)
+     * @param serializer     Jackson serializer for signal payloads
+     * @param parkingLot     virtual thread parking mechanism for signal await
      */
     SignalManager(
             WorkflowStore store,
             @Nullable WorkflowMessaging messaging,
+            @Nullable SignalNotifier signalNotifier,
             PayloadSerializer serializer,
             ParkingLot parkingLot
     ) {
         this.store = store;
         this.messaging = messaging;
+        this.signalNotifier = signalNotifier;
         this.serializer = serializer;
         this.parkingLot = parkingLot;
     }
@@ -126,9 +131,19 @@ final class SignalManager {
         );
         store.saveSignal(signal);
 
-        // Unpark if waiting
+        // Unpark if waiting locally
         var parkKey = workflowId + ":signal:" + signalName;
         parkingLot.unpark(parkKey, signalPayload);
+
+        // Notify other instances (best-effort)
+        if (signalNotifier != null) {
+            try {
+                signalNotifier.publish(workflowId, signalName);
+            } catch (Exception e) {
+                logger.warn("Failed to publish signal notification for workflow '{}': {}",
+                        workflowId, e.getMessage());
+            }
+        }
 
         logger.debug("Delivered signal '{}' to workflow '{}'", signalName, workflowId);
     }
