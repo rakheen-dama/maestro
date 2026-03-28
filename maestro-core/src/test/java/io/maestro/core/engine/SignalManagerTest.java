@@ -13,6 +13,7 @@ import io.maestro.core.model.WorkflowTimer;
 import io.maestro.core.spi.SignalMessage;
 import io.maestro.core.spi.TaskMessage;
 import io.maestro.core.spi.WorkflowLifecycleEvent;
+import io.maestro.core.spi.SignalNotifier;
 import io.maestro.core.spi.WorkflowMessaging;
 import io.maestro.core.spi.WorkflowStore;
 import org.junit.jupiter.api.BeforeEach;
@@ -109,6 +110,45 @@ class SignalManagerTest {
         signalManager.deliverSignal("order-1", "payment.result", "paid");
 
         assertTrue(unparkedLatch.await(5, TimeUnit.SECONDS), "Parked thread should be unparked");
+    }
+
+    // ── deliverSignal — cross-instance notification ────────────────────
+
+    @Test
+    @DisplayName("deliverSignal invokes SignalNotifier.publish when notifier is present")
+    void deliverSignalNotifiesCrossInstance() {
+        var notifier = new RecordingNotifier();
+        var sm = new SignalManager(store, messaging, notifier, serializer, parkingLot);
+
+        var instanceId = UUID.randomUUID();
+        createInstance("order-1", instanceId);
+
+        sm.deliverSignal("order-1", "payment.result", "paid");
+
+        // Signal still persisted
+        var signals = store.getUnconsumedSignals("order-1", "payment.result");
+        assertEquals(1, signals.size());
+
+        // Notifier was called
+        assertEquals(1, notifier.published.size());
+        assertEquals("order-1:payment.result", notifier.published.getFirst());
+    }
+
+    @Test
+    @DisplayName("deliverSignal succeeds even if SignalNotifier.publish throws")
+    void deliverSignalSurvivesNotifierFailure() {
+        var failingNotifier = new FailingNotifier();
+        var sm = new SignalManager(store, messaging, failingNotifier, serializer, parkingLot);
+
+        var instanceId = UUID.randomUUID();
+        createInstance("order-1", instanceId);
+
+        // Should not throw — notifier failure is swallowed
+        sm.deliverSignal("order-1", "payment.result", "paid");
+
+        // Signal should still be persisted
+        var signals = store.getUnconsumedSignals("order-1", "payment.result");
+        assertEquals(1, signals.size(), "Signal must persist even when notifier fails");
     }
 
     // ── awaitSignal — replay path ──────────────────────────────────────
@@ -471,6 +511,38 @@ class SignalManagerTest {
                 }
             }
         }
+    }
+
+    // ── Recording SignalNotifier ──────────────────────────────────────
+
+    private static class RecordingNotifier implements SignalNotifier {
+
+        final CopyOnWriteArrayList<String> published = new CopyOnWriteArrayList<>();
+
+        @Override
+        public void publish(String workflowId, String signalName) {
+            published.add(workflowId + ":" + signalName);
+        }
+
+        @Override
+        public void subscribe(String workflowId, SignalCallback callback) {}
+
+        @Override
+        public void unsubscribe(String workflowId) {}
+    }
+
+    private static class FailingNotifier implements SignalNotifier {
+
+        @Override
+        public void publish(String workflowId, String signalName) {
+            throw new RuntimeException("Simulated notifier failure");
+        }
+
+        @Override
+        public void subscribe(String workflowId, SignalCallback callback) {}
+
+        @Override
+        public void unsubscribe(String workflowId) {}
     }
 
     // ── Recording WorkflowMessaging ────────────────────────────────────

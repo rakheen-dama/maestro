@@ -6,6 +6,7 @@ import io.lettuce.core.api.StatefulRedisConnection;
 import io.maestro.core.spi.DistributedLock;
 import io.maestro.core.spi.SignalNotifier;
 import io.maestro.lock.valkey.ValkeyDistributedLock;
+import io.maestro.lock.valkey.ValkeyLockConfig;
 import io.maestro.lock.valkey.ValkeySignalNotifier;
 import io.maestro.spring.config.MaestroAutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -49,7 +50,7 @@ import org.springframework.core.env.Environment;
 @ConditionalOnProperty(prefix = "maestro.lock", name = "type", havingValue = "valkey", matchIfMissing = true)
 public class ValkeyLockAutoConfiguration {
 
-    private static final String DEFAULT_REDIS_URI = "redis://localhost:6379";
+    // Intentionally re-use ValkeyLockConfig constant to avoid duplicating defaults
 
     @Bean(destroyMethod = "shutdown")
     @ConditionalOnMissingBean(name = "maestroRedisClient")
@@ -92,6 +93,6 @@ public class ValkeyLockAutoConfiguration {
             return custom;
         }
         // 3. Default
-        return DEFAULT_REDIS_URI;
+        return ValkeyLockConfig.DEFAULT_REDIS_URI;
     }
 }

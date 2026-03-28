@@ -18,10 +18,13 @@ public record ValkeyLockConfig(
         Duration defaultTtl
 ) {
 
+    /** Default Redis/Valkey URI when no configuration is provided. */
+    public static final String DEFAULT_REDIS_URI = "redis://localhost:6379";
+
     /**
      * Creates a configuration with sensible defaults.
      */
     public static ValkeyLockConfig withDefaults() {
-        return new ValkeyLockConfig("redis://localhost:6379", "maestro:lock:", Duration.ofSeconds(30));
+        return new ValkeyLockConfig(DEFAULT_REDIS_URI, "maestro:lock:", Duration.ofSeconds(30));
     }
 }

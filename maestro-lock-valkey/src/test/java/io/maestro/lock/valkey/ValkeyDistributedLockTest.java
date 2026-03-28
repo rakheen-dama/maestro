@@ -87,26 +87,34 @@ class ValkeyDistributedLockTest extends ValkeyTestSupport {
         void concurrentAcquire() throws InterruptedException {
             var key = "test:lock:concurrent";
             var results = Collections.synchronizedList(new ArrayList<LockHandle>());
-            var latch = new CountDownLatch(10);
+            var ready = new CountDownLatch(10);
+            var start = new CountDownLatch(1);
+            var done = new CountDownLatch(10);
 
             for (int i = 0; i < 10; i++) {
                 Thread.ofVirtual().start(() -> {
                     try {
+                        ready.countDown();
+                        assertTrue(start.await(5, TimeUnit.SECONDS));
                         var handle = lock.tryAcquire(key, Duration.ofSeconds(10));
                         handle.ifPresent(results::add);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
                     } finally {
-                        latch.countDown();
+                        done.countDown();
                     }
                 });
             }
 
-            assertTrue(latch.await(5, TimeUnit.SECONDS));
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            start.countDown(); // release all threads at once
+            assertTrue(done.await(5, TimeUnit.SECONDS));
             assertEquals(1, results.size(), "Exactly one thread should acquire the lock");
         }
 
         @Test
-        @DisplayName("token contains instance identifier")
-        void tokenContainsInstanceId() {
+        @DisplayName("token has expected structure — instanceId:threadId:uuid")
+        void tokenHasExpectedStructure() {
             var handle = lock.tryAcquire("test:lock:1", Duration.ofSeconds(10));
 
             assertTrue(handle.isPresent());
@@ -114,6 +122,9 @@ class ValkeyDistributedLockTest extends ValkeyTestSupport {
             // Token format: {instanceId}:{threadId}:{uuid}
             var parts = token.split(":");
             assertTrue(parts.length >= 3, "Token should have at least 3 colon-separated parts");
+            assertFalse(parts[0].isBlank(), "Instance ID segment should not be blank");
+            assertFalse(parts[1].isBlank(), "Thread ID segment should not be blank");
+            assertFalse(parts[2].isBlank(), "UUID segment should not be blank");
         }
     }
 
@@ -268,22 +279,30 @@ class ValkeyDistributedLockTest extends ValkeyTestSupport {
         void concurrentElection() throws InterruptedException {
             var key = "test:leader:concurrent";
             var winners = Collections.synchronizedList(new ArrayList<String>());
-            var latch = new CountDownLatch(10);
+            var ready = new CountDownLatch(10);
+            var start = new CountDownLatch(1);
+            var done = new CountDownLatch(10);
 
             for (int i = 0; i < 10; i++) {
                 var candidateId = "candidate-" + i;
                 Thread.ofVirtual().start(() -> {
                     try {
+                        ready.countDown();
+                        assertTrue(start.await(5, TimeUnit.SECONDS));
                         if (lock.trySetLeader(key, candidateId, Duration.ofSeconds(10))) {
                             winners.add(candidateId);
                         }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
                     } finally {
-                        latch.countDown();
+                        done.countDown();
                     }
                 });
             }
 
-            assertTrue(latch.await(5, TimeUnit.SECONDS));
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            start.countDown(); // release all threads at once
+            assertTrue(done.await(5, TimeUnit.SECONDS));
             assertEquals(1, winners.size(), "Exactly one candidate should win the election");
         }
     }
