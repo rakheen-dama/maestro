@@ -151,7 +151,7 @@ Services must include the `maestro-admin-client` dependency to publish lifecycle
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("io.maestro:maestro-admin-client")
+    implementation("io.b2mash.maestro:maestro-admin-client")
 }
 ```
 

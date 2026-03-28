@@ -46,12 +46,12 @@ Maestro is an open-source durable workflow engine delivered as a Spring Boot Sta
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("io.maestro:maestro-spring-boot-starter")
-    implementation("io.maestro:maestro-store-postgres")
-    implementation("io.maestro:maestro-messaging-kafka")
-    implementation("io.maestro:maestro-lock-valkey")
+    implementation("io.b2mash.maestro:maestro-spring-boot-starter")
+    implementation("io.b2mash.maestro:maestro-store-postgres")
+    implementation("io.b2mash.maestro:maestro-messaging-kafka")
+    implementation("io.b2mash.maestro:maestro-lock-valkey")
 
-    testImplementation("io.maestro:maestro-test")
+    testImplementation("io.b2mash.maestro:maestro-test")
 }
 ```
 

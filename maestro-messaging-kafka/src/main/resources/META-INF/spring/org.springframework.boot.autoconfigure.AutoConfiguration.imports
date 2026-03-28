@@ -1,1 +1,1 @@
-io.maestro.messaging.kafka.config.KafkaMessagingAutoConfiguration
+io.b2mash.maestro.messaging.kafka.config.KafkaMessagingAutoConfiguration

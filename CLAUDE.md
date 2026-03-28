@@ -114,40 +114,40 @@ public interface DistributedLock {
 ## Package Naming
 
 ```
-io.maestro.core                     — Core engine, domain, SPIs
-io.maestro.core.annotation          — @DurableWorkflow, @Activity, etc.
-io.maestro.core.engine               — WorkflowExecutor, ActivityProxy, MemoizationEngine
-io.maestro.core.model                — WorkflowInstance, WorkflowEvent, WorkflowSignal, WorkflowTimer
-io.maestro.core.saga                 — SagaManager, CompensationStack
-io.maestro.core.context              — WorkflowContext (sleep, awaitSignal, parallel, etc.)
-io.maestro.core.spi                  — WorkflowStore, WorkflowMessaging, DistributedLock
-io.maestro.core.retry                — RetryPolicy, RetryExecutor
-io.maestro.core.exception            — MaestroException hierarchy
+io.b2mash.maestro.core                     — Core engine, domain, SPIs
+io.b2mash.maestro.core.annotation          — @DurableWorkflow, @Activity, etc.
+io.b2mash.maestro.core.engine               — WorkflowExecutor, ActivityProxy, MemoizationEngine
+io.b2mash.maestro.core.model                — WorkflowInstance, WorkflowEvent, WorkflowSignal, WorkflowTimer
+io.b2mash.maestro.core.saga                 — SagaManager, CompensationStack
+io.b2mash.maestro.core.context              — WorkflowContext (sleep, awaitSignal, parallel, etc.)
+io.b2mash.maestro.core.spi                  — WorkflowStore, WorkflowMessaging, DistributedLock
+io.b2mash.maestro.core.retry                — RetryPolicy, RetryExecutor
+io.b2mash.maestro.core.exception            — MaestroException hierarchy
 
-io.maestro.spring                    — Spring Boot auto-configuration
-io.maestro.spring.annotation         — @MaestroSignalListener
-io.maestro.spring.config              — MaestroAutoConfiguration, MaestroProperties
-io.maestro.spring.proxy               — ActivityStubBeanPostProcessor
-io.maestro.spring.health              — MaestroHealthIndicator
-io.maestro.spring.client              — MaestroClient
+io.b2mash.maestro.spring                    — Spring Boot auto-configuration
+io.b2mash.maestro.spring.annotation         — @MaestroSignalListener
+io.b2mash.maestro.spring.config              — MaestroAutoConfiguration, MaestroProperties
+io.b2mash.maestro.spring.proxy               — ActivityStubBeanPostProcessor
+io.b2mash.maestro.spring.health              — MaestroHealthIndicator
+io.b2mash.maestro.spring.client              — MaestroClient
 
-io.maestro.store.jdbc                — Abstract JDBC WorkflowStore
-io.maestro.store.postgres             — Postgres impl + Flyway migrations
+io.b2mash.maestro.store.jdbc                — Abstract JDBC WorkflowStore
+io.b2mash.maestro.store.postgres             — Postgres impl + Flyway migrations
 
-io.maestro.messaging.kafka            — Kafka WorkflowMessaging
-io.maestro.messaging.kafka.listener   — @MaestroSignalListener processing
+io.b2mash.maestro.messaging.kafka            — Kafka WorkflowMessaging
+io.b2mash.maestro.messaging.kafka.listener   — @MaestroSignalListener processing
 
-io.maestro.lock.valkey                — Valkey DistributedLock
+io.b2mash.maestro.lock.valkey                — Valkey DistributedLock
 
-io.maestro.admin                      — Dashboard app
-io.maestro.admin.client               — Event publisher
+io.b2mash.maestro.admin                      — Dashboard app
+io.b2mash.maestro.admin.client               — Event publisher
 
-io.maestro.test                       — TestWorkflowEnvironment, in-memory SPIs
+io.b2mash.maestro.test                       — TestWorkflowEnvironment, in-memory SPIs
 
-io.maestro.samples.order              — Sample order service (e-commerce demo)
-io.maestro.samples.payment            — Sample payment gateway (e-commerce demo)
-io.maestro.samples.stokvel            — Sample stokvel onboarding service
-io.maestro.samples.corebanking        — Sample core banking proxy
+io.b2mash.maestro.samples.order              — Sample order service (e-commerce demo)
+io.b2mash.maestro.samples.payment            — Sample payment gateway (e-commerce demo)
+io.b2mash.maestro.samples.stokvel            — Sample stokvel onboarding service
+io.b2mash.maestro.samples.corebanking        — Sample core banking proxy
 ```
 
 ## Database Tables
