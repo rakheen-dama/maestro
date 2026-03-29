@@ -237,60 +237,48 @@ running this demo with Docker Compose.
 
 ---
 
-## Example: Stokvel Onboarding (Parallel + Quorum)
+## Example: E-Commerce Order Fulfilment (Parallel + Signals)
 
-The stokvel onboarding example demonstrates advanced cross-service patterns that
-go beyond simple request-response:
+The order and payment sample services demonstrate cross-service patterns:
 
 **Two services:**
-- **Stokvel Service** -- Runs the onboarding workflow that coordinates
-  signatory collection, agreement generation, and account activation.
-- **Core-Banking Proxy** -- Runs the account provisioning workflow with
-  durable retries against an unreliable core banking system, plus saga
-  compensation if the account needs to be closed.
+- **Order Service** -- Runs the order fulfilment workflow that coordinates
+  inventory reservation, payment processing, shipping, and notifications.
+- **Payment Gateway** -- Runs the payment processing workflow with durable
+  retries against a payment provider, plus saga compensation if the charge
+  needs to be reversed.
 
-**Advanced patterns demonstrated:**
+**Key patterns demonstrated:**
 
-### Parallel branches with mixed timescales
+### Parallel branches
 
-The onboarding workflow waits for two independent concerns simultaneously --
-one that takes days (signatory agreements from humans) and one that takes
-minutes (account provisioning from a system):
+The order workflow runs independent activities concurrently:
 
 ```java
 var results = workflow.parallel(List.of(
-    // Branch A: Collect 3 signatory agreements (days/weeks)
-    () -> workflow.collectSignals(
-        "signatory.agreed", SignatoryAgreement.class, 3, Duration.ofDays(30)),
-    // Branch B: Await account provisioning (minutes/hours)
-    () -> workflow.awaitSignal(
-        "account.result", AccountResult.class, Duration.ofDays(7))
+    // Branch A: Reserve inventory (fast)
+    () -> inventoryActivities.reserveItems(order.items()),
+    // Branch B: Request payment and await result (async)
+    () -> {
+        messagingActivities.publishPaymentRequest(paymentRequest);
+        return workflow.awaitSignal(
+            "payment.result", PaymentResult.class, Duration.ofMinutes(30));
+    }
 ));
 ```
 
-Both branches run concurrently on virtual threads. The workflow does not
-proceed until both complete (or time out). Sequence numbers use compound keys
-(`5.0`, `5.1`) so that each branch's memoization is independent.
-
-### Quorum signal collection
-
-`workflow.collectSignals("signatory.agreed", ..., 3, Duration.ofDays(30))`
-waits for exactly 3 signals with the name `"signatory.agreed"`. Signals arrive
-asynchronously over days or weeks as individual signatories interact with a
-mobile app. Each signal is persisted immediately. If the service restarts,
-previously collected signals are replayed from Postgres -- no signal is ever
-lost.
+Both branches run concurrently on virtual threads. Sequence numbers use
+compound keys (`5.0`, `5.1`) so each branch's memoization is independent.
 
 ### Cross-service signals with saga compensation
 
-The Core-Banking Proxy uses `@Saga` annotation on its workflow method. If
-account creation succeeds but a later step fails, the `@Compensate("closeAccount")`
-annotation on the `createAccount` activity ensures the account is cleaned up.
-The compensation result is published back to the Stokvel Service via Kafka so
-the onboarding workflow can handle the failure gracefully.
+The Payment Gateway uses `@Saga` annotation on its workflow method. If payment
+capture succeeds but a later step fails, the `@Compensate("reverseCharge")`
+annotation ensures the charge is reversed. The result is published back to the
+Order Service via Kafka so the fulfilment workflow can handle the outcome.
 
-See the full [Stokvel Example](example-stokvel.md) for the complete workflow
-code, signal routing, configuration, and tests.
+See the [sample services](../maestro-samples/) for the complete workflow code,
+signal routing, and Docker Compose setup.
 
 ---
 
@@ -448,7 +436,7 @@ re-execution produces the same outcome -- use idempotency keys with external
 systems, check-before-write patterns, or database upserts.
 
 **Use meaningful workflow IDs for routing.** Workflow IDs like
-`"order-" + orderId` or `"stokvel-" + stokvelId` make signal routing
+`"order-" + orderId` or `"payment-" + paymentId` make signal routing
 straightforward. The `@MaestroSignalListener` can derive the target workflow
 ID directly from the domain event without needing a lookup table.
 
@@ -494,4 +482,4 @@ asynchronous flow in milliseconds.
 - [Self-Recovery](self-recovery.md) -- How Maestro recovers from crashes without losing state
 - [Configuration](configuration.md) -- Full reference for all `maestro.*` properties
 - [Testing](testing.md) -- Unit testing workflows with TestWorkflowEnvironment
-- [Stokvel Example](example-stokvel.md) -- Full multi-service example with parallel branches, quorum, and saga
+- [Sample Services](../maestro-samples/) -- E-commerce demo with order fulfilment and payment processing

@@ -11,7 +11,6 @@ Maestro is an **open-source, embeddable durable workflow engine** delivered as a
 Read these before making architectural decisions:
 - `docs/maestro-prd.md` — Product requirements, API design, e-commerce example
 - `docs/maestro-architecture.md` — System architecture, diagrams, failure modes
-- `docs/example-stokvel.md` — Real-world multi-service stokvel onboarding example
 
 ## Core Design: Hybrid Memoization
 
@@ -65,8 +64,8 @@ maestro/
 ├── maestro-admin                   ← Standalone dashboard (Thymeleaf + HTMX, own Postgres).
 ├── maestro-test                    ← In-memory SPIs, controllable clock, TestWorkflowEnvironment.
 ├── maestro-samples/
-│   ├── sample-stokvel-service      ← Stokvel onboarding (parallel branches, signal collection)
-│   └── sample-core-banking-proxy   ← Core banking proxy with durable retries & saga
+│   ├── sample-order-service        ← Order fulfilment workflow (e-commerce demo)
+│   └── sample-payment-gateway      ← Payment processing with durable retries & saga
 └── docs/
 ```
 
@@ -146,8 +145,6 @@ io.b2mash.maestro.test                       — TestWorkflowEnvironment, in-mem
 
 io.b2mash.maestro.samples.order              — Sample order service (e-commerce demo)
 io.b2mash.maestro.samples.payment            — Sample payment gateway (e-commerce demo)
-io.b2mash.maestro.samples.stokvel            — Sample stokvel onboarding service
-io.b2mash.maestro.samples.corebanking        — Sample core banking proxy
 ```
 
 ## Database Tables
@@ -215,7 +212,7 @@ All under `maestro.*`. Topics are pre-created, declared in config.
 ./gradlew build
 ./gradlew :maestro-core:test
 ./gradlew :maestro-store-postgres:integrationTest
-./gradlew :maestro-samples:sample-stokvel-service:bootRun
+./gradlew :maestro-samples:sample-order-service:bootRun
 ```
 
 ## What NOT To Do

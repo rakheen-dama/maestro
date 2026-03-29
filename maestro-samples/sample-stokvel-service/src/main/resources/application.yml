@@ -1,6 +1,0 @@
-spring:
-  application:
-    name: sample-stokvel-service
-
-maestro:
-  service-name: stokvel-service

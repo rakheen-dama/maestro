@@ -269,7 +269,6 @@ See the [Samples README](maestro-samples/README.md) for crash recovery simulatio
 | **[Admin Dashboard](docs/admin.md)** | Setup and feature guide for the monitoring UI |
 | **[Architecture](docs/maestro-architecture.md)** | System design, diagrams, failure modes |
 | **[Product Requirements](docs/maestro-prd.md)** | Full PRD with API design and use cases |
-| **[Stokvel Example](docs/example-stokvel.md)** | Real-world multi-service workflow with parallel branches |
 
 ---
 
