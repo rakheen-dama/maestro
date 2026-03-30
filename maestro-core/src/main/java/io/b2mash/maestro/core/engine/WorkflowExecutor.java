@@ -488,12 +488,13 @@ public final class WorkflowExecutor {
         var thread = Thread.ofVirtual()
                 .name("maestro-workflow-%s-%s".formatted(instance.workflowType(), instance.workflowId()))
                 .unstarted(() -> {
+                    WorkflowContext.bind(ctx);
                     WorkflowMDC.populate(ctx);
                     try {
-                        ScopedValue.where(WorkflowContext.scopedValue(), ctx)
-                                .run(() -> executeWorkflow(ctx, instance, workflowImpl, workflowMethod,
-                                        inputPayload, compensationStack, parallelCompensation));
+                        executeWorkflow(ctx, instance, workflowImpl, workflowMethod,
+                                inputPayload, compensationStack, parallelCompensation);
                     } finally {
+                        WorkflowContext.clear();
                         WorkflowMDC.clear();
                     }
                 });

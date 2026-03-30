@@ -1,9 +1,9 @@
 package io.b2mash.maestro.core.context;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import java.lang.ScopedValue;
 import java.time.Duration;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -20,12 +20,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Unit tests for {@link WorkflowContext}.
  *
- * <p>Tests cover the ScopedValue lifecycle, sequence numbering,
+ * <p>Tests cover the ThreadLocal lifecycle, sequence numbering,
  * replay state management, identity accessors, and thread isolation.
  */
 class WorkflowContextTest {
 
     // ── Helpers ──────────────────────────────────────────────────────────
+
+    @AfterEach
+    void cleanup() {
+        WorkflowContext.clear();
+    }
 
     private WorkflowContext createContext(int initialSequence, boolean replaying) {
         return new WorkflowContext(
@@ -43,17 +48,20 @@ class WorkflowContextTest {
     // ── Tests ────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("ScopedValue lifecycle - context is available inside scope, gone outside")
-    void scopedValueLifecycle() {
+    @DisplayName("ThreadLocal lifecycle - context is available after bind, gone after clear")
+    void threadLocalLifecycle() {
         var ctx = createContext(0, true);
 
-        ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() -> {
+        WorkflowContext.bind(ctx);
+        try {
             var retrieved = WorkflowContext.current();
-            assertEquals(ctx, retrieved, "current() should return the bound context within scope");
-        });
+            assertEquals(ctx, retrieved, "current() should return the bound context");
+        } finally {
+            WorkflowContext.clear();
+        }
 
         assertThrows(IllegalStateException.class, WorkflowContext::current,
-                "current() should throw outside of ScopedValue scope");
+                "current() should throw after clear()");
     }
 
     @Test
@@ -138,11 +146,12 @@ class WorkflowContextTest {
     }
 
     @Test
-    @DisplayName("Thread isolation - context bound via ScopedValue is not visible on another thread")
+    @DisplayName("Thread isolation - context bound via ThreadLocal is not visible on another thread")
     void threadIsolation() throws Exception {
         var ctx = createContext(0, true);
 
-        ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() -> {
+        WorkflowContext.bind(ctx);
+        try {
             var otherThreadSawContext = new AtomicBoolean(true);
             var otherThreadException = new AtomicReference<Throwable>();
             var latch = new CountDownLatch(1);
@@ -153,7 +162,7 @@ class WorkflowContextTest {
                     // If we reach here, the context leaked across threads
                     otherThreadSawContext.set(true);
                 } catch (IllegalStateException e) {
-                    // Expected - ScopedValues do not inherit to child threads
+                    // Expected - ThreadLocals do not inherit to child threads
                     otherThreadSawContext.set(false);
                 } catch (Throwable t) {
                     otherThreadException.set(t);
@@ -162,24 +171,21 @@ class WorkflowContextTest {
                 }
             });
 
-            try {
-                assertTrue(latch.await(5, TimeUnit.SECONDS), "Other thread should complete within timeout");
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new AssertionError("Interrupted while waiting for child thread", e);
-            }
+            assertTrue(latch.await(5, TimeUnit.SECONDS), "Other thread should complete within timeout");
 
             if (otherThreadException.get() != null) {
                 throw new AssertionError("Other thread threw unexpected exception", otherThreadException.get());
             }
 
             assertFalse(otherThreadSawContext.get(),
-                    "Context bound via ScopedValue should NOT be visible on another thread");
+                    "Context bound via ThreadLocal should NOT be visible on another thread");
 
-            // Verify the context is still accessible in this scope
+            // Verify the context is still accessible on this thread
             assertEquals(ctx, WorkflowContext.current(),
-                    "Context should still be accessible in the original scope");
-        });
+                    "Context should still be accessible on the binding thread");
+        } finally {
+            WorkflowContext.clear();
+        }
     }
 
     // ── Workflow API delegation tests ───────────────────────────────────
@@ -189,10 +195,13 @@ class WorkflowContextTest {
     void workflowAliasForCurrent() {
         var ctx = createContext(0, false);
 
-        ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() -> {
+        WorkflowContext.bind(ctx);
+        try {
             assertEquals(ctx, WorkflowContext.workflow(),
                     "workflow() should return the same context as current()");
-        });
+        } finally {
+            WorkflowContext.clear();
+        }
     }
 
     @Test
@@ -200,7 +209,8 @@ class WorkflowContextTest {
     void apiMethodsThrowWithoutOperations() {
         var ctx = createContext(0, false);
 
-        ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() -> {
+        WorkflowContext.bind(ctx);
+        try {
             assertThrows(IllegalStateException.class, () -> ctx.sleep(Duration.ofSeconds(1)),
                     "sleep() should throw when operations not configured");
             assertThrows(IllegalStateException.class, () -> ctx.awaitSignal("foo", String.class, Duration.ofSeconds(1)),
@@ -211,7 +221,9 @@ class WorkflowContextTest {
                     "randomUUID() should throw when operations not configured");
             assertThrows(IllegalStateException.class, () -> ctx.addCompensation(() -> {}),
                     "addCompensation() should throw when operations not configured");
-        });
+        } finally {
+            WorkflowContext.clear();
+        }
     }
 
     @Test
