@@ -18,7 +18,7 @@ import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
 import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.MessageListener;
-import tools.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -44,7 +44,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * <h2>Per-Message Flow</h2>
  * <pre>
  * Kafka message (byte[])
- *   → deserialize to method parameter type (Jackson 3)
+ *   → deserialize to method parameter type (Jackson)
  *   → invoke annotated method
  *   → extract {@link SignalRouting} (workflowId + payload)
  *   → call {@link WorkflowExecutor#deliverSignal}

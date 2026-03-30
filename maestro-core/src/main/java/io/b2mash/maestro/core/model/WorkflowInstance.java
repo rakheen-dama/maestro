@@ -1,9 +1,9 @@
 package io.b2mash.maestro.core.model;
 
 import org.jspecify.annotations.Nullable;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.annotation.JsonDeserialize;
-import tools.jackson.databind.annotation.JsonPOJOBuilder;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
 
 import java.time.Instant;
 import java.util.Objects;

@@ -12,7 +12,7 @@ import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
 import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.MessageListener;
 import org.springframework.stereotype.Component;
-import tools.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -54,7 +54,7 @@ public class AdminEventConsumer implements SmartLifecycle {
      * Creates a new admin event consumer.
      *
      * @param consumerFactory Spring Boot auto-configured consumer factory
-     * @param objectMapper    Jackson 3 ObjectMapper for deserialization
+     * @param objectMapper    Jackson ObjectMapper for deserialization
      * @param adminProperties admin configuration properties
      * @param eventProjector  projector that persists events to the admin database
      */

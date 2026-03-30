@@ -1,6 +1,6 @@
 package io.b2mash.maestro.store.jdbc;
 
-import tools.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.Objects;
 
@@ -11,7 +11,7 @@ import java.util.Objects;
  * the JDBC store. Immutable after construction.
  *
  * @param tablePrefix  prefix for all Maestro database tables (e.g., {@code "maestro_"})
- * @param objectMapper Jackson 3 {@link ObjectMapper} for JSON serialization
+ * @param objectMapper Jackson {@link ObjectMapper} for JSON serialization
  */
 public record JdbcStoreConfiguration(
         String tablePrefix,
@@ -29,7 +29,7 @@ public record JdbcStoreConfiguration(
     /**
      * Creates a configuration with the default {@code "maestro_"} table prefix.
      *
-     * @param objectMapper Jackson 3 {@link ObjectMapper}
+     * @param objectMapper Jackson {@link ObjectMapper}
      * @return a new configuration with default prefix
      */
     public static JdbcStoreConfiguration withDefaults(ObjectMapper objectMapper) {

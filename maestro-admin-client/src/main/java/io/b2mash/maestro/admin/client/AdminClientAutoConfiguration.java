@@ -7,7 +7,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.kafka.core.KafkaTemplate;
-import tools.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
  * Auto-configuration for the Maestro Admin Client lifecycle event publisher.
@@ -35,7 +35,7 @@ public class AdminClientAutoConfiguration {
      * Creates the {@link AdminEventPublisher} bean if one does not already exist.
      *
      * @param kafkaTemplate the Kafka template for publishing serialized events
-     * @param objectMapper  Jackson 3 ObjectMapper for event serialization
+     * @param objectMapper  Jackson ObjectMapper for event serialization
      * @param properties    admin client configuration properties
      * @return a configured {@link AdminEventPublisher}
      */

@@ -7,8 +7,8 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.servlet.mvc.support.RedirectAttributes;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
  * Controller for admin actions that mutate workflow state.
@@ -32,7 +32,7 @@ public class AdminActionController {
      * Creates a new admin action controller.
      *
      * @param commandService service for sending admin commands via Kafka
-     * @param objectMapper   Jackson 3 ObjectMapper for parsing signal payloads
+     * @param objectMapper   Jackson ObjectMapper for parsing signal payloads
      */
     public AdminActionController(AdminCommandService commandService, ObjectMapper objectMapper) {
         this.commandService = commandService;

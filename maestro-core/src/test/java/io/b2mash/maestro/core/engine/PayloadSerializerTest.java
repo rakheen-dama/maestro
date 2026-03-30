@@ -3,9 +3,9 @@ package io.b2mash.maestro.core.engine;
 import io.b2mash.maestro.core.exception.SerializationException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.ObjectMapper;
-import tools.jackson.databind.node.NullNode;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.NullNode;
 
 import java.lang.reflect.Type;
 import java.util.List;
@@ -20,7 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Unit tests for {@link PayloadSerializer}.
  *
- * <p>Uses Jackson 3 ({@code tools.jackson.databind.ObjectMapper}) with a
+ * <p>Uses Jackson ({@code com.fasterxml.jackson.databind.ObjectMapper}) with a
  * no-arg constructor. No mocking frameworks — pure JUnit 5 assertions.
  */
 class PayloadSerializerTest {
@@ -45,7 +45,7 @@ class PayloadSerializerTest {
         assertNotNull(node);
         assertTrue(node.has("name"), "JsonNode should have 'name' field");
         assertTrue(node.has("value"), "JsonNode should have 'value' field");
-        assertEquals("workflow-1", node.get("name").stringValue());
+        assertEquals("workflow-1", node.get("name").textValue());
         assertEquals(42, node.get("value").asInt());
     }
 
