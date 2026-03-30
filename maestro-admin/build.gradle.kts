@@ -6,7 +6,7 @@ description = "Maestro Admin — Standalone workflow dashboard"
 
 dependencies {
     implementation(project(":maestro-admin-client"))
-    implementation(libs.spring.boot.starter.webmvc)
+    implementation(libs.spring.boot.starter.web)
     implementation(libs.spring.boot.starter.thymeleaf)
     implementation(libs.spring.boot.starter.jdbc)
     implementation(libs.spring.boot.starter.actuator)
