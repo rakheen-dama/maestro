@@ -1,8 +1,8 @@
 # Maestro
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Java](https://img.shields.io/badge/Java-25-orange.svg)](https://openjdk.org/projects/jdk/25/)
-[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.x-green.svg)](https://spring.io/projects/spring-boot)
+[![Java](https://img.shields.io/badge/Java-21-orange.svg)](https://openjdk.org/projects/jdk/21/)
+[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.5-green.svg)](https://spring.io/projects/spring-boot)
 
 **Embeddable durable workflow engine for Spring Boot.** Add a starter to your microservice and get Temporal-grade workflow durability using your existing Postgres, Kafka, and Valkey infrastructure.
 
@@ -276,13 +276,13 @@ See the [Samples README](maestro-samples/README.md) for crash recovery simulatio
 
 | Component | Technology |
 |---|---|
-| Language | Java 25 (virtual threads, scoped values) |
-| Framework | Spring Boot 4.x / Spring Framework 7 |
+| Language | Java 21 (virtual threads) |
+| Framework | Spring Boot 3.5 / Spring Framework 6 |
 | Build | Gradle Kotlin DSL (Gradle 9) |
 | Database | PostgreSQL 14+ |
 | Messaging | Apache Kafka via Spring Kafka 4.x |
 | Coordination | Valkey / Redis via Lettuce |
-| Serialization | Jackson 3 (`tools.jackson` packages) |
+| Serialization | Jackson 2.17 (`com.fasterxml.jackson` packages) |
 | Schema migration | Flyway 11.x |
 | Null safety | JSpecify (aligned with Spring 7) |
 | Admin UI | Thymeleaf + HTMX |
@@ -307,7 +307,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor guide.
 Contributions are welcome! Whether it's bug reports, feature requests, documentation improvements, or code -- we appreciate your help.
 
 Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on:
-- Code standards (Java 25 features, JSpecify, Jackson 3)
+- Code standards (Java 21 features, JSpecify, Jackson 2)
 - Architecture rules (`maestro-core` must never depend on Spring)
 - Pull request process
 - Testing requirements
