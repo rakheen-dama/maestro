@@ -4,6 +4,6 @@ reviews:
     base_branches:
       - "main"
       - "develop"
-      - "3.x"
+      - "version/.*"
       - "release/.*"
       - "feature/.*"
