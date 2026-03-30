@@ -4,7 +4,7 @@ plugins {
     id("io.spring.dependency-management")
 }
 
-val springBootBomVersion = "4.0.5"
+val springBootBomVersion = "3.5.0"
 
 dependencyManagement {
     imports {
