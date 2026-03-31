@@ -19,7 +19,7 @@ import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
-import tools.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.JsonNode;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
@@ -201,13 +201,13 @@ public final class ActivityInvocationHandler implements InvocationHandler {
 
         if (event.payload() != null) {
             if (event.payload().has("message")) {
-                var text = event.payload().get("message").stringValue();
+                var text = event.payload().get("message").textValue();
                 if (text != null && !text.isEmpty()) {
                     message = text;
                 }
             }
             if (event.payload().has("exceptionType")) {
-                exceptionType = event.payload().get("exceptionType").stringValue();
+                exceptionType = event.payload().get("exceptionType").textValue();
             }
         }
 

@@ -5,12 +5,12 @@ import org.jspecify.annotations.NullMarked;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
-import tools.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
  * Lightweight publisher for {@link WorkflowLifecycleEvent} records to a Kafka topic.
  *
- * <p>This class serializes lifecycle events using Jackson 3 and sends them to a
+ * <p>This class serializes lifecycle events using Jackson and sends them to a
  * configurable Kafka topic. Events are keyed by {@code workflowId} to guarantee
  * per-workflow ordering within a topic partition.
  *
@@ -38,7 +38,7 @@ public class AdminEventPublisher {
      * Creates a new lifecycle event publisher.
      *
      * @param kafkaTemplate the Kafka template for publishing serialized events
-     * @param objectMapper  Jackson 3 ObjectMapper for serialization
+     * @param objectMapper  Jackson ObjectMapper for serialization
      * @param topic         the Kafka topic to publish events to
      */
     public AdminEventPublisher(

@@ -16,8 +16,8 @@ import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -39,8 +39,8 @@ import java.util.stream.Collectors;
  * Abstract JDBC implementation of {@link WorkflowStore}.
  *
  * <p>Provides a complete implementation using plain JDBC with parameterized
- * SQL. All JSON payloads are serialized/deserialized with Jackson 3
- * ({@code tools.jackson}). Database-specific subclasses override protected
+ * SQL. All JSON payloads are serialized/deserialized with Jackson
+ * ({@code com.fasterxml.jackson}). Database-specific subclasses override protected
  * hook methods to provide optimized SQL where needed.
  *
  * <h2>Subclass Hooks</h2>

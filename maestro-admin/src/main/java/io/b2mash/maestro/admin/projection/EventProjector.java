@@ -8,7 +8,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
-import tools.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -58,7 +58,7 @@ public class EventProjector {
      * Creates a new event projector.
      *
      * @param jdbc         Spring JDBC template for admin database access
-     * @param objectMapper Jackson 3 ObjectMapper for serializing detail JsonNode to string
+     * @param objectMapper Jackson ObjectMapper for serializing detail JsonNode to string
      */
     public EventProjector(JdbcTemplate jdbc, ObjectMapper objectMapper) {
         this.jdbc = jdbc;

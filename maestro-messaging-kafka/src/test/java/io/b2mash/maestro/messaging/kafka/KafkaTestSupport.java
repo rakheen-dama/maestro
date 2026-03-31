@@ -14,8 +14,8 @@ import org.testcontainers.containers.KafkaContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
-import tools.jackson.databind.ObjectMapper;
-import tools.jackson.databind.json.JsonMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.json.JsonMapper;
 
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
@@ -32,7 +32,7 @@ import java.util.concurrent.ExecutionException;
  *
  * <p>Provides a shared Testcontainers {@link KafkaContainer} (KRaft mode,
  * confluentinc/cp-kafka image), along with pre-configured {@link KafkaTemplate},
- * {@link ConsumerFactory}, and Jackson 3 {@link ObjectMapper}.
+ * {@link ConsumerFactory}, and Jackson {@link ObjectMapper}.
  */
 @Testcontainers
 abstract class KafkaTestSupport {

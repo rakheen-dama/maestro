@@ -14,8 +14,8 @@ import io.b2mash.maestro.core.retry.RetryPolicy;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import tools.jackson.databind.ObjectMapper;
-import tools.jackson.databind.json.JsonMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.json.JsonMapper;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -101,7 +101,7 @@ public final class TestWorkflowEnvironment {
     /**
      * Creates a test environment with a custom ObjectMapper.
      *
-     * @param objectMapper the Jackson 3 ObjectMapper to use for serialization
+     * @param objectMapper the Jackson ObjectMapper to use for serialization
      */
     public static TestWorkflowEnvironment create(ObjectMapper objectMapper) {
         return new TestWorkflowEnvironment(objectMapper);

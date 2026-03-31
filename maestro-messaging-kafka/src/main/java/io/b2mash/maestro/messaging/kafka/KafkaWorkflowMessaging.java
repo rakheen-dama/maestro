@@ -12,7 +12,7 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
 import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.MessageListener;
-import tools.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -24,7 +24,7 @@ import java.util.function.Consumer;
  *
  * <p>Uses {@code KafkaTemplate<String, byte[]>} for publishing and
  * {@link ConcurrentMessageListenerContainer} for consuming. Messages are
- * serialized with Jackson 3 at the application layer, keeping the Kafka
+ * serialized with Jackson at the application layer, keeping the Kafka
  * value type as raw bytes for efficiency.
  *
  * <h2>Topic Naming</h2>
@@ -62,7 +62,7 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
      *
      * @param kafkaTemplate   the Kafka template for publishing messages
      * @param consumerFactory the consumer factory for creating listener containers
-     * @param objectMapper    Jackson 3 ObjectMapper for serialization
+     * @param objectMapper    Jackson ObjectMapper for serialization
      * @param config          resolved topic and consumer group configuration
      */
     public KafkaWorkflowMessaging(

@@ -4,8 +4,8 @@ import io.b2mash.maestro.store.jdbc.AbstractJdbcWorkflowStore;
 import io.b2mash.maestro.store.jdbc.JdbcStoreConfiguration;
 import org.jspecify.annotations.Nullable;
 import org.postgresql.util.PGobject;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import javax.sql.DataSource;
 import java.sql.PreparedStatement;
@@ -46,7 +46,7 @@ public final class PostgresWorkflowStore extends AbstractJdbcWorkflowStore {
      * Creates a Postgres workflow store with the default {@code "maestro_"} table prefix.
      *
      * @param dataSource   the JDBC data source
-     * @param objectMapper Jackson 3 {@link ObjectMapper} for JSON serialization
+     * @param objectMapper Jackson {@link ObjectMapper} for JSON serialization
      */
     public PostgresWorkflowStore(DataSource dataSource, ObjectMapper objectMapper) {
         super(dataSource, JdbcStoreConfiguration.withDefaults(objectMapper));

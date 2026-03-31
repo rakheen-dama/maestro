@@ -1,7 +1,7 @@
 package io.b2mash.maestro.core.spi;
 
 import org.jspecify.annotations.Nullable;
-import tools.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.JsonNode;
 
 /**
  * Message delivering a named signal to a workflow.

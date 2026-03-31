@@ -8,7 +8,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import tools.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.JsonNode;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -133,7 +133,7 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
                 var input = received.getFirst().input();
                 assertNotNull(input);
                 assertEquals(100, input.get("amount").asInt());
-                assertEquals("ZAR", input.get("currency").stringValue());
+                assertEquals("ZAR", input.get("currency").textValue());
             });
 
             messaging.destroy();

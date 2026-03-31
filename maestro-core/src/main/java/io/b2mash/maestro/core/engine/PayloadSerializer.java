@@ -2,10 +2,10 @@ package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.exception.SerializationException;
 import org.jspecify.annotations.Nullable;
-import tools.jackson.databind.JavaType;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.ObjectMapper;
-import tools.jackson.databind.node.NullNode;
+import com.fasterxml.jackson.databind.JavaType;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.NullNode;
 
 import java.lang.reflect.Type;
 
@@ -13,7 +13,7 @@ import java.lang.reflect.Type;
  * Serializes and deserializes activity method arguments and return values
  * to/from Jackson {@link JsonNode} for storage in the memoization log.
  *
- * <p>Wraps Jackson 3 ({@code tools.jackson}) operations and translates
+ * <p>Wraps Jackson ({@code com.fasterxml.jackson}) operations and translates
  * all exceptions to {@link SerializationException}.
  *
  * <h2>Null and Void Handling</h2>
@@ -23,7 +23,7 @@ import java.lang.reflect.Type;
  *       returns {@code null}.</li>
  * </ul>
  *
- * <p><b>Thread safety:</b> Jackson 3's {@link ObjectMapper} is thread-safe.
+ * <p><b>Thread safety:</b> Jackson's {@link ObjectMapper} is thread-safe when properly configured.
  * This class holds no mutable state and is safe for concurrent use.
  */
 public final class PayloadSerializer {
@@ -31,7 +31,7 @@ public final class PayloadSerializer {
     private final ObjectMapper objectMapper;
 
     /**
-     * @param objectMapper the Jackson 3 ObjectMapper to use
+     * @param objectMapper the Jackson ObjectMapper to use
      */
     public PayloadSerializer(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
