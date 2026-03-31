@@ -9,10 +9,8 @@ import org.slf4j.MDC;
  * every virtual-thread entry point ({@code WorkflowExecutor},
  * parallel branches, compensation branches) uses a consistent set of keys.
  *
- * <p>SLF4J MDC is still {@link ThreadLocal}-based. Each virtual thread
- * gets its own MDC state, so populate/clear remains correct. When SLF4J
- * adds {@link ScopedValue}-backed MDC support, this utility will be the
- * single point of migration.
+ * <p>SLF4J MDC is {@link ThreadLocal}-based. Each virtual thread
+ * gets its own MDC state, so populate/clear remains correct.
  *
  * <h2>Thread Safety</h2>
  * <p>MDC operations are per-thread. This class is stateless and safe

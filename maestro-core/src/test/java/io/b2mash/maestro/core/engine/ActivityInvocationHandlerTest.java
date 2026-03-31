@@ -28,7 +28,6 @@ import org.junit.jupiter.api.Test;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import java.lang.ScopedValue;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -80,10 +79,15 @@ class ActivityInvocationHandlerTest {
     }
 
     /**
-     * Runs the given block within a ScopedValue-bound WorkflowContext.
+     * Runs the given block within a ThreadLocal-bound WorkflowContext.
      */
     private void withContext(Runnable block) {
-        ScopedValue.where(WorkflowContext.scopedValue(), createContext()).run(block);
+        WorkflowContext.bind(createContext());
+        try {
+            block.run();
+        } finally {
+            WorkflowContext.clear();
+        }
     }
 
     // ── Replay path tests ─────────────────────────────────────────────
