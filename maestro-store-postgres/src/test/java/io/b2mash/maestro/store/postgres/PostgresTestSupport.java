@@ -54,7 +54,7 @@ abstract class PostgresTestSupport {
             }
         }
 
-        objectMapper = JsonMapper.builder().build();
+        objectMapper = JsonMapper.builder().findAndAddModules().build();
         store = new PostgresWorkflowStore(dataSource, objectMapper);
 
         truncateTables();

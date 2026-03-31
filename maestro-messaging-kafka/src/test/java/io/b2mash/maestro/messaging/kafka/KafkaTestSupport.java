@@ -49,7 +49,7 @@ abstract class KafkaTestSupport {
 
     @BeforeEach
     void setUpKafka() {
-        objectMapper = JsonMapper.builder().build();
+        objectMapper = JsonMapper.builder().findAndAddModules().build();
 
         var producerProps = Map.<String, Object>of(
                 ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers(),

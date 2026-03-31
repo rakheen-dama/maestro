@@ -109,7 +109,7 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
     @Override
     public void appendEvent(WorkflowEvent event) {
         var instanceEvents = events.computeIfAbsent(
-                event.workflowInstanceId(), _ -> new ConcurrentHashMap<>());
+                event.workflowInstanceId(), id -> new ConcurrentHashMap<>());
 
         var existing = instanceEvents.putIfAbsent(event.sequenceNumber(), event);
         if (existing != null) {

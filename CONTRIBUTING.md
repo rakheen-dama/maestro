@@ -29,7 +29,7 @@ Before you begin, ensure you have the following installed:
 
 | Tool | Version | Notes |
 |---|---|---|
-| **Java** | 25 or later | Virtual threads and scoped values required. Verify with `java --version`. |
+| **Java** | 21 or later | Virtual threads required. Verify with `java --version`. |
 | **Gradle** | 9.x | Provided via the Gradle wrapper (`./gradlew`). Do not install separately. |
 | **Docker** | Latest stable | Required for Testcontainers-based integration tests. |
 | **IDE** | IntelliJ IDEA recommended | Community or Ultimate. Enable annotation processing for JSpecify. |
@@ -145,12 +145,12 @@ Integration tests use [Testcontainers](https://testcontainers.com/) and **requir
 
 Maestro follows strict coding standards. Please review these before submitting code.
 
-### Java 25 Features
+### Java 21 Features
 
 - **Records** for DTOs and value objects.
 - **Sealed interfaces** where a closed set of implementations is appropriate.
 - **Virtual threads** for workflow execution. Never block virtual threads with `synchronized` or legacy I/O.
-- **Scoped values** (`ScopedValue`) for per-workflow context binding (replaces `ThreadLocal`).
+- **ThreadLocal** for per-workflow context binding. Always pair `bind()` with `clear()` in a `finally` block.
 - **`var`** for local variables where the type is obvious from context.
 - **Pattern matching** for `instanceof` checks.
 
@@ -164,10 +164,10 @@ Do not use Lombok. Use records for immutable data and IDE-generated code (constr
 - Prefer `Optional<T>` for return types that may be absent.
 - Never pass `null` where `@NonNull` is declared.
 
-### Jackson 3 Serialization
+### Jackson 2 Serialization
 
-- Use `tools.jackson` packages exclusively.
-- **Never** use `com.fasterxml.jackson` packages. Jackson 3 has a different package namespace.
+- Use `com.fasterxml.jackson` packages exclusively.
+- This branch uses Jackson 2.17.x (the `main` branch uses Jackson 3 with `tools.jackson` packages).
 
 ### Jakarta EE 11
 

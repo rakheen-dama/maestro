@@ -9,6 +9,6 @@ dependencies {
     implementation(project(":maestro-store-postgres"))
     implementation(project(":maestro-messaging-kafka"))
     implementation(project(":maestro-lock-valkey"))
-    implementation(libs.spring.boot.starter.webmvc)
+    implementation(libs.spring.boot.starter.web)
     runtimeOnly(libs.postgresql)
 }

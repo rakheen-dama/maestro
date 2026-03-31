@@ -2,7 +2,7 @@ name: Javadoc
 
 on:
   push:
-    tags: ['v*.*.*']
+    tags: ['v*.*.*-sb3']
 
 permissions:
   contents: read
@@ -22,10 +22,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Java 25
+      - name: Set up Java 21
         uses: actions/setup-java@v4
         with:
-          java-version: '25'
+          java-version: '21'
           distribution: 'temurin'
 
       - name: Set up Gradle

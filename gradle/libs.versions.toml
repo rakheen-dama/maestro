@@ -25,6 +25,7 @@ flyway-postgres = { module = "org.flywaydb:flyway-database-postgresql", version.
 
 # Jackson 2 — com.fasterxml.jackson group
 jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
+jackson-datatype-jsr310 = { module = "com.fasterxml.jackson.datatype:jackson-datatype-jsr310", version.ref = "jackson" }
 
 # Lettuce — Redis/Valkey client
 lettuce-core = { module = "io.lettuce:lettuce-core", version.ref = "lettuce" }
@@ -48,7 +49,7 @@ testcontainers-kafka = { module = "org.testcontainers:kafka", version.ref = "tes
 # Spring Boot starters (versions managed by Spring Boot BOM via dependency-management plugin)
 spring-boot-starter = { module = "org.springframework.boot:spring-boot-starter" }
 spring-boot-starter-jdbc = { module = "org.springframework.boot:spring-boot-starter-jdbc" }
-spring-boot-starter-webmvc = { module = "org.springframework.boot:spring-boot-starter-web" }
+spring-boot-starter-web = { module = "org.springframework.boot:spring-boot-starter-web" }
 spring-boot-starter-actuator = { module = "org.springframework.boot:spring-boot-starter-actuator" }
 spring-boot-starter-thymeleaf = { module = "org.springframework.boot:spring-boot-starter-thymeleaf" }
 spring-boot-autoconfigure = { module = "org.springframework.boot:spring-boot-autoconfigure" }

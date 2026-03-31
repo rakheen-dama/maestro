@@ -28,5 +28,5 @@
 - [ ] `./gradlew build` passes locally
 - [ ] No Spring dependencies added to `maestro-core`
 - [ ] Javadoc on public APIs (for library modules)
-- [ ] No `com.fasterxml.jackson` imports (use `tools.jackson`)
+- [ ] Uses `com.fasterxml.jackson` imports (Jackson 2 — this is the SB3 branch)
 - [ ] No `javax.*` imports (use `jakarta.*`)

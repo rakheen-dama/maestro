@@ -6,4 +6,5 @@ description = "Maestro Core — Workflow engine, SPIs, domain model (pure Java, 
 
 dependencies {
     api(libs.jackson.databind)
+    api(libs.jackson.datatype.jsr310)
 }

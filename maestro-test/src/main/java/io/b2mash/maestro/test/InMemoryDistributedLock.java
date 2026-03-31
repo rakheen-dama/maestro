@@ -35,13 +35,13 @@ public final class InMemoryDistributedLock implements DistributedLock {
 
     @Override
     public void release(LockHandle handle) {
-        locks.computeIfPresent(handle.key(), (_, current) ->
+        locks.computeIfPresent(handle.key(), (key, current) ->
                 current.token().equals(handle.token()) ? null : current);
     }
 
     @Override
     public void renew(LockHandle handle, Duration ttl) {
-        locks.computeIfPresent(handle.key(), (_, current) -> {
+        locks.computeIfPresent(handle.key(), (key, current) -> {
             if (current.token().equals(handle.token())) {
                 return new LockHandle(handle.key(), handle.token(), Instant.now().plus(ttl));
             }
