@@ -84,7 +84,11 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
     }
 
     private JsonNode jsonNode(String json) {
-        return objectMapper.readTree(json);
+        try {
+            return objectMapper.readTree(json);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw new RuntimeException("Invalid test JSON: " + json, e);
+        }
     }
 
     // ── Instance Tests ────────────────────────────────────────────────────
