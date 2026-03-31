@@ -25,6 +25,7 @@ flyway-postgres = { module = "org.flywaydb:flyway-database-postgresql", version.
 
 # Jackson 2 — com.fasterxml.jackson group
 jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
+jackson-datatype-jsr310 = { module = "com.fasterxml.jackson.datatype:jackson-datatype-jsr310", version.ref = "jackson" }
 
 # Lettuce — Redis/Valkey client
 lettuce-core = { module = "io.lettuce:lettuce-core", version.ref = "lettuce" }

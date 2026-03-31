@@ -95,7 +95,7 @@ public final class TestWorkflowEnvironment {
      * Creates a test environment with a default Jackson ObjectMapper.
      */
     public static TestWorkflowEnvironment create() {
-        return new TestWorkflowEnvironment(JsonMapper.builder().build());
+        return new TestWorkflowEnvironment(JsonMapper.builder().findAndAddModules().build());
     }
 
     /**
