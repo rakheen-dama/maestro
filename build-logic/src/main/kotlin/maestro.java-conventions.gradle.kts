@@ -7,7 +7,7 @@ version = property("version") as String
 
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(25)
+        languageVersion = JavaLanguageVersion.of(21)
     }
 }
 
@@ -25,7 +25,7 @@ tasks.withType<JavaCompile>().configureEach {
 // This keeps maestro-core's published POM completely free of Spring references.
 val jspecifyVersion = "1.0.0"
 val slf4jVersion = "2.0.17"
-val junitJupiterVersion = "6.0.1"
+val junitJupiterVersion = "5.11.4"
 val awaitilityVersion = "4.3.0"
 
 dependencies {

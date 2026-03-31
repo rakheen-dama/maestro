@@ -47,7 +47,7 @@ tasks.register<Javadoc>("aggregateJavadoc") {
     options {
         this as StandardJavadocDocletOptions
         addBooleanOption("Xdoclint:none", true)
-        links("https://docs.oracle.com/en/java/javase/25/docs/api/")
+        links("https://docs.oracle.com/en/java/javase/21/docs/api/")
     }
     isFailOnError = false
 }

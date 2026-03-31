@@ -1,16 +1,16 @@
 [versions]
-# Spring ecosystem
-spring-boot = "4.0.5"
+# Spring ecosystem — Spring Boot 3.5 for Java 21 compatibility
+spring-boot = "3.5.0"
 spring-dependency-management = "1.1.7"
 
 # Core library versions (explicit — NOT relying on Spring Boot BOM in non-Spring modules)
-jackson = "3.0.1"
+jackson = "2.17.3"
 slf4j = "2.0.17"
-junit-jupiter = "6.0.1"
+junit-jupiter = "5.11.4"
 flyway = "11.14.1"
 lettuce = "6.8.1.RELEASE"
 postgresql = "42.7.8"
-testcontainers = "2.0.1"
+testcontainers = "1.20.4"
 awaitility = "4.3.0"
 jspecify = "1.0.0"
 
@@ -23,8 +23,8 @@ postgresql = { module = "org.postgresql:postgresql", version.ref = "postgresql" 
 flyway-core = { module = "org.flywaydb:flyway-core", version.ref = "flyway" }
 flyway-postgres = { module = "org.flywaydb:flyway-database-postgresql", version.ref = "flyway" }
 
-# Jackson 3 — tools.jackson group
-jackson-databind = { module = "tools.jackson.core:jackson-databind", version.ref = "jackson" }
+# Jackson 2 — com.fasterxml.jackson group
+jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
 
 # Lettuce — Redis/Valkey client
 lettuce-core = { module = "io.lettuce:lettuce-core", version.ref = "lettuce" }
@@ -39,16 +39,16 @@ junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher
 # Awaitility — polling-based test assertions
 awaitility = { module = "org.awaitility:awaitility", version.ref = "awaitility" }
 
-# Testcontainers 2.x (artifact names changed from 1.x)
+# Testcontainers 1.x
 testcontainers = { module = "org.testcontainers:testcontainers", version.ref = "testcontainers" }
-testcontainers-junit5 = { module = "org.testcontainers:testcontainers-junit-jupiter", version.ref = "testcontainers" }
-testcontainers-postgresql = { module = "org.testcontainers:testcontainers-postgresql", version.ref = "testcontainers" }
-testcontainers-kafka = { module = "org.testcontainers:testcontainers-kafka", version.ref = "testcontainers" }
+testcontainers-junit5 = { module = "org.testcontainers:junit-jupiter", version.ref = "testcontainers" }
+testcontainers-postgresql = { module = "org.testcontainers:postgresql", version.ref = "testcontainers" }
+testcontainers-kafka = { module = "org.testcontainers:kafka", version.ref = "testcontainers" }
 
 # Spring Boot starters (versions managed by Spring Boot BOM via dependency-management plugin)
 spring-boot-starter = { module = "org.springframework.boot:spring-boot-starter" }
 spring-boot-starter-jdbc = { module = "org.springframework.boot:spring-boot-starter-jdbc" }
-spring-boot-starter-webmvc = { module = "org.springframework.boot:spring-boot-starter-webmvc" }
+spring-boot-starter-webmvc = { module = "org.springframework.boot:spring-boot-starter-web" }
 spring-boot-starter-actuator = { module = "org.springframework.boot:spring-boot-starter-actuator" }
 spring-boot-starter-thymeleaf = { module = "org.springframework.boot:spring-boot-starter-thymeleaf" }
 spring-boot-autoconfigure = { module = "org.springframework.boot:spring-boot-autoconfigure" }
