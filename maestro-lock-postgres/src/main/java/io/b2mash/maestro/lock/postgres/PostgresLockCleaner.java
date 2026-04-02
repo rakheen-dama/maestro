@@ -80,7 +80,7 @@ public final class PostgresLockCleaner {
                 }
             }
         } catch (SQLException e) {
-            logger.warn("Failed to clean expired locks: {}", e.getMessage());
+            logger.warn("Failed to clean expired locks", e);
         }
 
         return total;

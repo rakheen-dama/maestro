@@ -46,3 +46,9 @@ CREATE TABLE maestro_lifecycle_event_queue (
 );
 
 CREATE INDEX idx_lifecycle_queue_created ON maestro_lifecycle_event_queue(created_at);
+
+CREATE INDEX idx_task_queue_cleanup
+    ON maestro_task_queue(processed_at) WHERE status IN ('COMPLETED', 'FAILED');
+
+CREATE INDEX idx_signal_queue_cleanup
+    ON maestro_signal_queue(processed_at) WHERE status IN ('COMPLETED', 'FAILED');

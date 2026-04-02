@@ -70,7 +70,7 @@ public final class PostgresDistributedLock implements DistributedLock {
     private static final String RENEW_SQL = """
             UPDATE maestro_distributed_lock
             SET expires_at = now() + make_interval(secs => ?)
-            WHERE lock_key = ? AND token = ?
+            WHERE lock_key = ? AND token = ? AND expires_at > now()
             """;
 
     // language=SQL

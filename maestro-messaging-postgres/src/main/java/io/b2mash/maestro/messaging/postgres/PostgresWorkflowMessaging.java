@@ -172,7 +172,7 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
                 conn.rollback();
                 throw e;
             }
-        } catch (SQLException e) {
+        } catch (Exception e) {
             // SPI contract: lifecycle event failures must not interrupt workflow execution
             logger.warn("Failed to publish lifecycle event {} for workflow '{}': {}",
                     event.eventType(), event.workflowId(), e.getMessage(), e);
@@ -245,7 +245,9 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
                 SET status = 'PROCESSING', processed_at = now()
                 WHERE id = (
                     SELECT id FROM maestro_task_queue
-                    WHERE task_queue = ? AND status = 'PENDING'
+                    WHERE task_queue = ?
+                      AND (status = 'PENDING'
+                           OR (status = 'PROCESSING' AND processed_at < now() - interval '5 minutes'))
                     ORDER BY created_at
                     LIMIT 1
                     FOR UPDATE SKIP LOCKED
@@ -301,7 +303,9 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
                 SET status = 'PROCESSING', processed_at = now()
                 WHERE id = (
                     SELECT id FROM maestro_signal_queue
-                    WHERE service_name = ? AND status = 'PENDING'
+                    WHERE service_name = ?
+                      AND (status = 'PENDING'
+                           OR (status = 'PROCESSING' AND processed_at < now() - interval '5 minutes'))
                     ORDER BY created_at
                     LIMIT 1
                     FOR UPDATE SKIP LOCKED

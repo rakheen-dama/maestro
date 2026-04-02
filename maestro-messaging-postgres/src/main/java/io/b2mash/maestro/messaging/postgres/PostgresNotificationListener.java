@@ -11,6 +11,7 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 
@@ -44,6 +45,7 @@ public final class PostgresNotificationListener implements AutoCloseable {
 
     private final DataSource dataSource;
     private final Map<String, BiConsumer<String, String>> listeners = new ConcurrentHashMap<>();
+    private final ConcurrentLinkedQueue<String> pendingCommands = new ConcurrentLinkedQueue<>();
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     private volatile Connection dedicatedConnection;
@@ -92,7 +94,7 @@ public final class PostgresNotificationListener implements AutoCloseable {
      */
     public void listen(String channel, BiConsumer<String, String> listener) {
         listeners.put(channel, listener);
-        executeSql("LISTEN " + sanitizeChannel(channel));
+        pendingCommands.add("LISTEN " + sanitizeChannel(channel));
         logger.debug("Listening on Postgres channel '{}'", channel);
     }
 
@@ -103,7 +105,7 @@ public final class PostgresNotificationListener implements AutoCloseable {
      */
     public void unlisten(String channel) {
         listeners.remove(channel);
-        executeSql("UNLISTEN " + sanitizeChannel(channel));
+        pendingCommands.add("UNLISTEN " + sanitizeChannel(channel));
         logger.debug("Unlistened from Postgres channel '{}'", channel);
     }
 
@@ -126,9 +128,30 @@ public final class PostgresNotificationListener implements AutoCloseable {
 
     // ── Internal ────────────────────────────────────────────────────────
 
+    private long reconnectBackoff = 1000;
+
     private void pollLoop() {
         while (running.get()) {
             try {
+                // Null check for pgConnection — reconnect with backoff if unavailable
+                if (pgConnection == null) {
+                    reconnect();
+                    if (pgConnection == null) {
+                        Thread.sleep(Math.min(reconnectBackoff, 30_000));
+                        reconnectBackoff = Math.min(reconnectBackoff * 2, 30_000);
+                        continue;
+                    }
+                }
+                reconnectBackoff = 1000; // reset on success
+
+                // Drain pending LISTEN/UNLISTEN commands on the poll thread
+                String cmd;
+                while ((cmd = pendingCommands.poll()) != null) {
+                    try (var stmt = dedicatedConnection.createStatement()) {
+                        stmt.execute(cmd);
+                    }
+                }
+
                 var notifications = pgConnection.getNotifications(POLL_TIMEOUT_MS);
                 if (notifications != null) {
                     for (PGNotification notification : notifications) {
@@ -141,6 +164,9 @@ public final class PostgresNotificationListener implements AutoCloseable {
                             e.getMessage());
                     reconnect();
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
             }
         }
     }
@@ -217,6 +243,6 @@ public final class PostgresNotificationListener implements AutoCloseable {
      * @return a sanitized channel name safe for use in SQL LISTEN/NOTIFY
      */
     public static String sanitizeChannel(String channel) {
-        return channel.replaceAll("[^a-zA-Z0-9_]", "_");
+        return channel.replaceAll("[^a-zA-Z0-9_]", "_").toLowerCase();
     }
 }

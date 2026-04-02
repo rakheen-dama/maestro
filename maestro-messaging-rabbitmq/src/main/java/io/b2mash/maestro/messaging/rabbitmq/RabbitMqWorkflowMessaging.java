@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.core.BindingBuilder;
 import org.springframework.amqp.core.DirectExchange;
+import org.springframework.amqp.core.FanoutExchange;
 import org.springframework.amqp.core.Queue;
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
@@ -81,6 +82,7 @@ public final class RabbitMqWorkflowMessaging implements WorkflowMessaging, Dispo
         this.rabbitTemplate = rabbitTemplate;
         this.connectionFactory = connectionFactory;
         this.objectMapper = objectMapper;
+        declareAdminTopology();
     }
 
     // ── Publishing ───────────────────────────────────────────────────────
@@ -114,12 +116,6 @@ public final class RabbitMqWorkflowMessaging implements WorkflowMessaging, Dispo
     @Override
     public void subscribe(String taskQueue, Consumer<TaskMessage> handler) {
         var queueName = "maestro.tasks." + taskQueue;
-
-        if (containers.containsKey(queueName)) {
-            logger.warn("Already subscribed to task queue '{}', ignoring duplicate subscribe call", taskQueue);
-            return;
-        }
-
         declareTaskTopology(queueName, taskQueue);
 
         var container = createContainer(queueName, bytes -> {
@@ -131,7 +127,13 @@ public final class RabbitMqWorkflowMessaging implements WorkflowMessaging, Dispo
                         queueName, e.getMessage(), e);
             }
         });
-        containers.put(queueName, container);
+
+        var existing = containers.putIfAbsent(queueName, container);
+        if (existing != null) {
+            container.stop();  // Clean up the unused container
+            logger.warn("Already subscribed to task queue '{}', ignoring duplicate", taskQueue);
+            return;
+        }
         container.start();
         logger.info("Subscribed to task queue '{}' on RabbitMQ queue '{}'", taskQueue, queueName);
     }
@@ -139,13 +141,6 @@ public final class RabbitMqWorkflowMessaging implements WorkflowMessaging, Dispo
     @Override
     public void subscribeSignals(String serviceName, Consumer<SignalMessage> handler) {
         var queueName = "maestro.signals." + serviceName;
-
-        if (containers.containsKey(queueName)) {
-            logger.warn("Already subscribed to signals for service '{}', ignoring duplicate subscribe call",
-                    serviceName);
-            return;
-        }
-
         declareSignalTopology(queueName, serviceName);
 
         var container = createContainer(queueName, bytes -> {
@@ -157,7 +152,13 @@ public final class RabbitMqWorkflowMessaging implements WorkflowMessaging, Dispo
                         queueName, e.getMessage(), e);
             }
         });
-        containers.put(queueName, container);
+
+        var existing = containers.putIfAbsent(queueName, container);
+        if (existing != null) {
+            container.stop();  // Clean up the unused container
+            logger.warn("Already subscribed to signals for service '{}', ignoring duplicate", serviceName);
+            return;
+        }
         container.start();
         logger.info("Subscribed to signals for service '{}' on RabbitMQ queue '{}'", serviceName, queueName);
     }
@@ -191,6 +192,16 @@ public final class RabbitMqWorkflowMessaging implements WorkflowMessaging, Dispo
         admin.declareExchange(exchange);
         admin.declareQueue(queue);
         admin.declareBinding(BindingBuilder.bind(queue).to(exchange).with(routingKey));
+    }
+
+    /**
+     * Declares the fanout exchange for admin lifecycle events.
+     * Called eagerly in the constructor so the exchange exists before any publish.
+     */
+    private void declareAdminTopology() {
+        var admin = new org.springframework.amqp.rabbit.core.RabbitAdmin(connectionFactory);
+        var exchange = new FanoutExchange(ADMIN_EVENTS_EXCHANGE, true, false);
+        admin.declareExchange(exchange);
     }
 
     /**
