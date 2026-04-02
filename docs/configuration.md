@@ -52,7 +52,7 @@ and lifecycle event publishing.
 
 | Property                        | Type     | Default    | Description                                                                                     |
 |---------------------------------|----------|------------|-------------------------------------------------------------------------------------------------|
-| `maestro.messaging.type`        | `String` | `"kafka"`  | Messaging implementation type. Currently only `kafka` is supported.                             |
+| `maestro.messaging.type`        | `String` | `"kafka"`  | Messaging implementation. Supported values: `kafka` (default), `postgres`, `rabbitmq`.          |
 | `maestro.messaging.consumer-group`| `String`| `null`   | Kafka consumer group ID. If not set, defaults to `maestro-{serviceName}` at runtime.            |
 
 ### Topic Properties
@@ -69,6 +69,38 @@ group by default, which is the correct behavior for most deployments.
 
 ---
 
+### Postgres Messaging
+
+When `maestro.messaging.type: postgres`, Maestro uses PostgreSQL queue tables with `LISTEN/NOTIFY` for immediate notification and polling as a fallback. No Kafka or RabbitMQ infrastructure is needed.
+
+The Postgres messaging module shares the same `DataSource` as the workflow store. Additional Flyway migrations create the queue tables (`maestro_task_queue`, `maestro_signal_queue`, `maestro_lifecycle_event_queue`).
+
+**Dependencies:**
+```kotlin
+implementation("io.b2mash.maestro:maestro-messaging-postgres")
+```
+
+### RabbitMQ Messaging
+
+When `maestro.messaging.type: rabbitmq`, Maestro uses Spring AMQP with direct exchanges for task dispatch and signal delivery, and a fanout exchange for lifecycle events. All queues are quorum queues for durability.
+
+**Required Spring properties:**
+```yaml
+spring:
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+```
+
+**Dependencies:**
+```kotlin
+implementation("io.b2mash.maestro:maestro-messaging-rabbitmq")
+```
+
+---
+
 ## Lock Configuration
 
 Properties under `maestro.lock.*` configure the distributed locking layer used
@@ -76,13 +108,36 @@ for workflow instance locks, activity deduplication, and timer leader election.
 
 | Property                  | Type       | Default          | Description                                                                                  |
 |---------------------------|------------|------------------|----------------------------------------------------------------------------------------------|
-| `maestro.lock.type`       | `String`   | `"valkey"`       | Lock implementation type. Currently only `valkey` (compatible with Redis) is supported.      |
+| `maestro.lock.type`       | `String`   | `"valkey"`       | Lock implementation. Supported values: `valkey` (default), `postgres`.                       |
 | `maestro.lock.key-prefix` | `String`   | `"maestro:lock:"`| Prefix for all lock keys in Valkey/Redis. Change this to isolate multiple environments.      |
 | `maestro.lock.ttl`        | `Duration` | `30s`            | Lock time-to-live. Locks are automatically renewed while the workflow is executing. If a node crashes, locks expire after this duration, enabling recovery by another node. |
 
 The TTL value represents a trade-off: shorter values enable faster recovery after
 a crash, but require more frequent renewal. The default of 30 seconds is suitable
 for most workloads.
+
+---
+
+### Postgres Locking
+
+When `maestro.lock.type: postgres`, Maestro uses PostgreSQL tables for distributed locking and leader election. Locks use `INSERT ... ON CONFLICT` with token-based ownership and TTL-based expiry.
+
+The Postgres lock module shares the same `DataSource` as the workflow store. Flyway migrations create the lock tables (`maestro_distributed_lock`, `maestro_leader_election`).
+
+**Dependencies:**
+```kotlin
+implementation("io.b2mash.maestro:maestro-lock-postgres")
+```
+
+### Backend Comparison
+
+| | Kafka + Valkey | Postgres-only | RabbitMQ + Postgres |
+|---|---|---|---|
+| **External deps** | Postgres, Kafka, Valkey | Postgres only | Postgres, RabbitMQ |
+| **Throughput** | Highest | Moderate (~5-10k msg/s) | High |
+| **Latency** | Sub-ms locks | 1-5ms per lock/message | Low |
+| **Ordering** | Partition-keyed | FOR UPDATE SKIP LOCKED | Engine-level dedup |
+| **Best for** | High-scale production | Getting started, simple deployments | Spring/enterprise teams |
 
 ---
 
@@ -238,6 +293,23 @@ spring:
     redis:
       host: localhost
       port: 6379
+```
+
+#### Postgres-Only Example
+
+```yaml
+maestro:
+  service-name: my-service
+  store:
+    type: postgres
+  messaging:
+    type: postgres
+  lock:
+    type: postgres
+  worker:
+    task-queues:
+      - name: my-tasks
+        concurrency: 5
 ```
 
 A minimal configuration (relying on defaults) looks like this:

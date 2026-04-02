@@ -10,6 +10,8 @@
 
 Maestro gives your Spring Boot microservice Temporal.io-grade workflow durability without a central server. Add a starter dependency, point it at your existing Postgres, Kafka, and Valkey/Redis, and your workflows become crash-recoverable.
 
+The three infrastructure components (store, messaging, lock) are each defined as a Service Provider Interface (SPI), allowing different implementations to be swapped via configuration. See [Configuration](configuration.md) for available backends.
+
 The engine uses **hybrid memoization**: every activity call is intercepted by a proxy that checks Postgres for a stored result at the current sequence number. If found (replay), the stored result is returned instantly without re-execution. If not found (live), the activity executes, its result is persisted, and execution continues. On recovery after a crash, the workflow method is re-invoked from the top -- completed steps replay in microseconds, and execution resumes from the first uncompleted step.
 
 ---

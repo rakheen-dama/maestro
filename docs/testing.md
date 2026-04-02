@@ -8,7 +8,9 @@ Fast, deterministic workflow testing without infrastructure.
 
 ## Overview
 
-The `maestro-test` module provides an in-memory Maestro engine for testing durable workflows. No Postgres, no Kafka, no Valkey. Workflows run on real virtual threads, just like production. Test time is controllable -- advance minutes, hours, or days instantly.
+The `maestro-test` module provides in-memory implementations of all SPIs. Tests work the same regardless of which production messaging or lock backend you use.
+
+The module provides an in-memory Maestro engine for testing durable workflows. No Postgres, no Kafka, no Valkey. Workflows run on real virtual threads, just like production. Test time is controllable -- advance minutes, hours, or days instantly.
 
 What you get:
 

@@ -96,6 +96,9 @@ Before you begin, ensure you have the following installed:
 | `maestro-store-postgres` | Postgres implementation with Flyway 11 migrations. |
 | `maestro-messaging-kafka` | Spring Kafka 4.x `WorkflowMessaging` SPI implementation. |
 | `maestro-lock-valkey` | Lettuce-based `DistributedLock` SPI implementation. |
+| `maestro-messaging-postgres` | PostgreSQL `WorkflowMessaging` + `SignalNotifier`. |
+| `maestro-messaging-rabbitmq` | RabbitMQ `WorkflowMessaging` via Spring AMQP. |
+| `maestro-lock-postgres` | PostgreSQL `DistributedLock` using advisory locks. |
 | `maestro-admin` | Standalone dashboard (Thymeleaf + HTMX). |
 | `maestro-admin-client` | Lightweight lifecycle event publisher. |
 | `maestro-test` | In-memory SPIs, controllable clock, `TestWorkflowEnvironment`. |

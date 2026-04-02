@@ -136,6 +136,8 @@ The admin schema is managed by Flyway and applied automatically on startup. Migr
 
 ### Kafka topic
 
+> **Note:** When using Postgres messaging (`maestro.messaging.type: postgres`), lifecycle events are stored in the `maestro_lifecycle_event_queue` table instead of being published to a Kafka topic. The admin dashboard consumes from that table automatically when configured for Postgres messaging.
+
 The `maestro.admin.events` topic must be pre-created. The `kafka-init` service in `docker-compose.yml` handles this:
 
 ```bash

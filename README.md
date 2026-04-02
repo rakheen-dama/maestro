@@ -4,7 +4,7 @@
 [![Java](https://img.shields.io/badge/Java-25-orange.svg)](https://openjdk.org/projects/jdk/25/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.x-green.svg)](https://spring.io/projects/spring-boot)
 
-**Embeddable durable workflow engine for Spring Boot.** Add a starter to your microservice and get Temporal-grade workflow durability using your existing Postgres, Kafka, and Valkey infrastructure.
+**Embeddable durable workflow engine for Spring Boot.** Add a starter to your microservice and get Temporal-grade workflow durability using your existing Postgres — plus optionally Kafka, RabbitMQ, or Valkey.
 
 ---
 
@@ -54,6 +54,8 @@ dependencies {
     testImplementation("io.b2mash.maestro:maestro-test")
 }
 ```
+
+> **Postgres-only mode:** Replace `maestro-messaging-kafka` with `maestro-messaging-postgres` and `maestro-lock-valkey` with `maestro-lock-postgres` to eliminate Kafka and Valkey dependencies entirely. See [Configuration](docs/configuration.md) for details.
 
 ### 2. Define an activity
 
@@ -214,10 +216,15 @@ graph TB
 | `maestro-store-jdbc` | Abstract JDBC `WorkflowStore` | No |
 | `maestro-store-postgres` | Postgres implementation + Flyway migrations | No |
 | `maestro-messaging-kafka` | Kafka `WorkflowMessaging` implementation | Yes |
+| `maestro-messaging-postgres` | PostgreSQL `WorkflowMessaging` via LISTEN/NOTIFY + polling | No |
+| `maestro-messaging-rabbitmq` | RabbitMQ `WorkflowMessaging` via Spring AMQP | Yes |
 | `maestro-lock-valkey` | Valkey/Redis `DistributedLock` | No |
+| `maestro-lock-postgres` | PostgreSQL `DistributedLock` via table-backed locks | No |
 | `maestro-admin` | Standalone monitoring dashboard | Yes |
 | `maestro-admin-client` | Lifecycle event publisher | Minimal |
 | `maestro-test` | In-memory engine for testing | No |
+| `sample-postgres-only` | Document approval workflow -- Postgres-only demo | Yes |
+| `sample-rabbitmq-order-service` | E-commerce demo using RabbitMQ + Postgres | Yes |
 
 `maestro-core` is **pure Java** with zero Spring dependency. All Spring integration lives in `maestro-spring-boot-starter`.
 
