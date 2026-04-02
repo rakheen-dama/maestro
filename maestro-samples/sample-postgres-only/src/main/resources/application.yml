@@ -1,0 +1,32 @@
+spring:
+  application:
+    name: sample-postgres-only
+
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:maestro}
+    username: ${POSTGRES_USER:maestro}
+    password: ${POSTGRES_PASSWORD:maestro}
+
+server:
+  port: ${SERVER_PORT:8083}
+
+maestro:
+  service-name: document-service
+
+  store:
+    type: postgres
+
+  messaging:
+    type: postgres
+
+  lock:
+    type: postgres
+
+  worker:
+    task-queues:
+      - name: documents
+        concurrency: 3
+
+  admin:
+    events:
+      enabled: true
