@@ -1,3 +1,8 @@
+# Default infrastructure: Kafka + Valkey variant.
+# For Postgres-only or RabbitMQ alternatives, see the per-sample docker-compose files:
+#   maestro-samples/sample-postgres-only/docker-compose.yml
+#   maestro-samples/sample-rabbitmq-order-service/docker-compose.yml
+#
 # Maestro Demo — Full e-commerce workflow across two services + admin dashboard.
 #
 # Usage:

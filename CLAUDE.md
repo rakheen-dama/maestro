@@ -59,13 +59,18 @@ maestro/
 ├── maestro-store-jdbc              ← Abstract JDBC WorkflowStore SPI.
 ├── maestro-store-postgres          ← Postgres implementation + Flyway 11 migrations.
 ├── maestro-messaging-kafka         ← Spring Kafka 4.x WorkflowMessaging SPI.
+├── maestro-messaging-postgres      ← PostgreSQL WorkflowMessaging + SignalNotifier (LISTEN/NOTIFY).
+├── maestro-messaging-rabbitmq      ← RabbitMQ WorkflowMessaging via Spring AMQP.
 ├── maestro-lock-valkey             ← Lettuce DistributedLock SPI.
+├── maestro-lock-postgres           ← PostgreSQL DistributedLock SPI.
 ├── maestro-admin-client            ← Lightweight lifecycle event publisher.
 ├── maestro-admin                   ← Standalone dashboard (Thymeleaf + HTMX, own Postgres).
 ├── maestro-test                    ← In-memory SPIs, controllable clock, TestWorkflowEnvironment.
 ├── maestro-samples/
 │   ├── sample-order-service        ← Order fulfilment workflow (e-commerce demo)
-│   └── sample-payment-gateway      ← Payment processing with durable retries & saga
+│   ├── sample-payment-gateway      ← Payment processing with durable retries & saga
+│   ├── sample-postgres-only        ← Document approval (Postgres-only, zero external deps)
+│   └── sample-rabbitmq-order-service ← Order fulfilment using RabbitMQ + Postgres
 └── docs/
 ```
 
@@ -136,7 +141,11 @@ io.b2mash.maestro.store.postgres             — Postgres impl + Flyway migratio
 io.b2mash.maestro.messaging.kafka            — Kafka WorkflowMessaging
 io.b2mash.maestro.messaging.kafka.listener   — @MaestroSignalListener processing
 
+io.b2mash.maestro.messaging.postgres         — Postgres WorkflowMessaging + SignalNotifier
+io.b2mash.maestro.messaging.rabbitmq         — RabbitMQ WorkflowMessaging
+
 io.b2mash.maestro.lock.valkey                — Valkey DistributedLock
+io.b2mash.maestro.lock.postgres              — Postgres DistributedLock
 
 io.b2mash.maestro.admin                      — Dashboard app
 io.b2mash.maestro.admin.client               — Event publisher

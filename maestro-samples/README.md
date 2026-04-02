@@ -184,3 +184,40 @@ kafka-topics.sh --bootstrap-server localhost:9092 --create --topic payments.resu
 | **Durable retries** | Payment gateway retries 30x with exponential backoff |
 | **Signal self-recovery** | Signals persist to Postgres, delivered when workflow is ready |
 | **Workflow queries** | `GET /orders/{id}/status` reads live workflow state |
+
+---
+
+## sample-postgres-only
+
+**Postgres-only document approval workflow** — demonstrates Maestro with zero external dependencies beyond PostgreSQL.
+
+- **Domain:** Submit → assign reviewer → await review signal → publish/reject → archive
+- **Backend:** `maestro-store-postgres` + `maestro-messaging-postgres` + `maestro-lock-postgres`
+- **No Kafka, no Valkey, no RabbitMQ**
+
+```bash
+cd maestro-samples/sample-postgres-only
+docker-compose up -d
+# Submit a document
+curl -X POST http://localhost:8083/documents -H 'Content-Type: application/json' \
+  -d '{"title": "Q4 Report", "content": "...", "authorId": "alice"}'
+# Approve it
+curl -X POST http://localhost:8083/documents/{id}/review -H 'Content-Type: application/json' \
+  -d '{"approved": true, "reviewerId": "bob", "comments": "Looks good"}'
+```
+
+## sample-rabbitmq-order-service
+
+**E-commerce order fulfilment using RabbitMQ** — identical workflow to `sample-order-service` but with RabbitMQ for messaging and PostgreSQL for locking.
+
+- **Domain:** Same order fulfilment flow (reserve → pay → ship → notify)
+- **Backend:** `maestro-store-postgres` + `maestro-messaging-rabbitmq` + `maestro-lock-postgres`
+- **Proves workflow portability:** The `OrderFulfilmentWorkflow` class is identical — only infrastructure wiring changes.
+
+```bash
+cd maestro-samples/sample-rabbitmq-order-service
+docker-compose up -d
+# Place an order (same API as sample-order-service)
+curl -X POST http://localhost:8084/orders -H 'Content-Type: application/json' \
+  -d '{"customerId": "cust-1", "items": [{"sku": "WIDGET-1", "quantity": 2, "price": 29.99}], "paymentMethod": "card", "shippingAddress": "123 Main St"}'
+```

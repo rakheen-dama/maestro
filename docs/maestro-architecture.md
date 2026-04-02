@@ -102,7 +102,10 @@ graph TB
     CORE --> SPI_LOCK
     SPI_STORE --> STORE_JDBC --> STORE_PG
     SPI_MSG --> MSG_KAFKA
+    SPI_MSG --> MSG_PG["maestro-messaging-postgres"]
+    SPI_MSG --> MSG_RMQ["maestro-messaging-rabbitmq"]
     SPI_LOCK --> LOCK_VALKEY
+    SPI_LOCK --> LOCK_PG["maestro-lock-postgres"]
 
     style CORE fill:#4A90D9,color:#fff
     style STARTER fill:#5BA85A,color:#fff
@@ -118,10 +121,15 @@ graph TB
 | `maestro-store-jdbc` | Abstract JDBC `WorkflowStore`. | No (JDBC only) |
 | `maestro-store-postgres` | Postgres implementation + Flyway 11 migrations. | No |
 | `maestro-messaging-kafka` | Spring Kafka 4.x `WorkflowMessaging` implementation. `@MaestroSignalListener` processing. | Yes |
+| `maestro-messaging-postgres` | PostgreSQL-based `WorkflowMessaging` + `SignalNotifier`. No external broker required. | No |
+| `maestro-messaging-rabbitmq` | RabbitMQ `WorkflowMessaging` via Spring AMQP. | Yes |
 | `maestro-lock-valkey` | Lettuce-based `DistributedLock`. | No |
+| `maestro-lock-postgres` | PostgreSQL-based `DistributedLock` using advisory locks. | No |
 | `maestro-admin` | Standalone dashboard app (Thymeleaf + HTMX, own Postgres schema). | Yes |
 | `maestro-admin-client` | Publishes lifecycle events to Kafka. Lightweight. | Minimal |
 | `maestro-test` | In-memory SPIs, controllable clock, `TestWorkflowEnvironment`. | No |
+
+> **Operators choose one messaging implementation and one lock implementation for their deployment.** For example, a Postgres-only deployment uses `maestro-messaging-postgres` + `maestro-lock-postgres`, while a full infrastructure deployment uses `maestro-messaging-kafka` + `maestro-lock-valkey`.
 
 ---
 

@@ -509,7 +509,7 @@ class OrderFulfilmentWorkflowTest {
 - Non-JVM languages
 - CQRS / Event Sourcing
 - Full workflow versioning / migration tooling
-- Messaging backends beyond Kafka
+- ~~Messaging backends beyond Kafka~~ (Now available: Postgres and RabbitMQ messaging backends have been implemented as SPI alternatives to Kafka.)
 
 ---
 

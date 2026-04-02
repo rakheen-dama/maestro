@@ -14,6 +14,10 @@ Build a crash-recoverable workflow in under 30 minutes. This tutorial takes you 
 | **Docker** | Runs Postgres, Kafka, and Valkey locally |
 | **Gradle 9** | Or use the Gradle wrapper (`./gradlew`) |
 
+> **Simpler setup available:** If you want to skip Kafka and Valkey entirely, see the
+> [`sample-postgres-only`](../maestro-samples/sample-postgres-only/) sample — it runs with
+> just PostgreSQL. The guide below uses the full Kafka + Valkey stack.
+
 ---
 
 ## Step 1: Create a Spring Boot 4 Project
@@ -149,12 +153,12 @@ maestro:
   store:
     type: postgres
   messaging:
-    type: kafka
+    type: kafka    # Also supports: postgres, rabbitmq
     topics:
       tasks: maestro.tasks.default
       signals: maestro.signals.my-service
   lock:
-    type: valkey
+    type: valkey   # Also supports: postgres
   worker:
     task-queues:
       - name: default
