@@ -30,4 +30,6 @@ include(
     "maestro-admin-client",
     "maestro-samples:sample-order-service",
     "maestro-samples:sample-payment-gateway",
+    "maestro-samples:sample-postgres-only",
+    "maestro-samples:sample-rabbitmq-order-service",
 )

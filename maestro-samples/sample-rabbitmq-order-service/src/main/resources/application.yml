@@ -1,0 +1,38 @@
+spring:
+  application:
+    name: sample-rabbitmq-order-service
+
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:maestro}
+    username: ${POSTGRES_USER:maestro}
+    password: ${POSTGRES_PASSWORD:maestro}
+
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+
+server:
+  port: ${SERVER_PORT:8084}
+
+maestro:
+  service-name: order-service
+
+  store:
+    type: postgres
+
+  messaging:
+    type: rabbitmq
+
+  lock:
+    type: postgres
+
+  worker:
+    task-queues:
+      - name: orders
+        concurrency: 5
+
+  admin:
+    events:
+      enabled: true

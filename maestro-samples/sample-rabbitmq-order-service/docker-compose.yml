@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: maestro
+      POSTGRES_USER: maestro
+      POSTGRES_PASSWORD: maestro
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  rabbitmq:
+    image: rabbitmq:4-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+
+  order-service:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        MODULE: maestro-samples/sample-rabbitmq-order-service
+    ports:
+      - "8084:8084"
+    environment:
+      POSTGRES_HOST: postgres
+      RABBITMQ_HOST: rabbitmq
+      SERVER_PORT: 8084
+    depends_on:
+      - postgres
+      - rabbitmq
+
+volumes:
+  pgdata:
+  rabbitmq-data:
