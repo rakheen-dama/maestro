@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+<body>
+<!--
+  Reusable status badge fragment.
+  Usage: <span th:replace="~{fragments/status-badge :: badge(${workflow.status()})}"></span>
+-->
+<span th:fragment="badge(status)"
+      class="badge"
+      th:classappend="'badge-' + ${#strings.toLowerCase(status)}"
+      th:text="${status}">STATUS</span>
+</body>
+</html>

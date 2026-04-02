@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+<body>
+<!--
+  Reusable pagination controls.
+  Parameters:
+    page      - the Page<T> object
+    baseUrl   - the HTMX fragment URL (e.g., /admin/fragments/workflows)
+    targetId  - the HTMX swap target element ID
+    extras    - additional query params to preserve (e.g., &service=foo&status=RUNNING)
+-->
+<div th:fragment="controls(page, baseUrl, targetId, extras)" class="pagination">
+    <span class="text-muted"
+          th:with="start=${page.offset() + 1}, end=${T(Math).min(page.offset() + page.limit(), (int) page.total())}"
+          th:text="|Showing ${start}–${end} of ${page.total()}|">
+        Showing 1-20 of 100
+    </span>
+
+    <div class="pagination-links" th:if="${page.totalPages() > 1}">
+        <!-- Previous -->
+        <a th:if="${page.hasPrevious()}"
+           role="button"
+           class="outline secondary"
+           th:with="prevOffset=${page.offset() - page.limit()}"
+           th:href="${baseUrl + '?offset=' + prevOffset + '&limit=' + page.limit() + (extras != null ? extras : '')}"
+           th:attr="hx-get=${baseUrl + '?offset=' + prevOffset + '&limit=' + page.limit() + (extras != null ? extras : '')},
+                    hx-target=${'#' + targetId},
+                    hx-swap=innerHTML"
+           href="#">Previous</a>
+        <a th:unless="${page.hasPrevious()}"
+           role="button"
+           class="outline secondary"
+           aria-disabled="true"
+           href="#">Previous</a>
+
+        <!-- Page indicator -->
+        <span role="button" class="outline" aria-disabled="true"
+              th:text="|${page.pageNumber()} / ${page.totalPages()}|">1 / 5</span>
+
+        <!-- Next -->
+        <a th:if="${page.hasNext()}"
+           role="button"
+           class="outline secondary"
+           th:with="nextOffset=${page.offset() + page.limit()}"
+           th:href="${baseUrl + '?offset=' + nextOffset + '&limit=' + page.limit() + (extras != null ? extras : '')}"
+           th:attr="hx-get=${baseUrl + '?offset=' + nextOffset + '&limit=' + page.limit() + (extras != null ? extras : '')},
+                    hx-target=${'#' + targetId},
+                    hx-swap=innerHTML"
+           href="#">Next</a>
+        <a th:unless="${page.hasNext()}"
+           role="button"
+           class="outline secondary"
+           aria-disabled="true"
+           href="#">Next</a>
+    </div>
+</div>
+</body>
+</html>

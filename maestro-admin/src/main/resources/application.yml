@@ -1,0 +1,33 @@
+spring:
+  application:
+    name: maestro-admin
+
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${ADMIN_DB:maestro_admin}
+    username: ${POSTGRES_USER:maestro}
+    password: ${POSTGRES_PASSWORD:maestro}
+
+  flyway:
+    locations: classpath:db/migration/admin
+    baseline-on-migrate: true
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:29092}
+    consumer:
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
+
+  # Thymeleaf template caching is enabled by default.
+  # Disable for development: --spring.thymeleaf.cache=false
+
+server:
+  port: ${SERVER_PORT:8090}
+
+maestro:
+  admin:
+    events-topic: ${ADMIN_EVENTS_TOPIC:maestro.admin.events}
+    consumer-group: maestro-admin
+    signal-topic-prefix: maestro.signals.

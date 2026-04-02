@@ -1,0 +1,172 @@
+# Maestro Demo — Full e-commerce workflow across two services + admin dashboard.
+#
+# Usage:
+#   docker-compose up --build
+#
+# Services:
+#   - postgres:16       → Workflow state store (Flyway auto-migrates)
+#   - valkey:8          → Distributed locks and signal notifications
+#   - kafka (KRaft)     → Task dispatch, signals, cross-service events
+#   - kafka-init        → Pre-creates all required Kafka topics
+#   - order-service     → REST API + OrderFulfilmentWorkflow (port 8081)
+#   - payment-gateway   → PaymentProcessingWorkflow with durable retries (port 8082)
+#   - admin-dashboard   → Maestro Admin monitoring dashboard (port 8090)
+
+name: maestro-infra
+
+services:
+
+  # ── Infrastructure ─────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: maestro
+      POSTGRES_USER: maestro
+      POSTGRES_PASSWORD: maestro
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/init-admin-db.sh:/docker-entrypoint-initdb.d/init-admin-db.sh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U maestro -d maestro"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  kafka:
+    image: apache/kafka:3.9.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      CLUSTER_ID: "maestro-demo-cluster-001"
+    ports:
+      - "29092:29092"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 15
+      start_period: 20s
+
+  kafka-init:
+    image: apache/kafka:3.9.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Creating Kafka topics..."
+        KAFKA="/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092"
+        $$KAFKA --create --if-not-exists --topic maestro.tasks.orders          --partitions 3 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic maestro.tasks.payments        --partitions 3 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic maestro.signals.order-service  --partitions 3 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic maestro.signals.payment-gateway --partitions 3 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic maestro.admin.events          --partitions 1 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic payments.requests             --partitions 3 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic payments.results              --partitions 3 --replication-factor 1
+        echo "All Kafka topics created successfully."
+
+  # ── Application Services ────────��──────────────────────────────────
+
+  order-service:
+    build:
+      context: .
+      target: order-service
+    ports:
+      - "8081:8081"
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: maestro
+      POSTGRES_USER: maestro
+      POSTGRES_PASSWORD: maestro
+      KAFKA_BOOTSTRAP: kafka:9092
+      VALKEY_HOST: valkey
+      VALKEY_PORT: 6379
+      SERVER_PORT: 8081
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+
+  payment-gateway:
+    build:
+      context: .
+      target: payment-gateway
+    ports:
+      - "8082:8082"
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: maestro
+      POSTGRES_USER: maestro
+      POSTGRES_PASSWORD: maestro
+      KAFKA_BOOTSTRAP: kafka:9092
+      VALKEY_HOST: valkey
+      VALKEY_PORT: 6379
+      SERVER_PORT: 8082
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+
+  # ── Admin Dashboard ──────────────────────────────────────────────
+
+  admin-dashboard:
+    build:
+      context: .
+      target: admin-dashboard
+    ports:
+      - "8090:8090"
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      ADMIN_DB: maestro_admin
+      POSTGRES_USER: maestro
+      POSTGRES_PASSWORD: maestro
+      KAFKA_BOOTSTRAP: kafka:9092
+      SERVER_PORT: 8090
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:

@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+<body>
+<nav th:fragment="nav(activePage)" class="container admin-nav">
+    <ul>
+        <li><strong>Maestro Admin</strong></li>
+    </ul>
+    <ul>
+        <li><a th:href="@{/admin}"
+               th:attr="aria-current=${activePage == 'overview' ? 'page' : null}">Overview</a></li>
+        <li><a th:href="@{/admin/workflows}"
+               th:attr="aria-current=${activePage == 'workflows' ? 'page' : null}">Workflows</a></li>
+        <li><a th:href="@{/admin/failed}"
+               th:attr="aria-current=${activePage == 'failed' ? 'page' : null}">Failed</a></li>
+        <li><a th:href="@{/admin/signals}"
+               th:attr="aria-current=${activePage == 'signals' ? 'page' : null}">Signals</a></li>
+        <li><a th:href="@{/admin/timers}"
+               th:attr="aria-current=${activePage == 'timers' ? 'page' : null}">Timers</a></li>
+    </ul>
+</nav>
+</body>
+</html>

@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en" data-theme="light">
+<head th:replace="~{fragments/head :: head('Failed Workflows')}">
+    <title>Failed Workflows — Maestro Admin</title>
+</head>
+<body>
+    <nav th:replace="~{fragments/nav :: nav('failed')}"></nav>
+
+    <main class="container">
+        <div th:insert="~{fragments/flash :: messages}"></div>
+
+        <hgroup>
+            <h1>Failed Workflows</h1>
+            <p>Workflows that have failed and may need manual intervention</p>
+        </hgroup>
+
+        <!-- Table + pagination (HTMX swappable) -->
+        <div id="failed-results">
+            <div th:insert="~{fragments/failed-table :: content}"></div>
+        </div>
+    </main>
+</body>
+</html>

@@ -1,0 +1,43 @@
+# Java / JVM
+*.class
+*.jar
+*.war
+*.ear
+hs_err_pid*
+replay_pid*
+
+# Build tools
+.gradle/
+build/
+out/
+target/
+
+# Spring Boot
+*.log
+logs/
+spring.log
+
+# IDEs
+.idea/
+*.iml
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Docker
+.docker/
+docker-data/
+docker-compose.override.yml
+
+# Claude Code / agent artifacts
+.claude/
+.codex/
+codex/
+/.serena/

@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+<body>
+<!--
+  Workflow table fragment — returned as a partial for HTMX filtering, search, and pagination.
+  Model attributes: page (Page<AdminWorkflow>), service, status, search
+-->
+<div th:fragment="content">
+
+    <div th:if="${page.total() == 0}" class="empty-state">
+        <p>No workflows found matching your filters.</p>
+    </div>
+
+    <div th:unless="${page.total() == 0}">
+        <figure>
+            <table>
+                <thead>
+                    <tr>
+                        <th scope="col">Workflow ID</th>
+                        <th scope="col">Type</th>
+                        <th scope="col">Service</th>
+                        <th scope="col">Status</th>
+                        <th scope="col">Last Step</th>
+                        <th scope="col">Started</th>
+                        <th scope="col">Updated</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr th:each="wf : ${page.items()}">
+                        <td>
+                            <a class="text-mono"
+                               th:href="@{/admin/workflows/{id}(id=${wf.workflowId()})}"
+                               th:text="${wf.workflowId()}">order-12345</a>
+                        </td>
+                        <td th:text="${wf.workflowType()}">OrderWorkflow</td>
+                        <td th:text="${wf.serviceName()}">order-service</td>
+                        <td>
+                            <span th:replace="~{fragments/status-badge :: badge(${wf.status()})}"></span>
+                        </td>
+                        <td>
+                            <span th:if="${wf.lastStepName() != null}" th:text="${wf.lastStepName()}">step</span>
+                            <span th:if="${wf.lastStepName() == null}" class="text-muted">&mdash;</span>
+                        </td>
+                        <td th:text="${wf.startedAt()}">2024-01-01T00:00:00Z</td>
+                        <td th:text="${wf.updatedAt()}">2024-01-01T00:00:00Z</td>
+                    </tr>
+                </tbody>
+            </table>
+        </figure>
+
+        <!-- Pagination -->
+        <div th:with="extras=${(service != null and !service.isEmpty() ? '&amp;service=' + service : '') + (status != null and !status.isEmpty() ? '&amp;status=' + status : '') + (search != null and !search.isEmpty() ? '&amp;search=' + search : '')}">
+            <div th:replace="~{fragments/pagination :: controls(${page}, '/admin/fragments/workflows', 'workflow-results', ${extras})}"></div>
+        </div>
+    </div>
+</div>
+</body>
+</html>

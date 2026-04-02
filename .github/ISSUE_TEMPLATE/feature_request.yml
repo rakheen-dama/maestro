@@ -1,0 +1,60 @@
+name: Feature Request
+description: Suggest an enhancement or new feature for Maestro
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement! Please describe what you'd like and why.
+
+  - type: dropdown
+    id: module
+    attributes:
+      label: Module
+      description: Which module would this feature affect?
+      options:
+        - maestro-core
+        - maestro-spring-boot-starter
+        - maestro-store-postgres
+        - maestro-store-jdbc
+        - maestro-messaging-kafka
+        - maestro-lock-valkey
+        - maestro-admin
+        - maestro-admin-client
+        - maestro-test
+        - New module
+        - Other / Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: What problem does this feature solve? Is this related to a frustration?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe the solution you'd like. Include API sketches or pseudocode if helpful.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any alternative solutions or workarounds you've considered.
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any other context, examples, or references.
+    validations:
+      required: false
