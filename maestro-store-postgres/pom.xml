@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.b2mash.maestro</groupId>
+        <artifactId>maestro-parent</artifactId>
+        <version>${revision}</version>
+    </parent>
+
+    <artifactId>maestro-store-postgres</artifactId>
+    <name>maestro-store-postgres</name>
+    <description>Maestro Store Postgres — PostgreSQL WorkflowStore with Flyway migrations</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.b2mash.maestro</groupId>
+            <artifactId>maestro-store-jdbc</artifactId>
+            <version>${revision}</version>
+        </dependency>
+        <!-- was implementation() in Gradle (see maestro-store-jdbc note) -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+        </dependency>
+        <!-- Flyway — this module owns the migration SQL files in src/main/resources/db/migration/
+             Consumers get Flyway transitively so they don't need to declare it separately. -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

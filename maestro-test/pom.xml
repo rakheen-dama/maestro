@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.b2mash.maestro</groupId>
+        <artifactId>maestro-parent</artifactId>
+        <version>${revision}</version>
+    </parent>
+
+    <artifactId>maestro-test</artifactId>
+    <name>maestro-test</name>
+    <description>Maestro Test — In-memory SPIs, controllable clock, TestWorkflowEnvironment</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.b2mash.maestro</groupId>
+            <artifactId>maestro-core</artifactId>
+            <version>${revision}</version>
+        </dependency>
+        <!-- was: api(libs.junit.jupiter) — compile scope is intentional here,
+             this module IS a test library -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>tools.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+    </dependencies>
+</project>

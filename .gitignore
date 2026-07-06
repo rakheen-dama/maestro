@@ -11,6 +11,7 @@ replay_pid*
 build/
 out/
 target/
+.flattened-pom.xml
 
 # Spring Boot
 *.log

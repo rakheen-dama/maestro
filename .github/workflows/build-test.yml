@@ -24,17 +24,15 @@ jobs:
         with:
           java-version: '25'
           distribution: 'temurin'
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+          cache: maven
 
       - name: Build and test
-        run: ./gradlew build
+        run: mvn -B verify
 
       - name: Upload test reports
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: test-reports
-          path: '**/build/reports/tests/'
+          path: '**/target/surefire-reports/'
           retention-days: 7

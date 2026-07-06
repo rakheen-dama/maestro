@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.b2mash.maestro</groupId>
+        <artifactId>maestro-parent</artifactId>
+        <version>${revision}</version>
+    </parent>
+
+    <artifactId>maestro-store-jdbc</artifactId>
+    <name>maestro-store-jdbc</name>
+    <description>Maestro Store JDBC — Abstract JDBC WorkflowStore implementation</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.b2mash.maestro</groupId>
+            <artifactId>maestro-core</artifactId>
+            <version>${revision}</version>
+        </dependency>
+        <!-- was implementation() in Gradle: internal-only, hidden from consumers'
+             compile classpath. Maven's compile scope leaks it transitively. -->
+        <dependency>
+            <groupId>tools.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+    </dependencies>
+</project>

@@ -59,10 +59,10 @@ Ensure `main` is in a releasable state:
 git checkout main && git pull
 
 # Run full build + tests
-./gradlew build
+./mvnw verify
 
 # Verify Javadoc generates cleanly
-./gradlew aggregateJavadoc
+./mvnw -DskipTests compile javadoc:aggregate
 ```
 
 ### 2. Tag the Release
@@ -89,16 +89,16 @@ The tag push triggers two workflows:
 
 ### 4. Post-Release
 
-Update the version in `gradle.properties` to the next snapshot:
+Update the `<revision>` property in the root `pom.xml` to the next snapshot:
 
 ```bash
 # e.g., after releasing 0.3.0
 # macOS/BSD:
-sed -i '' 's/version=.*/version=0.4.0-SNAPSHOT/' gradle.properties
+sed -i '' 's|<revision>.*</revision>|<revision>0.4.0-SNAPSHOT</revision>|' pom.xml
 # Linux (GNU sed):
-# sed -i 's/version=.*/version=0.4.0-SNAPSHOT/' gradle.properties
+# sed -i 's|<revision>.*</revision>|<revision>0.4.0-SNAPSHOT</revision>|' pom.xml
 
-git add gradle.properties
+git add pom.xml
 git commit -m "chore: bump version to 0.4.0-SNAPSHOT"
 git push origin main
 ```
@@ -116,7 +116,10 @@ The following modules are published to Maven Central:
 | `maestro-store-jdbc` | `io.b2mash.maestro:maestro-store-jdbc` |
 | `maestro-store-postgres` | `io.b2mash.maestro:maestro-store-postgres` |
 | `maestro-messaging-kafka` | `io.b2mash.maestro:maestro-messaging-kafka` |
+| `maestro-messaging-postgres` | `io.b2mash.maestro:maestro-messaging-postgres` |
+| `maestro-messaging-rabbitmq` | `io.b2mash.maestro:maestro-messaging-rabbitmq` |
 | `maestro-lock-valkey` | `io.b2mash.maestro:maestro-lock-valkey` |
+| `maestro-lock-postgres` | `io.b2mash.maestro:maestro-lock-postgres` |
 | `maestro-admin-client` | `io.b2mash.maestro:maestro-admin-client` |
 | `maestro-test` | `io.b2mash.maestro:maestro-test` |
 
@@ -134,7 +137,7 @@ Maestro follows [Semantic Versioning](https://semver.org/):
 - **MINOR** — New features, backward-compatible SPI additions
 - **PATCH** — Bug fixes, performance improvements
 
-During development, `gradle.properties` uses a `-SNAPSHOT` suffix (e.g., `0.4.0-SNAPSHOT`). Release builds override this via the `-Pversion=X.Y.Z` flag from the git tag.
+During development, the `<revision>` property in the root `pom.xml` uses a `-SNAPSHOT` suffix (e.g., `0.4.0-SNAPSHOT`). Release builds override this via the `-Drevision=X.Y.Z` flag from the git tag; the flatten-maven-plugin resolves the property into the published POMs.
 
 ---
 
@@ -144,12 +147,12 @@ During development, `gradle.properties` uses a `-SNAPSHOT` suffix (e.g., `0.4.0-
 
 - **401 Unauthorized**: Check `OSSRH_USERNAME` / `OSSRH_PASSWORD` secrets. Tokens expire — regenerate at central.sonatype.com.
 - **Signing error**: Verify `GPG_SIGNING_KEY` contains the full armored key including headers. Verify `GPG_SIGNING_PASSWORD` matches.
-- **Validation failure**: Maven Central requires: groupId, artifactId, version, name, description, URL, license, developers, SCM. All are configured in `maestro.library-conventions.gradle.kts`.
+- **Validation failure**: Maven Central requires: groupId, artifactId, version, name, description, URL, license, developers, SCM. All are configured in the root `pom.xml` and inherited by every module.
 
 ### Javadoc workflow fails
 
 - **Java 25 not found**: Verify `temurin` distribution supports Java 25 in `actions/setup-java`. Fallback: switch to `zulu` or `oracle`.
-- **Classpath errors**: The `aggregateJavadoc` task collects classpaths from all library modules. If a new dependency causes resolution issues, check that all modules compile first (`./gradlew classes`).
+- **Classpath errors**: The `javadoc:aggregate` goal collects classpaths from all library modules. If a new dependency causes resolution issues, check that all modules compile first (`./mvnw -DskipTests compile`).
 
 ### CI build times are too long
 

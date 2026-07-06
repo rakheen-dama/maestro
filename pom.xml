@@ -1,0 +1,374 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Root parent + aggregator POM.
+
+  Replaces (from the Gradle build):
+    - settings.gradle.kts            → <modules>
+    - gradle.properties              → <revision> property (CI-friendly versioning)
+    - gradle/libs.versions.toml      → <properties> + <dependencyManagement>
+    - maestro.java-conventions       → compiler/surefire config + inherited baseline <dependencies>
+    - maestro.library-conventions    → POM metadata below + the `release` profile
+    - build.gradle.kts (nexus-publish) → central-publishing-maven-plugin in the `release` profile
+
+  Versioning: single source of truth is <revision>. Releases override it from the
+  git tag: `mvn -Drevision=0.3.0 deploy -Prelease`. The flatten-maven-plugin
+  resolves ${revision} into the POMs that get published (mandatory with
+  CI-friendly versions, otherwise consumers see the literal `${revision}`).
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>io.b2mash.maestro</groupId>
+    <artifactId>maestro-parent</artifactId>
+    <version>${revision}</version>
+    <packaging>pom</packaging>
+
+    <name>Maestro</name>
+    <description>Maestro — Embeddable Durable Workflow Engine for Spring Boot</description>
+    <url>https://github.com/maestro-workflow/maestro</url>
+
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0</url>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <id>maestro-workflow</id>
+            <name>Maestro Contributors</name>
+            <url>https://github.com/maestro-workflow/maestro/graphs/contributors</url>
+        </developer>
+    </developers>
+
+    <scm>
+        <connection>scm:git:git://github.com/maestro-workflow/maestro.git</connection>
+        <developerConnection>scm:git:ssh://github.com/maestro-workflow/maestro.git</developerConnection>
+        <url>https://github.com/maestro-workflow/maestro</url>
+    </scm>
+
+    <modules>
+        <module>maestro-core</module>
+        <module>maestro-spring-boot-starter</module>
+        <module>maestro-store-jdbc</module>
+        <module>maestro-store-postgres</module>
+        <module>maestro-messaging-kafka</module>
+        <module>maestro-messaging-postgres</module>
+        <module>maestro-messaging-rabbitmq</module>
+        <module>maestro-lock-valkey</module>
+        <module>maestro-lock-postgres</module>
+        <module>maestro-test</module>
+        <module>maestro-admin</module>
+        <module>maestro-admin-client</module>
+        <module>maestro-samples/sample-order-service</module>
+        <module>maestro-samples/sample-payment-gateway</module>
+        <module>maestro-samples/sample-postgres-only</module>
+        <module>maestro-samples/sample-rabbitmq-order-service</module>
+    </modules>
+
+    <properties>
+        <!-- The single project version (was: gradle.properties `version=`) -->
+        <revision>0.3.0-SNAPSHOT</revision>
+
+        <maven.compiler.release>25</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!-- Dependency versions (was: gradle/libs.versions.toml [versions]) -->
+        <spring-boot.version>4.0.5</spring-boot.version>
+        <jackson.version>3.0.1</jackson.version>
+        <slf4j.version>2.0.17</slf4j.version>
+        <junit-jupiter.version>6.0.1</junit-jupiter.version>
+        <flyway.version>11.14.1</flyway.version>
+        <lettuce.version>6.8.1.RELEASE</lettuce.version>
+        <postgresql.version>42.7.8</postgresql.version>
+        <testcontainers.version>2.0.1</testcontainers.version>
+        <awaitility.version>4.3.0</awaitility.version>
+        <jspecify.version>1.0.0</jspecify.version>
+
+        <!-- Plugin versions -->
+        <maven-compiler-plugin.version>3.14.0</maven-compiler-plugin.version>
+        <maven-surefire-plugin.version>3.5.4</maven-surefire-plugin.version>
+        <maven-source-plugin.version>3.3.1</maven-source-plugin.version>
+        <maven-javadoc-plugin.version>3.11.2</maven-javadoc-plugin.version>
+        <maven-gpg-plugin.version>3.2.7</maven-gpg-plugin.version>
+        <flatten-maven-plugin.version>1.7.0</flatten-maven-plugin.version>
+        <central-publishing-maven-plugin.version>0.8.0</central-publishing-maven-plugin.version>
+
+        <!-- Modules that are NOT published set this to true (admin, samples) -->
+        <skipPublishing>false</skipPublishing>
+    </properties>
+
+    <!--
+      Versions pinned explicitly — the Spring Boot BOM is deliberately NOT imported
+      here. Spring modules import it in their own <dependencyManagement>, which
+      keeps maestro-core's published POM completely free of Spring references.
+      (was: maestro.java-conventions / spring-library-conventions split)
+    -->
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.jspecify</groupId>
+                <artifactId>jspecify</artifactId>
+                <version>${jspecify.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.slf4j</groupId>
+                <artifactId>slf4j-api</artifactId>
+                <version>${slf4j.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>tools.jackson.core</groupId>
+                <artifactId>jackson-databind</artifactId>
+                <version>${jackson.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.postgresql</groupId>
+                <artifactId>postgresql</artifactId>
+                <version>${postgresql.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.flywaydb</groupId>
+                <artifactId>flyway-core</artifactId>
+                <version>${flyway.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.flywaydb</groupId>
+                <artifactId>flyway-database-postgresql</artifactId>
+                <version>${flyway.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.lettuce</groupId>
+                <artifactId>lettuce-core</artifactId>
+                <version>${lettuce.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.junit</groupId>
+                <artifactId>junit-bom</artifactId>
+                <version>${junit-jupiter.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.awaitility</groupId>
+                <artifactId>awaitility</artifactId>
+                <version>${awaitility.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers</artifactId>
+                <version>${testcontainers.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-junit-jupiter</artifactId>
+                <version>${testcontainers.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-postgresql</artifactId>
+                <version>${testcontainers.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-kafka</artifactId>
+                <version>${testcontainers.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-rabbitmq</artifactId>
+                <version>${testcontainers.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <!--
+      Baseline dependencies inherited by EVERY module
+      (was: maestro.java-conventions `dependencies {}` block)
+    -->
+    <dependencies>
+        <dependency>
+            <groupId>org.jspecify</groupId>
+            <artifactId>jspecify</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>${maven-compiler-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>${maven-surefire-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-source-plugin</artifactId>
+                    <version>${maven-source-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-javadoc-plugin</artifactId>
+                    <version>${maven-javadoc-plugin.version}</version>
+                    <configuration>
+                        <doclint>none</doclint>
+                        <failOnError>false</failOnError>
+                        <quiet>true</quiet>
+                        <links>
+                            <link>https://docs.oracle.com/en/java/javase/25/docs/api/</link>
+                        </links>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-gpg-plugin</artifactId>
+                    <version>${maven-gpg-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                    <version>${spring-boot.version}</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <parameters>true</parameters>
+                    <compilerArgs>
+                        <arg>-Xlint:all</arg>
+                        <arg>-Xlint:-processing</arg>
+                        <arg>-Xlint:-serial</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+
+            <!-- Resolves ${revision} in published/installed POMs (CI-friendly versioning) -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>flatten-maven-plugin</artifactId>
+                <version>${flatten-maven-plugin.version}</version>
+                <configuration>
+                    <updatePomFile>true</updatePomFile>
+                    <!-- `ossrh` mode (not `resolveCiFriendliesOnly`): fully resolves
+                         ${revision} in inter-module dependency versions and keeps the
+                         metadata Maven Central requires. resolveCiFriendliesOnly leaves
+                         literal ${revision} in <dependency> versions with no property
+                         to resolve it — broken POMs for consumers. -->
+                    <flattenMode>ossrh</flattenMode>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>flatten</id>
+                        <phase>process-resources</phase>
+                        <goals>
+                            <goal>flatten</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>flatten-clean</id>
+                        <phase>clean</phase>
+                        <goals>
+                            <goal>clean</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+    <!--
+      Activate with -Prelease. Attaches sources + javadoc JARs, signs everything,
+      and uploads to Maven Central via the Central Portal.
+      (was: maestro.library-conventions + nexus-publish plugin)
+    -->
+    <profiles>
+        <profile>
+            <id>release</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <goals>
+                                    <goal>jar-no-fork</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>attach-javadoc</id>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>sign</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <!-- Non-interactive signing in CI; passphrase from MAVEN_GPG_PASSPHRASE -->
+                            <gpgArguments>
+                                <arg>--pinentry-mode</arg>
+                                <arg>loopback</arg>
+                            </gpgArguments>
+                        </configuration>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>${central-publishing-maven-plugin.version}</version>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <publishingServerId>central</publishingServerId>
+                            <autoPublish>true</autoPublish>
+                            <waitUntil>published</waitUntil>
+                            <skipPublishing>${skipPublishing}</skipPublishing>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

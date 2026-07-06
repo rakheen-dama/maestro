@@ -27,12 +27,12 @@ jobs:
         with:
           java-version: '25'
           distribution: 'temurin'
+          cache: maven
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-
+      # was: ./gradlew aggregateJavadoc — javadoc:aggregate is built into the
+      # plugin; modules with maven.javadoc.skip=true (admin, samples) are excluded.
       - name: Generate aggregate Javadoc
-        run: ./gradlew aggregateJavadoc
+        run: mvn -B -DskipTests compile javadoc:aggregate
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
@@ -40,7 +40,7 @@ jobs:
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: build/docs/aggregateJavadoc
+          path: target/reports/apidocs
 
       - name: Deploy to GitHub Pages
         id: deployment
