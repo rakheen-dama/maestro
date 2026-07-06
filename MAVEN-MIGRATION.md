@@ -94,6 +94,11 @@ that Maven installs/deploys instead of the source POM.
   version everywhere, including inter-module dependencies.
 - `mvn -DskipTests compile javadoc:aggregate` — output at `target/reports/apidocs`,
   covering exactly the library modules (admin app + samples excluded).
+- `./mvnw verify` with Docker running — full build green in 1:31, zero failures.
+  All Testcontainers suites executed: `maestro-store-postgres` (Postgres),
+  `maestro-messaging-kafka` (Kafka), `maestro-lock-valkey` (Valkey).
+  `maestro-messaging-postgres`, `maestro-messaging-rabbitmq`, and
+  `maestro-lock-postgres` have no test sources yet (true under Gradle too),
+  so their near-instant module times are expected, not skipped tests.
 
-Not verified locally: Testcontainers-based integration tests (need Docker running)
-and an actual deploy to Central.
+Not verified locally: an actual deploy to Central.
