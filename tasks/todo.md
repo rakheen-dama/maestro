@@ -18,10 +18,20 @@ Branch: `test/integration-suite-p0-p6` (off `main` after PR #26 merged).
   - **BUG9 FOUND + FIXED (library):** `PostgresNotificationListener.listen()` only queued the LISTEN → cross-instance wake silently lossy. My earlier "production is not exposed" claim was wrong; the workaround it justified was removed
   - **BUG7 FOUND + FIXED (library):** version conflict on finalise recorded a *successful* workflow as FAILED (+ saga compensation after success)
 - [x] P3 — Backend modules: **37 tests** — `PostgresDistributedLockContractTest` (24) + messaging (13). Note: lock-postgres was **not** testless (4 pre-existing unit tests); the plan's premise was wrong. messaging-postgres genuinely had zero
-- [ ] P4 — Loan E2E: nightly CI workflow added (`e2e-nightly.yml`, schedule + manual dispatch, logs uploaded); scenario 6 (two-instance loan-application) added to `run-e2e.sh`. **Verification run in progress**
+- [x] P4 — Loan E2E: nightly CI workflow (`e2e-nightly.yml`, schedule + manual dispatch, logs+pids uploaded); scenario 6 (two-instance loan-application, driven entirely through node B) added. **6/6 PASS** on a clean run (ports verified free, containers down first)
+  - Kept as a script rather than a JUnit rewrite: it already does real `kill -9`, restart and PID identity checks; reimplementing risked losing exactly the assertions `tasks/lessons.md` exists for
+  - First run FAILED 6/6 — surfaced that `maestro.admin.events` was never pre-created, so the producer blocked 60s (`max.block.ms`) inside `startWorkflow`. The sample sets `maestro.admin.events.enabled: false` to avoid this, but that property is **read by nothing**. Topic now pre-created; the inert property is logged as a library follow-up
 - [x] P5 — Shutdown contract: **13 tests** (7 unit + 6 integration), RED-first
   - **BUG6 FOUND + FIXED (library):** shutdown marked parked workflows FAILED *and compensated them*. Typed `ExecutorShutdownException`; parked workflows stay `WAITING_*` and recoverable
-- [ ] P6 — Guardrails: `MaestroClient` (8 tests) done; health-indicator audit answered (**not implemented at all** — docs/code gap); determinism replay-diff + coverage gate outstanding
+- [x] P6 — Guardrails:
+  - `MaestroClient` — 8 tests through the real auto-config chain (first dedicated test class); mutation-verified
+  - Health-indicator audit answered: **not implemented at all** — no `io.b2mash.maestro.spring.health` package exists though `CLAUDE.md` documents `MaestroHealthIndicator`. Docs/code gap, not a test gap; not built (new feature, out of scope)
+  - Module test-coverage gate wired into `check`: fails on any `maestro-*` module with production code and zero tests, with a documented allowlist for the four known-untested modules (admin, admin-client, messaging-rabbitmq, store-jdbc). Proven to bite by removing an entry
+  - `DeterminismChecker` in `maestro-test` — runs a workflow N times and diffs the decision sequences; 3 tests prove it passes a deterministic workflow and catches a branching one, naming the divergence point
+
+## Final verification
+- [x] `./gradlew build` green repo-wide (includes the 65-test integration module + coverage gate)
+- [x] Loan E2E 6/6 green on a clean run
 
 ---
 

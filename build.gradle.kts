@@ -18,6 +18,72 @@ nexusPublishing {
     }
 }
 
+// ── Module test-coverage gate ────────────────────────────────────────────
+//
+// Every module with production code must carry at least one test class. The
+// gap this guards against is not "low coverage" but "no tests at all", which
+// is how maestro-messaging-postgres shipped in releases untested.
+//
+// The modules below have no tests today. They are listed explicitly so the
+// gate can pass on a known baseline while still failing the moment a NEW
+// untested module appears — and so the debt is visible in the build rather
+// than only in a document. Remove a module from this set when it gets a test;
+// the gate then keeps it honest.
+val modulesWithoutTests = setOf(
+    "maestro-admin",              // dashboard app — see docs/test-plan.md §1
+    "maestro-admin-client",       // lifecycle event publisher
+    "maestro-messaging-rabbitmq", // secondary backend
+    "maestro-store-jdbc",         // abstract base, exercised via maestro-store-postgres
+)
+
+val verifyModuleTestCoverage = tasks.register("verifyModuleTestCoverage") {
+    group = "verification"
+    description = "Fails if a module with production code has no test classes."
+
+    // Library modules only. The sample applications are demonstrations, not
+    // shipped artifacts, and are covered by the loan-origination E2E instead.
+    val moduleReports = subprojects.filter { it.name.startsWith("maestro-") }.map { module ->
+        val hasMain = module.file("src/main/java").isDirectory
+        val testDir = module.file("src/test/java")
+        val testCount = if (testDir.isDirectory) {
+            testDir.walkTopDown().count {
+                it.isFile && it.name.endsWith(".java") &&
+                    (it.name.contains("Test") || it.name.endsWith("IT.java"))
+            }
+        } else 0
+        Triple(module.name, hasMain, testCount)
+    }
+    val allowlist = modulesWithoutTests
+
+    doLast {
+        val offenders = moduleReports
+            .filter { (name, hasMain, count) -> hasMain && count == 0 && name !in allowlist }
+            .map { it.first }
+        if (offenders.isNotEmpty()) {
+            throw GradleException(
+                "These modules have production code but no test classes: " +
+                    offenders.sorted().joinToString(", ") +
+                    ". Add a test, or add the module to `modulesWithoutTests` in the root " +
+                    "build with a comment explaining why."
+            )
+        }
+        // Surface the accepted debt on every run so it does not go quiet.
+        val stale = moduleReports.filter { (name, _, count) -> name in allowlist && count > 0 }
+        if (stale.isNotEmpty()) {
+            logger.lifecycle(
+                "Module(s) now have tests and should be removed from `modulesWithoutTests`: " +
+                    stale.joinToString(", ") { it.first }
+            )
+        }
+        logger.lifecycle(
+            "Test-coverage gate: ${moduleReports.count { it.second }} modules with production " +
+                "code, ${allowlist.size} accepted without tests."
+        )
+    }
+}
+
+tasks.named("check") { dependsOn(verifyModuleTestCoverage) }
+
 // Aggregate Javadoc across all publishable library modules
 val libraryModules = listOf(
     "maestro-core",
