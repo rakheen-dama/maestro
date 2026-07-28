@@ -104,9 +104,13 @@ sequenceDiagram
    `PaymentResult` event. The Order Service has a `@MaestroSignalListener` that
    maps this event to a workflow signal.
 
-7. **Order Workflow resumes.** The signal wakes the workflow (via Valkey pub/sub
-   for instant notification, or via the next poll cycle if Valkey is unavailable).
-   The workflow continues with shipment and notification activities.
+7. **Order Workflow resumes.** If the workflow is parked on the same instance
+   that ingested the signal, it is unparked directly. If it is parked on another
+   instance, the signal notifier (Valkey pub/sub or Postgres LISTEN/NOTIFY)
+   wakes it. If notification fails or no notifier is configured, the parked
+   workflow finds the persisted signal via its periodic store re-check (every
+   30 seconds) — it is never lost. The workflow continues with shipment and
+   notification activities.
 
 The key insight: neither service knows it is talking to another Maestro workflow.
 The Order Service publishes a `PaymentRequest` and waits for a `PaymentResult`.
@@ -142,9 +146,11 @@ public SignalRouting routePaymentResult(PaymentResultEvent event) {
    - **What payload** to deliver (`payload`)
 3. Maestro persists the signal to Postgres immediately. This is critical --
    even if the target workflow is not currently running, the signal is safe.
-4. Maestro notifies the target workflow via Valkey pub/sub for instant wake-up.
-   If Valkey is unavailable, the workflow will pick up the signal on its next
-   poll cycle. Either way, the signal is never lost.
+4. Maestro unparks the workflow directly if it is waiting on this instance, and
+   publishes a notification (Valkey pub/sub or Postgres LISTEN/NOTIFY) to wake
+   it if it is parked on another instance. If notification fails or no notifier
+   is configured, the workflow picks up the persisted signal via its periodic
+   store re-check (every 30 seconds). Either way, the signal is never lost.
 
 **Design principle:** The listener method should be a thin routing layer. Extract
 the workflow ID, map the payload, and return. Business logic belongs in the
@@ -269,8 +275,9 @@ var results = workflow.parallel(List.of(
 ));
 ```
 
-Both branches run concurrently on virtual threads. Sequence numbers use
-compound keys (`5.0`, `5.1`) so each branch's memoization is independent.
+Both branches run concurrently on virtual threads. Each branch is allocated
+its own block of sequence numbers (branch *i* of a fork at parent sequence `p`
+starts at `p*1000 + (i+1)*1000`) so each branch's memoization is independent.
 
 ### Cross-service signals with saga compensation
 
@@ -385,44 +392,53 @@ the source of truth -- Postgres is.
 
 | Key Pattern | Purpose | TTL |
 |---|---|---|
-| `maestro:lock:workflow:{workflowId}` | Workflow instance lock | 30s (auto-renewed) |
-| `maestro:dedup:{workflowId}:{seq}` | Activity deduplication | 5m |
+| `maestro:lock:workflow:{workflowId}` | Workflow instance lock | 30s (renewed every 10s) |
+| `maestro:lock:activity:{workflowId}:{seq}` | Activity execution lock (doubles as dedup) | activity timeout + 10s |
 | `maestro:leader:timer-poller:{service}` | Timer polling leader election | 15s |
 | `maestro:signal:{workflowId}` (pub/sub) | Signal notification channel | N/A |
 
 ### What each key does
 
 **Workflow lock** -- Ensures only one node executes a workflow instance at a
-time. The lock is acquired when a workflow starts executing and automatically
-renewed while it runs. If a node crashes, the lock expires after 30 seconds,
-allowing another node to pick up the workflow during recovery.
+time. The lock is acquired before the workflow's virtual thread launches and
+renewed every 10 seconds while it runs — including while parked awaiting
+signals or timers. If a node crashes, the lock expires after 30 seconds,
+allowing another node's periodic recovery poller (`maestro.recovery.*`) to
+pick up the workflow.
 
-**Activity dedup** -- Prevents the same activity from executing twice during
-recovery. When a workflow replays after a crash, it checks both the Postgres
-event log (authoritative) and the Valkey dedup key (fast path). The 5-minute
-TTL covers any reasonable recovery window.
+**Activity lock** -- Held around a single activity execution as a best-effort
+guard against concurrent duplicate execution; it doubles as the fast-path
+dedup key. The authoritative dedup remains the Postgres unique index on
+`(workflow_instance_id, sequence_number)` — a duplicate execution's persist
+loses and the stored result is returned instead.
 
 **Timer leader** -- Ensures only one node in the cluster polls for due timers.
 The 15-second TTL means leadership transfers quickly if the current leader
 goes down.
 
-**Signal pub/sub** -- Provides instant wake-up when a signal is delivered. When
-a `@MaestroSignalListener` persists a signal, it also publishes a notification
-on this channel. The workflow's virtual thread is waiting on a
-`CountDownLatch` that the subscriber releases.
+**Signal pub/sub** -- Provides instant cross-instance wake-up when a signal is
+delivered. While a workflow is parked in `awaitSignal`, its instance subscribes
+to this channel; delivering a signal anywhere publishes a notification whose
+callback unparks the waiting virtual thread, which then reads the persisted
+signal from Postgres. If the subscription or notification fails — or no
+notifier is configured at all — the parked workflow re-checks the store every
+30 seconds, so the signal is delivered within one interval.
 
 ### Graceful degradation
 
 If Valkey is unavailable, Maestro does not stop working:
 
-- **Locks** fall back to Postgres advisory locks
+- **Locks** degrade to unlocked execution — the unique constraint on
+  `(workflow_instance_id, sequence_number)` and optimistic instance versioning
+  remain the correctness backstop (or use `maestro-lock-postgres` to keep
+  locking without Valkey)
 - **Dedup** falls back to the unique constraint on
   `(workflow_instance_id, sequence_number)` in the event table
 - **Leader election** falls back so that each node polls independently
   (safe but slightly less efficient)
-- **Signal notification** falls back to poll-based delivery -- the workflow
-  checks for pending signals on each timer poll cycle instead of being woken
-  instantly
+- **Signal notification** falls back to store-based delivery -- a parked
+  workflow re-checks the store every 30 seconds, so instead of an instant wake
+  the signal arrives within one re-check interval
 
 The system is slower without Valkey, but correct. Postgres is always the
 source of truth.

@@ -124,7 +124,7 @@ graph TB
 | `maestro-messaging-postgres` | PostgreSQL-based `WorkflowMessaging` + `SignalNotifier`. No external broker required. | No |
 | `maestro-messaging-rabbitmq` | RabbitMQ `WorkflowMessaging` via Spring AMQP. | Yes |
 | `maestro-lock-valkey` | Lettuce-based `DistributedLock`. | No |
-| `maestro-lock-postgres` | PostgreSQL-based `DistributedLock` using advisory locks. | No |
+| `maestro-lock-postgres` | PostgreSQL-based `DistributedLock` using TTL-based lock tables. | No |
 | `maestro-admin` | Standalone dashboard app (Thymeleaf + HTMX, own Postgres schema). | Yes |
 | `maestro-admin-client` | Publishes lifecycle events to Kafka. Lightweight. | Minimal |
 | `maestro-test` | In-memory SPIs, controllable clock, `TestWorkflowEnvironment`. | No |
@@ -444,7 +444,7 @@ All topics are pre-created and declared in `application.yml`.
 
 | Topic | Owner | Key | Purpose |
 |---|---|---|---|
-| `orders.payment.requests` | Order Service | orderId | Payment commands to proxy |
+| `payments.requests` | Order Service | orderId | Payment commands to proxy |
 | `payments.results` | Payment Proxy | orderId | Payment results back |
 | `maestro.tasks.{taskQueue}` | Per-service | workflowId | Internal task dispatch |
 | `maestro.signals.{service}` | Per-service | workflowId | Inbound signals |
@@ -458,12 +458,14 @@ Consumer group per service: `maestro-{serviceName}`.
 
 | Key Pattern | Purpose | TTL |
 |---|---|---|
-| `maestro:lock:workflow:{workflowId}` | Workflow instance lock | 30s (auto-renewed) |
-| `maestro:dedup:{workflowId}:{seq}` | Activity deduplication | 5m |
+| `maestro:lock:workflow:{workflowId}` | Workflow instance lock | 30s (renewed every 10s) |
+| `maestro:lock:activity:{workflowId}:{seq}` | Activity execution lock (doubles as dedup) | activity timeout + 10s |
 | `maestro:leader:timer-poller:{service}` | Timer polling leader election | 15s |
 | `maestro:signal:{workflowId}` (pub/sub) | Immediate signal notification | N/A |
 
-**Fallback:** If Valkey is down, locking falls back to Postgres advisory locks, deduplication to unique constraints, and signal notification to poll-based delivery. Postgres is the source of truth; Valkey is a performance optimisation.
+If an instance-lock renewal reports lost ownership (e.g. after a long GC pause), the engine logs an error and drops the handle — the running workflow is not aborted; the unique event index remains the duplicate-execution guard.
+
+**Fallback:** If the lock backend is down, workflows proceed unlocked — the Postgres unique index on `(workflow_instance_id, sequence_number)` and optimistic instance versioning remain the correctness backstop. Signals are always persisted in Postgres; if pub/sub notification fails (or no notifier is configured), a parked workflow finds them via its periodic store re-check (every 30s) or during recovery replay. Postgres is the source of truth; Valkey is a performance optimisation.
 
 ---
 
@@ -491,7 +493,7 @@ sequenceDiagram
     Note over WF: Wakes, continues
 ```
 
-Timer leader election uses Valkey `SET NX EX 15`. One instance per service polls. Lock renewed every 10s.
+Timer leader election uses a 15-second TTL claim, renewed on every poll cycle (default 5s, `maestro.timer.poll-interval`). One instance per service polls.
 
 ---
 
@@ -541,7 +543,7 @@ flowchart TD
     style B fill:#4A90D9,color:#fff
 ```
 
-Parallel branches use compound sequence keys: parent `5` → branches `5.0`, `5.1`, `5.2`. Each independently memoized on replay.
+Parallel branches partition the sequence space with integer arithmetic: branch *i* of a fork at parent sequence `p` allocates sequence numbers from base `p*1000 + (i+1)*1000` (e.g. parent `5` → bases `6000`, `7000`, `8000`), giving each branch up to 999 steps. Each branch is independently memoized on replay.
 
 ---
 
