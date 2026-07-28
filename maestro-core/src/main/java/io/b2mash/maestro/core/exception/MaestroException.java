@@ -33,6 +33,7 @@ public sealed class MaestroException extends RuntimeException
                 LockBackendException,
                 SerializationException,
                 CompensationException,
+                ExecutorShutdownException,
                 QueryException {
 
     /**

@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -7,6 +8,7 @@ import org.slf4j.LoggerFactory;
 import java.time.Duration;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -39,6 +41,15 @@ import java.util.concurrent.TimeoutException;
  * the park actually registering — without permits, a timer fired in that
  * window would never be re-fired and the workflow would stall.
  *
+ * <h2>Shutdown</h2>
+ * <p>{@link #shutdown()} abandons every waiter with an
+ * {@link ExecutorShutdownException} — a signal the executor tells apart from a
+ * workflow failure, so a workflow parked at shutdown keeps its
+ * {@code WAITING_*} status and stays recoverable rather than being failed and
+ * compensated. The shutdown state is sticky: a park that registers after
+ * shutdown began throws immediately instead of blocking out its timeout, which
+ * is what bounds how long {@code shutdown()} has to wait.
+ *
  * <h2>Thread Safety</h2>
  * <p>All operations are thread-safe. The underlying {@link ConcurrentHashMap}
  * handles concurrent park/unpark from different virtual threads.
@@ -52,6 +63,7 @@ final class ParkingLot {
 
     private final ConcurrentHashMap<String, CompletableFuture<Object>> futures = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Object> pendingWakes = new ConcurrentHashMap<>();
+    private volatile boolean shuttingDown = false;
 
     /**
      * Parks the current virtual thread until {@link #unpark(String, Object)} is called.
@@ -62,16 +74,10 @@ final class ParkingLot {
      *
      * @param key the parking key (e.g., {@code "order-abc:signal:payment.result"})
      * @return the payload delivered by {@link #unpark(String, Object)}, may be {@code null}
-     * @throws CancellationException if the future is cancelled (e.g., during shutdown)
+     * @throws ExecutorShutdownException if the executor is shutting down
      */
     @Nullable Object park(String key) {
-        var future = new CompletableFuture<Object>();
-        var existing = futures.putIfAbsent(key, future);
-        if (existing != null) {
-            throw new IllegalStateException(
-                    "Parking key '%s' already occupied — duplicate park call would orphan the existing waiter".formatted(key));
-        }
-
+        var future = register(key);
         try {
             // Consume a permit stored by an unpark that raced ahead of this
             // park. Checked AFTER registering the future: an unpark running
@@ -82,6 +88,8 @@ final class ParkingLot {
                 return unwrapPermit(permit);
             }
             return future.join();
+        } catch (CompletionException e) {
+            throw rethrow(key, e);
         } finally {
             futures.remove(key, future);
         }
@@ -96,17 +104,11 @@ final class ParkingLot {
      * @param key     the parking key
      * @param timeout maximum time to wait
      * @return the payload delivered by unpark, may be {@code null}
-     * @throws TimeoutException      if the timeout elapses before unpark
-     * @throws CancellationException if the future is cancelled (e.g., during shutdown)
+     * @throws TimeoutException          if the timeout elapses before unpark
+     * @throws ExecutorShutdownException if the executor is shutting down
      */
     @Nullable Object parkWithTimeout(String key, Duration timeout) throws TimeoutException {
-        var future = new CompletableFuture<Object>();
-        var existing = futures.putIfAbsent(key, future);
-        if (existing != null) {
-            throw new IllegalStateException(
-                    "Parking key '%s' already occupied — duplicate park call would orphan the existing waiter".formatted(key));
-        }
-
+        var future = register(key);
         try {
             // See park(): consume a permit from an unpark that raced ahead
             var permit = pendingWakes.remove(key);
@@ -118,14 +120,53 @@ final class ParkingLot {
             Thread.currentThread().interrupt();
             throw new CancellationException("Interrupted while parked at key: " + key);
         } catch (java.util.concurrent.ExecutionException e) {
-            // Propagate the cause — this shouldn't normally happen since we complete with values
-            if (e.getCause() instanceof RuntimeException re) {
-                throw re;
-            }
-            throw new RuntimeException("Unexpected exception while parked at key: " + key, e.getCause());
+            throw rethrow(key, e);
         } finally {
             futures.remove(key, future);
         }
+    }
+
+    /**
+     * Registers a waiter's future under the given key.
+     *
+     * <p>The shutdown check happens <em>after</em> registration, mirroring the
+     * permit protocol: a concurrent {@link #shutdown()} either sees this future
+     * and completes it, or set the flag before we read it — never neither.
+     *
+     * @param key the parking key
+     * @return the registered future
+     * @throws IllegalStateException     if the key is already occupied
+     * @throws ExecutorShutdownException if the executor is shutting down
+     */
+    private CompletableFuture<Object> register(String key) {
+        var future = new CompletableFuture<Object>();
+        var existing = futures.putIfAbsent(key, future);
+        if (existing != null) {
+            throw new IllegalStateException(
+                    "Parking key '%s' already occupied — duplicate park call would orphan the existing waiter".formatted(key));
+        }
+        if (shuttingDown) {
+            futures.remove(key, future);
+            throw shutdownSignal(key);
+        }
+        return future;
+    }
+
+    /**
+     * Unwraps a completion wrapper thrown by {@code join()}/{@code get()} and
+     * rethrows its cause, so a shutdown reaches the workflow as an
+     * {@link ExecutorShutdownException} rather than a wrapper the executor
+     * would read as a failure.
+     *
+     * @param key the parking key, for the fallback message
+     * @param e   the wrapper thrown by the future
+     * @return never returns — declared so callers can write {@code throw rethrow(...)}
+     */
+    private static RuntimeException rethrow(String key, Exception e) {
+        if (e.getCause() instanceof RuntimeException re) {
+            return re;
+        }
+        return new RuntimeException("Unexpected exception while parked at key: " + key, e.getCause());
     }
 
     /**
@@ -174,22 +215,34 @@ final class ParkingLot {
     }
 
     /**
-     * Cancels all parked futures whose key starts with the given workflow ID prefix.
+     * Abandons every waiter because this node is shutting down, and refuses
+     * further parks.
      *
-     * <p>Used during graceful shutdown to unblock all parked virtual threads
-     * for a specific workflow so they can exit cleanly.
+     * <p>Each parked thread resumes by throwing {@link ExecutorShutdownException}
+     * so it can exit promptly. That exception is the executor's signal to leave
+     * the workflow's durable state alone: a workflow parked here keeps its
+     * {@code WAITING_*} status, runs no compensation, and is recovered by
+     * whichever node starts next.
      *
-     * @param workflowId the workflow ID prefix to match
+     * <p>The state is sticky — this lot is not reusable afterwards, which is
+     * intentional: a park racing shutdown must fail fast rather than block out
+     * its timeout and stall the drain.
      */
-    void unparkAll(String workflowId) {
-        var prefix = workflowId + ":";
+    void shutdown() {
+        shuttingDown = true;
         futures.forEach((key, future) -> {
-            if (key.startsWith(prefix)) {
-                future.cancel(false);
-                logger.debug("Cancelled parked future at key '{}' during shutdown", key);
+            if (future.completeExceptionally(shutdownSignal(key))) {
+                logger.debug("Abandoned park at key '{}' — executor is shutting down", key);
             }
         });
-        clearPending(workflowId);
+        pendingWakes.clear();
+    }
+
+    private static ExecutorShutdownException shutdownSignal(String key) {
+        return new ExecutorShutdownException(
+                "Executor is shutting down — abandoning the park at key '%s'; the workflow keeps its "
+                        .formatted(key)
+                        + "durable state and is recoverable");
     }
 
     /**

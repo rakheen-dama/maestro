@@ -4,6 +4,8 @@ import io.b2mash.maestro.core.annotation.Saga;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.context.WorkflowMDC;
 import io.b2mash.maestro.core.exception.CompensationException;
+import io.b2mash.maestro.core.exception.OptimisticLockException;
+import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.QueryNotDefinedException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowExecutionException;
@@ -49,8 +51,10 @@ import java.util.concurrent.atomic.AtomicReference;
  *       re-invokes each in replay mode.</li>
  *   <li><b>Signal delivery:</b> Persists signals and unparks waiting workflows.</li>
  *   <li><b>Timer fire:</b> Marks timers as fired and unparks sleeping workflows.</li>
- *   <li><b>Shutdown:</b> Stops accepting new work and waits for in-flight
- *       workflows to complete.</li>
+ *   <li><b>Shutdown:</b> Stops accepting new work, waits for in-flight
+ *       workflows to drain, and leaves parked workflows in their
+ *       {@code WAITING_*} status for another node to recover — a graceful
+ *       stop is never a workflow failure.</li>
  * </ul>
  *
  * <h2>Virtual Thread Model</h2>
@@ -70,6 +74,14 @@ public final class WorkflowExecutor {
 
     private static final Logger logger = LoggerFactory.getLogger(WorkflowExecutor.class);
     private static final Duration SHUTDOWN_TIMEOUT = Duration.ofSeconds(30);
+
+    /**
+     * How many times a terminal-status write is retried against a fresh read
+     * before the conflict is treated as unrecoverable. Conflicts come from
+     * other writers of the same row, so a handful of attempts is ample; an
+     * unbounded loop would hide a pathological writer.
+     */
+    private static final int TERMINAL_TRANSITION_ATTEMPTS = 5;
 
     private final WorkflowStore store;
     private final @Nullable DistributedLock distributedLock;
@@ -423,9 +435,22 @@ public final class WorkflowExecutor {
     /**
      * Gracefully shuts down the executor.
      *
-     * <p>Stops accepting new workflows, cancels all parked futures
-     * (unblocking sleeping/waiting threads), and waits up to 30 seconds
-     * for in-flight workflows to complete.
+     * <p>Stops accepting new workflows, abandons every parked waiter so those
+     * virtual threads exit, waits up to 30 seconds for in-flight workflows to
+     * drain, and then stops renewing instance locks.
+     *
+     * <h2>What a parked workflow sees</h2>
+     * <p>A workflow parked on {@code awaitSignal()} or {@code sleep()} has
+     * committed no failure, so shutdown does not fail it. Its park throws
+     * {@link ExecutorShutdownException}, which the executor tells apart from a
+     * workflow failure: the instance keeps the {@code WAITING_SIGNAL} or
+     * {@code WAITING_TIMER} status it parked in, no compensation runs, and its
+     * instance lock is released as the thread unwinds — so a surviving node,
+     * or this one after a restart, recovers it immediately.
+     *
+     * <p>Workflows still executing an activity are <em>not</em> interrupted;
+     * they drain up to the shutdown timeout. Any that overrun it are left
+     * running, and their instance locks expire by TTL.
      */
     public void shutdown() {
         if (!shuttingDown.compareAndSet(false, true)) {
@@ -447,10 +472,10 @@ public final class WorkflowExecutor {
         logger.info("Shutting down WorkflowExecutor, {} workflow(s) in-flight",
                 runningWorkflows.size());
 
-        // Cancel all parked futures so threads can exit
-        for (var entry : runningWorkflows.entrySet()) {
-            parkingLot.unparkAll(entry.getKey());
-        }
+        // Abandon every park so those threads exit promptly. Their workflows
+        // keep the WAITING_* status they parked in and stay recoverable —
+        // a park abandoned this way is not a workflow failure.
+        parkingLot.shutdown();
 
         // Wait for in-flight workflows with a deadline
         var deadline = Instant.now().plus(SHUTDOWN_TIMEOUT);
@@ -674,26 +699,22 @@ public final class WorkflowExecutor {
             // Deserialize input and invoke the workflow method
             Object result = invokeWorkflowMethod(workflowImpl, workflowMethod, inputPayload);
 
-            // Success — re-read instance for latest version (DefaultWorkflowOperations
-            // may have bumped the version via status transitions)
+            // Success — finalise, converging with any other writer
             var outputPayload = result != null ? serializer.serialize(result) : null;
-            var latest = store.getInstance(ctx.workflowId()).orElse(instance);
-            var updated = latest.toBuilder()
-                    .status(WorkflowStatus.COMPLETED)
-                    .output(outputPayload)
-                    .completedAt(Instant.now())
-                    .updatedAt(Instant.now())
-                    .eventSequence(ctx.currentSequence())
-                    .version(latest.version() + 1)
-                    .build();
-            store.updateInstance(updated);
+            if (transitionToTerminal(ctx, instance, WorkflowStatus.COMPLETED, outputPayload)) {
+                // Append WORKFLOW_COMPLETED event
+                appendEvent(ctx, EventType.WORKFLOW_COMPLETED, null, outputPayload);
+                publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_COMPLETED, null);
 
-            // Append WORKFLOW_COMPLETED event
-            appendEvent(ctx, EventType.WORKFLOW_COMPLETED, null, outputPayload);
-            publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_COMPLETED, null);
+                logger.info("Workflow '{}' completed successfully", ctx.workflowId());
+            }
 
-            logger.info("Workflow '{}' completed successfully", ctx.workflowId());
-
+        } catch (ExecutorShutdownException e) {
+            // Not a failure: this node is stopping while the workflow was
+            // parked. Its durable state — WAITING_SIGNAL or WAITING_TIMER —
+            // is still valid and still recoverable, so nothing is written and
+            // no compensation runs. Whichever node starts next picks it up.
+            handleShutdownSuspension(ctx);
         } catch (Exception e) {
             handleWorkflowFailure(ctx, instance, e, compensationStack, parallelCompensation);
         } finally {
@@ -726,6 +747,22 @@ public final class WorkflowExecutor {
         }
     }
 
+    // ── Internal: shutdown suspension ──────────────────────────────────
+
+    /**
+     * Records that a workflow's local run ended because this node is shutting
+     * down. Deliberately writes nothing: the instance is already in the
+     * {@code WAITING_*} status it parked in, which is exactly the state
+     * recovery needs to find.
+     */
+    private void handleShutdownSuspension(WorkflowContext ctx) {
+        var status = store.getInstance(ctx.workflowId())
+                .map(WorkflowInstance::status)
+                .orElse(null);
+        logger.info("Workflow '{}' suspended by shutdown while {} — left recoverable",
+                ctx.workflowId(), status);
+    }
+
     // ── Internal: failure handling ─────────────────────────────────────
 
     private void handleWorkflowFailure(
@@ -756,23 +793,83 @@ public final class WorkflowExecutor {
                     exception.getClass().getName(),
                     exception.getMessage()
             ));
-            // Re-read for latest version (compensations or status transitions may have bumped it)
-            var latest = store.getInstance(ctx.workflowId()).orElse(instance);
-            var updated = latest.toBuilder()
-                    .status(WorkflowStatus.FAILED)
-                    .output(errorPayload)
-                    .completedAt(Instant.now())
-                    .updatedAt(Instant.now())
-                    .eventSequence(ctx.currentSequence())
-                    .version(latest.version() + 1)
-                    .build();
-            store.updateInstance(updated);
-
-            appendEvent(ctx, EventType.WORKFLOW_FAILED, null, errorPayload);
-            publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_FAILED, null);
+            if (transitionToTerminal(ctx, instance, WorkflowStatus.FAILED, errorPayload)) {
+                appendEvent(ctx, EventType.WORKFLOW_FAILED, null, errorPayload);
+                publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_FAILED, null);
+            }
         } catch (Exception updateError) {
             logger.error("Failed to update workflow '{}' status to FAILED",
                     ctx.workflowId(), updateError);
+        }
+    }
+
+    // ── Internal: terminal transition ──────────────────────────────────
+
+    /**
+     * Writes a workflow's terminal status, converging with any other writer
+     * that touched the instance row first.
+     *
+     * <p>The instance is read, stamped with {@code version + 1} and written.
+     * Anything that writes the row in between invalidates that version:
+     * another node running the same workflow (the documented no-lock-backend
+     * degradation, a lock lost mid-run, or a stale lock on a fresh start), or
+     * simply another status transition on this node. Before this converged,
+     * the resulting {@link io.b2mash.maestro.core.exception.OptimisticLockException}
+     * escaped into the caller's failure handling and a workflow that had
+     * <em>succeeded</em> was recorded as {@code FAILED} — with the conflict
+     * message as its output, contradicting its own {@code WORKFLOW_COMPLETED}
+     * event, and running a saga's compensations after a successful run.
+     *
+     * <p>A persistence conflict is not a workflow outcome. It is resolved by
+     * retrying against a fresh read, and by standing down when another runner
+     * has already reached a terminal state — the event log at that sequence is
+     * then the durable truth and must not be contradicted.
+     *
+     * @param ctx      the workflow context (supplies the final event sequence)
+     * @param fallback the instance to fall back on if the row cannot be re-read
+     * @param status   the terminal status to write
+     * @param output   the output or error payload to record
+     * @return {@code true} if this call wrote the transition and its caller
+     *         should record the matching event; {@code false} if another
+     *         runner had already finalised the workflow
+     * @throws io.b2mash.maestro.core.exception.OptimisticLockException if the
+     *         conflict persists across every attempt
+     */
+    private boolean transitionToTerminal(
+            WorkflowContext ctx, WorkflowInstance fallback,
+            WorkflowStatus status, @Nullable JsonNode output
+    ) {
+        for (var attempt = 1; ; attempt++) {
+            var latest = store.getInstance(ctx.workflowId()).orElse(fallback);
+            if (latest.status().isTerminal()) {
+                logger.warn("Workflow '{}' is already {} — another runner finalised it first; "
+                                + "not overwriting with {}",
+                        ctx.workflowId(), latest.status(), status);
+                return false;
+            }
+            var now = Instant.now();
+            var updated = latest.toBuilder()
+                    .status(status)
+                    .output(output)
+                    .completedAt(now)
+                    .updatedAt(now)
+                    .eventSequence(ctx.currentSequence())
+                    .version(latest.version() + 1)
+                    .build();
+            try {
+                store.updateInstance(updated);
+                return true;
+            } catch (OptimisticLockException e) {
+                if (attempt >= TERMINAL_TRANSITION_ATTEMPTS) {
+                    logger.error("Could not finalise workflow '{}' as {} after {} attempts — "
+                                    + "the instance row is being written continuously",
+                            ctx.workflowId(), status, attempt);
+                    throw e;
+                }
+                logger.debug("Version conflict finalising workflow '{}' as {} (attempt {}) — "
+                                + "retrying against a fresh read",
+                        ctx.workflowId(), status, attempt);
+            }
         }
     }
 
