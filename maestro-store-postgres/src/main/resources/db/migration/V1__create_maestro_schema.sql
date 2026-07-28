@@ -1,5 +1,8 @@
 -- Maestro workflow engine schema.
 -- Four core tables for persisting workflow instances, events, signals, and timers.
+--
+-- Flyway version bands — see the note in maestro-messaging-postgres' V200
+-- migration. This module reserves 1-99.
 -- Table prefix is hardcoded to 'maestro_'. If JdbcStoreConfiguration uses a custom
 -- prefix, provide corresponding custom Flyway migrations.
 

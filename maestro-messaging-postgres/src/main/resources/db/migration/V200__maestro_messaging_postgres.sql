@@ -1,3 +1,14 @@
+-- Maestro Postgres messaging schema (task queues, signal channels, lifecycle events).
+--
+-- Flyway version bands. Every maestro-* module ships its migrations into
+-- classpath:db/migration, which Flyway scans as ONE location with ONE version
+-- namespace. Modules therefore reserve disjoint bands so that a deployment
+-- combining them (e.g. the Postgres-only profile) does not collide:
+--   1-99    maestro-store-postgres
+--   100-199 maestro-lock-postgres
+--   200-299 maestro-messaging-postgres
+-- Pinned by MaestroMigrationsCoexistIT in maestro-integration-tests.
+
 CREATE TABLE maestro_task_queue (
     id                    UUID          PRIMARY KEY,
     task_queue            VARCHAR(255)  NOT NULL,

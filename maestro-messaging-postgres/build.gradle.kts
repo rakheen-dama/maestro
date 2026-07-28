@@ -13,4 +13,8 @@ dependencies {
 
     testImplementation(libs.spring.boot.starter.test)
     testImplementation(libs.testcontainers.postgresql)
+    testImplementation(libs.awaitility)
+    // Applies this module's own V200 migration before the suites run.
+    testImplementation(libs.flyway.core)
+    testRuntimeOnly(libs.flyway.postgres)
 }

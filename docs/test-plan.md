@@ -4,6 +4,12 @@
 **Must-work integrations:** **Kafka** and **Postgres** (Valkey is
 best-effort; RabbitMQ/Postgres-messaging are secondary).
 
+> **Status (updated after P0–P3, P5):** the integration module
+> `maestro-integration-tests` now runs **65 tests** against real Postgres and
+> real Kafka on every PR, plus **37** new backend-module tests. Closing these
+> gaps found **six shipped defects** — see §5. Remaining: P4 scenario wiring,
+> P6 guardrails.
+
 ## Why this document exists
 
 The optimistic-lock version-convention bug shipped despite a fully green
@@ -29,21 +35,21 @@ entire integration seams unverified. This plan makes those seams explicit.
 
 | Feature | U | I | E | Notes / gap |
 |---|---|---|---|---|
-| Hybrid memoization (replay, failure replay, crash-after-persist dedup) | ✅ | — | ✅ | Never exercised against real Postgres in CI |
-| Workflow lifecycle (start/complete/fail, lifecycle events) | ✅ | — | ✅ | Same |
-| Startup recovery + periodic RecoveryPoller | ✅ | — | ✅ | Recovery against real store only in manual E2E (kill -9 scenario) |
-| Signals: deliver / await / pre-arrived / orphan adoption / timeout / late race | ✅ | ◐ | ✅ | Store ops I-tested (PostgresWorkflowStoreTest); engine signal flow on real store: E only |
-| Signal consume CAS; append-before-consume ordering | ✅ | ◐ | ✅ | CAS I-tested at store level only |
-| Cross-instance wake (SignalNotifier subscribe/publish) | ✅ | ◐ | — | Valkey pub/sub mechanics I-tested (ValkeySignalNotifierTest); **integrated wake of a parked workflow via notifier: never**; Postgres LISTEN/NOTIFY notifier: **no tests at all** |
+| Hybrid memoization (replay, failure replay, crash-after-persist dedup) | ✅ | ✅ | ✅ | `EnginePostgresMemoizationIT` — counting activities prove completed steps are NOT re-executed |
+| Workflow lifecycle (start/complete/fail, lifecycle events) | ✅ | ✅ | ✅ | `EnginePostgresLifecycleIT` (5) |
+| Startup recovery + periodic RecoveryPoller | ✅ | ✅ | ✅ | `EnginePostgresRecoveryIT` — second executor over the same store |
+| Signals: deliver / await / pre-arrived / orphan adoption / timeout / late race | ✅ | ✅ | ✅ | `EnginePostgresSignalIT` (6) — full matrix on real PG |
+| Signal consume CAS; append-before-consume ordering | ✅ | ✅ | ✅ | `EnginePostgresSignalIT` — CAS loss exercised through the engine |
+| Cross-instance wake (SignalNotifier subscribe/publish) | ✅ | ✅ | — | `MultiNodeSignalRoutingIT` (integrated wake) + `PostgresSignalNotifierTest` (LISTEN/NOTIFY). **Found BUG9** — see §5 |
 | Periodic 30s store re-check while parked; spurious-wake re-park | ✅ | — | ✅¹ | ¹ E2E exercises it implicitly (single node); no I test |
-| collectSignals (N-of-M, FIFO by received_at) | ✅² | — | ✅ | ² via loan-sample tests (in-memory) |
-| Timers: sleep, TimerPoller, SKIP LOCKED, CAS fire, leader election | ✅ | ◐ | ✅ | getDueTimers/markTimerFired I-tested; poller loop + leader election only with stubs; **timer fires across restart: E only** |
-| Saga compensation (LIFO, parallel, partial failure, COMPENSATING) | ✅ | — | ✅ | |
-| Retry (RetryExecutor, RetryPolicy, retryUntil) | ✅ | — | ✅ | |
-| Parallel branches (sequence-block partitioning, overflow guard) | ✅ | — | — | **Not exercised by the loan sample or E2E** (design chose loop-fan-in) |
+| collectSignals (N-of-M, FIFO by received_at) | ✅ | ✅ | ✅ | `EnginePostgresSignalIT`, `MultiNodeSignalRoutingIT` (cross-node FIFO) |
+| Timers: sleep, TimerPoller, SKIP LOCKED, CAS fire, leader election | ✅ | ✅ | ✅ | `EnginePostgresTimerIT` — poller fires from PG; timer scheduled by one executor fired by another |
+| Saga compensation (LIFO, parallel, partial failure, COMPENSATING) | ✅ | ✅ | ✅ | `EnginePostgresSagaIT` — LIFO by execution AND persisted sequence; version march pinned |
+| Retry (RetryExecutor, RetryPolicy, retryUntil) | ✅ | ✅ | ✅ | `EnginePostgresLifecycleIT` (retry exhaustion → FAILED) |
+| Parallel branches (sequence-block partitioning, overflow guard) | ✅ | ✅ | — | `EnginePostgresParallelIT` — distinct sequence blocks per branch |
 | Queries (@QueryMethod, in-memory only) | ✅ | — | — | Documented single-node limitation |
-| Instance lock (acquire/release/renew, NO_BACKEND, HELD_ELSEWHERE, lost-lock, TTL validation) | ✅ | — | ✅¹ | ¹ E observed lock behaviour incidentally; **no I test of the lock manager against real Valkey or Postgres locks** |
-| Graceful shutdown | ◐ | — | — | Known bug: parked workflows are marked FAILED (+compensated!) on shutdown instead of staying recoverable — **no test encodes the desired behaviour** |
+| Instance lock (acquire/release/renew, NO_BACKEND, HELD_ELSEWHERE, lost-lock, TTL validation) | ✅ | ✅ | ✅ | `MultiNodeLockContentionIT`, `MultiNodeOwnerDeathIT`, `PostgresDistributedLockContractTest` (24) |
+| Graceful shutdown | ✅ | ✅ | — | **BUG6 FIXED.** `WorkflowExecutorShutdownTest` (7) + `ShutdownContractIT` (6): parked workflows stay WAITING_*, no compensation, recoverable by a fresh node |
 | Determinism guardrails | — | — | — | Nothing detects nondeterministic workflow code; replay divergence is silent |
 
 ### Spring Boot starter (3 test classes)
@@ -53,19 +59,19 @@ entire integration seams unverified. This plan makes those seams explicit.
 | Auto-configuration activation chain (store → engine → client) | ✅³ | — | ✅ | ³ via PostgresStoreAutoConfigurationTest context runner |
 | @DurableWorkflow classpath scanning; @ActivityStub injection | ✅ | — | ✅ | |
 | StartupRecoveryRunner, SignalSubscriptionRunner ordering | ✅ | — | ✅ | |
-| SignalSubscriptionRunner against a **real** maestro.signals.* topic | — | — | — | Runner subscribes in E2E but no scenario publishes to the channel |
-| MaestroClient (startAsync, startAndWait, signal, query handles) | ◐ | — | ✅ | No dedicated client test class |
-| Health indicator | — | — | — | Audit: confirm whether `io.b2mash.maestro.spring.health` is implemented at all |
+| SignalSubscriptionRunner against a **real** maestro.signals.* topic | — | ✅ | — | `KafkaSignalChannelIT` — the channel is fed for the first time |
+| MaestroClient (startAsync, startAndWait, signal, query handles) | ✅ | — | ✅ | `MaestroClientTest` (8) through the real auto-config chain |
+| Health indicator | — | — | — | **Audit answered: NOT IMPLEMENTED.** No `io.b2mash.maestro.spring.health` package and no `*Health*` class exists, though `CLAUDE.md` documents `MaestroHealthIndicator`. Docs/code gap, not a test gap |
 
 ### Kafka (must-work) — maestro-messaging-kafka (2 test classes)
 
 | Feature | U | I | E | Notes |
 |---|---|---|---|---|
 | KafkaWorkflowMessaging publish/subscribe (tasks, signals, lifecycle) | — | ✅ | ◐ | Module Testcontainers tests exist; engine-level signals channel unused in E2E |
-| @MaestroSignalListener discovery + routing → deliverSignal | ✅ | ◐ | ✅ | BPP unit-tested; full listener→signal→parked-workflow round-trip on real Kafka: **E only, not CI** |
-| At-least-once semantics: handler failure vs ack | — | — | — | **Known deferred defect**: Kafka/Rabbit adapters ack even when the handler throws → a failed `deliverSignal` loses the signal. No test encodes desired nack/retry/DLT behaviour |
-| Consumer-group routing: signal consumed on node B for workflow parked on node A | — | — | — | The **normal** production topology; never tested anywhere (E2E is single-node) |
-| Duplicate delivery tolerance end-to-end | — | — | ◐ | Unit-level duplicate signal tests only |
+| @MaestroSignalListener discovery + routing → deliverSignal | ✅ | ✅ | ✅ | `KafkaSignalListenerRoundTripIT` — full round trip in CI |
+| At-least-once semantics: handler failure vs ack | — | ◐ | — | **Still deferred, now specified.** `KafkaAckOnFailureIT` + `PostgresWorkflowMessagingTest` pin current behaviour and carry `@Disabled` desired-behaviour specs. Measured: engine channel acks after 1 attempt; listener path retries 10 then skips; Postgres marks the row FAILED terminally |
+| Consumer-group routing: signal consumed on node B for workflow parked on node A | — | ✅ | — | `MultiNodeSignalRoutingIT`; E2E scenario 6 adds a two-instance run |
+| Duplicate delivery tolerance end-to-end | — | ✅ | ◐ | `KafkaDuplicateDeliveryIT` — 2 rows, 1 consume, 1 completion |
 
 ### Postgres (must-work) — store + lock + messaging
 
@@ -73,10 +79,10 @@ entire integration seams unverified. This plan makes those seams explicit.
 |---|---|---|---|---|
 | PostgresWorkflowStore (instances, events, signals, timers, concurrency, version CAS) | — | ✅ | ✅ | 37 Testcontainers tests — good |
 | PostgresStoreAutoConfiguration | ✅ | — | ✅ | |
-| Flyway migrations | ◐ | ✅⁴ | ✅ | ⁴ implicitly via store tests |
-| **Engine × real Postgres store** (start→signal→timer→saga→recover on PG) | — | — | ✅ | **The BUG1 gap. Highest-risk hole in the suite.** |
-| maestro-lock-postgres (acquire/release/renew/leader, LockBackendException) | — | — | ✅¹ | **Zero test classes in the module** |
-| maestro-messaging-postgres (queues, SKIP LOCKED claim, LISTEN/NOTIFY notifier) | — | — | — | **Zero test classes**; secondary backend but ships in releases |
+| Flyway migrations | ◐ | ✅ | ✅ | `MaestroMigrationsCoexistIT` — all modules on one DB. **Found BUG5** |
+| **Engine × real Postgres store** (start→signal→timer→saga→recover on PG) | — | ✅ | ✅ | **CLOSED** — 32 tests across 8 `EnginePostgres*IT` suites |
+| maestro-lock-postgres (acquire/release/renew/leader, LockBackendException) | ✅ | ✅ | ✅ | `PostgresDistributedLockContractTest` (24, Testcontainers) + the pre-existing 4 backend-failure unit tests (the module was **not** testless — the earlier claim was wrong) |
+| maestro-messaging-postgres (queues, SKIP LOCKED claim, LISTEN/NOTIFY notifier) | — | ✅ | — | 13 tests: `PostgresWorkflowMessagingTest` (8) + `PostgresSignalNotifierTest` (5). **Found BUG9** |
 
 ### Other
 
@@ -193,6 +199,171 @@ if that backend is kept.
   messaging-rabbitmq, admin, admin-client).
 
 ---
+
+## 5. Defects found by closing these gaps
+
+Every one of these was invisible to a fully green in-memory build. That is the
+thesis of this document, restated as evidence.
+
+| # | Defect | Found by | Status |
+|---|---|---|---|
+| BUG5 | `lock-postgres` and `messaging-postgres` both shipped Flyway `V100` into `classpath:db/migration`; Flyway aborts on the duplicate version, so the Postgres-only profile could never migrate | `MaestroMigrationsCoexistIT` | **Fixed** — disjoint version bands (store 1–99, lock 100–199, messaging 200–299) |
+| BUG6 | Graceful shutdown marked parked workflows `FAILED` and ran their compensations — stopping a node could refund a customer whose order was merely awaiting approval | `WorkflowExecutorShutdownTest`, `ShutdownContractIT` | **Fixed** — typed `ExecutorShutdownException`; parked workflows keep `WAITING_*` and stay recoverable |
+| BUG7 | A version conflict while finalising recorded a **successful** workflow as `FAILED`, contradicting its own `WORKFLOW_COMPLETED` event and compensating a saga after a successful run | `WorkflowExecutorTerminalTransitionTest`, multi-node work | **Fixed** — `transitionToTerminal` retries against a fresh read and stands down when another runner finalised |
+| BUG8 | Every nested `@ConfigurationProperties` block was inert: the records declared no-arg constructors, so Boot skipped value-object binding and silently bound nothing. `maestro.messaging.topics.*`, `lock.ttl`, `timer.*`, `recovery.*`, `retry.*`, `store.table-prefix`, `worker.task-queues` were stuck at defaults in every deployment | `MaestroPropertiesBindingTest` | **Fixed** — one canonical constructor per record, defaults via `defaults()` |
+| BUG9 | `PostgresNotificationListener.listen()` only queued the `LISTEN`, applied up to 500 ms later; Postgres delivers `NOTIFY` only to already-listening sessions, so cross-instance wake was silently lossy | `PostgresSignalNotifierTest`, `MultiNodeSignalRoutingIT` | **Fixed** — `listen()` blocks until the command executes |
+
+### Known and still open
+
+> **For working on these, read [`docs/open-issues.md`](open-issues.md) instead.**
+> It is a standalone brief — it explains how Maestro works, where each defect
+> lives, how to reproduce it, what a fix looks like and how to know it worked,
+> without assuming any context. The list below is the summary index.
+
+Ranked by risk. Each item names the evidence, so none of these rests on
+recollection. "Unverified" below means no test asserts the behaviour either way.
+
+#### A. Correctness risks — unfixed
+
+1. **Ack-on-failure loses signals (all transports).** *High.* Measured, not
+   assumed: the engine signal channel acks after **one** attempt, because
+   `KafkaWorkflowMessaging.subscribeSignals` catches and logs, defeating
+   `SignalSubscriptionRunner`'s deliberate rethrow; the `@MaestroSignalListener`
+   path retries **ten** times then logs and skips; the Postgres adapter marks the
+   row `FAILED`, and its claim query only ever selects `PENDING` or stale
+   `PROCESSING`, so the signal is gone permanently. This contradicts the
+   engine's own "never discard a signal" rule. Deferred because a real fix needs
+   a dead-letter destination, new configuration, a topic-creation policy
+   decision (Maestro never auto-creates topics) and a mirrored RabbitMQ change.
+   Executable specs: `KafkaAckOnFailureIT` and `PostgresWorkflowMessagingTest`,
+   both `@Disabled` with precise messages.
+
+2. **Timer fired-but-not-appended is a permanent stall.** *High.* If a timer is
+   marked `FIRED` and the process dies before its `TIMER_FIRED` event is
+   appended, replay re-parks on a timer the poller will never fire again. The
+   workflow waits forever with no error. Pre-existing and unrelated to the
+   shutdown work — a `kill -9` in that window reproduces it. Unverified: no test
+   covers it.
+
+3. **Lifecycle publishing can stall workflow start.** *Medium.* `publishLifecycleEvent`
+   catches exceptions, so it is fire-and-forget for *errors* but not for
+   *latency*: an absent or unreachable admin topic makes the producer block on
+   metadata lookup for `max.block.ms` — 60 s by default — inside
+   `startWorkflow`. Observed: it timed out every loan E2E scenario at 150 s. Only
+   the sample was fixed (the topic is now pre-created). The library-side fix is
+   to bound `max.block.ms` on the admin producer or publish off the workflow
+   thread, so observability can never gate execution.
+
+4. **A lost lock does not abort the local run.** *Medium, accepted by design.*
+   `LockHandle` carries a fencing token but nothing validates it in the store, so
+   a node that loses its lock to a >TTL pause keeps running. Duplicate *persisted
+   results* are still prevented by the unique event index; duplicate *side
+   effects* are not. Closing this needs fencing-token validation in the
+   `WorkflowStore` SPI.
+
+5. **The no-lock-backend profile duplicates execution.** *By design, now
+   characterised.* `MultiNodeNoLockBackendIT` pins what actually happens: a
+   second node launches its own copy and an in-flight activity runs once per
+   node, so activities must be idempotent in that profile. Memoized steps still
+   replay rather than re-run, the unique index admits one event per sequence, and
+   the losing node adopts the winner's result.
+
+#### B. Design sharp edges
+
+6. **`ExecutorShutdownException` is a `RuntimeException`.** A workflow author who
+   catches broadly around `awaitSignal`/`sleep` can swallow it and silently
+   reinstate the old "shutdown fails the workflow" behaviour. Temporal uses an
+   `Error` precisely so this cannot happen. The repo's convention (everything
+   extends `MaestroException`) was followed and the hazard documented on the
+   exception, but the trade-off deserves a second opinion.
+
+7. **Shutdown during compensation is not clean.** `SagaManager`'s compensation
+   loop catches `Exception` broadly, so an `ExecutorShutdownException` thrown by
+   an activity mid-compensation is treated as a compensation failure rather than
+   as "this node is stopping". The instance is left `COMPENSATING` — non-terminal
+   and recoverable, so nothing corrupts — but it is not the intended semantics.
+   Unverified: no test covers shutdown racing compensation.
+
+8. **`PostgresNotificationListener.listen()` now blocks.** If a notification
+   callback ever called `listen()`, it would run on the poll thread and wait for
+   that same thread, stalling every channel until the 5 s timeout. No current
+   caller does this (callbacks only `unpark` or `notifyAll`), so it is latent —
+   but the blocking contract is new and has no reentrancy guard.
+
+9. **Two hardcoded 30 s values with no configuration seam.** `SHUTDOWN_TIMEOUT`
+   in `WorkflowExecutor`, and `SignalManager`'s parked-workflow re-check
+   interval, which is unreachable from `WorkflowExecutor`'s public API. The
+   second one also bounds production cross-node signal latency for
+   Kafka-without-Valkey deployments, so it is a real operational knob that
+   cannot be turned.
+
+10. **`maestro.admin.events.enabled` / `.topic` are read by nothing.** The topic
+    that works is `maestro.messaging.topics.admin-events`, and lifecycle
+    publishing cannot be disabled at all. `sample-order-service` and the
+    loan sample both set the inert property. Either wire it or delete it.
+
+11. **The health indicator does not exist.** `CLAUDE.md` documents
+    `io.b2mash.maestro.spring.health.MaestroHealthIndicator`; no such package or
+    class is present. Docs promise a feature the code does not have.
+
+12. **`ActivityInvocationHandler` hardcodes the `maestro:lock:activity:` prefix**,
+    ignoring `maestro.lock.key-prefix`, which the instance lock now honours.
+
+13. **`EventType.WORKFLOW_STARTED` is never written.** Start is published only as
+    a `LifecycleEventType`. The enum constant is dead in the store's event space.
+
+#### C. Coverage still missing
+
+14. **Four modules have no tests at all:** `maestro-admin`, `maestro-admin-client`,
+    `maestro-messaging-rabbitmq`, `maestro-store-jdbc`. Held as an explicit
+    allowlist in the root build's coverage gate, so new untested modules fail the
+    build while this debt stays visible.
+
+15. **RabbitMQ has no suite** and carries the same ack-on-failure defect as Kafka.
+    **Valkey** is covered only for lock and notifier mechanics, not integrated
+    engine behaviour.
+
+16. **Queries (`@QueryMethod`) are single-node by design and untested on a real
+    backend** — a query against a node not running the workflow throws
+    `WorkflowNotQueryableException`. No integration test pins that.
+
+17. **The admin dashboard is unverified end-to-end.** `$maestro:retry` and
+    `$maestro:terminate` are dropped with a WARN, so the dashboard buttons do
+    nothing; no engine-side command dispatcher exists.
+
+18. **`DeterminismChecker` catches only between-run nondeterminism** — randomness,
+    clock reads, mutable static state. A value that is stable for a JVM's
+    lifetime but changes across restarts or code edits still slips through, and
+    replay divergence against a *stored* event log is not detected at all.
+
+19. **Five hand-rolled `WorkflowStore` fakes and three lock fakes** live across
+    `maestro-core`'s tests. Every SPI change ripples through all of them, and
+    they can drift from real backend semantics — which is precisely how the
+    original gap arose.
+
+20. **The loan E2E runs nightly, not per PR**, on one machine, and is the only
+    place a real `kill -9` is exercised.
+
+#### D. Scale deferrals
+
+21. **`getRecoverableInstances()` has no service or staleness filter** — every
+    node re-reads the whole active set on each poll and probes the lock for each
+    foreign-owned instance. Needs a filter plus an index (an SPI change).
+
+22. **Lock renewal is serial** — one round-trip per held lock every TTL/3. Needs
+    batching before a node holds thousands of parked workflows.
+
+23. **Wake subscriptions churn per await** rather than being scoped to the
+    workflow's local lifetime.
+
+#### One thing I could not explain
+
+The loan E2E failed 6/6 on its first run here because `maestro.admin.events` was
+missing, yet the same topic was equally absent when the suite passed 5/5 earlier
+in the day. The producer-blocking mechanism is understood and the topic is now
+pre-created, but *what changed between those two runs* was never established
+from the artifacts available. It is recorded rather than rationalised: if this
+resurfaces, start there.
 
 ## 4. Explicitly out of scope (for now)
 

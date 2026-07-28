@@ -1,10 +1,10 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
-import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -208,8 +209,8 @@ class ParkingLotTest {
     }
 
     @Test
-    @DisplayName("unparkAll() cancels all futures for a workflow")
-    void unparkAllCancelsWorkflowFutures() throws Exception {
+    @DisplayName("shutdown() abandons every waiter with ExecutorShutdownException, not a failure")
+    void shutdownAbandonsEveryWaiter() throws Exception {
         var result1 = new AtomicReference<Object>();
         var result2 = new AtomicReference<Object>();
         var parked = new CountDownLatch(2);
@@ -218,7 +219,7 @@ class ParkingLotTest {
             parked.countDown();
             try {
                 parkingLot.park("order-abc:signal:payment");
-            } catch (CancellationException e) {
+            } catch (RuntimeException e) {
                 result1.set(e);
             }
         });
@@ -226,8 +227,8 @@ class ParkingLotTest {
         var thread2 = Thread.ofVirtual().start(() -> {
             parked.countDown();
             try {
-                parkingLot.park("order-abc:timer:sleep-5");
-            } catch (CancellationException e) {
+                parkingLot.park("order-xyz:timer:sleep-5");
+            } catch (RuntimeException e) {
                 result2.set(e);
             }
         });
@@ -235,50 +236,29 @@ class ParkingLotTest {
         assertTrue(parked.await(5, TimeUnit.SECONDS));
         await().atMost(Duration.ofSeconds(2)).until(() -> parkingLot.parkedCount() == 2);
 
-        parkingLot.unparkAll("order-abc");
+        parkingLot.shutdown();
 
         thread1.join(Duration.ofSeconds(5));
         thread2.join(Duration.ofSeconds(5));
 
-        assertTrue(result1.get() instanceof CancellationException,
-                "First thread should receive CancellationException");
-        assertTrue(result2.get() instanceof CancellationException,
-                "Second thread should receive CancellationException");
+        // The exception type is the whole point: a CancellationException (or any
+        // wrapper of it) reads to the executor as a workflow failure and would
+        // fail — and compensate — a workflow that was merely parked.
+        assertInstanceOf(ExecutorShutdownException.class, result1.get());
+        assertInstanceOf(ExecutorShutdownException.class, result2.get());
     }
 
     @Test
-    @DisplayName("unparkAll() does not affect other workflows")
-    void unparkAllDoesNotAffectOtherWorkflows() throws Exception {
-        var otherResult = new AtomicReference<Object>();
-        var parkedBoth = new CountDownLatch(2);
+    @DisplayName("A park that registers after shutdown() throws immediately instead of blocking")
+    void parkAfterShutdownThrowsImmediately() {
+        parkingLot.shutdown();
 
-        // Park two workflows
-        Thread.ofVirtual().start(() -> {
-            parkedBoth.countDown();
-            try {
-                parkingLot.park("order-abc:signal:payment");
-            } catch (CancellationException ignored) {}
-        });
-
-        var otherThread = Thread.ofVirtual().start(() -> {
-            parkedBoth.countDown();
-            otherResult.set(parkingLot.park("order-xyz:signal:payment"));
-        });
-
-        assertTrue(parkedBoth.await(5, TimeUnit.SECONDS));
-        await().atMost(Duration.ofSeconds(2)).until(() -> parkingLot.parkedCount() == 2);
-
-        // Cancel only order-abc
-        parkingLot.unparkAll("order-abc");
-
-        await().atMost(Duration.ofSeconds(2)).untilAsserted(() -> assertTrue(
-                parkingLot.isParked("order-xyz:signal:payment"),
-                "Other workflow should still be parked"));
-
-        // Clean up the other thread
-        parkingLot.unpark("order-xyz:signal:payment", "done");
-        otherThread.join(Duration.ofSeconds(5));
-        assertEquals("done", otherResult.get());
+        assertThrows(ExecutorShutdownException.class,
+                () -> parkingLot.park("order-abc:signal:payment"),
+                "a park racing shutdown must fail fast, not block out its timeout and stall the drain");
+        assertThrows(ExecutorShutdownException.class,
+                () -> parkingLot.parkWithTimeout("order-abc:timer:sleep-5", Duration.ofMinutes(10)));
+        assertEquals(0, parkingLot.parkedCount(), "a refused park must not leave its future registered");
     }
 
     @Test

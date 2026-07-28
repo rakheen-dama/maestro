@@ -100,6 +100,13 @@ services:
         $$KAFKA --create --if-not-exists --topic maestro.signals.verification-gateway --partitions 3 --replication-factor 1
         $$KAFKA --create --if-not-exists --topic maestro.signals.underwriting         --partitions 3 --replication-factor 1
         # Cross-service business event topics (keyed by loanId)
+        # Engine lifecycle events for the admin dashboard. Maestro publishes
+        # these on every workflow transition and never auto-creates topics, so
+        # the topic must exist even when nothing consumes it — otherwise the
+        # producer blocks on metadata lookup for max.block.ms (60s by default)
+        # on the very first startWorkflow.
+        $$KAFKA --create --if-not-exists --topic maestro.admin.events           --partitions 3 --replication-factor 1
+
         $$KAFKA --create --if-not-exists --topic loans.verification.requests    --partitions 3 --replication-factor 1
         $$KAFKA --create --if-not-exists --topic loans.verification.results     --partitions 3 --replication-factor 1
         $$KAFKA --create --if-not-exists --topic loans.underwriting.requests    --partitions 3 --replication-factor 1

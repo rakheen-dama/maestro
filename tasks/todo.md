@@ -1,3 +1,40 @@
+# Milestone: Close the Test Gaps (multi-agent, P0–P6)
+
+Binding plan: `docs/test-plan.md`. Coordinator prompt: `tasks/test-gap-closure-prompt.md`.
+Contract for parallel builders: `maestro-integration-tests/SPEC.md`.
+Branch: `test/integration-suite-p0-p6` (off `main` after PR #26 merged).
+
+- [x] Scaffold — `maestro-integration-tests` module wired (`maestro.integration-test-conventions`: `test` = `@Tag("integration")`, separate `e2eTest` task for `@Tag("e2e")`); SPEC.md pins fixtures/naming/timing; fixtures = `PostgresIntegrationSupport`, `MaestroEngineHarness`, `WorkflowHandle`, `TestWorkflows`, `CountingActivities`; `EngineHarnessSmokeIT` proves the harness drives the real engine on real PG (3 tests green)
+  - **BUG5 FOUND + FIXED (library):** `maestro-lock-postgres` and `maestro-messaging-postgres` both shipped Flyway `V100` into `classpath:db/migration` → *"Found more than one migration with version 100"*; the Postgres-only profile could never migrate. RED first (`MaestroMigrationsCoexistIT`, 2 tests), fixed by disjoint version bands (store 1–99, lock 100–199, messaging 200–299; messaging renumbered V100→V200). Safe to renumber: zero release tags, nothing published.
+  - Audit note for P6: `EventType.WORKFLOW_STARTED` is never appended to the event log (start is published as `LifecycleEventType.WORKFLOW_STARTED` only) — dead enum constant.
+- [x] P0 — Engine × Postgres: **32 tests** across 8 suites, 3× flake-clean (`--rerun-tasks`)
+  - `EnginePostgresLifecycleIT` (5), `EnginePostgresMemoizationIT` (3), `EnginePostgresRecoveryIT` (4), `EnginePostgresParallelIT` (3), `EnginePostgresOptimisticLockIT` (5, BUG1 pin), `EnginePostgresSignalIT` (6), `EnginePostgresTimerIT` (4), `EnginePostgresSagaIT` (2)
+  - No engine defects found. Both builder agents died on transient API errors before reporting, so an independent rigor audit re-verified the suites against engine source: assertions trace to real formulas (branch partitioning `p*1000+(i+1)*1000`, store CAS `version-1`), crash sims genuinely use a second executor, orphan-adoption is distinct from pre-arrival, LIFO order asserted twice (execution + persisted sequence)
+  - Audit gap closed by coordinator: saga version-march was unasserted (`SagaManager.transitionToCompensating` is the BUG1 call site and swallows `OptimisticLockException`). Added version pins (2 for compensated, 1 for clean), RED-proved (`expected: <3> but was: <2>`)
+  - **Scaffold fixture bug found + fixed:** `@Container` on a static field in an abstract base is stopped by JUnit per test *class* → suites 2+ ran against a fresh unmigrated DB (`relation "maestro_workflow_signal" does not exist`, 29/35 red). Switched to JVM-wide singleton container
+- [x] P1 — Kafka in CI: **12 tests** (10 green, 2 `@Disabled` as executable spec) — listener round-trip, the `maestro.signals.{service}` channel fed for the first time, duplicate delivery, lifecycle events, ack-on-failure contract
+  - **BUG8 FOUND + FIXED (library):** every nested `@ConfigurationProperties` record declared a no-arg ctor → Boot skipped value-object binding → `maestro.messaging.topics.*`, `lock.*`, `timer.*`, `recovery.*`, `retry.*`, `store.table-prefix`, `worker.task-queues` were **inert in every deployment**. RED first (`MaestroPropertiesBindingTest`)
+- [x] P2 — Multi-node: **12 tests** — lock contention, owner death → TTL → adoption, cross-node signal routing, no-lock-backend characterization (duplicate execution is real; activities must be idempotent there)
+  - **BUG9 FOUND + FIXED (library):** `PostgresNotificationListener.listen()` only queued the LISTEN → cross-instance wake silently lossy. My earlier "production is not exposed" claim was wrong; the workaround it justified was removed
+  - **BUG7 FOUND + FIXED (library):** version conflict on finalise recorded a *successful* workflow as FAILED (+ saga compensation after success)
+- [x] P3 — Backend modules: **37 tests** — `PostgresDistributedLockContractTest` (24) + messaging (13). Note: lock-postgres was **not** testless (4 pre-existing unit tests); the plan's premise was wrong. messaging-postgres genuinely had zero
+- [x] P4 — Loan E2E: nightly CI workflow (`e2e-nightly.yml`, schedule + manual dispatch, logs+pids uploaded); scenario 6 (two-instance loan-application, driven entirely through node B) added. **6/6 PASS** on a clean run (ports verified free, containers down first)
+  - Kept as a script rather than a JUnit rewrite: it already does real `kill -9`, restart and PID identity checks; reimplementing risked losing exactly the assertions `tasks/lessons.md` exists for
+  - First run FAILED 6/6 — surfaced that `maestro.admin.events` was never pre-created, so the producer blocked 60s (`max.block.ms`) inside `startWorkflow`. The sample sets `maestro.admin.events.enabled: false` to avoid this, but that property is **read by nothing**. Topic now pre-created; the inert property is logged as a library follow-up
+- [x] P5 — Shutdown contract: **13 tests** (7 unit + 6 integration), RED-first
+  - **BUG6 FOUND + FIXED (library):** shutdown marked parked workflows FAILED *and compensated them*. Typed `ExecutorShutdownException`; parked workflows stay `WAITING_*` and recoverable
+- [x] P6 — Guardrails:
+  - `MaestroClient` — 8 tests through the real auto-config chain (first dedicated test class); mutation-verified
+  - Health-indicator audit answered: **not implemented at all** — no `io.b2mash.maestro.spring.health` package exists though `CLAUDE.md` documents `MaestroHealthIndicator`. Docs/code gap, not a test gap; not built (new feature, out of scope)
+  - Module test-coverage gate wired into `check`: fails on any `maestro-*` module with production code and zero tests, with a documented allowlist for the four known-untested modules (admin, admin-client, messaging-rabbitmq, store-jdbc). Proven to bite by removing an entry
+  - `DeterminismChecker` in `maestro-test` — runs a workflow N times and diffs the decision sequences; 3 tests prove it passes a deterministic workflow and catches a branching one, naming the divergence point
+
+## Final verification
+- [x] `./gradlew build` green repo-wide (includes the 65-test integration module + coverage gate)
+- [x] Loan E2E 6/6 green on a clean run
+
+---
+
 # Milestone: Loan-Origination Sample (multi-agent build)
 
 Contract: `maestro-samples/sample-loan-origination/SPEC.md`.
@@ -71,6 +108,14 @@ Previous milestone (Gradle multi-module setup) completed — see git history of 
 - [x] All phases done test-first (RED verified before each implementation)
 
 ## Review — deferred follow-ups (deliberate, from code review)
+
+> **Superseded.** The authoritative, ranked list of remaining gaps and risks now
+> lives in `docs/test-plan.md` §5 ("Known and still open"), which folds these in
+> alongside everything the P0–P6 work surfaced. Two entries below are resolved:
+> **lock-postgres now has a test suite** (24 Testcontainers tests), and the
+> **shutdown bug is fixed** (`ExecutorShutdownException`; parked workflows stay
+> `WAITING_*`). The rest remain open and are restated there with severity and
+> evidence.
 - **Fencing/lost-lock abort:** a lock lost mid-run (>30s GC pause) logs ERROR but does not abort the local workflow; DB constraints dedup persists, not side effects. Needs fencing-token validation in the store (SPI change).
 - **Recovery query scale:** `getRecoverableInstances()` has no service/staleness filter — every node re-reads the full active set every 60s and probes the lock for each foreign-owned instance. Add `service_name` (or `updated_at < now()-TTL`) filter + index (SPI change).
 - **Batch lock renewal:** renewer renews serially, one round-trip per held lock every 10s; batch (SQL IN / Valkey pipeline) before nodes hold thousands of parked workflows.

@@ -26,6 +26,7 @@ include(
     "maestro-lock-valkey",
     "maestro-lock-postgres",
     "maestro-test",
+    "maestro-integration-tests",
     "maestro-admin",
     "maestro-admin-client",
     "maestro-samples:sample-order-service",

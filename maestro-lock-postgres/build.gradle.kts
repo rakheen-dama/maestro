@@ -12,4 +12,7 @@ dependencies {
 
     testImplementation(libs.spring.boot.starter.test)
     testImplementation(libs.testcontainers.postgresql)
+    // Applies this module's own V100 migration before the contract suite runs.
+    testImplementation(libs.flyway.core)
+    testRuntimeOnly(libs.flyway.postgres)
 }
