@@ -46,15 +46,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Base class for the P1 suites: a real Spring Boot application wired to a real
  * Kafka broker <em>and</em> a real Postgres store, both from Testcontainers.
  *
- * <h2>Why this class exists instead of {@code support.KafkaIntegrationSupport}</h2>
- * <p>{@code KafkaIntegrationSupport} starts its broker through JUnit's
- * {@code @Testcontainers}/{@code @Container} extension, which stops the container
- * when each test <em>class</em> ends. Spring caches an {@code ApplicationContext}
- * across test classes, so the second suite onwards would reuse producer and
- * consumer factories bound to a broker that no longer exists. This class
- * therefore starts the broker from a static initialiser and never stops it —
- * exactly the reasoning {@link PostgresIntegrationSupport} documents for
- * Postgres. Ryuk removes the container when the JVM exits.
+ * <p>This is the canonical base for any suite needing Kafka. Java has no
+ * multiple inheritance, so a Kafka suite that also needs the store cannot
+ * extend two bases; it extends {@link PostgresIntegrationSupport} and owns its
+ * broker, as this class does.
+ *
+ * <h2>Container lifecycle</h2>
+ * <p>The broker starts from a static initialiser and is never stopped. JUnit's
+ * {@code @Testcontainers}/{@code @Container} extension stops a static container
+ * when each test <em>class</em> ends, and Spring caches an
+ * {@code ApplicationContext} across test classes — so the second suite onwards
+ * would reuse producer and consumer factories bound to a broker that no longer
+ * exists. Ryuk removes the container when the JVM exits.
  *
  * <h2>Schema</h2>
  * <p>Flyway runs in the static initialiser, not in a {@code @BeforeEach}: the

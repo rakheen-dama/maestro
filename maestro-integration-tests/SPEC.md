@@ -82,33 +82,24 @@ abstract class PostgresIntegrationSupport {
 - `@BeforeEach` truncates every `maestro_*` table for isolation. The container
   is **never** restarted between tests.
 
-### `support.KafkaIntegrationSupport` (abstract base class)
+### `kafka.KafkaSpringIntegrationSupport` — the Kafka base
 
-Mirrors `KafkaTestSupport` from `maestro-messaging-kafka`:
-`confluentinc/cp-kafka:7.7.1` in KRaft mode, `createTopics(String...)` via
-`AdminClient` (**topics are never auto-created** — repo rule), Spring Kafka
-producer/consumer factories with `byte[]` values and `auto.offset.reset=earliest`.
-
-```java
-protected String testSuffix;                   // unique per test — build topic/group names from it
-protected void createTopics(String... names);  // 1 partition each
-protected void createTopic(String name, int partitions);  // for consumer-group routing tests
-protected Map<String, Object> consumerProps(String groupId);
-protected static String bootstrapServers();    // for @DynamicPropertySource wiring
-```
+The canonical base for any suite needing Kafka: a real Spring Boot application
+wired to a Testcontainers broker **and** Postgres store. It extends
+`PostgresIntegrationSupport` and owns its broker, because Java has no multiple
+inheritance.
 
 Both container fixtures start from a **static initialiser**, never via
 `@Testcontainers`/`@Container`. That extension stops a static container when its
 test *class* ends, so an inherited container is recreated per subclass — and a
 cached `@SpringBootTest` context then holds factories bound to a dead broker.
-`PostgresIntegrationSupport` also migrates Flyway in its static initialiser,
-because Spring refreshes the context (and `StartupRecoveryRunner` queries
-`maestro_workflow_instance`) *before* any `@BeforeEach` runs.
+Flyway likewise runs in the static initialiser, because Spring refreshes the
+context (and `StartupRecoveryRunner` queries `maestro_workflow_instance`)
+*before* any `@BeforeEach` runs.
 
-Java has no multiple inheritance, so a suite needing **both** backends extends
-`PostgresIntegrationSupport` and starts its own broker the same way — see
-`kafka.KafkaSpringIntegrationSupport`, the working example for `@SpringBootTest`
-suites. `KafkaIntegrationSupport` is for Kafka-only suites.
+`confluentinc/cp-kafka:7.7.1` in KRaft mode. **Topics are never auto-created**
+(repo rule) — pre-create them from `@BeforeAll`, which JUnit runs before the
+Spring context loads.
 
 ### `support.MaestroEngineHarness` — the engine-under-test seam
 
