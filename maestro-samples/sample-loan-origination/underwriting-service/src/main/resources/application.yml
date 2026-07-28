@@ -51,4 +51,7 @@ maestro:
 
   admin:
     events:
+      # No admin dashboard in this sample — lifecycle events are not
+      # published. Previously a no-op (the property bound but nothing read
+      # it); now actually disables lifecycle publishing end to end.
       enabled: false
