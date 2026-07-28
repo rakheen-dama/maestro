@@ -35,11 +35,11 @@ Properties under `maestro.store.*` control the workflow persistence layer.
 |----------------------------|----------|-------------|----------------------------------------------------------------------------------------------------------|
 | `maestro.store.type`       | `String` | `"postgres"`| Store implementation type. Currently only `postgres` is supported.                                       |
 | `maestro.store.table-prefix`| `String`| `"maestro_"`| Prefix applied to all database table names (e.g., `maestro_workflow_instance`, `maestro_workflow_event`). |
-| `maestro.store.schema`     | `String` | `"maestro"` | Database schema where Maestro tables are created. Flyway migrations target this schema.                  |
 
 The table prefix lets you run multiple Maestro instances in the same database by
-giving each a unique prefix. The schema setting controls which PostgreSQL schema
-Flyway creates tables in.
+giving each a unique prefix. To target a non-default PostgreSQL schema, set it
+on the JDBC connection (e.g. `currentSchema` in the datasource URL) — Maestro
+does not manage schemas itself.
 
 ---
 
@@ -268,7 +268,6 @@ maestro:
   store:
     type: postgres
     table-prefix: maestro_
-    schema: maestro
   messaging:
     type: kafka
     topics:
@@ -392,7 +391,7 @@ leader election, and signal notification. The following key patterns are used:
 | Key Pattern                                   | Purpose                         | TTL               |
 |-----------------------------------------------|-------------------------------- |--------------------|
 | `maestro:lock:workflow:{workflowId}`          | Workflow instance lock          | 30s (renewed every 10s) |
-| `maestro:lock:activity:{workflowId}:{seq}`    | Activity execution lock (doubles as dedup) | activity timeout + 10s |
+| `maestro:lock:activity:{workflowId}:{seq}`    | Activity execution lock (fast-path dedup) | activity timeout + 10s |
 | `maestro:leader:timer-poller:{service}`       | Timer poller leader election    | 15s                |
 | `maestro:signal:{workflowId}`                 | Signal notification (pub/sub)   | N/A (pub/sub)      |
 
@@ -404,9 +403,12 @@ including parked waits — and renewed every 10 seconds. If a node crashes, the
 lock expires after 30 seconds, allowing another node's recovery poller to pick
 up the workflow.
 
-The activity lock guards a single activity execution against concurrent
-duplicates and doubles as the fast-path dedup key. The authoritative dedup is
-the Postgres unique index on `(workflow_instance_id, sequence_number)`.
+The activity lock is a best-effort guard against concurrent duplicate execution
+and doubles as the fast-path dedup key. The authoritative dedup is the Postgres
+unique index on `(workflow_instance_id, sequence_number)` — but note that this
+deduplicates *persisted results*, not external side effects. If a lock expires
+or is lost mid-execution, an activity can run more than once, so activities
+must be idempotent (or use fencing/idempotency keys with external systems).
 
 The leader election key ensures that only one node in the cluster runs the timer
 poller. It uses a shorter TTL (15 seconds) so that leadership transfers quickly

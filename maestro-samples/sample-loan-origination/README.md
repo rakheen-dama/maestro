@@ -9,7 +9,7 @@ The binding contract for everything in this sample is [SPEC.md](SPEC.md).
 
 ## Architecture
 
-```
+```text
                          ┌──────────────────────────────┐
   REST (docs, sign,      │  loan-application-service     │
   withdraw) ──────────►  │  LoanApplicationWorkflow      │

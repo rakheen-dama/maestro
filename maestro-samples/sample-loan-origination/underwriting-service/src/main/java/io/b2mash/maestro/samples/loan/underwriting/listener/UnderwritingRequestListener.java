@@ -50,15 +50,18 @@ public class UnderwritingRequestListener {
                             .workflowId(workflowId)
                             .build()
             ).startAsync(request);
-            logger.info("Started underwriting workflow '{}' (amount={}, income={})",
-                    workflowId, request.amount(), request.income());
+            // Amount/income are sensitive financial data — keep them out of logs.
+            logger.info("Started underwriting workflow '{}'", workflowId);
         } catch (WorkflowAlreadyExistsException e) {
             // Idempotent start: duplicate request or Kafka redelivery.
             logger.info("Underwriting workflow '{}' already exists — ignoring duplicate request",
                     workflowId);
         } catch (Exception e) {
+            // Rethrow so the Kafka listener error handler retries (or routes
+            // to DLT if configured) instead of acknowledging a failed start.
             logger.error("Failed to start underwriting workflow '{}': {}",
                     workflowId, e.getMessage(), e);
+            throw e;
         }
     }
 }

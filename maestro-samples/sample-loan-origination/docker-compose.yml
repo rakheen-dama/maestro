@@ -66,6 +66,9 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      # Topics are pre-created by kafka-init — Maestro never auto-creates
+      # topics, so unexpected topic names must fail loudly.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       CLUSTER_ID: "maestro-loan-cluster-001"
     ports:
       - "29093:29093"

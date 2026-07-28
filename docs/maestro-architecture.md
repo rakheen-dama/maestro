@@ -459,7 +459,7 @@ Consumer group per service: `maestro-{serviceName}`.
 | Key Pattern | Purpose | TTL |
 |---|---|---|
 | `maestro:lock:workflow:{workflowId}` | Workflow instance lock | 30s (renewed every 10s) |
-| `maestro:lock:activity:{workflowId}:{seq}` | Activity execution lock (doubles as dedup) | activity timeout + 10s |
+| `maestro:lock:activity:{workflowId}:{seq}` | Activity execution lock (fast-path dedup) | activity timeout + 10s |
 | `maestro:leader:timer-poller:{service}` | Timer polling leader election | 15s |
 | `maestro:signal:{workflowId}` (pub/sub) | Immediate signal notification | N/A |
 
@@ -626,7 +626,7 @@ SIGTERM → stop accepting new workflows → stop Kafka consumers → wait for i
 | **External API down** | Activity retries durably (configurable: attempts, backoff, max interval). Service can restart during retries. |
 | **Kafka rebalance** | In-progress workflows continue. New tasks reroute. |
 | **Postgres lost** | Execution blocks until restored. No activity without persistence. |
-| **Valkey down** | Fallback to Postgres locking. Poll-based signals. |
+| **Valkey down** | Workflows proceed unlocked (unique event index is the backstop; or use `maestro-lock-postgres`). Poll-based signals. |
 | **Duplicate Kafka delivery** | Valkey dedup + unique constraint. |
 | **Signal before workflow** | Stored with null instance. Adopted on start. |
 | **Signal before await** | Stored unconsumed. Consumed when await reached. |

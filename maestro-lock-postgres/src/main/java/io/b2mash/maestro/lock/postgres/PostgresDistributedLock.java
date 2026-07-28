@@ -1,5 +1,6 @@
 package io.b2mash.maestro.lock.postgres;
 
+import io.b2mash.maestro.core.exception.LockBackendException;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
 import org.slf4j.Logger;
@@ -125,7 +126,7 @@ public final class PostgresDistributedLock implements DistributedLock {
             // "backend unavailable" (degrade gracefully) from "lock held
             // elsewhere" (skip the workflow). Returning empty here would be
             // misread as contention.
-            throw new IllegalStateException("Failed to acquire lock '" + key + "'", e);
+            throw new LockBackendException("Failed to acquire lock '" + key + "'", key, e);
         }
 
         logger.debug("Failed to acquire lock '{}' — already held", key);
@@ -176,8 +177,8 @@ public final class PostgresDistributedLock implements DistributedLock {
         } catch (SQLException e) {
             // Transient backend error — propagate so callers can retry rather
             // than misreading it as lost ownership
-            throw new IllegalStateException(
-                    "Failed to renew lock '" + handle.key() + "'", e);
+            throw new LockBackendException(
+                    "Failed to renew lock '" + handle.key() + "'", handle.key(), e);
         }
     }
 

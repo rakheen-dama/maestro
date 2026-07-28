@@ -83,6 +83,13 @@ final class WorkflowInstanceLockManager {
             Duration ttl,
             Duration renewInterval
     ) {
+        if (ttl == null || ttl.isNegative() || ttl.isZero()) {
+            throw new IllegalArgumentException("instance lock ttl must be positive, got " + ttl);
+        }
+        if (renewInterval == null || renewInterval.isNegative() || renewInterval.isZero()) {
+            throw new IllegalArgumentException(
+                    "instance lock renewInterval must be positive, got " + renewInterval);
+        }
         this.distributedLock = distributedLock;
         this.serviceName = serviceName;
         this.keyPrefix = keyPrefix;

@@ -8,6 +8,9 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.ObjectMapper;
 
+import java.time.Duration;
+import java.util.concurrent.TimeUnit;
+
 /**
  * Publishes {@link VerificationResult} events to the pre-created
  * {@code loans.verification.results} Kafka topic, keyed by {@code loanId}.
@@ -22,6 +25,7 @@ public class KafkaVerificationMessagingActivities implements VerificationMessagi
     private static final Logger logger =
             LoggerFactory.getLogger(KafkaVerificationMessagingActivities.class);
     private static final String TOPIC = "loans.verification.results";
+    private static final Duration SEND_TIMEOUT = Duration.ofSeconds(30);
 
     private final KafkaTemplate<String, byte[]> kafkaTemplate;
     private final ObjectMapper objectMapper;
@@ -36,7 +40,10 @@ public class KafkaVerificationMessagingActivities implements VerificationMessagi
     public void publishResult(VerificationResult result) {
         try {
             var bytes = objectMapper.writeValueAsBytes(result);
-            kafkaTemplate.send(TOPIC, result.loanId(), bytes).get();
+            // Bounded wait: an unresponsive broker must fail the activity (and
+            // enter the durable retry policy) instead of pinning the thread.
+            kafkaTemplate.send(TOPIC, result.loanId(), bytes)
+                    .get(SEND_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
             logger.info("Published {} verification result for loan {}: approved={}",
                     result.type(), result.loanId(), result.approved());
         } catch (InterruptedException e) {

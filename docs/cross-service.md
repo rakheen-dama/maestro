@@ -393,7 +393,7 @@ the source of truth -- Postgres is.
 | Key Pattern | Purpose | TTL |
 |---|---|---|
 | `maestro:lock:workflow:{workflowId}` | Workflow instance lock | 30s (renewed every 10s) |
-| `maestro:lock:activity:{workflowId}:{seq}` | Activity execution lock (doubles as dedup) | activity timeout + 10s |
+| `maestro:lock:activity:{workflowId}:{seq}` | Activity execution lock (fast-path dedup) | activity timeout + 10s |
 | `maestro:leader:timer-poller:{service}` | Timer polling leader election | 15s |
 | `maestro:signal:{workflowId}` (pub/sub) | Signal notification channel | N/A |
 
@@ -433,15 +433,19 @@ If Valkey is unavailable, Maestro does not stop working:
   remain the correctness backstop (or use `maestro-lock-postgres` to keep
   locking without Valkey)
 - **Dedup** falls back to the unique constraint on
-  `(workflow_instance_id, sequence_number)` in the event table
+  `(workflow_instance_id, sequence_number)` in the event table — this
+  deduplicates persisted results, not external side effects
 - **Leader election** falls back so that each node polls independently
   (safe but slightly less efficient)
 - **Signal notification** falls back to store-based delivery -- a parked
   workflow re-checks the store every 30 seconds, so instead of an instant wake
   the signal arrives within one re-check interval
 
-The system is slower without Valkey, but correct. Postgres is always the
-source of truth.
+The system is slower without Valkey, but durable workflow state stays
+correct — Postgres is always the source of truth. What unlocked execution
+cannot guarantee is exactly-once *external side effects*: without the lock an
+activity may run more than once, which is why activities must be idempotent
+(see Best Practices below).
 
 ---
 

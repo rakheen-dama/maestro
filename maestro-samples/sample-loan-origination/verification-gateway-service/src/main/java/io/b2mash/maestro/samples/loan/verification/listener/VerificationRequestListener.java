@@ -61,8 +61,8 @@ public class VerificationRequestListener {
                             .build()
             ).startAsync(task);
 
-            logger.info("Started verification workflow '{}' (amount={}, latency={})",
-                    workflowId, request.amount(), latency);
+            // Loan amount is sensitive financial data — keep it out of logs.
+            logger.info("Started verification workflow '{}' (latency={})", workflowId, latency);
         } catch (WorkflowAlreadyExistsException e) {
             // Duplicate delivery — the workflow is already running or done.
             logger.info("Verification workflow '{}' already exists — ignoring duplicate request",
@@ -71,8 +71,11 @@ public class VerificationRequestListener {
             logger.error("Rejected verification request for loan {}: {}",
                     request.loanId(), e.getMessage());
         } catch (Exception e) {
+            // Rethrow so the Kafka listener error handler retries (or routes
+            // to DLT if configured) instead of acknowledging a failed start.
             logger.error("Failed to start verification workflow '{}': {}",
                     workflowId, e.getMessage(), e);
+            throw e;
         }
     }
 }

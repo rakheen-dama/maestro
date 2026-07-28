@@ -122,7 +122,10 @@ public final class WorkflowExecutor {
      * @param serviceName     the name of the owning service
      * @param lockKeyPrefix   prefix for distributed lock keys (e.g. {@code maestro:lock:})
      * @param instanceLockTtl TTL for the per-workflow instance lock; renewed
-     *                        at one third of this interval
+     *                        at one third of this interval — must be strictly
+     *                        positive
+     * @throws IllegalArgumentException if {@code instanceLockTtl} is
+     *                                  {@code null}, zero, or negative
      */
     public WorkflowExecutor(
             WorkflowStore store,
@@ -134,6 +137,10 @@ public final class WorkflowExecutor {
             String lockKeyPrefix,
             Duration instanceLockTtl
     ) {
+        if (instanceLockTtl == null || instanceLockTtl.isNegative() || instanceLockTtl.isZero()) {
+            throw new IllegalArgumentException(
+                    "instanceLockTtl must be positive, got " + instanceLockTtl);
+        }
         this.store = store;
         this.distributedLock = distributedLock;
         this.messaging = messaging;
@@ -588,14 +595,18 @@ public final class WorkflowExecutor {
                     instance.workflowId());
         }
 
-        if (replaying && acquisition == WorkflowInstanceLockManager.Acquisition.ACQUIRED) {
-            // Close the recovery-query→lock-grant race: the previous owner may
-            // have finished the workflow before releasing the lock
+        if (replaying) {
+            // Close the recovery-query→resume race: the previous owner may
+            // have finished the workflow after the recovery snapshot was
+            // taken. Run the re-check regardless of lock acquisition — with
+            // no lock backend (NO_BACKEND) the snapshot can be just as stale.
             var current = store.getInstance(instance.workflowId());
             if (current.isEmpty() || !current.get().status().isActive()) {
                 logger.debug("Workflow '{}' turned terminal before resume — skipping",
                         instance.workflowId());
-                instanceLockManager.release(instance.workflowId());
+                if (acquisition == WorkflowInstanceLockManager.Acquisition.ACQUIRED) {
+                    instanceLockManager.release(instance.workflowId());
+                }
                 return false;
             }
         }

@@ -10,6 +10,9 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.ObjectMapper;
 
+import java.time.Duration;
+import java.util.concurrent.TimeUnit;
+
 /**
  * Publishes cross-service events to the pre-created loan topics, keyed by
  * {@code loanId} per the SPEC contract.
@@ -21,6 +24,7 @@ public class KafkaLoanMessagingActivities implements LoanMessagingActivities {
 
     static final String VERIFICATION_REQUESTS_TOPIC = "loans.verification.requests";
     static final String UNDERWRITING_REQUESTS_TOPIC = "loans.underwriting.requests";
+    private static final Duration SEND_TIMEOUT = Duration.ofSeconds(30);
 
     private final KafkaTemplate<String, byte[]> kafkaTemplate;
     private final ObjectMapper objectMapper;
@@ -58,7 +62,9 @@ public class KafkaLoanMessagingActivities implements LoanMessagingActivities {
     private void send(String topic, String key, Object event) {
         try {
             var bytes = objectMapper.writeValueAsBytes(event);
-            kafkaTemplate.send(topic, key, bytes).get();
+            // Bounded wait: an unresponsive broker must fail the activity (and
+            // enter the durable retry policy) instead of pinning the thread.
+            kafkaTemplate.send(topic, key, bytes).get(SEND_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new RuntimeException("Interrupted while publishing to " + topic, e);

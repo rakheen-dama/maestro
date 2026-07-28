@@ -193,10 +193,12 @@ Orchestration within, choreography between. Each service owns its state. Kafka e
 
 ```
 maestro:lock:workflow:{workflowId}           — Instance lock (30s TTL, renewed every 10s)
-maestro:lock:activity:{workflowId}:{seq}     — Activity execution lock, doubles as dedup (timeout + 10s TTL)
+maestro:lock:activity:{workflowId}:{seq}     — Activity execution lock, best-effort dedup fast path (timeout + 10s TTL)
 maestro:leader:timer-poller:{service}         — Timer leader (15s TTL)
 maestro:signal:{workflowId}                   — Pub/sub for immediate signal wake
 ```
+
+Locks are best-effort guards: if one expires or is lost, the unique event index dedups *persisted results*, not external side effects — activities must be idempotent.
 
 ## Configuration Namespace
 

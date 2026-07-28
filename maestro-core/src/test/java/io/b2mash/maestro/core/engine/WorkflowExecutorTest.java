@@ -411,6 +411,45 @@ class WorkflowExecutorTest {
     }
 
     @Test
+    @DisplayName("Resume skips a terminal instance even without a lock backend")
+    void resumeSkipsTerminalInstanceWithoutLockBackend() throws Exception {
+        // The store already shows COMPLETED …
+        var completed = recoverableInstance("recover-done-unlocked").toBuilder()
+                .status(WorkflowStatus.COMPLETED)
+                .build();
+        store.createInstance(completed);
+
+        // … but the recovery query returned a stale RUNNING snapshot. The
+        // default executor has no DistributedLock (NO_BACKEND) — the terminal
+        // re-check must still run.
+        var stale = completed.toBuilder().status(WorkflowStatus.RUNNING).build();
+
+        var latch = new CountDownLatch(1);
+        var workflow = new SimpleWorkflow(latch);
+        var method = SimpleWorkflow.class.getMethod("run", String.class);
+
+        var resumed = executor.resumeWorkflow(stale, workflow, method);
+
+        assertFalse(resumed, "terminal instance must not be resumed without a lock backend");
+        assertFalse(latch.await(300, TimeUnit.MILLISECONDS),
+                "the terminal workflow must not execute");
+    }
+
+    @Test
+    @DisplayName("Constructor rejects a non-positive instance lock TTL")
+    void constructorRejectsNonPositiveInstanceLockTtl() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
+                        "maestro:lock:", Duration.ZERO));
+        assertThrows(IllegalArgumentException.class, () ->
+                new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
+                        "maestro:lock:", Duration.ofSeconds(-5)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
+                        "maestro:lock:", null));
+    }
+
+    @Test
     @DisplayName("Fresh start proceeds when the instance lock cannot be acquired")
     void freshStartProceedsWhenLockUnavailable() throws Exception {
         var lock = new MapLock();

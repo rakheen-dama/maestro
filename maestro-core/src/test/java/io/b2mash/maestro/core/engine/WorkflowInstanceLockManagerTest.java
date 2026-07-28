@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -36,6 +37,20 @@ class WorkflowInstanceLockManagerTest {
         if (manager != null) {
             manager.close();
         }
+    }
+
+    @Test
+    @DisplayName("non-positive ttl or renew interval is rejected")
+    void nonPositiveTtlOrRenewIntervalRejected() {
+        var lock = new RecordingLock();
+        assertThrows(IllegalArgumentException.class, () ->
+                new WorkflowInstanceLockManager(lock, "svc", Duration.ZERO, SHORT_RENEW));
+        assertThrows(IllegalArgumentException.class, () ->
+                new WorkflowInstanceLockManager(lock, "svc", Duration.ofSeconds(-1), SHORT_RENEW));
+        assertThrows(IllegalArgumentException.class, () ->
+                new WorkflowInstanceLockManager(lock, "svc", SHORT_TTL, Duration.ZERO));
+        assertThrows(IllegalArgumentException.class, () ->
+                new WorkflowInstanceLockManager(lock, "svc", SHORT_TTL, Duration.ofMillis(-10)));
     }
 
     @Test

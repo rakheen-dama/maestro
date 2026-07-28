@@ -48,8 +48,12 @@ public class RuleBasedAssessmentActivities implements AssessmentActivities {
             registry.queued(request.loanId(), request.round(), dti);
         }
 
-        logger.info("Auto-assessed loan {} round {}: DTI={} verificationsApproved={} -> {}",
-                request.loanId(), request.round(), dti, request.verificationsApproved(), outcome);
+        // DTI and verification details are sensitive financial data — log the
+        // outcome at INFO and keep diagnostics at DEBUG.
+        logger.info("Auto-assessed loan {} round {} -> {}",
+                request.loanId(), request.round(), outcome);
+        logger.debug("Assessment detail for loan {} round {}: DTI={} verificationsApproved={}",
+                request.loanId(), request.round(), dti, request.verificationsApproved());
         return outcome;
     }
 

@@ -33,12 +33,31 @@ public final class LoanTimeouts {
     private LoanTimeouts() {
     }
 
-    /** Applies the given timeouts (called at startup from Spring config, or from tests). */
+    /**
+     * Applies the given timeouts (called at startup from Spring config, or from tests).
+     *
+     * @throws IllegalArgumentException if any timeout is {@code null}, zero,
+     *                                  or negative — an invalid deployment
+     *                                  configuration must fail at startup
+     *                                  instead of producing instant workflow
+     *                                  timeouts
+     */
     public static void configure(Duration doc, Duration sign, Duration decision, Duration gate) {
+        requirePositive("doc", doc);
+        requirePositive("sign", sign);
+        requirePositive("decision", decision);
+        requirePositive("gate", gate);
         docTimeout = doc;
         signTimeout = sign;
         decisionTimeout = decision;
         gateTimeout = gate;
+    }
+
+    private static void requirePositive(String name, Duration value) {
+        if (value == null || value.isNegative() || value.isZero()) {
+            throw new IllegalArgumentException(
+                    "%s timeout must be positive, got %s".formatted(name, value));
+        }
     }
 
     /** Restores the SPEC defaults (call from test teardown). */

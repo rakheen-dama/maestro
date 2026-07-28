@@ -51,12 +51,7 @@ Previous milestone (Gradle multi-module setup) completed — see git history of 
 - [x] Wire into WorkflowExecutor (launchWorkflow acquire, finally release, resumeWorkflow boolean)
 - [x] RecoveryPoller + startRecoveryPoller; starter RecoveryProperties + StartupRecoveryRunner
 - [x] InMemoryDistributedLock TTL expiry honor
-- [ ] All module tests green (full build)
-
-## Phase 5 — Docs
-- [ ] maestro-architecture.md corrections (topics, dedup key, timer TTL, branch keys, instance lock semantics)
-- [ ] cross-service.md / self-recovery.md wake-behavior corrections
-- [ ] configuration.md recovery properties; DistributedLock javadoc; CLAUDE.md key table
+- [x] All module tests green (full build)
 
 ## Phase 5 — Docs
 - [x] maestro-architecture.md corrections (topics, dedup key, timer TTL, branch keys, instance lock semantics)

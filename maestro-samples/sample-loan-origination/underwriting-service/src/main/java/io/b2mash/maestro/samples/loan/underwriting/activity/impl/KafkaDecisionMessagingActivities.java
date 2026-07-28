@@ -9,6 +9,9 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.ObjectMapper;
 
+import java.time.Duration;
+import java.util.concurrent.TimeUnit;
+
 /**
  * Publishes underwriting decisions to the {@code loans.underwriting.decisions}
  * Kafka topic (pre-created by the docker-compose init container), keyed by
@@ -19,6 +22,7 @@ public class KafkaDecisionMessagingActivities implements DecisionMessagingActivi
 
     private static final Logger logger = LoggerFactory.getLogger(KafkaDecisionMessagingActivities.class);
     private static final String TOPIC = "loans.underwriting.decisions";
+    private static final Duration SEND_TIMEOUT = Duration.ofSeconds(30);
 
     private final KafkaTemplate<String, byte[]> kafkaTemplate;
     private final ObjectMapper objectMapper;
@@ -36,7 +40,10 @@ public class KafkaDecisionMessagingActivities implements DecisionMessagingActivi
     public void publishDecision(UnderwritingDecision decision) {
         try {
             var bytes = objectMapper.writeValueAsBytes(decision);
-            kafkaTemplate.send(TOPIC, decision.loanId(), bytes).get();
+            // Bounded wait: an unresponsive broker must fail the activity (and
+            // enter the durable retry policy) instead of pinning the thread.
+            kafkaTemplate.send(TOPIC, decision.loanId(), bytes)
+                    .get(SEND_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new RuntimeException(

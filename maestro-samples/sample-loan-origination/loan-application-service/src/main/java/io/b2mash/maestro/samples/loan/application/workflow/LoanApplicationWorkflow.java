@@ -143,6 +143,11 @@ public class LoanApplicationWorkflow {
                 throw new LoanDeclinedException("Verification '%s' declined: %s"
                         .formatted(result.type(), result.details()));
             }
+            if (!expectedTypes.contains(result.type())) {
+                // Only the requested verification types may satisfy the fan-in —
+                // arbitrary approved types must not stand in for them.
+                throw new LoanDeclinedException("Unexpected verification type: " + result.type());
+            }
             verifiedTypes.add(result.type());
         }
 
@@ -163,8 +168,7 @@ public class LoanApplicationWorkflow {
             // DESIGN IDIOM 1 (decision-as-payload): one signal name for the
             // decision point — the verdict (APPROVED/REJECTED/CONDITIONS)
             // lives in the payload, never in competing signal names.
-            var decision = workflow.awaitSignal("underwriting.decision",
-                    UnderwritingDecision.class, LoanTimeouts.decisionTimeout());
+            var decision = awaitDecisionForRound(workflow, round);
 
             if (VERDICT_APPROVED.equals(decision.verdict())) {
                 return;
@@ -189,6 +193,24 @@ public class LoanApplicationWorkflow {
             currentStep = "COLLECTING_CONDITION_DOCUMENTS_ROUND_" + round;
             workflow.collectSignals("document.uploaded", DocumentUploaded.class,
                     decision.conditions().size(), LoanTimeouts.docTimeout());
+        }
+    }
+
+    /**
+     * Awaits the underwriting decision for the given round, skipping delayed
+     * or duplicated decisions from earlier rounds so they cannot be
+     * mis-attributed to the active round. Bounded by the decision timeout on
+     * each await.
+     */
+    private UnderwritingDecision awaitDecisionForRound(WorkflowContext workflow, int round) {
+        while (true) {
+            var decision = workflow.awaitSignal("underwriting.decision",
+                    UnderwritingDecision.class, LoanTimeouts.decisionTimeout());
+            if (decision.round() == round) {
+                return decision;
+            }
+            // Stale decision from a previous round (delayed or redelivered) —
+            // consume it and keep waiting for the active round's decision.
         }
     }
 

@@ -21,7 +21,7 @@ with out-of-order signals:
 
 ## Modules
 
-```
+```text
 maestro-samples/sample-loan-origination/
 ├── loan-application-service/      ← orchestrator + funding saga (port 8091)
 ├── verification-gateway-service/  ← simulated credit/employment/appraisal (port 8092)

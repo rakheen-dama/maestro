@@ -44,9 +44,12 @@ public final class InMemoryDistributedLock implements DistributedLock {
 
     @Override
     public boolean renew(LockHandle handle, Duration ttl) {
-        var renewed = new LockHandle(handle.key(), handle.token(), Instant.now().plus(ttl));
+        var now = Instant.now();
+        var renewed = new LockHandle(handle.key(), handle.token(), now.plus(ttl));
         var result = locks.computeIfPresent(handle.key(), (_, current) ->
-                current.token().equals(handle.token()) ? renewed : current);
+                current.token().equals(handle.token()) && current.expiresAt().isAfter(now)
+                        ? renewed
+                        : current);
         return result == renewed;
     }
 

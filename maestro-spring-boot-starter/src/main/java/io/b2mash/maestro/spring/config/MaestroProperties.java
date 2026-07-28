@@ -161,17 +161,18 @@ public class MaestroProperties {
     /**
      * Workflow store configuration.
      *
+     * <p>Tables live in the connection's default schema; use the JDBC URL's
+     * {@code currentSchema} parameter to relocate them.
+     *
      * @param type        store implementation type (e.g., {@code "postgres"})
      * @param tablePrefix prefix for database tables
-     * @param schema      database schema name
      */
     public record StoreProperties(
             @DefaultValue("postgres") String type,
-            @DefaultValue("maestro_") String tablePrefix,
-            @DefaultValue("maestro") String schema
+            @DefaultValue("maestro_") String tablePrefix
     ) {
         public StoreProperties() {
-            this("postgres", "maestro_", "maestro");
+            this("postgres", "maestro_");
         }
     }
 

@@ -3,6 +3,7 @@ package io.b2mash.maestro.lock.valkey;
 import io.lettuce.core.ScriptOutputType;
 import io.lettuce.core.SetArgs;
 import io.lettuce.core.api.sync.RedisCommands;
+import io.b2mash.maestro.core.exception.LockBackendException;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
 import org.slf4j.Logger;
@@ -106,7 +107,15 @@ public final class ValkeyDistributedLock implements DistributedLock {
     public Optional<LockHandle> tryAcquire(String key, Duration ttl) {
         var token = generateToken();
         var args = SetArgs.Builder.nx().px(ttl.toMillis());
-        var result = commands.set(key, token, args);
+        String result;
+        try {
+            result = commands.set(key, token, args);
+        } catch (RuntimeException e) {
+            // Transient backend error — propagate so callers can distinguish
+            // "backend unavailable" (degrade gracefully) from "lock held
+            // elsewhere" (skip the workflow).
+            throw new LockBackendException("Failed to acquire lock '" + key + "'", key, e);
+        }
 
         if ("OK".equals(result)) {
             var handle = new LockHandle(key, token, Instant.now().plus(ttl));
@@ -133,9 +142,17 @@ public final class ValkeyDistributedLock implements DistributedLock {
 
     @Override
     public boolean renew(LockHandle handle, Duration ttl) {
-        var result = runScript(renewSha, RENEW_SCRIPT,
-                new String[]{handle.key()},
-                handle.token(), String.valueOf(ttl.toMillis()));
+        Object result;
+        try {
+            result = runScript(renewSha, RENEW_SCRIPT,
+                    new String[]{handle.key()},
+                    handle.token(), String.valueOf(ttl.toMillis()));
+        } catch (RuntimeException e) {
+            // Transient backend error — propagate so callers can retry rather
+            // than misreading it as lost ownership
+            throw new LockBackendException(
+                    "Failed to renew lock '" + handle.key() + "'", handle.key(), e);
+        }
 
         var renewed = result != null && ((Long) result) > 0;
         if (renewed) {

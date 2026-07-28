@@ -737,7 +737,9 @@ class SignalManagerTest {
         }
 
         @Override
-        public boolean markSignalConsumed(UUID signalId) {
+        public synchronized boolean markSignalConsumed(UUID signalId) {
+            // synchronized: the check-then-set below must be atomic so two
+            // concurrent consumers cannot both win the consumption CAS
             for (int i = 0; i < signals.size(); i++) {
                 var s = signals.get(i);
                 if (s.id().equals(signalId) && !s.consumed()) {
