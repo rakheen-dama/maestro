@@ -12,12 +12,16 @@ Branch: `test/integration-suite-p0-p6` (off `main` after PR #26 merged).
   - No engine defects found. Both builder agents died on transient API errors before reporting, so an independent rigor audit re-verified the suites against engine source: assertions trace to real formulas (branch partitioning `p*1000+(i+1)*1000`, store CAS `version-1`), crash sims genuinely use a second executor, orphan-adoption is distinct from pre-arrival, LIFO order asserted twice (execution + persisted sequence)
   - Audit gap closed by coordinator: saga version-march was unasserted (`SagaManager.transitionToCompensating` is the BUG1 call site and swallows `OptimisticLockException`). Added version pins (2 for compensated, 1 for clean), RED-proved (`expected: <3> but was: <2>`)
   - **Scaffold fixture bug found + fixed:** `@Container` on a static field in an abstract base is stopped by JUnit per test *class* → suites 2+ ran against a fresh unmigrated DB (`relation "maestro_workflow_signal" does not exist`, 29/35 red). Switched to JVM-wide singleton container
-- [ ] P1 — Kafka in CI (listener round-trip, signals channel, duplicate delivery, ack-on-failure contract)
-- [ ] P2 — Multi-node (lock contention, owner death → adoption, cross-node signal wake, consumer-group)
-- [ ] P3 — lock-postgres + messaging-postgres module suites (currently zero tests)
-- [ ] P4 — Loan E2E promoted into CI (`@Tag("e2e")`, identity assertions kept, + two-instance scenario)
-- [ ] P5 — Shutdown contract (RED-first; parked workflows must stay WAITING_*, not FAILED)
-- [ ] P6 — Guardrails (determinism replay-diff, coverage gate, health-indicator + MaestroClient audits)
+- [x] P1 — Kafka in CI: **12 tests** (10 green, 2 `@Disabled` as executable spec) — listener round-trip, the `maestro.signals.{service}` channel fed for the first time, duplicate delivery, lifecycle events, ack-on-failure contract
+  - **BUG8 FOUND + FIXED (library):** every nested `@ConfigurationProperties` record declared a no-arg ctor → Boot skipped value-object binding → `maestro.messaging.topics.*`, `lock.*`, `timer.*`, `recovery.*`, `retry.*`, `store.table-prefix`, `worker.task-queues` were **inert in every deployment**. RED first (`MaestroPropertiesBindingTest`)
+- [x] P2 — Multi-node: **12 tests** — lock contention, owner death → TTL → adoption, cross-node signal routing, no-lock-backend characterization (duplicate execution is real; activities must be idempotent there)
+  - **BUG9 FOUND + FIXED (library):** `PostgresNotificationListener.listen()` only queued the LISTEN → cross-instance wake silently lossy. My earlier "production is not exposed" claim was wrong; the workaround it justified was removed
+  - **BUG7 FOUND + FIXED (library):** version conflict on finalise recorded a *successful* workflow as FAILED (+ saga compensation after success)
+- [x] P3 — Backend modules: **37 tests** — `PostgresDistributedLockContractTest` (24) + messaging (13). Note: lock-postgres was **not** testless (4 pre-existing unit tests); the plan's premise was wrong. messaging-postgres genuinely had zero
+- [ ] P4 — Loan E2E: nightly CI workflow added (`e2e-nightly.yml`, schedule + manual dispatch, logs uploaded); scenario 6 (two-instance loan-application) added to `run-e2e.sh`. **Verification run in progress**
+- [x] P5 — Shutdown contract: **13 tests** (7 unit + 6 integration), RED-first
+  - **BUG6 FOUND + FIXED (library):** shutdown marked parked workflows FAILED *and compensated them*. Typed `ExecutorShutdownException`; parked workflows stay `WAITING_*` and recoverable
+- [ ] P6 — Guardrails: `MaestroClient` (8 tests) done; health-indicator audit answered (**not implemented at all** — docs/code gap); determinism replay-diff + coverage gate outstanding
 
 ---
 

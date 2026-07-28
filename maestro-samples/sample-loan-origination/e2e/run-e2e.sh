@@ -31,6 +31,10 @@ mkdir -p "$LOG_DIR" "$PID_DIR"
 
 # ── Configuration ────────────────────────────────────────────────────────
 LOAN_URL="http://localhost:8091"
+# Scenario 6 runs a SECOND loan-application-service instance — same service
+# name, so the same Kafka consumer group and the same Postgres store.
+LOAN_URL_B="http://localhost:8094"
+LOAN_NODE_B="loan-application-service-b"
 VERIFY_URL="http://localhost:8092"
 UW_URL="http://localhost:8093"
 
@@ -340,6 +344,7 @@ teardown() {
     log "Tearing down services and infrastructure..."
     local svc
     for svc in "${SERVICES[@]}"; do stop_service "$svc" || true; done
+    stop_service "$LOAN_NODE_B" || true
     if [[ "$E2E_REUSE" != 1 ]]; then
         compose down -v >/dev/null 2>&1 || true
     fi
@@ -367,6 +372,26 @@ run_scenario() { # <name> <function>
 }
 
 # ── Scenario 1: happy path (co-borrower signs FIRST) ────────────────────
+# ── Second loan-application node (scenario 6) ───────────────────────────
+# Same jar, same maestro.service-name; only the HTTP port differs. That makes
+# it a genuine second node of the same service: one consumer group, one store,
+# one instance-lock namespace.
+start_loan_node_b() {
+    local jar; jar="$(service_jar loan-application-service)"
+    : >"$LOG_DIR/$LOAN_NODE_B.log"
+    log "Starting second loan-application node on 8094..."
+    SERVER_PORT=8094 java -jar "$jar" >>"$LOG_DIR/$LOAN_NODE_B.log" 2>&1 &
+    echo $! >"$PID_DIR/$LOAN_NODE_B.pid"
+    wait_for_http "$LOAN_NODE_B" "$LOAN_URL_B/applications/__probe__" 120
+}
+
+upload_doc_via() { # <baseUrl> <id> <docType> <uploadedBy>
+    api_post "$1/applications/$2/documents" "{\"docType\":\"$3\",\"uploadedBy\":\"$4\"}" >/dev/null
+}
+sign_app_via() { # <baseUrl> <id> <signerId>
+    api_post "$1/applications/$2/sign" "{\"signerId\":\"$3\"}" >/dev/null
+}
+
 scenario_happy_path() {
     local id="e2e-${RUN_ID}-s1"
     # DTI = 400000/100000 = 4.0 -> HUMAN_REVIEW (not <3 auto-approve, not >6 auto-reject)
@@ -530,6 +555,61 @@ sweep_logs() {
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────
+# ── Scenario 6: two loan-application nodes ──────────────────────────────
+# The production topology: more than one instance of the same service. The
+# application is created on node A and then driven ENTIRELY through node B, so
+# every signal is ingested by a node that may not own the workflow. It can only
+# complete if signals reach the owner (or the owner is adopted) across nodes.
+scenario_two_node() {
+    local id="e2e-${RUN_ID}-s6"
+
+    start_loan_node_b || return 1
+
+    local pid_a pid_b
+    pid_a="$(cat "$PID_DIR/loan-application-service.pid")"
+    pid_b="$(cat "$PID_DIR/$LOAN_NODE_B.pid")"
+    [[ "$pid_a" != "$pid_b" ]] || { err "Both nodes report the same PID $pid_a"; return 1; }
+    log "Node A pid=$pid_a, node B pid=$pid_b"
+
+    # DTI = 200000/100000 = 2.0 -> auto-approve, so the run needs no
+    # underwriting queue and the only variable under test is cross-node
+    # signal delivery.
+    create_app "$id" '["erin"]' 200000 100000 500000 '["tax-return"]' || return 1
+    log "Created $id on node A; every signal below goes to node B"
+
+    upload_doc_via "$LOAN_URL_B" "$id" "tax-return" "erin" || return 1
+    sign_app_via   "$LOAN_URL_B" "$id" "erin" || return 1
+
+    wait_for_engine_status "$id" COMPLETED "$WAIT_TERMINAL_SECS" || return 1
+
+    # Both nodes must agree on the outcome — they share one store.
+    local body_a body_b
+    body_a="$(api_get "$LOAN_URL/applications/$id")"
+    body_b="$(api_get "$LOAN_URL_B/applications/$id")"
+    assert_eq "node A engine status" "COMPLETED" "$(json_get "$body_a" status)" || return 1
+    assert_eq "node A loan result"   "FUNDED"    "$(json_get "$body_a" output.status)" || return 1
+    assert_eq "node B engine status" "COMPLETED" "$(json_get "$body_b" status)" || return 1
+    assert_eq "node B loan result"   "FUNDED"    "$(json_get "$body_b" output.status)" || return 1
+
+    # Funding must have happened once, not once per node. The disbursement log
+    # line is the observable side effect of the funding saga.
+    local disbursed_a disbursed_b total
+    disbursed_a="$(grep -c "disburs.*$id" "$LOG_DIR/loan-application-service.log" 2>/dev/null || true)"
+    disbursed_b="$(grep -c "disburs.*$id" "$LOG_DIR/$LOAN_NODE_B.log" 2>/dev/null || true)"
+    total=$(( ${disbursed_a:-0} + ${disbursed_b:-0} ))
+    if (( total > 1 )); then
+        err "Loan $id was disbursed $total times across the two nodes (A=$disbursed_a B=$disbursed_b)"
+        return 1
+    fi
+    log "Disbursement side effect observed $total time(s) across both nodes"
+
+    # Identity: both nodes must still be the processes we started.
+    kill -0 "$pid_a" 2>/dev/null || { err "Node A ($pid_a) died during the scenario"; return 1; }
+    kill -0 "$pid_b" 2>/dev/null || { err "Node B ($pid_b) died during the scenario"; return 1; }
+
+    stop_service "$LOAN_NODE_B"
+}
+
 main() {
     log "Loan-origination E2E run $RUN_ID (logs: $LOG_DIR)"
 
@@ -546,6 +626,7 @@ main() {
     run_scenario "3. Conditions loop -> round-2 approval"     scenario_conditions_loop
     run_scenario "4. Withdrawal after rate lock (saga)"       scenario_withdrawal_after_rate_lock
     run_scenario "5. Crash recovery (kill -9 + replay)"       scenario_crash_recovery
+    run_scenario "6. Two-node loan-application (multi-node)"  scenario_two_node
 
     sweep_logs
 
