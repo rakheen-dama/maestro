@@ -1,0 +1,48 @@
+spring:
+  application:
+    name: sample-verification-gateway-service
+
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5433}/${POSTGRES_DB:verification_gateway}
+    username: ${POSTGRES_USER:maestro}
+    password: ${POSTGRES_PASSWORD:maestro}
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:29093}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
+    consumer:
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+
+  data:
+    redis:
+      url: redis://${VALKEY_HOST:localhost}:${VALKEY_PORT:6380}
+
+server:
+  port: ${SERVER_PORT:8092}
+
+maestro:
+  service-name: verification-gateway
+
+  store:
+    type: postgres
+
+  messaging:
+    type: kafka
+    topics:
+      tasks: maestro.tasks.verification-gateway
+      signals: maestro.signals.verification-gateway
+
+  lock:
+    type: valkey
+
+  worker:
+    task-queues:
+      - name: verification-gateway
+        concurrency: 5
+
+  admin:
+    events:
+      enabled: false

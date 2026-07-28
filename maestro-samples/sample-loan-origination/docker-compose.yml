@@ -1,0 +1,107 @@
+# Maestro Loan Origination Sample — shared infrastructure only.
+# The three services run from the host via Gradle bootRun (see README.md).
+#
+# Usage:
+#   docker compose up -d
+#
+# Services:
+#   - postgres:16   → One instance, one database per service
+#                     (loan_application, verification_gateway, underwriting)
+#   - valkey:8      → Distributed locks and signal notifications
+#   - kafka (KRaft) → Task dispatch, signals, cross-service events
+#   - kafka-init    → Pre-creates ALL required topics (never auto-created)
+#
+# Host ports are offset from the root docker-compose.yml so both stacks can
+# run side by side: Postgres 5433, Valkey 6380, Kafka 29093.
+
+name: maestro-loan-origination
+
+services:
+
+  # ── Infrastructure ─────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: maestro
+      POSTGRES_USER: maestro
+      POSTGRES_PASSWORD: maestro
+    ports:
+      - "5433:5432"
+    volumes:
+      - loan-pgdata:/var/lib/postgresql/data
+      - ./docker/init-loan-dbs.sh:/docker-entrypoint-initdb.d/init-loan-dbs.sh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U maestro -d maestro"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  kafka:
+    image: apache/kafka:3.9.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      # NOTE: bind-all listeners use the empty-host form (://:port), NOT
+      # 0.0.0.0 — the apache/kafka image's storage-format step rejects
+      # 0.0.0.0 ("advertised.listeners cannot use the nonroutable
+      # meta-address") even when KAFKA_ADVERTISED_LISTENERS is set.
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:29093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      CLUSTER_ID: "maestro-loan-cluster-001"
+    ports:
+      - "29093:29093"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 15
+      start_period: 20s
+
+  # Pre-creates every topic the sample uses. Maestro NEVER auto-creates topics.
+  kafka-init:
+    image: apache/kafka:3.9.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Creating Kafka topics..."
+        KAFKA="/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092"
+        # Engine task-dispatch topics (one per service)
+        $$KAFKA --create --if-not-exists --topic maestro.tasks.loan-application      --partitions 3 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic maestro.tasks.verification-gateway  --partitions 3 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic maestro.tasks.underwriting          --partitions 3 --replication-factor 1
+        # Engine inbound signal channels (one per service)
+        $$KAFKA --create --if-not-exists --topic maestro.signals.loan-application     --partitions 3 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic maestro.signals.verification-gateway --partitions 3 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic maestro.signals.underwriting         --partitions 3 --replication-factor 1
+        # Cross-service business event topics (keyed by loanId)
+        $$KAFKA --create --if-not-exists --topic loans.verification.requests    --partitions 3 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic loans.verification.results     --partitions 3 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic loans.underwriting.requests    --partitions 3 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic loans.underwriting.decisions   --partitions 3 --replication-factor 1
+        echo "All Kafka topics created successfully."
+
+volumes:
+  loan-pgdata:

@@ -1,0 +1,55 @@
+spring:
+  application:
+    name: sample-loan-application-service
+
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5433}/${POSTGRES_DB:loan_application}
+    username: ${POSTGRES_USER:maestro}
+    password: ${POSTGRES_PASSWORD:maestro}
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:29093}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
+    consumer:
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+
+  data:
+    redis:
+      url: redis://${VALKEY_HOST:localhost}:${VALKEY_PORT:6380}
+
+server:
+  port: ${SERVER_PORT:8091}
+
+maestro:
+  service-name: loan-application
+
+  # Workflow timeouts (SPEC defaults) — bound via LoanSampleProperties.
+  sample:
+    doc-timeout: PT10M
+    sign-timeout: PT10M
+    decision-timeout: PT10M
+    gate-timeout: PT1S
+
+  store:
+    type: postgres
+
+  messaging:
+    type: kafka
+    topics:
+      tasks: maestro.tasks.loan-application
+      signals: maestro.signals.loan-application
+
+  lock:
+    type: valkey
+
+  worker:
+    task-queues:
+      - name: loan-application
+        concurrency: 5
+
+  admin:
+    events:
+      enabled: false
