@@ -33,10 +33,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * events, with the right identity fields, for a workflow that actually ran.
  *
  * <h2>Which property names the topic</h2>
- * <p>The topic comes from {@code maestro.messaging.topics.admin-events}.
- * {@code maestro.admin.events.topic} and {@code maestro.admin.events.enabled}
- * exist in {@code MaestroProperties} but nothing reads them — see the P1 report.
- * This suite deliberately configures the property that is actually wired.
+ * <p>The topic comes from {@code maestro.messaging.topics.admin-events}, the
+ * canonical property. {@code maestro.admin.events.topic} is a deprecated
+ * alias for it (used only when the canonical property is left at its
+ * default — see {@code KafkaMessagingAutoConfigurationAdminTopicAliasTest}
+ * for the precedence contract), and {@code maestro.admin.events.enabled}
+ * gates lifecycle publishing entirely at the engine (see
+ * {@code MaestroAutoConfigurationLifecycleEventsTest}). This suite
+ * deliberately configures the canonical property.
  */
 @SpringBootTest(
         classes = KafkaSignalTestApplication.class,
