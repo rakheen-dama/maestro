@@ -701,6 +701,9 @@ public final class WorkflowExecutor {
             // still sees the lock held and skips — retried by the next poll
             runningWorkflows.remove(ctx.workflowId());
             instanceLockManager.release(ctx.workflowId());
+            // Drop orphaned wake permits (e.g. duplicate signal deliveries
+            // that arrived after the last await) now that the run is over
+            parkingLot.clearPending(ctx.workflowId());
         }
     }
 
