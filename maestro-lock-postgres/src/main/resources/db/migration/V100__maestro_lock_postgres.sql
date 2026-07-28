@@ -1,3 +1,8 @@
+-- Maestro Postgres distributed-lock schema (locks + leader election).
+--
+-- Flyway version bands — see the note in maestro-messaging-postgres'
+-- V200 migration. This module reserves 100-199.
+
 CREATE TABLE maestro_distributed_lock (
     lock_key    VARCHAR(512)  PRIMARY KEY,
     token       VARCHAR(64)   NOT NULL,
