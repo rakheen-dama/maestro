@@ -221,6 +221,7 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
                     .completedAt(Instant.now().truncatedTo(ChronoUnit.MILLIS))
                     .output(jsonNode("{\"success\":true}"))
                     .updatedAt(Instant.now().truncatedTo(ChronoUnit.MILLIS))
+                    .version(instance.version() + 1)
                     .build();
             store.updateInstance(updated);
 
@@ -237,20 +238,50 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
             var instance = newInstance("order-lock");
             store.createInstance(instance);
 
-            // First update succeeds (version 0 → 1)
+            // First update succeeds (version 0 → 1, caller pre-increments)
             store.updateInstance(instance.toBuilder()
                     .status(WorkflowStatus.WAITING_SIGNAL)
                     .updatedAt(Instant.now().truncatedTo(ChronoUnit.MILLIS))
+                    .version(instance.version() + 1)
                     .build());
 
-            // Second update with stale version (still 0) fails
+            // A stale writer that also read version 0 builds version 1 —
+            // but the row has moved on, so its CAS against version 0 fails
             var stale = instance.toBuilder()
                     .status(WorkflowStatus.COMPLETED)
                     .updatedAt(Instant.now().truncatedTo(ChronoUnit.MILLIS))
+                    .version(instance.version() + 1)
                     .build();
 
             var ex = assertThrows(OptimisticLockException.class,
                     () -> store.updateInstance(stale));
+            assertEquals(0, ex.expectedVersion());
+            assertEquals(1, ex.actualVersion());
+        }
+
+        @Test
+        @DisplayName("updateInstance persists caller-supplied pre-incremented version")
+        void updateInstance_persistsCallerSuppliedVersion() {
+            var instance = newInstance("order-canonical");
+            store.createInstance(instance); // stored version = 0
+
+            // Canonical convention: the caller builds the complete new state,
+            // including the NEW version (current + 1).
+            var updated = instance.toBuilder()
+                    .status(WorkflowStatus.WAITING_SIGNAL)
+                    .updatedAt(Instant.now().truncatedTo(ChronoUnit.MILLIS))
+                    .version(instance.version() + 1) // 1
+                    .build();
+            store.updateInstance(updated);
+
+            var found = store.getInstance("order-canonical").orElseThrow();
+            assertEquals(1, found.version());
+            assertEquals(WorkflowStatus.WAITING_SIGNAL, found.status());
+
+            // Replaying the same pre-incremented version must fail: the store
+            // now holds version 1, but this update expects the row at 0.
+            var ex = assertThrows(OptimisticLockException.class,
+                    () -> store.updateInstance(updated));
             assertEquals(0, ex.expectedVersion());
             assertEquals(1, ex.actualVersion());
         }
@@ -421,6 +452,24 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
             assertEquals(2, signals.size());
             assertEquals(earlier.id(), signals.get(0).id());
             assertEquals(later.id(), signals.get(1).id());
+        }
+
+        @Test
+        @DisplayName("markSignalConsumed transitions unconsumed→consumed exactly once")
+        void markSignalConsumed_returnsTrueOnceThenFalse() {
+            var instance = newInstance("order-cas");
+            store.createInstance(instance);
+            var signal = newSignal("order-cas", instance.id(), "payment.result");
+            store.saveSignal(signal);
+
+            assertTrue(store.markSignalConsumed(signal.id()), "first consume should win the CAS");
+            assertFalse(store.markSignalConsumed(signal.id()), "second consume should lose the CAS");
+        }
+
+        @Test
+        @DisplayName("markSignalConsumed returns false for unknown id")
+        void markSignalConsumed_unknownIdReturnsFalse() {
+            assertFalse(store.markSignalConsumed(UUID.randomUUID()));
         }
 
         @Test
@@ -624,13 +673,15 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
             var failureCount = new AtomicInteger(0);
             var error = new AtomicReference<Throwable>();
 
-            // Thread 1: update with version 0
+            // Both writers read version 0 and build version 1 (canonical
+            // caller-pre-increments convention) — only one CAS can win
             var t1 = Thread.startVirtualThread(() -> {
                 try {
                     latch.await();
                     store.updateInstance(instance.toBuilder()
                             .status(WorkflowStatus.WAITING_SIGNAL)
                             .updatedAt(Instant.now().truncatedTo(ChronoUnit.MILLIS))
+                            .version(instance.version() + 1)
                             .build());
                 } catch (Exception e) {
                     failureCount.incrementAndGet();
@@ -638,13 +689,13 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
                 }
             });
 
-            // Thread 2: also update with version 0
             var t2 = Thread.startVirtualThread(() -> {
                 try {
                     latch.await();
                     store.updateInstance(instance.toBuilder()
                             .status(WorkflowStatus.COMPLETED)
                             .updatedAt(Instant.now().truncatedTo(ChronoUnit.MILLIS))
+                            .version(instance.version() + 1)
                             .build());
                 } catch (Exception e) {
                     failureCount.incrementAndGet();

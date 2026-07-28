@@ -222,6 +222,264 @@ class WorkflowExecutorTest {
         assertTrue(latch.await(5, TimeUnit.SECONDS), "Recovered workflow should complete");
     }
 
+    // ── Instance lock ──────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("Start acquires the instance lock and releases it on completion")
+    void startAcquiresInstanceLockAndReleasesOnCompletion() throws Exception {
+        var lock = new MapLock();
+        var lockedExecutor = new WorkflowExecutor(store, lock, messaging, null, serializer, "test-service");
+        try {
+            var latch = new CountDownLatch(1);
+            var workflow = new SimpleWorkflow(latch);
+            var method = SimpleWorkflow.class.getMethod("run", String.class);
+
+            lockedExecutor.startWorkflow("lock-1", "SimpleWorkflow", "default",
+                    "hello", workflow, method);
+
+            assertTrue(latch.await(5, TimeUnit.SECONDS));
+            assertTrue(lock.acquiredKeys.contains("maestro:lock:workflow:lock-1"),
+                    "instance lock must be acquired with the documented key");
+            await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
+                    assertFalse(lock.isHeld("maestro:lock:workflow:lock-1"),
+                            "instance lock must be released after completion"));
+        } finally {
+            lockedExecutor.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("Instance lock is acquired before the instance row is created (recovery-poller steal guard)")
+    void lockAcquiredBeforeInstanceCreated() throws Exception {
+        var lock = new MapLock();
+        var lockHeldDuringCreate = new CopyOnWriteArrayList<Boolean>();
+        var checkingStore = new InMemoryWorkflowStore() {
+            @Override
+            public WorkflowInstance createInstance(WorkflowInstance instance) {
+                lockHeldDuringCreate.add(lock.isHeld("maestro:lock:workflow:" + instance.workflowId()));
+                return super.createInstance(instance);
+            }
+        };
+        var lockedExecutor = new WorkflowExecutor(checkingStore, lock, messaging, null, serializer, "test-service");
+        try {
+            var latch = new CountDownLatch(1);
+            var workflow = new SimpleWorkflow(latch);
+            var method = SimpleWorkflow.class.getMethod("run", String.class);
+
+            lockedExecutor.startWorkflow("lock-pre", "SimpleWorkflow", "default",
+                    "hello", workflow, method);
+
+            assertTrue(latch.await(5, TimeUnit.SECONDS));
+            assertEquals(List.of(true), lockHeldDuringCreate,
+                    "the instance lock must already be held when createInstance runs, "
+                            + "so the recovery poller can never steal a just-created workflow");
+        } finally {
+            lockedExecutor.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("Duplicate workflow start releases the pre-acquired instance lock")
+    void duplicateStartReleasesLock() throws Exception {
+        var lock = new MapLock();
+        var lockedExecutor = new WorkflowExecutor(store, lock, messaging, null, serializer, "test-service");
+        try {
+            var latch = new CountDownLatch(1);
+            var workflow = new SimpleWorkflow(latch);
+            var method = SimpleWorkflow.class.getMethod("run", String.class);
+
+            lockedExecutor.startWorkflow("dup-1", "SimpleWorkflow", "default",
+                    "hello", workflow, method);
+            assertTrue(latch.await(5, TimeUnit.SECONDS));
+            await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
+                    assertFalse(lock.isHeld("maestro:lock:workflow:dup-1")));
+
+            assertThrows(WorkflowAlreadyExistsException.class, () ->
+                    lockedExecutor.startWorkflow("dup-1", "SimpleWorkflow", "default",
+                            "hello", workflow, method));
+            assertFalse(lock.isHeld("maestro:lock:workflow:dup-1"),
+                    "a failed start must not leak the pre-acquired instance lock");
+        } finally {
+            lockedExecutor.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("Instance lock is released after workflow failure")
+    void lockReleasedAfterFailure() throws Exception {
+        var lock = new MapLock();
+        var lockedExecutor = new WorkflowExecutor(store, lock, messaging, null, serializer, "test-service");
+        try {
+            var latch = new CountDownLatch(1);
+            var workflow = new FailingWorkflow(latch);
+            var method = FailingWorkflow.class.getMethod("run", String.class);
+
+            lockedExecutor.startWorkflow("lock-2", "FailingWorkflow", "default",
+                    "input", workflow, method);
+
+            assertTrue(latch.await(5, TimeUnit.SECONDS));
+            await().atMost(Duration.ofSeconds(2)).untilAsserted(() -> {
+                assertEquals(WorkflowStatus.FAILED, store.getInstance("lock-2").orElseThrow().status());
+                assertFalse(lock.isHeld("maestro:lock:workflow:lock-2"),
+                        "instance lock must be released after failure handling");
+            });
+        } finally {
+            lockedExecutor.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("Instance lock stays held while parked awaiting a signal")
+    void lockHeldWhileParked() throws Exception {
+        var lock = new MapLock();
+        var lockedExecutor = new WorkflowExecutor(store, lock, messaging, null, serializer, "test-service");
+        try {
+            var waitingLatch = new CountDownLatch(1);
+            var completedLatch = new CountDownLatch(1);
+            var workflow = new SignalWorkflow(waitingLatch, completedLatch);
+            var method = SignalWorkflow.class.getMethod("run", String.class);
+
+            lockedExecutor.startWorkflow("lock-3", "SignalWorkflow", "default",
+                    "input", workflow, method);
+
+            assertTrue(waitingLatch.await(5, TimeUnit.SECONDS));
+            assertTrue(lock.isHeld("maestro:lock:workflow:lock-3"),
+                    "instance lock must be held while parked");
+
+            lockedExecutor.deliverSignal("lock-3", "payment.result", "paid");
+            assertTrue(completedLatch.await(5, TimeUnit.SECONDS));
+            await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
+                    assertFalse(lock.isHeld("maestro:lock:workflow:lock-3")));
+        } finally {
+            lockedExecutor.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("Resume is skipped when the instance lock is held by another node")
+    void resumeSkippedWhenLockHeldByAnotherNode() throws Exception {
+        var lock = new MapLock();
+        lock.holdForeign("maestro:lock:workflow:recover-locked");
+        var lockedExecutor = new WorkflowExecutor(store, lock, messaging, null, serializer, "test-service");
+        try {
+            store.createInstance(recoverableInstance("recover-locked"));
+
+            var latch = new CountDownLatch(1);
+            var workflow = new SimpleWorkflow(latch);
+            var method = SimpleWorkflow.class.getMethod("run", String.class);
+            var reg = new WorkflowRegistration("SimpleWorkflow", "default", workflow, method);
+
+            var count = lockedExecutor.recoverWorkflows(Map.of("SimpleWorkflow", reg));
+
+            assertEquals(0, count, "a foreign-locked workflow must not be counted as recovered");
+            assertFalse(latch.await(300, TimeUnit.MILLISECONDS),
+                    "the foreign-locked workflow must not execute");
+            assertFalse(lockedExecutor.isRunning("recover-locked"));
+        } finally {
+            lockedExecutor.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("Resume skips an instance that turned terminal between query and lock grant")
+    void resumeSkipsTerminalInstanceAfterLockGrant() throws Exception {
+        var lock = new MapLock();
+        var lockedExecutor = new WorkflowExecutor(store, lock, messaging, null, serializer, "test-service");
+        try {
+            // The store already shows COMPLETED …
+            var completed = recoverableInstance("recover-done").toBuilder()
+                    .status(WorkflowStatus.COMPLETED)
+                    .build();
+            store.createInstance(completed);
+
+            // … but the recovery query returned a stale RUNNING snapshot
+            var stale = completed.toBuilder().status(WorkflowStatus.RUNNING).build();
+
+            var latch = new CountDownLatch(1);
+            var workflow = new SimpleWorkflow(latch);
+            var method = SimpleWorkflow.class.getMethod("run", String.class);
+
+            var resumed = lockedExecutor.resumeWorkflow(stale, workflow, method);
+
+            assertFalse(resumed, "terminal instance must not be resumed");
+            assertFalse(latch.await(300, TimeUnit.MILLISECONDS));
+            assertFalse(lock.isHeld("maestro:lock:workflow:recover-done"),
+                    "lock must be released after the terminal re-check");
+        } finally {
+            lockedExecutor.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("Fresh start proceeds when the instance lock cannot be acquired")
+    void freshStartProceedsWhenLockUnavailable() throws Exception {
+        var lock = new MapLock();
+        lock.holdForeign("maestro:lock:workflow:lock-4");
+        var lockedExecutor = new WorkflowExecutor(store, lock, messaging, null, serializer, "test-service");
+        try {
+            var latch = new CountDownLatch(1);
+            var workflow = new SimpleWorkflow(latch);
+            var method = SimpleWorkflow.class.getMethod("run", String.class);
+
+            lockedExecutor.startWorkflow("lock-4", "SimpleWorkflow", "default",
+                    "hello", workflow, method);
+
+            assertTrue(latch.await(5, TimeUnit.SECONDS),
+                    "a fresh start must proceed despite a stale foreign lock — "
+                            + "createInstance uniqueness already proved ownership");
+        } finally {
+            lockedExecutor.shutdown();
+        }
+    }
+
+    // ── Recovery poller ────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("Recovery poller picks up a workflow once a foreign lock is released")
+    void recoveryPollerPicksUpAfterForeignLockRelease() throws Exception {
+        var lock = new MapLock();
+        lock.holdForeign("maestro:lock:workflow:recover-later");
+        var lockedExecutor = new WorkflowExecutor(store, lock, messaging, null, serializer, "test-service");
+        try {
+            store.createInstance(recoverableInstance("recover-later"));
+
+            var latch = new CountDownLatch(1);
+            var workflow = new SimpleWorkflow(latch);
+            var method = SimpleWorkflow.class.getMethod("run", String.class);
+            var reg = new WorkflowRegistration("SimpleWorkflow", "default", workflow, method);
+            var registrations = Map.of("SimpleWorkflow", reg);
+
+            // Startup recovery: skipped (foreign lock)
+            assertEquals(0, lockedExecutor.recoverWorkflows(registrations));
+
+            lockedExecutor.startRecoveryPoller(registrations, Duration.ofMillis(100));
+            assertFalse(latch.await(300, TimeUnit.MILLISECONDS),
+                    "poller must not steal a workflow whose lock is held elsewhere");
+
+            // The other node releases (crash → TTL expiry, or graceful release)
+            lock.releaseForeign("maestro:lock:workflow:recover-later");
+
+            assertTrue(latch.await(5, TimeUnit.SECONDS),
+                    "poller must pick up the workflow after the foreign lock is gone");
+        } finally {
+            lockedExecutor.shutdown();
+        }
+    }
+
+    private WorkflowInstance recoverableInstance(String workflowId) {
+        return WorkflowInstance.builder()
+                .id(UUID.randomUUID())
+                .workflowId(workflowId)
+                .runId(UUID.randomUUID())
+                .workflowType("SimpleWorkflow")
+                .taskQueue("default")
+                .status(WorkflowStatus.RUNNING)
+                .serviceName("test-service")
+                .startedAt(Instant.now())
+                .updatedAt(Instant.now())
+                .build();
+    }
+
     @Test
     @DisplayName("Lifecycle events are published")
     void lifecycleEventsPublished() throws Exception {
@@ -434,6 +692,54 @@ class WorkflowExecutorTest {
         }
     }
 
+    // ── Map-backed DistributedLock ─────────────────────────────────────
+
+    private static class MapLock implements DistributedLock {
+
+        final ConcurrentHashMap<String, LockHandle> locks = new ConcurrentHashMap<>();
+        final CopyOnWriteArrayList<String> acquiredKeys = new CopyOnWriteArrayList<>();
+
+        void holdForeign(String key) {
+            locks.put(key, new LockHandle(key, "foreign-token", Instant.now().plusSeconds(60)));
+        }
+
+        void releaseForeign(String key) {
+            locks.remove(key);
+        }
+
+        boolean isHeld(String key) {
+            return locks.containsKey(key);
+        }
+
+        @Override
+        public Optional<LockHandle> tryAcquire(String key, Duration ttl) {
+            var handle = new LockHandle(key, UUID.randomUUID().toString(), Instant.now().plus(ttl));
+            var existing = locks.putIfAbsent(key, handle);
+            if (existing != null) {
+                return Optional.empty();
+            }
+            acquiredKeys.add(key);
+            return Optional.of(handle);
+        }
+
+        @Override
+        public void release(LockHandle handle) {
+            locks.computeIfPresent(handle.key(), (_, current) ->
+                    current.token().equals(handle.token()) ? null : current);
+        }
+
+        @Override
+        public boolean renew(LockHandle handle, Duration ttl) {
+            var current = locks.get(handle.key());
+            return current != null && current.token().equals(handle.token());
+        }
+
+        @Override
+        public boolean trySetLeader(String electionKey, String candidateId, Duration ttl) {
+            return false;
+        }
+    }
+
     // ── In-memory WorkflowStore ────────────────────────────────────────
 
     /**
@@ -510,17 +816,18 @@ class WorkflowExecutorTest {
         }
 
         @Override
-        public void markSignalConsumed(UUID signalId) {
+        public boolean markSignalConsumed(UUID signalId) {
             // Replace the signal with consumed=true
             for (int i = 0; i < signals.size(); i++) {
                 var s = signals.get(i);
-                if (s.id().equals(signalId)) {
+                if (s.id().equals(signalId) && !s.consumed()) {
                     signals.set(i, new WorkflowSignal(
                             s.id(), s.workflowInstanceId(), s.workflowId(),
                             s.signalName(), s.payload(), true, s.receivedAt()));
-                    return;
+                    return true;
                 }
             }
+            return false;
         }
 
         @Override

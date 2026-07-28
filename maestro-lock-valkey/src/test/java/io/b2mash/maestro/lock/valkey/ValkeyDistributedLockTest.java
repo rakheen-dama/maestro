@@ -179,12 +179,13 @@ class ValkeyDistributedLockTest extends ValkeyTestSupport {
     class RenewTests {
 
         @Test
-        @DisplayName("extends TTL with correct token")
+        @DisplayName("extends TTL with correct token and returns true")
         void renewExtendsttl() {
             var handle = lock.tryAcquire("test:lock:1", Duration.ofMillis(500)).orElseThrow();
 
             // Renew with a much longer TTL
-            lock.renew(handle, Duration.ofSeconds(30));
+            assertTrue(lock.renew(handle, Duration.ofSeconds(30)),
+                    "renew with the holder's token should succeed");
 
             // Wait past original TTL — lock should still be held
             await().pollDelay(600, TimeUnit.MILLISECONDS)
@@ -196,26 +197,28 @@ class ValkeyDistributedLockTest extends ValkeyTestSupport {
         }
 
         @Test
-        @DisplayName("does NOT renew with wrong token")
+        @DisplayName("does NOT renew with wrong token — returns false")
         void renewWithWrongToken() {
             lock.tryAcquire("test:lock:1", Duration.ofMillis(500));
 
             var fakeHandle = new LockHandle("test:lock:1", "wrong-token", Instant.now().plusSeconds(10));
-            lock.renew(fakeHandle, Duration.ofSeconds(30));
+            assertFalse(lock.renew(fakeHandle, Duration.ofSeconds(30)),
+                    "renew with a foreign token must report the lock as lost");
 
             // Original TTL should be unchanged (short) — lock expires soon
             await().atMost(2, TimeUnit.SECONDS).until(() -> commands.get("test:lock:1") == null);
         }
 
         @Test
-        @DisplayName("renew after key expired is a no-op")
+        @DisplayName("renew after key expired returns false")
         void renewAfterExpiry() {
             var handle = lock.tryAcquire("test:lock:1", Duration.ofMillis(100)).orElseThrow();
 
             await().atMost(2, TimeUnit.SECONDS).until(() -> commands.get("test:lock:1") == null);
 
-            // Should not throw
-            lock.renew(handle, Duration.ofSeconds(30));
+            // Should not throw — but must report the loss
+            assertFalse(lock.renew(handle, Duration.ofSeconds(30)),
+                    "renew after expiry must report the lock as lost");
 
             // Key should still be absent
             assertFalse(commands.exists("test:lock:1") > 0);

@@ -269,6 +269,7 @@ public final class SagaManager {
             var compensating = latest.toBuilder()
                     .status(WorkflowStatus.COMPENSATING)
                     .updatedAt(Instant.now())
+                    .version(latest.version() + 1)
                     .build();
             store.updateInstance(compensating);
         } catch (io.b2mash.maestro.core.exception.OptimisticLockException e) {

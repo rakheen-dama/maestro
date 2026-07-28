@@ -201,7 +201,7 @@ class TimerPollerTest {
             return Optional.empty();
         }
         @Override public void release(LockHandle handle) {}
-        @Override public void renew(LockHandle handle, Duration ttl) {}
+        @Override public boolean renew(LockHandle handle, Duration ttl) { return true; }
         @Override public boolean trySetLeader(String electionKey, String candidateId, Duration ttl) {
             return false;
         }
@@ -212,7 +212,7 @@ class TimerPollerTest {
             return Optional.of(new LockHandle(key, UUID.randomUUID().toString(), Instant.now().plus(ttl)));
         }
         @Override public void release(LockHandle handle) {}
-        @Override public void renew(LockHandle handle, Duration ttl) {}
+        @Override public boolean renew(LockHandle handle, Duration ttl) { return true; }
         @Override public boolean trySetLeader(String electionKey, String candidateId, Duration ttl) {
             return true;
         }
@@ -269,15 +269,16 @@ class TimerPollerTest {
                     .toList();
         }
 
-        @Override public void markSignalConsumed(UUID signalId) {
+        @Override public boolean markSignalConsumed(UUID signalId) {
             for (int i = 0; i < signals.size(); i++) {
                 var s = signals.get(i);
-                if (s.id().equals(signalId)) {
+                if (s.id().equals(signalId) && !s.consumed()) {
                     signals.set(i, new WorkflowSignal(s.id(), s.workflowInstanceId(), s.workflowId(),
                             s.signalName(), s.payload(), true, s.receivedAt()));
-                    return;
+                    return true;
                 }
             }
+            return false;
         }
 
         @Override public void adoptOrphanedSignals(String workflowId, UUID instanceId) {

@@ -151,7 +151,7 @@ public final class PostgresDistributedLock implements DistributedLock {
     }
 
     @Override
-    public void renew(LockHandle handle, Duration ttl) {
+    public boolean renew(LockHandle handle, Duration ttl) {
         var ttlSeconds = ttl.toMillis() / 1000.0;
 
         try (var conn = dataSource.getConnection();
@@ -165,13 +165,16 @@ public final class PostgresDistributedLock implements DistributedLock {
             int rows = stmt.executeUpdate();
             if (rows > 0) {
                 logger.debug("Renewed lock '{}' for {}ms", handle.key(), ttl.toMillis());
-            } else {
-                // Silently ignore — lock was lost (expired and possibly re-acquired)
-                logger.debug("Lock '{}' not renewed — token mismatch or already expired",
-                        handle.key());
+                return true;
             }
+            logger.debug("Lock '{}' not renewed — token mismatch or already expired",
+                    handle.key());
+            return false;
         } catch (SQLException e) {
-            logger.warn("Failed to renew lock '{}': {}", handle.key(), e.getMessage());
+            // Transient backend error — propagate so callers can retry rather
+            // than misreading it as lost ownership
+            throw new IllegalStateException(
+                    "Failed to renew lock '" + handle.key() + "'", e);
         }
     }
 

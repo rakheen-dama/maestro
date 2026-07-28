@@ -19,6 +19,7 @@ import tools.jackson.databind.JsonNode;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeoutException;
 
 /**
@@ -63,14 +64,43 @@ final class SignalManager {
 
     private static final Logger logger = LoggerFactory.getLogger(SignalManager.class);
 
+    /**
+     * How often a parked await re-checks the store for a signal persisted
+     * without a notification reaching this instance — e.g. ingested on
+     * another node in a deployment with no {@link SignalNotifier} (Kafka or
+     * RabbitMQ messaging without Valkey), or delivered in the narrow window
+     * before the park registered. Bounds cross-node signal latency in those
+     * cases; with a working notifier the wake is instant and this never fires.
+     */
+    static final Duration DEFAULT_WAKE_RECHECK_INTERVAL = Duration.ofSeconds(30);
+
     private final WorkflowStore store;
     private final @Nullable WorkflowMessaging messaging;
     private final @Nullable SignalNotifier signalNotifier;
     private final PayloadSerializer serializer;
     private final ParkingLot parkingLot;
+    private final Duration wakeRecheckInterval;
 
     /**
-     * Creates a new signal manager.
+     * Ref-counted cross-instance wake subscriptions, keyed by workflow ID.
+     *
+     * <p>The {@link SignalNotifier} SPI supports one callback per workflow ID,
+     * but parallel branches of one workflow may await different signals
+     * concurrently — the count ensures the shared subscription is only torn
+     * down when the last await finishes.
+     *
+     * <p>Bookkeeping happens under the map's bin lock, but the notifier
+     * subscribe/unsubscribe I/O deliberately happens <em>outside</em> it — a
+     * slow notifier must not stall unrelated awaits. The cost is a narrow
+     * subscribe-vs-unsubscribe interleaving in which a counted await can end
+     * up without an active physical subscription; the periodic store re-check
+     * bounds the resulting wake delay (the notifier is an optimisation, not a
+     * correctness requirement).
+     */
+    private final ConcurrentHashMap<String, Integer> wakeSubscriptions = new ConcurrentHashMap<>();
+
+    /**
+     * Creates a new signal manager with the default wake re-check interval.
      *
      * @param store          workflow store for signal persistence and event memoization
      * @param messaging      optional messaging for lifecycle event publishing
@@ -85,11 +115,27 @@ final class SignalManager {
             PayloadSerializer serializer,
             ParkingLot parkingLot
     ) {
+        this(store, messaging, signalNotifier, serializer, parkingLot, DEFAULT_WAKE_RECHECK_INTERVAL);
+    }
+
+    /**
+     * Creates a new signal manager with a custom wake re-check interval
+     * (package-private, for tests).
+     */
+    SignalManager(
+            WorkflowStore store,
+            @Nullable WorkflowMessaging messaging,
+            @Nullable SignalNotifier signalNotifier,
+            PayloadSerializer serializer,
+            ParkingLot parkingLot,
+            Duration wakeRecheckInterval
+    ) {
         this.store = store;
         this.messaging = messaging;
         this.signalNotifier = signalNotifier;
         this.serializer = serializer;
         this.parkingLot = parkingLot;
+        this.wakeRecheckInterval = wakeRecheckInterval;
     }
 
     // ── Delivery ────────────────────────────────────────────────────────
@@ -193,37 +239,140 @@ final class SignalManager {
             return consumeSignal(ctx, seq, stepName, signalName, signal, type);
         }
 
-        // No signal yet — park and wait
-        updateInstanceStatus(ctx, WorkflowStatus.WAITING_SIGNAL);
-
-        var parkKey = ctx.workflowId() + ":signal:" + signalName;
-        logger.debug("Workflow '{}' waiting for signal '{}' (timeout={})", ctx.workflowId(), signalName, timeout);
-
+        // No signal yet — subscribe for cross-instance wake, then park.
+        // Subscription is a performance optimisation: if it fails (or a
+        // notification slips through before the park registers), the signal
+        // is still found via the periodic store re-check below.
+        subscribeForWake(ctx.workflowId());
         try {
-            parkingLot.parkWithTimeout(parkKey, timeout);
-        } catch (TimeoutException e) {
-            // Re-check store: signal may have arrived between our check and parking
-            var lateSignals = store.getUnconsumedSignals(ctx.workflowId(), signalName);
-            if (!lateSignals.isEmpty()) {
-                var result = consumeSignal(ctx, seq, stepName, signalName, lateSignals.getFirst(), type);
-                updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
-                return result;
+            if (signalNotifier != null) {
+                // Close the check→subscribe race: a signal persisted on another
+                // node before our subscription became active would never notify
+                // us. Without a notifier there is no such race to close.
+                var raced = store.getUnconsumedSignals(ctx.workflowId(), signalName);
+                if (!raced.isEmpty()) {
+                    return consumeSignal(ctx, seq, stepName, signalName, raced.getFirst(), type);
+                }
             }
-            updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
-            throw new SignalTimeoutException(ctx.workflowId(), signalName, timeout);
-        }
 
-        // Woke up — signal should now be in the store
-        var signals = store.getUnconsumedSignals(ctx.workflowId(), signalName);
-        if (signals.isEmpty()) {
-            // Shouldn't happen normally — defensive fallback
-            updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
-            throw new SignalTimeoutException(ctx.workflowId(), signalName, timeout);
-        }
+            updateInstanceStatus(ctx, WorkflowStatus.WAITING_SIGNAL);
 
-        var result = consumeSignal(ctx, seq, stepName, signalName, signals.getFirst(), type);
-        updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
-        return result;
+            var parkKey = ctx.workflowId() + ":signal:" + signalName;
+            logger.debug("Workflow '{}' waiting for signal '{}' (timeout={})", ctx.workflowId(), signalName, timeout);
+
+            // Park in re-check-interval chunks. Every wake OR chunk expiry
+            // re-reads the store, so a signal persisted without a notification
+            // reaching this instance (no notifier configured, notification
+            // gap, missed unpark) is delivered within one interval instead of
+            // stalling until the full await timeout.
+            var deadline = Instant.now().plus(timeout);
+            while (true) {
+                var remaining = Duration.between(Instant.now(), deadline);
+                if (!remaining.isPositive()) {
+                    updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
+                    throw new SignalTimeoutException(ctx.workflowId(), signalName, timeout);
+                }
+                var chunk = remaining.compareTo(wakeRecheckInterval) < 0 ? remaining : wakeRecheckInterval;
+
+                boolean woken;
+                try {
+                    parkingLot.parkWithTimeout(parkKey, chunk);
+                    woken = true;
+                } catch (TimeoutException e) {
+                    woken = false;
+                }
+
+                var signals = store.getUnconsumedSignals(ctx.workflowId(), signalName);
+                if (!signals.isEmpty()) {
+                    var result = consumeSignal(ctx, seq, stepName, signalName, signals.getFirst(), type);
+                    updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
+                    return result;
+                }
+                if (woken) {
+                    // Unparked but nothing in the store — defensive fallback
+                    updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
+                    throw new SignalTimeoutException(ctx.workflowId(), signalName, timeout);
+                }
+            }
+        } finally {
+            unsubscribeForWake(ctx.workflowId());
+        }
+    }
+
+    // ── Cross-instance wake subscription ────────────────────────────────
+
+    /**
+     * Registers (or ref-counts) the cross-instance wake subscription for a
+     * workflow. The notifier I/O happens outside the map lock; on subscribe
+     * failure the count is rolled back and the await falls back to the
+     * periodic store re-check.
+     */
+    private void subscribeForWake(String workflowId) {
+        if (signalNotifier == null) {
+            return;
+        }
+        var count = wakeSubscriptions.merge(workflowId, 1, Integer::sum);
+        if (count > 1) {
+            return; // subscription already active (or being set up concurrently)
+        }
+        try {
+            signalNotifier.subscribe(workflowId, this::onRemoteSignal);
+        } catch (Exception e) {
+            logger.warn("Failed to subscribe for cross-instance wake of workflow '{}' — "
+                            + "periodic store re-check remains the fallback: {}",
+                    workflowId, e.getMessage());
+            removeWakeCount(workflowId);
+        }
+    }
+
+    /**
+     * Decrements the wake-subscription ref-count, unsubscribing (outside the
+     * map lock) when the last concurrent await for this workflow finishes.
+     */
+    private void unsubscribeForWake(String workflowId) {
+        if (signalNotifier == null) {
+            return;
+        }
+        if (removeWakeCount(workflowId)) {
+            try {
+                signalNotifier.unsubscribe(workflowId);
+            } catch (Exception e) {
+                logger.warn("Failed to unsubscribe cross-instance wake of workflow '{}': {}",
+                        workflowId, e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Decrements the wake ref-count for a workflow.
+     *
+     * @return {@code true} when the count reached zero and the physical
+     *         subscription should be torn down
+     */
+    private boolean removeWakeCount(String workflowId) {
+        var reachedZero = new boolean[1];
+        wakeSubscriptions.compute(workflowId, (id, count) -> {
+            if (count == null) {
+                return null;
+            }
+            if (count <= 1) {
+                reachedZero[0] = true;
+                return null;
+            }
+            return count - 1;
+        });
+        return reachedZero[0];
+    }
+
+    /**
+     * Cross-instance notification callback: unparks the local waiter, which
+     * then re-reads the signal from the store. May run on a network event
+     * loop thread — must stay lightweight and non-blocking. Unparking an
+     * absent key (self-echo of a local delivery, or a waiter that already
+     * woke) is a no-op.
+     */
+    private void onRemoteSignal(String workflowId, String signalName) {
+        parkingLot.unpark(workflowId + ":signal:" + signalName, null);
     }
 
     // ── Orphan adoption ─────────────────────────────────────────────────
@@ -252,8 +401,16 @@ final class SignalManager {
         // Persist the SIGNAL_RECEIVED event BEFORE marking consumed.
         // If appendEvent fails, the signal stays unconsumed and can be
         // retried on recovery. The reverse order would lose the signal.
+        // If the CAS below then loses, the appended event is already the
+        // durable memoized truth for this sequence — consuming a different
+        // row now would contradict the event log on replay, so we proceed.
         appendEvent(ctx, seq, EventType.SIGNAL_RECEIVED, stepName, signal.payload());
-        store.markSignalConsumed(signal.id());
+        if (!store.markSignalConsumed(signal.id())) {
+            logger.warn("Signal '{}' (id={}) for workflow '{}' was already consumed by a "
+                            + "concurrent consumer — proceeding with the memoized SIGNAL_RECEIVED "
+                            + "event at seq {}",
+                    signalName, signal.id(), ctx.workflowId(), seq);
+        }
         publishLifecycleEvent(ctx, stepName, LifecycleEventType.SIGNAL_RECEIVED);
         logger.debug("Consumed signal '{}' for workflow '{}'", signalName, ctx.workflowId());
         return serializer.deserialize(signal.payload(), type);

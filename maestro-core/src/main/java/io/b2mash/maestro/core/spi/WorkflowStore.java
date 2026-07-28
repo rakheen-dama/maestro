@@ -83,14 +83,18 @@ public interface WorkflowStore {
     /**
      * Updates an existing workflow instance with optimistic locking.
      *
-     * <p>The update must check that the current stored version matches
-     * {@link WorkflowInstance#version()} on the provided instance. If it
-     * matches, the store increments the version and applies the update.
-     * If it does not match, an {@link OptimisticLockException} is thrown.
+     * <p><b>Version convention:</b> the caller builds the complete new state,
+     * including the new version ({@code current + 1}), before calling this
+     * method — e.g. {@code instance.toBuilder().version(current.version() + 1)}.
+     * The store persists the instance verbatim if and only if the stored
+     * row's version equals {@link WorkflowInstance#version()}{@code - 1};
+     * otherwise an {@link OptimisticLockException} is thrown. After a
+     * successful update, the in-memory instance and the stored row agree.
      *
-     * @param instance the instance to update (with current version)
+     * @param instance the fully-built updated instance (version already incremented)
      * @throws WorkflowNotFoundException if the workflow does not exist
-     * @throws OptimisticLockException   if the version does not match
+     * @throws OptimisticLockException   if the stored version does not match
+     *                                   {@code instance.version() - 1}
      */
     void updateInstance(WorkflowInstance instance);
 
@@ -163,14 +167,19 @@ public interface WorkflowStore {
     List<WorkflowSignal> getUnconsumedSignals(String workflowId, String signalName);
 
     /**
-     * Marks a signal as consumed.
+     * Atomically marks a signal as consumed (compare-and-set).
      *
      * <p>Once consumed, the signal will no longer be returned by
-     * {@link #getUnconsumedSignals(String, String)}.
+     * {@link #getUnconsumedSignals(String, String)}. Implementations must
+     * transition the {@code consumed} flag atomically so that a signal row
+     * can never satisfy two consumers.
      *
      * @param signalId the signal UUID to mark as consumed
+     * @return {@code true} if this call transitioned the signal from
+     *         unconsumed to consumed; {@code false} if it was already
+     *         consumed or does not exist
      */
-    void markSignalConsumed(UUID signalId);
+    boolean markSignalConsumed(UUID signalId);
 
     /**
      * Adopts orphaned signals by setting their {@code workflowInstanceId}.

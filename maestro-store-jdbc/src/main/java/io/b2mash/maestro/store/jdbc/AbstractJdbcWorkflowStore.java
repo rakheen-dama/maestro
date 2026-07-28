@@ -218,10 +218,13 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     public void updateInstance(WorkflowInstance instance) {
         Objects.requireNonNull(instance, "instance");
 
+        // Canonical optimistic-lock convention: the caller has already built
+        // the updated instance with version = current + 1, so the row is
+        // persisted verbatim iff the stored version equals version - 1.
         String sql = "UPDATE " + tableName("workflow_instance")
                 + " SET run_id = ?, workflow_type = ?, task_queue = ?, status = ?, "
                 + "input = ?, output = ?, service_name = ?, event_sequence = ?, "
-                + "started_at = ?, completed_at = ?, updated_at = ?, version = ? + 1"
+                + "started_at = ?, completed_at = ?, updated_at = ?, version = ?"
                 + " WHERE id = ? AND version = ?";
 
         int updated = update(sql, ps -> {
@@ -238,7 +241,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             ps.setTimestamp(11, Timestamp.from(instance.updatedAt()));
             ps.setInt(12, instance.version());
             ps.setObject(13, instance.id());
-            ps.setInt(14, instance.version());
+            ps.setInt(14, instance.version() - 1);
         });
 
         if (updated == 0) {
@@ -246,7 +249,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         }
 
         log.debug("Updated workflow instance: workflowId={}, version={}→{}",
-                instance.workflowId(), instance.version(), instance.version() + 1);
+                instance.workflowId(), instance.version() - 1, instance.version());
     }
 
     // ── Event operations ──────────────────────────────────────────────────
@@ -344,13 +347,13 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     }
 
     @Override
-    public void markSignalConsumed(UUID signalId) {
+    public boolean markSignalConsumed(UUID signalId) {
         Objects.requireNonNull(signalId, "signalId");
 
         String sql = "UPDATE " + tableName("workflow_signal")
-                + " SET consumed = true WHERE id = ?";
+                + " SET consumed = true WHERE id = ? AND consumed = false";
 
-        update(sql, ps -> ps.setObject(1, signalId));
+        return update(sql, ps -> ps.setObject(1, signalId)) > 0;
     }
 
     @Override
@@ -488,8 +491,9 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         if (currentVersion.isEmpty()) {
             throw new WorkflowNotFoundException(instance.workflowId());
         }
+        // The caller expected the stored row to still be at version - 1
         throw new OptimisticLockException(instance.workflowId(),
-                instance.version(), currentVersion.get());
+                instance.version() - 1, currentVersion.get());
     }
 
     // ── Row mappers ───────────────────────────────────────────────────────

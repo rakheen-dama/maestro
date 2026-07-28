@@ -108,6 +108,21 @@ class SagaManagerTest {
     }
 
     @Test
+    @DisplayName("Transition to COMPENSATING pre-increments the instance version")
+    void transitionToCompensatingPreIncrementsVersion() {
+        var stack = new CompensationStack();
+        stack.push("step-A", () -> {});
+
+        sagaManager.compensate(ctx, instance, stack, false);
+
+        // Canonical optimistic-lock convention: the caller builds the updated
+        // instance with version = current + 1 before calling updateInstance.
+        var latest = store.getInstance("test-workflow").orElseThrow();
+        assertEquals(WorkflowStatus.COMPENSATING, latest.status());
+        assertEquals(instance.version() + 1, latest.version());
+    }
+
+    @Test
     @DisplayName("Events: COMPENSATION_STARTED, then COMPENSATION_COMPLETED")
     void compensationEventsRecorded() {
         var stack = new CompensationStack();
@@ -254,7 +269,7 @@ class SagaManagerTest {
 
         @Override public void saveSignal(WorkflowSignal signal) {}
         @Override public List<WorkflowSignal> getUnconsumedSignals(String wfId, String name) { return List.of(); }
-        @Override public void markSignalConsumed(UUID signalId) {}
+        @Override public boolean markSignalConsumed(UUID signalId) { return true; }
         @Override public void adoptOrphanedSignals(String wfId, UUID instanceId) {}
         @Override public void saveTimer(WorkflowTimer timer) {}
         @Override public List<WorkflowTimer> getDueTimers(Instant now, int batchSize) { return List.of(); }

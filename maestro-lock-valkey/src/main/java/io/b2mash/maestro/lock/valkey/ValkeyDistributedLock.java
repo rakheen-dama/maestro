@@ -132,16 +132,18 @@ public final class ValkeyDistributedLock implements DistributedLock {
     }
 
     @Override
-    public void renew(LockHandle handle, Duration ttl) {
+    public boolean renew(LockHandle handle, Duration ttl) {
         var result = runScript(renewSha, RENEW_SCRIPT,
                 new String[]{handle.key()},
                 handle.token(), String.valueOf(ttl.toMillis()));
 
-        if (result != null && ((Long) result) > 0) {
+        var renewed = result != null && ((Long) result) > 0;
+        if (renewed) {
             logger.debug("Renewed lock '{}' for {}ms", handle.key(), ttl.toMillis());
         } else {
             logger.debug("Lock '{}' not renewed — token mismatch or already expired", handle.key());
         }
+        return renewed;
     }
 
     @Override

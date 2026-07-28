@@ -607,7 +607,7 @@ class ActivityInvocationHandlerTest {
         }
 
         @Override
-        public void markSignalConsumed(UUID signalId) {
+        public boolean markSignalConsumed(UUID signalId) {
             throw new UnsupportedOperationException();
         }
 
@@ -665,8 +665,9 @@ class ActivityInvocationHandlerTest {
         }
 
         @Override
-        public void renew(LockHandle handle, Duration ttl) {
+        public boolean renew(LockHandle handle, Duration ttl) {
             // no-op
+            return true;
         }
 
         @Override
