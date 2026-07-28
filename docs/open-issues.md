@@ -159,25 +159,43 @@ module, then carry on. Never work around a proven engine bug inside a test.
 
 ## 4. Issue index
 
-Ordered by what I would fix first. Severity is about user impact; effort is a
-rough guide.
+Ordered by what I would fix first.
 
-| # | Issue | Severity | Effort |
-|---|---|---|---|
-| [1](#issue-1) | Failed signal handlers lose signals permanently | High | Large |
-| [2](#issue-2) | A timer can fire once and then stall the workflow forever | High | Medium |
-| [3](#issue-3) | Lifecycle publishing can block workflow start for 60s | Medium | Small |
-| [4](#issue-4) | `ExecutorShutdownException` can be swallowed by user code | Medium | Small |
-| [5](#issue-5) | Shutdown during compensation leaves a workflow `COMPENSATING` | Medium | Small |
-| [6](#issue-6) | `maestro.admin.events.*` configuration does nothing | Low | Small |
-| [7](#issue-7) | Two hardcoded 30s timeouts with no configuration seam | Low | Small |
-| [8](#issue-8) | Health indicator is documented but does not exist | Low | Small |
-| [9](#issue-9) | Activity lock prefix ignores `maestro.lock.key-prefix` | Low | Trivial |
-| [10](#issue-10) | Four modules have no tests at all | Medium | Medium |
-| [11](#issue-11) | Lost locks don't stop the workflow (no fencing) | Medium | Large |
-| [12](#issue-12) | Recovery polling doesn't scale | Low now | Medium |
+**Read the "Kind" column first — it determines how you work.** Almost everything
+here is a *library* problem, not a coverage problem. That is the outcome of the
+verification work rather than a departure from it: closing test gaps converted
+unknowns into two piles, things now proven to work and a defect backlog. This is
+the second pile.
 
----
+- **Library defect** — the shipped behaviour is wrong. Fixing it changes what
+  users experience, so it needs a failing test first, a behaviour test after,
+  and a line in the release notes if the change is observable.
+- **Library gap** — behaviour is defensible but something is missing or
+  unconfigurable. Usually an API or design decision, not a bug fix.
+- **Testing gap** — the code may be fine; nothing verifies it either way. Expect
+  these to *become* library defects once you look: `maestro-messaging-postgres`
+  was a pure testing gap until its first suite found a signal-loss defect.
+
+| # | Issue | Kind | Severity | Effort |
+|---|---|---|---|---|
+| [1](#issue-1) | Failed signal handlers lose signals permanently | Library defect | High | Large |
+| [2](#issue-2) | A timer can fire once and then stall the workflow forever | Library defect *(believed — unproven, see below)* | High | Medium |
+| [3](#issue-3) | Lifecycle publishing can block workflow start for 60s | Library defect | Medium | Small |
+| [4](#issue-4) | `ExecutorShutdownException` can be swallowed by user code | Library gap (API design) | Medium | Small |
+| [5](#issue-5) | Shutdown during compensation leaves a workflow `COMPENSATING` | Library defect (semantics only) | Medium | Small |
+| [6](#issue-6) | `maestro.admin.events.*` configuration does nothing | Library defect | Low | Small |
+| [7](#issue-7) | Two hardcoded 30s timeouts with no configuration seam | Library gap | Low | Small |
+| [8](#issue-8) | Health indicator is documented but does not exist | Library gap (or docs bug) | Low | Small |
+| [9](#issue-9) | Activity lock prefix ignores `maestro.lock.key-prefix` | Library defect | Low | Trivial |
+| [10](#issue-10) | Four modules have no tests at all | **Testing gap** | Medium | Medium |
+| [11](#issue-11) | Lost locks don't stop the workflow (no fencing) | Library gap (accepted limitation) | Medium | Large |
+| [12](#issue-12) | Recovery polling doesn't scale | Library gap (performance) | Low now | Medium |
+
+**Issue 2 is the one to be sceptical of.** It is traced through the code, not
+reproduced by a test. Write the reproduction before the fix; if the workflow does
+not stall, the reading of the ordering was wrong and the issue should be closed.
+Everything else in the "defect" rows was either observed directly or is pinned by
+an existing `@Disabled` test.
 
 ## 5. The issues
 
@@ -268,10 +286,13 @@ If the process dies between 1 and 3, replay finds `TIMER_SCHEDULED` with no
 row is already `FIRED`, and `getDueTimers` only returns `PENDING` rows — so no
 poller will ever fire it again.
 
-**Why it matters.** The workflow waits forever. There is no error, no failed
-status, nothing in a dashboard: it simply never progresses. A `kill -9` in that
-window reproduces it, which is precisely the scenario durability is meant to
-survive.
+**Confidence.** This is traced through the code, not yet reproduced. Nothing
+tests it either way. Treat the reproduction below as the first task, and be
+willing to close this issue if the workflow turns out to recover.
+
+**Why it matters.** If the reading is right, the workflow waits forever. There is
+no error, no failed status, nothing in a dashboard: it simply never progresses.
+The window is exactly the `kill -9` scenario durability is meant to survive.
 
 **Where.**
 - `maestro-core/src/main/java/.../engine/WorkflowExecutor.java` — `fireTimer`
@@ -536,8 +557,14 @@ pattern: `PostgresWorkflowMessagingTest` for a transport,
 Testcontainers singleton started from a static initialiser — read the comments
 there before writing a fixture, they encode a real pitfall.
 
+**Expect this to produce library defects.** This is the only pure testing gap in
+the list, and it probably won't stay that way — the last module in this state
+(`maestro-messaging-postgres`) had a signal-loss defect waiting in it. Budget for
+fixing what you find, not just for writing tests.
+
 **Done when.** Each module is removed from the `modulesWithoutTests` allowlist
-with a real suite behind it.
+with a real suite behind it, and anything the suites uncover is either fixed or
+added to this document.
 
 ---
 
