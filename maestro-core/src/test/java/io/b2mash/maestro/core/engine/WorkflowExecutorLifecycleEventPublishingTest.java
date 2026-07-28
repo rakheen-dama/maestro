@@ -112,8 +112,13 @@ class WorkflowExecutorLifecycleEventPublishingTest {
                 assertEquals(WorkflowStatus.COMPLETED,
                         store.getInstance("disabled-1").orElseThrow().status()));
 
-        // Give any (incorrect) async publish a chance to land before asserting absence.
-        Thread.sleep(200);
+        // Deterministic, not a timing guess: publishLifecycleEvent short-circuits
+        // before submitting anything when disabled, so there is no async publish to
+        // race. shutdown() additionally drains the lifecycle publisher (waits for
+        // queued/in-flight work, see LifecycleEventPublisher#shutdown) before
+        // returning, so this assertion stays deterministic even against a future
+        // regression that submits-then-drops instead of never submitting at all.
+        executor.shutdown();
         assertEquals(List.of(), messaging.events, "no lifecycle event may be published when disabled");
     }
 
