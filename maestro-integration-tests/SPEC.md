@@ -21,8 +21,10 @@ lives under `src/test/java`.
 - Convention plugin `maestro.integration-test-conventions` (in `build-logic`):
   applies `maestro.java-conventions` + the Spring Boot BOM, **not**
   `library-conventions` (nothing is published or signed).
-- `test` task → runs `@Tag("integration")`, **excludes** `@Tag("e2e")`. Runs on
-  every PR through the existing `./gradlew build` in `.github/workflows/build-test.yml`.
+- `test` task → **excludes** `@Tag("e2e")`; everything else in the module runs.
+  (It does not `includeTags("integration")` — an untagged class should run and
+  be noticed, not be silently skipped.) Runs on every PR through the existing
+  `./gradlew build` in `.github/workflows/build-test.yml`.
 - `e2eTest` task → runs `@Tag("e2e")` only. Never wired into `build`/`check`.
 - Root convenience: `./gradlew :maestro-integration-tests:test`.
 
@@ -86,7 +88,19 @@ Mirrors `KafkaTestSupport` from `maestro-messaging-kafka`:
 `confluentinc/cp-kafka:7.7.1` in KRaft mode, `createTopics(String...)` via
 `AdminClient` (**topics are never auto-created** — repo rule), Spring Kafka
 producer/consumer factories with `byte[]` values and `auto.offset.reset=earliest`.
-Per-test unique topic suffixes.
+
+```java
+protected String testSuffix;                   // unique per test — build topic/group names from it
+protected void createTopics(String... names);  // 1 partition each
+protected void createTopic(String name, int partitions);  // for consumer-group routing tests
+protected Map<String, Object> consumerProps(String groupId);
+protected static String bootstrapServers();    // for @DynamicPropertySource wiring
+```
+
+A suite needing both backends extends `PostgresIntegrationSupport` and holds a
+Kafka container of its own, or uses `@SpringBootTest` with
+`@DynamicPropertySource` pointing at both containers — Java has no multiple
+inheritance, so pick one base and wire the other explicitly.
 
 ### `support.MaestroEngineHarness` — the engine-under-test seam
 

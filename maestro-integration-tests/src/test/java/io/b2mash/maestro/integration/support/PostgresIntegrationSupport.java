@@ -8,8 +8,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.postgresql.ds.PGSimpleDataSource;
 import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -19,10 +17,16 @@ import java.sql.SQLException;
  * Base class for integration suites that run the real engine against a real
  * PostgreSQL backend.
  *
- * <p>Mirrors {@code PostgresTestSupport} in {@code maestro-store-postgres}: one
- * static Testcontainers Postgres shared by every test in the class, Flyway
- * migrated once per container, and per-test truncation for isolation. The
- * container is never restarted between tests — truncation is what isolates.
+ * <p>One Postgres container is shared by every integration suite in the JVM,
+ * Flyway migrated once, with per-test truncation for isolation. The container
+ * is never restarted — truncation is what isolates.
+ *
+ * <p>The container is started from a static initialiser rather than through
+ * JUnit's {@code @Testcontainers}/{@code @Container} extension. That extension
+ * stops a static container when its test <em>class</em> finishes, so an
+ * inherited container is torn down and recreated for every subclass; the second
+ * suite onwards would then run against a fresh, unmigrated database. Ryuk
+ * removes this container when the JVM exits.
  *
  * <p>Migrations are applied from {@code classpath:db/migration}, which spans
  * every Maestro module on the test classpath: the store (version band 1–99),
@@ -31,21 +35,23 @@ import java.sql.SQLException;
  * {@code io.b2mash.maestro.integration.schema.MaestroMigrationsCoexistIT}.
  *
  * <h2>Thread Safety</h2>
- * <p>Instances are per-test and confined to the test thread. The static
- * container and the one-shot migration flag are guarded internally and safe for
- * JUnit's shared-container lifecycle.
+ * <p>Instances are per-test and confined to the test thread. The container is
+ * started once by class initialisation and the one-shot migration is guarded by
+ * a monitor, so suites may share both safely.
  */
-@Testcontainers
 @Tag("integration")
 public abstract class PostgresIntegrationSupport {
 
-    @Container
     @SuppressWarnings("resource")
     static final PostgreSQLContainer<?> postgres =
             new PostgreSQLContainer<>("postgres:16-alpine")
                     .withDatabaseName("maestro_it")
                     .withUsername("test")
                     .withPassword("test");
+
+    static {
+        postgres.start();
+    }
 
     private static final Object MIGRATION_LOCK = new Object();
     private static boolean migrated = false;
