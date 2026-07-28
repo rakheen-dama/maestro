@@ -627,6 +627,11 @@ class ActivityInvocationHandlerTest {
         }
 
         @Override
+        public Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
         public boolean markTimerFired(UUID timerId) {
             throw new UnsupportedOperationException();
         }

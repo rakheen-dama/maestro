@@ -413,6 +413,25 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     }
 
     @Override
+    public Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId) {
+        Objects.requireNonNull(workflowInstanceId, "workflowInstanceId");
+        Objects.requireNonNull(timerId, "timerId");
+
+        // No LIMIT clause: querySingle already stops at the first row, which
+        // keeps this statement dialect-neutral. The ORDER BY is only there so
+        // that "the first row" is deterministic.
+        String sql = "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at,"
+                + " status, created_at FROM " + tableName("workflow_timer")
+                + " WHERE workflow_instance_id = ? AND timer_id = ?"
+                + " ORDER BY created_at ASC, id ASC";
+
+        return querySingle(sql, ps -> {
+            ps.setObject(1, workflowInstanceId);
+            ps.setString(2, timerId);
+        }, this::mapTimer);
+    }
+
+    @Override
     public boolean markTimerFired(UUID timerId) {
         Objects.requireNonNull(timerId, "timerId");
 

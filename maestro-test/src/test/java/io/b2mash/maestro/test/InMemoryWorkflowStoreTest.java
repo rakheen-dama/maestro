@@ -284,6 +284,29 @@ class InMemoryWorkflowStoreTest {
     }
 
     @Test
+    void findTimerSeesFiredTimersThatGetDueTimersHides() {
+        var timer = buildTimer("wf-find", Instant.now().minusSeconds(10), TimerStatus.PENDING);
+        store.saveTimer(timer);
+        assertTrue(store.markTimerFired(timer.id()));
+
+        assertTrue(store.getDueTimers(Instant.now(), 100).isEmpty());
+
+        var found = store.findTimer(timer.workflowInstanceId(), timer.timerId());
+        assertTrue(found.isPresent());
+        assertEquals(timer.id(), found.get().id());
+        assertEquals(TimerStatus.FIRED, found.get().status());
+    }
+
+    @Test
+    void findTimerReturnsEmptyForUnknownTimerOrInstance() {
+        var timer = buildTimer("wf-find-miss", Instant.now().plusSeconds(60), TimerStatus.PENDING);
+        store.saveTimer(timer);
+
+        assertTrue(store.findTimer(timer.workflowInstanceId(), "timer-nope").isEmpty());
+        assertTrue(store.findTimer(UUID.randomUUID(), timer.timerId()).isEmpty());
+    }
+
+    @Test
     void markTimerFiredCAS() {
         var timer = buildTimer("wf-cas", Instant.now().minusSeconds(10), TimerStatus.PENDING);
         store.saveTimer(timer);

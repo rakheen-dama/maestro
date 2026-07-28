@@ -219,6 +219,31 @@ public interface WorkflowStore {
     List<WorkflowTimer> getDueTimers(Instant now, int batchSize);
 
     /**
+     * Looks up a workflow's timer by its logical timer ID, whatever its status.
+     *
+     * <p>This is the only way to read a timer that is no longer <em>due</em>.
+     * {@link #getDueTimers(Instant, int)} deliberately returns only
+     * {@code PENDING} rows, so a timer that has already fired is invisible to
+     * it. Replay needs the fired ones: a node can die between
+     * {@link #markTimerFired(UUID)} and the workflow thread appending its
+     * {@code TIMER_FIRED} event, leaving an event log that says "scheduled,
+     * never fired" and a row that says otherwise. Replay consults this method to
+     * tell that crash window apart from a timer that is genuinely still pending,
+     * and continues rather than parking forever.
+     *
+     * <p>A timer ID is unique within a workflow instance (it is derived from the
+     * sequence number of the {@code sleep()} that created it). If an
+     * implementation somehow holds duplicates, it must return one of them
+     * deterministically.
+     *
+     * @param workflowInstanceId the owning workflow instance
+     * @param timerId            the logical timer ID (e.g. {@code "sleep-2"}),
+     *                           not the timer's database UUID
+     * @return the timer, or empty if this instance has no timer with that ID
+     */
+    Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId);
+
+    /**
      * Marks a timer as fired (atomic compare-and-set: PENDING → FIRED).
      *
      * <p>Only transitions timers in {@code PENDING} status. If the timer

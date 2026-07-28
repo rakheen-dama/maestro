@@ -317,6 +317,11 @@ class WorkflowExecutorTerminalTransitionTest {
         }
 
         @Override
+        public Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId) {
+            return Optional.empty();
+        }
+
+        @Override
         public boolean markTimerFired(UUID timerId) {
             return true;
         }

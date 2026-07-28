@@ -300,6 +300,13 @@ class TimerPollerTest {
                     .toList();
         }
 
+        @Override public Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId) {
+            return timers.stream()
+                    .filter(t -> t.workflowInstanceId().equals(workflowInstanceId)
+                            && t.timerId().equals(timerId))
+                    .findFirst();
+        }
+
         @Override public boolean markTimerFired(UUID timerId) {
             for (int i = 0; i < timers.size(); i++) {
                 var t = timers.get(i);

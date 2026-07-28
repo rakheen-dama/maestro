@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.TimerStatus;
@@ -220,6 +221,97 @@ class WorkflowExecutorTest {
 
         assertEquals(1, count, "Should recover 1 workflow");
         assertTrue(latch.await(5, TimeUnit.SECONDS), "Recovered workflow should complete");
+    }
+
+    @Test
+    @DisplayName("Recovery heals a timer marked FIRED before its TIMER_FIRED event was appended")
+    void recoverWorkflowsHealsTimerFiredBeforeEventAppend() throws Exception {
+        // The crash window inside fireTimer: the row goes PENDING → FIRED, then
+        // the node dies before its workflow thread appends TIMER_FIRED. The
+        // event log now says "scheduled, never fired" while the row says
+        // otherwise — and getDueTimers only ever returns PENDING rows, so no
+        // poller will look at this timer again. Replay has to notice.
+        var nodeAWorkflow = new SleepingWorkflow(Duration.ofMinutes(10), new CountDownLatch(1));
+        var method = SleepingWorkflow.class.getMethod("run", String.class);
+
+        var instanceId = executor.startWorkflow("timer-heal-1", "SleepingWorkflow", "default",
+                "hello", nodeAWorkflow, method);
+
+        await().atMost(Duration.ofSeconds(5)).until(() ->
+                store.getInstance("timer-heal-1")
+                        .map(i -> i.status() == WorkflowStatus.WAITING_TIMER)
+                        .orElse(false));
+
+        // The sleep is the first operation, so it owns sequence 1.
+        var timer = store.findTimer(instanceId, "sleep-1").orElseThrow();
+        assertEquals(TimerStatus.PENDING, timer.status());
+        assertTrue(store.markTimerFired(timer.id()), "the crash window opens once the row transitions");
+        // node-a is now gone: nothing unparks its thread, nothing appends TIMER_FIRED.
+
+        var completed = new CountDownLatch(1);
+        var nodeBWorkflow = new SleepingWorkflow(Duration.ofMinutes(10), completed);
+        var registration = new WorkflowRegistration(
+                "SleepingWorkflow", "default", nodeBWorkflow, method);
+        var nodeB = new WorkflowExecutor(store, null, messaging, null, serializer, "node-b");
+        try {
+            assertEquals(1, nodeB.recoverWorkflows(Map.of("SleepingWorkflow", registration)));
+
+            assertTrue(completed.await(5, TimeUnit.SECONDS),
+                    "a timer already marked FIRED must not re-park the workflow forever");
+            await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                    assertEquals(WorkflowStatus.COMPLETED,
+                            store.getInstance("timer-heal-1").orElseThrow().status()));
+
+            var firedEvents = store.getEvents(instanceId).stream()
+                    .filter(e -> e.eventType() == EventType.TIMER_FIRED)
+                    .toList();
+            assertEquals(1, firedEvents.size(),
+                    "replay must heal the missing TIMER_FIRED event exactly once");
+        } finally {
+            nodeB.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("Recovery re-parks a sleep whose timer is still PENDING")
+    void recoverWorkflowsReParksWhileTimerStillPending() throws Exception {
+        // The counterpart of the healing test: a genuinely pending timer must
+        // still park, or the self-heal would turn every sleep into a no-op.
+        var nodeAWorkflow = new SleepingWorkflow(Duration.ofMinutes(10), new CountDownLatch(1));
+        var method = SleepingWorkflow.class.getMethod("run", String.class);
+
+        var instanceId = executor.startWorkflow("timer-pending-1", "SleepingWorkflow", "default",
+                "hello", nodeAWorkflow, method);
+        await().atMost(Duration.ofSeconds(5)).until(() ->
+                store.getInstance("timer-pending-1")
+                        .map(i -> i.status() == WorkflowStatus.WAITING_TIMER)
+                        .orElse(false));
+
+        var completed = new CountDownLatch(1);
+        var nodeBWorkflow = new SleepingWorkflow(Duration.ofMinutes(10), completed);
+        var registration = new WorkflowRegistration(
+                "SleepingWorkflow", "default", nodeBWorkflow, method);
+        var nodeB = new WorkflowExecutor(store, null, messaging, null, serializer, "node-b");
+        try {
+            assertEquals(1, nodeB.recoverWorkflows(Map.of("SleepingWorkflow", registration)));
+
+            await().atMost(Duration.ofSeconds(5)).until(() -> nodeB.isRunning("timer-pending-1"));
+            assertFalse(completed.await(500, TimeUnit.MILLISECONDS),
+                    "a PENDING timer must leave the recovered workflow parked");
+            assertEquals(WorkflowStatus.WAITING_TIMER,
+                    store.getInstance("timer-pending-1").orElseThrow().status());
+            assertEquals(0, store.getEvents(instanceId).stream()
+                            .filter(e -> e.eventType() == EventType.TIMER_FIRED).count(),
+                    "no TIMER_FIRED event may be written while the timer is pending");
+
+            // Firing it for real releases the recovered run.
+            var timer = store.findTimer(instanceId, "sleep-1").orElseThrow();
+            nodeB.fireTimer("timer-pending-1", "sleep-1", timer.id());
+            assertTrue(completed.await(5, TimeUnit.SECONDS),
+                    "firing the timer must release the re-parked workflow");
+        } finally {
+            nodeB.shutdown();
+        }
     }
 
     // ── Instance lock ──────────────────────────────────────────────────
@@ -656,6 +748,27 @@ class WorkflowExecutorTest {
     }
 
     /**
+     * Workflow whose only step is a durable sleep — the fixture for timer
+     * replay. The nap is long enough that nothing fires it by accident; the
+     * tests fire (or pretend to fire) it explicitly.
+     */
+    public static class SleepingWorkflow {
+        private final Duration nap;
+        private final CountDownLatch completed;
+
+        public SleepingWorkflow(Duration nap, CountDownLatch completed) {
+            this.nap = nap;
+            this.completed = completed;
+        }
+
+        public String run(String input) {
+            WorkflowContext.current().sleep(nap);
+            completed.countDown();
+            return "awake";
+        }
+    }
+
+    /**
      * Workflow with no input parameter.
      */
     public static class NoInputWorkflow {
@@ -892,6 +1005,14 @@ class WorkflowExecutorTest {
                     .filter(t -> t.status() == TimerStatus.PENDING && !t.fireAt().isAfter(now))
                     .limit(batchSize)
                     .toList();
+        }
+
+        @Override
+        public Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId) {
+            return timers.stream()
+                    .filter(t -> t.workflowInstanceId().equals(workflowInstanceId)
+                            && t.timerId().equals(timerId))
+                    .findFirst();
         }
 
         @Override

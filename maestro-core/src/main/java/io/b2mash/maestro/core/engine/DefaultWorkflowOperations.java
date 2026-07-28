@@ -119,11 +119,22 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                     logger.debug("Replaying completed sleep at seq {} (skipped)", seq);
                     return;
                 }
-                // TIMER_SCHEDULED exists but TIMER_FIRED does not — timer is still pending.
-                // Re-park to wait for it.
-                logger.debug("Replaying pending sleep at seq {} — re-parking", seq);
+                // TIMER_SCHEDULED exists but TIMER_FIRED does not. Either the
+                // timer really is still pending, or the node that owned this
+                // workflow died inside the window between the timer row going
+                // PENDING → FIRED and this thread appending TIMER_FIRED. The
+                // durable row is what tells the two apart: only a PENDING timer
+                // will ever be handed to a poller again, so re-parking on a
+                // FIRED one would wait forever.
                 var timerId = extractTimerId(storedEvent.get().payload());
-                parkForTimer(ctx, timerId);
+                if (alreadyFired(ctx, timerId)) {
+                    logger.debug("Replaying sleep at seq {} whose timer '{}' already fired — "
+                            + "healing the missing TIMER_FIRED event instead of re-parking",
+                            seq, timerId);
+                } else {
+                    logger.debug("Replaying pending sleep at seq {} — re-parking", seq);
+                    parkForTimer(ctx, timerId);
+                }
                 // Timer fired — record the TIMER_FIRED event
                 recordTimerFired(ctx);
                 // Restore RUNNING status (matches the live path)
@@ -173,6 +184,23 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
     private void parkForTimer(WorkflowContext ctx, String timerId) {
         var parkKey = ctx.workflowId() + ":timer:" + timerId;
         parkingLot.park(parkKey);
+    }
+
+    /**
+     * Whether this workflow's timer has already been marked fired durably.
+     *
+     * <p>Answers "has the wake already happened and been lost?" — the question
+     * the event log alone cannot answer, because the {@code TIMER_FIRED} event
+     * is appended by the workflow thread <em>after</em> the row transitions.
+     *
+     * @param ctx     the current workflow context
+     * @param timerId the logical timer ID from the {@code TIMER_SCHEDULED} event
+     * @return {@code true} if the store holds a FIRED timer with that ID
+     */
+    private boolean alreadyFired(WorkflowContext ctx, String timerId) {
+        return store.findTimer(ctx.workflowInstanceId(), timerId)
+                .map(timer -> timer.status() == TimerStatus.FIRED)
+                .orElse(false);
     }
 
     private void recordTimerFired(WorkflowContext ctx) {
