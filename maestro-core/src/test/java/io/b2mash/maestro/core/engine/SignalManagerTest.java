@@ -543,6 +543,41 @@ class SignalManagerTest {
         assertEquals(List.of("cross-node"), resultHolder);
     }
 
+    @Test
+    @DisplayName("spurious wake (notifier self-echo) re-parks instead of aborting the await")
+    void spuriousWakeDoesNotAbortAwait() throws Exception {
+        var instanceId = UUID.randomUUID();
+        createInstance("order-1", instanceId);
+
+        var resultHolder = new CopyOnWriteArrayList<String>();
+        var completedLatch = new CountDownLatch(1);
+        Thread.ofVirtual().start(() -> {
+            var ctx = createContext(instanceId, "order-1", 0, false);
+            ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() -> {
+                resultHolder.add(signalManager.awaitSignal(
+                        ctx, "payment.result", String.class, Duration.ofSeconds(10)));
+                completedLatch.countDown();
+            });
+        });
+
+        await().atMost(Duration.ofSeconds(2)).until(() ->
+                parkingLot.isParked("order-1:signal:payment.result"));
+
+        // Spurious wake: unpark with NO signal in the store — e.g. a pub/sub
+        // self-echo arriving after a previous consume re-parked this key
+        parkingLot.unpark("order-1:signal:payment.result", null);
+
+        // The await must survive it and re-park
+        await().atMost(Duration.ofSeconds(2)).until(() ->
+                parkingLot.isParked("order-1:signal:payment.result"));
+
+        // The real signal then completes the await normally
+        signalManager.deliverSignal("order-1", "payment.result", "paid");
+        assertTrue(completedLatch.await(5, TimeUnit.SECONDS),
+                "await must complete after the real signal, not abort on the spurious wake");
+        assertEquals(List.of("paid"), resultHolder);
+    }
+
     // ── consumeSignal — CAS loses ──────────────────────────────────────
 
     @Test

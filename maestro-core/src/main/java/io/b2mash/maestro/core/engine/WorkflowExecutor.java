@@ -252,6 +252,11 @@ public final class WorkflowExecutor {
             Object workflowImpl,
             Method workflowMethod
     ) {
+        if (shuttingDown.get()) {
+            logger.debug("Executor shutting down — skipping resume of workflow '{}'",
+                    instance.workflowId());
+            return false;
+        }
         if (runningWorkflows.containsKey(instance.workflowId())) {
             logger.debug("Workflow '{}' is already running — skipping resume", instance.workflowId());
             return false;

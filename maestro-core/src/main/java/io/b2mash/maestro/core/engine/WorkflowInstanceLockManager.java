@@ -97,7 +97,9 @@ final class WorkflowInstanceLockManager {
      * @return the acquisition outcome — never throws
      */
     Acquisition tryAcquire(String workflowId) {
-        if (distributedLock == null) {
+        if (distributedLock == null || closed.get()) {
+            // After close() the renewer is gone — a lock acquired now would
+            // silently expire mid-run, so degrade to unlocked instead
             return Acquisition.NO_BACKEND;
         }
         if (heldLocks.containsKey(workflowId)) {
@@ -161,6 +163,9 @@ final class WorkflowInstanceLockManager {
     }
 
     private void startRenewerIfNeeded() {
+        if (closed.get()) {
+            return;
+        }
         if (renewerStarted.compareAndSet(false, true)) {
             var thread = Thread.ofVirtual()
                     .name("maestro-instance-lock-renewer-" + serviceName)

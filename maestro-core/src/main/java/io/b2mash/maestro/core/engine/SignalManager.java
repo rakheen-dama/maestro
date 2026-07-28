@@ -289,9 +289,12 @@ final class SignalManager {
                     return result;
                 }
                 if (woken) {
-                    // Unparked but nothing in the store — defensive fallback
-                    updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
-                    throw new SignalTimeoutException(ctx.workflowId(), signalName, timeout);
+                    // Spurious wake — e.g. a pub/sub self-echo of a previous
+                    // delivery arriving after this key was consumed and
+                    // re-parked (loops like collectSignals await the same
+                    // name repeatedly). Re-park; the deadline still bounds us.
+                    logger.debug("Spurious wake for workflow '{}' signal '{}' — re-parking",
+                            ctx.workflowId(), signalName);
                 }
             }
         } finally {

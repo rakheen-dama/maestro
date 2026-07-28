@@ -121,8 +121,11 @@ public final class PostgresDistributedLock implements DistributedLock {
                 }
             }
         } catch (SQLException e) {
-            logger.warn("Failed to acquire lock '{}': {}", key, e.getMessage());
-            return Optional.empty();
+            // Transient backend error — propagate so callers can distinguish
+            // "backend unavailable" (degrade gracefully) from "lock held
+            // elsewhere" (skip the workflow). Returning empty here would be
+            // misread as contention.
+            throw new IllegalStateException("Failed to acquire lock '" + key + "'", e);
         }
 
         logger.debug("Failed to acquire lock '{}' — already held", key);
