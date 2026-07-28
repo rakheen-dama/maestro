@@ -94,6 +94,8 @@ public final class WorkflowExecutor {
     private final SagaManager sagaManager;
     private final QueryRegistry queryRegistry;
     private final WorkflowInstanceLockManager instanceLockManager;
+    private final boolean lifecycleEventsEnabled;
+    private final LifecycleEventPublisher lifecycleEventPublisher;
     private final ConcurrentHashMap<String, RunningWorkflow> runningWorkflows;
     private final AtomicBoolean shuttingDown;
     private final AtomicReference<TimerPoller> timerPoller = new AtomicReference<>();
@@ -124,7 +126,8 @@ public final class WorkflowExecutor {
     }
 
     /**
-     * Creates a new workflow executor with explicit lock configuration.
+     * Creates a new workflow executor with explicit lock configuration and
+     * lifecycle event publishing enabled.
      *
      * @param store           workflow store for persistence
      * @param distributedLock optional distributed lock backend
@@ -149,6 +152,43 @@ public final class WorkflowExecutor {
             String lockKeyPrefix,
             Duration instanceLockTtl
     ) {
+        this(store, distributedLock, messaging, signalNotifier, serializer, serviceName,
+                lockKeyPrefix, instanceLockTtl, true);
+    }
+
+    /**
+     * Creates a new workflow executor with explicit lock configuration and
+     * explicit control over lifecycle event publishing.
+     *
+     * @param store                   workflow store for persistence
+     * @param distributedLock         optional distributed lock backend
+     * @param messaging               optional messaging for lifecycle events
+     * @param signalNotifier          optional cross-instance signal notification
+     * @param serializer              Jackson serializer for payloads
+     * @param serviceName             the name of the owning service
+     * @param lockKeyPrefix           prefix for distributed lock keys (e.g. {@code maestro:lock:})
+     * @param instanceLockTtl         TTL for the per-workflow instance lock; renewed
+     *                                at one third of this interval — must be strictly
+     *                                positive
+     * @param lifecycleEventsEnabled  whether {@code WORKFLOW_STARTED}/{@code _COMPLETED}/
+     *                                {@code _FAILED} lifecycle events are published at all
+     *                                (independent of whether {@code messaging} is configured).
+     *                                Corresponds to {@code maestro.admin.events.enabled} in the
+     *                                Spring Boot starter.
+     * @throws IllegalArgumentException if {@code instanceLockTtl} is
+     *                                  {@code null}, zero, or negative
+     */
+    public WorkflowExecutor(
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            @Nullable WorkflowMessaging messaging,
+            @Nullable SignalNotifier signalNotifier,
+            PayloadSerializer serializer,
+            String serviceName,
+            String lockKeyPrefix,
+            Duration instanceLockTtl,
+            boolean lifecycleEventsEnabled
+    ) {
         if (instanceLockTtl == null || instanceLockTtl.isNegative() || instanceLockTtl.isZero()) {
             throw new IllegalArgumentException(
                     "instanceLockTtl must be positive, got " + instanceLockTtl);
@@ -166,6 +206,8 @@ public final class WorkflowExecutor {
                 distributedLock, serviceName, lockKeyPrefix, instanceLockTtl,
                 instanceLockTtl.dividedBy(3));
         this.queryRegistry = new QueryRegistry();
+        this.lifecycleEventsEnabled = lifecycleEventsEnabled;
+        this.lifecycleEventPublisher = new LifecycleEventPublisher(serviceName);
         this.runningWorkflows = new ConcurrentHashMap<>();
         this.shuttingDown = new AtomicBoolean(false);
     }
@@ -494,6 +536,11 @@ public final class WorkflowExecutor {
 
         // Stop the lock renewer; locks of overrunning workflows expire via TTL
         instanceLockManager.close();
+
+        // Give the lifecycle publisher a short, bounded window to flush events
+        // queued by workflows that just drained, then force it down — a stalled
+        // transport must not make shutdown hang.
+        lifecycleEventPublisher.shutdown();
 
         var remaining = runningWorkflows.size();
         if (remaining > 0) {
@@ -902,27 +949,43 @@ public final class WorkflowExecutor {
         }
     }
 
+    /**
+     * Builds and submits a lifecycle event for off-thread publishing.
+     *
+     * <p>Never runs {@link WorkflowMessaging#publishLifecycleEvent} on the
+     * calling thread: that call is free to block (Kafka's producer, for
+     * example, blocks synchronously fetching metadata for a missing topic, up
+     * to {@code max.block.ms}), and the calling thread here is a workflow's
+     * own virtual thread — most notably during {@code startWorkflow} itself.
+     * The actual publish, and its failure handling, happens on
+     * {@link #lifecycleEventPublisher}; see {@link LifecycleEventPublisher}
+     * for the backpressure and shutdown contract.
+     */
     private void publishLifecycleEvent(
             WorkflowInstance instance, LifecycleEventType eventType,
             @Nullable String stepName
     ) {
-        if (messaging == null) return;
-        try {
-            messaging.publishLifecycleEvent(new WorkflowLifecycleEvent(
-                    instance.id(),
-                    instance.workflowId(),
-                    instance.workflowType(),
-                    serviceName,
-                    instance.taskQueue(),
-                    eventType,
-                    stepName,
-                    null,
-                    Instant.now()
-            ));
-        } catch (Exception e) {
-            logger.warn("Failed to publish {} lifecycle event for workflow '{}'",
-                    eventType, instance.workflowId(), e);
-        }
+        if (messaging == null || !lifecycleEventsEnabled) return;
+        var event = new WorkflowLifecycleEvent(
+                instance.id(),
+                instance.workflowId(),
+                instance.workflowType(),
+                serviceName,
+                instance.taskQueue(),
+                eventType,
+                stepName,
+                null,
+                Instant.now()
+        );
+        lifecycleEventPublisher.submit(() -> {
+            try {
+                messaging.publishLifecycleEvent(event);
+            } catch (Exception e) {
+                // SPI contract: lifecycle event failures must not interrupt workflow execution
+                logger.warn("Failed to publish {} lifecycle event for workflow '{}'",
+                        eventType, instance.workflowId(), e);
+            }
+        });
     }
 
     // ── Internal: query invocation ─────────────────────────────────────
