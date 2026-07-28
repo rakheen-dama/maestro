@@ -341,8 +341,17 @@ public class MaestroProperties {
     /**
      * Lifecycle event publishing to the admin dashboard.
      *
-     * @param enabled whether lifecycle events are published
-     * @param topic   Kafka topic for admin events
+     * @param enabled whether {@code WORKFLOW_STARTED}/{@code _COMPLETED}/{@code _FAILED}
+     *                lifecycle events are published at all. {@code false} disables
+     *                publishing entirely, independent of the messaging topic — a
+     *                legitimate choice for deployments that do not run the admin
+     *                dashboard and want no lifecycle traffic on the broker.
+     * @param topic   <b>Deprecated alias</b> for {@link TopicsProperties#adminEvents()}
+     *                ({@code maestro.messaging.topics.admin-events}), kept for
+     *                deployments that only disable the dashboard's own events and
+     *                never touched the messaging block. If both properties are set,
+     *                {@code maestro.messaging.topics.admin-events} wins and a WARN is
+     *                logged at startup. Prefer configuring the topic there.
      */
     public record EventsProperties(
             @DefaultValue("true") boolean enabled,
