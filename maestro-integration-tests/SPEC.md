@@ -168,6 +168,30 @@ Bugs found so far:
   shipped `V100`; Flyway aborts with *"Found more than one migration with
   version 100"*, so the Postgres-only profile could not migrate. Fixed by
   disjoint version bands; pinned by `schema.MaestroMigrationsCoexistIT`.
+- **BUG6 (fixed, P2):** `PostgresNotificationListener.listen()` only *queued*
+  the `LISTEN`; it was executed later on the polling thread. Postgres delivers
+  a `NOTIFY` only to sessions already listening, so every cross-node signal
+  published in that window (up to one 500ms poll cycle) was lost outright and
+  the parked workflow stalled until `SignalManager`'s 30s store re-check —
+  which `SignalWorkflow`'s 30s await timeout then raced. `SignalManager`
+  re-checks the store straight after subscribing precisely to close this race,
+  a guard that was worthless against an asynchronous subscribe. Fixed by making
+  `listen()` block until the command has been executed; reproduced by
+  `PostgresSignalNotifierTest.publishImmediatelyAfterSubscribe_isDelivered`,
+  pinned end-to-end by `multinode.MultiNodeSignalRoutingIT`.
+- **BUG7 (fixed, P2):** `WorkflowExecutor` finalised a workflow by writing
+  `version + 1` from an earlier read. Any concurrent writer of that row — a
+  second node running the workflow (no-lock-backend degradation, a lock lost
+  mid-run, a stale lock on a fresh start), or another status transition on this
+  node — made that write throw `OptimisticLockException`, which fell into the
+  generic `catch (Exception)` for *workflow* failures. A workflow that had
+  succeeded was recorded `FAILED`, its output replaced by the conflict message,
+  contradicting its own `WORKFLOW_COMPLETED` event, and a saga's compensations
+  ran after a successful run. Fixed with a convergent terminal transition
+  (bounded retry against a fresh read; stand down if another runner already
+  reached a terminal state). Reproduced by
+  `core.engine.WorkflowExecutorTerminalTransitionTest`, pinned end-to-end by
+  `multinode.MultiNodeNoLockBackendIT`.
 
 ## Open items (decide before the phase that needs them)
 
