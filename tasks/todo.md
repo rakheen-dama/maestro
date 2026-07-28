@@ -108,6 +108,14 @@ Previous milestone (Gradle multi-module setup) completed — see git history of 
 - [x] All phases done test-first (RED verified before each implementation)
 
 ## Review — deferred follow-ups (deliberate, from code review)
+
+> **Superseded.** The authoritative, ranked list of remaining gaps and risks now
+> lives in `docs/test-plan.md` §5 ("Known and still open"), which folds these in
+> alongside everything the P0–P6 work surfaced. Two entries below are resolved:
+> **lock-postgres now has a test suite** (24 Testcontainers tests), and the
+> **shutdown bug is fixed** (`ExecutorShutdownException`; parked workflows stay
+> `WAITING_*`). The rest remain open and are restated there with severity and
+> evidence.
 - **Fencing/lost-lock abort:** a lock lost mid-run (>30s GC pause) logs ERROR but does not abort the local workflow; DB constraints dedup persists, not side effects. Needs fencing-token validation in the store (SPI change).
 - **Recovery query scale:** `getRecoverableInstances()` has no service/staleness filter — every node re-reads the full active set every 60s and probes the lock for each foreign-owned instance. Add `service_name` (or `updated_at < now()-TTL`) filter + index (SPI change).
 - **Batch lock renewal:** renewer renews serially, one round-trip per held lock every 10s; batch (SQL IN / Valkey pipeline) before nodes hold thousands of parked workflows.
