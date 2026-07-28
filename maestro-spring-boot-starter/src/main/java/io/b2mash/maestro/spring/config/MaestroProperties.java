@@ -50,21 +50,21 @@ public class MaestroProperties {
      */
     private List<String> workflowPackages = List.of();
 
-    private StoreProperties store = new StoreProperties();
+    private StoreProperties store = StoreProperties.defaults();
 
-    private MessagingProperties messaging = new MessagingProperties();
+    private MessagingProperties messaging = MessagingProperties.defaults();
 
-    private LockProperties lock = new LockProperties();
+    private LockProperties lock = LockProperties.defaults();
 
-    private WorkerProperties worker = new WorkerProperties();
+    private WorkerProperties worker = WorkerProperties.defaults();
 
-    private TimerProperties timer = new TimerProperties();
+    private TimerProperties timer = TimerProperties.defaults();
 
-    private RecoveryProperties recovery = new RecoveryProperties();
+    private RecoveryProperties recovery = RecoveryProperties.defaults();
 
-    private RetryProperties retry = new RetryProperties();
+    private RetryProperties retry = RetryProperties.defaults();
 
-    private AdminProperties admin = new AdminProperties();
+    private AdminProperties admin = AdminProperties.defaults();
 
     // ── Getters and setters ─────────────────────────────────────────
 
@@ -157,6 +157,16 @@ public class MaestroProperties {
     }
 
     // ── Nested configuration records ────────────────────────────────
+    //
+    // Every nested block is a record and is bound by Spring Boot's value-object
+    // (constructor) binder. That binder is skipped for any type that also
+    // declares a no-argument constructor — Boot then falls back to JavaBean
+    // binding and, records having no setters, silently binds nothing. So these
+    // records must expose exactly one constructor: the canonical one. Defaults
+    // for the fields above therefore come from a static `defaults()` factory,
+    // never from a no-arg constructor.
+    //
+    // Pinned by MaestroPropertiesBindingTest.
 
     /**
      * Workflow store configuration.
@@ -171,8 +181,9 @@ public class MaestroProperties {
             @DefaultValue("postgres") String type,
             @DefaultValue("maestro_") String tablePrefix
     ) {
-        public StoreProperties() {
-            this("postgres", "maestro_");
+        /** @return the defaults documented above */
+        public static StoreProperties defaults() {
+            return new StoreProperties("postgres", "maestro_");
         }
     }
 
@@ -188,8 +199,9 @@ public class MaestroProperties {
             @Nullable String consumerGroup,
             @DefaultValue TopicsProperties topics
     ) {
-        public MessagingProperties() {
-            this("kafka", null, new TopicsProperties());
+        /** @return the defaults documented above */
+        public static MessagingProperties defaults() {
+            return new MessagingProperties("kafka", null, TopicsProperties.defaults());
         }
     }
 
@@ -205,8 +217,9 @@ public class MaestroProperties {
             @Nullable String signals,
             @DefaultValue("maestro.admin.events") String adminEvents
     ) {
-        public TopicsProperties() {
-            this(null, null, "maestro.admin.events");
+        /** @return the defaults documented above */
+        public static TopicsProperties defaults() {
+            return new TopicsProperties(null, null, "maestro.admin.events");
         }
     }
 
@@ -222,8 +235,9 @@ public class MaestroProperties {
             @DefaultValue("maestro:lock:") String keyPrefix,
             @DefaultValue("30s") Duration ttl
     ) {
-        public LockProperties() {
-            this("valkey", "maestro:lock:", Duration.ofSeconds(30));
+        /** @return the defaults documented above */
+        public static LockProperties defaults() {
+            return new LockProperties("valkey", "maestro:lock:", Duration.ofSeconds(30));
         }
     }
 
@@ -235,8 +249,9 @@ public class MaestroProperties {
     public record WorkerProperties(
             @DefaultValue List<TaskQueueProperties> taskQueues
     ) {
-        public WorkerProperties() {
-            this(List.of());
+        /** @return the defaults documented above */
+        public static WorkerProperties defaults() {
+            return new WorkerProperties(List.of());
         }
     }
 
@@ -263,8 +278,9 @@ public class MaestroProperties {
             @DefaultValue("5s") Duration pollInterval,
             @DefaultValue("100") int batchSize
     ) {
-        public TimerProperties() {
-            this(Duration.ofSeconds(5), 100);
+        /** @return the defaults documented above */
+        public static TimerProperties defaults() {
+            return new TimerProperties(Duration.ofSeconds(5), 100);
         }
     }
 
@@ -282,8 +298,9 @@ public class MaestroProperties {
             @DefaultValue("true") boolean enabled,
             @DefaultValue("60s") Duration pollInterval
     ) {
-        public RecoveryProperties() {
-            this(true, Duration.ofSeconds(60));
+        /** @return the defaults documented above */
+        public static RecoveryProperties defaults() {
+            return new RecoveryProperties(true, Duration.ofSeconds(60));
         }
     }
 
@@ -301,8 +318,9 @@ public class MaestroProperties {
             @DefaultValue("60s") Duration defaultMaxInterval,
             @DefaultValue("2.0") double defaultBackoffMultiplier
     ) {
-        public RetryProperties() {
-            this(3, Duration.ofSeconds(1), Duration.ofSeconds(60), 2.0);
+        /** @return the defaults documented above */
+        public static RetryProperties defaults() {
+            return new RetryProperties(3, Duration.ofSeconds(1), Duration.ofSeconds(60), 2.0);
         }
     }
 
@@ -314,8 +332,9 @@ public class MaestroProperties {
     public record AdminProperties(
             @DefaultValue EventsProperties events
     ) {
-        public AdminProperties() {
-            this(new EventsProperties());
+        /** @return the defaults documented above */
+        public static AdminProperties defaults() {
+            return new AdminProperties(EventsProperties.defaults());
         }
     }
 
@@ -329,8 +348,9 @@ public class MaestroProperties {
             @DefaultValue("true") boolean enabled,
             @DefaultValue("maestro.admin.events") String topic
     ) {
-        public EventsProperties() {
-            this(true, "maestro.admin.events");
+        /** @return the defaults documented above */
+        public static EventsProperties defaults() {
+            return new EventsProperties(true, "maestro.admin.events");
         }
     }
 }
