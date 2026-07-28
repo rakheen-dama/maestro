@@ -215,6 +215,11 @@ thesis of this document, restated as evidence.
 
 ### Known and still open
 
+> **For working on these, read [`docs/open-issues.md`](open-issues.md) instead.**
+> It is a standalone brief — it explains how Maestro works, where each defect
+> lives, how to reproduce it, what a fix looks like and how to know it worked,
+> without assuming any context. The list below is the summary index.
+
 Ranked by risk. Each item names the evidence, so none of these rests on
 recollection. "Unverified" below means no test asserts the behaviour either way.
 
