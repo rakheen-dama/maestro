@@ -1,0 +1,124 @@
+package io.b2mash.maestro.integration.kafka;
+
+import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.spi.SignalMessage;
+import io.b2mash.maestro.core.spi.WorkflowMessaging;
+import io.b2mash.maestro.spring.client.MaestroClient;
+import io.b2mash.maestro.spring.client.WorkflowOptions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+
+import java.time.Duration;
+import java.util.UUID;
+import java.util.concurrent.ExecutionException;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * Feeds the engine-level inbound signal channel — {@code maestro.signals.{service}}
+ * — on a real broker, which no test had ever done.
+ *
+ * <p>{@code SignalSubscriptionRunner} subscribes to that topic at startup and
+ * routes each {@link SignalMessage} to {@code WorkflowExecutor.deliverSignal}.
+ * It is the ingestion path for signals published by
+ * {@link WorkflowMessaging#publishSignal} — the admin dashboard and any service
+ * that talks to Maestro rather than to a domain topic. The loan-origination E2E
+ * starts the subscriber but never publishes to it, so the whole channel was
+ * unverified end to end.
+ */
+@SpringBootTest(
+        classes = KafkaSignalTestApplication.class,
+        webEnvironment = SpringBootTest.WebEnvironment.NONE,
+        properties = {
+                "maestro.service-name=" + KafkaSignalChannelIT.SERVICE,
+                "maestro.lock.type=postgres",
+                "maestro.messaging.type=kafka",
+                "maestro.messaging.topics.admin-events=" + KafkaSignalChannelIT.ADMIN_TOPIC,
+                "maestro.recovery.enabled=false"
+        })
+@Tag("integration")
+@DisplayName("The maestro.signals.{service} channel delivers signals into running workflows")
+class KafkaSignalChannelIT extends KafkaSpringIntegrationSupport {
+
+    static final String SERVICE = "kafka-channel";
+
+    static final String ADMIN_TOPIC = "it.channel.admin";
+
+    /** The engine-level inbound channel this suite exercises. */
+    private static final String SIGNAL_TOPIC = "maestro.signals." + SERVICE;
+
+    private static final Duration BOUND = Duration.ofSeconds(30);
+
+    @Autowired
+    private MaestroClient maestro;
+
+    @Autowired
+    private WorkflowMessaging messaging;
+
+    /**
+     * @throws ExecutionException   if topic creation fails
+     * @throws InterruptedException if interrupted while waiting
+     */
+    @BeforeAll
+    static void createChannelTopics() throws ExecutionException, InterruptedException {
+        createTopics(SIGNAL_TOPIC, ADMIN_TOPIC);
+    }
+
+    @Test
+    @DisplayName("a SignalMessage published to the channel wakes a parked workflow and completes it")
+    void publishedSignalMessage_wakesTheParkedWorkflow() throws Exception {
+        var workflowId = "channel-" + UUID.randomUUID().toString().substring(0, 8);
+
+        maestro.newWorkflow(KafkaTestWorkflows.ApprovalWorkflow.class,
+                WorkflowOptions.builder().workflowId(workflowId).build()).startAsync("seed");
+        awaitStatus(workflowId, WorkflowStatus.WAITING_SIGNAL, BOUND);
+
+        // The production publish path — same serialization, same topic naming
+        // and same partition key a remote service or the dashboard would use.
+        messaging.publishSignal(SERVICE, new SignalMessage(
+                workflowId, KafkaTestWorkflows.APPROVAL_SIGNAL, objectMapper.valueToTree("granted")));
+
+        var completed = awaitStatus(workflowId, WorkflowStatus.COMPLETED, BOUND);
+        assertEquals("seed:granted", serializer.deserialize(completed.output(), String.class));
+
+        var rows = signalRows(workflowId);
+        assertEquals(1, rows.size(), "the channel must persist exactly one signal row");
+        assertEquals(completed.id(), rows.getFirst().workflowInstanceId());
+        assertTrue(rows.getFirst().consumed());
+    }
+
+    @Test
+    @DisplayName("an admin command on the channel is dropped without persisting a signal row")
+    void adminCommand_isDroppedAndNeverPersisted() throws Exception {
+        var workflowId = "channel-admin-" + UUID.randomUUID().toString().substring(0, 8);
+
+        maestro.newWorkflow(KafkaTestWorkflows.ApprovalWorkflow.class,
+                WorkflowOptions.builder().workflowId(workflowId).build()).startAsync("seed");
+        awaitStatus(workflowId, WorkflowStatus.WAITING_SIGNAL, BOUND);
+
+        // Engine-side handling of $maestro: commands is not implemented, so
+        // SignalSubscriptionRunner drops them rather than persisting a row no
+        // await could ever consume. Pinning that here keeps the dashboard's
+        // known-inert buttons from silently becoming signal-table pollution.
+        messaging.publishSignal(SERVICE, new SignalMessage(
+                workflowId, "$maestro:terminate", objectMapper.valueToTree("now")));
+
+        // Both records carry the same key, so they land on the same partition in
+        // order: once the approval has been consumed, the command provably was
+        // handled first — no sleep needed to prove a negative.
+        messaging.publishSignal(SERVICE, new SignalMessage(
+                workflowId, KafkaTestWorkflows.APPROVAL_SIGNAL, objectMapper.valueToTree("granted")));
+
+        var completed = awaitStatus(workflowId, WorkflowStatus.COMPLETED, BOUND);
+        assertEquals("seed:granted", serializer.deserialize(completed.output(), String.class));
+
+        var rows = signalRows(workflowId);
+        assertEquals(1, rows.size(), "the admin command must not have been persisted");
+        assertEquals(KafkaTestWorkflows.APPROVAL_SIGNAL, rows.getFirst().signalName());
+    }
+}
