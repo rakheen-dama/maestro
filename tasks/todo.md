@@ -1,3 +1,22 @@
+# Milestone: Close the Test Gaps (multi-agent, P0–P6)
+
+Binding plan: `docs/test-plan.md`. Coordinator prompt: `tasks/test-gap-closure-prompt.md`.
+Contract for parallel builders: `maestro-integration-tests/SPEC.md`.
+Branch: `test/integration-suite-p0-p6` (off `main` after PR #26 merged).
+
+- [x] Scaffold — `maestro-integration-tests` module wired (`maestro.integration-test-conventions`: `test` = `@Tag("integration")`, separate `e2eTest` task for `@Tag("e2e")`); SPEC.md pins fixtures/naming/timing; fixtures = `PostgresIntegrationSupport`, `MaestroEngineHarness`, `WorkflowHandle`, `TestWorkflows`, `CountingActivities`; `EngineHarnessSmokeIT` proves the harness drives the real engine on real PG (3 tests green)
+  - **BUG5 FOUND + FIXED (library):** `maestro-lock-postgres` and `maestro-messaging-postgres` both shipped Flyway `V100` into `classpath:db/migration` → *"Found more than one migration with version 100"*; the Postgres-only profile could never migrate. RED first (`MaestroMigrationsCoexistIT`, 2 tests), fixed by disjoint version bands (store 1–99, lock 100–199, messaging 200–299; messaging renumbered V100→V200). Safe to renumber: zero release tags, nothing published.
+  - Audit note for P6: `EventType.WORKFLOW_STARTED` is never appended to the event log (start is published as `LifecycleEventType.WORKFLOW_STARTED` only) — dead enum constant.
+- [ ] P0 — Engine × Postgres (lifecycle/memoization/recovery + signals/timers/saga + parallel branches + BUG1 pin)
+- [ ] P1 — Kafka in CI (listener round-trip, signals channel, duplicate delivery, ack-on-failure contract)
+- [ ] P2 — Multi-node (lock contention, owner death → adoption, cross-node signal wake, consumer-group)
+- [ ] P3 — lock-postgres + messaging-postgres module suites (currently zero tests)
+- [ ] P4 — Loan E2E promoted into CI (`@Tag("e2e")`, identity assertions kept, + two-instance scenario)
+- [ ] P5 — Shutdown contract (RED-first; parked workflows must stay WAITING_*, not FAILED)
+- [ ] P6 — Guardrails (determinism replay-diff, coverage gate, health-indicator + MaestroClient audits)
+
+---
+
 # Milestone: Loan-Origination Sample (multi-agent build)
 
 Contract: `maestro-samples/sample-loan-origination/SPEC.md`.

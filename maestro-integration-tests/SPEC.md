@@ -1,0 +1,171 @@
+# maestro-integration-tests — Build Contract
+
+**Single source of truth for every agent writing integration suites.**
+Deviations require updating this file *first*. Binding plan: `docs/test-plan.md`
+(phases P0–P6). Repo conventions in `CLAUDE.md` are mandatory. Process rules in
+`tasks/lessons.md` are mandatory.
+
+## Purpose
+
+Prove Maestro's features against **real backends** — Postgres and Kafka are
+must-work; Valkey is best-effort. Every feature row in the `docs/test-plan.md`
+matrix that lacks an **I** marker for a must-work path gets one here, in CI,
+green.
+
+This module is **not published**. It contains no production code — everything
+lives under `src/test/java`.
+
+## Module wiring (fixed — do not change without updating this file)
+
+- Gradle module `:maestro-integration-tests`, registered in `settings.gradle.kts`.
+- Convention plugin `maestro.integration-test-conventions` (in `build-logic`):
+  applies `maestro.java-conventions` + the Spring Boot BOM, **not**
+  `library-conventions` (nothing is published or signed).
+- `test` task → runs `@Tag("integration")`, **excludes** `@Tag("e2e")`. Runs on
+  every PR through the existing `./gradlew build` in `.github/workflows/build-test.yml`.
+- `e2eTest` task → runs `@Tag("e2e")` only. Never wired into `build`/`check`.
+- Root convenience: `./gradlew :maestro-integration-tests:test`.
+
+## Naming and layout (pinned)
+
+```
+io.b2mash.maestro.integration
+├── support/     — shared fixtures (coordinator-owned; ask before editing)
+├── workflows/   — deterministic workflow + activity fixtures (coordinator-owned)
+├── schema/      — migration-composition suites            [scaffold]
+├── engine/      — P0: engine × Postgres
+├── kafka/       — P1: Kafka in CI
+├── multinode/   — P2: two-node topology
+├── backends/    — P3: lock-postgres + messaging-postgres
+└── e2e/         — P4: loan-origination E2E (@Tag("e2e"))
+```
+
+- Every class is `@Tag("integration")` (or `@Tag("e2e")` in `e2e/`).
+- Class names end in **`IT`** (e.g. `EnginePostgresLifecycleIT`).
+- Test-method style follows `PostgresWorkflowStoreTest`: `@DisplayName` full
+  sentence on class and method; method names `subjectUnderTest_expectation`.
+- Assertions: **plain JUnit** `org.junit.jupiter.api.Assertions.*` (the repo does
+  not use AssertJ outside Spring context-runner tests, which may use it).
+- Waiting: **Awaitility only**. No `Thread.sleep` as synchronisation — the one
+  permitted exception is letting a Kafka listener container get its partition
+  assignment, mirroring `KafkaWorkflowMessagingTest`.
+
+## Shared fixtures — the API every suite uses
+
+Owned by the coordinator. If a suite needs a change here, request it; do not
+fork a private copy.
+
+### `support.PostgresIntegrationSupport` (abstract base class)
+
+Mirrors `PostgresTestSupport` from `maestro-store-postgres`:
+
+```java
+@Testcontainers @Tag("integration")
+abstract class PostgresIntegrationSupport {
+    static final PostgreSQLContainer<?> postgres;   // postgres:16-alpine, shared, static
+    protected PGSimpleDataSource dataSource;
+    protected PostgresWorkflowStore store;
+    protected ObjectMapper objectMapper;            // tools.jackson JsonMapper.builder().build()
+    protected PayloadSerializer serializer;
+
+    protected PostgresDistributedLock newLock();    // lock backend over the same DataSource
+    protected void truncateAll() throws SQLException;
+}
+```
+
+- Flyway migrates `classpath:db/migration` **once per container**, guarded by a
+  static flag — this applies the store (V1–V99), lock (V100–V199) and messaging
+  (V200–V299) bands together. Version bands are pinned by
+  `schema.MaestroMigrationsCoexistIT`; never reuse another module's band.
+- `@BeforeEach` truncates every `maestro_*` table for isolation. The container
+  is **never** restarted between tests.
+
+### `support.KafkaIntegrationSupport` (abstract base class)
+
+Mirrors `KafkaTestSupport` from `maestro-messaging-kafka`:
+`confluentinc/cp-kafka:7.7.1` in KRaft mode, `createTopics(String...)` via
+`AdminClient` (**topics are never auto-created** — repo rule), Spring Kafka
+producer/consumer factories with `byte[]` values and `auto.offset.reset=earliest`.
+Per-test unique topic suffixes.
+
+### `support.MaestroEngineHarness` — the engine-under-test seam
+
+Builds a **real** `WorkflowExecutor` over whatever SPIs a suite supplies, wires
+`@ActivityStub` fields through the real `ActivityProxyFactory`, and resolves
+`@WorkflowMethod` — i.e. it does what `TestWorkflowEnvironment` does, but
+against real backends. `maestro-test`'s in-memory environment must **not** be
+used as the subject of an integration assertion.
+
+```java
+var harness = MaestroEngineHarness.builder(store, objectMapper)
+        .serviceName("node-a")
+        .lock(lock)                       // optional
+        .messaging(messaging)             // optional
+        .signalNotifier(notifier)         // optional
+        .instanceLockTtl(Duration.ofSeconds(2))   // short TTL for contention tests
+        .build();
+
+harness.registerActivities(GreetActivities.class, activityImpl);
+harness.registerWorkflow(new ChainWorkflow());        // instance, so tests can hold counters
+var handle = harness.start("wf-1", ChainWorkflow.class, input);
+handle.awaitTerminal(Duration.ofSeconds(10));
+assertEquals(WorkflowStatus.COMPLETED, handle.status());
+```
+
+Key methods: `start`, `deliverSignal`, `fireDueTimers`, `startTimerPoller`,
+`startRecoveryPoller`, `recover()`, `executor()`, `close()` (calls `shutdown()`).
+`WorkflowHandle` exposes `status()`, `instance()`, `events()`, `result(Class)`,
+`awaitStatus(...)`, `awaitTerminal(...)`.
+
+**Multi-node rule:** a second node is a second `MaestroEngineHarness` with a
+different `serviceName` over the **same** `store`/`lock`. Never share a harness.
+
+### `workflows.*` — deterministic workflow fixtures
+
+Small, deterministic workflow classes shared by P0–P2. Activity implementations
+count invocations so that *replay must not re-execute* is directly assertable.
+Covered shapes: activity chain, `awaitSignal`, `collectSignals`, `sleep`,
+parallel branches, saga with compensation, failing activity with retry.
+
+## Timing rules (flake discipline)
+
+- The engine has **no injectable clock** — `sleep()`/timers use real wall-clock
+  time. Use short durations (≤ 1s) and a fast `TimerPoller` (`Duration.ofMillis(200)`).
+- Awaitility bounds: **generous** (5–15s), poll interval short. A generous bound
+  on a fast condition is not slow; it is what makes CI stable.
+- `SignalManager`'s parked-workflow re-check interval is a hardcoded **30s** and
+  is **not reachable** from `WorkflowExecutor`'s public API (only a
+  package-private `SignalManager` constructor takes it). Any test that depends
+  on the no-notifier re-check path must therefore either supply a
+  `SignalNotifier` or get a library seam added first — see *Open items*.
+- A phase is done only when its suites pass **3 consecutive** `--rerun-tasks` runs.
+
+## Library-bug protocol
+
+If a suite exposes an engine defect: reproduce it FIRST as a failing test in the
+**owning library module**, then fix the library, then continue. Never mask a
+proven engine bug inside a test suite. Where no single module owns the defect
+(it only appears when modules are composed), the regression test lives here and
+the fix goes to the module that must change — as was done for the Flyway
+version-band collision.
+
+Bugs found so far:
+- **BUG5 (fixed):** `maestro-lock-postgres` and `maestro-messaging-postgres` both
+  shipped `V100`; Flyway aborts with *"Found more than one migration with
+  version 100"*, so the Postgres-only profile could not migrate. Fixed by
+  disjoint version bands; pinned by `schema.MaestroMigrationsCoexistIT`.
+
+## Open items (decide before the phase that needs them)
+
+1. **Wake re-check seam (blocks part of P2).** To test cross-node wake without a
+   notifier in bounded time, `WorkflowExecutor` needs to expose the
+   `SignalManager` wake-recheck interval (and the starter a
+   `maestro.signal.wake-recheck-interval` property). This is a small, legitimate
+   library improvement — the value currently also bounds production cross-node
+   signal latency for Kafka-without-Valkey deployments. Raise it in P2.
+2. **Ack-on-failure (P1).** Transport adapters ack even when the handler throws.
+   Write the contract test RED and `@Disabled("known defect — tasks/todo.md")`
+   unless a redelivery design with bounded retries + DLT lands.
+3. **Shutdown contract (P5).** `shutdown()` unparks every running workflow and
+   marks parked ones FAILED (with compensation). The desired-behaviour tests are
+   the spec; the fix is pre-approved.
