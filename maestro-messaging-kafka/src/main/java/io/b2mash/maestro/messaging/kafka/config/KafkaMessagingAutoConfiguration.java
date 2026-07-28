@@ -12,6 +12,8 @@ import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -59,6 +61,8 @@ import java.util.Map;
 @ConditionalOnClass(KafkaTemplate.class)
 @ConditionalOnProperty(prefix = "maestro.messaging", name = "type", havingValue = "kafka", matchIfMissing = true)
 public class KafkaMessagingAutoConfiguration {
+
+    private static final Logger logger = LoggerFactory.getLogger(KafkaMessagingAutoConfiguration.class);
 
     private static final String DEFAULT_BOOTSTRAP_SERVERS = "localhost:9092";
 
@@ -114,9 +118,52 @@ public class KafkaMessagingAutoConfiguration {
         return new KafkaMessagingConfig(
                 topics.tasks(),
                 topics.signals(),
-                topics.adminEvents(),
+                resolveAdminEventsTopic(properties),
                 consumerGroup
         );
+    }
+
+    /**
+     * Resolves the admin-events topic, honouring the deprecated
+     * {@code maestro.admin.events.topic} alias.
+     *
+     * <p>{@code maestro.messaging.topics.admin-events} is the canonical
+     * property. {@code maestro.admin.events.topic} is kept as an alias for
+     * deployments that only ever touched the admin block. Both properties
+     * carry the same default ({@code "maestro.admin.events"}), so a value
+     * that differs from the default is treated as having been explicitly
+     * configured:
+     * <ul>
+     *   <li>Neither customized — the shared default.</li>
+     *   <li>Only one customized — that value is used.</li>
+     *   <li>Both customized to the same value — that value, no conflict.</li>
+     *   <li>Both customized to different values — the messaging property
+     *       wins and a WARN is logged, so the conflict is visible rather
+     *       than silently dropping the alias.</li>
+     * </ul>
+     *
+     * @param properties the bound Maestro configuration
+     * @return the topic to publish/consume admin lifecycle events on
+     */
+    private static String resolveAdminEventsTopic(MaestroProperties properties) {
+        var defaultTopic = MaestroProperties.TopicsProperties.defaults().adminEvents();
+        var messagingTopic = properties.getMessaging().topics().adminEvents();
+        var aliasTopic = properties.getAdmin().events().topic();
+
+        var messagingCustomized = !messagingTopic.equals(defaultTopic);
+        var aliasCustomized = !aliasTopic.equals(defaultTopic);
+
+        if (aliasCustomized && messagingCustomized && !aliasTopic.equals(messagingTopic)) {
+            logger.warn("Both maestro.messaging.topics.admin-events ('{}') and the deprecated "
+                            + "maestro.admin.events.topic ('{}') are configured — "
+                            + "maestro.messaging.topics.admin-events wins. Remove the deprecated property.",
+                    messagingTopic, aliasTopic);
+            return messagingTopic;
+        }
+        if (aliasCustomized && !messagingCustomized) {
+            return aliasTopic;
+        }
+        return messagingTopic;
     }
 
     @Bean
