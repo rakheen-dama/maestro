@@ -43,6 +43,29 @@ class PostgresSignalNotifierTest extends PostgresMessagingTestSupport {
     }
 
     @Test
+    @DisplayName("a signal published immediately after subscribe is still delivered")
+    void publishImmediatelyAfterSubscribe_isDelivered() {
+        try (var notifier = new PostgresSignalNotifier(dataSource, notificationListener)) {
+            var workflowId = "wf-immediate-" + unique();
+            var woken = new ConcurrentLinkedQueue<String>();
+
+            // The contract callers rely on: once subscribe() has returned, the
+            // subscription is live. SignalManager re-checks the store straight
+            // after subscribing precisely to close the check→subscribe race —
+            // that guard is worthless if the LISTEN has not been applied yet,
+            // because a signal delivered on another node after the re-check
+            // and before the LISTEN lands is lost until the 30s store
+            // re-check. One publish, no retry loop.
+            notifier.subscribe(workflowId, (wfId, signalName) -> woken.add(signalName));
+            notifier.publish(workflowId, "approval");
+
+            await().atMost(BOUND).pollInterval(Duration.ofMillis(50))
+                    .until(() -> !woken.isEmpty());
+            assertEquals("approval", woken.peek());
+        }
+    }
+
+    @Test
     @DisplayName("a subscriber is not woken by a signal for a different workflow")
     void subscriberIgnoresOtherWorkflows() {
         try (var notifier = new PostgresSignalNotifier(dataSource, notificationListener)) {
@@ -104,15 +127,14 @@ class PostgresSignalNotifierTest extends PostgresMessagingTestSupport {
     }
 
     /**
-     * Publishes repeatedly until the subscriber is woken.
+     * Publishes once and waits for the wake.
      *
-     * <p>{@code subscribe} only queues the {@code LISTEN}; it is executed later
-     * on the listener's polling thread. Postgres delivers a {@code NOTIFY} only
-     * to sessions that are already listening, so a notification published
-     * immediately after subscribing can legitimately be missed. Production code
-     * is not exposed to this: the engine re-checks the store after subscribing.
-     * Re-publishing keeps the test honest about the wake actually being
-     * delivered, without encoding the polling interval.
+     * <p>A single publish is enough because {@code subscribe} does not return
+     * until the {@code LISTEN} has actually been executed on the dedicated
+     * connection. This used to re-publish in a loop to paper over an
+     * asynchronous {@code LISTEN}; the loop hid the fact that a notification
+     * sent in that window was lost outright, which is what
+     * {@link #publishImmediatelyAfterSubscribe_isDelivered} now pins.
      *
      * @param notifier   the notifier under test
      * @param workflowId the workflow to notify
@@ -121,10 +143,8 @@ class PostgresSignalNotifierTest extends PostgresMessagingTestSupport {
      */
     private static void publishUntilWoken(PostgresSignalNotifier notifier, String workflowId,
                                           String signalName, ConcurrentLinkedQueue<String> woken) {
-        await().atMost(BOUND).pollInterval(Duration.ofMillis(200)).until(() -> {
-            notifier.publish(workflowId, signalName);
-            return !woken.isEmpty();
-        });
+        notifier.publish(workflowId, signalName);
+        await().atMost(BOUND).pollInterval(Duration.ofMillis(50)).until(() -> !woken.isEmpty());
     }
 
     private static String unique() {

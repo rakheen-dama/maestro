@@ -1,6 +1,7 @@
 package io.b2mash.maestro.messaging.postgres;
 
 import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
 import org.postgresql.PGConnection;
 import org.postgresql.PGNotification;
 import org.slf4j.Logger;
@@ -12,6 +13,8 @@ import java.sql.SQLException;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 
@@ -43,9 +46,17 @@ public final class PostgresNotificationListener implements AutoCloseable {
      */
     private static final int POLL_TIMEOUT_MS = 500;
 
+    /**
+     * How long {@link #listen} waits for the polling thread to actually issue
+     * its {@code LISTEN}. Must comfortably exceed {@link #POLL_TIMEOUT_MS},
+     * which bounds how long the polling thread can be busy before it drains
+     * the command queue.
+     */
+    private static final long LISTEN_APPLY_TIMEOUT_MS = 5_000;
+
     private final DataSource dataSource;
     private final Map<String, BiConsumer<String, String>> listeners = new ConcurrentHashMap<>();
-    private final ConcurrentLinkedQueue<String> pendingCommands = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<PendingCommand> pendingCommands = new ConcurrentLinkedQueue<>();
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     private volatile Connection dedicatedConnection;
@@ -89,24 +100,85 @@ public final class PostgresNotificationListener implements AutoCloseable {
      * Registers a listener for a specific channel and issues a
      * {@code LISTEN} command on the dedicated connection.
      *
+     * <p>This call <b>blocks until the {@code LISTEN} has actually been
+     * executed</b> (or {@link #LISTEN_APPLY_TIMEOUT_MS} elapses). Postgres
+     * delivers a {@code NOTIFY} only to sessions that are already listening,
+     * so returning before the command reached the server would silently drop
+     * every notification published in the gap — the caller has no way to
+     * detect that, and callers such as {@code SignalManager} re-check their
+     * source of truth immediately after subscribing precisely on the
+     * assumption that the subscription is live by then.
+     *
+     * <p>The command is executed on the polling thread rather than here: the
+     * dedicated connection is single-threaded and the poller may be blocked
+     * inside {@code getNotifications}. The wait is therefore bounded by one
+     * poll timeout in the normal case.
+     *
      * @param channel  the Postgres NOTIFY channel name
      * @param listener callback receiving (channel, payload) pairs
      */
     public void listen(String channel, BiConsumer<String, String> listener) {
         listeners.put(channel, listener);
-        pendingCommands.add("LISTEN " + sanitizeChannel(channel));
+        var applied = new CountDownLatch(1);
+        pendingCommands.add(new PendingCommand("LISTEN " + sanitizeChannel(channel), applied));
+        awaitApplied(applied, channel);
         logger.debug("Listening on Postgres channel '{}'", channel);
     }
 
     /**
      * Unregisters a listener and issues an {@code UNLISTEN} command.
      *
+     * <p>Unlike {@link #listen}, this does not wait: the callback is removed
+     * synchronously, so a notification arriving before the {@code UNLISTEN}
+     * lands is already ignored.
+     *
      * @param channel the Postgres NOTIFY channel name
      */
     public void unlisten(String channel) {
         listeners.remove(channel);
-        pendingCommands.add("UNLISTEN " + sanitizeChannel(channel));
+        pendingCommands.add(new PendingCommand("UNLISTEN " + sanitizeChannel(channel), null));
         logger.debug("Unlistened from Postgres channel '{}'", channel);
+    }
+
+    /**
+     * Waits for the polling thread to execute a queued command.
+     *
+     * <p>A timeout is not fatal — the subscription is still registered and will
+     * be applied on a later cycle — but it does mean notifications may be
+     * missed in the meantime, so it is logged loudly.
+     */
+    private void awaitApplied(CountDownLatch applied, String channel) {
+        if (!running.get()) {
+            logger.warn("LISTEN on channel '{}' queued while the listener is not running — "
+                    + "notifications will be missed until start() is called", channel);
+            return;
+        }
+        try {
+            if (!applied.await(LISTEN_APPLY_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                logger.warn("LISTEN on channel '{}' was not applied within {}ms — "
+                                + "notifications published before it lands will be missed",
+                        channel, LISTEN_APPLY_TIMEOUT_MS);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * A {@code LISTEN}/{@code UNLISTEN} command queued for the polling thread,
+     * with an optional latch released once the command has been executed.
+     *
+     * @param sql     the command to execute on the dedicated connection
+     * @param applied released after execution, or {@code null} if nobody waits
+     */
+    private record PendingCommand(String sql, @Nullable CountDownLatch applied) {
+
+        /** Releases any waiter, whether the command succeeded or failed. */
+        void markApplied() {
+            if (applied != null) {
+                applied.countDown();
+            }
+        }
     }
 
     @Override
@@ -123,6 +195,11 @@ public final class PostgresNotificationListener implements AutoCloseable {
         }
         closeConnection();
         listeners.clear();
+        // Nothing will drain the queue now — free anyone waiting on a LISTEN
+        PendingCommand pending;
+        while ((pending = pendingCommands.poll()) != null) {
+            pending.markApplied();
+        }
         logger.info("PostgreSQL LISTEN/NOTIFY listener closed");
     }
 
@@ -145,10 +222,14 @@ public final class PostgresNotificationListener implements AutoCloseable {
                 reconnectBackoff = 1000; // reset on success
 
                 // Drain pending LISTEN/UNLISTEN commands on the poll thread
-                String cmd;
+                PendingCommand cmd;
                 while ((cmd = pendingCommands.poll()) != null) {
                     try (var stmt = dedicatedConnection.createStatement()) {
-                        stmt.execute(cmd);
+                        stmt.execute(cmd.sql());
+                    } finally {
+                        // Release the waiter even if execution failed — it must
+                        // not block for the full timeout on a dead connection
+                        cmd.markApplied();
                     }
                 }
 
