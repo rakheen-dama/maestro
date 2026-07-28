@@ -2,10 +2,12 @@ package io.b2mash.maestro.integration.support;
 
 import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
+import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.spi.WorkflowStore;
+import org.awaitility.core.ConditionTimeoutException;
 import org.jspecify.annotations.Nullable;
 
 import java.time.Duration;
@@ -91,7 +93,20 @@ public final class WorkflowHandle {
     }
 
     /**
-     * Waits until the workflow reaches any terminal status.
+     * Waits until the workflow reaches a terminal status <em>and</em> its
+     * terminal event has been appended.
+     *
+     * <p>Both waits are needed. Finalising a run is two writes: the instance row
+     * moves to {@code COMPLETED}/{@code FAILED} first, and the matching
+     * {@code WORKFLOW_COMPLETED}/{@code WORKFLOW_FAILED} event is appended
+     * after. A test that waits only on the status can therefore read the event
+     * log during the gap and see the terminal event missing — invisible on a
+     * fast machine, reproducible on slower CI.
+     *
+     * <p>If the status turns terminal but no terminal event ever appears, this
+     * returns once the status settles rather than failing: a node that lost the
+     * finalisation race to another runner legitimately writes no event of its
+     * own.
      *
      * @param timeout the bound
      * @return the terminal status reached
@@ -102,7 +117,31 @@ public final class WorkflowHandle {
                 .until(() -> store.getInstance(workflowId)
                         .map(i -> i.status().isTerminal())
                         .orElse(false));
+
+        // Best-effort: give the terminal event a bounded moment to land. Not an
+        // assertion — see the note above about a node that did not finalise.
+        var eventBound = timeout.compareTo(TERMINAL_EVENT_BOUND) < 0
+                ? timeout : TERMINAL_EVENT_BOUND;
+        try {
+            await().atMost(eventBound)
+                    .pollInterval(Duration.ofMillis(25))
+                    .until(this::hasTerminalEvent);
+        } catch (ConditionTimeoutException ignored) {
+            // No terminal event from this node; the caller asserts what it needs.
+        }
         return status();
+    }
+
+    /** How long to wait for the terminal event once the status is terminal. */
+    private static final Duration TERMINAL_EVENT_BOUND = Duration.ofSeconds(10);
+
+    /**
+     * @return whether the log already carries the event that closes the run
+     */
+    private boolean hasTerminalEvent() {
+        return store.getEvents(instanceId).stream().anyMatch(e ->
+                e.eventType() == EventType.WORKFLOW_COMPLETED
+                        || e.eventType() == EventType.WORKFLOW_FAILED);
     }
 
     /**
