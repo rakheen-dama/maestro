@@ -17,8 +17,11 @@ These bind every task. Reviewers treat violations as defects.
   `javax.*`. No Lombok. JSpecify `@Nullable` on public APIs. Public exceptions
   extend `MaestroException` (Task 3 makes one deliberate, documented exception
   to this rule). Javadoc and thread-safety notes on public classes.
-- Kafka/RabbitMQ topics, queues, and exchanges are never auto-created by
-  Maestro; they are pre-declared in configuration and documented.
+- Kafka topics are never auto-created by Maestro; they are pre-declared in
+  configuration and documented. (RabbitMQ is the exception: that module
+  already self-declares its topology idempotently and may declare its
+  dead-letter topology the same way — coordinator ruling in
+  `issue1-design.md` §10.)
 - Optimistic locking convention: the caller builds the new state with
   `version = current + 1`; the store CASes against `version - 1`.
 - Library-bug protocol: if a test exposes an engine defect, reproduce it first
@@ -250,10 +253,10 @@ assume it carries Issue 1.
   fixtures first (they encode a real pitfall).
 - Cover: task publish/subscribe round-trip, signal publish/subscribe,
   lifecycle events, handler-failure behaviour.
-- Apply the Task 6 approved design (`issue1-design.md`) to RabbitMQ:
-  handler failure must not lose the signal; permanent failure lands
-  somewhere inspectable (RabbitMQ-native DLX is acceptable if pre-declared,
-  never auto-created).
+- Apply the Task 6 approved design (`issue1-design.md` §4.3) to RabbitMQ:
+  handler failure must not lose the signal; permanent failure republishes to
+  the dead-letter exchange/DLQ, which the module declares idempotently like
+  the rest of its topology (coordinator ruling, design §10).
 - Remove `maestro-messaging-rabbitmq` from the `modulesWithoutTests`
   allowlist in root `build.gradle.kts`.
 - Any additional defect found: library-bug protocol (failing test in the
