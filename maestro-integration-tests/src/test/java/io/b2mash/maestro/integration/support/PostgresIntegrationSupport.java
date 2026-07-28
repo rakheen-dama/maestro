@@ -51,10 +51,8 @@ public abstract class PostgresIntegrationSupport {
 
     static {
         postgres.start();
+        migrate();
     }
-
-    private static final Object MIGRATION_LOCK = new Object();
-    private static boolean migrated = false;
 
     /** Tables truncated before every test, child-first so CASCADE has nothing to chase. */
     private static final String TRUNCATE_SQL = """
@@ -70,20 +68,25 @@ public abstract class PostgresIntegrationSupport {
     protected ObjectMapper objectMapper;
     protected PayloadSerializer serializer;
 
+    /**
+     * Applies every module's migrations once, at class-initialisation time.
+     *
+     * <p>Deliberately not done in {@code @BeforeEach}: Spring refreshes an
+     * {@code @SpringBootTest} context — and {@code StartupRecoveryRunner}
+     * queries {@code maestro_workflow_instance} — before any {@code @BeforeEach}
+     * method runs, so a Spring-based suite would meet an unmigrated database.
+     */
+    private static void migrate() {
+        Flyway.configure()
+                .dataSource(newDataSource())
+                .locations("classpath:db/migration")
+                .load()
+                .migrate();
+    }
+
     @BeforeEach
     void setUpPostgres() throws SQLException {
         dataSource = newDataSource();
-
-        synchronized (MIGRATION_LOCK) {
-            if (!migrated) {
-                Flyway.configure()
-                        .dataSource(dataSource)
-                        .locations("classpath:db/migration")
-                        .load()
-                        .migrate();
-                migrated = true;
-            }
-        }
 
         objectMapper = JsonMapper.builder().build();
         serializer = new PayloadSerializer(objectMapper);

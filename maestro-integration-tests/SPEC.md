@@ -97,10 +97,18 @@ protected Map<String, Object> consumerProps(String groupId);
 protected static String bootstrapServers();    // for @DynamicPropertySource wiring
 ```
 
-A suite needing both backends extends `PostgresIntegrationSupport` and holds a
-Kafka container of its own, or uses `@SpringBootTest` with
-`@DynamicPropertySource` pointing at both containers — Java has no multiple
-inheritance, so pick one base and wire the other explicitly.
+Both container fixtures start from a **static initialiser**, never via
+`@Testcontainers`/`@Container`. That extension stops a static container when its
+test *class* ends, so an inherited container is recreated per subclass — and a
+cached `@SpringBootTest` context then holds factories bound to a dead broker.
+`PostgresIntegrationSupport` also migrates Flyway in its static initialiser,
+because Spring refreshes the context (and `StartupRecoveryRunner` queries
+`maestro_workflow_instance`) *before* any `@BeforeEach` runs.
+
+Java has no multiple inheritance, so a suite needing **both** backends extends
+`PostgresIntegrationSupport` and starts its own broker the same way — see
+`kafka.KafkaSpringIntegrationSupport`, the working example for `@SpringBootTest`
+suites. `KafkaIntegrationSupport` is for Kafka-only suites.
 
 ### `support.MaestroEngineHarness` — the engine-under-test seam
 

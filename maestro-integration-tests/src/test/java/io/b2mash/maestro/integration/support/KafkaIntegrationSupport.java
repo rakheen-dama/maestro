@@ -17,8 +17,6 @@ import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
 import org.testcontainers.containers.KafkaContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
@@ -32,9 +30,16 @@ import java.util.concurrent.ExecutionException;
  * Base class for integration suites that exercise Maestro against a real Kafka
  * broker.
  *
- * <p>Mirrors {@code KafkaTestSupport} in {@code maestro-messaging-kafka}: one
- * static Testcontainers broker in KRaft mode shared by every test in the class,
+ * <p>One broker in KRaft mode is shared by every integration suite in the JVM,
  * with Spring Kafka producer and consumer factories over {@code byte[]} values.
+ *
+ * <p>The container is started from a static initialiser rather than through
+ * JUnit's {@code @Testcontainers}/{@code @Container} extension. That extension
+ * stops a static container when its test <em>class</em> finishes, which breaks
+ * two ways here: an inherited container is torn down and recreated for each
+ * subclass, and — because Spring caches an {@code @SpringBootTest} context
+ * across classes — a later suite reuses producer and consumer factories bound
+ * to a broker that no longer exists. Ryuk removes the container at JVM exit.
  *
  * <p><b>Topics are never auto-created.</b> That is a repo-wide rule — production
  * topics are pre-declared in configuration — so every suite must call
@@ -43,19 +48,28 @@ import java.util.concurrent.ExecutionException;
  * <p>Tests share one broker, so each test derives unique topic and consumer-group
  * names from {@link #testSuffix} to stay isolated without restarting the container.
  *
+ * <h2>Choosing a base class</h2>
+ * <p>Java has no multiple inheritance, so a suite needing Kafka <em>and</em>
+ * Postgres cannot extend both bases. Such a suite extends
+ * {@code PostgresIntegrationSupport} and starts its own broker the same way —
+ * see {@code kafka.KafkaSpringIntegrationSupport}. This base is for suites that
+ * need Kafka alone.
+ *
  * <h2>Thread Safety</h2>
- * <p>Instances are per-test and confined to the test thread; the static container
- * is managed by JUnit's Testcontainers lifecycle.
+ * <p>Instances are per-test and confined to the test thread; the container is
+ * started once by class initialisation and shared.
  */
-@Testcontainers
 @Tag("integration")
 public abstract class KafkaIntegrationSupport {
 
-    @Container
     @SuppressWarnings("resource")
     static final KafkaContainer kafka =
             new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1"))
                     .withKraft();
+
+    static {
+        kafka.start();
+    }
 
     protected KafkaTemplate<String, byte[]> kafkaTemplate;
     protected ProducerFactory<String, byte[]> producerFactory;
