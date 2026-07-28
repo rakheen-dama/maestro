@@ -179,7 +179,7 @@ the second pile.
 | # | Issue | Kind | Severity | Effort |
 |---|---|---|---|---|
 | [1](#issue-1) | Failed signal handlers lose signals permanently | Library defect | High | Large |
-| [2](#issue-2) | A timer can fire once and then stall the workflow forever | Library defect *(believed — unproven, see below)* | High | Medium |
+| [2](#issue-2) | A timer can fire once and then stall the workflow forever | Library defect — **reproduced and fixed** | High | Medium |
 | [3](#issue-3) | Lifecycle publishing can block workflow start for 60s | Library defect | Medium | Small |
 | [4](#issue-4) | `ExecutorShutdownException` can be swallowed by user code | Library gap (API design) | Medium | Small |
 | [5](#issue-5) | Shutdown during compensation leaves a workflow `COMPENSATING` | Library defect (semantics only) | Medium | Small |
@@ -191,11 +191,11 @@ the second pile.
 | [11](#issue-11) | Lost locks don't stop the workflow (no fencing) | Library gap (accepted limitation) | Medium | Large |
 | [12](#issue-12) | Recovery polling doesn't scale | Library gap (performance) | Low now | Medium |
 
-**Issue 2 is the one to be sceptical of.** It is traced through the code, not
-reproduced by a test. Write the reproduction before the fix; if the workflow does
-not stall, the reading of the ordering was wrong and the issue should be closed.
-Everything else in the "defect" rows was either observed directly or is pinned by
-an existing `@Disabled` test.
+**Issue 2 was the one to be sceptical of** — it was traced through the code, not
+reproduced. The reproduction has since been written and the reading was right:
+the workflow stalled forever. It is now fixed and pinned; see the issue for
+details. Everything else in the "defect" rows was either observed directly or is
+pinned by an existing `@Disabled` test.
 
 ## 5. The issues
 
@@ -269,6 +269,13 @@ green.
 
 ### Issue 2 — A timer can fire once and then stall the workflow forever {#issue-2}
 
+> **Resolved.** The reproduction below was written first and it failed exactly as
+> predicted: the recovered workflow sat in `WAITING_TIMER` forever. Fixed by
+> option 1 (self-healing replay). Pinned by
+> `engine.EnginePostgresTimerIT.timerFiredBeforeEventAppend_recoveryCompletesTheWorkflow`
+> and `core.engine.WorkflowExecutorTest.recoverWorkflowsHealsTimerFiredBeforeEventAppend`.
+> The rest of this section is kept as the record of the defect.
+
 **What's wrong.** Firing a timer is two writes that aren't atomic, and a crash
 between them strands the workflow permanently.
 
@@ -321,8 +328,17 @@ exist for this.
 
 Option 1 is the cleanest and is testable entirely at the engine level.
 
+**What was done.** Option 1. Replay could not previously ask the question,
+because `getDueTimers` returns only `PENDING` rows — a fired timer was invisible
+to the engine. `WorkflowStore` gained `findTimer(workflowInstanceId, timerId)`,
+implemented by `AbstractJdbcWorkflowStore` and the in-memory test store, and
+`DefaultWorkflowOperations.sleep` now consults it before re-parking: a `FIRED`
+row means the wake already happened and was lost, so it appends the missing
+`TIMER_FIRED` event and continues. A `PENDING` row still parks, so a live sleep
+is unaffected. No schema change.
+
 **Done when.** The reproduction above passes, and a `kill -9` in that window
-leaves a workflow that recovery can complete.
+leaves a workflow that recovery can complete. — Done.
 
 ---
 
