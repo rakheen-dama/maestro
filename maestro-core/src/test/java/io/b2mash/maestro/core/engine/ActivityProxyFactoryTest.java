@@ -365,7 +365,7 @@ class ActivityProxyFactoryTest {
         }
 
         @Override
-        public void markSignalConsumed(UUID signalId) {
+        public boolean markSignalConsumed(UUID signalId) {
             throw new UnsupportedOperationException("stub");
         }
 
@@ -411,7 +411,7 @@ class ActivityProxyFactoryTest {
         }
 
         @Override
-        public void renew(LockHandle handle, Duration ttl) {
+        public boolean renew(LockHandle handle, Duration ttl) {
             throw new UnsupportedOperationException("stub");
         }
 

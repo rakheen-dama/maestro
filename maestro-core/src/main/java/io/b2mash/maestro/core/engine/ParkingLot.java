@@ -30,6 +30,15 @@ import java.util.concurrent.TimeoutException;
  *   <li>{@code "{workflowId}:timer:{timerId}"} — waiting for a timer</li>
  * </ul>
  *
+ * <h2>Wake Permits</h2>
+ * <p>An {@link #unpark(String, Object)} that finds no registered waiter
+ * stores a <b>one-shot permit</b> (latest payload wins) instead of being
+ * lost; the next park on that key consumes it and returns immediately.
+ * This closes the race where a wake source fires between a caller
+ * announcing its intent to wait (e.g. status {@code WAITING_TIMER}) and
+ * the park actually registering — without permits, a timer fired in that
+ * window would never be re-fired and the workflow would stall.
+ *
  * <h2>Thread Safety</h2>
  * <p>All operations are thread-safe. The underlying {@link ConcurrentHashMap}
  * handles concurrent park/unpark from different virtual threads.
@@ -38,7 +47,11 @@ final class ParkingLot {
 
     private static final Logger logger = LoggerFactory.getLogger(ParkingLot.class);
 
+    /** Marker for a permit delivered with a {@code null} payload. */
+    private static final Object NULL_PAYLOAD = new Object();
+
     private final ConcurrentHashMap<String, CompletableFuture<Object>> futures = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Object> pendingWakes = new ConcurrentHashMap<>();
 
     /**
      * Parks the current virtual thread until {@link #unpark(String, Object)} is called.
@@ -60,6 +73,14 @@ final class ParkingLot {
         }
 
         try {
+            // Consume a permit stored by an unpark that raced ahead of this
+            // park. Checked AFTER registering the future: an unpark running
+            // now either sees the future (completes it) or stored a permit
+            // before we registered (we consume it here) — never lost.
+            var permit = pendingWakes.remove(key);
+            if (permit != null) {
+                return unwrapPermit(permit);
+            }
             return future.join();
         } finally {
             futures.remove(key, future);
@@ -87,6 +108,11 @@ final class ParkingLot {
         }
 
         try {
+            // See park(): consume a permit from an unpark that raced ahead
+            var permit = pendingWakes.remove(key);
+            if (permit != null) {
+                return unwrapPermit(permit);
+            }
             return future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -108,9 +134,9 @@ final class ParkingLot {
      * <p>Completes the {@link CompletableFuture} associated with the key,
      * causing the parked virtual thread to resume with the given payload.
      *
-     * <p>If no thread is currently parked at this key, the call is logged
-     * as a debug message and ignored — the signal/timer result will be
-     * consumed from the store when the workflow reaches the await point.
+     * <p>If no thread is currently parked at this key, a one-shot permit is
+     * stored (latest payload wins) so the wake is not lost if a park is
+     * racing to register — the next park on this key returns immediately.
      *
      * @param key     the parking key
      * @param payload the result to deliver to the parked thread, may be {@code null}
@@ -121,7 +147,19 @@ final class ParkingLot {
             future.complete(payload);
             logger.debug("Unparked workflow at key '{}'", key);
         } else {
-            logger.debug("No parked workflow at key '{}' — signal/timer will be consumed from store", key);
+            pendingWakes.put(key, payload != null ? payload : NULL_PAYLOAD);
+            // Close the reverse race: a park may have registered its future
+            // after our lookup above but before the permit was stored — if
+            // so, hand the wake to it now (it may already have consumed the
+            // permit itself; remove() makes the hand-off exactly-once).
+            var racedFuture = futures.get(key);
+            if (racedFuture != null) {
+                var permit = pendingWakes.remove(key);
+                if (permit != null) {
+                    racedFuture.complete(unwrapPermit(permit));
+                }
+            }
+            logger.debug("No parked workflow at key '{}' — stored wake permit", key);
         }
     }
 
@@ -151,6 +189,32 @@ final class ParkingLot {
                 logger.debug("Cancelled parked future at key '{}' during shutdown", key);
             }
         });
+        clearPending(workflowId);
+    }
+
+    /**
+     * Removes any stored wake permits for a workflow. Called when a workflow
+     * reaches a terminal state so orphaned permits (e.g. from duplicate
+     * signal deliveries) cannot accumulate or leak into a future run.
+     *
+     * @param workflowId the workflow ID prefix to match
+     */
+    void clearPending(String workflowId) {
+        var prefix = workflowId + ":";
+        pendingWakes.keySet().removeIf(key -> key.startsWith(prefix));
+    }
+
+    /**
+     * Returns the number of stored wake permits. Primarily for testing.
+     *
+     * @return the number of pending-wake entries
+     */
+    int pendingWakeCount() {
+        return pendingWakes.size();
+    }
+
+    private static @Nullable Object unwrapPermit(Object permit) {
+        return permit == NULL_PAYLOAD ? null : permit;
     }
 
     /**

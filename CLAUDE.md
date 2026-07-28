@@ -22,7 +22,7 @@ Read these before making architectural decisions:
 
 **Determinism constraint:** Code between activity calls must be deterministic. No `Math.random()`, `LocalDateTime.now()`, `UUID.randomUUID()`, or direct I/O. Use `workflow.currentTime()`, `workflow.randomUUID()`.
 
-**Parallel branches** use compound sequence keys: step `5` → branches `5.0`, `5.1`, `5.2`.
+**Parallel branches** partition the sequence space: branch *i* of a fork at parent seq `p` allocates from base `p*1000 + (i+1)*1000` (≤999 steps per branch).
 
 ## Tech Stack
 
@@ -192,11 +192,13 @@ Orchestration within, choreography between. Each service owns its state. Kafka e
 ## Valkey Keys
 
 ```
-maestro:lock:workflow:{workflowId}           — Instance lock (30s TTL, renewed)
-maestro:dedup:{workflowId}:{seq}             — Activity dedup (5m TTL)
+maestro:lock:workflow:{workflowId}           — Instance lock (30s TTL, renewed every 10s)
+maestro:lock:activity:{workflowId}:{seq}     — Activity execution lock, best-effort dedup fast path (timeout + 10s TTL)
 maestro:leader:timer-poller:{service}         — Timer leader (15s TTL)
 maestro:signal:{workflowId}                   — Pub/sub for immediate signal wake
 ```
+
+Locks are best-effort guards: if one expires or is lost, the unique event index dedups *persisted results*, not external side effects — activities must be idempotent.
 
 ## Configuration Namespace
 

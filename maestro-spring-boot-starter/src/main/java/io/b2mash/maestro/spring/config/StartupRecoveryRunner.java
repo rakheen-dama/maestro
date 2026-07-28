@@ -48,6 +48,14 @@ public class StartupRecoveryRunner implements ApplicationRunner, Ordered {
         executor.startTimerPoller(timer.pollInterval(), timer.batchSize());
         logger.info("Maestro timer poller started (interval={}, batchSize={})",
                 timer.pollInterval(), timer.batchSize());
+
+        // 3. Start the periodic recovery poller — adopts workflows whose
+        // owning node has died (instance lock expired) or shut down
+        var recovery = properties.getRecovery();
+        if (recovery.enabled()) {
+            executor.startRecoveryPoller(registrations, recovery.pollInterval());
+            logger.info("Maestro recovery poller started (interval={})", recovery.pollInterval());
+        }
     }
 
     @Override

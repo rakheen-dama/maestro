@@ -32,4 +32,7 @@ include(
     "maestro-samples:sample-payment-gateway",
     "maestro-samples:sample-postgres-only",
     "maestro-samples:sample-rabbitmq-order-service",
+    "maestro-samples:sample-loan-origination:loan-application-service",
+    "maestro-samples:sample-loan-origination:verification-gateway-service",
+    "maestro-samples:sample-loan-origination:underwriting-service",
 )

@@ -12,8 +12,9 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * In-memory {@link DistributedLock} for tests.
  *
- * <p>Simple single-JVM lock using {@link ConcurrentHashMap}. No TTL
- * enforcement — tests are short-lived and deterministic. Fencing tokens
+ * <p>Simple single-JVM lock using {@link ConcurrentHashMap}. TTL expiry is
+ * honoured on {@link #tryAcquire} so crash-recovery scenarios (a "dead"
+ * holder's lock becoming re-acquirable) can be simulated. Fencing tokens
  * are generated for correctness of the activity proxy's token validation.
  *
  * <p><b>Thread safety:</b> All operations are thread-safe via
@@ -26,11 +27,13 @@ public final class InMemoryDistributedLock implements DistributedLock {
     @Override
     public Optional<LockHandle> tryAcquire(String key, Duration ttl) {
         var handle = new LockHandle(key, UUID.randomUUID().toString(), Instant.now().plus(ttl));
-        var existing = locks.putIfAbsent(key, handle);
-        if (existing != null) {
-            return Optional.empty();
-        }
-        return Optional.of(handle);
+        var winner = locks.compute(key, (_, current) -> {
+            if (current == null || current.expiresAt().isBefore(Instant.now())) {
+                return handle;
+            }
+            return current;
+        });
+        return winner == handle ? Optional.of(handle) : Optional.empty();
     }
 
     @Override
@@ -40,13 +43,14 @@ public final class InMemoryDistributedLock implements DistributedLock {
     }
 
     @Override
-    public void renew(LockHandle handle, Duration ttl) {
-        locks.computeIfPresent(handle.key(), (_, current) -> {
-            if (current.token().equals(handle.token())) {
-                return new LockHandle(handle.key(), handle.token(), Instant.now().plus(ttl));
-            }
-            return current;
-        });
+    public boolean renew(LockHandle handle, Duration ttl) {
+        var now = Instant.now();
+        var renewed = new LockHandle(handle.key(), handle.token(), now.plus(ttl));
+        var result = locks.computeIfPresent(handle.key(), (_, current) ->
+                current.token().equals(handle.token()) && current.expiresAt().isAfter(now)
+                        ? renewed
+                        : current);
+        return result == renewed;
     }
 
     @Override

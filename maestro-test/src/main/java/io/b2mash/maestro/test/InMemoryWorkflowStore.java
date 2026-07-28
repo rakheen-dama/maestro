@@ -159,11 +159,11 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
     }
 
     @Override
-    public void markSignalConsumed(UUID signalId) {
+    public boolean markSignalConsumed(UUID signalId) {
         synchronized (signalLock) {
             for (int i = 0; i < signals.size(); i++) {
                 var signal = signals.get(i);
-                if (signal.id().equals(signalId)) {
+                if (signal.id().equals(signalId) && !signal.consumed()) {
                     signals.set(i, new WorkflowSignal(
                             signal.id(),
                             signal.workflowInstanceId(),
@@ -173,9 +173,10 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
                             true,
                             signal.receivedAt()
                     ));
-                    return;
+                    return true;
                 }
             }
+            return false;
         }
     }
 

@@ -17,9 +17,10 @@ import java.util.Optional;
  * and been acquired by another caller.
  *
  * <h2>Fallback Behavior</h2>
- * <p>If the distributed lock backend is unavailable, the engine falls
- * back to Postgres advisory locks for locking and unique constraints
- * for deduplication. See the architecture documentation for details.
+ * <p>If the distributed lock backend is unavailable, the engine proceeds
+ * unlocked — the store's unique event constraint and optimistic instance
+ * versioning remain the correctness backstop. See the architecture
+ * documentation for details.
  *
  * <h2>Thread Safety</h2>
  * <p>Implementations must be thread-safe. Multiple virtual threads will
@@ -61,13 +62,19 @@ public interface DistributedLock {
      * Renews a lock's TTL.
      *
      * <p>The renewal is only applied if the handle's token still matches
-     * the current holder. If the lock has already expired and been
-     * re-acquired, the renewal is silently ignored.
+     * the current holder.
+     *
+     * <p>Implementations should <b>throw</b> on transient backend errors
+     * (network, timeout) and reserve {@code false} for a token mismatch —
+     * the lock expired and may have been re-acquired by another holder.
+     * This lets callers distinguish a retryable hiccup from lost ownership.
      *
      * @param handle the lock handle to renew
      * @param ttl    new time-to-live from now
+     * @return {@code true} if the lock was renewed; {@code false} if
+     *         ownership has been lost (token no longer matches)
      */
-    void renew(LockHandle handle, Duration ttl);
+    boolean renew(LockHandle handle, Duration ttl);
 
     /**
      * Attempts to become the leader for the given election key.

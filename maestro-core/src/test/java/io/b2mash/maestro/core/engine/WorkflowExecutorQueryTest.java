@@ -427,15 +427,16 @@ class WorkflowExecutorQueryTest {
         }
 
         @Override
-        public void markSignalConsumed(UUID signalId) {
+        public boolean markSignalConsumed(UUID signalId) {
             for (int i = 0; i < signals.size(); i++) {
                 var s = signals.get(i);
-                if (s.id().equals(signalId)) {
+                if (s.id().equals(signalId) && !s.consumed()) {
                     signals.set(i, new WorkflowSignal(s.id(), s.workflowInstanceId(), s.workflowId(),
                             s.signalName(), s.payload(), true, s.receivedAt()));
-                    return;
+                    return true;
                 }
             }
+            return false;
         }
 
         @Override

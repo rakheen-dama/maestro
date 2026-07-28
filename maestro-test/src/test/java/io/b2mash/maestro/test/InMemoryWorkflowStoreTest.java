@@ -194,6 +194,23 @@ class InMemoryWorkflowStoreTest {
     }
 
     @Test
+    void markSignalConsumedReturnsTrueOnceThenFalse() {
+        var signalId = UUID.randomUUID();
+        var signal = new WorkflowSignal(
+                signalId, UUID.randomUUID(), "wf-cas",
+                "approved", null, false, Instant.now());
+        store.saveSignal(signal);
+
+        assertTrue(store.markSignalConsumed(signalId), "first consume should win the CAS");
+        assertFalse(store.markSignalConsumed(signalId), "second consume should lose the CAS");
+    }
+
+    @Test
+    void markSignalConsumedUnknownIdReturnsFalse() {
+        assertFalse(store.markSignalConsumed(UUID.randomUUID()));
+    }
+
+    @Test
     void adoptOrphanedSignals() {
         // Signal arrives before workflow starts (instanceId = null)
         var signal = new WorkflowSignal(

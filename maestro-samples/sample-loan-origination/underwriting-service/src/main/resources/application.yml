@@ -1,0 +1,54 @@
+spring:
+  application:
+    name: sample-underwriting-service
+
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5433}/${POSTGRES_DB:underwriting}
+    username: ${POSTGRES_USER:maestro}
+    password: ${POSTGRES_PASSWORD:maestro}
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:29093}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
+    consumer:
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+
+  data:
+    redis:
+      url: redis://${VALKEY_HOST:localhost}:${VALKEY_PORT:6380}
+
+server:
+  port: ${SERVER_PORT:8093}
+
+maestro:
+  service-name: underwriting
+
+  # Sample-level knobs (bound by UnderwritingSampleProperties).
+  # SPEC defaults: 10 minutes per human decision desk; tests override to <=1s.
+  sample:
+    underwriter-timeout: PT10M
+    senior-timeout: PT10M
+
+  store:
+    type: postgres
+
+  messaging:
+    type: kafka
+    topics:
+      tasks: maestro.tasks.underwriting
+      signals: maestro.signals.underwriting
+
+  lock:
+    type: valkey
+
+  worker:
+    task-queues:
+      - name: underwriting
+        concurrency: 5
+
+  admin:
+    events:
+      enabled: false

@@ -11,4 +11,11 @@ dependencies {
     implementation(project(":maestro-lock-valkey"))
     implementation(libs.spring.boot.starter.webmvc)
     runtimeOnly(libs.postgresql)
+    // Spring Boot 4 modular auto-configuration: JDBC (DataSource), Flyway
+    // (maestro_* schema from maestro-store-postgres), and Kafka
+    // (KafkaTemplate + spring.kafka.* binding) each live in their own
+    // starter and must be declared explicitly.
+    runtimeOnly(libs.spring.boot.starter.jdbc)
+    runtimeOnly(libs.spring.boot.starter.flyway)
+    runtimeOnly(libs.spring.boot.starter.kafka)
 }

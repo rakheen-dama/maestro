@@ -35,11 +35,11 @@ Properties under `maestro.store.*` control the workflow persistence layer.
 |----------------------------|----------|-------------|----------------------------------------------------------------------------------------------------------|
 | `maestro.store.type`       | `String` | `"postgres"`| Store implementation type. Currently only `postgres` is supported.                                       |
 | `maestro.store.table-prefix`| `String`| `"maestro_"`| Prefix applied to all database table names (e.g., `maestro_workflow_instance`, `maestro_workflow_event`). |
-| `maestro.store.schema`     | `String` | `"maestro"` | Database schema where Maestro tables are created. Flyway migrations target this schema.                  |
 
 The table prefix lets you run multiple Maestro instances in the same database by
-giving each a unique prefix. The schema setting controls which PostgreSQL schema
-Flyway creates tables in.
+giving each a unique prefix. To target a non-default PostgreSQL schema, set it
+on the JDBC connection (e.g. `currentSchema` in the datasource URL) — Maestro
+does not manage schemas itself.
 
 ---
 
@@ -190,6 +190,21 @@ delay between a timer becoming due and the workflow resuming.
 
 ---
 
+## Recovery Configuration
+
+Properties under `maestro.recovery.*` control the periodic recovery poller. On
+top of the one-shot recovery at startup, every node re-runs recovery at this
+interval so that workflows owned by a node that has since died (its instance
+lock expired) or shut down are adopted without a restart. All nodes poll — the
+per-instance distributed lock guarantees only one of them wins each workflow.
+
+| Property                         | Type       | Default | Description                                                                 |
+|----------------------------------|------------|---------|-----------------------------------------------------------------------------|
+| `maestro.recovery.enabled`       | `boolean`  | `true`  | Whether the periodic recovery poller runs.                                   |
+| `maestro.recovery.poll-interval` | `Duration` | `60s`   | Interval between recovery cycles. Together with the 30s instance-lock TTL, this bounds how long an orphaned workflow waits before another node adopts it. |
+
+---
+
 ## Retry Configuration
 
 Properties under `maestro.retry.*` define the default retry policy applied to
@@ -253,7 +268,6 @@ maestro:
   store:
     type: postgres
     table-prefix: maestro_
-    schema: maestro
   messaging:
     type: kafka
     topics:
@@ -376,22 +390,25 @@ leader election, and signal notification. The following key patterns are used:
 
 | Key Pattern                                   | Purpose                         | TTL               |
 |-----------------------------------------------|-------------------------------- |--------------------|
-| `maestro:lock:workflow:{workflowId}`          | Workflow instance lock          | 30s (auto-renewed) |
-| `maestro:dedup:{workflowId}:{seq}`            | Activity deduplication guard    | 5m                 |
+| `maestro:lock:workflow:{workflowId}`          | Workflow instance lock          | 30s (renewed every 10s) |
+| `maestro:lock:activity:{workflowId}:{seq}`    | Activity execution lock (fast-path dedup) | activity timeout + 10s |
 | `maestro:leader:timer-poller:{service}`       | Timer poller leader election    | 15s                |
 | `maestro:signal:{workflowId}`                 | Signal notification (pub/sub)   | N/A (pub/sub)      |
 
 The `maestro:lock:` prefix is configurable via `maestro.lock.key-prefix`. If you
 change it, the lock keys will use your custom prefix instead.
 
-The instance lock is held for the duration of a workflow execution and
-automatically renewed. If a node crashes, the lock expires after the configured
-TTL (default 30 seconds), allowing another node to pick up the workflow during
-recovery.
+The instance lock is held for the duration of a workflow's local lifetime —
+including parked waits — and renewed every 10 seconds. If a node crashes, the
+lock expires after 30 seconds, allowing another node's recovery poller to pick
+up the workflow.
 
-The deduplication key prevents the same activity from executing twice when a
-workflow is recovered. It expires after 5 minutes, which is long enough to cover
-any reasonable recovery window.
+The activity lock is a best-effort guard against concurrent duplicate execution
+and doubles as the fast-path dedup key. The authoritative dedup is the Postgres
+unique index on `(workflow_instance_id, sequence_number)` — but note that this
+deduplicates *persisted results*, not external side effects. If a lock expires
+or is lost mid-execution, an activity can run more than once, so activities
+must be idempotent (or use fencing/idempotency keys with external systems).
 
 The leader election key ensures that only one node in the cluster runs the timer
 poller. It uses a shorter TTL (15 seconds) so that leadership transfers quickly

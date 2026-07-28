@@ -38,6 +38,18 @@ public class MaestroProperties {
      */
     private @Nullable String serviceName;
 
+    /**
+     * Packages to scan for {@code @DurableWorkflow} classes. When empty
+     * (the default), the application's auto-configuration packages — the
+     * package of the {@code @SpringBootApplication} class — are scanned.
+     *
+     * <p>Note: consumed early (before configuration-property binding) by
+     * {@link DurableWorkflowBeanRegistrar} directly from the
+     * {@link org.springframework.core.env.Environment}; declared here so the
+     * property appears in configuration metadata.
+     */
+    private List<String> workflowPackages = List.of();
+
     private StoreProperties store = new StoreProperties();
 
     private MessagingProperties messaging = new MessagingProperties();
@@ -47,6 +59,8 @@ public class MaestroProperties {
     private WorkerProperties worker = new WorkerProperties();
 
     private TimerProperties timer = new TimerProperties();
+
+    private RecoveryProperties recovery = new RecoveryProperties();
 
     private RetryProperties retry = new RetryProperties();
 
@@ -68,6 +82,14 @@ public class MaestroProperties {
 
     public void setServiceName(String serviceName) {
         this.serviceName = serviceName;
+    }
+
+    public List<String> getWorkflowPackages() {
+        return workflowPackages;
+    }
+
+    public void setWorkflowPackages(List<String> workflowPackages) {
+        this.workflowPackages = workflowPackages;
     }
 
     public StoreProperties getStore() {
@@ -110,6 +132,14 @@ public class MaestroProperties {
         this.timer = timer;
     }
 
+    public RecoveryProperties getRecovery() {
+        return recovery;
+    }
+
+    public void setRecovery(RecoveryProperties recovery) {
+        this.recovery = recovery;
+    }
+
     public RetryProperties getRetry() {
         return retry;
     }
@@ -131,17 +161,18 @@ public class MaestroProperties {
     /**
      * Workflow store configuration.
      *
+     * <p>Tables live in the connection's default schema; use the JDBC URL's
+     * {@code currentSchema} parameter to relocate them.
+     *
      * @param type        store implementation type (e.g., {@code "postgres"})
      * @param tablePrefix prefix for database tables
-     * @param schema      database schema name
      */
     public record StoreProperties(
             @DefaultValue("postgres") String type,
-            @DefaultValue("maestro_") String tablePrefix,
-            @DefaultValue("maestro") String schema
+            @DefaultValue("maestro_") String tablePrefix
     ) {
         public StoreProperties() {
-            this("postgres", "maestro_", "maestro");
+            this("postgres", "maestro_");
         }
     }
 
@@ -234,6 +265,25 @@ public class MaestroProperties {
     ) {
         public TimerProperties() {
             this(Duration.ofSeconds(5), 100);
+        }
+    }
+
+    /**
+     * Periodic workflow recovery configuration.
+     *
+     * <p>The recovery poller re-runs recovery at the given interval so that
+     * workflows owned by a node that has since died (instance lock expired)
+     * are adopted without a restart.
+     *
+     * @param enabled      whether the periodic recovery poller runs
+     * @param pollInterval interval between recovery cycles
+     */
+    public record RecoveryProperties(
+            @DefaultValue("true") boolean enabled,
+            @DefaultValue("60s") Duration pollInterval
+    ) {
+        public RecoveryProperties() {
+            this(true, Duration.ofSeconds(60));
         }
     }
 

@@ -17,6 +17,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.core.env.Environment;
 import tools.jackson.databind.ObjectMapper;
 
 /**
@@ -74,9 +75,23 @@ public class MaestroAutoConfiguration {
             throw new IllegalStateException(
                     "maestro.service-name must be set. Configure it in application.yml or application.properties.");
         }
+        var lock = properties.getLock();
         return new WorkflowExecutor(
-                store, distributedLock, messaging, signalNotifier, serializer, serviceName
+                store, distributedLock, messaging, signalNotifier, serializer, serviceName,
+                lock.keyPrefix(), lock.ttl()
         );
+    }
+
+    /**
+     * Registers bare {@code @DurableWorkflow} classes as Spring beans via
+     * classpath scanning. Static because {@code BeanDefinitionRegistryPostProcessor}
+     * beans are instantiated very early, before this configuration class itself.
+     */
+    @Bean
+    public static DurableWorkflowBeanRegistrar maestroDurableWorkflowBeanRegistrar(
+            Environment environment
+    ) {
+        return new DurableWorkflowBeanRegistrar(environment);
     }
 
     @Bean
@@ -96,6 +111,15 @@ public class MaestroAutoConfiguration {
             MaestroProperties properties
     ) {
         return new StartupRecoveryRunner(executor, registrar, properties);
+    }
+
+    @Bean
+    public SignalSubscriptionRunner maestroSignalSubscriptionRunner(
+            WorkflowExecutor executor,
+            @Nullable WorkflowMessaging messaging,
+            MaestroProperties properties
+    ) {
+        return new SignalSubscriptionRunner(executor, messaging, properties);
     }
 
     @Bean

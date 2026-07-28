@@ -1,5 +1,6 @@
 package io.b2mash.maestro.lock.postgres;
 
+import io.b2mash.maestro.core.exception.LockBackendException;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
 import org.slf4j.Logger;
@@ -121,8 +122,11 @@ public final class PostgresDistributedLock implements DistributedLock {
                 }
             }
         } catch (SQLException e) {
-            logger.warn("Failed to acquire lock '{}': {}", key, e.getMessage());
-            return Optional.empty();
+            // Transient backend error — propagate so callers can distinguish
+            // "backend unavailable" (degrade gracefully) from "lock held
+            // elsewhere" (skip the workflow). Returning empty here would be
+            // misread as contention.
+            throw new LockBackendException("Failed to acquire lock '" + key + "'", key, e);
         }
 
         logger.debug("Failed to acquire lock '{}' — already held", key);
@@ -151,7 +155,7 @@ public final class PostgresDistributedLock implements DistributedLock {
     }
 
     @Override
-    public void renew(LockHandle handle, Duration ttl) {
+    public boolean renew(LockHandle handle, Duration ttl) {
         var ttlSeconds = ttl.toMillis() / 1000.0;
 
         try (var conn = dataSource.getConnection();
@@ -165,13 +169,16 @@ public final class PostgresDistributedLock implements DistributedLock {
             int rows = stmt.executeUpdate();
             if (rows > 0) {
                 logger.debug("Renewed lock '{}' for {}ms", handle.key(), ttl.toMillis());
-            } else {
-                // Silently ignore — lock was lost (expired and possibly re-acquired)
-                logger.debug("Lock '{}' not renewed — token mismatch or already expired",
-                        handle.key());
+                return true;
             }
+            logger.debug("Lock '{}' not renewed — token mismatch or already expired",
+                    handle.key());
+            return false;
         } catch (SQLException e) {
-            logger.warn("Failed to renew lock '{}': {}", handle.key(), e.getMessage());
+            // Transient backend error — propagate so callers can retry rather
+            // than misreading it as lost ownership
+            throw new LockBackendException(
+                    "Failed to renew lock '" + handle.key() + "'", handle.key(), e);
         }
     }
 

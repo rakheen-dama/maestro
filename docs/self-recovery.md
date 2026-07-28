@@ -241,10 +241,10 @@ Recovery queries the `maestro_workflow_instance` table using the `idx_wf_instanc
 | External API down | Activity retries durably (configurable `RetryPolicy`). Service can restart during retries. |
 | Kafka rebalance | In-progress workflows continue. New tasks reroute to reassigned partitions. |
 | Postgres unavailable | Execution blocks until restored. No activity proceeds without persistence. |
-| Valkey down | Fallback to Postgres locking and poll-based signal delivery. |
-| Duplicate Kafka delivery | Valkey dedup key + unique constraint on `(workflow_instance_id, sequence_number)`. |
+| Valkey down | Workflows proceed unlocked (unique event index is the backstop). Signals stay persisted in Postgres; wake-up degrades to the parked await's periodic store re-check (every 30s). |
+| Duplicate Kafka delivery | Activity lock (fast path) + unique constraint on `(workflow_instance_id, sequence_number)` (authoritative). |
 
-The guiding principle: **Postgres is truth, Valkey is optimisation, Kafka is transport.** If Valkey is unavailable, Maestro degrades gracefully to Postgres-based locking and polling. If Kafka rebalances, in-flight workflows are unaffected because their state lives in Postgres. The only hard dependency is Postgres -- and if Postgres is down, the correct behaviour is to wait.
+The guiding principle: **Postgres is truth, Valkey is optimisation, Kafka is transport.** If Valkey is unavailable, workflows proceed unlocked — the unique event index and optimistic instance versioning remain the correctness backstop — and signal wake-up degrades to the parked await's periodic store re-check (or use `maestro-lock-postgres` to keep distributed locking without Valkey). If Kafka rebalances, in-flight workflows are unaffected because their state lives in Postgres. The only hard dependency is Postgres -- and if Postgres is down, the correct behaviour is to wait.
 
 Self-recovery works identically regardless of your choice of messaging backend (Kafka, Postgres, or RabbitMQ) or lock backend (Valkey or Postgres). PostgreSQL is always the authoritative store for workflow state.
 

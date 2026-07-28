@@ -388,9 +388,9 @@ List<ShipmentConfirmation> shipments = workflow.parallel(List.of(
 ));
 ```
 
-### Compound sequence keys
+### Branch sequence blocks
 
-When parallel execution occurs at sequence step `5`, each branch receives a compound key: `5.0`, `5.1`, `5.2`. This means:
+When parallel execution forks at sequence step `5`, each branch is allocated its own block of sequence numbers: branch *i* starts at `5*1000 + (i+1)*1000` (bases `6000`, `7000`, `8000`), with up to 999 steps per branch. This means:
 
 - Each branch is independently memoized.
 - On replay, each branch replays its own stored events regardless of original execution order.
