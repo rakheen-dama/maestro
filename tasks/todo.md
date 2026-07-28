@@ -125,3 +125,19 @@ Previous milestone (Gradle multi-module setup) completed — see git history of 
 - **lock-postgres has no test suite** (renew boolean covered via InMemory + Valkey suites only).
 - **Pre-existing bug (own ticket):** `shutdown()` cancels parked futures → parked workflows are marked FAILED (with compensation!) on graceful shutdown instead of staying recoverable.
 - **ActivityInvocationHandler** still hardcodes `maestro:lock:activity:` prefix (pre-existing; same wiring as instance lock now supports).
+
+# Milestone: Release Readiness (open-issues.md → fixed)
+
+Binding plan: `tasks/release-readiness-plan.md` (SDD ledger in `.superpowers/sdd/release-readiness-plan/progress.md`).
+Branch: `worktree-release-readiness` off `main` @ 0502b38.
+
+- [ ] Task 1 — Issue 2: timer fire crash window (repro first, decision gate)
+- [ ] Task 2 — Issues 3+6: lifecycle publish latency + admin.events wiring
+- [ ] Task 3 — Issues 4+5: ExecutorShutdownException → Error; SagaManager rethrow
+- [ ] Task 4 — Issues 7+9: config seams (shutdown timeout, wake recheck, activity lock prefix)
+- [ ] Task 5 — Issue 8: MaestroHealthIndicator
+- [ ] Task 6 — Issue 1: signal no-loss policy (Kafka + Postgres) per approved design
+- [ ] Task 7 — Issue 10a: RabbitMQ suite + Issue 1 parity
+- [ ] Task 8 — Issue 10b: admin-client / admin / store-jdbc suites
+- [ ] Task 9 — Docs truth pass + release notes (Issues 11/12 → known limitations)
+- [ ] Task 10 — QA: full build 3×, e2eTest, loan E2E (process identity), admin dashboard live check
