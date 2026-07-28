@@ -114,15 +114,31 @@ public final class PostgresNotificationListener implements AutoCloseable {
      * inside {@code getNotifications}. The wait is therefore bounded by one
      * poll timeout in the normal case.
      *
+     * <p>Three outcomes are possible and the caller can tell them apart by the
+     * return value: the {@code LISTEN} executed ({@code true}); it could not be
+     * executed because the listener was closed or the connection failed
+     * ({@code false}); or the wait timed out ({@code false}, logged as a
+     * warning). A {@code false} return means notifications on this channel may
+     * be missed until a later {@code listen} succeeds — callers that need
+     * certainty must fall back to polling their source of truth.
+     *
      * @param channel  the Postgres NOTIFY channel name
      * @param listener callback receiving (channel, payload) pairs
+     * @return {@code true} if the {@code LISTEN} reached the server
      */
-    public void listen(String channel, BiConsumer<String, String> listener) {
+    public boolean listen(String channel, BiConsumer<String, String> listener) {
         listeners.put(channel, listener);
         var applied = new CountDownLatch(1);
-        pendingCommands.add(new PendingCommand("LISTEN " + sanitizeChannel(channel), applied));
+        var command = new PendingCommand("LISTEN " + sanitizeChannel(channel), applied);
+        pendingCommands.add(command);
         awaitApplied(applied, channel);
+        if (!command.succeeded().get()) {
+            logger.warn("LISTEN on Postgres channel '{}' was not applied — notifications "
+                    + "may be missed until it is retried", channel);
+            return false;
+        }
         logger.debug("Listening on Postgres channel '{}'", channel);
+        return true;
     }
 
     /**
@@ -171,10 +187,24 @@ public final class PostgresNotificationListener implements AutoCloseable {
      * @param sql     the command to execute on the dedicated connection
      * @param applied released after execution, or {@code null} if nobody waits
      */
-    private record PendingCommand(String sql, @Nullable CountDownLatch applied) {
+    private record PendingCommand(String sql, @Nullable CountDownLatch applied,
+                                  AtomicBoolean succeeded) {
 
-        /** Releases any waiter, whether the command succeeded or failed. */
-        void markApplied() {
+        PendingCommand(String sql, @Nullable CountDownLatch applied) {
+            this(sql, applied, new AtomicBoolean(false));
+        }
+
+        /** Releases the waiter, recording that the command really did execute. */
+        void markSucceeded() {
+            succeeded.set(true);
+            release();
+        }
+
+        /**
+         * Releases the waiter without the command having executed — the caller
+         * must not be told its subscription is live.
+         */
+        void release() {
             if (applied != null) {
                 applied.countDown();
             }
@@ -195,10 +225,11 @@ public final class PostgresNotificationListener implements AutoCloseable {
         }
         closeConnection();
         listeners.clear();
-        // Nothing will drain the queue now — free anyone waiting on a LISTEN
+        // Nothing will drain the queue now — free anyone waiting on a LISTEN,
+        // WITHOUT marking it applied: the command never ran.
         PendingCommand pending;
         while ((pending = pendingCommands.poll()) != null) {
-            pending.markApplied();
+            pending.release();
         }
         logger.info("PostgreSQL LISTEN/NOTIFY listener closed");
     }
@@ -226,10 +257,15 @@ public final class PostgresNotificationListener implements AutoCloseable {
                 while ((cmd = pendingCommands.poll()) != null) {
                     try (var stmt = dedicatedConnection.createStatement()) {
                         stmt.execute(cmd.sql());
-                    } finally {
-                        // Release the waiter even if execution failed — it must
-                        // not block for the full timeout on a dead connection
-                        cmd.markApplied();
+                        cmd.markSucceeded();
+                    } catch (SQLException e) {
+                        // Release the waiter so it does not block for the full
+                        // timeout on a dead connection, but do NOT report
+                        // success: the session is not listening.
+                        logger.warn("Failed to execute '{}' on the notification connection: {}",
+                                cmd.sql(), e.getMessage());
+                        cmd.release();
+                        throw e;
                     }
                 }
 

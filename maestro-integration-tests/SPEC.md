@@ -38,9 +38,15 @@ io.b2mash.maestro.integration
 ├── engine/      — P0: engine × Postgres
 ├── kafka/       — P1: Kafka in CI
 ├── multinode/   — P2: two-node topology
-├── backends/    — P3: lock-postgres + messaging-postgres
-└── e2e/         — P4: loan-origination E2E (@Tag("e2e"))
+└── shutdown/    — P5: graceful-shutdown contract
 ```
+
+Two phases deliberately live outside this module: **P3** (lock-postgres and
+messaging-postgres) belongs in those modules' own `src/test`, because a backend
+suite should ship with its backend; and **P4** (loan-origination E2E) stays in
+`maestro-samples/sample-loan-origination/e2e/run-e2e.sh`, driven by the
+`e2eTest` tag's nightly CI job — the script already performs real `kill -9`,
+restart and PID-identity checks that a JUnit port would have put at risk.
 
 - Every class is `@Tag("integration")` (or `@Tag("e2e")` in `e2e/`).
 - Class names end in **`IT`** (e.g. `EnginePostgresLifecycleIT`).
@@ -163,6 +169,16 @@ the fix goes to the module that must change — as was done for the Flyway
 version-band collision.
 
 Bugs found so far:
+- **BUG6 (fixed):** graceful shutdown marked parked workflows FAILED and ran
+  their compensations. `ExecutorShutdownException` now distinguishes "this node
+  is stopping" from "the workflow threw"; parked workflows keep their
+  `WAITING_*` status and stay recoverable. Pinned by
+  `WorkflowExecutorShutdownTest` and `shutdown.ShutdownContractIT`.
+- **BUG7 (fixed):** a version conflict while finalising recorded a *successful*
+  workflow as FAILED and compensated it. `transitionToTerminal` retries against
+  a fresh read, stands down when another runner finalised, and — when the retry
+  budget is exhausted — leaves the instance non-terminal for recovery rather
+  than inventing an outcome. Pinned by `WorkflowExecutorTerminalTransitionTest`.
 - **BUG5 (fixed):** `maestro-lock-postgres` and `maestro-messaging-postgres` both
   shipped `V100`; Flyway aborts with *"Found more than one migration with
   version 100"*, so the Postgres-only profile could not migrate. Fixed by
@@ -203,6 +219,5 @@ Bugs found so far:
 2. **Ack-on-failure (P1).** Transport adapters ack even when the handler throws.
    Write the contract test RED and `@Disabled("known defect — tasks/todo.md")`
    unless a redelivery design with bounded retries + DLT lands.
-3. **Shutdown contract (P5).** `shutdown()` unparks every running workflow and
-   marks parked ones FAILED (with compensation). The desired-behaviour tests are
-   the spec; the fix is pre-approved.
+3. **Ack-on-failure follow-through.** See item 2 — nothing further is open
+   beyond that decision.

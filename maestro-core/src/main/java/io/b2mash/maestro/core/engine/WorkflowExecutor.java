@@ -830,10 +830,11 @@ public final class WorkflowExecutor {
      * @param status   the terminal status to write
      * @param output   the output or error payload to record
      * @return {@code true} if this call wrote the transition and its caller
-     *         should record the matching event; {@code false} if another
-     *         runner had already finalised the workflow
-     * @throws io.b2mash.maestro.core.exception.OptimisticLockException if the
-     *         conflict persists across every attempt
+     *         should record the matching event; {@code false} if another runner
+     *         had already finalised the workflow, or if the conflict persisted
+     *         across every attempt — in which case the instance is deliberately
+     *         left non-terminal and recoverable rather than being recorded with
+     *         an outcome this run could not persist
      */
     private boolean transitionToTerminal(
             WorkflowContext ctx, WorkflowInstance fallback,
@@ -861,10 +862,18 @@ public final class WorkflowExecutor {
                 return true;
             } catch (OptimisticLockException e) {
                 if (attempt >= TERMINAL_TRANSITION_ATTEMPTS) {
+                    // Give up on the write, but do NOT turn a persistence
+                    // conflict into a workflow outcome. Propagating here would
+                    // land in the caller's failure handling and record a run
+                    // that SUCCEEDED as FAILED — the very bug this method
+                    // exists to prevent. Leaving the instance in its current,
+                    // non-terminal status keeps it recoverable: the next node
+                    // to pick it up replays the memoized steps and finalises it.
                     logger.error("Could not finalise workflow '{}' as {} after {} attempts — "
-                                    + "the instance row is being written continuously",
+                                    + "the instance row is being written continuously. Leaving it "
+                                    + "non-terminal for recovery to finalise.",
                             ctx.workflowId(), status, attempt);
-                    throw e;
+                    return false;
                 }
                 logger.debug("Version conflict finalising workflow '{}' as {} (attempt {}) — "
                                 + "retrying against a fresh read",

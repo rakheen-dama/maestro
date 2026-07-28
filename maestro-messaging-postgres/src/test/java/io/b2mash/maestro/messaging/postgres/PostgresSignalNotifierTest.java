@@ -9,6 +9,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -145,6 +146,22 @@ class PostgresSignalNotifierTest extends PostgresMessagingTestSupport {
                                           String signalName, ConcurrentLinkedQueue<String> woken) {
         notifier.publish(workflowId, signalName);
         await().atMost(BOUND).pollInterval(Duration.ofMillis(50)).until(() -> !woken.isEmpty());
+    }
+
+    @Test
+    @DisplayName("listen reports failure rather than claiming a subscription that was never applied")
+    void listenReportsFailureWhenNotApplied() {
+        // A listener that is already closed can never execute the LISTEN. The
+        // caller must be told, not silently left believing it is subscribed —
+        // that is the silent-lost-notification failure this class exists to
+        // remove, and releasing the waiter is not the same as succeeding.
+        var closed = new PostgresNotificationListener(newDataSource());
+        closed.start();
+        closed.close();
+
+        var applied = closed.listen("maestro_signal_never_" + unique(), (ch, payload) -> { });
+
+        assertFalse(applied, "listen must report that the LISTEN never reached the server");
     }
 
     private static String unique() {

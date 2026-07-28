@@ -31,6 +31,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -87,6 +89,35 @@ class WorkflowExecutorTerminalTransitionTest {
                 "the winner's output must stand");
         assertEquals(0, store.eventsOfType(EventType.WORKFLOW_FAILED),
                 "no WORKFLOW_FAILED event may be recorded for a successful run");
+    }
+
+    @Test
+    @DisplayName("when the retry budget is exhausted the workflow is left recoverable, not failed")
+    void exhaustedRetries_leaveTheWorkflowRecoverableRatherThanFailed() {
+        // Exactly enough conflicts to burn the success path's retry budget; the
+        // contention then stops, so a FAILED write would succeed if attempted.
+        store.conflictForNextUpdates(5);
+
+        var workflowId = "wf-exhausted";
+        start(workflowId);
+
+        // The run cannot persist its terminal status, so it must leave the
+        // instance alone: a persistence conflict is not a workflow outcome, and
+        // a workflow that SUCCEEDED must never be recorded as FAILED.
+        await().atMost(Duration.ofSeconds(5))
+                .until(() -> !executor.isRunning(workflowId));
+
+        var instance = store.getInstance(workflowId).orElseThrow();
+        assertNotEquals(WorkflowStatus.FAILED, instance.status(),
+                "a successful workflow must not be recorded FAILED because its "
+                        + "terminal write kept losing a version race");
+        assertFalse(instance.status().isTerminal(),
+                "the instance must stay non-terminal so recovery can finalise it");
+        assertTrue(store.getRecoverableInstances().stream()
+                        .anyMatch(i -> i.workflowId().equals(workflowId)),
+                "the workflow must remain recoverable");
+        assertEquals(0, store.eventsOfType(EventType.WORKFLOW_FAILED),
+                "no WORKFLOW_FAILED event may be written for a successful run");
     }
 
     @Test
@@ -152,6 +183,7 @@ class WorkflowExecutorTerminalTransitionTest {
         private final CopyOnWriteArrayList<WorkflowEvent> events = new CopyOnWriteArrayList<>();
         private final AtomicBoolean completeOutOfBand = new AtomicBoolean();
         private final AtomicBoolean bumpOutOfBand = new AtomicBoolean();
+        private final AtomicInteger conflictsRemaining = new AtomicInteger();
         private final AtomicInteger updateAttempts = new AtomicInteger();
         private volatile String outOfBandOutput = "";
 
@@ -164,6 +196,19 @@ class WorkflowExecutorTerminalTransitionTest {
         /** Makes another writer bump the version (status unchanged) before the next update. */
         void bumpVersionOutOfBandOnNextUpdate() {
             bumpOutOfBand.set(true);
+        }
+
+        /**
+         * Conflicts the next {@code n} updates, then stops. Sized to exhaust the
+         * success path's retry budget and then let the FAILED write through —
+         * the case where a successful workflow really does get recorded FAILED.
+         */
+        void conflictForNextUpdates(int n) {
+            conflictsRemaining.set(n);
+        }
+
+        int updateAttempts() {
+            return updateAttempts.get();
         }
 
         int eventsOfType(EventType type) {
@@ -205,7 +250,8 @@ class WorkflowExecutorTerminalTransitionTest {
                 byWorkflowId.put(stored.workflowId(), stored);
                 events.add(new WorkflowEvent(UUID.randomUUID(), stored.id(), 1,
                         EventType.WORKFLOW_COMPLETED, null, stored.output(), Instant.now()));
-            } else if (bumpOutOfBand.compareAndSet(true, false)) {
+            } else if (conflictsRemaining.getAndUpdate(n -> n > 0 ? n - 1 : 0) > 0
+                    || bumpOutOfBand.compareAndSet(true, false)) {
                 stored = stored.toBuilder()
                         .updatedAt(Instant.now())
                         .version(stored.version() + 1)
