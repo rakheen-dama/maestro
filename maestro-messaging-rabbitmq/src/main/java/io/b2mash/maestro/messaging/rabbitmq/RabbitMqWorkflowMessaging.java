@@ -4,16 +4,21 @@ import io.b2mash.maestro.core.spi.SignalMessage;
 import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
+import org.jspecify.annotations.NullMarked;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.amqp.core.AcknowledgeMode;
 import org.springframework.amqp.core.BindingBuilder;
 import org.springframework.amqp.core.DirectExchange;
 import org.springframework.amqp.core.FanoutExchange;
 import org.springframework.amqp.core.Queue;
+import org.springframework.amqp.rabbit.config.RetryInterceptorBuilder;
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
+import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.rabbit.listener.SimpleMessageListenerContainer;
 import org.springframework.amqp.rabbit.listener.adapter.MessageListenerAdapter;
+import org.springframework.amqp.rabbit.retry.RepublishMessageRecoverer;
 import org.springframework.beans.factory.DisposableBean;
 import tools.jackson.databind.ObjectMapper;
 
@@ -34,10 +39,28 @@ import java.util.function.Consumer;
  *   <li>Tasks: {@code maestro.tasks} — direct exchange, routing key = task queue name</li>
  *   <li>Signals: {@code maestro.signals} — direct exchange, routing key = service name</li>
  *   <li>Admin events: {@code maestro.admin.events} — fanout exchange</li>
+ *   <li>Dead letters: {@link RabbitMqRedeliveryConfig#deadLetterExchange()} — direct
+ *       exchange, one {@code <queueName>.dlq} quorum queue per source queue, bound
+ *       with routing key = the source queue name</li>
  * </ul>
  *
  * <p>All queues are declared as quorum queues ({@code x-queue-type: quorum})
- * for high availability and data safety.
+ * for high availability and data safety. Every declaration is idempotent, so
+ * repeated {@code subscribe}/{@code subscribeSignals} calls — or an operator
+ * pre-declaring the same names out of band — are safe.
+ *
+ * <h2>Handler Failure</h2>
+ * <p>Handler exceptions are never swallowed: they propagate out of the raw
+ * message listener to a stateless retry interceptor on the listener
+ * container's advice chain. The interceptor re-invokes the handler in-process
+ * with exponential backoff and, once {@link RabbitMqRedeliveryConfig#maxAttempts()}
+ * is spent, a {@link RepublishMessageRecoverer} republishes the message to the
+ * dead-letter exchange (routing key = the source queue name, {@code
+ * x-exception-*} headers added) — only then is the original message
+ * acknowledged. {@link AcknowledgeMode#AUTO} is safe here specifically
+ * because the container only acks after the advice chain returns normally;
+ * a message is never acknowledged unprocessed. Handlers may therefore be
+ * re-invoked with the same message and must be idempotent.
  *
  * <h2>Thread Safety</h2>
  * <p>This class is thread-safe. Publishing can be called concurrently from
@@ -45,7 +68,9 @@ import java.util.function.Consumer;
  * {@link ConcurrentHashMap} and stopped on {@link #destroy()}.
  *
  * @see WorkflowMessaging
+ * @see RabbitMqRedeliveryConfig
  */
+@NullMarked
 public final class RabbitMqWorkflowMessaging implements WorkflowMessaging, DisposableBean {
 
     private static final Logger logger = LoggerFactory.getLogger(RabbitMqWorkflowMessaging.class);
@@ -59,6 +84,8 @@ public final class RabbitMqWorkflowMessaging implements WorkflowMessaging, Dispo
     private final RabbitTemplate rabbitTemplate;
     private final ConnectionFactory connectionFactory;
     private final ObjectMapper objectMapper;
+    private final RabbitMqRedeliveryConfig redelivery;
+    private final RabbitAdmin admin;
 
     /**
      * Tracks active listener containers keyed by queue name.
@@ -68,7 +95,8 @@ public final class RabbitMqWorkflowMessaging implements WorkflowMessaging, Dispo
             new ConcurrentHashMap<>();
 
     /**
-     * Creates a new RabbitMQ-based workflow messaging implementation.
+     * Creates a new RabbitMQ-based workflow messaging implementation with the
+     * default redelivery policy.
      *
      * @param rabbitTemplate    the RabbitMQ template for publishing messages
      * @param connectionFactory the connection factory for creating listener containers
@@ -79,9 +107,28 @@ public final class RabbitMqWorkflowMessaging implements WorkflowMessaging, Dispo
             ConnectionFactory connectionFactory,
             ObjectMapper objectMapper
     ) {
+        this(rabbitTemplate, connectionFactory, objectMapper, RabbitMqRedeliveryConfig.defaults());
+    }
+
+    /**
+     * Creates a new RabbitMQ-based workflow messaging implementation.
+     *
+     * @param rabbitTemplate    the RabbitMQ template for publishing messages
+     * @param connectionFactory the connection factory for creating listener containers
+     * @param objectMapper      Jackson 3 ObjectMapper for serialization
+     * @param redelivery        handler-failure redelivery and dead-letter policy
+     */
+    public RabbitMqWorkflowMessaging(
+            RabbitTemplate rabbitTemplate,
+            ConnectionFactory connectionFactory,
+            ObjectMapper objectMapper,
+            RabbitMqRedeliveryConfig redelivery
+    ) {
         this.rabbitTemplate = rabbitTemplate;
         this.connectionFactory = connectionFactory;
         this.objectMapper = objectMapper;
+        this.redelivery = redelivery;
+        this.admin = new RabbitAdmin(connectionFactory);
         declareAdminTopology();
     }
 
@@ -118,15 +165,11 @@ public final class RabbitMqWorkflowMessaging implements WorkflowMessaging, Dispo
         var queueName = "maestro.tasks." + taskQueue;
         declareTaskTopology(queueName, taskQueue);
 
-        var container = createContainer(queueName, bytes -> {
-            try {
-                var message = deserialize(bytes, TaskMessage.class);
-                handler.accept(message);
-            } catch (Exception e) {
-                logger.error("Error processing task message from queue '{}': {}",
-                        queueName, e.getMessage(), e);
-            }
-        });
+        // Nothing is caught here on purpose: a handler failure — or an
+        // undeserializable message — must reach the container's retry
+        // interceptor so the message is not acknowledged. See the class Javadoc.
+        var container = createContainer(queueName, bytes ->
+                handler.accept(deserialize(bytes, TaskMessage.class)));
 
         var existing = containers.putIfAbsent(queueName, container);
         if (existing != null) {
@@ -143,15 +186,11 @@ public final class RabbitMqWorkflowMessaging implements WorkflowMessaging, Dispo
         var queueName = "maestro.signals." + serviceName;
         declareSignalTopology(queueName, serviceName);
 
-        var container = createContainer(queueName, bytes -> {
-            try {
-                var message = deserialize(bytes, SignalMessage.class);
-                handler.accept(message);
-            } catch (Exception e) {
-                logger.error("Error processing signal message from queue '{}': {}",
-                        queueName, e.getMessage(), e);
-            }
-        });
+        // Nothing is caught here on purpose: a handler failure means the
+        // signal is not yet durable, so it must reach the container's retry
+        // interceptor rather than being acknowledged. See the class Javadoc.
+        var container = createContainer(queueName, bytes ->
+                handler.accept(deserialize(bytes, SignalMessage.class)));
 
         var existing = containers.putIfAbsent(queueName, container);
         if (existing != null) {
@@ -182,16 +221,17 @@ public final class RabbitMqWorkflowMessaging implements WorkflowMessaging, Dispo
     // ── Topology Declaration ─────────────────────────────────────────────
 
     /**
-     * Declares the direct exchange, quorum queue, and binding for a task queue.
+     * Declares the direct exchange, quorum queue, and binding for a task queue,
+     * plus its dead-letter exchange and queue.
      * Topology is declared lazily on first subscribe.
      */
     private void declareTaskTopology(String queueName, String routingKey) {
-        var admin = new org.springframework.amqp.rabbit.core.RabbitAdmin(connectionFactory);
         var exchange = new DirectExchange(TASKS_EXCHANGE, true, false);
         var queue = new Queue(queueName, true, false, false, QUORUM_QUEUE_ARGS);
         admin.declareExchange(exchange);
         admin.declareQueue(queue);
         admin.declareBinding(BindingBuilder.bind(queue).to(exchange).with(routingKey));
+        declareDeadLetterTopology(queueName);
     }
 
     /**
@@ -199,22 +239,41 @@ public final class RabbitMqWorkflowMessaging implements WorkflowMessaging, Dispo
      * Called eagerly in the constructor so the exchange exists before any publish.
      */
     private void declareAdminTopology() {
-        var admin = new org.springframework.amqp.rabbit.core.RabbitAdmin(connectionFactory);
         var exchange = new FanoutExchange(ADMIN_EVENTS_EXCHANGE, true, false);
         admin.declareExchange(exchange);
     }
 
     /**
-     * Declares the direct exchange, quorum queue, and binding for a signal queue.
+     * Declares the direct exchange, quorum queue, and binding for a signal queue,
+     * plus its dead-letter exchange and queue.
      * Topology is declared lazily on first subscribe.
      */
     private void declareSignalTopology(String queueName, String routingKey) {
-        var admin = new org.springframework.amqp.rabbit.core.RabbitAdmin(connectionFactory);
         var exchange = new DirectExchange(SIGNALS_EXCHANGE, true, false);
         var queue = new Queue(queueName, true, false, false, QUORUM_QUEUE_ARGS);
         admin.declareExchange(exchange);
         admin.declareQueue(queue);
         admin.declareBinding(BindingBuilder.bind(queue).to(exchange).with(routingKey));
+        declareDeadLetterTopology(queueName);
+    }
+
+    /**
+     * Declares this queue's dead-letter exchange and {@code <queueName>.dlq}
+     * quorum queue, idempotently, exactly like the rest of this class's
+     * topology. Unlike Kafka — where Maestro never auto-creates topics — the
+     * RabbitMQ transport already self-declares its own exchanges and queues,
+     * so the dead-letter destination follows the same, already-accepted
+     * pattern (design ruling, {@code issue1-design.md} §10). Operators may
+     * equivalently pre-declare the same names out of band.
+     *
+     * @param queueName the source queue whose exhausted messages land here
+     */
+    private void declareDeadLetterTopology(String queueName) {
+        var deadLetterExchange = new DirectExchange(redelivery.deadLetterExchange(), true, false);
+        var deadLetterQueue = new Queue(queueName + ".dlq", true, false, false, QUORUM_QUEUE_ARGS);
+        admin.declareExchange(deadLetterExchange);
+        admin.declareQueue(deadLetterQueue);
+        admin.declareBinding(BindingBuilder.bind(deadLetterQueue).to(deadLetterExchange).with(queueName));
     }
 
     // ── Internal Helpers ─────────────────────────────────────────────────
@@ -227,8 +286,33 @@ public final class RabbitMqWorkflowMessaging implements WorkflowMessaging, Dispo
         container.setQueueNames(queueName);
         container.setMessageListener(new MessageListenerAdapter(
                 new RawBytesHandler(listener), "handleMessage"));
-        container.setAcknowledgeMode(org.springframework.amqp.core.AcknowledgeMode.AUTO);
+        // AUTO is safe here because the advice chain below only lets the
+        // container ack after a successful handler invocation or a successful
+        // dead-letter republish — never after an unhandled exception.
+        container.setAcknowledgeMode(AcknowledgeMode.AUTO);
+        container.setAdviceChain(buildRetryInterceptor(queueName));
         return container;
+    }
+
+    /**
+     * Builds the stateless retry interceptor shared by every listener
+     * container: bounded, backed-off in-process redelivery, then a republish
+     * to this queue's dead-letter destination.
+     *
+     * @param queueName the source queue, used as the dead-letter routing key
+     * @return an advice for {@link SimpleMessageListenerContainer#setAdviceChain}
+     */
+    private org.aopalliance.aop.Advice buildRetryInterceptor(String queueName) {
+        var recoverer = new RepublishMessageRecoverer(
+                rabbitTemplate, redelivery.deadLetterExchange(), queueName);
+        return RetryInterceptorBuilder.stateless()
+                .maxRetries(Math.max(0, redelivery.maxAttempts() - 1))
+                .backOffOptions(
+                        redelivery.initialInterval().toMillis(),
+                        redelivery.multiplier(),
+                        redelivery.maxInterval().toMillis())
+                .recoverer(recoverer)
+                .build();
     }
 
     private byte[] serialize(Object value) {

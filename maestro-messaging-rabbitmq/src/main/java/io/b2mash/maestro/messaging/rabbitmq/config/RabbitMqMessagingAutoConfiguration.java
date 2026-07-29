@@ -1,8 +1,10 @@
 package io.b2mash.maestro.messaging.rabbitmq.config;
 
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
+import io.b2mash.maestro.messaging.rabbitmq.RabbitMqRedeliveryConfig;
 import io.b2mash.maestro.messaging.rabbitmq.RabbitMqWorkflowMessaging;
 import io.b2mash.maestro.spring.config.MaestroAutoConfiguration;
+import io.b2mash.maestro.spring.config.MaestroProperties;
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -31,6 +33,10 @@ import tools.jackson.databind.ObjectMapper;
  * and {@link ConnectionFactory} are typically provided by Spring Boot's
  * RabbitMQ auto-configuration ({@code spring-boot-starter-amqp}).
  *
+ * <p>The handler-failure redelivery and dead-letter policy is resolved from
+ * {@code maestro.messaging.redelivery.*} ({@link MaestroProperties}) into a
+ * {@link RabbitMqRedeliveryConfig}.
+ *
  * <p>The bean is guarded with {@link ConditionalOnMissingBean} to allow
  * user overrides.
  *
@@ -46,8 +52,19 @@ public class RabbitMqMessagingAutoConfiguration {
     public RabbitMqWorkflowMessaging rabbitMqWorkflowMessaging(
             RabbitTemplate rabbitTemplate,
             ConnectionFactory connectionFactory,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            MaestroProperties properties
     ) {
-        return new RabbitMqWorkflowMessaging(rabbitTemplate, connectionFactory, objectMapper);
+        var redelivery = properties.getMessaging().redelivery();
+        return new RabbitMqWorkflowMessaging(
+                rabbitTemplate,
+                connectionFactory,
+                objectMapper,
+                new RabbitMqRedeliveryConfig(
+                        redelivery.maxAttempts(),
+                        redelivery.initialInterval(),
+                        redelivery.multiplier(),
+                        redelivery.maxInterval(),
+                        redelivery.deadLetterExchange()));
     }
 }
