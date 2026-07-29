@@ -115,11 +115,17 @@ public class KafkaMessagingAutoConfiguration {
             }
             consumerGroup = "maestro-" + serviceName;
         }
+        var redelivery = messaging.redelivery();
         return new KafkaMessagingConfig(
                 topics.tasks(),
                 topics.signals(),
                 resolveAdminEventsTopic(properties),
-                consumerGroup
+                consumerGroup,
+                redelivery.maxAttempts(),
+                redelivery.initialInterval(),
+                redelivery.multiplier(),
+                redelivery.maxInterval(),
+                redelivery.deadLetterSuffix()
         );
     }
 

@@ -1,8 +1,10 @@
 package io.b2mash.maestro.messaging.kafka.listener;
 
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
+import io.b2mash.maestro.messaging.kafka.KafkaRedeliveryErrorHandlers;
 import io.b2mash.maestro.spring.annotation.MaestroSignalListener;
 import io.b2mash.maestro.spring.annotation.SignalRouting;
+import io.b2mash.maestro.spring.config.MaestroProperties;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,6 +17,8 @@ import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
 import org.springframework.kafka.core.ConsumerFactory;
+import org.springframework.kafka.core.KafkaOperations;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
 import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.MessageListener;
@@ -49,6 +53,15 @@ import java.util.concurrent.CopyOnWriteArrayList;
  *   → extract {@link SignalRouting} (workflowId + payload)
  *   → call {@link WorkflowExecutor#deliverSignal}
  * </pre>
+ *
+ * <h2>Failure Handling</h2>
+ * <p>Anything that throws — a deserialization failure, the user's routing
+ * method, or {@code deliverSignal} itself — propagates out of the listener, so
+ * the offset is not committed. The container's error handler redelivers the
+ * record with exponential backoff and, once the attempt budget is spent,
+ * publishes it to {@code <topic>} + the configured dead-letter suffix. A signal
+ * is therefore never acknowledged unprocessed, and a poison record is parked
+ * rather than skipped or looped on forever.
  *
  * <h2>Thread Safety</h2>
  * <p>Scanning happens on the Spring initialization thread. Consumer containers
@@ -124,11 +137,14 @@ public class MaestroSignalListenerBeanPostProcessor
         var executor = ctx.getBean(WorkflowExecutor.class);
         var objectMapper = ctx.getBean(ObjectMapper.class);
         var baseGroup = resolveBaseConsumerGroup(ctx);
+        var kafkaTemplate = resolveKafkaTemplate(ctx);
+        var redelivery = ctx.getBean(MaestroProperties.class).getMessaging().redelivery();
 
         logger.info("Activating {} @MaestroSignalListener registration(s)", registrations.size());
 
         for (var reg : registrations) {
-            var container = createListenerContainer(reg, consumerFactory, executor, objectMapper, baseGroup);
+            var container = createListenerContainer(
+                    reg, consumerFactory, executor, objectMapper, baseGroup, kafkaTemplate, redelivery);
             containers.add(container);
             container.start();
 
@@ -186,7 +202,9 @@ public class MaestroSignalListenerBeanPostProcessor
             ConsumerFactory<String, byte[]> consumerFactory,
             WorkflowExecutor executor,
             ObjectMapper objectMapper,
-            String baseGroup
+            String baseGroup,
+            KafkaOperations<String, byte[]> kafkaTemplate,
+            MaestroProperties.RedeliveryProperties redelivery
     ) {
         var groupId = reg.groupIdSuffix().isEmpty()
                 ? baseGroup
@@ -198,7 +216,34 @@ public class MaestroSignalListenerBeanPostProcessor
         containerProps.setMessageListener(
                 (MessageListener<String, byte[]>) record -> handleMessage(record.value(), reg, executor, objectMapper));
 
-        return new ConcurrentMessageListenerContainer<>(consumerFactory, containerProps);
+        var container = new ConcurrentMessageListenerContainer<>(consumerFactory, containerProps);
+        // Without this the default error handler logs and skips once its
+        // retries are exhausted — the offset is committed and the signal is
+        // gone. A poison record must be parked on the dead-letter topic
+        // instead, where it stays inspectable and replayable.
+        container.setCommonErrorHandler(KafkaRedeliveryErrorHandlers.deadLettering(
+                kafkaTemplate,
+                redelivery.maxAttempts(),
+                redelivery.initialInterval(),
+                redelivery.multiplier(),
+                redelivery.maxInterval(),
+                redelivery.deadLetterSuffix()));
+        return container;
+    }
+
+    /**
+     * Resolves the producer used to publish exhausted records.
+     *
+     * <p>Maestro's own template is looked up by name first, so an application
+     * that defines {@code KafkaTemplate} beans of its own does not make the
+     * lookup ambiguous.
+     */
+    @SuppressWarnings("unchecked")
+    private static KafkaOperations<String, byte[]> resolveKafkaTemplate(ApplicationContext ctx) {
+        if (ctx.containsBean("maestroKafkaTemplate")) {
+            return (KafkaOperations<String, byte[]>) ctx.getBean("maestroKafkaTemplate", KafkaOperations.class);
+        }
+        return (KafkaOperations<String, byte[]>) ctx.getBean(KafkaTemplate.class);
     }
 
     private void handleMessage(
@@ -243,7 +288,7 @@ public class MaestroSignalListenerBeanPostProcessor
     }
 
     private String resolveBaseConsumerGroup(ApplicationContext ctx) {
-        var properties = ctx.getBean(io.b2mash.maestro.spring.config.MaestroProperties.class);
+        var properties = ctx.getBean(MaestroProperties.class);
         var messaging = properties.getMessaging();
         if (messaging.consumerGroup() != null) {
             return messaging.consumerGroup();

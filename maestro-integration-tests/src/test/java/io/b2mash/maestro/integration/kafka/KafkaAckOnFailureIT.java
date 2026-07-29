@@ -10,7 +10,6 @@ import io.b2mash.maestro.spring.client.MaestroClient;
 import io.b2mash.maestro.spring.client.WorkflowOptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -139,9 +138,6 @@ class KafkaAckOnFailureIT extends KafkaSpringIntegrationSupport {
     }
 
     @Test
-    @Disabled("known defect: transport acks on handler failure — KafkaWorkflowMessaging.subscribeSignals "
-            + "catches and logs, so a failed handler is acked after one attempt and the signal is lost; "
-            + "see maestro-integration-tests/SPEC.md open item 2 and tasks/todo.md")
     @DisplayName("the engine signal channel redelivers when the handler throws")
     void signalChannelHandlerFailure_isRedelivered() throws Exception {
         var config = new KafkaMessagingConfig(
@@ -175,9 +171,6 @@ class KafkaAckOnFailureIT extends KafkaSpringIntegrationSupport {
     }
 
     @Test
-    @Disabled("known defect: transport acks on handler failure — once DefaultErrorHandler's retries are "
-            + "exhausted the record is logged and skipped, with no dead-letter topic, so the signal is "
-            + "lost; see maestro-integration-tests/SPEC.md open item 2 and tasks/todo.md")
     @DisplayName("a persistently failing @MaestroSignalListener record is dead-lettered, not dropped")
     void persistentHandlerFailure_isDeadLetteredNotDropped() {
         var workflowId = "ack-poison-" + UUID.randomUUID().toString().substring(0, 8);
