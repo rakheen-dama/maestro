@@ -676,14 +676,14 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
                     Instant.now().minusSeconds(10), TimerStatus.PENDING);
             store.saveTimer(timer);
 
-            store.markTimerCancelled(timer.id());
+            assertTrue(store.markTimerCancelled(timer.id()), "the first cancel must win the CAS");
 
             // Should no longer appear as due
             assertTrue(store.getDueTimers(Instant.now(), 10).isEmpty());
         }
 
         @Test
-        @DisplayName("markTimerCancelled is idempotent")
+        @DisplayName("markTimerCancelled is idempotent — CAS, not a blind write")
         void markTimerCancelled_isIdempotent() {
             var instance = newInstance("order-cancel-idem");
             store.createInstance(instance);
@@ -692,8 +692,24 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
                     Instant.now().minusSeconds(10), TimerStatus.PENDING);
             store.saveTimer(timer);
 
-            store.markTimerCancelled(timer.id());
-            assertDoesNotThrow(() -> store.markTimerCancelled(timer.id()));
+            assertTrue(store.markTimerCancelled(timer.id()));
+            assertFalse(store.markTimerCancelled(timer.id()),
+                    "a second cancel of an already-cancelled timer must lose the CAS");
+        }
+
+        @Test
+        @DisplayName("markTimerCancelled returns false for an already-fired timer")
+        void markTimerCancelled_returnsFalseForFired() {
+            var instance = newInstance("order-cancel-fired");
+            store.createInstance(instance);
+
+            var timer = newTimer(instance.id(), "order-cancel-fired",
+                    Instant.now().minusSeconds(10), TimerStatus.PENDING);
+            store.saveTimer(timer);
+
+            assertTrue(store.markTimerFired(timer.id()));
+            assertFalse(store.markTimerCancelled(timer.id()),
+                    "cancelling an already-fired timer must lose the CAS");
         }
     }
 

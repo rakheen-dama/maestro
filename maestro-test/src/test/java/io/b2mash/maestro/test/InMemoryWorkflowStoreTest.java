@@ -322,11 +322,32 @@ class InMemoryWorkflowStoreTest {
         var timer = buildTimer("wf-cancel", Instant.now().plusSeconds(60), TimerStatus.PENDING);
         store.saveTimer(timer);
 
-        store.markTimerCancelled(timer.id());
+        assertTrue(store.markTimerCancelled(timer.id()), "the first cancel must win the CAS");
 
         // Timer should no longer appear in due timers even if time passes
         var due = store.getDueTimers(Instant.now().plusSeconds(120), 100);
         assertTrue(due.isEmpty());
+    }
+
+    @Test
+    void markTimerCancelledCAS() {
+        var timer = buildTimer("wf-cancel-cas", Instant.now().plusSeconds(60), TimerStatus.PENDING);
+        store.saveTimer(timer);
+
+        // First cancel succeeds
+        assertTrue(store.markTimerCancelled(timer.id()));
+        // Second cancel returns false (already CANCELLED)
+        assertFalse(store.markTimerCancelled(timer.id()));
+    }
+
+    @Test
+    void markTimerCancelledReturnsFalseForFired() {
+        var timer = buildTimer("wf-fire-cancel", Instant.now().minusSeconds(10), TimerStatus.PENDING);
+        store.saveTimer(timer);
+
+        assertTrue(store.markTimerFired(timer.id()));
+        assertFalse(store.markTimerCancelled(timer.id()),
+                "cancelling an already-fired timer must lose the CAS");
     }
 
     @Test
