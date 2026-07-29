@@ -210,14 +210,21 @@ Bugs found so far:
 
 ## Open items (decide before the phase that needs them)
 
-1. **Wake re-check seam (blocks part of P2).** To test cross-node wake without a
-   notifier in bounded time, `WorkflowExecutor` needs to expose the
-   `SignalManager` wake-recheck interval (and the starter a
-   `maestro.signal.wake-recheck-interval` property). This is a small, legitimate
-   library improvement — the value currently also bounds production cross-node
-   signal latency for Kafka-without-Valkey deployments. Raise it in P2.
-2. **Ack-on-failure (P1).** Transport adapters ack even when the handler throws.
-   Write the contract test RED and `@Disabled("known defect — tasks/todo.md")`
-   unless a redelivery design with bounded retries + DLT lands.
+1. **Wake re-check seam (blocks part of P2).** ~~To test cross-node wake
+   without a notifier in bounded time, `WorkflowExecutor` needs to expose
+   the `SignalManager` wake-recheck interval~~ — **done.**
+   `maestro.signal.wake-recheck-interval` is now a real configuration
+   property (default 30s, unchanged), threaded through
+   `WorkflowExecutor`/`SignalManager`, and pinned by
+   `MaestroAutoConfigurationConfigSeamsTest`.
+2. **Ack-on-failure (P1).** ~~Transport adapters ack even when the handler
+   throws. Write the contract test RED and `@Disabled("known defect —
+   tasks/todo.md")` unless a redelivery design with bounded retries + DLT
+   lands.~~ — **done.** All three transports now apply bounded,
+   exponential-backoff redelivery and dead-letter on exhaustion
+   (`maestro.messaging.redelivery.*`); the `@Disabled` specs described here
+   are enabled and green (`KafkaAckOnFailureIT`,
+   `PostgresWorkflowMessagingTest`, `RabbitMqWorkflowMessagingTest`). See
+   `docs/open-issues.md` Issue 1 and `docs/release-notes.md`.
 3. **Ack-on-failure follow-through.** See item 2 — nothing further is open
    beyond that decision.
