@@ -31,7 +31,6 @@ nexusPublishing {
 // the gate then keeps it honest.
 val modulesWithoutTests = setOf(
     "maestro-admin",              // dashboard app — see docs/test-plan.md §1
-    "maestro-admin-client",       // lifecycle event publisher
     "maestro-store-jdbc",         // abstract base, exercised via maestro-store-postgres
 )
 

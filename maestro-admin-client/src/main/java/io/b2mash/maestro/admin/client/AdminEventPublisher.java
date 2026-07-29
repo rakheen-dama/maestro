@@ -64,7 +64,20 @@ public class AdminEventPublisher {
         var key = event.workflowId();
         try {
             var bytes = objectMapper.writeValueAsBytes(event);
-            kafkaTemplate.send(topic, key, bytes);
+            // KafkaTemplate.send() only throws for failures detectable before the
+            // record is handed to the producer (e.g. serialization at the Spring
+            // layer); the actual broker round-trip completes asynchronously via the
+            // returned future. Without observing that future, a broker-side failure
+            // (partition unavailable, timeout, etc.) would be silently dropped —
+            // whenComplete() below is what makes the WARN-and-swallow contract in
+            // this class's Javadoc true for both failure paths, not just the
+            // synchronous one.
+            kafkaTemplate.send(topic, key, bytes).whenComplete((result, ex) -> {
+                if (ex != null) {
+                    logger.warn("Failed to publish lifecycle event {} for workflow '{}' to topic '{}'",
+                            event.eventType(), key, topic, ex);
+                }
+            });
         } catch (Exception e) {
             logger.warn("Failed to publish lifecycle event {} for workflow '{}' to topic '{}'",
                     event.eventType(), key, topic, e);
