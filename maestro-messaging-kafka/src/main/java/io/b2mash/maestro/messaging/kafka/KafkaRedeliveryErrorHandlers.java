@@ -17,8 +17,12 @@ import java.time.Duration;
  * <p>A handler exception means the message was not processed — on the engine
  * signal channel it means the signal is not yet in Postgres — so the offset
  * must not be committed. {@link DefaultErrorHandler} seeks back to the failed
- * record instead of committing, which stalls the partition for the duration of
- * the backoff. That is deliberate: it preserves per-workflow ordering, and
+ * record and retries it in place for the duration of the backoff, instead of
+ * committing past it. Maestro's listener containers run with the default
+ * concurrency of one consumer thread per topic, so that thread owns every
+ * partition assigned to it: the backoff blocks consumption of the whole
+ * topic on this node for its duration, not just the failed record's
+ * partition. That is deliberate: it preserves per-workflow ordering, and
  * during a store outage the signal channel should pause rather than churn.
  * Once the attempt budget is spent the record is published to
  * {@code <topic><deadLetterSuffix>}, keeping its key and value and gaining

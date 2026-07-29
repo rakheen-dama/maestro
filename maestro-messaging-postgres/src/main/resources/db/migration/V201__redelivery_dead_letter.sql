@@ -26,7 +26,10 @@ ALTER TABLE maestro_signal_queue DROP CONSTRAINT chk_signal_queue_status;
 ALTER TABLE maestro_signal_queue ADD CONSTRAINT chk_signal_queue_status
     CHECK (status IN ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'DEAD_LETTER'));
 
--- The claim query now orders by due time, not insertion time.
+-- The claim query still orders by created_at (insertion order); this index
+-- swaps its WHERE-clause column from created_at to next_attempt_at only so a
+-- redelivery-eligibility check (status = 'PENDING' AND next_attempt_at <= now())
+-- can use it, not to change the query's ordering.
 DROP INDEX idx_signal_queue_pending;
 CREATE INDEX idx_signal_queue_pending
     ON maestro_signal_queue(service_name, next_attempt_at) WHERE status = 'PENDING';
