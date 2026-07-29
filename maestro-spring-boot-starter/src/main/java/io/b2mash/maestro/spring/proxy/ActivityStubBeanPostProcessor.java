@@ -3,6 +3,7 @@ package io.b2mash.maestro.spring.proxy;
 import io.b2mash.maestro.core.annotation.ActivityStub;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.engine.ActivityProxyFactory;
+import io.b2mash.maestro.core.engine.GatedWorkflowMessaging;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.retry.RetryExecutor;
 import io.b2mash.maestro.core.retry.RetryPolicy;
@@ -94,11 +95,18 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
         store = ctx.getBean(WorkflowStore.class);
         serializer = ctx.getBean(PayloadSerializer.class);
         retryExecutor = ctx.getBean(RetryExecutor.class);
-        lockKeyPrefix = ctx.getBean(MaestroProperties.class).getLock().keyPrefix();
+        var properties = ctx.getBean(MaestroProperties.class);
+        lockKeyPrefix = properties.getLock().keyPrefix();
 
         // Optional SPIs — null when not available
         distributedLock = ctx.getBeanProvider(DistributedLock.class).getIfAvailable();
-        messaging = ctx.getBeanProvider(WorkflowMessaging.class).getIfAvailable();
+        // Activity proxies are built here, independently of WorkflowExecutor, so
+        // ACTIVITY_* lifecycle events need their own gate on maestro.admin.events.enabled
+        // — WorkflowExecutor only gates the events it publishes itself and the
+        // components it constructs (SignalManager, SagaManager, DefaultWorkflowOperations).
+        // GatedWorkflowMessaging is the shared seam both paths use; see its Javadoc.
+        var rawMessaging = ctx.getBeanProvider(WorkflowMessaging.class).getIfAvailable();
+        messaging = GatedWorkflowMessaging.wrap(rawMessaging, properties.getAdmin().events().enabled());
 
         dependenciesResolved = true;
     }

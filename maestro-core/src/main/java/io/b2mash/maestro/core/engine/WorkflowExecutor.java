@@ -262,14 +262,20 @@ public final class WorkflowExecutor {
         }
         this.store = store;
         this.distributedLock = distributedLock;
-        this.messaging = messaging;
+        // Wrapped once, here, and handed to every component this executor builds
+        // (SignalManager, SagaManager, DefaultWorkflowOperations below) so the
+        // enabled flag is honoured by every lifecycle-event publisher this
+        // executor owns, not just this class's own WORKFLOW_* events — see
+        // GatedWorkflowMessaging's Javadoc for why this is the shared seam
+        // rather than each class re-implementing its own enabled check.
+        this.messaging = GatedWorkflowMessaging.wrap(messaging, lifecycleEventsEnabled);
         this.signalNotifier = signalNotifier;
         this.serializer = serializer;
         this.serviceName = serviceName;
         this.parkingLot = new ParkingLot();
         this.signalManager = new SignalManager(
-                store, messaging, signalNotifier, serializer, parkingLot, wakeRecheckInterval);
-        this.sagaManager = new SagaManager(store, messaging, serializer, serviceName);
+                store, this.messaging, signalNotifier, serializer, parkingLot, wakeRecheckInterval);
+        this.sagaManager = new SagaManager(store, this.messaging, serializer, serviceName);
         this.instanceLockManager = new WorkflowInstanceLockManager(
                 distributedLock, serviceName, lockKeyPrefix, instanceLockTtl,
                 instanceLockTtl.dividedBy(3));

@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.model.TimerStatus;
 import io.b2mash.maestro.core.model.WorkflowEvent;
@@ -7,6 +8,9 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.retry.RetryExecutor;
+import io.b2mash.maestro.core.retry.RetryPolicy;
+import io.b2mash.maestro.core.spi.LifecycleEventType;
 import io.b2mash.maestro.core.spi.SignalMessage;
 import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
@@ -47,6 +51,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>Issue 6: {@code enabled=false} (threaded in via the executor
  * constructor) must stop lifecycle publishing entirely, not just tolerate
  * failures from it.
+ *
+ * <p>Fix round 2 (QA Gate 5): {@code enabled=false} was only honoured by this
+ * class's own {@code WORKFLOW_*} events. {@link ActivityInvocationHandler}
+ * ({@code ACTIVITY_*}), {@link SignalManager} ({@code SIGNAL_RECEIVED}),
+ * {@link DefaultWorkflowOperations} ({@code TIMER_*}), and {@link
+ * io.b2mash.maestro.core.saga.SagaManager} ({@code COMPENSATION_*}) each
+ * checked only {@code messaging != null}, never the flag — a live E2E run
+ * with the flag set leaked 247 non-workflow-level events to Kafka. The
+ * activity/timer/signal/compensation tests below drive a workflow through
+ * all four of those paths and assert zero events reach the spy when
+ * disabled, so this class of regression is caught here rather than by live
+ * inspection of a Kafka topic.
  */
 @DisplayName("Lifecycle event publishing is off-thread and can be disabled")
 class WorkflowExecutorLifecycleEventPublishingTest {
@@ -165,6 +181,134 @@ class WorkflowExecutorLifecycleEventPublishingTest {
                 "shutdown must not wait out a stalled lifecycle publisher (30s block), took " + elapsed);
     }
 
+    // ── Fix round 2: enabled=false must gate EVERY lifecycle event type ────
+
+    @Test
+    @DisplayName("enabled=false stops activity, timer, and signal lifecycle events too — not just workflow-level ones")
+    void lifecycleEventsDisabled_stopsActivityTimerAndSignalEventsToo() throws Exception {
+        var messaging = new RecordingMessaging();
+        var serializer = new PayloadSerializer(new ObjectMapper());
+        executor = new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
+                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
+                false);
+
+        // Activity proxies are not built by WorkflowExecutor — in production
+        // ActivityStubBeanPostProcessor builds them independently, resolving its
+        // own WorkflowMessaging bean straight from the Spring context. A caller
+        // that wants activity lifecycle events gated therefore wraps messaging
+        // with the same GatedWorkflowMessaging seam WorkflowExecutor uses
+        // internally, before handing it to ActivityProxyFactory.
+        var gatedMessaging = GatedWorkflowMessaging.wrap(messaging, false);
+        var activities = new ActivityProxyFactory().createProxy(
+                GreetingActivities.class, new GreetingActivitiesImpl(),
+                store, null, gatedMessaging, RetryPolicy.defaultPolicy(), Duration.ofSeconds(5),
+                serializer, new RetryExecutor());
+
+        var workflow = new FullLifecycleWorkflow(activities);
+        var method = FullLifecycleWorkflow.class.getMethod("run", String.class);
+
+        var instanceId = executor.startWorkflow("full-lifecycle-disabled", "FullLifecycleWorkflow", "default",
+                "world", workflow, method);
+
+        await().atMost(Duration.ofSeconds(5)).until(() ->
+                store.getInstance("full-lifecycle-disabled")
+                        .map(i -> i.status() == WorkflowStatus.WAITING_TIMER)
+                        .orElse(false));
+        // The activity call is the workflow's first operation (sequence 1);
+        // sleep() is the second (sequence 2) — see DefaultWorkflowOperations.sleep.
+        var timer = store.findTimer(instanceId, "sleep-2").orElseThrow();
+        executor.fireTimer("full-lifecycle-disabled", "sleep-2", timer.id());
+
+        await().atMost(Duration.ofSeconds(5)).until(() ->
+                store.getInstance("full-lifecycle-disabled")
+                        .map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL)
+                        .orElse(false));
+        executor.deliverSignal("full-lifecycle-disabled", "go", "approved");
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertEquals(WorkflowStatus.COMPLETED,
+                        store.getInstance("full-lifecycle-disabled").orElseThrow().status()));
+
+        // Deterministic, not a timing guess: shutdown() drains the lifecycle
+        // publisher (see LifecycleEventPublisher#shutdown) before returning.
+        executor.shutdown();
+        assertEquals(List.of(), messaging.events,
+                "no lifecycle event of ANY type may reach messaging when disabled — activity, "
+                        + "timer, and signal events must be gated exactly like workflow-level ones");
+    }
+
+    @Test
+    @DisplayName("enabled=false stops saga compensation lifecycle events too")
+    void lifecycleEventsDisabled_stopsCompensationEventsToo() throws Exception {
+        var messaging = new RecordingMessaging();
+        var serializer = new PayloadSerializer(new ObjectMapper());
+        executor = new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
+                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
+                false);
+
+        var workflow = new CompensatingWorkflow();
+        var method = CompensatingWorkflow.class.getMethod("run", String.class);
+
+        executor.startWorkflow("comp-disabled", "CompensatingWorkflow", "default", "hello", workflow, method);
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertEquals(WorkflowStatus.FAILED, store.getInstance("comp-disabled").orElseThrow().status()));
+
+        executor.shutdown();
+        assertEquals(List.of(), messaging.events,
+                "no COMPENSATION_* lifecycle event may reach messaging when disabled");
+    }
+
+    @Test
+    @DisplayName("enabled=true (the default) still publishes activity, timer, and signal events — the positive control")
+    void lifecycleEventsEnabled_publishesActivityTimerAndSignalEventsToo() throws Exception {
+        // Without this control, the disabled-case test above could pass
+        // vacuously if the workflow shape itself never generated non-workflow-
+        // level events (e.g. a typo in a signal/timer name that never fires).
+        var messaging = new RecordingMessaging();
+        var serializer = new PayloadSerializer(new ObjectMapper());
+        executor = new WorkflowExecutor(store, null, messaging, null, serializer, "test-service");
+
+        var gatedMessaging = GatedWorkflowMessaging.wrap(messaging, true);
+        var activities = new ActivityProxyFactory().createProxy(
+                GreetingActivities.class, new GreetingActivitiesImpl(),
+                store, null, gatedMessaging, RetryPolicy.defaultPolicy(), Duration.ofSeconds(5),
+                serializer, new RetryExecutor());
+
+        var workflow = new FullLifecycleWorkflow(activities);
+        var method = FullLifecycleWorkflow.class.getMethod("run", String.class);
+
+        var instanceId = executor.startWorkflow("full-lifecycle-enabled", "FullLifecycleWorkflow", "default",
+                "world", workflow, method);
+
+        await().atMost(Duration.ofSeconds(5)).until(() ->
+                store.getInstance("full-lifecycle-enabled")
+                        .map(i -> i.status() == WorkflowStatus.WAITING_TIMER)
+                        .orElse(false));
+        var timer = store.findTimer(instanceId, "sleep-2").orElseThrow();
+        executor.fireTimer("full-lifecycle-enabled", "sleep-2", timer.id());
+
+        await().atMost(Duration.ofSeconds(5)).until(() ->
+                store.getInstance("full-lifecycle-enabled")
+                        .map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL)
+                        .orElse(false));
+        executor.deliverSignal("full-lifecycle-enabled", "go", "approved");
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertEquals(WorkflowStatus.COMPLETED,
+                        store.getInstance("full-lifecycle-enabled").orElseThrow().status()));
+
+        executor.shutdown();
+        var types = messaging.events.stream().map(WorkflowLifecycleEvent::eventType).toList();
+        assertTrue(types.contains(LifecycleEventType.WORKFLOW_STARTED));
+        assertTrue(types.contains(LifecycleEventType.ACTIVITY_STARTED));
+        assertTrue(types.contains(LifecycleEventType.ACTIVITY_COMPLETED));
+        assertTrue(types.contains(LifecycleEventType.TIMER_SCHEDULED));
+        assertTrue(types.contains(LifecycleEventType.TIMER_FIRED));
+        assertTrue(types.contains(LifecycleEventType.SIGNAL_RECEIVED));
+        assertTrue(types.contains(LifecycleEventType.WORKFLOW_COMPLETED));
+    }
+
     // ── Fixtures ─────────────────────────────────────────────────────────
 
     /** Completes immediately and counts down a latch so the test can synchronise. */
@@ -178,6 +322,48 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         public String run(String input) {
             latch.countDown();
             return input;
+        }
+    }
+
+    /** A trivial activity, invoked through a real memoizing proxy so ACTIVITY_* events are published. */
+    public interface GreetingActivities {
+        String greet(String name);
+    }
+
+    /** @see GreetingActivities */
+    public static class GreetingActivitiesImpl implements GreetingActivities {
+        @Override
+        public String greet(String name) {
+            return "hello " + name;
+        }
+    }
+
+    /**
+     * Drives an activity call, a durable sleep, and a signal await in one run —
+     * every lifecycle-event source {@link WorkflowExecutor} touches except saga
+     * compensation (see {@link CompensatingWorkflow} for that one).
+     */
+    public static class FullLifecycleWorkflow {
+        private final GreetingActivities activities;
+
+        public FullLifecycleWorkflow(GreetingActivities activities) {
+            this.activities = activities;
+        }
+
+        public String run(String input) {
+            var greeting = activities.greet(input);
+            WorkflowContext.current().sleep(Duration.ofMillis(50));
+            var signal = WorkflowContext.current().awaitSignal("go", String.class, Duration.ofSeconds(10));
+            return greeting + ":" + signal;
+        }
+    }
+
+    /** Registers a compensation, then fails — exercises SagaManager's COMPENSATION_* events. */
+    public static class CompensatingWorkflow {
+        public String run(String input) {
+            var wf = WorkflowContext.current();
+            wf.addCompensation("undo-" + input, () -> {});
+            throw new IllegalStateException("deliberate failure for the compensation-gating test");
         }
     }
 
@@ -299,6 +485,14 @@ class WorkflowExecutorLifecycleEventPublishingTest {
 
         @Override
         public boolean markSignalConsumed(UUID signalId) {
+            for (var i = 0; i < signals.size(); i++) {
+                var s = signals.get(i);
+                if (s.id().equals(signalId) && !s.consumed()) {
+                    signals.set(i, new WorkflowSignal(s.id(), s.workflowInstanceId(), s.workflowId(),
+                            s.signalName(), s.payload(), true, s.receivedAt()));
+                    return true;
+                }
+            }
             return false;
         }
 
@@ -328,6 +522,14 @@ class WorkflowExecutorLifecycleEventPublishingTest {
 
         @Override
         public boolean markTimerFired(UUID timerId) {
+            for (var i = 0; i < timers.size(); i++) {
+                var t = timers.get(i);
+                if (t.id().equals(timerId) && t.status() == TimerStatus.PENDING) {
+                    timers.set(i, new WorkflowTimer(t.id(), t.workflowInstanceId(), t.workflowId(),
+                            t.timerId(), t.fireAt(), TimerStatus.FIRED, t.createdAt()));
+                    return true;
+                }
+            }
             return false;
         }
 
