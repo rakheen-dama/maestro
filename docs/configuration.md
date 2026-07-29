@@ -67,6 +67,76 @@ When `consumer-group` is not explicitly set, Maestro derives it from the service
 name as `maestro-{serviceName}`. This ensures each service gets its own consumer
 group by default, which is the correct behavior for most deployments.
 
+### Redelivery and Dead-Letter Properties
+
+A message handler that throws has **not** processed the message — on the signal
+channel it means the signal is not yet in Postgres — so no transport
+acknowledges it. Every transport redelivers with exponential backoff and, once
+the attempt budget is spent, routes the message to a durable, inspectable
+dead-letter destination rather than dropping it or looping on it forever.
+
+| Property                                          | Type       | Default                 | Description                                                                 |
+|---------------------------------------------------|------------|-------------------------|-----------------------------------------------------------------------------|
+| `maestro.messaging.redelivery.max-attempts`       | `int`      | `10`                    | Total delivery attempts, including the first. All transports.               |
+| `maestro.messaging.redelivery.initial-interval`   | `Duration` | `1s`                    | Backoff before the second attempt. All transports.                          |
+| `maestro.messaging.redelivery.multiplier`         | `double`   | `2.0`                   | Factor applied to the backoff after each failure. All transports.           |
+| `maestro.messaging.redelivery.max-interval`       | `Duration` | `30s`                   | Ceiling for the computed backoff. All transports.                           |
+| `maestro.messaging.redelivery.dead-letter-suffix` | `String`   | `".DLT"`                | Appended to a topic to name its dead-letter topic. **Kafka only.**          |
+| `maestro.messaging.redelivery.dead-letter-exchange`| `String`  | `"maestro.dead-letter"` | Exchange exhausted messages are republished to. **RabbitMQ only.**          |
+
+The delay before the attempt following the *n*-th failure is
+`min(initial-interval × multiplier^(n-1), max-interval)`. The defaults give
+1s, 2s, 4s, 8s, 16s, 30s, 30s, 30s, 30s between 10 attempts — roughly 2.5
+minutes of tolerance, long enough to ride out a store blip and short enough
+that a poison message does not stall a service's signal channel for long.
+
+**Tuning.** Raise `max-attempts` if your store outages routinely run longer
+than the budget (an outage longer than the budget dead-letters signals, which
+then need an operator replay — they are parked, never lost). Lower it to
+contain a poison message sooner. There is no unbounded mode: a poison message
+would stall its partition or queue forever behind it.
+
+**Where exhausted messages go:**
+
+| Transport | Destination | Created by |
+|---|---|---|
+| Kafka | `<topic>` + `dead-letter-suffix`, e.g. `maestro.signals.order-service.DLT` | **The operator** — Maestro never creates topics |
+| Postgres | The same queue row, in `DEAD_LETTER` status | Nothing to create |
+| RabbitMQ | `<queue>.dlq`, bound to `dead-letter-exchange` | The module declares it idempotently, like its other topology |
+
+If a Kafka dead-letter topic is missing, the publish fails, the offset is not
+committed and the record is attempted again: consumption stalls noisily instead
+of losing the message.
+
+**Inspecting and replaying.** On Kafka a dead-letter topic is an ordinary
+topic — read it with any consumer (`kafka-console-consumer --topic
+maestro.signals.order-service.DLT --from-beginning --property
+print.headers=true`; the `kafka_dlt-*` headers carry the original topic,
+partition, offset and exception) and replay by producing the record back to the
+source topic with the same key. On Postgres use
+`PostgresWorkflowMessaging.listDeadLetterSignals` / `listDeadLetterTasks` and
+`replaySignal(id)` / `replayTask(id)`, or plain SQL:
+
+```sql
+SELECT id, workflow_id, signal_name, attempts, last_error, created_at
+  FROM maestro_signal_queue
+ WHERE service_name = 'order-service' AND status = 'DEAD_LETTER'
+ ORDER BY created_at;
+
+UPDATE maestro_signal_queue
+   SET status = 'PENDING', attempts = 0, next_attempt_at = now(), last_error = NULL
+ WHERE id = '...' AND status = 'DEAD_LETTER';
+```
+
+`DEAD_LETTER` rows are never removed by `PostgresMessageCleaner` — they are the
+inspectable destination. Rows stranded as `FAILED` by versions before
+redelivery existed can be rescued once, deliberately:
+
+```sql
+UPDATE maestro_signal_queue SET status = 'PENDING', next_attempt_at = now() WHERE status = 'FAILED';
+UPDATE maestro_task_queue   SET status = 'PENDING', next_attempt_at = now() WHERE status = 'FAILED';
+```
+
 ---
 
 ### Postgres Messaging
