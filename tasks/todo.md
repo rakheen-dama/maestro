@@ -140,4 +140,12 @@ Branch: `worktree-release-readiness` off `main` @ 0502b38.
 - [x] Task 7 — Issue 10a: RabbitMQ first suite (3x green) + Issue 1 parity; off the allowlist
 - [x] Task 8 — Issue 10b: admin-client / admin / store-jdbc suites — all off the allowlist, gate empty
 - [x] Task 9 — Docs truth pass + release notes; issues 13-15 recorded; all spot-checks passed
-- [ ] Task 10 — QA: full build 3×, e2eTest, loan E2E (process identity), admin dashboard live check
+- [x] Task 10 — QA: all gates passed (found+drove fix for enabled-flag event leak)
+
+## Review — Release Readiness milestone (2026-07-29)
+
+All 10 tasks complete; issues 1–10 closed, 11/12 documented as known limitations, new issues 13–15 recorded.
+- 42+ commits on `worktree-release-readiness` (base `main` @ 0502b38). Final whole-branch review (after 10 per-task reviews): ready to merge; its one Important finding (docs misattribution) fixed in `14a5fba` and re-review clean.
+- Defects found and fixed BEYOND the original issue list: admin missing kafka+flyway starters (boot-breaking), admin-client silently dropping async send failures, `enabled=false` leaking ACTIVITY_*/SIGNAL_*/TIMER_*/COMPENSATION_* events (caught by QA gate 5 live E2E, fixed via GatedWorkflowMessaging).
+- Verification: full `./gradlew build` green post-fix; integration suite 69/69 across 3 `--rerun-tasks` runs; loan E2E 6/6 with process-identity proof; admin ingestion verified over HTTP.
+- Breaking changes (all in docs/release-notes.md): WorkflowStore.findTimer, ExecutorShutdownException→Error, KafkaMessagingConfig fields, @MaestroSignalListener KafkaTemplate requirement. Operators must pre-create .DLT topics before upgrading.
