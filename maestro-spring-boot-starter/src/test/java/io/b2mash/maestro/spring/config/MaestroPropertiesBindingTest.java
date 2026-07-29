@@ -54,6 +54,28 @@ class MaestroPropertiesBindingTest {
     }
 
     @Test
+    @DisplayName("the redelivery block binds from configuration")
+    void redeliveryBlockBinds() {
+        runner.withPropertyValues(
+                        "maestro.service-name=binding-test",
+                        "maestro.messaging.redelivery.max-attempts=4",
+                        "maestro.messaging.redelivery.initial-interval=250ms",
+                        "maestro.messaging.redelivery.multiplier=3.5",
+                        "maestro.messaging.redelivery.max-interval=90s",
+                        "maestro.messaging.redelivery.dead-letter-suffix=.dead",
+                        "maestro.messaging.redelivery.dead-letter-exchange=custom.dead-letter")
+                .run(context -> {
+                    var redelivery = context.getBean(MaestroProperties.class).getMessaging().redelivery();
+                    assertThat(redelivery.maxAttempts()).isEqualTo(4);
+                    assertThat(redelivery.initialInterval()).isEqualTo(Duration.ofMillis(250));
+                    assertThat(redelivery.multiplier()).isEqualTo(3.5);
+                    assertThat(redelivery.maxInterval()).isEqualTo(Duration.ofSeconds(90));
+                    assertThat(redelivery.deadLetterSuffix()).isEqualTo(".dead");
+                    assertThat(redelivery.deadLetterExchange()).isEqualTo("custom.dead-letter");
+                });
+    }
+
+    @Test
     @DisplayName("store, lock, timer, recovery and retry blocks bind from configuration")
     void remainingBlocksBind() {
         runner.withPropertyValues(
@@ -100,6 +122,13 @@ class MaestroPropertiesBindingTest {
             assertThat(properties.getMessaging().consumerGroup()).isNull();
             assertThat(properties.getMessaging().topics().tasks()).isNull();
             assertThat(properties.getMessaging().topics().adminEvents()).isEqualTo("maestro.admin.events");
+            var redelivery = properties.getMessaging().redelivery();
+            assertThat(redelivery.maxAttempts()).isEqualTo(10);
+            assertThat(redelivery.initialInterval()).isEqualTo(Duration.ofSeconds(1));
+            assertThat(redelivery.multiplier()).isEqualTo(2.0);
+            assertThat(redelivery.maxInterval()).isEqualTo(Duration.ofSeconds(30));
+            assertThat(redelivery.deadLetterSuffix()).isEqualTo(".DLT");
+            assertThat(redelivery.deadLetterExchange()).isEqualTo("maestro.dead-letter");
             assertThat(properties.getLock().type()).isEqualTo("valkey");
             assertThat(properties.getLock().ttl()).isEqualTo(Duration.ofSeconds(30));
             assertThat(properties.getTimer().pollInterval()).isEqualTo(Duration.ofSeconds(5));

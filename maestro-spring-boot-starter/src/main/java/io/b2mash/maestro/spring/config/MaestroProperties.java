@@ -213,15 +213,64 @@ public class MaestroProperties {
      * @param type          messaging implementation type (e.g., {@code "kafka"})
      * @param consumerGroup Kafka consumer group; defaults to the service name at runtime
      * @param topics        topic name configuration
+     * @param redelivery    handler-failure redelivery and dead-letter policy
      */
     public record MessagingProperties(
             @DefaultValue("kafka") String type,
             @Nullable String consumerGroup,
-            @DefaultValue TopicsProperties topics
+            @DefaultValue TopicsProperties topics,
+            @DefaultValue RedeliveryProperties redelivery
     ) {
         /** @return the defaults documented above */
         public static MessagingProperties defaults() {
-            return new MessagingProperties("kafka", null, TopicsProperties.defaults());
+            return new MessagingProperties("kafka", null,
+                    TopicsProperties.defaults(), RedeliveryProperties.defaults());
+        }
+    }
+
+    /**
+     * Redelivery and dead-letter policy applied when a message handler throws.
+     *
+     * <p>A handler exception means the message was <em>not</em> processed — on
+     * the engine signal channel it means the signal is not yet durable — so the
+     * transport must not acknowledge it. Every transport therefore redelivers
+     * the message with exponential backoff and, once the attempt budget is
+     * exhausted, routes it to a durable, inspectable dead-letter destination
+     * rather than dropping it or looping on it forever.
+     *
+     * <p>The delay before the attempt following the <i>n</i>-th failure is
+     * {@code min(initialInterval × multiplier^(n-1), maxInterval)}, and
+     * {@code maxAttempts} counts the initial attempt (matching
+     * {@code RetryPolicy} semantics). The defaults give roughly
+     * 1s, 2s, 4s, 8s, 16s, 30s, 30s, 30s, 30s between 10 attempts — about
+     * 2.5 minutes of tolerance for a transient store outage before a message
+     * is parked. Raise {@code max-attempts} for longer outage tolerance;
+     * lower it to contain a poison message sooner.
+     *
+     * <p>Dead-letter destinations are never created by Maestro on Kafka: the
+     * {@code <topic><dead-letter-suffix>} topics are pre-declared by the
+     * operator like every other topic. The Postgres transport needs nothing
+     * created (it parks rows in {@code DEAD_LETTER} status).
+     *
+     * @param maxAttempts        total delivery attempts, including the first
+     * @param initialInterval    backoff before the second attempt
+     * @param multiplier         factor applied to the backoff after each failure
+     * @param maxInterval        ceiling for the computed backoff
+     * @param deadLetterSuffix   Kafka only — suffix appended to the source topic
+     * @param deadLetterExchange RabbitMQ only — exchange exhausted messages are republished to
+     */
+    public record RedeliveryProperties(
+            @DefaultValue("10") int maxAttempts,
+            @DefaultValue("1s") Duration initialInterval,
+            @DefaultValue("2.0") double multiplier,
+            @DefaultValue("30s") Duration maxInterval,
+            @DefaultValue(".DLT") String deadLetterSuffix,
+            @DefaultValue("maestro.dead-letter") String deadLetterExchange
+    ) {
+        /** @return the defaults documented above */
+        public static RedeliveryProperties defaults() {
+            return new RedeliveryProperties(10, Duration.ofSeconds(1), 2.0,
+                    Duration.ofSeconds(30), ".DLT", "maestro.dead-letter");
         }
     }
 
