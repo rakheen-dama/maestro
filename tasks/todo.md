@@ -136,7 +136,7 @@ Branch: `worktree-release-readiness` off `main` @ 0502b38.
 - [x] Task 3 — Issues 4+5: ExecutorShutdownException → Error; SagaManager rethrow — catch ordering, ParkingLot/RetryExecutor/ActivityInvocationHandler/DefaultWorkflowOperations audit fixes, CLAUDE.md documented
 - [x] Task 4 — Issues 7+9: config seams — all three wired, defaults unchanged
 - [x] Task 5 — Issue 8: MaestroHealthIndicator — auto-configured on Actuator classpath, UP/DOWN + poller/running-count details
-- [ ] Task 6 — Issue 1: signal no-loss policy (Kafka + Postgres) per approved design
+- [x] Task 6 — Issue 1: signal no-loss (Kafka + Postgres) — redelivery + DLT/DEAD_LETTER + replay API, both specs enabled
 - [ ] Task 7 — Issue 10a: RabbitMQ suite + Issue 1 parity
 - [ ] Task 8 — Issue 10b: admin-client / admin / store-jdbc suites
 - [ ] Task 9 — Docs truth pass + release notes (Issues 11/12 → known limitations)
