@@ -238,6 +238,60 @@ class WorkflowExecutorShutdownTest {
                 "the genuine failure must still be finalised once compensation completes");
     }
 
+    @Test
+    @DisplayName("Shutdown mid-compensation does not re-invoke a compensation that already completed "
+            + "before a LATER one (not first in LIFO order) was interrupted (Issue 14)")
+    void shutdown_duringCompensationWithEarlierStepAlreadyCompleted_doesNotReinvokeItOnRecovery()
+            throws Exception {
+        // Unlike ParkingCompensationWorkflow above (whose parking step is
+        // FIRST in LIFO order, so shutdown always interrupts before anything
+        // completes), this fixture's parking step is registered FIRST and
+        // therefore unwinds SECOND — its sibling completes durably before
+        // the interruption. This is the shape docs/open-issues.md Issue 14
+        // notes none of the other shutdown fixtures exercise.
+        var completedInvocations = new AtomicInteger();
+        var workflow = new ParkingSecondCompensationWorkflow(completedInvocations);
+        var method = ParkingSecondCompensationWorkflow.class.getMethod("run", String.class);
+        executor.startWorkflow("mid-comp-completed-first", "ParkingSecondCompensationWorkflow", "default",
+                "input", workflow, method);
+
+        awaitStatus("mid-comp-completed-first", WorkflowStatus.WAITING_SIGNAL);
+        assertEquals(1, completedInvocations.get(),
+                "the first-in-LIFO-order compensation must have completed before the second ever parked");
+        assertEquals(1, countEventsForStep("mid-comp-completed-first",
+                        EventType.COMPENSATION_STEP_COMPLETED, "completes-first"),
+                "the completed compensation step's outcome must be durable before shutdown");
+
+        executor.shutdown();
+
+        assertEquals(1, completedInvocations.get(), "shutdown itself must not trigger a re-invocation");
+        assertFalse(hasEvent("mid-comp-completed-first", EventType.WORKFLOW_FAILED));
+
+        secondExecutor = new WorkflowExecutor(store, null, null, null, serializer, "node-b");
+        var registrations = Map.of("ParkingSecondCompensationWorkflow",
+                new WorkflowRegistration("ParkingSecondCompensationWorkflow", "default", workflow, method));
+        assertEquals(1, secondExecutor.recoverWorkflows(registrations),
+                "the workflow abandoned mid-compensation must be recoverable by a fresh node");
+
+        awaitStatus("mid-comp-completed-first", WorkflowStatus.WAITING_SIGNAL);
+        secondExecutor.deliverSignal("mid-comp-completed-first",
+                ParkingSecondCompensationWorkflow.RESUME_SIGNAL, "resumed");
+
+        awaitStatus("mid-comp-completed-first", WorkflowStatus.FAILED);
+
+        assertEquals(1, completedInvocations.get(),
+                "the already-completed compensation action must NOT be re-invoked by the recovery replay");
+        assertEquals(1, countEventsForStep("mid-comp-completed-first",
+                        EventType.COMPENSATION_STEP_COMPLETED, "completes-first"),
+                "no duplicate COMPENSATION_STEP_COMPLETED event may be appended for the "
+                        + "already-completed step on replay");
+        assertEquals(1, countEventsForStep("mid-comp-completed-first",
+                        EventType.COMPENSATION_STEP_COMPLETED, "blocks-second"),
+                "the previously-interrupted step must complete exactly once once resumed");
+        assertTrue(hasEvent("mid-comp-completed-first", EventType.COMPENSATION_COMPLETED));
+        assertTrue(hasEvent("mid-comp-completed-first", EventType.WORKFLOW_FAILED));
+    }
+
     // NOTE: SagaManager.executeParallel's shutdown-rethrow check (the analogous
     // fix for @Saga(parallelCompensation = true)) has no test here — it is
     // currently unreachable. See the fix-round-1 report for the call-chain
@@ -541,6 +595,13 @@ class WorkflowExecutorShutdownTest {
         return store.getEvents(instance.id()).stream().anyMatch(e -> e.eventType() == type);
     }
 
+    private long countEventsForStep(String workflowId, EventType type, String stepName) {
+        var instance = store.getInstance(workflowId).orElseThrow();
+        return store.getEvents(instance.id()).stream()
+                .filter(e -> e.eventType() == type && stepName.equals(e.stepName()))
+                .count();
+    }
+
     // ── Workflow fixtures ──────────────────────────────────────────────
 
     /** Parks on a signal that the test never sends unless it means to. */
@@ -698,6 +759,41 @@ class WorkflowExecutorShutdownTest {
             wf.addCompensation("release", released::incrementAndGet);
             wf.addCompensation("parking-compensation",
                     () -> WorkflowContext.current().awaitSignal(RESUME_SIGNAL, String.class, NEVER));
+            throw new IllegalStateException("Intentional failure to trigger compensation");
+        }
+    }
+
+    /**
+     * The Issue 14 shape {@link ParkingCompensationWorkflow} does not cover:
+     * here the compensation registered <em>first</em> — {@code blocks-second},
+     * which parks — unwinds SECOND in LIFO order, so {@code completes-first}
+     * runs (and completes durably) before the interruption, rather than
+     * being the one shutdown catches mid-flight.
+     */
+    public static class ParkingSecondCompensationWorkflow {
+
+        /** The signal that unblocks the parking compensation on recovery. */
+        public static final String RESUME_SIGNAL = "resume-second-compensation";
+
+        private final AtomicInteger completedInvocations;
+
+        /** @param completedInvocations counter incremented by the "completes-first" compensation */
+        public ParkingSecondCompensationWorkflow(AtomicInteger completedInvocations) {
+            this.completedInvocations = completedInvocations;
+        }
+
+        /**
+         * @param input unused seed
+         * @return never returns
+         */
+        public String run(String input) {
+            var wf = WorkflowContext.current();
+            // Registered first -> unwinds SECOND -> the one shutdown interrupts.
+            wf.addCompensation("blocks-second",
+                    () -> WorkflowContext.current().awaitSignal(RESUME_SIGNAL, String.class, NEVER));
+            // Registered second -> unwinds FIRST -> completes durably before
+            // the interruption above ever runs.
+            wf.addCompensation("completes-first", completedInvocations::incrementAndGet);
             throw new IllegalStateException("Intentional failure to trigger compensation");
         }
     }
