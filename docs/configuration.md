@@ -94,7 +94,18 @@ that a poison message does not stall a service's signal channel for long.
 than the budget (an outage longer than the budget dead-letters signals, which
 then need an operator replay — they are parked, never lost). Lower it to
 contain a poison message sooner. There is no unbounded mode: a poison message
-would stall its partition or queue forever behind it.
+would stall redelivery forever behind it — on Kafka this stalls the whole
+*topic* on that node (the default listener concurrency is one consumer
+thread per topic, which owns every partition assigned to it, not just the
+failed record's partition); on Postgres/RabbitMQ it stalls that queue.
+
+**Fatal exceptions bypass retries.** On Kafka, `DefaultErrorHandler` treats a
+handful of exception types as unrecoverable regardless of the configured
+budget — deserialization failures, `ClassCastException`, and other framework
+conversion errors — and sends the record straight to the dead-letter topic on
+the first attempt rather than retrying it. This is spring-kafka's own default
+classification, not something Maestro configures; the `max-attempts` budget
+above only governs exceptions it doesn't consider fatal.
 
 **Where exhausted messages go:**
 
@@ -272,6 +283,29 @@ per-instance distributed lock guarantees only one of them wins each workflow.
 |----------------------------------|------------|---------|-----------------------------------------------------------------------------|
 | `maestro.recovery.enabled`       | `boolean`  | `true`  | Whether the periodic recovery poller runs.                                   |
 | `maestro.recovery.poll-interval` | `Duration` | `60s`   | Interval between recovery cycles. Together with the 30s instance-lock TTL, this bounds how long an orphaned workflow waits before another node adopts it. |
+
+---
+
+## Shutdown and Signal Configuration
+
+| Property                              | Type       | Default | Description                                                                                                    |
+|----------------------------------------|------------|---------|------------------------------------------------------------------------------------------------------------------|
+| `maestro.shutdown.timeout`            | `Duration` | `30s`   | How long graceful shutdown waits for in-flight workflows to drain before forcing through. |
+| `maestro.signal.wake-recheck-interval`| `Duration` | `30s`   | How often a parked workflow re-reads the store for a signal it may have missed. |
+
+Both were previously hardcoded 30-second constants with no configuration
+seam; they now bind under `maestro.*` like every other property, with the
+same 30s defaults, so unset deployments are unaffected.
+
+`maestro.signal.wake-recheck-interval` is a real operational knob, not just a
+test seam: it bounds cross-node signal latency for any deployment running
+Kafka without a `SignalNotifier` (i.e. without Valkey's pub/sub wake) — a
+signal delivered to a node other than the one holding the parked workflow is
+picked up on the next re-check, not instantly, in that configuration.
+
+`maestro.lock.key-prefix` (see [Lock Configuration](#lock-configuration))
+now also applies to the activity execution lock, not just the instance
+lock — both honour the same configured prefix.
 
 ---
 

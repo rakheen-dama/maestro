@@ -70,7 +70,8 @@ maestro/
 │   ├── sample-order-service        ← Order fulfilment workflow (e-commerce demo)
 │   ├── sample-payment-gateway      ← Payment processing with durable retries & saga
 │   ├── sample-postgres-only        ← Document approval (Postgres-only, zero external deps)
-│   └── sample-rabbitmq-order-service ← Order fulfilment using RabbitMQ + Postgres
+│   ├── sample-rabbitmq-order-service ← Order fulfilment using RabbitMQ + Postgres
+│   └── sample-loan-origination     ← Multi-service loan E2E (application/underwriting/verification), nightly CI
 └── docs/
 ```
 
@@ -91,12 +92,14 @@ public interface WorkflowStore {
 
     void saveSignal(WorkflowSignal signal);
     List<WorkflowSignal> getUnconsumedSignals(String workflowId, String signalName);
-    void markSignalConsumed(UUID signalId);
+    boolean markSignalConsumed(UUID signalId);           // CAS: false if already consumed
     void adoptOrphanedSignals(String workflowId, UUID instanceId);
 
     void saveTimer(WorkflowTimer timer);
     List<WorkflowTimer> getDueTimers(Instant now, int batchSize);
-    void markTimerFired(UUID timerId);
+    Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId); // any status; replay self-heal
+    boolean markTimerFired(UUID timerId);                 // CAS: false if already fired/cancelled
+    void markTimerCancelled(UUID timerId);
 }
 
 public interface WorkflowMessaging {
@@ -202,7 +205,12 @@ Locks are best-effort guards: if one expires or is lost, the unique event index 
 
 ## Configuration Namespace
 
-All under `maestro.*`. Topics are pre-created, declared in config.
+All under `maestro.*`. Topics are pre-created, declared in config. Full
+reference: `docs/configuration.md`. Notable properties added post-0.3.0:
+`maestro.shutdown.timeout` (default 30s), `maestro.signal.wake-recheck-interval`
+(default 30s), `maestro.messaging.redelivery.*` (bounded retry + dead-letter
+policy, all transports), `maestro.admin.events.enabled` (now actually wired;
+`.topic` is a deprecated alias for `maestro.messaging.topics.admin-events`).
 
 ## Coding Standards
 

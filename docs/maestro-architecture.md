@@ -634,7 +634,17 @@ flowchart TD
 
 ### Graceful Shutdown
 
-SIGTERM → stop accepting new workflows → stop Kafka consumers → wait for in-flight activities (30s default) → release Valkey locks → shutdown.
+SIGTERM → stop accepting new workflows → stop Kafka consumers → wait for in-flight activities (30s by default, configurable via `maestro.shutdown.timeout`) → release Valkey locks → shutdown.
+
+A workflow parked mid-drain (awaiting a signal or timer, or mid-compensation)
+is abandoned rather than failed: shutdown raises `ExecutorShutdownException`
+(an `Error`, deliberately outside the `MaestroException` hierarchy so an
+ordinary workflow-author `catch (Exception e)` cannot swallow it and
+misrecord the abandonment as a failure), the instance is left in its current
+active status, and a fresh node's recovery picks it up and completes it —
+including when the abandonment happens while a saga's compensations are
+running, which leaves the instance `COMPENSATING` rather than recorded as a
+failed compensation step.
 
 ---
 
