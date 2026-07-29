@@ -1,5 +1,6 @@
 package io.b2mash.maestro.spring.health;
 
+import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
@@ -16,8 +17,10 @@ import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import tools.jackson.databind.ObjectMapper;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -30,8 +33,19 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code MaestroHealthIndicator}; these tests pin the auto-configuration
  * conditions — present only when Actuator's health classes are on the
  * classpath and Maestro itself has activated — and the indicator's
- * behaviour: {@code UP} with store/poller/running-count details when the
- * store is reachable, {@code DOWN} when it throws.
+ * behaviour: {@code UP} only when the store is reachable and every
+ * <em>enabled</em> poller is running; a poller disabled by configuration
+ * (e.g. {@code maestro.recovery.enabled=false}) does not affect status and
+ * is reported as {@code "disabled"} rather than a boolean; {@code DOWN}
+ * when the store throws, the timer poller (always expected to run) is not
+ * running, or the recovery poller is enabled but not running.
+ *
+ * <p>The timer and recovery pollers are only started by the starter's
+ * {@code StartupRecoveryRunner} — an {@code ApplicationRunner} that a bare
+ * {@link ApplicationContextRunner} never invokes — so tests that need a
+ * poller running start it directly via the {@link WorkflowExecutor} bean,
+ * mirroring how {@code MaestroAutoConfigurationConfigSeamsTest} drives the
+ * engine directly through its real beans.
  */
 @DisplayName("MaestroHealthAutoConfiguration")
 class MaestroHealthAutoConfigurationTest {
@@ -79,18 +93,91 @@ class MaestroHealthAutoConfigurationTest {
     }
 
     @Test
-    @DisplayName("status is UP with store/poller/running-count details when the store is reachable")
-    void upWithDetailsWhenStoreReachable() {
+    @DisplayName("status is UP with store/poller/running-count details when the store is reachable "
+            + "and both pollers are running")
+    void upWhenStoreReachableAndPollersRunning() {
         runner.withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    var executor = context.getBean(WorkflowExecutor.class);
+                    executor.startTimerPoller(Duration.ofSeconds(5), 100);
+                    executor.startRecoveryPoller(Map.of(), Duration.ofSeconds(60));
+                    try {
+                        var indicator = context.getBean(MaestroHealthIndicator.class);
+                        var health = indicator.health();
+
+                        assertThat(health.getStatus()).isEqualTo(Status.UP);
+                        assertThat(health.getDetails())
+                                .containsEntry("store", "reachable")
+                                .containsEntry("timerPollerRunning", true)
+                                .containsEntry("recoveryPollerRunning", true)
+                                .containsKey("runningWorkflowCount");
+                    } finally {
+                        executor.shutdown();
+                    }
+                });
+    }
+
+    @Test
+    @DisplayName("status is DOWN when the timer poller (always enabled) is not running")
+    void downWhenTimerPollerNotRunning() {
+        runner.withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .withPropertyValues("maestro.recovery.enabled=false")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     var indicator = context.getBean(MaestroHealthIndicator.class);
                     var health = indicator.health();
 
-                    assertThat(health.getStatus()).isEqualTo(Status.UP);
-                    assertThat(health.getDetails())
-                            .containsEntry("store", "reachable")
-                            .containsKeys("timerPollerRunning", "recoveryPollerRunning", "runningWorkflowCount");
+                    assertThat(health.getStatus())
+                            .as("timer poller was never started — a dead/never-started poller "
+                                    + "with no disable switch is always a fault")
+                            .isEqualTo(Status.DOWN);
+                    assertThat(health.getDetails()).containsEntry("timerPollerRunning", false);
+                });
+    }
+
+    @Test
+    @DisplayName("status is DOWN when the recovery poller is enabled but not running (crashed/never started)")
+    void downWhenRecoveryPollerEnabledButNotRunning() {
+        runner.withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    var executor = context.getBean(WorkflowExecutor.class);
+                    executor.startTimerPoller(Duration.ofSeconds(5), 100);
+                    // Recovery poller enabled by default (maestro.recovery.enabled=true)
+                    // but deliberately never started — simulates a dead poller.
+                    try {
+                        var indicator = context.getBean(MaestroHealthIndicator.class);
+                        var health = indicator.health();
+
+                        assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+                        assertThat(health.getDetails()).containsEntry("recoveryPollerRunning", false);
+                    } finally {
+                        executor.shutdown();
+                    }
+                });
+    }
+
+    @Test
+    @DisplayName("status stays UP when the recovery poller is disabled by configuration, "
+            + "reported as \"disabled\" rather than false")
+    void upWhenRecoveryPollerDisabledByConfiguration() {
+        runner.withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .withPropertyValues("maestro.recovery.enabled=false")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    var executor = context.getBean(WorkflowExecutor.class);
+                    executor.startTimerPoller(Duration.ofSeconds(5), 100);
+                    // Recovery poller intentionally never started — disabled, not dead.
+                    try {
+                        var indicator = context.getBean(MaestroHealthIndicator.class);
+                        var health = indicator.health();
+
+                        assertThat(health.getStatus()).isEqualTo(Status.UP);
+                        assertThat(health.getDetails()).containsEntry("recoveryPollerRunning", "disabled");
+                    } finally {
+                        executor.shutdown();
+                    }
                 });
     }
 
