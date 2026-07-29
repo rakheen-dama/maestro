@@ -31,32 +31,27 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * The at-least-once contract for signal ingestion: <b>a handler that fails must
  * not cost the signal.</b>
  *
- * <p>Two of these tests are the executable specification for a known, deferred
- * defect (SPEC.md, open item 2) and are {@code @Disabled} until the adapter is
- * fixed. Measured behaviour today:
+ * <p>Both delivery paths are covered, because both used to lose signals:
  *
  * <ul>
  *   <li><b>{@code @MaestroSignalListener} path</b> — the bean post-processor
- *       rethrows, so Spring Kafka's {@code DefaultErrorHandler} redelivers the
- *       record. A <em>transient</em> failure therefore recovers, which
- *       {@link #transientHandlerFailure_isRedeliveredUntilItSucceeds()} pins as
- *       working. A <em>persistent</em> failure exhausts the retries — measured:
- *       10 attempts, {@code DefaultErrorHandler}'s default back-off — and the
- *       record is then logged and skipped: the offset is committed and the
- *       signal is gone, with no dead-letter topic to catch it.</li>
+ *       rethrows, so the record is redelivered and a <em>transient</em> failure
+ *       recovers, which
+ *       {@link #transientHandlerFailure_isRedeliveredUntilItSucceeds()} pins.
+ *       A <em>persistent</em> failure used to exhaust the retries and then be
+ *       logged and skipped — offset committed, signal gone, no dead-letter
+ *       topic. It must now be parked on {@code <topic>.DLT}.</li>
  *   <li><b>Engine signal channel</b> — {@code KafkaWorkflowMessaging}
- *       {@code subscribeSignals} wraps the handler in {@code try/catch} and only
- *       logs, so the record is acked after a <em>single</em> attempt — measured:
- *       1. That silently defeats {@code SignalSubscriptionRunner}, which
- *       deliberately rethrows "so the transport does NOT ack".</li>
+ *       {@code subscribeSignals} used to wrap the handler in {@code try/catch}
+ *       and only log, so the record was acked after a <em>single</em> attempt,
+ *       silently defeating {@code SignalSubscriptionRunner}, which deliberately
+ *       rethrows "so the transport does NOT ack". It must now redeliver until
+ *       the signal is durable, and park the record that never will be.</li>
  * </ul>
  *
- * <p>Fixing the second case is a one-line change with a large blast radius: with
- * the catch removed the record would be retried a bounded number of times and
- * then dropped anyway, so "not lost" additionally needs a dead-letter topic —
- * which Maestro cannot auto-create (topics are pre-declared by policy) and which
- * RabbitMQ must mirror. That design belongs with the adapter owner, so the
- * contract is left here as a red specification rather than half-fixed.
+ * <p>Dead-letter topics are ordinary topics: Maestro creates none, so this
+ * suite pre-creates them in {@code @BeforeAll} exactly as an operator would
+ * declare them.
  */
 @SpringBootTest(
         classes = {
@@ -69,7 +64,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
                 "maestro.lock.type=postgres",
                 "maestro.messaging.type=kafka",
                 "maestro.messaging.topics.admin-events=" + KafkaAckOnFailureIT.ADMIN_TOPIC,
-                "maestro.recovery.enabled=false"
+                "maestro.recovery.enabled=false",
+                // A tight budget so exhaustion (~1.75s of backoff) fits this
+                // suite's bound; the production default is 10 attempts over
+                // ~2.5 minutes. The transient test fails twice, still under 4.
+                "maestro.messaging.redelivery.max-attempts=4",
+                "maestro.messaging.redelivery.initial-interval=250ms"
         })
 @Tag("integration")
 @DisplayName("A failing signal handler must not lose the signal")
@@ -84,6 +84,12 @@ class KafkaAckOnFailureIT extends KafkaSpringIntegrationSupport {
 
     /** The engine channel used by the adapter-level test. */
     static final String CHANNEL_TOPIC = "it.ack.channel";
+
+    /** The engine channel used by the adapter-level poison test. */
+    static final String POISON_CHANNEL_TOPIC = "it.ack.channel.poison";
+
+    /** Where the engine channel parks a record it can never process. */
+    static final String POISON_CHANNEL_DLT = POISON_CHANNEL_TOPIC + ".DLT";
 
     static final String ADMIN_TOPIC = "it.ack.admin";
 
@@ -104,7 +110,8 @@ class KafkaAckOnFailureIT extends KafkaSpringIntegrationSupport {
      */
     @BeforeAll
     static void createAckTopics() throws ExecutionException, InterruptedException {
-        createTopics(EVENT_TOPIC, DLT_TOPIC, CHANNEL_TOPIC, ADMIN_TOPIC, "maestro.signals." + SERVICE);
+        createTopics(EVENT_TOPIC, DLT_TOPIC, CHANNEL_TOPIC, POISON_CHANNEL_TOPIC, POISON_CHANNEL_DLT,
+                ADMIN_TOPIC, "maestro.signals." + SERVICE);
     }
 
     @BeforeEach
@@ -140,8 +147,9 @@ class KafkaAckOnFailureIT extends KafkaSpringIntegrationSupport {
     @Test
     @DisplayName("the engine signal channel redelivers when the handler throws")
     void signalChannelHandlerFailure_isRedelivered() throws Exception {
-        var config = new KafkaMessagingConfig(
-                null, CHANNEL_TOPIC, ADMIN_TOPIC, "ack-channel-" + UUID.randomUUID());
+        // Two failures then success — comfortably inside the budget, so
+        // this channel never reaches its dead-letter topic.
+        var config = channelConfig(CHANNEL_TOPIC, 5);
         var messaging = new KafkaWorkflowMessaging(
                 producer(), consumerFactory(config.consumerGroup()), objectMapper, config);
 
@@ -190,7 +198,61 @@ class KafkaAckOnFailureIT extends KafkaSpringIntegrationSupport {
         }
     }
 
+    @Test
+    @DisplayName("the engine signal channel dead-letters a record it can never process")
+    void signalChannelPersistentFailure_isDeadLetteredNotDropped() {
+        var config = channelConfig(POISON_CHANNEL_TOPIC, CHANNEL_MAX_ATTEMPTS);
+        var messaging = new KafkaWorkflowMessaging(
+                producer(), consumerFactory(config.consumerGroup()), objectMapper, config);
+
+        var attempts = new AtomicInteger();
+        var signal = new SignalMessage(
+                "ack-channel-poison-wf", KafkaTestWorkflows.APPROVAL_SIGNAL,
+                objectMapper.valueToTree("granted"));
+
+        try (var dlt = recorderFor(POISON_CHANNEL_DLT)) {
+            messaging.subscribeSignals(SERVICE, message -> {
+                attempts.incrementAndGet();
+                throw new IllegalStateException("poison signal — this handler can never process it");
+            });
+
+            messaging.publishSignal(SERVICE, signal);
+
+            await().atMost(BOUND).pollInterval(Duration.ofMillis(200)).untilAsserted(() ->
+                    assertEquals(1, dlt.messages(SignalMessage.class).size(),
+                            "an unprocessable signal must be parked, not skipped; attempts="
+                                    + attempts.get()));
+            assertEquals(signal.workflowId(), dlt.messages(SignalMessage.class).getFirst().workflowId());
+            assertEquals(signal.signalName(), dlt.messages(SignalMessage.class).getFirst().signalName());
+            assertEquals(signal.workflowId(), dlt.keys().getFirst(),
+                    "the parked record must keep its partition key");
+
+            // Bounded: the budget is spent once and the channel moves on.
+            assertEquals(CHANNEL_MAX_ATTEMPTS, attempts.get(),
+                    "redelivery must be bounded by the configured budget");
+        } finally {
+            messaging.destroy();
+        }
+    }
+
     // ── test-local fixtures ─────────────────────────────────────────────
+
+    /** Attempt budget for the engine channel's poison test. */
+    private static final int CHANNEL_MAX_ATTEMPTS = 3;
+
+    /**
+     * Builds an adapter config for a directly constructed engine channel, with
+     * a budget small enough to exhaust inside {@link #BOUND}.
+     *
+     * @param signalsTopic the fixed signal topic this channel consumes
+     * @param maxAttempts  total delivery attempts, including the first
+     * @return the config
+     */
+    private static KafkaMessagingConfig channelConfig(String signalsTopic, int maxAttempts) {
+        return new KafkaMessagingConfig(
+                null, signalsTopic, ADMIN_TOPIC, "ack-channel-" + UUID.randomUUID(),
+                maxAttempts, Duration.ofMillis(250), 2.0, Duration.ofSeconds(1), ".DLT");
+    }
 
     /** Registers this suite's router; see {@code KafkaSignalListenerRoundTripIT}. */
     @TestConfiguration

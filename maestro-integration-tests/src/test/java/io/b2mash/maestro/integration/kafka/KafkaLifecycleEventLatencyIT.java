@@ -5,6 +5,7 @@ import io.b2mash.maestro.integration.support.MaestroEngineHarness;
 import io.b2mash.maestro.integration.support.PostgresIntegrationSupport;
 import io.b2mash.maestro.messaging.kafka.KafkaMessagingConfig;
 import io.b2mash.maestro.messaging.kafka.KafkaWorkflowMessaging;
+import io.b2mash.maestro.spring.config.MaestroProperties;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
@@ -95,7 +96,13 @@ class KafkaLifecycleEventLatencyIT extends PostgresIntegrationSupport {
                 ConsumerConfig.GROUP_ID_CONFIG, "it-lifecycle-latency",
                 ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class,
                 ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class));
-        var messagingConfig = new KafkaMessagingConfig(null, null, missingTopic, "it-lifecycle-latency");
+        // This suite only publishes, so the redelivery policy is immaterial —
+        // it is the production default.
+        var redelivery = MaestroProperties.RedeliveryProperties.defaults();
+        var messagingConfig = new KafkaMessagingConfig(
+                null, null, missingTopic, "it-lifecycle-latency",
+                redelivery.maxAttempts(), redelivery.initialInterval(), redelivery.multiplier(),
+                redelivery.maxInterval(), redelivery.deadLetterSuffix());
         var messaging = new KafkaWorkflowMessaging(kafkaTemplate, consumerFactory, objectMapper, messagingConfig);
 
         try (var harness = MaestroEngineHarness.builder(store, objectMapper)
