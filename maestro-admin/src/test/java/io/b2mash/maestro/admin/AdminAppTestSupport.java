@@ -55,7 +55,7 @@ import java.util.concurrent.ExecutionException;
  * <h2>Thread Safety</h2>
  * <p>The containers and shared producer are static and thread-safe.
  */
-public abstract class AdminAppTestSupport {
+abstract class AdminAppTestSupport {
 
     @SuppressWarnings("resource")
     protected static final PostgreSQLContainer<?> POSTGRES =
