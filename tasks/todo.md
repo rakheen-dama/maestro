@@ -134,8 +134,8 @@ Branch: `worktree-release-readiness` off `main` @ 0502b38.
 - [x] Task 1 — Issue 2: timer fire crash window — CONFIRMED + fixed (self-healing replay, findTimer SPI, V3 index)
 - [x] Task 2 — Issues 3+6: lifecycle publish latency + admin.events wiring — async bounded publisher, enabled flag wired, topic alias
 - [x] Task 3 — Issues 4+5: ExecutorShutdownException → Error; SagaManager rethrow — catch ordering, ParkingLot/RetryExecutor/ActivityInvocationHandler/DefaultWorkflowOperations audit fixes, CLAUDE.md documented
-- [ ] Task 4 — Issues 7+9: config seams (shutdown timeout, wake recheck, activity lock prefix)
-- [ ] Task 5 — Issue 8: MaestroHealthIndicator
+- [x] Task 4 — Issues 7+9: config seams — all three wired, defaults unchanged
+- [x] Task 5 — Issue 8: MaestroHealthIndicator — auto-configured on Actuator classpath, UP/DOWN + poller/running-count details
 - [ ] Task 6 — Issue 1: signal no-loss policy (Kafka + Postgres) per approved design
 - [ ] Task 7 — Issue 10a: RabbitMQ suite + Issue 1 parity
 - [ ] Task 8 — Issue 10b: admin-client / admin / store-jdbc suites
