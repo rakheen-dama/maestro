@@ -83,7 +83,8 @@ Issues 7 and 9.
 
 ### `maestro.admin.events.enabled` now actually works
 
-Setting it to `false` genuinely stops lifecycle event publishing.
+Setting it to `false` genuinely stops lifecycle event publishing (all event
+families — workflow, activity, signal, timer, and compensation).
 `maestro.admin.events.topic` is kept as a deprecated alias for
 `maestro.messaging.topics.admin-events`. Closes Issue 6.
 

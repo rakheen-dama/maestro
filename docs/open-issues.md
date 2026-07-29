@@ -130,6 +130,16 @@ remember that the fakes have already been wrong about this codebase six times.
 cd maestro-samples/sample-loan-origination && ./e2e/run-e2e.sh   # full E2E, ~4 min
 ```
 
+**`e2eTest` currently matches nothing.** No test in the repo carries
+`@Tag("e2e")` — that usage was removed from `maestro-integration-tests`
+during the P0–P6 work (PR #27); the task itself is still registered by
+`maestro.integration-test-conventions.gradle.kts` and runs green, it just
+executes zero tests. This predates this branch and isn't something it
+introduced. Real end-to-end coverage is the loan-origination script above
+(`sample-loan-origination/e2e/run-e2e.sh`), which runs nightly and on demand
+in CI (`.github/workflows/e2e-nightly.yml`) — treat `e2eTest` as dead until
+either a suite is tagged `e2e` again or the task is removed.
+
 **Where tests belong.** Unit tests live in their module. Tests that need a real
 backend go in `maestro-integration-tests` (see its `SPEC.md` for fixtures and
 conventions) — *except* backend-specific suites, which live with their backend
@@ -519,6 +529,26 @@ workflow is left recoverable with no compensation recorded as failed.
 > names both. Commit `6eddfc4` (engine wiring), `88b5ade` (topic alias).
 > Pinned by `MaestroAutoConfigurationLifecycleEventsTest` and
 > `KafkaMessagingAutoConfigurationAdminTopicAliasTest`.
+>
+> **Correction.** The above described only `WorkflowExecutor`'s own
+> `WORKFLOW_*` events; a live loan-origination E2E run with the flag set
+> still leaked 247 `ACTIVITY_*`/`SIGNAL_*`/`TIMER_*` events, because
+> `ActivityInvocationHandler`, `SignalManager`, and
+> `DefaultWorkflowOperations` each published lifecycle events through their
+> own unguarded reference and never checked the flag — and the audit that
+> followed found a fourth unguarded publisher, `SagaManager`
+> (`COMPENSATION_*`). The actual fix is `GatedWorkflowMessaging`, a
+> `WorkflowMessaging` decorator in `maestro-core` whose
+> `publishLifecycleEvent` no-ops when disabled and passes every other method
+> through unchanged. It is applied at both places a `WorkflowMessaging`
+> reference is constructed — `WorkflowExecutor`'s constructor (covering
+> `SignalManager`, `SagaManager`, and `DefaultWorkflowOperations`, which it
+> builds) and the Spring Boot starter's `ActivityStubBeanPostProcessor`
+> (covering activity proxies) — so every event family (`WORKFLOW_*`,
+> `ACTIVITY_*`, `SIGNAL_*`, `TIMER_*`, `COMPENSATION_*`) is gated from one
+> shared seam instead of each publisher re-implementing its own check.
+> Commit `63c01fc`. Pinned by `GatedWorkflowMessagingTest` and
+> `WorkflowExecutorLifecycleEventPublishingTest`.
 
 **What's wrong.** `maestro.admin.events.enabled` and `maestro.admin.events.topic`
 are bound into `MaestroProperties` and then read by nothing. Grep for

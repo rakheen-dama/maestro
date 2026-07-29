@@ -303,6 +303,13 @@ public final class RabbitMqWorkflowMessaging implements WorkflowMessaging, Dispo
      * @return an advice for {@link SimpleMessageListenerContainer#setAdviceChain}
      */
     private org.aopalliance.aop.Advice buildRetryInterceptor(String queueName) {
+        // Spring Retry's SimpleRetryPolicy (the default here) classifies on
+        // Throwable but only counts subclasses of Exception towards the retry
+        // budget; a Throwable that is an Error would bypass retries entirely
+        // and dead-letter on the first attempt. Unreachable today — no engine
+        // path throws ExecutorShutdownException (an Error; see its Javadoc)
+        // on a listener thread — but keep it that way if this container's
+        // threading model changes.
         var recoverer = new RepublishMessageRecoverer(
                 rabbitTemplate, redelivery.deadLetterExchange(), queueName);
         return RetryInterceptorBuilder.stateless()

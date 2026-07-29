@@ -350,7 +350,7 @@ the Maestro admin dashboard.
 
 | Property                      | Type      | Default                  | Description                                                                     |
 |-------------------------------|-----------|--------------------------|---------------------------------------------------------------------------------|
-| `maestro.admin.events.enabled`| `boolean` | `true`                   | Whether to publish workflow lifecycle events (started, completed, failed, etc.). |
+| `maestro.admin.events.enabled`| `boolean` | `true`                   | Whether to publish workflow lifecycle events (started, completed, failed, etc.) — all event families (workflow, activity, signal, timer, and compensation). |
 | `maestro.admin.events.topic`  | `String`  | `"maestro.admin.events"` | Kafka topic where lifecycle events are published.                               |
 
 When enabled, Maestro publishes lifecycle events for every workflow state
