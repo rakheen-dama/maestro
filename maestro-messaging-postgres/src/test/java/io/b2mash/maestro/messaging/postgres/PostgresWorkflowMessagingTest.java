@@ -31,6 +31,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code FOR UPDATE SKIP LOCKED}, reclaim of stale {@code PROCESSING} rows, and
  * the round trips for tasks, signals and lifecycle events.
  *
+ * <p>The handler-failure nest pins the redelivery state machine: a failed
+ * handler must put its row back in {@code PENDING} with a future
+ * {@code next_attempt_at} rather than retire it, and a message that exhausts
+ * its attempt budget must park in {@code DEAD_LETTER}, listable and replayable,
+ * instead of looping forever or vanishing.
+ *
  * <p>Polling threads are started by {@code subscribe}, so every assertion about
  * delivery is made through Awaitility rather than by assuming synchronous
  * hand-off.
