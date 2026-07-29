@@ -258,13 +258,20 @@ public interface WorkflowStore {
     boolean markTimerFired(UUID timerId);
 
     /**
-     * Marks a timer as cancelled.
+     * Marks a timer as cancelled (atomic compare-and-set: PENDING → CANCELLED).
      *
-     * <p>Updates the timer status from {@code PENDING} to {@code CANCELLED}.
-     * If the timer has already been fired or cancelled, this is a no-op
-     * (idempotent).
+     * <p>Only transitions timers in {@code PENDING} status. If the timer is
+     * already {@code FIRED} or {@code CANCELLED}, this is a no-op and returns
+     * {@code false}. This allows callers to detect whether they won the race
+     * (e.g., cancel vs. fire) — the live cancellation path
+     * ({@link io.b2mash.maestro.core.engine.WorkflowExecutor#cancelTimer})
+     * only unparks the waiting workflow when this call returns {@code true},
+     * so a caller that discards the return value would silently leave a lost
+     * race un-observed rather than reporting it.
      *
      * @param timerId the timer UUID to cancel
+     * @return {@code true} if the transition was applied (PENDING → CANCELLED),
+     *         {@code false} if the timer was already in a terminal state
      */
-    void markTimerCancelled(UUID timerId);
+    boolean markTimerCancelled(UUID timerId);
 }

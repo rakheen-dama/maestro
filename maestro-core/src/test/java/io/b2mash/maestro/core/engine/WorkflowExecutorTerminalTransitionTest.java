@@ -327,8 +327,9 @@ class WorkflowExecutorTerminalTransitionTest {
         }
 
         @Override
-        public void markTimerCancelled(UUID timerId) {
+        public boolean markTimerCancelled(UUID timerId) {
             // no timers in these tests
+            return false;
         }
     }
 

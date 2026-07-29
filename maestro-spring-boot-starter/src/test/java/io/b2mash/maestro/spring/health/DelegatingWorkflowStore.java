@@ -97,7 +97,7 @@ abstract class DelegatingWorkflowStore implements WorkflowStore {
     }
 
     @Override
-    public void markTimerCancelled(UUID timerId) {
-        delegate.markTimerCancelled(timerId);
+    public boolean markTimerCancelled(UUID timerId) {
+        return delegate.markTimerCancelled(timerId);
     }
 }

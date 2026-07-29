@@ -34,6 +34,7 @@ public sealed class MaestroException extends RuntimeException
                 WorkflowExecutionException,
                 ActivityExecutionException,
                 SignalTimeoutException,
+                TimerCancelledException,
                 RetryExhaustedException,
                 LockAcquisitionException,
                 LockBackendException,

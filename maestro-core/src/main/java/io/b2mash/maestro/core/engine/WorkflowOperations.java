@@ -39,7 +39,20 @@ public sealed interface WorkflowOperations permits DefaultWorkflowOperations {
      *
      * <p>During replay, a previously completed sleep is skipped instantly.
      *
+     * <p>If an operator cancels the timer while the workflow is waiting on it
+     * (or, on replay, previously waited on it), this call throws
+     * {@link io.b2mash.maestro.core.exception.TimerCancelledException}
+     * instead of returning — deterministically, on the live path and on
+     * every later replay. Uncaught, it propagates like any other exception:
+     * saga compensation runs (if registered) and the instance ends
+     * {@code FAILED}. This also affects {@link #retryUntil}, whose backoff
+     * delay is implemented with this method — a cancelled backoff sleep
+     * surfaces the same way, out of {@code retryUntil} rather than as a
+     * {@link io.b2mash.maestro.core.exception.RetryExhaustedException}.
+     *
      * @param duration the duration to sleep
+     * @throws io.b2mash.maestro.core.exception.TimerCancelledException
+     *         if an operator cancels the timer while the workflow is waiting on it
      */
     void sleep(Duration duration);
 

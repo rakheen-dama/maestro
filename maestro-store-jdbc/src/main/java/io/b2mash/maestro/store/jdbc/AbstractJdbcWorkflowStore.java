@@ -442,13 +442,13 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     }
 
     @Override
-    public void markTimerCancelled(UUID timerId) {
+    public boolean markTimerCancelled(UUID timerId) {
         Objects.requireNonNull(timerId, "timerId");
 
         String sql = "UPDATE " + tableName("workflow_timer")
                 + " SET status = 'CANCELLED' WHERE id = ? AND status = 'PENDING'";
 
-        update(sql, ps -> ps.setObject(1, timerId));
+        return update(sql, ps -> ps.setObject(1, timerId)) > 0;
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────

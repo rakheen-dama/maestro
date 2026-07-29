@@ -534,7 +534,8 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         }
 
         @Override
-        public void markTimerCancelled(UUID timerId) {
+        public boolean markTimerCancelled(UUID timerId) {
+            return false;
         }
     }
 }

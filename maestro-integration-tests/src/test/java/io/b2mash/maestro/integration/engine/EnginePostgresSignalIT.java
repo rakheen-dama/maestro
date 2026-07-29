@@ -526,8 +526,8 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
         }
 
         @Override
-        public void markTimerCancelled(UUID timerId) {
-            delegate.markTimerCancelled(timerId);
+        public boolean markTimerCancelled(UUID timerId) {
+            return delegate.markTimerCancelled(timerId);
         }
     }
 }

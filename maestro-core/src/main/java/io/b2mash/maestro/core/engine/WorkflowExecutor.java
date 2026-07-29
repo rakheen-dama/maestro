@@ -50,7 +50,10 @@ import java.util.concurrent.atomic.AtomicReference;
  *   <li><b>Recovery:</b> At startup, queries for recoverable workflows and
  *       re-invokes each in replay mode.</li>
  *   <li><b>Signal delivery:</b> Persists signals and unparks waiting workflows.</li>
- *   <li><b>Timer fire:</b> Marks timers as fired and unparks sleeping workflows.</li>
+  *   <li><b>Timer fire:</b> Marks timers as fired and unparks sleeping workflows.</li>
+ *   <li><b>Timer cancel:</b> Marks a pending timer as cancelled and unparks a
+ *       sleeping workflow with a catchable
+ *       {@link io.b2mash.maestro.core.exception.TimerCancelledException}.</li>
  *   <li><b>Shutdown:</b> Stops accepting new work, waits for in-flight
  *       workflows to drain, and leaves parked workflows in their
  *       {@code WAITING_*} status for another node to recover — a graceful
@@ -485,6 +488,57 @@ public final class WorkflowExecutor {
             logger.debug("Timer '{}' for workflow '{}' already fired or cancelled — skipping unpark",
                     timerId, workflowId);
         }
+    }
+
+    // ── Timer cancel ───────────────────────────────────────────────────
+
+    /**
+     * Cancels a pending timer, unparking a sleeping workflow with a
+     * catchable, durable "cancelled" outcome.
+     *
+     * <p>The store transition ({@code PENDING → CANCELLED}) is the single
+     * arbiter of the outcome — arbitrated by the same compare-and-set
+     * {@link #fireTimer(String, String, UUID)} uses for firing, so exactly
+     * one of a racing fire and cancel wins. This is the only supported
+     * cancellation entry point: unlike a hypothetical store-only cancel, it
+     * also unparks the waiting workflow, so {@code sleep()} does not stall
+     * forever on a row that will never become {@code FIRED}.
+     *
+     * <p>If this call wins the compare-and-set, the workflow's virtual
+     * thread — if parked here — resumes, reads the now-{@code CANCELLED} row,
+     * and its {@code sleep()} call throws
+     * {@link io.b2mash.maestro.core.exception.TimerCancelledException}. The
+     * same exception is thrown on every later replay, because the outcome is
+     * memoized as a {@code TIMER_CANCELLED} event at the sequence a
+     * {@code TIMER_FIRED} event would otherwise occupy. If the workflow is
+     * not parked on this node — it may be running on another node, or about
+     * to re-park after a crash — the cancellation is still durable and is
+     * observed at the workflow's next wake or recovery, the same
+     * eventual-consistency contract a cross-node {@link #fireTimer} has today.
+     *
+     * <p>Cancelling a timer that has already fired, or was already
+     * cancelled, is a {@code false} no-op: the row's outcome is already
+     * decided and the caller is told it lost the race rather than being left
+     * to guess.
+     *
+     * @param workflowId the workflow's business ID
+     * @param timerId    the timer's logical ID (e.g., {@code "sleep-5"})
+     * @param timerDbId  the timer's database UUID (for store transition)
+     * @return {@code true} if this call transitioned the timer
+     *         {@code PENDING → CANCELLED}; {@code false} if the timer had
+     *         already fired or was already cancelled
+     */
+    public boolean cancelTimer(String workflowId, String timerId, UUID timerDbId) {
+        var cancelled = store.markTimerCancelled(timerDbId);
+        if (cancelled) {
+            var parkKey = workflowId + ":timer:" + timerId;
+            parkingLot.unpark(parkKey, null);
+            logger.debug("Cancelled timer '{}' for workflow '{}'", timerId, workflowId);
+        } else {
+            logger.debug("Timer '{}' for workflow '{}' already fired or cancelled — skipping unpark",
+                    timerId, workflowId);
+        }
+        return cancelled;
     }
 
     // ── Timer poller ────────────────────────────────────────────────────

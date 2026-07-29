@@ -21,7 +21,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Unit tests for {@link TimerManager}.
@@ -37,36 +36,11 @@ class TimerManagerTest {
         timerManager = new TimerManager(store);
     }
 
-    // ── cancelTimer ───────────────────────────────────────────────────
-
-    @Test
-    @DisplayName("cancelTimer transitions PENDING → CANCELLED")
-    void cancelTimerPendingToCancelled() {
-        var timerId = UUID.randomUUID();
-        var timer = new WorkflowTimer(
-                timerId, UUID.randomUUID(), "wf-1", "sleep-1",
-                Instant.now().plusSeconds(60), TimerStatus.PENDING, Instant.now());
-        store.saveTimer(timer);
-
-        timerManager.cancelTimer(timerId);
-
-        var timers = store.getDueTimers(Instant.now().plusSeconds(120), 10);
-        assertTrue(timers.isEmpty(), "Cancelled timer should not appear in due timers");
-    }
-
-    @Test
-    @DisplayName("cancelTimer is idempotent on already-fired timer")
-    void cancelTimerAlreadyFired() {
-        var timerId = UUID.randomUUID();
-        var timer = new WorkflowTimer(
-                timerId, UUID.randomUUID(), "wf-1", "sleep-1",
-                Instant.now().plusSeconds(60), TimerStatus.PENDING, Instant.now());
-        store.saveTimer(timer);
-        store.markTimerFired(timerId);
-
-        // Should not throw — idempotent
-        timerManager.cancelTimer(timerId);
-    }
+    // Cancellation lives on WorkflowExecutor.cancelTimer now (TimerManager has
+    // no ParkingLot access, so a store-only cancel here would strand the
+    // workflow — see TimerManager's Javadoc). Its coverage moved to
+    // WorkflowExecutorTest (unpark behaviour) and the store contract tests
+    // (InMemoryWorkflowStoreTest / PostgresWorkflowStoreTest — CAS behaviour).
 
     // ── getDueTimers ─────────────────────────────────────────────────
 
@@ -215,15 +189,16 @@ class TimerManagerTest {
             return false;
         }
 
-        @Override public void markTimerCancelled(UUID timerId) {
+        @Override public boolean markTimerCancelled(UUID timerId) {
             for (int i = 0; i < timers.size(); i++) {
                 var t = timers.get(i);
                 if (t.id().equals(timerId) && t.status() == TimerStatus.PENDING) {
                     timers.set(i, new WorkflowTimer(t.id(), t.workflowInstanceId(), t.workflowId(),
                             t.timerId(), t.fireAt(), TimerStatus.CANCELLED, t.createdAt()));
-                    return;
+                    return true;
                 }
             }
+            return false;
         }
     }
 }

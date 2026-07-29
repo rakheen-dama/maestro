@@ -285,6 +285,8 @@ public final class WorkflowContext {
      *
      * @param duration the duration to sleep
      * @throws IllegalStateException if operations are not configured
+     * @throws io.b2mash.maestro.core.exception.TimerCancelledException
+     *         if an operator cancels the timer while the workflow is waiting on it
      * @see WorkflowOperations#sleep(Duration)
      */
     public void sleep(Duration duration) {

@@ -1106,8 +1106,8 @@ class WorkflowExecutorShutdownTest {
         }
 
         @Override
-        public void markTimerCancelled(UUID timerId) {
-            transitionTimer(timerId, TimerStatus.CANCELLED);
+        public boolean markTimerCancelled(UUID timerId) {
+            return transitionTimer(timerId, TimerStatus.CANCELLED);
         }
 
         private boolean transitionTimer(UUID timerId, TimerStatus to) {

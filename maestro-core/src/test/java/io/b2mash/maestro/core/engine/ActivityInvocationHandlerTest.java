@@ -659,7 +659,7 @@ class ActivityInvocationHandlerTest {
         }
 
         @Override
-        public void markTimerCancelled(UUID timerId) {
+        public boolean markTimerCancelled(UUID timerId) {
             throw new UnsupportedOperationException();
         }
     }

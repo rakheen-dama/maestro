@@ -45,6 +45,9 @@ public enum LifecycleEventType {
     /** A durable timer fired. */
     TIMER_FIRED,
 
+    /** A durable timer was cancelled while the workflow was waiting on it. */
+    TIMER_CANCELLED,
+
     /** Saga compensation started. */
     COMPENSATION_STARTED,
 

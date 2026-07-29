@@ -386,7 +386,7 @@ class SagaManagerTest {
         @Override public List<WorkflowTimer> getDueTimers(Instant now, int batchSize) { return List.of(); }
         @Override public Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId) { return Optional.empty(); }
         @Override public boolean markTimerFired(UUID timerId) { return false; }
-        @Override public void markTimerCancelled(UUID timerId) {}
+        @Override public boolean markTimerCancelled(UUID timerId) { return false; }
     }
 
     // ── Recording messaging ───────────────────────────────────────────

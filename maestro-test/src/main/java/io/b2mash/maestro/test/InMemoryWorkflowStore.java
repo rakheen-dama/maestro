@@ -257,7 +257,7 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
     }
 
     @Override
-    public void markTimerCancelled(UUID timerId) {
+    public boolean markTimerCancelled(UUID timerId) {
         synchronized (timerLock) {
             for (int i = 0; i < timers.size(); i++) {
                 var timer = timers.get(i);
@@ -271,9 +271,10 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
                             TimerStatus.CANCELLED,
                             timer.createdAt()
                     ));
-                    return;
+                    return true;
                 }
             }
+            return false;
         }
     }
 

@@ -202,7 +202,7 @@ class SignalSubscriptionRunnerTest {
         }
 
         @Override
-        public void markTimerCancelled(java.util.UUID timerId) {}
+        public boolean markTimerCancelled(java.util.UUID timerId) { return false; }
     }
 
     // ── Recording WorkflowMessaging ────────────────────────────────────
