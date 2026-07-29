@@ -315,6 +315,13 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             return method.invoke(activityImpl, args);
         } catch (InvocationTargetException e) {
             var cause = e.getCause();
+            // An Error (e.g. ExecutorShutdownException, thrown as a control-flow
+            // signal — see its Javadoc) must not be re-wrapped as a RuntimeException:
+            // that would let it be retried or recorded as an activity failure
+            // instead of reaching WorkflowExecutor's shutdown handling intact.
+            if (cause instanceof Error err) {
+                throw err;
+            }
             if (cause instanceof Exception ex) {
                 throw ex;
             }
@@ -492,6 +499,9 @@ public final class ActivityInvocationHandler implements InvocationHandler {
                 compensationMethod.invoke(proxy, compensationArgs);
             } catch (java.lang.reflect.InvocationTargetException e) {
                 var cause = e.getCause();
+                // See invokeActivity(): an Error (ExecutorShutdownException) must
+                // reach SagaManager's compensation loop intact, not re-wrapped.
+                if (cause instanceof Error err) throw err;
                 if (cause instanceof RuntimeException re) throw re;
                 throw new RuntimeException("Compensation '%s' failed".formatted(compensationStepName), cause);
             } catch (IllegalAccessException e) {

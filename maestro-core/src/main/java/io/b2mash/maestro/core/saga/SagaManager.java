@@ -3,6 +3,7 @@ package io.b2mash.maestro.core.saga;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.context.WorkflowMDC;
 import io.b2mash.maestro.core.exception.CompensationException;
+import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
@@ -150,6 +151,13 @@ public final class SagaManager {
         for (int i = 0; i < entries.size(); i++) {
             var entry = entries.get(i);
             try {
+                // catch (Exception e) deliberately does not catch
+                // ExecutorShutdownException: it extends Error, not Exception.
+                // A compensation action that parks (sleep()/awaitSignal()) and
+                // is abandoned by shutdown propagates out of this loop
+                // uncaught — no step is recorded failed, and the remaining
+                // (not-yet-run) compensations are left for a recovering node,
+                // which replays this one's memoized side effects and continues.
                 entry.action().run();
                 logger.debug("Compensation {} '{}' completed for workflow '{}'",
                         i, entry.stepName(), ctx.workflowId());
@@ -224,6 +232,11 @@ public final class SagaManager {
                                             publishLifecycleEvent(ctx, entry.stepName(),
                                                     LifecycleEventType.COMPENSATION_STEP_COMPLETED);
                                         } catch (Throwable t) {
+                                            // Caught broadly (including ExecutorShutdownException,
+                                            // an Error) so the branch thread always counts down the
+                                            // latch instead of dying uncaught; the check below tells
+                                            // a shutdown apart from a real compensation failure before
+                                            // anything is recorded.
                                             errors.get(index).set(t);
                                         }
                                     });
@@ -244,6 +257,18 @@ public final class SagaManager {
         // Advance parent sequence past all branch spaces
         var nextParentSeq = parentSeq * BRANCH_MULTIPLIER + (entries.size() + 1) * BRANCH_MULTIPLIER;
         ctx.setSequence(nextParentSeq);
+
+        // A shutdown in any branch takes priority over recording outcomes: the
+        // whole compensation attempt is being abandoned for a later node to
+        // finish, so nothing here — including other branches that may have
+        // failed for unrelated reasons in the same instant — is recorded as a
+        // compensation failure. Rethrowing propagates to WorkflowExecutor,
+        // which leaves the instance COMPENSATING and recoverable.
+        for (var errorRef : errors) {
+            if (errorRef.get() instanceof ExecutorShutdownException shutdown) {
+                throw shutdown;
+            }
+        }
 
         // Collect failures
         for (int i = 0; i < entries.size(); i++) {

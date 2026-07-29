@@ -490,6 +490,16 @@ public final class WorkflowExecutor {
      * instance lock is released as the thread unwinds — so a surviving node,
      * or this one after a restart, recovers it immediately.
      *
+     * <p>The same holds if shutdown lands <em>during</em> saga compensation: a
+     * compensation action that parks (e.g. one calling {@code sleep()} or
+     * {@code awaitSignal()}) is unblocked the same way, {@link SagaManager}
+     * lets the exception propagate instead of recording the interrupted step
+     * as failed, and the instance is left {@code COMPENSATING} — still an
+     * active, recoverable status — for the next node to finish. Because
+     * {@link ExecutorShutdownException} extends {@link Error}, ordinary
+     * {@code catch (Exception)} code — in a workflow method or a compensation
+     * action — cannot intercept it and mistake it for a real failure.
+     *
      * <p>Workflows still executing an activity are <em>not</em> interrupted;
      * they drain up to the shutdown timeout. Any that overrun it are left
      * running, and their instance locks expire by TTL.
@@ -761,9 +771,27 @@ public final class WorkflowExecutor {
             // parked. Its durable state — WAITING_SIGNAL or WAITING_TIMER —
             // is still valid and still recoverable, so nothing is written and
             // no compensation runs. Whichever node starts next picks it up.
+            //
+            // This catch is deliberately ahead of catch (Exception e) below:
+            // ExecutorShutdownException extends Error (see its Javadoc), so
+            // the ordering is not load-bearing for the compiler, but it keeps
+            // the shutdown path visually first as the case the rest of this
+            // method must never treat as a failure.
             handleShutdownSuspension(ctx);
         } catch (Exception e) {
-            handleWorkflowFailure(ctx, instance, e, compensationStack, parallelCompensation);
+            try {
+                handleWorkflowFailure(ctx, instance, e, compensationStack, parallelCompensation);
+            } catch (ExecutorShutdownException shutdownDuringCompensation) {
+                // Shutdown landed while compensating a genuine failure. The
+                // compensation actions that already ran are memoized (they
+                // went through the activity proxy); the instance is still
+                // COMPENSATING — an active, recoverable status — and no
+                // COMPENSATION_STEP_FAILED was recorded for the interrupted
+                // step (SagaManager rethrows this instead of recording it).
+                // Treat it exactly like a shutdown during a park: leave the
+                // durable state alone for the next node to finish.
+                handleShutdownSuspension(ctx);
+            }
         } finally {
             // Remove-then-release: a concurrent recovery attempt in the gap
             // still sees the lock held and skips — retried by the next poll
@@ -789,6 +817,13 @@ public final class WorkflowExecutor {
             }
         } catch (InvocationTargetException e) {
             var cause = e.getCause();
+            // ExecutorShutdownException (an Error) must reach executeWorkflow's
+            // catch (ExecutorShutdownException e) intact — e.g. a workflow's own
+            // try { ... } catch (Exception e) { ... } around awaitSignal()/sleep()
+            // doesn't catch it (Error isn't an Exception), reflection unwraps it
+            // to this InvocationTargetException, and wrapping it in a
+            // RuntimeException here would re-hide it as an ordinary failure.
+            if (cause instanceof Error err) throw err;
             if (cause instanceof Exception ex) throw ex;
             throw new RuntimeException(cause);
         }
@@ -799,8 +834,9 @@ public final class WorkflowExecutor {
     /**
      * Records that a workflow's local run ended because this node is shutting
      * down. Deliberately writes nothing: the instance is already in the
-     * {@code WAITING_*} status it parked in, which is exactly the state
-     * recovery needs to find.
+     * {@code WAITING_*} (or {@code COMPENSATING}, if shutdown landed mid-saga)
+     * status it was interrupted in, which is exactly the state recovery needs
+     * to find.
      */
     private void handleShutdownSuspension(WorkflowContext ctx) {
         var status = store.getInstance(ctx.workflowId())

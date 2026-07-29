@@ -158,15 +158,27 @@ final class ParkingLot {
      * {@link ExecutorShutdownException} rather than a wrapper the executor
      * would read as a failure.
      *
+     * <p>{@link ExecutorShutdownException} is an {@link Error}, not a
+     * {@link RuntimeException} — {@link CompletableFuture#completeExceptionally}
+     * still wraps it the same way, so the {@code Error} branch is checked
+     * first here; falling through to the {@code RuntimeException} branch
+     * would otherwise re-wrap it and hide it from the caller's
+     * {@code catch (ExecutorShutdownException e)}.
+     *
      * @param key the parking key, for the fallback message
      * @param e   the wrapper thrown by the future
-     * @return never returns — declared so callers can write {@code throw rethrow(...)}
+     * @return never returns normally — declared so callers can write
+     *         {@code throw rethrow(...)}; the {@code Error} case throws directly
      */
     private static RuntimeException rethrow(String key, Exception e) {
-        if (e.getCause() instanceof RuntimeException re) {
+        var cause = e.getCause();
+        if (cause instanceof Error err) {
+            throw err;
+        }
+        if (cause instanceof RuntimeException re) {
             return re;
         }
-        return new RuntimeException("Unexpected exception while parked at key: " + key, e.getCause());
+        return new RuntimeException("Unexpected exception while parked at key: " + key, cause);
     }
 
     /**

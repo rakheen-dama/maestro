@@ -18,6 +18,12 @@ package io.b2mash.maestro.core.exception;
  * <p>All subtypes are unchecked ({@link RuntimeException}) because workflow
  * code cannot meaningfully recover from most engine-level failures. Specific
  * subtypes allow targeted catching where recovery IS possible.
+ *
+ * <p><b>Deliberate exception:</b> {@link ExecutorShutdownException} is
+ * <em>not</em> a subtype of this class — it extends {@link Error} instead, so
+ * that ordinary {@code catch (Exception)} workflow code cannot swallow a
+ * graceful-shutdown signal and mistake it for a workflow failure. See its
+ * Javadoc and {@code CLAUDE.md} § Coding Standards for the rationale.
  */
 public sealed class MaestroException extends RuntimeException
         permits WorkflowNotFoundException,
@@ -33,7 +39,6 @@ public sealed class MaestroException extends RuntimeException
                 LockBackendException,
                 SerializationException,
                 CompensationException,
-                ExecutorShutdownException,
                 QueryException {
 
     /**

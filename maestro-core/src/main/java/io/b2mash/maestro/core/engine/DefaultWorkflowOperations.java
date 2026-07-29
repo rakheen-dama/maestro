@@ -344,10 +344,15 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             throw new RuntimeException("Parallel execution interrupted", e);
         }
 
-        // Check for errors — fail fast with first error
+        // Check for errors — fail fast with first error. ExecutorShutdownException
+        // (an Error, not a RuntimeException — see its Javadoc) is rethrown as-is:
+        // wrapping it here would hide a graceful shutdown inside a plain
+        // RuntimeException that executeWorkflow's catch (ExecutorShutdownException e)
+        // no longer recognises, turning a routine deploy into a recorded failure.
         for (int i = 0; i < branchCount; i++) {
             var error = errors.get(i).get();
             if (error != null) {
+                if (error instanceof Error err) throw err;
                 if (error instanceof RuntimeException re) throw re;
                 throw new RuntimeException("Parallel branch " + i + " failed", error);
             }
