@@ -21,3 +21,12 @@ Agents were killed mid-task twice ("connection closed mid-response") and once
 stalled on a watchdog. Their working-tree progress survives. Resume via
 SendMessage with a precise state summary; if an agent dies twice on the same
 step, finish the step inline instead of resuming a third time.
+
+## Long-running builder agents: mandate incremental commits (2026-07-29)
+Three builder agents died mid-task on transient API errors/stalls this session.
+The one dispatched WITHOUT "commit at every coherent checkpoint" lost ~all its
+in-context work twice; the ones dispatched WITH it lost nothing (5 checkpoint
+commits survived a death during final verification). Rule: every implementer
+dispatch for >30-min work must include the incremental-commit instruction, and
+recovery is: read `git log`/`git status`, send a precise state summary, resume
+— or fresh agent over the surviving tree after two deaths.

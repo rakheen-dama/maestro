@@ -385,6 +385,11 @@ class ActivityProxyFactoryTest {
         }
 
         @Override
+        public Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId) {
+            throw new UnsupportedOperationException("stub");
+        }
+
+        @Override
         public boolean markTimerFired(UUID timerId) {
             throw new UnsupportedOperationException("stub");
         }

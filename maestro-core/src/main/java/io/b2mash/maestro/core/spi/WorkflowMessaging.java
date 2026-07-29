@@ -13,7 +13,9 @@ import java.util.function.Consumer;
  * <ul>
  *   <li>All publish methods provide <b>at-least-once</b> delivery.</li>
  *   <li>Consumers must be idempotent — duplicate messages are possible
- *       during Kafka rebalances or retries.</li>
+ *       during Kafka rebalances or retries, and a handler that throws is
+ *       re-invoked with the same message until it succeeds or the message is
+ *       dead-lettered.</li>
  *   <li>Message ordering is guaranteed <b>per workflow ID</b> (by using
  *       workflow ID as the Kafka partition key).</li>
  * </ul>
@@ -67,9 +69,14 @@ public interface WorkflowMessaging {
      * Subscribes to task messages on the specified queue.
      *
      * <p>The handler is invoked for each received message on the
-     * implementation's consumer thread. Handler exceptions should be
-     * caught and logged by the implementation — they must not crash
-     * the consumer.
+     * implementation's consumer thread.
+     *
+     * <p><b>A handler exception means the message was not processed.</b> The
+     * implementation must therefore not acknowledge it: it must redeliver the
+     * message a bounded number of times, and route a message that exhausts
+     * redelivery to a durable, inspectable dead-letter destination. Handler
+     * exceptions must never crash the consumer and must never silently discard
+     * the message.
      *
      * @param taskQueue the task queue to subscribe to
      * @param handler   callback invoked for each task message
@@ -82,6 +89,13 @@ public interface WorkflowMessaging {
      * <p>The handler is invoked for each received signal. It is the
      * handler's responsibility to persist the signal via
      * {@link WorkflowStore#saveSignal} and notify the workflow.
+     *
+     * <p>That persist <em>is</em> the durability step, so the same rule as
+     * {@link #subscribe} applies with extra force: a handler exception means
+     * the signal is not yet in the store, and acknowledging it there is the one
+     * moment a signal can be truly lost. The implementation must redeliver a
+     * bounded number of times and dead-letter what it cannot deliver — never
+     * discard a signal.
      *
      * @param serviceName the service name to subscribe signals for
      * @param handler     callback invoked for each signal message

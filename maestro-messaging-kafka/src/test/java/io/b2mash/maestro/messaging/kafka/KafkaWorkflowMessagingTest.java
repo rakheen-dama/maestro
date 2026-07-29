@@ -4,12 +4,13 @@ import io.b2mash.maestro.core.spi.LifecycleEventType;
 import io.b2mash.maestro.core.spi.SignalMessage;
 import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import tools.jackson.databind.JsonNode;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -33,13 +34,27 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
     @BeforeEach
     void setUpMessaging() {
         testSuffix = UUID.randomUUID().toString().substring(0, 8);
-        var config = new KafkaMessagingConfig(
-                null,   // dynamic task topics
-                null,   // dynamic signal topics
+        messaging = new KafkaWorkflowMessaging(
+                kafkaTemplate, consumerFactory, objectMapper, config(null, null));
+    }
+
+    /**
+     * Builds a config with a deliberately tiny redelivery budget: these tests
+     * assert delivery, not the production backoff, and a failing record would
+     * otherwise stall its partition for minutes.
+     */
+    private KafkaMessagingConfig config(@Nullable String tasksTopic, @Nullable String signalsTopic) {
+        return new KafkaMessagingConfig(
+                tasksTopic,
+                signalsTopic,
                 "maestro.admin.events." + testSuffix,
-                "test-group-" + testSuffix
+                "test-group-" + testSuffix,
+                2,                          // one redelivery, then dead-letter
+                Duration.ofMillis(50),
+                2.0,
+                Duration.ofMillis(200),
+                ".DLT"
         );
-        messaging = new KafkaWorkflowMessaging(kafkaTemplate, consumerFactory, objectMapper, config);
     }
 
     // ── Publish + Subscribe Tasks ────────────────────────────────────────
@@ -253,7 +268,9 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
         void handlerExceptionDoesNotCrashConsumer() throws Exception {
             var taskQueue = "errors-" + testSuffix;
             var topic = "maestro.tasks." + taskQueue;
-            createTopics(topic);
+            // The failing record is redelivered and then dead-lettered, so the
+            // dead-letter topic has to exist — Maestro never creates topics.
+            createTopics(topic, topic + ".DLT");
 
             var successCount = new AtomicInteger(0);
             var failCount = new AtomicInteger(0);
@@ -271,9 +288,11 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
             var failing = new TaskMessage(UUID.randomUUID(), "fail-me", "type", UUID.randomUUID(), "svc", null);
             messaging.publishTask(taskQueue, failing);
 
-            // Wait for the failure to be processed
+            // The failing record is redelivered before it is dead-lettered, so
+            // the whole budget is spent before the consumer moves on.
             await().atMost(10, SECONDS).untilAsserted(() ->
-                    assertTrue(failCount.get() >= 1, "Failing message should have been attempted"));
+                    assertEquals(2, failCount.get(),
+                            "Failing message should have been attempted twice, then dead-lettered"));
 
             // Now send a second message AFTER the failure — proves the consumer
             // is still alive and consuming, not just that both messages were
@@ -301,12 +320,7 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
             var fixedTopic = "custom.tasks." + testSuffix;
             createTopics(fixedTopic);
 
-            var overrideConfig = new KafkaMessagingConfig(
-                    fixedTopic,  // fixed task topic
-                    null,
-                    "maestro.admin.events." + testSuffix,
-                    "override-group-" + testSuffix
-            );
+            var overrideConfig = config(fixedTopic, null);
             var overrideMessaging = new KafkaWorkflowMessaging(
                     kafkaTemplate, consumerFactory, objectMapper, overrideConfig);
 

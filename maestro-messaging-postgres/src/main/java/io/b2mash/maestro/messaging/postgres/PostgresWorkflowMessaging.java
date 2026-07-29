@@ -15,6 +15,8 @@ import javax.sql.DataSource;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -32,10 +34,21 @@ import java.util.function.Consumer;
  * <ul>
  *   <li>All publish methods provide <b>at-least-once</b> delivery.</li>
  *   <li>Consumers must be idempotent — duplicate messages are possible
- *       if processing fails after status update.</li>
+ *       if processing fails after status update, and a handler that throws is
+ *       re-invoked with the same message.</li>
  *   <li>Message ordering is guaranteed <b>per queue</b> by
  *       {@code created_at} ordering.</li>
  * </ul>
+ *
+ * <h2>Handler Failure</h2>
+ * <p>A handler exception is never an acknowledgement: the queue row is the
+ * retry ledger. The row returns to {@code PENDING} with an incremented
+ * {@code attempts} counter and a {@code next_attempt_at} in the future
+ * (exponential backoff, see {@link PostgresRedeliveryConfig}), and once the
+ * attempt budget is exhausted it is parked in {@code DEAD_LETTER} — durable and
+ * inspectable via {@link #listDeadLetterSignals}/{@link #listDeadLetterTasks},
+ * replayable via {@link #replaySignal}/{@link #replayTask}. A message is never
+ * dropped, and a poison message never becomes a hot loop.
  *
  * <h2>Thread Safety</h2>
  * <p>This class is thread-safe. Publishing uses pooled connections with
@@ -58,14 +71,19 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
      */
     private static final long POLL_INTERVAL_MS = 1000;
 
+    /** Longest {@code last_error} kept on a queue row. */
+    private static final int MAX_ERROR_LENGTH = 2000;
+
     private final DataSource dataSource;
     private final ObjectMapper objectMapper;
     private final PostgresNotificationListener notificationListener;
+    private final PostgresRedeliveryConfig redelivery;
     private final CopyOnWriteArrayList<Thread> pollingThreads = new CopyOnWriteArrayList<>();
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     /**
-     * Creates a new PostgreSQL-based workflow messaging implementation.
+     * Creates a new PostgreSQL-based workflow messaging implementation with the
+     * default redelivery policy.
      *
      * @param dataSource           the DataSource for database operations
      * @param objectMapper         Jackson 3 ObjectMapper for JSON serialization
@@ -76,9 +94,27 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
             ObjectMapper objectMapper,
             PostgresNotificationListener notificationListener
     ) {
+        this(dataSource, objectMapper, notificationListener, PostgresRedeliveryConfig.defaults());
+    }
+
+    /**
+     * Creates a new PostgreSQL-based workflow messaging implementation.
+     *
+     * @param dataSource           the DataSource for database operations
+     * @param objectMapper         Jackson 3 ObjectMapper for JSON serialization
+     * @param notificationListener the shared LISTEN/NOTIFY listener
+     * @param redelivery           policy applied when a handler throws
+     */
+    public PostgresWorkflowMessaging(
+            DataSource dataSource,
+            ObjectMapper objectMapper,
+            PostgresNotificationListener notificationListener,
+            PostgresRedeliveryConfig redelivery
+    ) {
         this.dataSource = dataSource;
         this.objectMapper = objectMapper;
         this.notificationListener = notificationListener;
+        this.redelivery = redelivery;
     }
 
     // ── Publishing ───────────────────────────────────────────────────────
@@ -240,20 +276,24 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
     // ── Polling loops ───────────────────────────────────────────────────
 
     private void pollTasks(String taskQueue, Consumer<TaskMessage> handler, Object lock) {
+        // A PENDING row is claimable once it is due: a handler failure pushes
+        // next_attempt_at into the future rather than retiring the row. The
+        // stale-PROCESSING branch is unchanged — a crashed consumer is not a
+        // handler failure and must not consume an attempt.
         var claimSql = """
                 UPDATE maestro_task_queue
                 SET status = 'PROCESSING', processed_at = now()
                 WHERE id = (
                     SELECT id FROM maestro_task_queue
                     WHERE task_queue = ?
-                      AND (status = 'PENDING'
+                      AND ((status = 'PENDING' AND next_attempt_at <= now())
                            OR (status = 'PROCESSING' AND processed_at < now() - interval '5 minutes'))
                     ORDER BY created_at
                     LIMIT 1
                     FOR UPDATE SKIP LOCKED
                 )
                 RETURNING id, task_queue, workflow_instance_id, workflow_id, workflow_type,
-                          run_id, service_name, payload
+                          run_id, service_name, payload, attempts
                 """;
 
         while (running.get()) {
@@ -267,9 +307,10 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
                             if (rs.next()) {
                                 processed = true;
                                 var rowId = rs.getObject("id", UUID.class);
+                                var attempts = rs.getInt("attempts");
                                 var message = readTaskMessage(rs);
                                 conn.commit();
-                                processTaskMessage(rowId, message, handler);
+                                processTaskMessage(rowId, attempts, message, handler);
                             } else {
                                 conn.commit();
                             }
@@ -298,19 +339,21 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
     }
 
     private void pollSignals(String serviceName, Consumer<SignalMessage> handler, Object lock) {
+        // See pollTasks: PENDING rows are claimable once due, so a failed
+        // handler's row comes back after its backoff instead of being lost.
         var claimSql = """
                 UPDATE maestro_signal_queue
                 SET status = 'PROCESSING', processed_at = now()
                 WHERE id = (
                     SELECT id FROM maestro_signal_queue
                     WHERE service_name = ?
-                      AND (status = 'PENDING'
+                      AND ((status = 'PENDING' AND next_attempt_at <= now())
                            OR (status = 'PROCESSING' AND processed_at < now() - interval '5 minutes'))
                     ORDER BY created_at
                     LIMIT 1
                     FOR UPDATE SKIP LOCKED
                 )
-                RETURNING id, service_name, workflow_id, signal_name, payload
+                RETURNING id, service_name, workflow_id, signal_name, payload, attempts
                 """;
 
         while (running.get()) {
@@ -324,9 +367,10 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
                             if (rs.next()) {
                                 processed = true;
                                 var rowId = rs.getObject("id", UUID.class);
+                                var attempts = rs.getInt("attempts");
                                 var message = readSignalMessage(rs);
                                 conn.commit();
-                                processSignalMessage(rowId, message, handler);
+                                processSignalMessage(rowId, attempts, message, handler);
                             } else {
                                 conn.commit();
                             }
@@ -356,27 +400,23 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
 
     // ── Message processing ──────────────────────────────────────────────
 
-    private void processTaskMessage(UUID rowId, TaskMessage message,
+    private void processTaskMessage(UUID rowId, int attempts, TaskMessage message,
                                     Consumer<TaskMessage> handler) {
         try {
             handler.accept(message);
             updateStatus("maestro_task_queue", rowId, "COMPLETED");
         } catch (Exception e) {
-            logger.error("Error processing task message {} for workflow '{}': {}",
-                    rowId, message.workflowId(), e.getMessage(), e);
-            updateStatus("maestro_task_queue", rowId, "FAILED");
+            recordFailure("maestro_task_queue", rowId, attempts, message.workflowId(), e);
         }
     }
 
-    private void processSignalMessage(UUID rowId, SignalMessage message,
+    private void processSignalMessage(UUID rowId, int attempts, SignalMessage message,
                                       Consumer<SignalMessage> handler) {
         try {
             handler.accept(message);
             updateStatus("maestro_signal_queue", rowId, "COMPLETED");
         } catch (Exception e) {
-            logger.error("Error processing signal message {} for workflow '{}': {}",
-                    rowId, message.workflowId(), e.getMessage(), e);
-            updateStatus("maestro_signal_queue", rowId, "FAILED");
+            recordFailure("maestro_signal_queue", rowId, attempts, message.workflowId(), e);
         }
     }
 
@@ -390,6 +430,175 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
         } catch (SQLException e) {
             logger.warn("Failed to update status to '{}' for row {} in {}: {}",
                     status, rowId, table, e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Schedules the next attempt for a message whose handler threw, or parks it
+     * once the attempt budget is spent.
+     *
+     * <p>If this update itself fails — the store being unreachable is exactly
+     * the fault we are surviving — the row is left {@code PROCESSING} and the
+     * five-minute stale reclaim in the poll loop picks it up. Either way the
+     * message is not lost.
+     */
+    private void recordFailure(String table, UUID rowId, int previousAttempts,
+                               String workflowId, Exception failure) {
+        var attempts = previousAttempts + 1;
+        var exhausted = attempts >= redelivery.maxAttempts();
+        var backoffMillis = exhausted ? 0L : redelivery.backoffAfter(attempts).toMillis();
+
+        if (exhausted) {
+            logger.error("Message {} for workflow '{}' in {} failed on attempt {}/{} — "
+                            + "parking it in DEAD_LETTER: {}",
+                    rowId, workflowId, table, attempts, redelivery.maxAttempts(),
+                    failure.getMessage(), failure);
+        } else {
+            logger.warn("Message {} for workflow '{}' in {} failed on attempt {}/{} — "
+                            + "redelivering in {}ms: {}",
+                    rowId, workflowId, table, attempts, redelivery.maxAttempts(),
+                    backoffMillis, failure.getMessage(), failure);
+        }
+
+        var sql = "UPDATE " + table + " SET status = ?, attempts = ?, "
+                + "next_attempt_at = now() + (? * interval '1 millisecond'), "
+                + "last_error = ?, processed_at = now() WHERE id = ?";
+        try (var conn = dataSource.getConnection();
+             var stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, exhausted ? "DEAD_LETTER" : "PENDING");
+            stmt.setInt(2, attempts);
+            stmt.setLong(3, backoffMillis);
+            stmt.setString(4, describe(failure));
+            stmt.setObject(5, rowId);
+            stmt.executeUpdate();
+        } catch (SQLException e) {
+            // The row stays PROCESSING and the stale reclaim recovers it.
+            logger.warn("Failed to record delivery failure for row {} in {} — "
+                            + "leaving it PROCESSING for the stale reclaim: {}",
+                    rowId, table, e.getMessage(), e);
+        }
+    }
+
+    private static String describe(Exception failure) {
+        var text = failure.toString();
+        return text.length() > MAX_ERROR_LENGTH ? text.substring(0, MAX_ERROR_LENGTH) : text;
+    }
+
+    // ── Dead letters ────────────────────────────────────────────────────
+
+    /**
+     * Lists signals parked in {@code DEAD_LETTER} for a service, oldest first.
+     *
+     * <p>The plain-SQL equivalent, for operators without an application handy:
+     * <pre>{@code
+     * SELECT id, workflow_id, signal_name, attempts, last_error, created_at
+     *   FROM maestro_signal_queue
+     *  WHERE service_name = ? AND status = 'DEAD_LETTER'
+     *  ORDER BY created_at LIMIT ?;
+     * }</pre>
+     *
+     * @param serviceName the service the signals were addressed to
+     * @param limit       maximum rows to return
+     * @return the parked signals, oldest first
+     */
+    public List<DeadLetterMessage> listDeadLetterSignals(String serviceName, int limit) {
+        var sql = """
+                SELECT id, workflow_id, signal_name AS name, payload, attempts, last_error, created_at
+                FROM maestro_signal_queue
+                WHERE service_name = ? AND status = 'DEAD_LETTER'
+                ORDER BY created_at
+                LIMIT ?
+                """;
+        return listDeadLetters(sql, serviceName, limit);
+    }
+
+    /**
+     * Lists tasks parked in {@code DEAD_LETTER} on a queue, oldest first.
+     *
+     * @param taskQueue the queue the tasks were published to
+     * @param limit     maximum rows to return
+     * @return the parked tasks, oldest first
+     */
+    public List<DeadLetterMessage> listDeadLetterTasks(String taskQueue, int limit) {
+        var sql = """
+                SELECT id, workflow_id, workflow_type AS name, payload, attempts, last_error, created_at
+                FROM maestro_task_queue
+                WHERE task_queue = ? AND status = 'DEAD_LETTER'
+                ORDER BY created_at
+                LIMIT ?
+                """;
+        return listDeadLetters(sql, taskQueue, limit);
+    }
+
+    /**
+     * Returns a parked signal to the queue for another round of delivery.
+     *
+     * <p>The attempt budget is reset, so replay after the underlying fault is
+     * fixed behaves exactly like a fresh publish.
+     *
+     * @param id the queue row ID, from {@link #listDeadLetterSignals}
+     * @return {@code true} if a {@code DEAD_LETTER} row was replayed,
+     *         {@code false} if there was no such row
+     */
+    public boolean replaySignal(UUID id) {
+        return replay("maestro_signal_queue", id, SIGNAL_CHANNEL);
+    }
+
+    /**
+     * Returns a parked task to the queue for another round of delivery.
+     *
+     * @param id the queue row ID, from {@link #listDeadLetterTasks}
+     * @return {@code true} if a {@code DEAD_LETTER} row was replayed,
+     *         {@code false} if there was no such row
+     */
+    public boolean replayTask(UUID id) {
+        return replay("maestro_task_queue", id, TASK_CHANNEL);
+    }
+
+    private List<DeadLetterMessage> listDeadLetters(String sql, String qualifier, int limit) {
+        try (var conn = dataSource.getConnection();
+             var stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, qualifier);
+            stmt.setInt(2, limit);
+            try (var rs = stmt.executeQuery()) {
+                var messages = new ArrayList<DeadLetterMessage>();
+                while (rs.next()) {
+                    messages.add(new DeadLetterMessage(
+                            rs.getObject("id", UUID.class),
+                            rs.getString("workflow_id"),
+                            rs.getString("name"),
+                            deserializeNullable(rs.getString("payload")),
+                            rs.getInt("attempts"),
+                            rs.getString("last_error"),
+                            rs.getTimestamp("created_at").toInstant()));
+                }
+                return messages;
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to list dead-lettered messages", e);
+        }
+    }
+
+    private boolean replay(String table, UUID id, String channelBase) {
+        var qualifierColumn = TASK_CHANNEL.equals(channelBase) ? "task_queue" : "service_name";
+        var sql = "UPDATE " + table + " SET status = 'PENDING', attempts = 0, "
+                + "next_attempt_at = now(), last_error = NULL, processed_at = NULL "
+                + "WHERE id = ? AND status = 'DEAD_LETTER' RETURNING " + qualifierColumn;
+        try (var conn = dataSource.getConnection();
+             var stmt = conn.prepareStatement(sql)) {
+            stmt.setObject(1, id);
+            try (var rs = stmt.executeQuery()) {
+                if (!rs.next()) {
+                    return false;
+                }
+                var qualifier = rs.getString(1);
+                notifyChannel(channelBase, qualifier);
+                logger.info("Replayed dead-lettered message {} from {}", id, table);
+                return true;
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException(
+                    "Failed to replay dead-lettered message " + id + " from " + table, e);
         }
     }
 

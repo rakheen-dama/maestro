@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.TimerStatus;
@@ -159,6 +160,42 @@ class WorkflowExecutorTest {
         assertTrue(completedLatch.await(5, TimeUnit.SECONDS), "Workflow should complete after signal");
     }
 
+    @Test
+    @DisplayName("A configured wake-recheck-interval reaches the SignalManager, bounding cross-node signal latency")
+    void wakeRecheckIntervalReachesSignalManager() throws Exception {
+        // Default recheck interval (30s) would never notice a signal persisted
+        // without a local unpark inside this test's short await window — so a
+        // short custom interval completing the workflow proves it was threaded
+        // from the constructor into SignalManager, not just left at the default.
+        executor.shutdown();
+        executor = new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
+                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
+                true, WorkflowExecutor.DEFAULT_SHUTDOWN_TIMEOUT, Duration.ofMillis(200));
+
+        var completedLatch = new CountDownLatch(1);
+        var waitingLatch = new CountDownLatch(1);
+        var workflow = new SignalWorkflow(waitingLatch, completedLatch);
+        var method = SignalWorkflow.class.getMethod("run", String.class);
+
+        executor.startWorkflow("wake-recheck", "SignalWorkflow", "default", "input", workflow, method);
+        assertTrue(waitingLatch.await(5, TimeUnit.SECONDS), "Workflow should reach await point");
+        await().atMost(Duration.ofSeconds(2)).until(() ->
+                store.getInstance("wake-recheck")
+                        .map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL)
+                        .orElse(false));
+
+        // Persist the signal directly — bypasses executor.deliverSignal, so no
+        // local unpark happens. Only the periodic store re-check can find it.
+        var instanceId = store.getInstance("wake-recheck").orElseThrow().id();
+        store.saveSignal(new WorkflowSignal(
+                UUID.randomUUID(), instanceId, "wake-recheck", "payment.result",
+                serializer.serialize("cross-node"), false, Instant.now()));
+
+        assertTrue(completedLatch.await(3, TimeUnit.SECONDS),
+                "the 200ms wake-recheck-interval configured on the constructor must have reached "
+                        + "SignalManager — with the 30s default this would still be waiting");
+    }
+
     // ── Shutdown ───────────────────────────────────────────────────────
 
     @Test
@@ -220,6 +257,97 @@ class WorkflowExecutorTest {
 
         assertEquals(1, count, "Should recover 1 workflow");
         assertTrue(latch.await(5, TimeUnit.SECONDS), "Recovered workflow should complete");
+    }
+
+    @Test
+    @DisplayName("Recovery heals a timer marked FIRED before its TIMER_FIRED event was appended")
+    void recoverWorkflowsHealsTimerFiredBeforeEventAppend() throws Exception {
+        // The crash window inside fireTimer: the row goes PENDING → FIRED, then
+        // the node dies before its workflow thread appends TIMER_FIRED. The
+        // event log now says "scheduled, never fired" while the row says
+        // otherwise — and getDueTimers only ever returns PENDING rows, so no
+        // poller will look at this timer again. Replay has to notice.
+        var nodeAWorkflow = new SleepingWorkflow(Duration.ofMinutes(10), new CountDownLatch(1));
+        var method = SleepingWorkflow.class.getMethod("run", String.class);
+
+        var instanceId = executor.startWorkflow("timer-heal-1", "SleepingWorkflow", "default",
+                "hello", nodeAWorkflow, method);
+
+        await().atMost(Duration.ofSeconds(5)).until(() ->
+                store.getInstance("timer-heal-1")
+                        .map(i -> i.status() == WorkflowStatus.WAITING_TIMER)
+                        .orElse(false));
+
+        // The sleep is the first operation, so it owns sequence 1.
+        var timer = store.findTimer(instanceId, "sleep-1").orElseThrow();
+        assertEquals(TimerStatus.PENDING, timer.status());
+        assertTrue(store.markTimerFired(timer.id()), "the crash window opens once the row transitions");
+        // node-a is now gone: nothing unparks its thread, nothing appends TIMER_FIRED.
+
+        var completed = new CountDownLatch(1);
+        var nodeBWorkflow = new SleepingWorkflow(Duration.ofMinutes(10), completed);
+        var registration = new WorkflowRegistration(
+                "SleepingWorkflow", "default", nodeBWorkflow, method);
+        var nodeB = new WorkflowExecutor(store, null, messaging, null, serializer, "node-b");
+        try {
+            assertEquals(1, nodeB.recoverWorkflows(Map.of("SleepingWorkflow", registration)));
+
+            assertTrue(completed.await(5, TimeUnit.SECONDS),
+                    "a timer already marked FIRED must not re-park the workflow forever");
+            await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                    assertEquals(WorkflowStatus.COMPLETED,
+                            store.getInstance("timer-heal-1").orElseThrow().status()));
+
+            var firedEvents = store.getEvents(instanceId).stream()
+                    .filter(e -> e.eventType() == EventType.TIMER_FIRED)
+                    .toList();
+            assertEquals(1, firedEvents.size(),
+                    "replay must heal the missing TIMER_FIRED event exactly once");
+        } finally {
+            nodeB.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("Recovery re-parks a sleep whose timer is still PENDING")
+    void recoverWorkflowsReParksWhileTimerStillPending() throws Exception {
+        // The counterpart of the healing test: a genuinely pending timer must
+        // still park, or the self-heal would turn every sleep into a no-op.
+        var nodeAWorkflow = new SleepingWorkflow(Duration.ofMinutes(10), new CountDownLatch(1));
+        var method = SleepingWorkflow.class.getMethod("run", String.class);
+
+        var instanceId = executor.startWorkflow("timer-pending-1", "SleepingWorkflow", "default",
+                "hello", nodeAWorkflow, method);
+        await().atMost(Duration.ofSeconds(5)).until(() ->
+                store.getInstance("timer-pending-1")
+                        .map(i -> i.status() == WorkflowStatus.WAITING_TIMER)
+                        .orElse(false));
+
+        var completed = new CountDownLatch(1);
+        var nodeBWorkflow = new SleepingWorkflow(Duration.ofMinutes(10), completed);
+        var registration = new WorkflowRegistration(
+                "SleepingWorkflow", "default", nodeBWorkflow, method);
+        var nodeB = new WorkflowExecutor(store, null, messaging, null, serializer, "node-b");
+        try {
+            assertEquals(1, nodeB.recoverWorkflows(Map.of("SleepingWorkflow", registration)));
+
+            await().atMost(Duration.ofSeconds(5)).until(() -> nodeB.isRunning("timer-pending-1"));
+            assertFalse(completed.await(500, TimeUnit.MILLISECONDS),
+                    "a PENDING timer must leave the recovered workflow parked");
+            assertEquals(WorkflowStatus.WAITING_TIMER,
+                    store.getInstance("timer-pending-1").orElseThrow().status());
+            assertEquals(0, store.getEvents(instanceId).stream()
+                            .filter(e -> e.eventType() == EventType.TIMER_FIRED).count(),
+                    "no TIMER_FIRED event may be written while the timer is pending");
+
+            // Firing it for real releases the recovered run.
+            var timer = store.findTimer(instanceId, "sleep-1").orElseThrow();
+            nodeB.fireTimer("timer-pending-1", "sleep-1", timer.id());
+            assertTrue(completed.await(5, TimeUnit.SECONDS),
+                    "firing the timer must release the re-parked workflow");
+        } finally {
+            nodeB.shutdown();
+        }
     }
 
     // ── Instance lock ──────────────────────────────────────────────────
@@ -450,6 +578,40 @@ class WorkflowExecutorTest {
     }
 
     @Test
+    @DisplayName("Constructor rejects a non-positive shutdown timeout")
+    void constructorRejectsNonPositiveShutdownTimeout() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
+                        "maestro:lock:", Duration.ofSeconds(30), true,
+                        Duration.ZERO, Duration.ofSeconds(30)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
+                        "maestro:lock:", Duration.ofSeconds(30), true,
+                        Duration.ofSeconds(-5), Duration.ofSeconds(30)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
+                        "maestro:lock:", Duration.ofSeconds(30), true,
+                        null, Duration.ofSeconds(30)));
+    }
+
+    @Test
+    @DisplayName("Constructor rejects a non-positive wake-recheck interval")
+    void constructorRejectsNonPositiveWakeRecheckInterval() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
+                        "maestro:lock:", Duration.ofSeconds(30), true,
+                        Duration.ofSeconds(30), Duration.ZERO));
+        assertThrows(IllegalArgumentException.class, () ->
+                new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
+                        "maestro:lock:", Duration.ofSeconds(30), true,
+                        Duration.ofSeconds(30), Duration.ofSeconds(-5)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
+                        "maestro:lock:", Duration.ofSeconds(30), true,
+                        Duration.ofSeconds(30), null));
+    }
+
+    @Test
     @DisplayName("Fresh start proceeds when the instance lock cannot be acquired")
     void freshStartProceedsWhenLockUnavailable() throws Exception {
         var lock = new MapLock();
@@ -517,6 +679,63 @@ class WorkflowExecutorTest {
                 .startedAt(Instant.now())
                 .updatedAt(Instant.now())
                 .build();
+    }
+
+    // ── Poller status accessors ──────────────────────────────────────────
+
+    @Test
+    @DisplayName("isTimerPollerRunning() reflects the timer poller's lifecycle")
+    void isTimerPollerRunningReflectsLifecycle() {
+        assertFalse(executor.isTimerPollerRunning(), "no poller started yet");
+
+        executor.startTimerPoller(Duration.ofMillis(50), 10);
+        assertTrue(executor.isTimerPollerRunning());
+
+        executor.shutdown();
+        assertFalse(executor.isTimerPollerRunning(), "stopped by shutdown");
+    }
+
+    @Test
+    @DisplayName("isRecoveryPollerRunning() reflects the recovery poller's lifecycle")
+    void isRecoveryPollerRunningReflectsLifecycle() {
+        assertFalse(executor.isRecoveryPollerRunning(), "no poller started yet");
+
+        executor.startRecoveryPoller(Map.of(), Duration.ofMillis(50));
+        assertTrue(executor.isRecoveryPollerRunning());
+
+        executor.shutdown();
+        assertFalse(executor.isRecoveryPollerRunning(), "stopped by shutdown");
+    }
+
+    @Test
+    @DisplayName("hasTimerPollerStarted() is monotonic — stays true after the poller stops, "
+            + "so callers can tell \"never started\" apart from \"started, then died\"")
+    void hasTimerPollerStartedStaysTrueAfterStop() {
+        assertFalse(executor.hasTimerPollerStarted(), "never started yet");
+
+        executor.startTimerPoller(Duration.ofMillis(50), 10);
+        assertTrue(executor.hasTimerPollerStarted());
+        assertTrue(executor.isTimerPollerRunning());
+
+        executor.shutdown();
+        assertTrue(executor.hasTimerPollerStarted(),
+                "monotonic — must not revert to \"never started\" once shutdown stops the poller");
+        assertFalse(executor.isTimerPollerRunning(), "but it is no longer running");
+    }
+
+    @Test
+    @DisplayName("hasRecoveryPollerStarted() is monotonic — stays true after the poller stops")
+    void hasRecoveryPollerStartedStaysTrueAfterStop() {
+        assertFalse(executor.hasRecoveryPollerStarted(), "never started yet");
+
+        executor.startRecoveryPoller(Map.of(), Duration.ofMillis(50));
+        assertTrue(executor.hasRecoveryPollerStarted());
+        assertTrue(executor.isRecoveryPollerRunning());
+
+        executor.shutdown();
+        assertTrue(executor.hasRecoveryPollerStarted(),
+                "monotonic — must not revert to \"never started\" once shutdown stops the poller");
+        assertFalse(executor.isRecoveryPollerRunning(), "but it is no longer running");
     }
 
     @Test
@@ -652,6 +871,27 @@ class WorkflowExecutorTest {
         public String run(String input) {
             latch.countDown();
             return input != null ? input.toUpperCase() : "DONE";
+        }
+    }
+
+    /**
+     * Workflow whose only step is a durable sleep — the fixture for timer
+     * replay. The nap is long enough that nothing fires it by accident; the
+     * tests fire (or pretend to fire) it explicitly.
+     */
+    public static class SleepingWorkflow {
+        private final Duration nap;
+        private final CountDownLatch completed;
+
+        public SleepingWorkflow(Duration nap, CountDownLatch completed) {
+            this.nap = nap;
+            this.completed = completed;
+        }
+
+        public String run(String input) {
+            WorkflowContext.current().sleep(nap);
+            completed.countDown();
+            return "awake";
         }
     }
 
@@ -892,6 +1132,14 @@ class WorkflowExecutorTest {
                     .filter(t -> t.status() == TimerStatus.PENDING && !t.fireAt().isAfter(now))
                     .limit(batchSize)
                     .toList();
+        }
+
+        @Override
+        public Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId) {
+            return timers.stream()
+                    .filter(t -> t.workflowInstanceId().equals(workflowInstanceId)
+                            && t.timerId().equals(timerId))
+                    .findFirst();
         }
 
         @Override

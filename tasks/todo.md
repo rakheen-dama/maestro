@@ -125,3 +125,27 @@ Previous milestone (Gradle multi-module setup) completed — see git history of 
 - **lock-postgres has no test suite** (renew boolean covered via InMemory + Valkey suites only).
 - **Pre-existing bug (own ticket):** `shutdown()` cancels parked futures → parked workflows are marked FAILED (with compensation!) on graceful shutdown instead of staying recoverable.
 - **ActivityInvocationHandler** still hardcodes `maestro:lock:activity:` prefix (pre-existing; same wiring as instance lock now supports).
+
+# Milestone: Release Readiness (open-issues.md → fixed)
+
+Binding plan: `tasks/release-readiness-plan.md` (SDD ledger in `.superpowers/sdd/release-readiness-plan/progress.md`).
+Branch: `worktree-release-readiness` off `main` @ 0502b38.
+
+- [x] Task 1 — Issue 2: timer fire crash window — CONFIRMED + fixed (self-healing replay, findTimer SPI, V3 index)
+- [x] Task 2 — Issues 3+6: lifecycle publish latency + admin.events wiring — async bounded publisher, enabled flag wired, topic alias
+- [x] Task 3 — Issues 4+5: ExecutorShutdownException → Error; SagaManager rethrow — catch ordering, ParkingLot/RetryExecutor/ActivityInvocationHandler/DefaultWorkflowOperations audit fixes, CLAUDE.md documented
+- [x] Task 4 — Issues 7+9: config seams — all three wired, defaults unchanged
+- [x] Task 5 — Issue 8: MaestroHealthIndicator — auto-configured on Actuator classpath, UP/DOWN + poller/running-count details
+- [x] Task 6 — Issue 1: signal no-loss (Kafka + Postgres) — redelivery + DLT/DEAD_LETTER + replay API, both specs enabled
+- [x] Task 7 — Issue 10a: RabbitMQ first suite (3x green) + Issue 1 parity; off the allowlist
+- [x] Task 8 — Issue 10b: admin-client / admin / store-jdbc suites — all off the allowlist, gate empty
+- [x] Task 9 — Docs truth pass + release notes; issues 13-15 recorded; all spot-checks passed
+- [x] Task 10 — QA: all gates passed (found+drove fix for enabled-flag event leak)
+
+## Review — Release Readiness milestone (2026-07-29)
+
+All 10 tasks complete; issues 1–10 closed, 11/12 documented as known limitations, new issues 13–15 recorded.
+- 42+ commits on `worktree-release-readiness` (base `main` @ 0502b38). Final whole-branch review (after 10 per-task reviews): ready to merge; its one Important finding (docs misattribution) fixed in `14a5fba` and re-review clean.
+- Defects found and fixed BEYOND the original issue list: admin missing kafka+flyway starters (boot-breaking), admin-client silently dropping async send failures, `enabled=false` leaking ACTIVITY_*/SIGNAL_*/TIMER_*/COMPENSATION_* events (caught by QA gate 5 live E2E, fixed via GatedWorkflowMessaging).
+- Verification: full `./gradlew build` green post-fix; integration suite 69/69 across 3 `--rerun-tasks` runs; loan E2E 6/6 with process-identity proof; admin ingestion verified over HTTP.
+- Breaking changes (all in docs/release-notes.md): WorkflowStore.findTimer, ExecutorShutdownException→Error, KafkaMessagingConfig fields, @MaestroSignalListener KafkaTemplate requirement. Operators must pre-create .DLT topics before upgrading.

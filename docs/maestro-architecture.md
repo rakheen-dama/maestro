@@ -349,6 +349,16 @@ stateDiagram-v2
 
 ## 5. Self-Recovery Pattern
 
+Every case below begins with the signal already persisted, which is what makes
+it recoverable. Until that write succeeds the transport is the only thing
+holding the signal, so **no transport acknowledges a message whose handler
+threw**: it redelivers with exponential backoff
+(`maestro.messaging.redelivery.*`, ~2.5 minutes by default) and, only once the
+attempt budget is spent, parks the message where it stays inspectable and
+replayable — a `.DLT` topic on Kafka, `DEAD_LETTER` status on the Postgres
+queue tables, a `<queue>.dlq` on RabbitMQ. A signal is never discarded; the
+worst case is that it needs an operator to replay it.
+
 ### 5.1 Signal Arrives Before Workflow Reaches Await
 
 ```mermaid
@@ -449,8 +459,19 @@ All topics are pre-created and declared in `application.yml`.
 | `maestro.tasks.{taskQueue}` | Per-service | workflowId | Internal task dispatch |
 | `maestro.signals.{service}` | Per-service | workflowId | Inbound signals |
 | `maestro.admin.events` | All services | serviceName | Lifecycle events for dashboard |
+| `<any consumed topic>.DLT` | Per-service | workflowId | Messages that exhausted redelivery (suffix configurable) |
 
 Consumer group per service: `maestro-{serviceName}`.
+
+A dead-letter topic is required for every topic Maestro *consumes* — the task
+topics, the signal topics, and each `@MaestroSignalListener` topic — and is
+declared by the operator like every other topic; Maestro auto-creates none. If
+one is missing, the exhausted record cannot be published, the offset is not
+committed and consumption stalls noisily rather than dropping the message. The
+Postgres transport needs no destination (rows move to `DEAD_LETTER` status);
+the RabbitMQ module declares `<queue>.dlq` itself, consistent with the rest of
+its self-declared topology. See `docs/configuration.md` for the
+`maestro.messaging.redelivery.*` properties and the inspect/replay recipes.
 
 ---
 
@@ -613,7 +634,17 @@ flowchart TD
 
 ### Graceful Shutdown
 
-SIGTERM → stop accepting new workflows → stop Kafka consumers → wait for in-flight activities (30s default) → release Valkey locks → shutdown.
+SIGTERM → stop accepting new workflows → stop Kafka consumers → wait for in-flight activities (30s by default, configurable via `maestro.shutdown.timeout`) → release Valkey locks → shutdown.
+
+A workflow parked mid-drain (awaiting a signal or timer, or mid-compensation)
+is abandoned rather than failed: shutdown raises `ExecutorShutdownException`
+(an `Error`, deliberately outside the `MaestroException` hierarchy so an
+ordinary workflow-author `catch (Exception e)` cannot swallow it and
+misrecord the abandonment as a failure), the instance is left in its current
+active status, and a fresh node's recovery picks it up and completes it —
+including when the abandonment happens while a saga's compensations are
+running, which leaves the instance `COMPENSATING` rather than recorded as a
+failed compensation step.
 
 ---
 

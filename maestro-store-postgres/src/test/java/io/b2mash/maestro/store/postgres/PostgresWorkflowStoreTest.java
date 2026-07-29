@@ -582,6 +582,46 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
         }
 
         @Test
+        @DisplayName("findTimer returns a fired timer, which getDueTimers can no longer see")
+        void findTimer_returnsFiredTimer() {
+            var instance = newInstance("order-find-fired");
+            store.createInstance(instance);
+
+            var timer = newTimer(instance.id(), "order-find-fired",
+                    Instant.now().minusSeconds(10), TimerStatus.PENDING);
+            store.saveTimer(timer);
+            assertTrue(store.markTimerFired(timer.id()));
+
+            // This is the whole point of findTimer: getDueTimers has gone blind
+            // to this row, but replay still has to learn that it fired.
+            assertTrue(store.getDueTimers(Instant.now(), 10).isEmpty());
+
+            var found = store.findTimer(instance.id(), timer.timerId());
+            assertTrue(found.isPresent());
+            assertEquals(timer.id(), found.get().id());
+            assertEquals(TimerStatus.FIRED, found.get().status());
+            assertEquals(timer.timerId(), found.get().timerId());
+            assertEquals("order-find-fired", found.get().workflowId());
+        }
+
+        @Test
+        @DisplayName("findTimer returns empty for an unknown timer ID or another instance")
+        void findTimer_returnsEmptyForUnknownTimer() {
+            var instance = newInstance("order-find-miss");
+            store.createInstance(instance);
+            var other = newInstance("order-find-other");
+            store.createInstance(other);
+
+            var timer = newTimer(instance.id(), "order-find-miss",
+                    Instant.now().plusSeconds(60), TimerStatus.PENDING);
+            store.saveTimer(timer);
+
+            assertTrue(store.findTimer(instance.id(), "sleep-nope").isEmpty());
+            assertTrue(store.findTimer(other.id(), timer.timerId()).isEmpty(),
+                    "a timer must not leak across workflow instances");
+        }
+
+        @Test
         @DisplayName("markTimerFired transitions PENDING to FIRED")
         void markTimerFired_transitionsPendingToFired() {
             var instance = newInstance("order-fire");

@@ -76,9 +76,13 @@ public class MaestroAutoConfiguration {
                     "maestro.service-name must be set. Configure it in application.yml or application.properties.");
         }
         var lock = properties.getLock();
+        var lifecycleEventsEnabled = properties.getAdmin().events().enabled();
+        var shutdownTimeout = properties.getShutdown().timeout();
+        var wakeRecheckInterval = properties.getSignal().wakeRecheckInterval();
         return new WorkflowExecutor(
                 store, distributedLock, messaging, signalNotifier, serializer, serviceName,
-                lock.keyPrefix(), lock.ttl()
+                lock.keyPrefix(), lock.ttl(), lifecycleEventsEnabled,
+                shutdownTimeout, wakeRecheckInterval
         );
     }
 

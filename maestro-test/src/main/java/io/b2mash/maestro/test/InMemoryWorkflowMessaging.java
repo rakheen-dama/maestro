@@ -16,6 +16,13 @@ import java.util.function.Consumer;
  * are no-ops — in a single-JVM test environment, the
  * {@link TestWorkflowEnvironment} invokes the workflow executor directly.
  *
+ * <p><b>Divergence from the SPI contract:</b> the redelivery and dead-letter
+ * obligations on {@link WorkflowMessaging#subscribe} and
+ * {@link WorkflowMessaging#subscribeSignals} do not apply here, because there
+ * is no transport to redeliver from. Delivery is synchronous, so a handler
+ * exception propagates straight to the caller that published — it cannot be
+ * silently lost, which is what those obligations exist to prevent.
+ *
  * <p><b>Thread safety:</b> {@link CopyOnWriteArrayList} ensures safe
  * concurrent reads and writes.
  */

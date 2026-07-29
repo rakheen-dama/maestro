@@ -191,6 +191,12 @@ class SignalSubscriptionRunnerTest {
         }
 
         @Override
+        public java.util.Optional<io.b2mash.maestro.core.model.WorkflowTimer> findTimer(
+                java.util.UUID workflowInstanceId, String timerId) {
+            throw new UnsupportedOperationException("stub");
+        }
+
+        @Override
         public boolean markTimerFired(java.util.UUID timerId) {
             return false;
         }

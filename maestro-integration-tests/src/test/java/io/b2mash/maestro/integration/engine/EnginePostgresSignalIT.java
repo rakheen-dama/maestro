@@ -516,6 +516,11 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
         }
 
         @Override
+        public Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId) {
+            return delegate.findTimer(workflowInstanceId, timerId);
+        }
+
+        @Override
         public boolean markTimerFired(UUID timerId) {
             return delegate.markTimerFired(timerId);
         }

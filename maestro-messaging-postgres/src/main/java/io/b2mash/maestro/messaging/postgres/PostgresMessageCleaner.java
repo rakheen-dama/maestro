@@ -16,6 +16,14 @@ import java.time.Duration;
  * older than a configurable retention period. This prevents unbounded
  * table growth while preserving recent messages for debugging.
  *
+ * <p>{@code DEAD_LETTER} rows are deliberately never deleted: they are the
+ * inspectable destination for messages that exhausted redelivery, and cleaning
+ * them up would reintroduce the very message loss that dead-lettering exists to
+ * prevent. Retire them by replaying them
+ * ({@link PostgresWorkflowMessaging#replaySignal}) or by deleting them
+ * explicitly once triaged. {@code FAILED} is only written by versions before
+ * redelivery existed.
+ *
  * <h2>Usage</h2>
  * <p>Typically scheduled as a periodic task (e.g., via Spring's
  * {@code @Scheduled}) by the application or invoked from the admin dashboard.

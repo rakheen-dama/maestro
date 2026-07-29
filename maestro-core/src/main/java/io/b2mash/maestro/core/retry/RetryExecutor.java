@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.retry;
 
 import io.b2mash.maestro.core.exception.ActivityExecutionException;
+import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -48,6 +49,12 @@ public final class RetryExecutor {
         for (int attempt = 0; attempt < policy.maxAttempts(); attempt++) {
             try {
                 return task.call();
+            } catch (ExecutorShutdownException e) {
+                // Not a retryable failure — the executor is shutting down.
+                // Retrying (with a backoff sleep) would delay the drain for no
+                // reason, and wrapping it in ActivityExecutionException would
+                // hide it from executeWorkflow's shutdown handling.
+                throw e;
             } catch (Throwable e) {
                 var unwrapped = unwrap(e);
 

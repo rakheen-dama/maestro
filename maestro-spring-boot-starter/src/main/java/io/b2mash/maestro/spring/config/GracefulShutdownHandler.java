@@ -14,7 +14,8 @@ import org.springframework.context.SmartLifecycle;
  *   <li>Stops the timer poller</li>
  *   <li>Stops accepting new workflows</li>
  *   <li>Unparks all waiting/sleeping workflows</li>
- *   <li>Waits up to 30 seconds for in-flight workflows to complete</li>
+ *   <li>Waits up to the configured shutdown timeout for in-flight workflows to
+ *       complete ({@code maestro.shutdown.timeout}, default 30 seconds)</li>
  * </ul>
  *
  * <h2>Phase Ordering</h2>

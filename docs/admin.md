@@ -212,6 +212,16 @@ All actions produce a flash message confirming success or reporting failure, the
 
 **Note:** Admin commands use internal signal names prefixed with `$maestro:` (e.g., `$maestro:retry`, `$maestro:terminate`) to distinguish them from application-level signals.
 
+**Known limitation:** Retry and Terminate publish their `$maestro:retry` /
+`$maestro:terminate` signal to the target service's signal topic, and the
+dashboard reports success once the publish succeeds — but no engine-side
+listener currently consumes those two internal signal names, so nothing in
+the target service actually acts on them yet. The buttons are not functional
+end-to-end. "Send Signal" is unaffected — an application-level signal you
+send is delivered and consumed exactly like any other signal, since
+`awaitSignal(...)` doesn't care who published it. See
+[open-issues.md](open-issues.md) for tracking.
+
 ---
 
 ## Configuration Reference

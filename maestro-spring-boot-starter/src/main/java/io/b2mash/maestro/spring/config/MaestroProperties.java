@@ -66,6 +66,10 @@ public class MaestroProperties {
 
     private AdminProperties admin = AdminProperties.defaults();
 
+    private ShutdownProperties shutdown = ShutdownProperties.defaults();
+
+    private SignalProperties signal = SignalProperties.defaults();
+
     // ── Getters and setters ─────────────────────────────────────────
 
     public boolean isEnabled() {
@@ -156,6 +160,22 @@ public class MaestroProperties {
         this.admin = admin;
     }
 
+    public ShutdownProperties getShutdown() {
+        return shutdown;
+    }
+
+    public void setShutdown(ShutdownProperties shutdown) {
+        this.shutdown = shutdown;
+    }
+
+    public SignalProperties getSignal() {
+        return signal;
+    }
+
+    public void setSignal(SignalProperties signal) {
+        this.signal = signal;
+    }
+
     // ── Nested configuration records ────────────────────────────────
     //
     // Every nested block is a record and is bound by Spring Boot's value-object
@@ -193,15 +213,64 @@ public class MaestroProperties {
      * @param type          messaging implementation type (e.g., {@code "kafka"})
      * @param consumerGroup Kafka consumer group; defaults to the service name at runtime
      * @param topics        topic name configuration
+     * @param redelivery    handler-failure redelivery and dead-letter policy
      */
     public record MessagingProperties(
             @DefaultValue("kafka") String type,
             @Nullable String consumerGroup,
-            @DefaultValue TopicsProperties topics
+            @DefaultValue TopicsProperties topics,
+            @DefaultValue RedeliveryProperties redelivery
     ) {
         /** @return the defaults documented above */
         public static MessagingProperties defaults() {
-            return new MessagingProperties("kafka", null, TopicsProperties.defaults());
+            return new MessagingProperties("kafka", null,
+                    TopicsProperties.defaults(), RedeliveryProperties.defaults());
+        }
+    }
+
+    /**
+     * Redelivery and dead-letter policy applied when a message handler throws.
+     *
+     * <p>A handler exception means the message was <em>not</em> processed — on
+     * the engine signal channel it means the signal is not yet durable — so the
+     * transport must not acknowledge it. Every transport therefore redelivers
+     * the message with exponential backoff and, once the attempt budget is
+     * exhausted, routes it to a durable, inspectable dead-letter destination
+     * rather than dropping it or looping on it forever.
+     *
+     * <p>The delay before the attempt following the <i>n</i>-th failure is
+     * {@code min(initialInterval × multiplier^(n-1), maxInterval)}, and
+     * {@code maxAttempts} counts the initial attempt (matching
+     * {@code RetryPolicy} semantics). The defaults give roughly
+     * 1s, 2s, 4s, 8s, 16s, 30s, 30s, 30s, 30s between 10 attempts — about
+     * 2.5 minutes of tolerance for a transient store outage before a message
+     * is parked. Raise {@code max-attempts} for longer outage tolerance;
+     * lower it to contain a poison message sooner.
+     *
+     * <p>Dead-letter destinations are never created by Maestro on Kafka: the
+     * {@code <topic><dead-letter-suffix>} topics are pre-declared by the
+     * operator like every other topic. The Postgres transport needs nothing
+     * created (it parks rows in {@code DEAD_LETTER} status).
+     *
+     * @param maxAttempts        total delivery attempts, including the first
+     * @param initialInterval    backoff before the second attempt
+     * @param multiplier         factor applied to the backoff after each failure
+     * @param maxInterval        ceiling for the computed backoff
+     * @param deadLetterSuffix   Kafka only — suffix appended to the source topic
+     * @param deadLetterExchange RabbitMQ only — exchange exhausted messages are republished to
+     */
+    public record RedeliveryProperties(
+            @DefaultValue("10") int maxAttempts,
+            @DefaultValue("1s") Duration initialInterval,
+            @DefaultValue("2.0") double multiplier,
+            @DefaultValue("30s") Duration maxInterval,
+            @DefaultValue(".DLT") String deadLetterSuffix,
+            @DefaultValue("maestro.dead-letter") String deadLetterExchange
+    ) {
+        /** @return the defaults documented above */
+        public static RedeliveryProperties defaults() {
+            return new RedeliveryProperties(10, Duration.ofSeconds(1), 2.0,
+                    Duration.ofSeconds(30), ".DLT", "maestro.dead-letter");
         }
     }
 
@@ -341,8 +410,17 @@ public class MaestroProperties {
     /**
      * Lifecycle event publishing to the admin dashboard.
      *
-     * @param enabled whether lifecycle events are published
-     * @param topic   Kafka topic for admin events
+     * @param enabled whether {@code WORKFLOW_STARTED}/{@code _COMPLETED}/{@code _FAILED}
+     *                lifecycle events are published at all. {@code false} disables
+     *                publishing entirely, independent of the messaging topic — a
+     *                legitimate choice for deployments that do not run the admin
+     *                dashboard and want no lifecycle traffic on the broker.
+     * @param topic   <b>Deprecated alias</b> for {@link TopicsProperties#adminEvents()}
+     *                ({@code maestro.messaging.topics.admin-events}), kept for
+     *                deployments that only disable the dashboard's own events and
+     *                never touched the messaging block. If both properties are set,
+     *                {@code maestro.messaging.topics.admin-events} wins and a WARN is
+     *                logged at startup. Prefer configuring the topic there.
      */
     public record EventsProperties(
             @DefaultValue("true") boolean enabled,
@@ -351,6 +429,44 @@ public class MaestroProperties {
         /** @return the defaults documented above */
         public static EventsProperties defaults() {
             return new EventsProperties(true, "maestro.admin.events");
+        }
+    }
+
+    /**
+     * Graceful shutdown configuration.
+     *
+     * @param timeout how long {@code WorkflowExecutor.shutdown()} waits for
+     *                in-flight workflows to drain before returning; workflows
+     *                that overrun it are left running and their instance
+     *                locks expire by TTL
+     */
+    public record ShutdownProperties(
+            @DefaultValue("30s") Duration timeout
+    ) {
+        /** @return the defaults documented above */
+        public static ShutdownProperties defaults() {
+            return new ShutdownProperties(Duration.ofSeconds(30));
+        }
+    }
+
+    /**
+     * Signal handling configuration.
+     *
+     * @param wakeRecheckInterval how often a workflow parked on
+     *                            {@code awaitSignal()} re-checks the store for
+     *                            a signal persisted without a notification
+     *                            reaching this instance — e.g. ingested on
+     *                            another node in a deployment with no
+     *                            {@code SignalNotifier} (Kafka or RabbitMQ
+     *                            messaging without Valkey). Bounds cross-node
+     *                            signal latency in those cases.
+     */
+    public record SignalProperties(
+            @DefaultValue("30s") Duration wakeRecheckInterval
+    ) {
+        /** @return the defaults documented above */
+        public static SignalProperties defaults() {
+            return new SignalProperties(Duration.ofSeconds(30));
         }
     }
 }

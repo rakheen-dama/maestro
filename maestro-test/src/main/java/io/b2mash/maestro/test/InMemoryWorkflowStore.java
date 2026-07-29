@@ -222,6 +222,16 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
     }
 
     @Override
+    public Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId) {
+        synchronized (timerLock) {
+            return timers.stream()
+                    .filter(t -> t.workflowInstanceId().equals(workflowInstanceId))
+                    .filter(t -> t.timerId().equals(timerId))
+                    .findFirst();
+        }
+    }
+
+    @Override
     public boolean markTimerFired(UUID timerId) {
         synchronized (timerLock) {
             for (int i = 0; i < timers.size(); i++) {

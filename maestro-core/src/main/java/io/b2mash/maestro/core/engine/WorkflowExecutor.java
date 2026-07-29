@@ -73,7 +73,14 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class WorkflowExecutor {
 
     private static final Logger logger = LoggerFactory.getLogger(WorkflowExecutor.class);
-    private static final Duration SHUTDOWN_TIMEOUT = Duration.ofSeconds(30);
+
+    /**
+     * Default wait for in-flight workflows to drain during {@link #shutdown()},
+     * used when no explicit {@code shutdownTimeout} is passed to the
+     * constructor. Corresponds to {@code maestro.shutdown.timeout} in the
+     * Spring Boot starter.
+     */
+    static final Duration DEFAULT_SHUTDOWN_TIMEOUT = Duration.ofSeconds(30);
 
     /**
      * How many times a terminal-status write is retried against a fresh read
@@ -94,10 +101,15 @@ public final class WorkflowExecutor {
     private final SagaManager sagaManager;
     private final QueryRegistry queryRegistry;
     private final WorkflowInstanceLockManager instanceLockManager;
+    private final boolean lifecycleEventsEnabled;
+    private final Duration shutdownTimeout;
+    private final LifecycleEventPublisher lifecycleEventPublisher;
     private final ConcurrentHashMap<String, RunningWorkflow> runningWorkflows;
     private final AtomicBoolean shuttingDown;
     private final AtomicReference<TimerPoller> timerPoller = new AtomicReference<>();
     private final AtomicReference<RecoveryPoller> recoveryPoller = new AtomicReference<>();
+    private final AtomicBoolean timerPollerStarted = new AtomicBoolean(false);
+    private final AtomicBoolean recoveryPollerStarted = new AtomicBoolean(false);
 
     /**
      * Creates a new workflow executor with the default lock key prefix
@@ -124,7 +136,8 @@ public final class WorkflowExecutor {
     }
 
     /**
-     * Creates a new workflow executor with explicit lock configuration.
+     * Creates a new workflow executor with explicit lock configuration and
+     * lifecycle event publishing enabled.
      *
      * @param store           workflow store for persistence
      * @param distributedLock optional distributed lock backend
@@ -149,23 +162,127 @@ public final class WorkflowExecutor {
             String lockKeyPrefix,
             Duration instanceLockTtl
     ) {
+        this(store, distributedLock, messaging, signalNotifier, serializer, serviceName,
+                lockKeyPrefix, instanceLockTtl, true);
+    }
+
+    /**
+     * Creates a new workflow executor with explicit lock configuration and
+     * explicit control over lifecycle event publishing.
+     *
+     * @param store                   workflow store for persistence
+     * @param distributedLock         optional distributed lock backend
+     * @param messaging               optional messaging for lifecycle events
+     * @param signalNotifier          optional cross-instance signal notification
+     * @param serializer              Jackson serializer for payloads
+     * @param serviceName             the name of the owning service
+     * @param lockKeyPrefix           prefix for distributed lock keys (e.g. {@code maestro:lock:})
+     * @param instanceLockTtl         TTL for the per-workflow instance lock; renewed
+     *                                at one third of this interval — must be strictly
+     *                                positive
+     * @param lifecycleEventsEnabled  whether {@code WORKFLOW_STARTED}/{@code _COMPLETED}/
+     *                                {@code _FAILED} lifecycle events are published at all
+     *                                (independent of whether {@code messaging} is configured).
+     *                                Corresponds to {@code maestro.admin.events.enabled} in the
+     *                                Spring Boot starter.
+     * @throws IllegalArgumentException if {@code instanceLockTtl} is
+     *                                  {@code null}, zero, or negative
+     */
+    public WorkflowExecutor(
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            @Nullable WorkflowMessaging messaging,
+            @Nullable SignalNotifier signalNotifier,
+            PayloadSerializer serializer,
+            String serviceName,
+            String lockKeyPrefix,
+            Duration instanceLockTtl,
+            boolean lifecycleEventsEnabled
+    ) {
+        this(store, distributedLock, messaging, signalNotifier, serializer, serviceName,
+                lockKeyPrefix, instanceLockTtl, lifecycleEventsEnabled,
+                DEFAULT_SHUTDOWN_TIMEOUT, SignalManager.DEFAULT_WAKE_RECHECK_INTERVAL);
+    }
+
+    /**
+     * Creates a new workflow executor with explicit lock configuration,
+     * explicit control over lifecycle event publishing, and explicit
+     * shutdown/signal timing.
+     *
+     * @param store                  workflow store for persistence
+     * @param distributedLock        optional distributed lock backend
+     * @param messaging              optional messaging for lifecycle events
+     * @param signalNotifier         optional cross-instance signal notification
+     * @param serializer             Jackson serializer for payloads
+     * @param serviceName            the name of the owning service
+     * @param lockKeyPrefix          prefix for distributed lock keys (e.g. {@code maestro:lock:})
+     * @param instanceLockTtl        TTL for the per-workflow instance lock; renewed
+     *                               at one third of this interval — must be strictly
+     *                               positive
+     * @param lifecycleEventsEnabled whether {@code WORKFLOW_STARTED}/{@code _COMPLETED}/
+     *                               {@code _FAILED} lifecycle events are published at all
+     *                               (independent of whether {@code messaging} is configured).
+     *                               Corresponds to {@code maestro.admin.events.enabled} in the
+     *                               Spring Boot starter.
+     * @param shutdownTimeout        how long {@link #shutdown()} waits for in-flight
+     *                               workflows to drain before returning — must be strictly
+     *                               positive. Corresponds to {@code maestro.shutdown.timeout}.
+     * @param wakeRecheckInterval    how often a parked {@code awaitSignal()} re-checks the
+     *                               store for a signal persisted without a notification
+     *                               reaching this instance — must be strictly positive.
+     *                               Corresponds to {@code maestro.signal.wake-recheck-interval}.
+     * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
+     *                                  or {@code wakeRecheckInterval} is {@code null}, zero,
+     *                                  or negative
+     */
+    public WorkflowExecutor(
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            @Nullable WorkflowMessaging messaging,
+            @Nullable SignalNotifier signalNotifier,
+            PayloadSerializer serializer,
+            String serviceName,
+            String lockKeyPrefix,
+            Duration instanceLockTtl,
+            boolean lifecycleEventsEnabled,
+            Duration shutdownTimeout,
+            Duration wakeRecheckInterval
+    ) {
         if (instanceLockTtl == null || instanceLockTtl.isNegative() || instanceLockTtl.isZero()) {
             throw new IllegalArgumentException(
                     "instanceLockTtl must be positive, got " + instanceLockTtl);
         }
+        if (shutdownTimeout == null || shutdownTimeout.isNegative() || shutdownTimeout.isZero()) {
+            throw new IllegalArgumentException(
+                    "shutdownTimeout must be positive, got " + shutdownTimeout);
+        }
+        if (wakeRecheckInterval == null || wakeRecheckInterval.isNegative() || wakeRecheckInterval.isZero()) {
+            throw new IllegalArgumentException(
+                    "wakeRecheckInterval must be positive, got " + wakeRecheckInterval);
+        }
         this.store = store;
         this.distributedLock = distributedLock;
-        this.messaging = messaging;
+        // Wrapped once, here, and handed to every component this executor builds
+        // (SignalManager, SagaManager, DefaultWorkflowOperations below) so the
+        // enabled flag is honoured by every lifecycle-event publisher this
+        // executor owns, not just this class's own WORKFLOW_* events — see
+        // GatedWorkflowMessaging's Javadoc for why this is the shared seam
+        // rather than each class re-implementing its own enabled check.
+        this.messaging = GatedWorkflowMessaging.wrap(messaging, lifecycleEventsEnabled);
         this.signalNotifier = signalNotifier;
         this.serializer = serializer;
         this.serviceName = serviceName;
         this.parkingLot = new ParkingLot();
-        this.signalManager = new SignalManager(store, messaging, signalNotifier, serializer, parkingLot);
-        this.sagaManager = new SagaManager(store, messaging, serializer, serviceName);
+        this.signalManager = new SignalManager(
+                store, this.messaging, signalNotifier, serializer, parkingLot, wakeRecheckInterval);
+        this.sagaManager = new SagaManager(store, this.messaging, serializer, serviceName);
         this.instanceLockManager = new WorkflowInstanceLockManager(
                 distributedLock, serviceName, lockKeyPrefix, instanceLockTtl,
                 instanceLockTtl.dividedBy(3));
         this.queryRegistry = new QueryRegistry();
+        this.lifecycleEventsEnabled = lifecycleEventsEnabled;
+        this.shutdownTimeout = shutdownTimeout;
+        this.lifecycleEventPublisher = new LifecycleEventPublisher(serviceName);
         this.runningWorkflows = new ConcurrentHashMap<>();
         this.shuttingDown = new AtomicBoolean(false);
     }
@@ -397,6 +514,7 @@ public final class WorkflowExecutor {
             throw new IllegalStateException("Timer poller already started");
         }
         poller.start();
+        timerPollerStarted.set(true);
     }
 
     // ── Recovery poller ─────────────────────────────────────────────────
@@ -428,6 +546,7 @@ public final class WorkflowExecutor {
             throw new IllegalStateException("Recovery poller already started");
         }
         poller.start();
+        recoveryPollerStarted.set(true);
     }
 
     // ── Shutdown ───────────────────────────────────────────────────────
@@ -436,8 +555,9 @@ public final class WorkflowExecutor {
      * Gracefully shuts down the executor.
      *
      * <p>Stops accepting new workflows, abandons every parked waiter so those
-     * virtual threads exit, waits up to 30 seconds for in-flight workflows to
-     * drain, and then stops renewing instance locks.
+     * virtual threads exit, waits up to the configured shutdown timeout
+     * (default 30 seconds; {@code maestro.shutdown.timeout}) for in-flight
+     * workflows to drain, and then stops renewing instance locks.
      *
      * <h2>What a parked workflow sees</h2>
      * <p>A workflow parked on {@code awaitSignal()} or {@code sleep()} has
@@ -447,6 +567,16 @@ public final class WorkflowExecutor {
      * {@code WAITING_TIMER} status it parked in, no compensation runs, and its
      * instance lock is released as the thread unwinds — so a surviving node,
      * or this one after a restart, recovers it immediately.
+     *
+     * <p>The same holds if shutdown lands <em>during</em> saga compensation: a
+     * compensation action that parks (e.g. one calling {@code sleep()} or
+     * {@code awaitSignal()}) is unblocked the same way, {@link SagaManager}
+     * lets the exception propagate instead of recording the interrupted step
+     * as failed, and the instance is left {@code COMPENSATING} — still an
+     * active, recoverable status — for the next node to finish. Because
+     * {@link ExecutorShutdownException} extends {@link Error}, ordinary
+     * {@code catch (Exception)} code — in a workflow method or a compensation
+     * action — cannot intercept it and mistake it for a real failure.
      *
      * <p>Workflows still executing an activity are <em>not</em> interrupted;
      * they drain up to the shutdown timeout. Any that overrun it are left
@@ -478,7 +608,7 @@ public final class WorkflowExecutor {
         parkingLot.shutdown();
 
         // Wait for in-flight workflows with a deadline
-        var deadline = Instant.now().plus(SHUTDOWN_TIMEOUT);
+        var deadline = Instant.now().plus(shutdownTimeout);
         for (var entry : runningWorkflows.entrySet()) {
             try {
                 var remaining = Duration.between(Instant.now(), deadline);
@@ -494,6 +624,11 @@ public final class WorkflowExecutor {
 
         // Stop the lock renewer; locks of overrunning workflows expire via TTL
         instanceLockManager.close();
+
+        // Give the lifecycle publisher a short, bounded window to flush events
+        // queued by workflows that just drained, then force it down — a stalled
+        // transport must not make shutdown hang.
+        lifecycleEventPublisher.shutdown();
 
         var remaining = runningWorkflows.size();
         if (remaining > 0) {
@@ -587,6 +722,60 @@ public final class WorkflowExecutor {
      */
     public int runningCount() {
         return runningWorkflows.size();
+    }
+
+    /**
+     * Returns whether the background timer poller is currently running on
+     * this executor.
+     *
+     * @return {@code true} if {@link #startTimerPoller(Duration, int)} has
+     *         been called and the poller has not since stopped (e.g. via
+     *         {@link #shutdown()})
+     */
+    public boolean isTimerPollerRunning() {
+        var poller = timerPoller.get();
+        return poller != null && poller.isRunning();
+    }
+
+    /**
+     * Returns whether the background recovery poller is currently running
+     * on this executor.
+     *
+     * @return {@code true} if {@link #startRecoveryPoller(Map, Duration)}
+     *         has been called and the poller has not since stopped (e.g.
+     *         via {@link #shutdown()})
+     */
+    public boolean isRecoveryPollerRunning() {
+        var poller = recoveryPoller.get();
+        return poller != null && poller.isRunning();
+    }
+
+    /**
+     * Returns whether {@link #startTimerPoller(Duration, int)} has ever been
+     * called on this executor.
+     *
+     * <p>Unlike {@link #isTimerPollerRunning()}, this flag is monotonic — it
+     * stays {@code true} even after {@link #shutdown()} stops the poller.
+     * Combined with {@link #isTimerPollerRunning()}, a caller (e.g. a health
+     * check) can distinguish "not started yet" (still starting up — not a
+     * fault) from "started, then stopped running" (a real fault, such as a
+     * crashed poller thread).
+     *
+     * @return {@code true} once the timer poller has been started at least once
+     */
+    public boolean hasTimerPollerStarted() {
+        return timerPollerStarted.get();
+    }
+
+    /**
+     * Returns whether {@link #startRecoveryPoller(Map, Duration)} has ever
+     * been called on this executor. Monotonic — see
+     * {@link #hasTimerPollerStarted()} for the startup-vs-fault rationale.
+     *
+     * @return {@code true} once the recovery poller has been started at least once
+     */
+    public boolean hasRecoveryPollerStarted() {
+        return recoveryPollerStarted.get();
     }
 
     // ── Internal: workflow launch ──────────────────────────────────────
@@ -714,9 +903,27 @@ public final class WorkflowExecutor {
             // parked. Its durable state — WAITING_SIGNAL or WAITING_TIMER —
             // is still valid and still recoverable, so nothing is written and
             // no compensation runs. Whichever node starts next picks it up.
+            //
+            // This catch is deliberately ahead of catch (Exception e) below:
+            // ExecutorShutdownException extends Error (see its Javadoc), so
+            // the ordering is not load-bearing for the compiler, but it keeps
+            // the shutdown path visually first as the case the rest of this
+            // method must never treat as a failure.
             handleShutdownSuspension(ctx);
         } catch (Exception e) {
-            handleWorkflowFailure(ctx, instance, e, compensationStack, parallelCompensation);
+            try {
+                handleWorkflowFailure(ctx, instance, e, compensationStack, parallelCompensation);
+            } catch (ExecutorShutdownException shutdownDuringCompensation) {
+                // Shutdown landed while compensating a genuine failure. The
+                // compensation actions that already ran are memoized (they
+                // went through the activity proxy); the instance is still
+                // COMPENSATING — an active, recoverable status — and no
+                // COMPENSATION_STEP_FAILED was recorded for the interrupted
+                // step (SagaManager rethrows this instead of recording it).
+                // Treat it exactly like a shutdown during a park: leave the
+                // durable state alone for the next node to finish.
+                handleShutdownSuspension(ctx);
+            }
         } finally {
             // Remove-then-release: a concurrent recovery attempt in the gap
             // still sees the lock held and skips — retried by the next poll
@@ -742,6 +949,13 @@ public final class WorkflowExecutor {
             }
         } catch (InvocationTargetException e) {
             var cause = e.getCause();
+            // ExecutorShutdownException (an Error) must reach executeWorkflow's
+            // catch (ExecutorShutdownException e) intact — e.g. a workflow's own
+            // try { ... } catch (Exception e) { ... } around awaitSignal()/sleep()
+            // doesn't catch it (Error isn't an Exception), reflection unwraps it
+            // to this InvocationTargetException, and wrapping it in a
+            // RuntimeException here would re-hide it as an ordinary failure.
+            if (cause instanceof Error err) throw err;
             if (cause instanceof Exception ex) throw ex;
             throw new RuntimeException(cause);
         }
@@ -752,8 +966,9 @@ public final class WorkflowExecutor {
     /**
      * Records that a workflow's local run ended because this node is shutting
      * down. Deliberately writes nothing: the instance is already in the
-     * {@code WAITING_*} status it parked in, which is exactly the state
-     * recovery needs to find.
+     * {@code WAITING_*} (or {@code COMPENSATING}, if shutdown landed mid-saga)
+     * status it was interrupted in, which is exactly the state recovery needs
+     * to find.
      */
     private void handleShutdownSuspension(WorkflowContext ctx) {
         var status = store.getInstance(ctx.workflowId())
@@ -902,27 +1117,43 @@ public final class WorkflowExecutor {
         }
     }
 
+    /**
+     * Builds and submits a lifecycle event for off-thread publishing.
+     *
+     * <p>Never runs {@link WorkflowMessaging#publishLifecycleEvent} on the
+     * calling thread: that call is free to block (Kafka's producer, for
+     * example, blocks synchronously fetching metadata for a missing topic, up
+     * to {@code max.block.ms}), and the calling thread here is a workflow's
+     * own virtual thread — most notably during {@code startWorkflow} itself.
+     * The actual publish, and its failure handling, happens on
+     * {@link #lifecycleEventPublisher}; see {@link LifecycleEventPublisher}
+     * for the backpressure and shutdown contract.
+     */
     private void publishLifecycleEvent(
             WorkflowInstance instance, LifecycleEventType eventType,
             @Nullable String stepName
     ) {
-        if (messaging == null) return;
-        try {
-            messaging.publishLifecycleEvent(new WorkflowLifecycleEvent(
-                    instance.id(),
-                    instance.workflowId(),
-                    instance.workflowType(),
-                    serviceName,
-                    instance.taskQueue(),
-                    eventType,
-                    stepName,
-                    null,
-                    Instant.now()
-            ));
-        } catch (Exception e) {
-            logger.warn("Failed to publish {} lifecycle event for workflow '{}'",
-                    eventType, instance.workflowId(), e);
-        }
+        if (messaging == null || !lifecycleEventsEnabled) return;
+        var event = new WorkflowLifecycleEvent(
+                instance.id(),
+                instance.workflowId(),
+                instance.workflowType(),
+                serviceName,
+                instance.taskQueue(),
+                eventType,
+                stepName,
+                null,
+                Instant.now()
+        );
+        lifecycleEventPublisher.submit(() -> {
+            try {
+                messaging.publishLifecycleEvent(event);
+            } catch (Exception e) {
+                // SPI contract: lifecycle event failures must not interrupt workflow execution
+                logger.warn("Failed to publish {} lifecycle event for workflow '{}'",
+                        eventType, instance.workflowId(), e);
+            }
+        });
     }
 
     // ── Internal: query invocation ─────────────────────────────────────

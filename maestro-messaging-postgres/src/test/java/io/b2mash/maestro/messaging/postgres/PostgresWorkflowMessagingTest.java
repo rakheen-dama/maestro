@@ -4,7 +4,6 @@ import io.b2mash.maestro.core.spi.LifecycleEventType;
 import io.b2mash.maestro.core.spi.SignalMessage;
 import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -16,6 +15,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.awaitility.Awaitility.await;
@@ -30,6 +30,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * the queue semantics the engine depends on: at-most-one-consumer claiming via
  * {@code FOR UPDATE SKIP LOCKED}, reclaim of stale {@code PROCESSING} rows, and
  * the round trips for tasks, signals and lifecycle events.
+ *
+ * <p>The handler-failure nest pins the redelivery state machine: a failed
+ * handler must put its row back in {@code PENDING} with a future
+ * {@code next_attempt_at} rather than retire it, and a message that exhausts
+ * its attempt budget must park in {@code DEAD_LETTER}, listable and replayable,
+ * instead of looping forever or vanishing.
  *
  * <p>Polling threads are started by {@code subscribe}, so every assertion about
  * delivery is made through Awaitility rather than by assuming synchronous
@@ -174,34 +180,93 @@ class PostgresWorkflowMessagingTest extends PostgresMessagingTestSupport {
     class HandlerFailureTests {
 
         @Test
-        @DisplayName("current behaviour: a throwing handler marks the row FAILED and it is never retried")
-        void throwingHandlerMarksRowFailedTerminally() throws Exception {
-            var service = "svc-fail-" + unique();
+        @DisplayName("a persistently failing handler parks the signal in DEAD_LETTER after a bounded number of attempts")
+        void persistentFailureLandsInDeadLetter() throws Exception {
+            var service = "svc-poison-" + unique();
             var attempts = new AtomicInteger();
-            messaging.subscribeSignals(service, m -> {
-                attempts.incrementAndGet();
-                throw new IllegalStateException("handler blew up");
-            });
 
-            messaging.publishSignal(service, new SignalMessage("wf-sig-fail", "approval", null));
+            try (var tight = newMessaging(new PostgresRedeliveryConfig(
+                    3, Duration.ofMillis(100), 2.0, Duration.ofMillis(200)))) {
+                tight.subscribeSignals(service, m -> {
+                    attempts.incrementAndGet();
+                    throw new IllegalStateException("poison signal — this handler can never process it");
+                });
 
-            await().atMost(BOUND).until(
-                    () -> "FAILED".equals(statusOf("maestro_signal_queue", "wf-sig-fail")));
+                tight.publishSignal(service, new SignalMessage("wf-sig-poison", "approval", null));
 
-            // FAILED is terminal: the claim query only picks up PENDING rows and
-            // stale PROCESSING rows, so this signal is never delivered again.
-            await().during(Duration.ofSeconds(3)).atMost(Duration.ofSeconds(8))
-                    .until(() -> attempts.get() == 1);
-            assertEquals(1, attempts.get(),
-                    "today the message is consumed exactly once even though it failed");
-            assertEquals("FAILED", statusOf("maestro_signal_queue", "wf-sig-fail"));
+                await().atMost(BOUND).until(
+                        () -> "DEAD_LETTER".equals(statusOf("maestro_signal_queue", "wf-sig-poison")));
+                assertEquals(3, intColumnOf("maestro_signal_queue", "attempts", "wf-sig-poison"),
+                        "the attempt budget must be spent, not exceeded");
+                assertNotNull(columnOf("maestro_signal_queue", "last_error", "wf-sig-poison"),
+                        "a parked message must record why it was parked");
+
+                // Parking is terminal until an operator replays it: a poison
+                // message must not become a hot loop on the signal channel.
+                await().during(Duration.ofSeconds(3)).atMost(Duration.ofSeconds(8))
+                        .until(() -> attempts.get() == 3);
+            }
         }
 
         @Test
-        @Disabled("known defect: the transport acks on handler failure, losing the signal — "
-                + "the row is marked FAILED and never redelivered. Desired behaviour is "
-                + "bounded redelivery then a dead-letter, without poison-message loops. "
-                + "See tasks/todo.md and docs/test-plan.md §P1/§P3.")
+        @DisplayName("a dead-lettered signal is listable and replay delivers it")
+        void deadLetteredSignalIsListableAndReplayable() throws Exception {
+            var service = "svc-replay-" + unique();
+            var handlerFails = new AtomicBoolean(true);
+            var delivered = new AtomicInteger();
+
+            try (var tight = newMessaging(new PostgresRedeliveryConfig(
+                    2, Duration.ofMillis(100), 2.0, Duration.ofMillis(200)))) {
+                tight.subscribeSignals(service, m -> {
+                    if (handlerFails.get()) {
+                        throw new IllegalStateException("store unavailable");
+                    }
+                    delivered.incrementAndGet();
+                });
+
+                tight.publishSignal(service, new SignalMessage("wf-sig-replay", "approval", null));
+                await().atMost(BOUND).until(
+                        () -> "DEAD_LETTER".equals(statusOf("maestro_signal_queue", "wf-sig-replay")));
+
+                var parked = tight.listDeadLetterSignals(service, 10);
+                assertEquals(1, parked.size(), "the parked signal must be inspectable");
+                var message = parked.getFirst();
+                assertEquals("wf-sig-replay", message.workflowId());
+                assertEquals("approval", message.name());
+                assertEquals(2, message.attempts());
+                assertNotNull(message.lastError());
+
+                // The outage is over — an operator replays the parked signal.
+                handlerFails.set(false);
+                assertTrue(tight.replaySignal(message.id()), "a DEAD_LETTER row must be replayable");
+
+                await().atMost(BOUND).until(() -> delivered.get() == 1);
+                await().atMost(BOUND).until(
+                        () -> "COMPLETED".equals(statusOf("maestro_signal_queue", "wf-sig-replay")));
+                assertTrue(tight.listDeadLetterSignals(service, 10).isEmpty(),
+                        "a replayed signal must leave the dead-letter listing");
+            }
+        }
+
+        @Test
+        @DisplayName("a failed task handler must not lose the task either — it is redelivered")
+        void failedHandlerMustNotLoseTheTask() throws Exception {
+            var queue = taskQueueName();
+            var attempts = new AtomicInteger();
+            messaging.subscribe(queue, m -> {
+                if (attempts.incrementAndGet() == 1) {
+                    throw new IllegalStateException("transient handler failure");
+                }
+            });
+
+            messaging.publishTask(queue, newTask("wf-task-redeliver"));
+
+            await().atMost(BOUND).until(() -> attempts.get() >= 2);
+            await().atMost(BOUND).until(
+                    () -> "COMPLETED".equals(statusOf("maestro_task_queue", "wf-task-redeliver")));
+        }
+
+        @Test
         @DisplayName("desired behaviour: a failed handler must not lose the signal — it is redelivered")
         void failedHandlerMustNotLoseTheSignal() throws Exception {
             var service = "svc-redeliver-" + unique();

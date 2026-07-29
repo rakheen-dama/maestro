@@ -4,9 +4,11 @@ import io.b2mash.maestro.core.spi.SignalNotifier;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.messaging.postgres.PostgresMessageCleaner;
 import io.b2mash.maestro.messaging.postgres.PostgresNotificationListener;
+import io.b2mash.maestro.messaging.postgres.PostgresRedeliveryConfig;
 import io.b2mash.maestro.messaging.postgres.PostgresSignalNotifier;
 import io.b2mash.maestro.messaging.postgres.PostgresWorkflowMessaging;
 import io.b2mash.maestro.spring.config.MaestroAutoConfiguration;
+import io.b2mash.maestro.spring.config.MaestroProperties;
 import org.jspecify.annotations.NullMarked;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -67,9 +69,19 @@ public class PostgresMessagingAutoConfiguration {
     public PostgresWorkflowMessaging postgresWorkflowMessaging(
             DataSource dataSource,
             ObjectMapper objectMapper,
-            PostgresNotificationListener maestroPostgresNotificationListener
+            PostgresNotificationListener maestroPostgresNotificationListener,
+            MaestroProperties properties
     ) {
-        return new PostgresWorkflowMessaging(dataSource, objectMapper, maestroPostgresNotificationListener);
+        var redelivery = properties.getMessaging().redelivery();
+        return new PostgresWorkflowMessaging(
+                dataSource,
+                objectMapper,
+                maestroPostgresNotificationListener,
+                new PostgresRedeliveryConfig(
+                        redelivery.maxAttempts(),
+                        redelivery.initialInterval(),
+                        redelivery.multiplier(),
+                        redelivery.maxInterval()));
     }
 
     @Bean(destroyMethod = "close")

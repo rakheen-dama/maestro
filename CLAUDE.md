@@ -70,7 +70,8 @@ maestro/
 │   ├── sample-order-service        ← Order fulfilment workflow (e-commerce demo)
 │   ├── sample-payment-gateway      ← Payment processing with durable retries & saga
 │   ├── sample-postgres-only        ← Document approval (Postgres-only, zero external deps)
-│   └── sample-rabbitmq-order-service ← Order fulfilment using RabbitMQ + Postgres
+│   ├── sample-rabbitmq-order-service ← Order fulfilment using RabbitMQ + Postgres
+│   └── sample-loan-origination     ← Multi-service loan E2E (application/underwriting/verification), nightly CI
 └── docs/
 ```
 
@@ -91,12 +92,14 @@ public interface WorkflowStore {
 
     void saveSignal(WorkflowSignal signal);
     List<WorkflowSignal> getUnconsumedSignals(String workflowId, String signalName);
-    void markSignalConsumed(UUID signalId);
+    boolean markSignalConsumed(UUID signalId);           // CAS: false if already consumed
     void adoptOrphanedSignals(String workflowId, UUID instanceId);
 
     void saveTimer(WorkflowTimer timer);
     List<WorkflowTimer> getDueTimers(Instant now, int batchSize);
-    void markTimerFired(UUID timerId);
+    Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId); // any status; replay self-heal
+    boolean markTimerFired(UUID timerId);                 // CAS: false if already fired/cancelled
+    void markTimerCancelled(UUID timerId);
 }
 
 public interface WorkflowMessaging {
@@ -202,7 +205,12 @@ Locks are best-effort guards: if one expires or is lost, the unique event index 
 
 ## Configuration Namespace
 
-All under `maestro.*`. Topics are pre-created, declared in config.
+All under `maestro.*`. Topics are pre-created, declared in config. Full
+reference: `docs/configuration.md`. Notable properties added post-0.3.0:
+`maestro.shutdown.timeout` (default 30s), `maestro.signal.wake-recheck-interval`
+(default 30s), `maestro.messaging.redelivery.*` (bounded retry + dead-letter
+policy, all transports), `maestro.admin.events.enabled` (now actually wired;
+`.topic` is a deprecated alias for `maestro.messaging.topics.admin-events`).
 
 ## Coding Standards
 
@@ -211,6 +219,20 @@ All under `maestro.*`. Topics are pre-created, declared in config.
 - **Jackson 3:** Use `tools.jackson` packages everywhere. Never `com.fasterxml.jackson`.
 - **Immutability:** Records for DTOs. Final fields + builders for mutable domain objects.
 - **Exceptions:** All extend `MaestroException`. Specific subtypes for each failure mode.
+  **One deliberate exception:** `ExecutorShutdownException` extends `Error`, not
+  `MaestroException`. It signals that a workflow's local run was abandoned because
+  the node is shutting down — not that the workflow failed. If it were a
+  `RuntimeException` like everything else, a workflow author's ordinary
+  `try { ... } catch (Exception e) { ... }` around `awaitSignal()`/`sleep()` would
+  silently swallow it and reinstate the exact bug it exists to prevent: a routine
+  deploy recorded as a workflow failure, running compensations for work that never
+  failed. Making it an `Error` means `catch (Exception)` — and most `catch
+  (Throwable)` "log and continue" blocks — cannot intercept it (Temporal takes the
+  same approach for the same problem). Anywhere reflection is involved
+  (`Method.invoke`, `CompletableFuture` completion), unwrap the cause and check
+  `instanceof Error` *before* checking `instanceof Exception`/`RuntimeException` —
+  otherwise the unwrap silently re-wraps it into a catchable type. See its Javadoc
+  for the full rationale.
 - **Logging:** SLF4J. MDC with `workflowId`, `runId`, `activityName`.
 - **No Lombok.** Records and IDE-generated code only.
 - **Javadoc:** All public APIs. SPIs especially.

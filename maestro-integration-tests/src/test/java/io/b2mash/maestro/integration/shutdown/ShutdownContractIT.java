@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -176,6 +177,69 @@ class ShutdownContractIT extends PostgresIntegrationSupport {
         assertFalse(hasEvent(handle.instanceId(), EventType.COMPENSATION_STARTED),
                 "no compensation may be recorded in the durable event log");
         assertFalse(hasEvent(handle.instanceId(), EventType.WORKFLOW_FAILED));
+    }
+
+    @Test
+    @DisplayName("shutdown mid-compensation leaves the workflow recoverable with no step recorded failed, "
+            + "and a fresh node completes the compensation")
+    void shutdown_duringCompensation_leavesItRecoverableAndCompletesOnRecovery() throws Exception {
+        var released = new AtomicInteger();
+        nodeA = node("node-a", null);
+        nodeA.registerWorkflow(new ShutdownWorkflows.ParkingCompensationWorkflow(released));
+
+        var workflowId = MaestroEngineHarness.uniqueWorkflowId("shutdown-mid-comp");
+        var handle = nodeA.start(workflowId, ShutdownWorkflows.ParkingCompensationWorkflow.class, "seed");
+
+        // LIFO order runs "parking-compensation" (registered second) before
+        // "release" (registered first) — shutdown here interrupts the very
+        // first compensation, before the second has had a chance to run.
+        handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
+        assertTrue(hasEvent(handle.instanceId(), EventType.COMPENSATION_STARTED),
+                "must be genuinely mid-compensation, not an ordinary park");
+
+        nodeA.close();
+
+        assertEquals(0, released.get(), "the compensation later in LIFO order must not have run yet");
+        assertFalse(hasEvent(handle.instanceId(), EventType.COMPENSATION_STEP_FAILED),
+                "the compensation step interrupted by shutdown must not be recorded as failed");
+        assertFalse(hasEvent(handle.instanceId(), EventType.WORKFLOW_FAILED),
+                "shutdown must not finalise the workflow as FAILED while compensation is unresolved");
+        assertTrue(handle.status().isActive(),
+                "the instance must stay in an active, recoverable status — was " + handle.status());
+        assertEquals(List.of(workflowId),
+                store.getRecoverableInstances().stream().map(WorkflowInstance::workflowId).toList());
+
+        // The instance lock is released too, even though shutdown landed
+        // mid-compensation rather than mid-park — same guarantee as the
+        // dedicated lock test above, exercised on this shape.
+        var lockKey = "maestro:lock:workflow:" + workflowId;
+        var peer = newLock();
+        var adopted = peer.tryAcquire(lockKey, LOCK_TTL);
+        assertTrue(adopted.isPresent(),
+                "a shut-down node must hand its instance lock back even when shutdown landed mid-compensation");
+        peer.release(adopted.orElseThrow());
+
+        // A fresh node recovers it: the interrupted compensation re-parks
+        // (nothing was memoized for it — it never completed), and once
+        // resumed, finishes compensation and reaches FAILED, the correct
+        // outcome for a genuine failure.
+        var restartedReleased = new AtomicInteger();
+        nodeA = null;
+        nodeB = node("node-b", null);
+        nodeB.registerWorkflow(new ShutdownWorkflows.ParkingCompensationWorkflow(restartedReleased));
+
+        assertEquals(1, nodeB.recover(),
+                "the workflow abandoned mid-compensation must be recoverable from Postgres alone");
+        handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
+        nodeB.deliverSignal(workflowId, ShutdownWorkflows.ParkingCompensationWorkflow.RESUME_SIGNAL, "resumed");
+
+        assertEquals(WorkflowStatus.FAILED, handle.awaitTerminal(BOUND));
+        assertEquals(1, restartedReleased.get(), "the remaining compensation must complete once resumed");
+        assertFalse(hasEvent(handle.instanceId(), EventType.COMPENSATION_STEP_FAILED),
+                "no compensation step may be recorded failed across the full recovery");
+        assertTrue(hasEvent(handle.instanceId(), EventType.COMPENSATION_COMPLETED));
+        assertTrue(hasEvent(handle.instanceId(), EventType.WORKFLOW_FAILED),
+                "the genuine failure must still be finalised once compensation completes");
     }
 
     // ── 3. In-flight activities drain ──────────────────────────────────

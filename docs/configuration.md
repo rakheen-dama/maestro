@@ -67,6 +67,87 @@ When `consumer-group` is not explicitly set, Maestro derives it from the service
 name as `maestro-{serviceName}`. This ensures each service gets its own consumer
 group by default, which is the correct behavior for most deployments.
 
+### Redelivery and Dead-Letter Properties
+
+A message handler that throws has **not** processed the message — on the signal
+channel it means the signal is not yet in Postgres — so no transport
+acknowledges it. Every transport redelivers with exponential backoff and, once
+the attempt budget is spent, routes the message to a durable, inspectable
+dead-letter destination rather than dropping it or looping on it forever.
+
+| Property                                          | Type       | Default                 | Description                                                                 |
+|---------------------------------------------------|------------|-------------------------|-----------------------------------------------------------------------------|
+| `maestro.messaging.redelivery.max-attempts`       | `int`      | `10`                    | Total delivery attempts, including the first. All transports.               |
+| `maestro.messaging.redelivery.initial-interval`   | `Duration` | `1s`                    | Backoff before the second attempt. All transports.                          |
+| `maestro.messaging.redelivery.multiplier`         | `double`   | `2.0`                   | Factor applied to the backoff after each failure. All transports.           |
+| `maestro.messaging.redelivery.max-interval`       | `Duration` | `30s`                   | Ceiling for the computed backoff. All transports.                           |
+| `maestro.messaging.redelivery.dead-letter-suffix` | `String`   | `".DLT"`                | Appended to a topic to name its dead-letter topic. **Kafka only.**          |
+| `maestro.messaging.redelivery.dead-letter-exchange`| `String`  | `"maestro.dead-letter"` | Exchange exhausted messages are republished to. **RabbitMQ only.**          |
+
+The delay before the attempt following the *n*-th failure is
+`min(initial-interval × multiplier^(n-1), max-interval)`. The defaults give
+1s, 2s, 4s, 8s, 16s, 30s, 30s, 30s, 30s between 10 attempts — roughly 2.5
+minutes of tolerance, long enough to ride out a store blip and short enough
+that a poison message does not stall a service's signal channel for long.
+
+**Tuning.** Raise `max-attempts` if your store outages routinely run longer
+than the budget (an outage longer than the budget dead-letters signals, which
+then need an operator replay — they are parked, never lost). Lower it to
+contain a poison message sooner. There is no unbounded mode: a poison message
+would stall redelivery forever behind it — on Kafka this stalls the whole
+*topic* on that node (the default listener concurrency is one consumer
+thread per topic, which owns every partition assigned to it, not just the
+failed record's partition); on Postgres/RabbitMQ it stalls that queue.
+
+**Fatal exceptions bypass retries.** On Kafka, `DefaultErrorHandler` treats a
+handful of exception types as unrecoverable regardless of the configured
+budget — deserialization failures, `ClassCastException`, and other framework
+conversion errors — and sends the record straight to the dead-letter topic on
+the first attempt rather than retrying it. This is spring-kafka's own default
+classification, not something Maestro configures; the `max-attempts` budget
+above only governs exceptions it doesn't consider fatal.
+
+**Where exhausted messages go:**
+
+| Transport | Destination | Created by |
+|---|---|---|
+| Kafka | `<topic>` + `dead-letter-suffix`, e.g. `maestro.signals.order-service.DLT` | **The operator** — Maestro never creates topics |
+| Postgres | The same queue row, in `DEAD_LETTER` status | Nothing to create |
+| RabbitMQ | `<queue>.dlq`, bound to `dead-letter-exchange` | The module declares it idempotently, like its other topology |
+
+If a Kafka dead-letter topic is missing, the publish fails, the offset is not
+committed and the record is attempted again: consumption stalls noisily instead
+of losing the message.
+
+**Inspecting and replaying.** On Kafka a dead-letter topic is an ordinary
+topic — read it with any consumer (`kafka-console-consumer --topic
+maestro.signals.order-service.DLT --from-beginning --property
+print.headers=true`; the `kafka_dlt-*` headers carry the original topic,
+partition, offset and exception) and replay by producing the record back to the
+source topic with the same key. On Postgres use
+`PostgresWorkflowMessaging.listDeadLetterSignals` / `listDeadLetterTasks` and
+`replaySignal(id)` / `replayTask(id)`, or plain SQL:
+
+```sql
+SELECT id, workflow_id, signal_name, attempts, last_error, created_at
+  FROM maestro_signal_queue
+ WHERE service_name = 'order-service' AND status = 'DEAD_LETTER'
+ ORDER BY created_at;
+
+UPDATE maestro_signal_queue
+   SET status = 'PENDING', attempts = 0, next_attempt_at = now(), last_error = NULL
+ WHERE id = '...' AND status = 'DEAD_LETTER';
+```
+
+`DEAD_LETTER` rows are never removed by `PostgresMessageCleaner` — they are the
+inspectable destination. Rows stranded as `FAILED` by versions before
+redelivery existed can be rescued once, deliberately:
+
+```sql
+UPDATE maestro_signal_queue SET status = 'PENDING', next_attempt_at = now() WHERE status = 'FAILED';
+UPDATE maestro_task_queue   SET status = 'PENDING', next_attempt_at = now() WHERE status = 'FAILED';
+```
+
 ---
 
 ### Postgres Messaging
@@ -205,6 +286,29 @@ per-instance distributed lock guarantees only one of them wins each workflow.
 
 ---
 
+## Shutdown and Signal Configuration
+
+| Property                              | Type       | Default | Description                                                                                                    |
+|----------------------------------------|------------|---------|------------------------------------------------------------------------------------------------------------------|
+| `maestro.shutdown.timeout`            | `Duration` | `30s`   | How long graceful shutdown waits for in-flight workflows to drain before forcing through. |
+| `maestro.signal.wake-recheck-interval`| `Duration` | `30s`   | How often a parked workflow re-reads the store for a signal it may have missed. |
+
+Both were previously hardcoded 30-second constants with no configuration
+seam; they now bind under `maestro.*` like every other property, with the
+same 30s defaults, so unset deployments are unaffected.
+
+`maestro.signal.wake-recheck-interval` is a real operational knob, not just a
+test seam: it bounds cross-node signal latency for any deployment running
+Kafka without a `SignalNotifier` (i.e. without Valkey's pub/sub wake) — a
+signal delivered to a node other than the one holding the parked workflow is
+picked up on the next re-check, not instantly, in that configuration.
+
+`maestro.lock.key-prefix` (see [Lock Configuration](#lock-configuration))
+now also applies to the activity execution lock, not just the instance
+lock — both honour the same configured prefix.
+
+---
+
 ## Retry Configuration
 
 Properties under `maestro.retry.*` define the default retry policy applied to
@@ -246,7 +350,7 @@ the Maestro admin dashboard.
 
 | Property                      | Type      | Default                  | Description                                                                     |
 |-------------------------------|-----------|--------------------------|---------------------------------------------------------------------------------|
-| `maestro.admin.events.enabled`| `boolean` | `true`                   | Whether to publish workflow lifecycle events (started, completed, failed, etc.). |
+| `maestro.admin.events.enabled`| `boolean` | `true`                   | Whether to publish workflow lifecycle events (started, completed, failed, etc.) — all event families (workflow, activity, signal, timer, and compensation). |
 | `maestro.admin.events.topic`  | `String`  | `"maestro.admin.events"` | Kafka topic where lifecycle events are published.                               |
 
 When enabled, Maestro publishes lifecycle events for every workflow state

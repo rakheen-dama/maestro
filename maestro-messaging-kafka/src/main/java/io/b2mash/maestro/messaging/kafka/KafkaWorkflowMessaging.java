@@ -38,6 +38,14 @@ import java.util.function.Consumer;
  * <p>All messages are keyed by {@code workflowId} to guarantee per-workflow
  * ordering within a topic partition.
  *
+ * <h2>Handler Failure</h2>
+ * <p>Handler exceptions are never swallowed: they reach the container, whose
+ * error handler redelivers the record with exponential backoff and, once the
+ * attempt budget is spent, publishes it to {@code <topic><deadLetterSuffix>}.
+ * The offset is committed only after the handler succeeds or the record is
+ * dead-lettered, so a message is never acknowledged unprocessed. Handlers may
+ * therefore be re-invoked with the same message and must be idempotent.
+ *
  * <h2>Thread Safety</h2>
  * <p>This class is thread-safe. Publishing can be called concurrently from
  * multiple virtual threads. Listener containers are managed in a
@@ -45,6 +53,7 @@ import java.util.function.Consumer;
  *
  * @see WorkflowMessaging
  * @see KafkaMessagingConfig
+ * @see KafkaRedeliveryErrorHandlers
  */
 public final class KafkaWorkflowMessaging implements WorkflowMessaging, DisposableBean {
 
@@ -112,15 +121,11 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
     @Override
     public void subscribe(String taskQueue, Consumer<TaskMessage> handler) {
         var topic = resolveTaskTopic(taskQueue);
-        var container = createContainer(topic, record -> {
-            try {
-                var message = deserialize(record.value(), TaskMessage.class);
-                handler.accept(message);
-            } catch (Exception e) {
-                logger.error("Error processing task message from topic '{}': {}",
-                        topic, e.getMessage(), e);
-            }
-        });
+        // Nothing is caught here on purpose: a handler failure — or an
+        // undeserializable record — must reach the container's error handler so
+        // the offset is not committed. See the class Javadoc.
+        var container = createContainer(topic, record ->
+                handler.accept(deserialize(record.value(), TaskMessage.class)));
         containers.add(container);
         container.start();
         logger.info("Subscribed to task queue '{}' on topic '{}'", taskQueue, topic);
@@ -129,15 +134,8 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
     @Override
     public void subscribeSignals(String serviceName, Consumer<SignalMessage> handler) {
         var topic = resolveSignalTopic(serviceName);
-        var container = createContainer(topic, record -> {
-            try {
-                var message = deserialize(record.value(), SignalMessage.class);
-                handler.accept(message);
-            } catch (Exception e) {
-                logger.error("Error processing signal message from topic '{}': {}",
-                        topic, e.getMessage(), e);
-            }
-        });
+        var container = createContainer(topic, record ->
+                handler.accept(deserialize(record.value(), SignalMessage.class)));
         containers.add(container);
         container.start();
         logger.info("Subscribed to signals for service '{}' on topic '{}'", serviceName, topic);
@@ -184,7 +182,15 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
         containerProps.setGroupId(config.consumerGroup());
         containerProps.setMessageListener(listener);
         containerProps.setAckMode(ContainerProperties.AckMode.RECORD);
-        return new ConcurrentMessageListenerContainer<>(consumerFactory, containerProps);
+        var container = new ConcurrentMessageListenerContainer<>(consumerFactory, containerProps);
+        container.setCommonErrorHandler(KafkaRedeliveryErrorHandlers.deadLettering(
+                kafkaTemplate,
+                config.maxAttempts(),
+                config.initialInterval(),
+                config.multiplier(),
+                config.maxInterval(),
+                config.deadLetterSuffix()));
+        return container;
     }
 
     private byte[] serialize(Object value) {

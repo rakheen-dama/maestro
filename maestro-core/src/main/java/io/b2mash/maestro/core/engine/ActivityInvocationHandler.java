@@ -75,8 +75,12 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     private final Duration startToCloseTimeout;
     private final PayloadSerializer serializer;
     private final RetryExecutor retryExecutor;
+    private final String lockKeyPrefix;
 
     /**
+     * Creates a new handler with the default lock key prefix
+     * ({@code maestro:lock:}) — the same default the instance lock uses.
+     *
      * @param activityImpl        the real activity implementation to delegate to
      * @param activityName        the activity group name (for step name prefix)
      * @param store               the workflow store for memoization lookups and event persistence
@@ -98,6 +102,40 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             PayloadSerializer serializer,
             RetryExecutor retryExecutor
     ) {
+        this(activityImpl, activityName, store, distributedLock, messaging, retryPolicy,
+                startToCloseTimeout, serializer, retryExecutor,
+                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX);
+    }
+
+    /**
+     * Creates a new handler with an explicit lock key prefix.
+     *
+     * @param activityImpl        the real activity implementation to delegate to
+     * @param activityName        the activity group name (for step name prefix)
+     * @param store               the workflow store for memoization lookups and event persistence
+     * @param distributedLock     optional distributed lock for dedup optimization
+     * @param messaging           optional messaging for lifecycle event publishing
+     * @param retryPolicy         retry policy for failed activity invocations
+     * @param startToCloseTimeout timeout used as lock TTL hint
+     * @param serializer          Jackson serializer for payloads
+     * @param retryExecutor       retry executor for live activity invocations
+     * @param lockKeyPrefix       prefix for the per-activity distributed lock key
+     *                            (e.g. {@code maestro:lock:}) — the same prefix
+     *                            configured for the instance lock via
+     *                            {@code maestro.lock.key-prefix}
+     */
+    public ActivityInvocationHandler(
+            Object activityImpl,
+            String activityName,
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            @Nullable WorkflowMessaging messaging,
+            RetryPolicy retryPolicy,
+            Duration startToCloseTimeout,
+            PayloadSerializer serializer,
+            RetryExecutor retryExecutor,
+            String lockKeyPrefix
+    ) {
         this.activityImpl = activityImpl;
         this.activityName = activityName;
         this.store = store;
@@ -107,6 +145,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         this.startToCloseTimeout = startToCloseTimeout;
         this.serializer = serializer;
         this.retryExecutor = retryExecutor;
+        this.lockKeyPrefix = lockKeyPrefix;
     }
 
     @Override
@@ -315,6 +354,13 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             return method.invoke(activityImpl, args);
         } catch (InvocationTargetException e) {
             var cause = e.getCause();
+            // An Error (e.g. ExecutorShutdownException, thrown as a control-flow
+            // signal — see its Javadoc) must not be re-wrapped as a RuntimeException:
+            // that would let it be retried or recorded as an activity failure
+            // instead of reaching WorkflowExecutor's shutdown handling intact.
+            if (cause instanceof Error err) {
+                throw err;
+            }
             if (cause instanceof Exception ex) {
                 throw ex;
             }
@@ -401,7 +447,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             return null;
         }
 
-        var lockKey = "maestro:lock:activity:%s:%d".formatted(ctx.workflowId(), seq);
+        var lockKey = lockKeyPrefix + "activity:%s:%d".formatted(ctx.workflowId(), seq);
         var lockTtl = startToCloseTimeout.plusSeconds(10);
 
         try {
@@ -492,6 +538,9 @@ public final class ActivityInvocationHandler implements InvocationHandler {
                 compensationMethod.invoke(proxy, compensationArgs);
             } catch (java.lang.reflect.InvocationTargetException e) {
                 var cause = e.getCause();
+                // See invokeActivity(): an Error (ExecutorShutdownException) must
+                // reach SagaManager's compensation loop intact, not re-wrapped.
+                if (cause instanceof Error err) throw err;
                 if (cause instanceof RuntimeException re) throw re;
                 throw new RuntimeException("Compensation '%s' failed".formatted(compensationStepName), cause);
             } catch (IllegalAccessException e) {

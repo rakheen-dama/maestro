@@ -24,6 +24,7 @@ import java.util.UUID;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Durable timers driven by the real engine against a real Postgres store:
@@ -178,6 +179,47 @@ class EnginePostgresTimerIT extends PostgresIntegrationSupport {
         assertEquals(1, recorder.count("stepTwo"));
         assertEquals(TimerStatus.FIRED, readSingleTimerRow(workflowId).status());
         assertEquals(1, eventsOfType(handle.events(), EventType.TIMER_FIRED).size());
+    }
+
+    @Test
+    @DisplayName("a timer marked FIRED before its TIMER_FIRED event was appended is healed by recovery")
+    void timerFiredBeforeEventAppend_recoveryCompletesTheWorkflow() throws Exception {
+        // The crash window inside fireTimer: markTimerFired has moved the row
+        // PENDING → FIRED, but the workflow thread died before appending
+        // TIMER_FIRED. The log then says "scheduled, never fired" while the row
+        // says "fired" — and getDueTimers only returns PENDING rows, so no
+        // poller will ever look at it again. Modelled without a lock backend so
+        // node-b can adopt at once (see the restart test above).
+        harness = newHarness("node-a", false);
+        registerSleeper(harness, NAP);
+
+        var workflowId = MaestroEngineHarness.uniqueWorkflowId("timer-crash-window");
+        var handle = harness.start(workflowId, TestWorkflows.SleepingWorkflow.class, "seed");
+        handle.awaitStatus(WorkflowStatus.WAITING_TIMER, BOUND);
+
+        var timerDbId = readSingleTimerRow(workflowId).id();
+        assertTrue(store.markTimerFired(timerDbId),
+                "the crash window only opens once the row has transitioned");
+        // node-a is now gone: nothing unparks its thread, nothing appends TIMER_FIRED.
+
+        secondHarness = newHarness("node-b", false);
+        registerSleeper(secondHarness, NAP);
+        // Running a poller proves the poller is no rescue: the row is no longer due.
+        secondHarness.startTimerPoller(POLL_INTERVAL, 10);
+
+        assertEquals(1, secondHarness.recover(),
+                "node-b must adopt the WAITING_TIMER instance left behind by node-a");
+
+        assertEquals(WorkflowStatus.COMPLETED, handle.awaitTerminal(BOUND),
+                "a timer already marked FIRED must not re-park the workflow forever");
+        assertEquals("seed-one-two", handle.result(String.class));
+
+        assertEquals(1, recorder.count("stepOne"),
+                "the pre-sleep activity must replay, not re-execute, on the second executor");
+        assertEquals(1, recorder.count("stepTwo"));
+        assertEquals(1, eventsOfType(handle.events(), EventType.TIMER_FIRED).size(),
+                "replay must heal the missing TIMER_FIRED event exactly once");
+        assertEquals(TimerStatus.FIRED, readSingleTimerRow(workflowId).status());
     }
 
     // ── helpers ────────────────────────────────────────────────────────
