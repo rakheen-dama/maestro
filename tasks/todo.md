@@ -139,5 +139,5 @@ Branch: `worktree-release-readiness` off `main` @ 0502b38.
 - [x] Task 6 — Issue 1: signal no-loss (Kafka + Postgres) — redelivery + DLT/DEAD_LETTER + replay API, both specs enabled
 - [x] Task 7 — Issue 10a: RabbitMQ first suite (3x green) + Issue 1 parity; off the allowlist
 - [x] Task 8 — Issue 10b: admin-client / admin / store-jdbc suites — all off the allowlist, gate empty
-- [ ] Task 9 — Docs truth pass + release notes (Issues 11/12 → known limitations)
+- [x] Task 9 — Docs truth pass + release notes; issues 13-15 recorded; all spot-checks passed
 - [ ] Task 10 — QA: full build 3×, e2eTest, loan E2E (process identity), admin dashboard live check
