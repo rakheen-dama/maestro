@@ -112,8 +112,8 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         if (storedEvent.isPresent()) {
             if (storedEvent.get().eventType() == EventType.TIMER_SCHEDULED) {
                 // Check whether the outcome at the next sequence is already
-                // memoized. Pure deterministic re-derivation from the log —
-                // no writes, no store reads — for both terminal outcomes.
+                // memoized. Pure deterministic re-derivation from the event
+                // log — no writes, no timer-row read — for both terminal outcomes.
                 var nextSeq = seq + 1;
                 var nextEvent = store.getEventBySequence(ctx.workflowInstanceId(), nextSeq);
                 if (nextEvent.isPresent() && nextEvent.get().eventType() == EventType.TIMER_FIRED) {

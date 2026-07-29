@@ -50,7 +50,7 @@ import java.util.concurrent.atomic.AtomicReference;
  *   <li><b>Recovery:</b> At startup, queries for recoverable workflows and
  *       re-invokes each in replay mode.</li>
  *   <li><b>Signal delivery:</b> Persists signals and unparks waiting workflows.</li>
-  *   <li><b>Timer fire:</b> Marks timers as fired and unparks sleeping workflows.</li>
+ *   <li><b>Timer fire:</b> Marks timers as fired and unparks sleeping workflows.</li>
  *   <li><b>Timer cancel:</b> Marks a pending timer as cancelled and unparks a
  *       sleeping workflow with a catchable
  *       {@link io.b2mash.maestro.core.exception.TimerCancelledException}.</li>
