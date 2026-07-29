@@ -219,7 +219,7 @@ class ParkingLotTest {
             parked.countDown();
             try {
                 parkingLot.park("order-abc:signal:payment");
-            } catch (RuntimeException e) {
+            } catch (ExecutorShutdownException e) {
                 result1.set(e);
             }
         });
@@ -228,7 +228,7 @@ class ParkingLotTest {
             parked.countDown();
             try {
                 parkingLot.park("order-xyz:timer:sleep-5");
-            } catch (RuntimeException e) {
+            } catch (ExecutorShutdownException e) {
                 result2.set(e);
             }
         });

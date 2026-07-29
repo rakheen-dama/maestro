@@ -131,9 +131,9 @@ Previous milestone (Gradle multi-module setup) completed — see git history of 
 Binding plan: `tasks/release-readiness-plan.md` (SDD ledger in `.superpowers/sdd/release-readiness-plan/progress.md`).
 Branch: `worktree-release-readiness` off `main` @ 0502b38.
 
-- [ ] Task 1 — Issue 2: timer fire crash window (repro first, decision gate)
-- [ ] Task 2 — Issues 3+6: lifecycle publish latency + admin.events wiring
-- [ ] Task 3 — Issues 4+5: ExecutorShutdownException → Error; SagaManager rethrow
+- [x] Task 1 — Issue 2: timer fire crash window — CONFIRMED + fixed (self-healing replay, findTimer SPI, V3 index)
+- [x] Task 2 — Issues 3+6: lifecycle publish latency + admin.events wiring — async bounded publisher, enabled flag wired, topic alias
+- [x] Task 3 — Issues 4+5: ExecutorShutdownException → Error; SagaManager rethrow — catch ordering, ParkingLot/RetryExecutor/ActivityInvocationHandler/DefaultWorkflowOperations audit fixes, CLAUDE.md documented
 - [ ] Task 4 — Issues 7+9: config seams (shutdown timeout, wake recheck, activity lock prefix)
 - [ ] Task 5 — Issue 8: MaestroHealthIndicator
 - [ ] Task 6 — Issue 1: signal no-loss policy (Kafka + Postgres) per approved design

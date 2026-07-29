@@ -108,6 +108,44 @@ class WorkflowExecutorShutdownTest {
     }
 
     @Test
+    @DisplayName("A workflow that wraps awaitSignal in catch (Exception) still survives shutdown as WAITING_SIGNAL")
+    void shutdown_withCatchExceptionAroundAwaitSignal_stillLeavesItWaitingSignalAndRecoverable() throws Exception {
+        // A broad try/catch around a park point is ordinary, reasonable-looking
+        // workflow code. If ExecutorShutdownException were a RuntimeException
+        // (like every other Maestro exception), this catch would swallow it and
+        // reinstate the exact bug it exists to prevent: a routine shutdown
+        // reported as this workflow's own failure.
+        var workflow = new CatchAllAwaitingWorkflow();
+        var method = CatchAllAwaitingWorkflow.class.getMethod("run", String.class);
+        executor.startWorkflow("park-catchall", "CatchAllAwaitingWorkflow", "default",
+                "input", workflow, method);
+        awaitStatus("park-catchall", WorkflowStatus.WAITING_SIGNAL);
+
+        executor.shutdown();
+
+        assertEquals(WorkflowStatus.WAITING_SIGNAL, store.getInstance("park-catchall").orElseThrow().status(),
+                "a workflow author's catch (Exception) around awaitSignal must not turn a shutdown into a failure");
+        assertFalse(executor.isRunning("park-catchall"));
+        assertEquals(List.of("park-catchall"),
+                store.getRecoverableInstances().stream().map(WorkflowInstance::workflowId).toList());
+        assertFalse(hasEvent("park-catchall", EventType.WORKFLOW_FAILED),
+                "ExecutorShutdownException must not be catchable by ordinary workflow code");
+
+        // Prove the durable state is genuinely intact, not just untouched in
+        // memory: a second executor recovers it and drives it to completion.
+        secondExecutor = new WorkflowExecutor(store, null, null, null, serializer, "node-b");
+        var registrations = Map.of("CatchAllAwaitingWorkflow",
+                new WorkflowRegistration("CatchAllAwaitingWorkflow", "default", workflow, method));
+        assertEquals(1, secondExecutor.recoverWorkflows(registrations));
+        awaitStatus("park-catchall", WorkflowStatus.WAITING_SIGNAL);
+        secondExecutor.deliverSignal("park-catchall", CatchAllAwaitingWorkflow.SIGNAL, "approved");
+
+        awaitStatus("park-catchall", WorkflowStatus.COMPLETED);
+        assertEquals("approved",
+                serializer.deserialize(store.getInstance("park-catchall").orElseThrow().output(), String.class));
+    }
+
+    @Test
     @DisplayName("A workflow parked on sleep stays WAITING_TIMER and recoverable")
     void shutdown_withWorkflowParkedOnSleep_leavesItWaitingTimerAndRecoverable() throws Exception {
         var workflow = new SleepingWorkflow();
@@ -143,6 +181,58 @@ class WorkflowExecutorShutdownTest {
         assertEquals(WorkflowStatus.WAITING_SIGNAL, store.getInstance("park-saga").orElseThrow().status());
         assertFalse(hasEvent("park-saga", EventType.COMPENSATION_STARTED),
                 "no compensation may be recorded in the event log");
+    }
+
+    @Test
+    @DisplayName("Shutdown mid-compensation leaves the workflow recoverable with no step recorded failed, "
+            + "and a second executor completes the compensation")
+    void shutdown_duringCompensation_leavesItRecoverableAndCompletesOnRecovery() throws Exception {
+        var released = new AtomicInteger();
+        var workflow = new ParkingCompensationWorkflow(released);
+        var method = ParkingCompensationWorkflow.class.getMethod("run", String.class);
+        executor.startWorkflow("mid-comp", "ParkingCompensationWorkflow", "default", "input", workflow, method);
+
+        // LIFO order runs "parking-compensation" (registered second) before
+        // "release" (registered first) — so shutdown here interrupts the very
+        // first compensation, before the second has had a chance to run.
+        awaitStatus("mid-comp", WorkflowStatus.WAITING_SIGNAL);
+        assertTrue(hasEvent("mid-comp", EventType.COMPENSATION_STARTED),
+                "must be genuinely mid-compensation, not the original park");
+
+        executor.shutdown();
+
+        assertEquals(0, released.get(),
+                "the compensation later in LIFO order must not have run yet");
+        assertFalse(hasEvent("mid-comp", EventType.COMPENSATION_STEP_FAILED),
+                "the compensation step interrupted by shutdown must not be recorded as failed");
+        assertFalse(hasEvent("mid-comp", EventType.WORKFLOW_FAILED),
+                "shutdown must not finalise the workflow as FAILED while compensation is unresolved");
+        var statusAfterShutdown = store.getInstance("mid-comp").orElseThrow().status();
+        assertTrue(statusAfterShutdown.isActive(),
+                "the instance must stay in an active, recoverable status — was " + statusAfterShutdown);
+        assertEquals(List.of("mid-comp"),
+                store.getRecoverableInstances().stream().map(WorkflowInstance::workflowId).toList());
+
+        // A second node recovers it: the interrupted compensation re-parks
+        // (nothing was memoized for it — it never completed), and once resumed,
+        // finishes compensation and reaches FAILED, the correct outcome for a
+        // genuine failure.
+        secondExecutor = new WorkflowExecutor(store, null, null, null, serializer, "node-b");
+        var registrations = Map.of("ParkingCompensationWorkflow",
+                new WorkflowRegistration("ParkingCompensationWorkflow", "default", workflow, method));
+        assertEquals(1, secondExecutor.recoverWorkflows(registrations),
+                "the workflow abandoned mid-compensation must be recoverable by a fresh node");
+
+        awaitStatus("mid-comp", WorkflowStatus.WAITING_SIGNAL);
+        secondExecutor.deliverSignal("mid-comp", ParkingCompensationWorkflow.RESUME_SIGNAL, "resumed");
+
+        awaitStatus("mid-comp", WorkflowStatus.FAILED);
+        assertEquals(1, released.get(), "the remaining compensation must complete once resumed");
+        assertFalse(hasEvent("mid-comp", EventType.COMPENSATION_STEP_FAILED),
+                "no compensation step may be recorded failed across the full recovery");
+        assertTrue(hasEvent("mid-comp", EventType.COMPENSATION_COMPLETED));
+        assertTrue(hasEvent("mid-comp", EventType.WORKFLOW_FAILED),
+                "the genuine failure must still be finalised once compensation completes");
     }
 
     // ── 3. In-flight activities drain ──────────────────────────────────
@@ -275,6 +365,33 @@ class WorkflowExecutorShutdownTest {
         }
     }
 
+    /**
+     * Parks on a signal, wrapped in a broad {@code catch (Exception)} — the
+     * ordinary-looking workflow code shape that would swallow
+     * {@link io.b2mash.maestro.core.exception.ExecutorShutdownException} if it
+     * were a {@code RuntimeException} like every other Maestro exception.
+     */
+    public static class CatchAllAwaitingWorkflow {
+
+        /** The signal this workflow waits for. */
+        public static final String SIGNAL = "approval";
+
+        /**
+         * @param input unused seed
+         * @return the signal payload once one arrives
+         */
+        public String run(String input) {
+            try {
+                return WorkflowContext.current().awaitSignal(SIGNAL, String.class, NEVER);
+            } catch (Exception e) {
+                // A reasonable-looking broad catch a workflow author might write
+                // around a park point. Swallowing ExecutorShutdownException here
+                // would misreport a routine shutdown as this failure.
+                throw new IllegalStateException("awaitSignal failed unexpectedly", e);
+            }
+        }
+    }
+
     /** Registers a compensation and then parks — the saga shape shutdown must not disturb. */
     public static class CompensatingAwaitingWorkflow {
         private final AtomicInteger compensations;
@@ -357,6 +474,38 @@ class WorkflowExecutorShutdownTest {
             var wf = WorkflowContext.current();
             wf.addCompensation("undo-committed-work", compensations::incrementAndGet);
             throw new IllegalStateException("Intentional failure");
+        }
+    }
+
+    /**
+     * Registers two compensations and then genuinely fails. LIFO order runs
+     * {@code parking-compensation} (registered second) before {@code release}
+     * (registered first) — the shape that reveals whether shutdown mid-saga
+     * is wrongly recorded as a compensation failure, since it interrupts the
+     * first compensation the moment it parks, before the second ever runs.
+     */
+    public static class ParkingCompensationWorkflow {
+
+        /** The signal that unblocks the parking compensation on recovery. */
+        public static final String RESUME_SIGNAL = "resume-compensation";
+
+        private final AtomicInteger released;
+
+        /** @param released counter incremented by the "release" compensation */
+        public ParkingCompensationWorkflow(AtomicInteger released) {
+            this.released = released;
+        }
+
+        /**
+         * @param input unused seed
+         * @return never returns
+         */
+        public String run(String input) {
+            var wf = WorkflowContext.current();
+            wf.addCompensation("release", released::incrementAndGet);
+            wf.addCompensation("parking-compensation",
+                    () -> WorkflowContext.current().awaitSignal(RESUME_SIGNAL, String.class, NEVER));
+            throw new IllegalStateException("Intentional failure to trigger compensation");
         }
     }
 

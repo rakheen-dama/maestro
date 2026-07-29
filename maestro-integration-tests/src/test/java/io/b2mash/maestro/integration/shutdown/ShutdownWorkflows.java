@@ -9,6 +9,7 @@ import io.b2mash.maestro.integration.workflows.CountingActivities.SagaActivities
 
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Workflow fixtures specific to the shutdown contract (P5).
@@ -66,6 +67,41 @@ public final class ShutdownWorkflows {
             var decision = WorkflowContext.current()
                     .awaitSignal(SIGNAL, String.class, Duration.ofMinutes(10));
             return activities.ship(item + ":" + decision);
+        }
+    }
+
+    /**
+     * Registers two compensations and then genuinely fails. LIFO order runs
+     * {@code parking-compensation} (registered second) before {@code release}
+     * (registered first) — the shape that reveals whether shutdown landing
+     * <em>mid-compensation</em> is wrongly recorded as a compensation failure:
+     * it interrupts the first compensation the instant it parks, before the
+     * second has run at all.
+     */
+    @DurableWorkflow(name = "ParkingCompensationWorkflow")
+    public static class ParkingCompensationWorkflow {
+
+        /** The signal that unblocks the parking compensation on recovery. */
+        public static final String RESUME_SIGNAL = "resume-compensation";
+
+        private final AtomicInteger released;
+
+        /** @param released counter incremented by the "release" compensation */
+        public ParkingCompensationWorkflow(AtomicInteger released) {
+            this.released = released;
+        }
+
+        /**
+         * @param item unused seed
+         * @return never returns — this workflow always fails
+         */
+        @WorkflowMethod
+        public String run(String item) {
+            var wf = WorkflowContext.current();
+            wf.addCompensation("release", released::incrementAndGet);
+            wf.addCompensation("parking-compensation",
+                    () -> WorkflowContext.current().awaitSignal(RESUME_SIGNAL, String.class, Duration.ofMinutes(10)));
+            throw new IllegalStateException("Intentional failure to trigger compensation");
         }
     }
 }
