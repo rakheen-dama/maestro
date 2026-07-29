@@ -714,6 +714,32 @@ public final class WorkflowExecutor {
         return runningWorkflows.size();
     }
 
+    /**
+     * Returns whether the background timer poller is currently running on
+     * this executor.
+     *
+     * @return {@code true} if {@link #startTimerPoller(Duration, int)} has
+     *         been called and the poller has not since stopped (e.g. via
+     *         {@link #shutdown()})
+     */
+    public boolean isTimerPollerRunning() {
+        var poller = timerPoller.get();
+        return poller != null && poller.isRunning();
+    }
+
+    /**
+     * Returns whether the background recovery poller is currently running
+     * on this executor.
+     *
+     * @return {@code true} if {@link #startRecoveryPoller(Map, Duration)}
+     *         has been called and the poller has not since stopped (e.g.
+     *         via {@link #shutdown()})
+     */
+    public boolean isRecoveryPollerRunning() {
+        var poller = recoveryPoller.get();
+        return poller != null && poller.isRunning();
+    }
+
     // ── Internal: workflow launch ──────────────────────────────────────
 
     private boolean launchWorkflow(

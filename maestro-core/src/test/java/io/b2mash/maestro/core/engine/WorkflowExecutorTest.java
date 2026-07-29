@@ -681,6 +681,32 @@ class WorkflowExecutorTest {
                 .build();
     }
 
+    // ── Poller status accessors ──────────────────────────────────────────
+
+    @Test
+    @DisplayName("isTimerPollerRunning() reflects the timer poller's lifecycle")
+    void isTimerPollerRunningReflectsLifecycle() {
+        assertFalse(executor.isTimerPollerRunning(), "no poller started yet");
+
+        executor.startTimerPoller(Duration.ofMillis(50), 10);
+        assertTrue(executor.isTimerPollerRunning());
+
+        executor.shutdown();
+        assertFalse(executor.isTimerPollerRunning(), "stopped by shutdown");
+    }
+
+    @Test
+    @DisplayName("isRecoveryPollerRunning() reflects the recovery poller's lifecycle")
+    void isRecoveryPollerRunningReflectsLifecycle() {
+        assertFalse(executor.isRecoveryPollerRunning(), "no poller started yet");
+
+        executor.startRecoveryPoller(Map.of(), Duration.ofMillis(50));
+        assertTrue(executor.isRecoveryPollerRunning());
+
+        executor.shutdown();
+        assertFalse(executor.isRecoveryPollerRunning(), "stopped by shutdown");
+    }
+
     @Test
     @DisplayName("Lifecycle events are published")
     void lifecycleEventsPublished() throws Exception {

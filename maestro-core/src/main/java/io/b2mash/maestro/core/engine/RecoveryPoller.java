@@ -87,6 +87,16 @@ final class RecoveryPoller {
         logger.info("Recovery poller stopped");
     }
 
+    /**
+     * Returns whether the poller is currently running.
+     *
+     * @return {@code true} if the poller is active
+     */
+    boolean isRunning() {
+        var thread = pollerThread;
+        return running && thread != null && thread.isAlive();
+    }
+
     // ── Internal: polling loop ──────────────────────────────────────────
 
     private void pollLoop() {
