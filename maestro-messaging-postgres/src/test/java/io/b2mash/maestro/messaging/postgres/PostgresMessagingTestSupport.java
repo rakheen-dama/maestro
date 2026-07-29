@@ -143,6 +143,39 @@ abstract class PostgresMessagingTestSupport {
     }
 
     /**
+     * Reads a single integer column for a workflow's row.
+     *
+     * @param table      the queue table
+     * @param column     the column to read
+     * @param workflowId the workflow ID
+     * @return the column value, or {@code -1} if there is no such row
+     * @throws SQLException if the query fails
+     */
+    protected int intColumnOf(String table, String column, String workflowId) throws SQLException {
+        try (var conn = dataSource.getConnection();
+             var stmt = conn.prepareStatement(
+                     "SELECT " + column + " FROM " + table + " WHERE workflow_id = ?")) {
+            stmt.setString(1, workflowId);
+            try (var rs = stmt.executeQuery()) {
+                return rs.next() ? rs.getInt(1) : -1;
+            }
+        }
+    }
+
+    /**
+     * Builds an independent messaging instance with a bespoke redelivery
+     * policy, so a test can exhaust the attempt budget in milliseconds instead
+     * of the production default's minutes.
+     *
+     * @param redelivery the redelivery policy
+     * @return a new instance; close it when the test is done
+     */
+    protected PostgresWorkflowMessaging newMessaging(PostgresRedeliveryConfig redelivery) {
+        return new PostgresWorkflowMessaging(
+                newDataSource(), objectMapper, notificationListener, redelivery);
+    }
+
+    /**
      * Counts rows for a workflow in a queue table.
      *
      * @param table the queue table
