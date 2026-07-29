@@ -29,9 +29,7 @@ nexusPublishing {
 // untested module appears — and so the debt is visible in the build rather
 // than only in a document. Remove a module from this set when it gets a test;
 // the gate then keeps it honest.
-val modulesWithoutTests = setOf(
-    "maestro-store-jdbc",         // abstract base, exercised via maestro-store-postgres
-)
+val modulesWithoutTests = setOf<String>()
 
 val verifyModuleTestCoverage = tasks.register("verifyModuleTestCoverage") {
     group = "verification"
