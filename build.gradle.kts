@@ -30,7 +30,6 @@ nexusPublishing {
 // than only in a document. Remove a module from this set when it gets a test;
 // the gate then keeps it honest.
 val modulesWithoutTests = setOf(
-    "maestro-admin",              // dashboard app — see docs/test-plan.md §1
     "maestro-store-jdbc",         // abstract base, exercised via maestro-store-postgres
 )
 

@@ -59,6 +59,7 @@ spring-kafka = { module = "org.springframework.kafka:spring-kafka" }
 
 # Testing — Spring (versions managed by Spring Boot BOM)
 spring-boot-starter-test = { module = "org.springframework.boot:spring-boot-starter-test" }
+spring-boot-starter-webmvc-test = { module = "org.springframework.boot:spring-boot-starter-webmvc-test" }
 spring-kafka-test = { module = "org.springframework.kafka:spring-kafka-test" }
 
 # Spring Boot BOM — used by Spring convention plugins only
