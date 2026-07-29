@@ -108,6 +108,8 @@ public final class WorkflowExecutor {
     private final AtomicBoolean shuttingDown;
     private final AtomicReference<TimerPoller> timerPoller = new AtomicReference<>();
     private final AtomicReference<RecoveryPoller> recoveryPoller = new AtomicReference<>();
+    private final AtomicBoolean timerPollerStarted = new AtomicBoolean(false);
+    private final AtomicBoolean recoveryPollerStarted = new AtomicBoolean(false);
 
     /**
      * Creates a new workflow executor with the default lock key prefix
@@ -506,6 +508,7 @@ public final class WorkflowExecutor {
             throw new IllegalStateException("Timer poller already started");
         }
         poller.start();
+        timerPollerStarted.set(true);
     }
 
     // ── Recovery poller ─────────────────────────────────────────────────
@@ -537,6 +540,7 @@ public final class WorkflowExecutor {
             throw new IllegalStateException("Recovery poller already started");
         }
         poller.start();
+        recoveryPollerStarted.set(true);
     }
 
     // ── Shutdown ───────────────────────────────────────────────────────
@@ -738,6 +742,34 @@ public final class WorkflowExecutor {
     public boolean isRecoveryPollerRunning() {
         var poller = recoveryPoller.get();
         return poller != null && poller.isRunning();
+    }
+
+    /**
+     * Returns whether {@link #startTimerPoller(Duration, int)} has ever been
+     * called on this executor.
+     *
+     * <p>Unlike {@link #isTimerPollerRunning()}, this flag is monotonic — it
+     * stays {@code true} even after {@link #shutdown()} stops the poller.
+     * Combined with {@link #isTimerPollerRunning()}, a caller (e.g. a health
+     * check) can distinguish "not started yet" (still starting up — not a
+     * fault) from "started, then stopped running" (a real fault, such as a
+     * crashed poller thread).
+     *
+     * @return {@code true} once the timer poller has been started at least once
+     */
+    public boolean hasTimerPollerStarted() {
+        return timerPollerStarted.get();
+    }
+
+    /**
+     * Returns whether {@link #startRecoveryPoller(Map, Duration)} has ever
+     * been called on this executor. Monotonic — see
+     * {@link #hasTimerPollerStarted()} for the startup-vs-fault rationale.
+     *
+     * @return {@code true} once the recovery poller has been started at least once
+     */
+    public boolean hasRecoveryPollerStarted() {
+        return recoveryPollerStarted.get();
     }
 
     // ── Internal: workflow launch ──────────────────────────────────────

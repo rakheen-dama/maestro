@@ -1,10 +1,7 @@
 package io.b2mash.maestro.spring.health;
 
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
-import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
-import io.b2mash.maestro.core.model.WorkflowSignal;
-import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.spring.config.MaestroAutoConfiguration;
 import io.b2mash.maestro.test.InMemoryWorkflowStore;
@@ -18,11 +15,8 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import tools.jackson.databind.ObjectMapper;
 
 import java.time.Duration;
-import java.time.Instant;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -34,18 +28,28 @@ import static org.assertj.core.api.Assertions.assertThat;
  * conditions — present only when Actuator's health classes are on the
  * classpath and Maestro itself has activated — and the indicator's
  * behaviour: {@code UP} only when the store is reachable and every
- * <em>enabled</em> poller is running; a poller disabled by configuration
- * (e.g. {@code maestro.recovery.enabled=false}) does not affect status and
- * is reported as {@code "disabled"} rather than a boolean; {@code DOWN}
- * when the store throws, the timer poller (always expected to run) is not
- * running, or the recovery poller is enabled but not running.
+ * <em>enabled</em> poller that has actually started is running.
+ *
+ * <p>Three poller states matter and are tested separately:
+ * <ul>
+ *   <li><b>starting</b> — never started yet (the normal state right after
+ *       boot, before the starter's {@code StartupRecoveryRunner} runs) —
+ *       must not be {@code DOWN};</li>
+ *   <li><b>running</b> — started and alive — {@code UP};</li>
+ *   <li><b>dead</b> — started, then stopped running — a real fault,
+ *       {@code DOWN}.</li>
+ * </ul>
+ * A poller disabled by configuration (e.g. {@code maestro.recovery.enabled=false})
+ * is reported as {@code "disabled"} and never affects status, regardless of
+ * whether it was ever started.
  *
  * <p>The timer and recovery pollers are only started by the starter's
  * {@code StartupRecoveryRunner} — an {@code ApplicationRunner} that a bare
  * {@link ApplicationContextRunner} never invokes — so tests that need a
- * poller running start it directly via the {@link WorkflowExecutor} bean,
- * mirroring how {@code MaestroAutoConfigurationConfigSeamsTest} drives the
- * engine directly through its real beans.
+ * poller running (or stopped after running) drive it directly via the
+ * {@link WorkflowExecutor} bean, mirroring how
+ * {@code MaestroAutoConfigurationConfigSeamsTest} drives the engine
+ * directly through its real beans.
  */
 @DisplayName("MaestroHealthAutoConfiguration")
 class MaestroHealthAutoConfigurationTest {
@@ -79,7 +83,7 @@ class MaestroHealthAutoConfigurationTest {
     }
 
     @Test
-    @DisplayName("status is DOWN when the store throws")
+    @DisplayName("status is DOWN when the store throws, and poller/running-count details are still reported")
     void downWhenStoreThrows() {
         runner.withBean(WorkflowStore.class, ThrowingWorkflowStore::new)
                 .run(context -> {
@@ -88,7 +92,9 @@ class MaestroHealthAutoConfigurationTest {
                     var health = indicator.health();
 
                     assertThat(health.getStatus()).isEqualTo(Status.DOWN);
-                    assertThat(health.getDetails()).containsEntry("store", "unreachable");
+                    assertThat(health.getDetails())
+                            .containsEntry("store", "unreachable")
+                            .containsKeys("timerPollerRunning", "recoveryPollerRunning", "runningWorkflowCount");
                 });
     }
 
@@ -119,48 +125,69 @@ class MaestroHealthAutoConfigurationTest {
     }
 
     @Test
-    @DisplayName("status is DOWN when the timer poller (always enabled) is not running")
-    void downWhenTimerPollerNotRunning() {
+    @DisplayName("status is NOT DOWN during the startup window, before pollers have started "
+            + "(StartupRecoveryRunner hasn't run yet) — reported as \"starting\"")
+    void notDownDuringStartupWindowBeforePollersStart() {
         runner.withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
-                .withPropertyValues("maestro.recovery.enabled=false")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     var indicator = context.getBean(MaestroHealthIndicator.class);
                     var health = indicator.health();
 
                     assertThat(health.getStatus())
-                            .as("timer poller was never started — a dead/never-started poller "
-                                    + "with no disable switch is always a fault")
+                            .as("neither poller has started yet — this is every normal boot and every "
+                                    + "rolling deploy, not a fault; must not be DOWN")
+                            .isNotEqualTo(Status.DOWN);
+                    assertThat(health.getDetails())
+                            .containsEntry("timerPollerRunning", "starting")
+                            .containsEntry("recoveryPollerRunning", "starting");
+                });
+    }
+
+    @Test
+    @DisplayName("status is DOWN once the timer poller (always enabled) has started and then stopped")
+    void downWhenTimerPollerStartedThenStopped() {
+        runner.withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .withPropertyValues("maestro.recovery.enabled=false") // isolate the assertion to the timer poller
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    var executor = context.getBean(WorkflowExecutor.class);
+                    executor.startTimerPoller(Duration.ofSeconds(5), 100);
+                    executor.shutdown(); // stops the poller — "started, then died", a real fault
+
+                    var indicator = context.getBean(MaestroHealthIndicator.class);
+                    var health = indicator.health();
+
+                    assertThat(health.getStatus())
+                            .as("the poller started successfully and then stopped running — unlike "
+                                    + "never having started, this is a genuine fault")
                             .isEqualTo(Status.DOWN);
                     assertThat(health.getDetails()).containsEntry("timerPollerRunning", false);
                 });
     }
 
     @Test
-    @DisplayName("status is DOWN when the recovery poller is enabled but not running (crashed/never started)")
-    void downWhenRecoveryPollerEnabledButNotRunning() {
+    @DisplayName("status is DOWN once the (enabled) recovery poller has started and then stopped")
+    void downWhenRecoveryPollerStartedThenStopped() {
         runner.withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     var executor = context.getBean(WorkflowExecutor.class);
                     executor.startTimerPoller(Duration.ofSeconds(5), 100);
-                    // Recovery poller enabled by default (maestro.recovery.enabled=true)
-                    // but deliberately never started — simulates a dead poller.
-                    try {
-                        var indicator = context.getBean(MaestroHealthIndicator.class);
-                        var health = indicator.health();
+                    executor.startRecoveryPoller(Map.of(), Duration.ofSeconds(60));
+                    executor.shutdown(); // stops both pollers — recovery specifically now "started, then died"
 
-                        assertThat(health.getStatus()).isEqualTo(Status.DOWN);
-                        assertThat(health.getDetails()).containsEntry("recoveryPollerRunning", false);
-                    } finally {
-                        executor.shutdown();
-                    }
+                    var indicator = context.getBean(MaestroHealthIndicator.class);
+                    var health = indicator.health();
+
+                    assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+                    assertThat(health.getDetails()).containsEntry("recoveryPollerRunning", false);
                 });
     }
 
     @Test
     @DisplayName("status stays UP when the recovery poller is disabled by configuration, "
-            + "reported as \"disabled\" rather than false")
+            + "reported as \"disabled\" rather than \"starting\" or false")
     void upWhenRecoveryPollerDisabledByConfiguration() {
         runner.withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
                 .withPropertyValues("maestro.recovery.enabled=false")
@@ -168,7 +195,7 @@ class MaestroHealthAutoConfigurationTest {
                     assertThat(context).hasNotFailed();
                     var executor = context.getBean(WorkflowExecutor.class);
                     executor.startTimerPoller(Duration.ofSeconds(5), 100);
-                    // Recovery poller intentionally never started — disabled, not dead.
+                    // Recovery poller intentionally never started — disabled, not dead or starting.
                     try {
                         var indicator = context.getBean(MaestroHealthIndicator.class);
                         var health = indicator.health();
@@ -182,88 +209,11 @@ class MaestroHealthAutoConfigurationTest {
     }
 
     /** Always throws from {@link #getInstance(String)} to simulate an unreachable store. */
-    private static final class ThrowingWorkflowStore implements WorkflowStore {
-
-        private final InMemoryWorkflowStore delegate = new InMemoryWorkflowStore();
-
-        @Override
-        public WorkflowInstance createInstance(WorkflowInstance instance) {
-            return delegate.createInstance(instance);
-        }
+    private static final class ThrowingWorkflowStore extends DelegatingWorkflowStore {
 
         @Override
         public Optional<WorkflowInstance> getInstance(String workflowId) {
             throw new RuntimeException("store unreachable");
-        }
-
-        @Override
-        public List<WorkflowInstance> getRecoverableInstances() {
-            return delegate.getRecoverableInstances();
-        }
-
-        @Override
-        public void updateInstance(WorkflowInstance instance) {
-            delegate.updateInstance(instance);
-        }
-
-        @Override
-        public void appendEvent(WorkflowEvent event) {
-            delegate.appendEvent(event);
-        }
-
-        @Override
-        public Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int sequenceNumber) {
-            return delegate.getEventBySequence(instanceId, sequenceNumber);
-        }
-
-        @Override
-        public List<WorkflowEvent> getEvents(UUID instanceId) {
-            return delegate.getEvents(instanceId);
-        }
-
-        @Override
-        public void saveSignal(WorkflowSignal signal) {
-            delegate.saveSignal(signal);
-        }
-
-        @Override
-        public List<WorkflowSignal> getUnconsumedSignals(String workflowId, String signalName) {
-            return delegate.getUnconsumedSignals(workflowId, signalName);
-        }
-
-        @Override
-        public boolean markSignalConsumed(UUID signalId) {
-            return delegate.markSignalConsumed(signalId);
-        }
-
-        @Override
-        public void adoptOrphanedSignals(String workflowId, UUID instanceId) {
-            delegate.adoptOrphanedSignals(workflowId, instanceId);
-        }
-
-        @Override
-        public void saveTimer(WorkflowTimer timer) {
-            delegate.saveTimer(timer);
-        }
-
-        @Override
-        public List<WorkflowTimer> getDueTimers(Instant now, int batchSize) {
-            return delegate.getDueTimers(now, batchSize);
-        }
-
-        @Override
-        public Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId) {
-            return delegate.findTimer(workflowInstanceId, timerId);
-        }
-
-        @Override
-        public boolean markTimerFired(UUID timerId) {
-            return delegate.markTimerFired(timerId);
-        }
-
-        @Override
-        public void markTimerCancelled(UUID timerId) {
-            delegate.markTimerCancelled(timerId);
         }
     }
 }

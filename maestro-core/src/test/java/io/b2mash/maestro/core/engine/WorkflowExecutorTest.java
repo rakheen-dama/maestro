@@ -708,6 +708,37 @@ class WorkflowExecutorTest {
     }
 
     @Test
+    @DisplayName("hasTimerPollerStarted() is monotonic — stays true after the poller stops, "
+            + "so callers can tell \"never started\" apart from \"started, then died\"")
+    void hasTimerPollerStartedStaysTrueAfterStop() {
+        assertFalse(executor.hasTimerPollerStarted(), "never started yet");
+
+        executor.startTimerPoller(Duration.ofMillis(50), 10);
+        assertTrue(executor.hasTimerPollerStarted());
+        assertTrue(executor.isTimerPollerRunning());
+
+        executor.shutdown();
+        assertTrue(executor.hasTimerPollerStarted(),
+                "monotonic — must not revert to \"never started\" once shutdown stops the poller");
+        assertFalse(executor.isTimerPollerRunning(), "but it is no longer running");
+    }
+
+    @Test
+    @DisplayName("hasRecoveryPollerStarted() is monotonic — stays true after the poller stops")
+    void hasRecoveryPollerStartedStaysTrueAfterStop() {
+        assertFalse(executor.hasRecoveryPollerStarted(), "never started yet");
+
+        executor.startRecoveryPoller(Map.of(), Duration.ofMillis(50));
+        assertTrue(executor.hasRecoveryPollerStarted());
+        assertTrue(executor.isRecoveryPollerRunning());
+
+        executor.shutdown();
+        assertTrue(executor.hasRecoveryPollerStarted(),
+                "monotonic — must not revert to \"never started\" once shutdown stops the poller");
+        assertFalse(executor.isRecoveryPollerRunning(), "but it is no longer running");
+    }
+
+    @Test
     @DisplayName("Lifecycle events are published")
     void lifecycleEventsPublished() throws Exception {
         var latch = new CountDownLatch(1);
