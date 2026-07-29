@@ -209,6 +209,16 @@ class ShutdownContractIT extends PostgresIntegrationSupport {
         assertEquals(List.of(workflowId),
                 store.getRecoverableInstances().stream().map(WorkflowInstance::workflowId).toList());
 
+        // The instance lock is released too, even though shutdown landed
+        // mid-compensation rather than mid-park — same guarantee as the
+        // dedicated lock test above, exercised on this shape.
+        var lockKey = "maestro:lock:workflow:" + workflowId;
+        var peer = newLock();
+        var adopted = peer.tryAcquire(lockKey, LOCK_TTL);
+        assertTrue(adopted.isPresent(),
+                "a shut-down node must hand its instance lock back even when shutdown landed mid-compensation");
+        peer.release(adopted.orElseThrow());
+
         // A fresh node recovers it: the interrupted compensation re-parks
         // (nothing was memoized for it — it never completed), and once
         // resumed, finishes compensation and reaches FAILED, the correct

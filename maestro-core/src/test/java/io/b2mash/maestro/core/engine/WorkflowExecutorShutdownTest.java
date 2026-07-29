@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.annotation.Compensate;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.model.EventType;
@@ -9,6 +10,8 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.retry.RetryExecutor;
+import io.b2mash.maestro.core.retry.RetryPolicy;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
 import org.junit.jupiter.api.AfterEach;
@@ -233,6 +236,170 @@ class WorkflowExecutorShutdownTest {
         assertTrue(hasEvent("mid-comp", EventType.COMPENSATION_COMPLETED));
         assertTrue(hasEvent("mid-comp", EventType.WORKFLOW_FAILED),
                 "the genuine failure must still be finalised once compensation completes");
+    }
+
+    // NOTE: SagaManager.executeParallel's shutdown-rethrow check (the analogous
+    // fix for @Saga(parallelCompensation = true)) has no test here — it is
+    // currently unreachable. See the fix-round-1 report for the call-chain
+    // proof: parallel-compensation branch contexts are built with
+    // `operations = null` (SagaManager.executeParallel), so any compensation
+    // that calls WorkflowContext.current().awaitSignal()/sleep() throws
+    // IllegalStateException immediately (WorkflowContext.requireOperations())
+    // and never reaches ParkingLot — confirmed by attempting exactly this
+    // test, which timed out waiting for WAITING_SIGNAL because the workflow
+    // raced straight to FAILED via the IllegalStateException instead.
+
+    @Test
+    @DisplayName("Shutdown while a workflow's parallel() branch is parked propagates without being wrapped, "
+            + "leaving it recoverable")
+    void shutdown_withParkedParallelBranch_leavesItRecoverableAndCompletable() throws Exception {
+        // DefaultWorkflowOperations.parallel's branch error-collection loop
+        // (not SagaManager's) — the forward fork-join API, unrelated to sagas.
+        var workflow = new ParkingParallelBranchWorkflow();
+        var method = ParkingParallelBranchWorkflow.class.getMethod("run", String.class);
+        executor.startWorkflow("park-parallel-branch", "ParkingParallelBranchWorkflow", "default", "input",
+                workflow, method);
+
+        awaitStatus("park-parallel-branch", WorkflowStatus.WAITING_SIGNAL);
+
+        executor.shutdown();
+
+        assertEquals(WorkflowStatus.WAITING_SIGNAL,
+                store.getInstance("park-parallel-branch").orElseThrow().status(),
+                "a shutdown Error from a parallel() branch must not be wrapped into a RuntimeException "
+                        + "and recorded as this workflow's own failure");
+        assertFalse(executor.isRunning("park-parallel-branch"));
+        assertFalse(hasEvent("park-parallel-branch", EventType.WORKFLOW_FAILED));
+        assertEquals(List.of("park-parallel-branch"),
+                store.getRecoverableInstances().stream().map(WorkflowInstance::workflowId).toList());
+
+        secondExecutor = new WorkflowExecutor(store, null, null, null, serializer, "node-b");
+        var registrations = Map.of("ParkingParallelBranchWorkflow",
+                new WorkflowRegistration("ParkingParallelBranchWorkflow", "default", workflow, method));
+        assertEquals(1, secondExecutor.recoverWorkflows(registrations));
+        awaitStatus("park-parallel-branch", WorkflowStatus.WAITING_SIGNAL);
+        secondExecutor.deliverSignal("park-parallel-branch", ParkingParallelBranchWorkflow.SIGNAL, "approved");
+
+        awaitStatus("park-parallel-branch", WorkflowStatus.COMPLETED);
+        assertEquals("approved|quick", serializer.deserialize(
+                store.getInstance("park-parallel-branch").orElseThrow().output(), String.class));
+    }
+
+    @Test
+    @DisplayName("Shutdown while a retried activity is parked propagates without being retried or wrapped")
+    void shutdown_withRetriedActivityParked_propagatesWithoutRetryOrWrap() throws Exception {
+        // Drives the FULL activity proxy dispatch — Method.invoke() wrapping
+        // the park in InvocationTargetException, ActivityInvocationHandler
+        // .invokeActivity's cause-unwrap, and RetryExecutor.executeWithRetry —
+        // not just RetryExecutor in isolation (see RetryExecutorTest for that).
+        var invocations = new AtomicInteger();
+        var activityImpl = new ParkingActivityImpl(invocations, RetryShutdownWorkflow.RESUME_SIGNAL);
+        var proxy = new ActivityProxyFactory().createProxy(
+                ParkingActivity.class, activityImpl, store, null, null,
+                RetryPolicy.builder().maxAttempts(5).initialInterval(Duration.ofMillis(1))
+                        .maxInterval(Duration.ofMillis(10)).backoffMultiplier(1.0).build(),
+                Duration.ofSeconds(30), serializer, new RetryExecutor());
+        var workflow = new RetryShutdownWorkflow(proxy);
+        var method = RetryShutdownWorkflow.class.getMethod("run", String.class);
+        executor.startWorkflow("park-retry-activity", "RetryShutdownWorkflow", "default", "input",
+                workflow, method);
+
+        awaitStatus("park-retry-activity", WorkflowStatus.WAITING_SIGNAL);
+        assertEquals(1, invocations.get(), "must not have been retried before shutdown either");
+
+        executor.shutdown();
+
+        assertEquals(1, invocations.get(),
+                "a shutdown signal reaching a retried activity (maxAttempts=5) must not be retried");
+        assertEquals(WorkflowStatus.WAITING_SIGNAL,
+                store.getInstance("park-retry-activity").orElseThrow().status(),
+                "must not be wrapped into ActivityExecutionException and recorded as this workflow's failure");
+        assertFalse(executor.isRunning("park-retry-activity"));
+        assertFalse(hasEvent("park-retry-activity", EventType.ACTIVITY_FAILED),
+                "must not be recorded as an exhausted-retries activity failure");
+        assertFalse(hasEvent("park-retry-activity", EventType.WORKFLOW_FAILED));
+        assertEquals(List.of("park-retry-activity"),
+                store.getRecoverableInstances().stream().map(WorkflowInstance::workflowId).toList());
+
+        // Recovery: the activity never completed (no ACTIVITY_COMPLETED was
+        // persisted), so it replays live again on the second node.
+        secondExecutor = new WorkflowExecutor(store, null, null, null, serializer, "node-b");
+        var restartedInvocations = new AtomicInteger();
+        var restartedActivityImpl = new ParkingActivityImpl(restartedInvocations, RetryShutdownWorkflow.RESUME_SIGNAL);
+        var restartedProxy = new ActivityProxyFactory().createProxy(
+                ParkingActivity.class, restartedActivityImpl, store, null, null,
+                RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
+        var restartedWorkflow = new RetryShutdownWorkflow(restartedProxy);
+        var registrations = Map.of("RetryShutdownWorkflow",
+                new WorkflowRegistration("RetryShutdownWorkflow", "default", restartedWorkflow, method));
+        assertEquals(1, secondExecutor.recoverWorkflows(registrations),
+                "the workflow abandoned mid-activity must be recoverable by a fresh node");
+
+        awaitStatus("park-retry-activity", WorkflowStatus.WAITING_SIGNAL);
+        secondExecutor.deliverSignal("park-retry-activity", RetryShutdownWorkflow.RESUME_SIGNAL, "resumed");
+
+        awaitStatus("park-retry-activity", WorkflowStatus.COMPLETED);
+        assertEquals(1, restartedInvocations.get());
+    }
+
+    @Test
+    @DisplayName("Shutdown while a @Compensate-annotated activity's compensation method is parked leaves the "
+            + "workflow recoverable with no step recorded failed")
+    void shutdown_withCompensateActivityParked_leavesItRecoverableAndCompletesOnRecovery() throws Exception {
+        // Drives ActivityInvocationHandler.registerCompensationIfAnnotated's
+        // reflective compensationMethod.invoke(proxy, ...) call — a SEPARATE
+        // InvocationTargetException-unwrap fix from invokeActivity's, in a
+        // different method. Sequential (default) compensation: unlike a
+        // parallel-compensation branch, this runs on the main, fully-wired
+        // WorkflowContext, so awaitSignal() genuinely parks.
+        var undoCount = new AtomicInteger();
+        var activityImpl = new ParkingCompensateActivityImpl(undoCount, CompensateShutdownWorkflow.RESUME_SIGNAL);
+        var proxy = new ActivityProxyFactory().createProxy(
+                ParkingCompensateActivity.class, activityImpl, store, null, null,
+                RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
+        var workflow = new CompensateShutdownWorkflow(proxy);
+        var method = CompensateShutdownWorkflow.class.getMethod("run", String.class);
+        executor.startWorkflow("park-compensate-activity", "CompensateShutdownWorkflow", "default", "widget",
+                workflow, method);
+
+        awaitStatus("park-compensate-activity", WorkflowStatus.WAITING_SIGNAL);
+        assertTrue(hasEvent("park-compensate-activity", EventType.COMPENSATION_STARTED),
+                "must be genuinely mid-compensation, not an ordinary park");
+
+        executor.shutdown();
+
+        assertFalse(hasEvent("park-compensate-activity", EventType.COMPENSATION_STEP_FAILED),
+                "the @Compensate activity's method interrupted by shutdown must not be recorded as failed");
+        assertFalse(hasEvent("park-compensate-activity", EventType.WORKFLOW_FAILED),
+                "shutdown must not finalise the workflow as FAILED while compensation is unresolved");
+        var statusAfterShutdown = store.getInstance("park-compensate-activity").orElseThrow().status();
+        assertTrue(statusAfterShutdown.isActive(),
+                "the instance must stay in an active, recoverable status — was " + statusAfterShutdown);
+        assertEquals(List.of("park-compensate-activity"),
+                store.getRecoverableInstances().stream().map(WorkflowInstance::workflowId).toList());
+
+        secondExecutor = new WorkflowExecutor(store, null, null, null, serializer, "node-b");
+        var restartedUndoCount = new AtomicInteger();
+        var restartedActivityImpl = new ParkingCompensateActivityImpl(
+                restartedUndoCount, CompensateShutdownWorkflow.RESUME_SIGNAL);
+        var restartedProxy = new ActivityProxyFactory().createProxy(
+                ParkingCompensateActivity.class, restartedActivityImpl, store, null, null,
+                RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
+        var restartedWorkflow = new CompensateShutdownWorkflow(restartedProxy);
+        var registrations = Map.of("CompensateShutdownWorkflow",
+                new WorkflowRegistration("CompensateShutdownWorkflow", "default", restartedWorkflow, method));
+        assertEquals(1, secondExecutor.recoverWorkflows(registrations),
+                "the workflow abandoned mid-compensation must be recoverable by a fresh node");
+
+        awaitStatus("park-compensate-activity", WorkflowStatus.WAITING_SIGNAL);
+        secondExecutor.deliverSignal("park-compensate-activity", CompensateShutdownWorkflow.RESUME_SIGNAL, "resumed");
+
+        awaitStatus("park-compensate-activity", WorkflowStatus.FAILED);
+        assertTrue(restartedUndoCount.get() >= 1, "the compensation activity must complete once resumed");
+        assertFalse(hasEvent("park-compensate-activity", EventType.COMPENSATION_STEP_FAILED),
+                "no compensation step may be recorded failed across the full recovery");
+        assertTrue(hasEvent("park-compensate-activity", EventType.COMPENSATION_COMPLETED));
+        assertTrue(hasEvent("park-compensate-activity", EventType.WORKFLOW_FAILED));
     }
 
     // ── 3. In-flight activities drain ──────────────────────────────────
@@ -505,6 +672,163 @@ class WorkflowExecutorShutdownTest {
             wf.addCompensation("release", released::incrementAndGet);
             wf.addCompensation("parking-compensation",
                     () -> WorkflowContext.current().awaitSignal(RESUME_SIGNAL, String.class, NEVER));
+            throw new IllegalStateException("Intentional failure to trigger compensation");
+        }
+    }
+
+    /**
+     * Calls {@code parallel()} with two branches — one parks on a signal, the
+     * other returns immediately — so the fork spawns real branch threads
+     * (DefaultWorkflowOperations.parallel's single-task fast path only
+     * applies to a list of exactly one, and needs no fix).
+     */
+    public static class ParkingParallelBranchWorkflow {
+
+        /** The signal the parking branch waits for. */
+        public static final String SIGNAL = "approval";
+
+        /**
+         * @param input unused seed
+         * @return the two branch results, joined once both complete
+         */
+        public String run(String input) {
+            var wf = WorkflowContext.current();
+            List<String> results = wf.parallel(List.of(
+                    () -> wf.awaitSignal(SIGNAL, String.class, NEVER),
+                    () -> "quick"
+            ));
+            return results.get(0) + "|" + results.get(1);
+        }
+    }
+
+    /** Activity interface whose single method parks — see {@link ParkingActivityImpl}. */
+    public interface ParkingActivity {
+        /**
+         * @param input unused seed
+         * @return the signal payload once one arrives
+         */
+        String work(String input);
+    }
+
+    /**
+     * Deliberately reaches into {@link WorkflowContext} from an activity
+     * implementation's own method body — not the recommended pattern
+     * (activities normally do I/O only and have no business touching
+     * workflow context), but technically reachable: activities execute
+     * synchronously on the workflow's own virtual thread, so
+     * {@code WorkflowContext.current()} resolves correctly. Exists to drive
+     * a shutdown signal through {@code RetryExecutor} and
+     * {@code ActivityInvocationHandler.invokeActivity}'s reflection-unwrap.
+     */
+    public static class ParkingActivityImpl implements ParkingActivity {
+        private final AtomicInteger invocations;
+        private final String signalName;
+
+        /**
+         * @param invocations counter incremented on every call, proving retry didn't happen
+         * @param signalName  the signal this activity awaits
+         */
+        public ParkingActivityImpl(AtomicInteger invocations, String signalName) {
+            this.invocations = invocations;
+            this.signalName = signalName;
+        }
+
+        @Override
+        public String work(String input) {
+            invocations.incrementAndGet();
+            return WorkflowContext.current().awaitSignal(signalName, String.class, NEVER);
+        }
+    }
+
+    /** Calls a single retried activity that parks. */
+    public static class RetryShutdownWorkflow {
+
+        /** The signal that unblocks the parked activity on recovery. */
+        public static final String RESUME_SIGNAL = "resume-retried-activity";
+
+        private final ParkingActivity activity;
+
+        /** @param activity the (proxied) activity to call */
+        public RetryShutdownWorkflow(ParkingActivity activity) {
+            this.activity = activity;
+        }
+
+        /**
+         * @param input unused seed
+         * @return the signal payload once one arrives
+         */
+        public String run(String input) {
+            return activity.work(input);
+        }
+    }
+
+    /** Activity interface whose compensation method parks — see {@link ParkingCompensateActivityImpl}. */
+    public interface ParkingCompensateActivity {
+        /**
+         * @param item the item being reserved
+         * @return a reservation reference
+         */
+        @Compensate("undo")
+        String reserve(String item);
+
+        /** @param reservation the value returned by {@link #reserve(String)} */
+        void undo(String reservation);
+    }
+
+    /**
+     * {@code reserve} completes immediately; {@code undo} (the {@code @Compensate}
+     * target) reaches into {@link WorkflowContext} — reachable because the
+     * compensation method is invoked through the same activity proxy
+     * machinery as any other activity call
+     * ({@code ActivityInvocationHandler.registerCompensationIfAnnotated}), and
+     * for sequential (default) compensation that call runs on the main,
+     * fully-wired {@code WorkflowContext} (unlike a parallel-compensation
+     * branch — see the fix-round-1 report for why that path is untestable).
+     */
+    public static class ParkingCompensateActivityImpl implements ParkingCompensateActivity {
+        private final AtomicInteger undoCount;
+        private final String signalName;
+
+        /**
+         * @param undoCount  counter incremented on every {@code undo} call
+         * @param signalName the signal {@code undo} awaits
+         */
+        public ParkingCompensateActivityImpl(AtomicInteger undoCount, String signalName) {
+            this.undoCount = undoCount;
+            this.signalName = signalName;
+        }
+
+        @Override
+        public String reserve(String item) {
+            return "reserved:" + item;
+        }
+
+        @Override
+        public void undo(String reservation) {
+            undoCount.incrementAndGet();
+            WorkflowContext.current().awaitSignal(signalName, String.class, NEVER);
+        }
+    }
+
+    /** Reserves (compensable via {@code @Compensate}) and then genuinely fails. */
+    public static class CompensateShutdownWorkflow {
+
+        /** The signal that unblocks the parked compensation on recovery. */
+        public static final String RESUME_SIGNAL = "resume-compensate-activity";
+
+        private final ParkingCompensateActivity activity;
+
+        /** @param activity the (proxied) activity to call */
+        public CompensateShutdownWorkflow(ParkingCompensateActivity activity) {
+            this.activity = activity;
+        }
+
+        /**
+         * @param item unused seed
+         * @return never returns
+         */
+        public String run(String item) {
+            activity.reserve(item);
             throw new IllegalStateException("Intentional failure to trigger compensation");
         }
     }

@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.retry;
 
 import io.b2mash.maestro.core.exception.ActivityExecutionException;
+import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -13,6 +14,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -251,6 +253,30 @@ class RetryExecutorTest {
         assertEquals("wf-8", thrown.workflowId());
         assertEquals("oneShot", thrown.activityName());
         assertEquals("one and done", thrown.getCause().getMessage());
+    }
+
+    @Test
+    @DisplayName("ExecutorShutdownException propagates unwrapped, without being retried")
+    void executorShutdownExceptionPropagatesWithoutRetry() {
+        // A shutdown signal is not a retryable activity failure — retrying it
+        // would delay the drain, and wrapping it in ActivityExecutionException
+        // would hide it from executeWorkflow's shutdown handling (it is an
+        // Error, not a RuntimeException — see its Javadoc). maxAttempts is
+        // deliberately > 1 so a regression that treats it as retryable would
+        // show up as counter > 1, not just as the wrong exception type.
+        var policy = fastPolicy(5);
+        var counter = new AtomicInteger();
+        var shutdownSignal = new ExecutorShutdownException("node is shutting down");
+        Callable<String> task = () -> {
+            counter.incrementAndGet();
+            throw shutdownSignal;
+        };
+
+        var thrown = assertThrows(ExecutorShutdownException.class,
+                () -> executor.executeWithRetry(policy, task, "parkingActivity", "wf-10"));
+
+        assertEquals(1, counter.get(), "a shutdown signal must not be retried");
+        assertSame(shutdownSignal, thrown, "the original exception instance must propagate, not a wrapper");
     }
 
     @Test
