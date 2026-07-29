@@ -44,7 +44,9 @@ import java.util.List;
 public final class ActivityProxyFactory {
 
     /**
-     * Creates a memoizing proxy for the given activity interface.
+     * Creates a memoizing proxy for the given activity interface, using the
+     * default activity lock key prefix ({@code maestro:lock:}) — the same
+     * default the instance lock uses.
      *
      * @param <T>                 the activity interface type
      * @param activityInterface   the activity interface class (must be an interface)
@@ -70,6 +72,44 @@ public final class ActivityProxyFactory {
             PayloadSerializer serializer,
             RetryExecutor retryExecutor
     ) {
+        return createProxy(activityInterface, activityImpl, store, distributedLock, messaging,
+                retryPolicy, startToCloseTimeout, serializer, retryExecutor,
+                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX);
+    }
+
+    /**
+     * Creates a memoizing proxy for the given activity interface, with an
+     * explicit activity lock key prefix.
+     *
+     * @param <T>                 the activity interface type
+     * @param activityInterface   the activity interface class (must be an interface)
+     * @param activityImpl        the real implementation to delegate live calls to
+     * @param store               the workflow store for memoization
+     * @param distributedLock     optional distributed lock for dedup optimization
+     * @param messaging           optional messaging for lifecycle events
+     * @param retryPolicy         retry policy for failed invocations
+     * @param startToCloseTimeout timeout used as lock TTL hint
+     * @param serializer          Jackson serializer for payloads
+     * @param retryExecutor       retry executor for live invocations
+     * @param lockKeyPrefix       prefix for the per-activity distributed lock key
+     *                            (e.g. {@code maestro:lock:}) — the same prefix
+     *                            configured for the instance lock via
+     *                            {@code maestro.lock.key-prefix}
+     * @return a proxy instance that implements {@code activityInterface}
+     * @throws IllegalArgumentException if {@code activityInterface} is not an interface
+     */
+    public <T> T createProxy(
+            Class<T> activityInterface,
+            T activityImpl,
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            @Nullable WorkflowMessaging messaging,
+            RetryPolicy retryPolicy,
+            Duration startToCloseTimeout,
+            PayloadSerializer serializer,
+            RetryExecutor retryExecutor,
+            String lockKeyPrefix
+    ) {
         if (!activityInterface.isInterface()) {
             throw new IllegalArgumentException(
                     "Activity type must be an interface, got: " + activityInterface.getName());
@@ -88,7 +128,8 @@ public final class ActivityProxyFactory {
                 retryPolicy,
                 startToCloseTimeout,
                 serializer,
-                retryExecutor
+                retryExecutor,
+                lockKeyPrefix
         );
 
         var proxy = Proxy.newProxyInstance(

@@ -160,6 +160,42 @@ class WorkflowExecutorTest {
         assertTrue(completedLatch.await(5, TimeUnit.SECONDS), "Workflow should complete after signal");
     }
 
+    @Test
+    @DisplayName("A configured wake-recheck-interval reaches the SignalManager, bounding cross-node signal latency")
+    void wakeRecheckIntervalReachesSignalManager() throws Exception {
+        // Default recheck interval (30s) would never notice a signal persisted
+        // without a local unpark inside this test's short await window — so a
+        // short custom interval completing the workflow proves it was threaded
+        // from the constructor into SignalManager, not just left at the default.
+        executor.shutdown();
+        executor = new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
+                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
+                true, WorkflowExecutor.DEFAULT_SHUTDOWN_TIMEOUT, Duration.ofMillis(200));
+
+        var completedLatch = new CountDownLatch(1);
+        var waitingLatch = new CountDownLatch(1);
+        var workflow = new SignalWorkflow(waitingLatch, completedLatch);
+        var method = SignalWorkflow.class.getMethod("run", String.class);
+
+        executor.startWorkflow("wake-recheck", "SignalWorkflow", "default", "input", workflow, method);
+        assertTrue(waitingLatch.await(5, TimeUnit.SECONDS), "Workflow should reach await point");
+        await().atMost(Duration.ofSeconds(2)).until(() ->
+                store.getInstance("wake-recheck")
+                        .map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL)
+                        .orElse(false));
+
+        // Persist the signal directly — bypasses executor.deliverSignal, so no
+        // local unpark happens. Only the periodic store re-check can find it.
+        var instanceId = store.getInstance("wake-recheck").orElseThrow().id();
+        store.saveSignal(new WorkflowSignal(
+                UUID.randomUUID(), instanceId, "wake-recheck", "payment.result",
+                serializer.serialize("cross-node"), false, Instant.now()));
+
+        assertTrue(completedLatch.await(3, TimeUnit.SECONDS),
+                "the 200ms wake-recheck-interval configured on the constructor must have reached "
+                        + "SignalManager — with the 30s default this would still be waiting");
+    }
+
     // ── Shutdown ───────────────────────────────────────────────────────
 
     @Test
@@ -539,6 +575,40 @@ class WorkflowExecutorTest {
         assertThrows(IllegalArgumentException.class, () ->
                 new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
                         "maestro:lock:", null));
+    }
+
+    @Test
+    @DisplayName("Constructor rejects a non-positive shutdown timeout")
+    void constructorRejectsNonPositiveShutdownTimeout() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
+                        "maestro:lock:", Duration.ofSeconds(30), true,
+                        Duration.ZERO, Duration.ofSeconds(30)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
+                        "maestro:lock:", Duration.ofSeconds(30), true,
+                        Duration.ofSeconds(-5), Duration.ofSeconds(30)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
+                        "maestro:lock:", Duration.ofSeconds(30), true,
+                        null, Duration.ofSeconds(30)));
+    }
+
+    @Test
+    @DisplayName("Constructor rejects a non-positive wake-recheck interval")
+    void constructorRejectsNonPositiveWakeRecheckInterval() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
+                        "maestro:lock:", Duration.ofSeconds(30), true,
+                        Duration.ofSeconds(30), Duration.ZERO));
+        assertThrows(IllegalArgumentException.class, () ->
+                new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
+                        "maestro:lock:", Duration.ofSeconds(30), true,
+                        Duration.ofSeconds(30), Duration.ofSeconds(-5)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
+                        "maestro:lock:", Duration.ofSeconds(30), true,
+                        Duration.ofSeconds(30), null));
     }
 
     @Test

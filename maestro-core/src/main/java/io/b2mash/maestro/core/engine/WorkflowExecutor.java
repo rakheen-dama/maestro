@@ -73,7 +73,14 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class WorkflowExecutor {
 
     private static final Logger logger = LoggerFactory.getLogger(WorkflowExecutor.class);
-    private static final Duration SHUTDOWN_TIMEOUT = Duration.ofSeconds(30);
+
+    /**
+     * Default wait for in-flight workflows to drain during {@link #shutdown()},
+     * used when no explicit {@code shutdownTimeout} is passed to the
+     * constructor. Corresponds to {@code maestro.shutdown.timeout} in the
+     * Spring Boot starter.
+     */
+    static final Duration DEFAULT_SHUTDOWN_TIMEOUT = Duration.ofSeconds(30);
 
     /**
      * How many times a terminal-status write is retried against a fresh read
@@ -95,6 +102,7 @@ public final class WorkflowExecutor {
     private final QueryRegistry queryRegistry;
     private final WorkflowInstanceLockManager instanceLockManager;
     private final boolean lifecycleEventsEnabled;
+    private final Duration shutdownTimeout;
     private final LifecycleEventPublisher lifecycleEventPublisher;
     private final ConcurrentHashMap<String, RunningWorkflow> runningWorkflows;
     private final AtomicBoolean shuttingDown;
@@ -189,9 +197,66 @@ public final class WorkflowExecutor {
             Duration instanceLockTtl,
             boolean lifecycleEventsEnabled
     ) {
+        this(store, distributedLock, messaging, signalNotifier, serializer, serviceName,
+                lockKeyPrefix, instanceLockTtl, lifecycleEventsEnabled,
+                DEFAULT_SHUTDOWN_TIMEOUT, SignalManager.DEFAULT_WAKE_RECHECK_INTERVAL);
+    }
+
+    /**
+     * Creates a new workflow executor with explicit lock configuration,
+     * explicit control over lifecycle event publishing, and explicit
+     * shutdown/signal timing.
+     *
+     * @param store                  workflow store for persistence
+     * @param distributedLock        optional distributed lock backend
+     * @param messaging              optional messaging for lifecycle events
+     * @param signalNotifier         optional cross-instance signal notification
+     * @param serializer             Jackson serializer for payloads
+     * @param serviceName            the name of the owning service
+     * @param lockKeyPrefix          prefix for distributed lock keys (e.g. {@code maestro:lock:})
+     * @param instanceLockTtl        TTL for the per-workflow instance lock; renewed
+     *                               at one third of this interval — must be strictly
+     *                               positive
+     * @param lifecycleEventsEnabled whether {@code WORKFLOW_STARTED}/{@code _COMPLETED}/
+     *                               {@code _FAILED} lifecycle events are published at all
+     *                               (independent of whether {@code messaging} is configured).
+     *                               Corresponds to {@code maestro.admin.events.enabled} in the
+     *                               Spring Boot starter.
+     * @param shutdownTimeout        how long {@link #shutdown()} waits for in-flight
+     *                               workflows to drain before returning — must be strictly
+     *                               positive. Corresponds to {@code maestro.shutdown.timeout}.
+     * @param wakeRecheckInterval    how often a parked {@code awaitSignal()} re-checks the
+     *                               store for a signal persisted without a notification
+     *                               reaching this instance — must be strictly positive.
+     *                               Corresponds to {@code maestro.signal.wake-recheck-interval}.
+     * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
+     *                                  or {@code wakeRecheckInterval} is {@code null}, zero,
+     *                                  or negative
+     */
+    public WorkflowExecutor(
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            @Nullable WorkflowMessaging messaging,
+            @Nullable SignalNotifier signalNotifier,
+            PayloadSerializer serializer,
+            String serviceName,
+            String lockKeyPrefix,
+            Duration instanceLockTtl,
+            boolean lifecycleEventsEnabled,
+            Duration shutdownTimeout,
+            Duration wakeRecheckInterval
+    ) {
         if (instanceLockTtl == null || instanceLockTtl.isNegative() || instanceLockTtl.isZero()) {
             throw new IllegalArgumentException(
                     "instanceLockTtl must be positive, got " + instanceLockTtl);
+        }
+        if (shutdownTimeout == null || shutdownTimeout.isNegative() || shutdownTimeout.isZero()) {
+            throw new IllegalArgumentException(
+                    "shutdownTimeout must be positive, got " + shutdownTimeout);
+        }
+        if (wakeRecheckInterval == null || wakeRecheckInterval.isNegative() || wakeRecheckInterval.isZero()) {
+            throw new IllegalArgumentException(
+                    "wakeRecheckInterval must be positive, got " + wakeRecheckInterval);
         }
         this.store = store;
         this.distributedLock = distributedLock;
@@ -200,13 +265,15 @@ public final class WorkflowExecutor {
         this.serializer = serializer;
         this.serviceName = serviceName;
         this.parkingLot = new ParkingLot();
-        this.signalManager = new SignalManager(store, messaging, signalNotifier, serializer, parkingLot);
+        this.signalManager = new SignalManager(
+                store, messaging, signalNotifier, serializer, parkingLot, wakeRecheckInterval);
         this.sagaManager = new SagaManager(store, messaging, serializer, serviceName);
         this.instanceLockManager = new WorkflowInstanceLockManager(
                 distributedLock, serviceName, lockKeyPrefix, instanceLockTtl,
                 instanceLockTtl.dividedBy(3));
         this.queryRegistry = new QueryRegistry();
         this.lifecycleEventsEnabled = lifecycleEventsEnabled;
+        this.shutdownTimeout = shutdownTimeout;
         this.lifecycleEventPublisher = new LifecycleEventPublisher(serviceName);
         this.runningWorkflows = new ConcurrentHashMap<>();
         this.shuttingDown = new AtomicBoolean(false);
@@ -478,8 +545,9 @@ public final class WorkflowExecutor {
      * Gracefully shuts down the executor.
      *
      * <p>Stops accepting new workflows, abandons every parked waiter so those
-     * virtual threads exit, waits up to 30 seconds for in-flight workflows to
-     * drain, and then stops renewing instance locks.
+     * virtual threads exit, waits up to the configured shutdown timeout
+     * (default 30 seconds; {@code maestro.shutdown.timeout}) for in-flight
+     * workflows to drain, and then stops renewing instance locks.
      *
      * <h2>What a parked workflow sees</h2>
      * <p>A workflow parked on {@code awaitSignal()} or {@code sleep()} has
@@ -530,7 +598,7 @@ public final class WorkflowExecutor {
         parkingLot.shutdown();
 
         // Wait for in-flight workflows with a deadline
-        var deadline = Instant.now().plus(SHUTDOWN_TIMEOUT);
+        var deadline = Instant.now().plus(shutdownTimeout);
         for (var entry : runningWorkflows.entrySet()) {
             try {
                 var remaining = Duration.between(Instant.now(), deadline);

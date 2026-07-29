@@ -275,6 +275,20 @@ class ActivityInvocationHandlerTest {
         });
     }
 
+    @Test
+    @DisplayName("Lock: honours a custom lock key prefix (maestro.lock.key-prefix)")
+    void lockHonoursCustomKeyPrefix() {
+        withContext(() -> {
+            var proxy = createProxyWithLockPrefix(
+                    GreetingActivities.class, new GreetingActivitiesImpl(), "custom:prefix:");
+            proxy.greet("World");
+
+            assertEquals(1, lock.acquiredKeys.size());
+            assertEquals("custom:prefix:activity:" + WORKFLOW_ID + ":1", lock.acquiredKeys.getFirst(),
+                    "the activity lock key must honour the configured prefix exactly like the instance lock");
+        });
+    }
+
     // ── Messaging behavior tests ──────────────────────────────────────
 
     @Test
@@ -420,6 +434,14 @@ class ActivityInvocationHandlerTest {
                 iface, impl, store, lock, null,
                 RetryPolicy.noRetry(), Duration.ofSeconds(30),
                 serializer, retryExecutor
+        );
+    }
+
+    private <T> T createProxyWithLockPrefix(Class<T> iface, T impl, String lockKeyPrefix) {
+        return factory.createProxy(
+                iface, impl, store, lock, messaging,
+                RetryPolicy.noRetry(), Duration.ofSeconds(30),
+                serializer, retryExecutor, lockKeyPrefix
         );
     }
 

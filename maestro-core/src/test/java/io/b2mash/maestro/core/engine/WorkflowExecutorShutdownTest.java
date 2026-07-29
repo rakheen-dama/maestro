@@ -435,6 +435,32 @@ class WorkflowExecutorShutdownTest {
         assertFalse(executor.isRunning("drain"));
     }
 
+    @Test
+    @DisplayName("A configured shutdown timeout bounds the drain wait instead of the 30s default")
+    void shutdown_withConfiguredTimeout_returnsAfterTheConfiguredWaitNotTheDefault() throws Exception {
+        executor.shutdown(); // discard the default, 30s-timeout executor from setUp
+        executor = new WorkflowExecutor(store, null, null, null, serializer, "node-a",
+                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
+                true, Duration.ofMillis(300), SignalManager.DEFAULT_WAKE_RECHECK_INTERVAL);
+
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1); // deliberately never counted down
+        var workflow = new BlockingWorkflow(entered, release);
+        executor.startWorkflow("shutdown-timeout", "BlockingWorkflow", "default",
+                "input", workflow, BlockingWorkflow.class.getMethod("run", String.class));
+        assertTrue(entered.await(15, TimeUnit.SECONDS), "the workflow must be in-flight before shutdown");
+
+        var start = Instant.now();
+        executor.shutdown();
+        var elapsed = Duration.between(start, Instant.now());
+
+        assertTrue(elapsed.compareTo(Duration.ofSeconds(5)) < 0,
+                "shutdown must return once the configured 300ms timeout elapses, not wait out the "
+                        + "default 30s — took " + elapsed);
+        assertTrue(executor.isRunning("shutdown-timeout"),
+                "work that overruns the configured timeout is left running rather than killed");
+    }
+
     // ── 4. Instance locks are handed back ──────────────────────────────
 
     @Test
