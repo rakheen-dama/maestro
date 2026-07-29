@@ -68,7 +68,9 @@ class MaestroPropertiesBindingTest {
                         "maestro.recovery.poll-interval=90s",
                         "maestro.retry.default-max-attempts=5",
                         "maestro.admin.events.enabled=false",
-                        "maestro.admin.events.topic=custom.admin")
+                        "maestro.admin.events.topic=custom.admin",
+                        "maestro.shutdown.timeout=15s",
+                        "maestro.signal.wake-recheck-interval=5s")
                 .run(context -> {
                     var properties = context.getBean(MaestroProperties.class);
                     assertThat(properties.getStore().tablePrefix()).isEqualTo("custom_");
@@ -82,6 +84,8 @@ class MaestroPropertiesBindingTest {
                     assertThat(properties.getRetry().defaultMaxAttempts()).isEqualTo(5);
                     assertThat(properties.getAdmin().events().enabled()).isFalse();
                     assertThat(properties.getAdmin().events().topic()).isEqualTo("custom.admin");
+                    assertThat(properties.getShutdown().timeout()).isEqualTo(Duration.ofSeconds(15));
+                    assertThat(properties.getSignal().wakeRecheckInterval()).isEqualTo(Duration.ofSeconds(5));
                 });
     }
 
@@ -104,6 +108,8 @@ class MaestroPropertiesBindingTest {
             assertThat(properties.getRetry().defaultMaxAttempts()).isEqualTo(3);
             assertThat(properties.getWorker().taskQueues()).isEmpty();
             assertThat(properties.getAdmin().events().topic()).isEqualTo("maestro.admin.events");
+            assertThat(properties.getShutdown().timeout()).isEqualTo(Duration.ofSeconds(30));
+            assertThat(properties.getSignal().wakeRecheckInterval()).isEqualTo(Duration.ofSeconds(30));
         });
     }
 

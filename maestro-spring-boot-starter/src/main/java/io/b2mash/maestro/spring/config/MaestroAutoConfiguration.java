@@ -77,9 +77,12 @@ public class MaestroAutoConfiguration {
         }
         var lock = properties.getLock();
         var lifecycleEventsEnabled = properties.getAdmin().events().enabled();
+        var shutdownTimeout = properties.getShutdown().timeout();
+        var wakeRecheckInterval = properties.getSignal().wakeRecheckInterval();
         return new WorkflowExecutor(
                 store, distributedLock, messaging, signalNotifier, serializer, serviceName,
-                lock.keyPrefix(), lock.ttl(), lifecycleEventsEnabled
+                lock.keyPrefix(), lock.ttl(), lifecycleEventsEnabled,
+                shutdownTimeout, wakeRecheckInterval
         );
     }
 

@@ -9,6 +9,7 @@ import io.b2mash.maestro.core.retry.RetryPolicy;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.core.spi.WorkflowStore;
+import io.b2mash.maestro.spring.config.MaestroProperties;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -61,6 +62,7 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
     private @Nullable WorkflowMessaging messaging;
     private @Nullable PayloadSerializer serializer;
     private @Nullable RetryExecutor retryExecutor;
+    private @Nullable String lockKeyPrefix;
 
     @Override
     public void setApplicationContext(ApplicationContext applicationContext) {
@@ -92,6 +94,7 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
         store = ctx.getBean(WorkflowStore.class);
         serializer = ctx.getBean(PayloadSerializer.class);
         retryExecutor = ctx.getBean(RetryExecutor.class);
+        lockKeyPrefix = ctx.getBean(MaestroProperties.class).getLock().keyPrefix();
 
         // Optional SPIs — null when not available
         distributedLock = ctx.getBeanProvider(DistributedLock.class).getIfAvailable();
@@ -146,7 +149,8 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
                     retryPolicy,
                     timeout,
                     serializer,
-                    retryExecutor
+                    retryExecutor,
+                    lockKeyPrefix
             );
 
             // Inject the proxy into the field

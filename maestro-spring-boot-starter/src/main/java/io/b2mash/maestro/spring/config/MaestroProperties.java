@@ -66,6 +66,10 @@ public class MaestroProperties {
 
     private AdminProperties admin = AdminProperties.defaults();
 
+    private ShutdownProperties shutdown = ShutdownProperties.defaults();
+
+    private SignalProperties signal = SignalProperties.defaults();
+
     // ── Getters and setters ─────────────────────────────────────────
 
     public boolean isEnabled() {
@@ -154,6 +158,22 @@ public class MaestroProperties {
 
     public void setAdmin(AdminProperties admin) {
         this.admin = admin;
+    }
+
+    public ShutdownProperties getShutdown() {
+        return shutdown;
+    }
+
+    public void setShutdown(ShutdownProperties shutdown) {
+        this.shutdown = shutdown;
+    }
+
+    public SignalProperties getSignal() {
+        return signal;
+    }
+
+    public void setSignal(SignalProperties signal) {
+        this.signal = signal;
     }
 
     // ── Nested configuration records ────────────────────────────────
@@ -360,6 +380,44 @@ public class MaestroProperties {
         /** @return the defaults documented above */
         public static EventsProperties defaults() {
             return new EventsProperties(true, "maestro.admin.events");
+        }
+    }
+
+    /**
+     * Graceful shutdown configuration.
+     *
+     * @param timeout how long {@code WorkflowExecutor.shutdown()} waits for
+     *                in-flight workflows to drain before returning; workflows
+     *                that overrun it are left running and their instance
+     *                locks expire by TTL
+     */
+    public record ShutdownProperties(
+            @DefaultValue("30s") Duration timeout
+    ) {
+        /** @return the defaults documented above */
+        public static ShutdownProperties defaults() {
+            return new ShutdownProperties(Duration.ofSeconds(30));
+        }
+    }
+
+    /**
+     * Signal handling configuration.
+     *
+     * @param wakeRecheckInterval how often a workflow parked on
+     *                            {@code awaitSignal()} re-checks the store for
+     *                            a signal persisted without a notification
+     *                            reaching this instance — e.g. ingested on
+     *                            another node in a deployment with no
+     *                            {@code SignalNotifier} (Kafka or RabbitMQ
+     *                            messaging without Valkey). Bounds cross-node
+     *                            signal latency in those cases.
+     */
+    public record SignalProperties(
+            @DefaultValue("30s") Duration wakeRecheckInterval
+    ) {
+        /** @return the defaults documented above */
+        public static SignalProperties defaults() {
+            return new SignalProperties(Duration.ofSeconds(30));
         }
     }
 }
