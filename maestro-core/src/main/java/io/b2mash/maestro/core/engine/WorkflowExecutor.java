@@ -110,6 +110,7 @@ public final class WorkflowExecutor {
     private final WorkflowInstanceLockManager instanceLockManager;
     private final boolean lifecycleEventsEnabled;
     private final Duration shutdownTimeout;
+    private final Duration wakeRecheckInterval;
     private final LifecycleEventPublisher lifecycleEventPublisher;
     private final ConcurrentHashMap<String, RunningWorkflow> runningWorkflows;
     private final AtomicBoolean shuttingDown;
@@ -234,9 +235,13 @@ public final class WorkflowExecutor {
      * @param shutdownTimeout        how long {@link #shutdown()} waits for in-flight
      *                               workflows to drain before returning — must be strictly
      *                               positive. Corresponds to {@code maestro.shutdown.timeout}.
-     * @param wakeRecheckInterval    how often a parked {@code awaitSignal()} re-checks the
-     *                               store for a signal persisted without a notification
-     *                               reaching this instance — must be strictly positive.
+     * @param wakeRecheckInterval    how often a parked {@code awaitSignal()} or
+     *                               {@code sleep()} re-checks the store for a wake that
+     *                               happened without a local unpark — a signal persisted
+     *                               on another node, or a timer fired/cancelled by a
+     *                               remote timer-poller leader — must be strictly
+     *                               positive. Bounds cross-node signal, timer-fire and
+     *                               timer-cancel latency for a parked workflow.
      *                               Corresponds to {@code maestro.signal.wake-recheck-interval}.
      * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
      *                                  or {@code wakeRecheckInterval} is {@code null}, zero,
@@ -289,6 +294,7 @@ public final class WorkflowExecutor {
         this.queryRegistry = new QueryRegistry();
         this.lifecycleEventsEnabled = lifecycleEventsEnabled;
         this.shutdownTimeout = shutdownTimeout;
+        this.wakeRecheckInterval = wakeRecheckInterval;
         this.lifecycleEventPublisher = new LifecycleEventPublisher(serviceName);
         this.runningWorkflows = new ConcurrentHashMap<>();
         this.shuttingDown = new AtomicBoolean(false);
@@ -478,6 +484,13 @@ public final class WorkflowExecutor {
      * The store transition is persisted before unparking to prevent the
      * timer poller from redelivering.
      *
+     * <p>The unpark is local to this JVM. If the sleeping workflow's thread
+     * is parked on <em>another</em> node — routine whenever the timer-poller
+     * leader is not the owner — the durable {@code FIRED} row is what wakes
+     * it: a parked {@code sleep()} re-reads its timer row every wake-recheck
+     * interval ({@code maestro.signal.wake-recheck-interval}) and resumes
+     * within one interval of this call.
+     *
      * @param workflowId  the workflow's business ID
      * @param timerId     the timer's logical ID (e.g., {@code "sleep-5"})
      * @param timerDbId   the timer's database UUID (for store transition)
@@ -515,10 +528,11 @@ public final class WorkflowExecutor {
      * same exception is thrown on every later replay, because the outcome is
      * memoized as a {@code TIMER_CANCELLED} event at the sequence a
      * {@code TIMER_FIRED} event would otherwise occupy. If the workflow is
-     * not parked on this node — it may be running on another node, or about
+     * not parked on this node — it may be parked on another node, or about
      * to re-park after a crash — the cancellation is still durable and is
-     * observed at the workflow's next wake or recovery, the same
-     * eventual-consistency contract a cross-node {@link #fireTimer} has today.
+     * observed within one wake-recheck interval by the owning node's parked
+     * {@code sleep()}, or at the workflow's next recovery — the same
+     * cross-node wake contract {@link #fireTimer} has.
      *
      * <p>Cancelling a timer that has already fired, or was already
      * cancelled, is a {@code false} no-op: the row's outcome is already
@@ -1247,7 +1261,7 @@ public final class WorkflowExecutor {
         var compensationStack = new CompensationStack();
         var operations = new DefaultWorkflowOperations(
                 store, distributedLock, messaging, serializer, parkingLot, compensationStack,
-                signalManager);
+                signalManager, wakeRecheckInterval);
 
         var ctx = new WorkflowContext(
                 instance.id(),

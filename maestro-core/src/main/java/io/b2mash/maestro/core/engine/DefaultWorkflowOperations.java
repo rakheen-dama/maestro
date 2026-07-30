@@ -5,6 +5,7 @@ import io.b2mash.maestro.core.context.WorkflowMDC;
 import io.b2mash.maestro.core.exception.RetryExhaustedException;
 import io.b2mash.maestro.core.exception.SignalTimeoutException;
 import io.b2mash.maestro.core.exception.TimerCancelledException;
+import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.model.TimerStatus;
@@ -29,6 +30,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
@@ -71,8 +73,12 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
     private final ParkingLot parkingLot;
     private final CompensationStack compensationStack;
     private final SignalManager signalManager;
+    private final Duration wakeRecheckInterval;
 
     /**
+     * Creates workflow operations with the default wake re-check interval
+     * (30s — the same default {@code SignalManager} uses).
+     *
      * @param store             workflow store for event persistence and signal management
      * @param distributedLock   optional distributed lock backend
      * @param messaging         optional messaging for lifecycle event publishing
@@ -90,6 +96,37 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             CompensationStack compensationStack,
             SignalManager signalManager
     ) {
+        this(store, distributedLock, messaging, serializer, parkingLot, compensationStack,
+                signalManager, SignalManager.DEFAULT_WAKE_RECHECK_INTERVAL);
+    }
+
+    /**
+     * Creates workflow operations with an explicit wake re-check interval.
+     *
+     * @param store               workflow store for event persistence and signal management
+     * @param distributedLock     optional distributed lock backend
+     * @param messaging           optional messaging for lifecycle event publishing
+     * @param serializer          Jackson serializer for payloads
+     * @param parkingLot          virtual thread parking mechanism
+     * @param compensationStack   LIFO compensation stack (shared with WorkflowExecutor)
+     * @param signalManager       signal lifecycle manager for await/consume operations
+     * @param wakeRecheckInterval how often a live {@link #sleep(Duration)} park
+     *                            re-reads the durable timer row for a fire or
+     *                            cancel that happened on another node — the
+     *                            same interval {@code SignalManager} uses for
+     *                            missed signal wakes
+     *                            ({@code maestro.signal.wake-recheck-interval})
+     */
+    public DefaultWorkflowOperations(
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            @Nullable WorkflowMessaging messaging,
+            PayloadSerializer serializer,
+            ParkingLot parkingLot,
+            CompensationStack compensationStack,
+            SignalManager signalManager,
+            Duration wakeRecheckInterval
+    ) {
         this.store = store;
         this.distributedLock = distributedLock;
         this.messaging = messaging;
@@ -97,6 +134,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         this.parkingLot = parkingLot;
         this.compensationStack = compensationStack;
         this.signalManager = signalManager;
+        this.wakeRecheckInterval = wakeRecheckInterval;
     }
 
     // ── sleep ──────────────────────────────────────────────────────────
@@ -204,9 +242,79 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         recordWakeOutcome(ctx, stepName, timerId);
     }
 
+    /**
+     * Parks the workflow's virtual thread until its timer fires or is
+     * cancelled — including on another node (Issue 17).
+     *
+     * <p>{@code TimerPoller} runs on the elected leader only, and
+     * {@code fireTimer}/{@code cancelTimer} unpark through the per-JVM
+     * {@link ParkingLot} — a no-op when the parked thread lives elsewhere. So
+     * this parks in wake-recheck-interval chunks, mirroring
+     * {@code SignalManager.awaitSignal}: every chunk expiry re-reads the
+     * durable timer row, and a row a remote node already transitioned wakes
+     * this thread within one interval instead of never. A local unpark
+     * remains the instant fast path — when leader == owner the chunking is
+     * unobservable.
+     *
+     * <p>On each expiry, before consulting the row, the instance is checked
+     * for a cross-node terminate (same stand-down {@code awaitSignal}
+     * performs per chunk): {@link WorkflowTerminatedException} propagates so
+     * the run stops without writing anything. A row that is no longer
+     * {@code PENDING} — or is defensively absent, since an absent row can
+     * never be handed to a poller — ends the park; the caller's
+     * {@code recordWakeOutcome} then reads the row and decides fired
+     * vs. cancelled, exactly as it does after a local unpark.
+     * {@code ExecutorShutdownException} from the park itself propagates
+     * unchanged (an {@code Error} — the caller must not see it as a wake).
+     *
+     * @param ctx     the current workflow context
+     * @param timerId the logical timer ID being slept on
+     */
     private void parkForTimer(WorkflowContext ctx, String timerId) {
         var parkKey = ctx.workflowId() + ":timer:" + timerId;
-        parkingLot.park(parkKey);
+        while (true) {
+            try {
+                parkingLot.parkWithTimeout(parkKey, wakeRecheckInterval);
+                return; // locally unparked — a fire or cancel; the row decides which
+            } catch (TimeoutException e) {
+                // No local wake this interval — fall through to the durable re-check
+            }
+
+            // Terminate outranks a wake: a terminate usually lands on a node
+            // that is not the owner, so nothing local unparks this thread.
+            standDownIfTerminated(ctx.workflowId());
+
+            var rowStatus = store.findTimer(ctx.workflowInstanceId(), timerId)
+                    .map(WorkflowTimer::status)
+                    .orElse(null);
+            if (rowStatus != TimerStatus.PENDING) {
+                logger.debug("Workflow '{}' timer '{}' transitioned to {} without a local wake — "
+                                + "resuming from the durable row (cross-node fire/cancel)",
+                        ctx.workflowId(), timerId, rowStatus);
+                return;
+            }
+        }
+    }
+
+    /**
+     * Stands the current run down if the workflow was terminated while parked
+     * on its timer — the timer analogue of the per-chunk check
+     * {@code SignalManager.awaitSignal} performs, bounding cross-node
+     * terminate convergence for a parked {@code sleep()} to one
+     * wake-recheck interval.
+     *
+     * @param workflowId the workflow's business ID
+     * @throws WorkflowTerminatedException if the instance row is {@code TERMINATED}
+     */
+    private void standDownIfTerminated(String workflowId) {
+        var terminated = store.getInstance(workflowId)
+                .map(instance -> instance.status() == WorkflowStatus.TERMINATED)
+                .orElse(false);
+        if (terminated) {
+            logger.info("Workflow '{}' was terminated while parked on a timer — abandoning this run",
+                    workflowId);
+            throw new WorkflowTerminatedException(workflowId, null);
+        }
     }
 
     /**

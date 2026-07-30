@@ -72,6 +72,11 @@ final class SignalManager {
      * RabbitMQ messaging without Valkey), or delivered in the narrow window
      * before the park registered. Bounds cross-node signal latency in those
      * cases; with a working notifier the wake is instant and this never fires.
+     *
+     * <p>Also the default interval at which a parked {@code sleep()} re-reads
+     * its durable timer row ({@link DefaultWorkflowOperations}) — a timer
+     * fired or cancelled by a remote timer-poller leader has no local unpark
+     * either (Issue 17).
      */
     static final Duration DEFAULT_WAKE_RECHECK_INTERVAL = Duration.ofSeconds(30);
 
