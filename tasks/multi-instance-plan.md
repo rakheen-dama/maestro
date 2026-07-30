@@ -324,3 +324,68 @@ any failure it reopens the owning task.
   naming the owning task and the exact failing evidence.
 
 **Done when.** PASS verdict with a complete evidence index.
+
+## Task 10: Fix cross-node timer wake (library defect, Issue 17)
+
+**Added by coordinator ruling after Task 1 exposed the defect** (see
+`.superpowers/sdd/multi-instance/rulings.md` Ruling 1).
+
+**Defect.** `TimerPoller` polls due timers only on the elected leader
+(`TimerPoller.java:160`). `WorkflowExecutor.fireTimer` CASes the timer row
+`PENDING → FIRED` in the shared store, then unparks via `ParkingLot` — a
+per-JVM map, so the unpark is a no-op when the workflow's parked virtual
+thread lives on a different node. `DefaultWorkflowOperations.sleep()` parks
+indefinitely (`DefaultWorkflowOperations.java:209`) with no periodic
+recheck — unlike `SignalManager.awaitSignal`, which parks in
+`wakeRecheckInterval` chunks (`SignalManager.java:276-280`) exactly to
+survive missed cross-process wakes. Consequence: in ANY multi-instance
+deployment of a service whose workflows call `workflow.sleep()`, whenever
+the timer-poller leader is not the node owning the parked thread, the
+timer is durably marked FIRED (invisible to `getDueTimers` forever), no
+thread wakes, and the Issue 2/13 self-heals never run (they require a
+replay); the workflow wedges until its owning node restarts. Routine
+operation — no failure injection needed. `cancelTimer`'s unpark is
+local-only too (same gap for cross-node cancellation of a parked sleep).
+
+**Reproduce first (library-bug protocol).**
+1. A failing `maestro-core` unit test (in-memory SPIs): a workflow parks in
+   a live `sleep()`; the test marks its timer FIRED directly through the
+   store (simulating a remote leader's `fireTimer` — store write happened,
+   local unpark didn't); assert the workflow completes within a short
+   configured recheck interval. Today it hangs forever — assert the hang
+   deterministically (bounded await that fails).
+2. A failing multinode integration test in
+   `maestro-integration-tests` `multinode/` (two `MaestroEngineHarness`
+   instances over one real Postgres): node B holds timer-poller
+   leadership, node A owns a sleeping workflow; assert the workflow
+   completes. Arrange leadership deterministically (e.g. only node B runs
+   a timer poller, or B wins election before A starts — study the harness;
+   the existing multinode suites encode the fixture patterns).
+Watch both fail for the predicted reason, then fix, then watch green.
+
+**Fix (direction decided by ruling — mirror the signal-wake pattern).**
+- `sleep()`'s live park becomes chunked `parkWithTimeout` at a recheck
+  interval, mirroring `SignalManager.awaitSignal`; on each wake/timeout,
+  consult `store.findTimer(...)`: `FIRED` → append the `TIMER_FIRED`
+  event and continue (identical event/sequence semantics to the existing
+  replay heal); `CANCELLED` → the Issue 13 outcome (append
+  `TIMER_CANCELLED`, throw `TimerCancelledException`); `PENDING` → keep
+  parking until the deadline logic says otherwise.
+- Reuse the existing wake-recheck configuration seam
+  (`maestro.signal.wake-recheck-interval` reaches the engine already) —
+  a separate timer property only if reuse is genuinely awkward; document
+  the choice in the report. Local unpark remains the instant fast path;
+  behaviour when leader == owner must be unchanged.
+- Respect `ExecutorShutdownException`/`WorkflowTerminatedException`
+  semantics while parked (mirror how `awaitSignal`'s chunked park handles
+  shutdown; `Error` before `Exception` at any unwrap site).
+- No new messaging, no schema change, no SPI change expected. If you
+  conclude an SPI change is needed, STOP and report.
+
+**Also required.**
+- Record as Issue 17 in `docs/open-issues.md` (follow the house format:
+  What's wrong / Why it matters / Where / resolution callout with commits
+  + pinning tests), and a `docs/release-notes.md` line (observable
+  change: cross-node timer fires now take effect within the recheck
+  interval; previously wedged forever).
+- Full `./gradlew build` green; the new tests green 3× `--rerun-tasks`.
