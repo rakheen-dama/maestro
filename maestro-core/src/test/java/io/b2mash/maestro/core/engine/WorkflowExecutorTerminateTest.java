@@ -103,7 +103,7 @@ class WorkflowExecutorTerminateTest {
                 "terminate marks and stops — it must not run compensations");
         assertTrue(events(instance.id(), EventType.COMPENSATION_STARTED).isEmpty(),
                 "no compensation event may be recorded");
-        assertEquals(1, lifecycleEvents(LifecycleEventType.WORKFLOW_TERMINATED).size(),
+        awaitLifecycleCount(LifecycleEventType.WORKFLOW_TERMINATED, 1,
                 "WORKFLOW_TERMINATED must be published so the dashboard turns red");
     }
 
@@ -279,7 +279,7 @@ class WorkflowExecutorTerminateTest {
         assertEquals("first", store.getInstance("term-dup").orElseThrow()
                         .output().get("reason").stringValue(),
                 "the redelivery must not overwrite the original reason");
-        assertEquals(1, lifecycleEvents(LifecycleEventType.WORKFLOW_TERMINATED).size(),
+        awaitLifecycleCount(LifecycleEventType.WORKFLOW_TERMINATED, 1,
                 "exactly one WORKFLOW_TERMINATED, however many times the command arrives");
     }
 
@@ -322,6 +322,23 @@ class WorkflowExecutorTerminateTest {
 
     private List<WorkflowLifecycleEvent> lifecycleEvents(LifecycleEventType type) {
         return messaging.events.stream().filter(e -> e.eventType() == type).toList();
+    }
+
+    /**
+     * Waits for a lifecycle event count, then holds it briefly to catch an
+     * extra publish arriving late.
+     *
+     * <p>Lifecycle events are published off the calling thread (see
+     * {@code LifecycleEventPublisher}), so asserting a count immediately after
+     * {@code terminateWorkflow} returns races the publisher — and asserting
+     * "exactly one" needs to survive a second event turning up a moment later,
+     * which is precisely what the duplicate-command test is about.
+     */
+    private void awaitLifecycleCount(LifecycleEventType type, int expected, String message) {
+        await().atMost(Duration.ofSeconds(5)).pollInterval(Duration.ofMillis(20))
+                .untilAsserted(() -> assertEquals(expected, lifecycleEvents(type).size(), message));
+        await().during(Duration.ofMillis(300)).atMost(Duration.ofSeconds(5))
+                .untilAsserted(() -> assertEquals(expected, lifecycleEvents(type).size(), message));
     }
 
     private List<EventType> events(java.util.UUID instanceId, EventType type) {
