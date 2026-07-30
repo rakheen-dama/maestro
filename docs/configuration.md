@@ -291,7 +291,7 @@ per-instance distributed lock guarantees only one of them wins each workflow.
 | Property                              | Type       | Default | Description                                                                                                    |
 |----------------------------------------|------------|---------|------------------------------------------------------------------------------------------------------------------|
 | `maestro.shutdown.timeout`            | `Duration` | `30s`   | How long graceful shutdown waits for in-flight workflows to drain before forcing through. |
-| `maestro.signal.wake-recheck-interval`| `Duration` | `30s`   | How often a parked workflow re-reads the store for a signal it may have missed. |
+| `maestro.signal.wake-recheck-interval`| `Duration` | `30s`   | How often a parked workflow re-reads the store for a wake it may have missed — a signal ingested elsewhere, or a timer fired/cancelled by a remote timer-poller leader. |
 
 Both were previously hardcoded 30-second constants with no configuration
 seam; they now bind under `maestro.*` like every other property, with the
@@ -301,7 +301,12 @@ same 30s defaults, so unset deployments are unaffected.
 test seam: it bounds cross-node signal latency for any deployment running
 Kafka without a `SignalNotifier` (i.e. without Valkey's pub/sub wake) — a
 signal delivered to a node other than the one holding the parked workflow is
-picked up on the next re-check, not instantly, in that configuration.
+picked up on the next re-check, not instantly, in that configuration. It also
+bounds cross-node **timer** latency in every multi-instance deployment: the
+timer poller runs on the elected leader only, so a timer fired (or cancelled)
+by a node that does not own the parked `workflow.sleep()` thread is observed
+via the sleeping node's periodic re-read of the durable timer row
+(`docs/open-issues.md` Issue 17).
 
 `maestro.lock.key-prefix` (see [Lock Configuration](#lock-configuration))
 now also applies to the activity execution lock, not just the instance

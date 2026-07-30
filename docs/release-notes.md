@@ -1,5 +1,23 @@
 # Release Notes — Maestro
 
+## Unreleased
+
+### Bug Fixes
+
+- **Cross-node timer fires (and cancels) now wake the sleeping workflow**
+  (`docs/open-issues.md` Issue 17). Previously, in any multi-instance
+  deployment, a timer fired by the timer-poller leader on a node other than
+  the one whose virtual thread was parked in `workflow.sleep()` durably
+  marked the timer `FIRED` but woke nothing — the workflow wedged forever
+  until its owning node restarted. A parked `sleep()` now re-reads its
+  durable timer row every `maestro.signal.wake-recheck-interval` (default
+  30s, unchanged — the property now bounds cross-node timer-fire,
+  timer-cancel and terminate latency as well as signal latency), so a
+  remote fire or cancel takes effect within one interval. Single-node
+  behaviour is unchanged: a local fire still unparks instantly.
+
+---
+
 ## 0.4.0
 
 This release closes out `docs/open-issues.md` Issues 13, 14, and 15 — all

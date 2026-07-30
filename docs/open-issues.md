@@ -184,7 +184,9 @@ by deliberate decision — see "Known limitations" at the end of §5. Three new
 issues (13–15), found while doing this work, were opened along the way and
 are **now resolved too** (see each section below). A fourth (16), found
 during the final whole-branch review of 13–15, is **guarded off, not
-resolved** — see its section for why.
+resolved** — see its section for why. A fifth (17), found on day one of the
+multi-instance verification cycle (running every service at two instances),
+is **now resolved** — see its section.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -218,6 +220,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [14](#issue-14) | `SagaManager` re-appends `COMPENSATION_STARTED` on replay | Library gap | Low | **Resolved** |
 | [15](#issue-15) | Admin dashboard retry/terminate signals are unconsumed | Library gap | Medium | **Resolved** |
 | [16](#issue-16) | Retrying a compensated saga is guarded off, not supported | Library gap | Medium | Open, guarded |
+| [17](#issue-17) | Cross-node timer fires never wake the sleeping workflow | Library defect | High | **Resolved** |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -1122,6 +1125,71 @@ correct outcome.
 
 ---
 
+### Issue 17 — Cross-node timer fires never wake the sleeping workflow {#issue-17}
+
+> **Resolved.** `DefaultWorkflowOperations.sleep()` no longer parks
+> indefinitely: both the live park and the replay re-park now park in
+> wake-recheck-interval chunks — the exact pattern
+> `SignalManager.awaitSignal` already used to survive missed cross-process
+> wakes — and on every chunk expiry re-read the durable timer row via
+> `WorkflowStore.findTimer`. A row a remote node has already transitioned
+> ends the park: `FIRED` appends the same `TIMER_FIRED` event a local wake
+> would (identical event/sequence semantics to the Issue 2 replay heal),
+> `CANCELLED` takes the Issue 13 outcome (`TIMER_CANCELLED` event +
+> catchable `TimerCancelledException`), `PENDING` keeps parking. A
+> cross-node terminate is also noticed within one interval, mirroring
+> `awaitSignal`'s per-chunk stand-down. The interval is the existing
+> `maestro.signal.wake-recheck-interval` (default 30s, unchanged) — reused
+> rather than a new property, since it already means "how often a parked
+> workflow re-reads the store for a wake it may have missed"; no SPI, schema
+> or messaging change. The local unpark stays the instant fast path, so
+> single-node (leader == owner) behaviour is unchanged. Commit `bdf9cc6`.
+> Pinned by
+> `WorkflowExecutorCrossNodeTimerWakeTest` (store-only `FIRED`/`CANCELLED`
+> transitions wake the parked sleep within the interval; a `PENDING` row
+> keeps it parked; the local fast path is untouched under the 30s default)
+> and `multinode.MultiNodeTimerWakeIT` (two engine harnesses over one real
+> Postgres: node B — sole timer poller, hence leader — fires or cancels, the
+> workflow sleeping on node A completes). The rest of this section is kept
+> as the record of the defect.
+
+**What's wrong.** `TimerPoller` polls due timers only on the elected leader.
+`WorkflowExecutor.fireTimer` CASes the timer row `PENDING → FIRED` in the
+shared store, then unparks via `ParkingLot` — a per-JVM map, so the unpark is
+a no-op when the workflow's parked virtual thread lives on a different node.
+`DefaultWorkflowOperations.sleep()` parked indefinitely (plain
+`ParkingLot.park`) with no periodic recheck — unlike
+`SignalManager.awaitSignal`, which parks in `wakeRecheckInterval` chunks
+precisely to survive missed cross-process wakes. Once the row is `FIRED` it
+is invisible to `getDueTimers` forever, and the Issue 2/13 self-heals only
+run on replay — so nothing short of restarting the owning node recovers the
+workflow. `cancelTimer`'s unpark was local-only too (the same gap for
+cross-node cancellation of a parked sleep), and a cross-node terminate of a
+parked sleep was likewise only noticed at the next status write.
+
+**Why it matters.** This is routine operation, not a failure scenario: in
+*any* multi-instance deployment of a service whose workflows call
+`workflow.sleep()`, every sleep wedges forever whenever the timer-poller
+leader happens not to be the node owning the parked thread — roughly
+(n−1)/n of sleeps in an n-node cluster. Found immediately when the
+loan-origination sample was run with two instances of every service
+(`.superpowers/sdd/multi-instance/rulings.md` Ruling 1); the same silent,
+permanent stall shape as Issues 2 and 13.
+
+**Where.** `maestro-core/src/main/java/.../engine/DefaultWorkflowOperations.java`
+— `sleep`/`parkForTimer`; `maestro-core/src/main/java/.../engine/WorkflowExecutor.java`
+— `fireTimer`/`cancelTimer` (the local-only unpark) and the
+`wakeRecheckInterval` seam; `maestro-core/src/main/java/.../engine/TimerPoller.java`
+— leader-only polling (unchanged; correct once the sleeper rechecks).
+
+**Done when.** A workflow sleeping on node A completes when node B's poller
+fires (or an operator on node B cancels) its timer, within a bounded
+interval, with the identical event log a single-node wake produces — proven
+at unit level against in-memory SPIs and end-to-end against real Postgres
+with two engine instances.
+
+---
+
 ## 6. Suggested order
 
 **Historical note:** the order below was the plan followed by the
@@ -1153,9 +1221,10 @@ as a side effect of fixing something else nearby — are now resolved too (see
 each section above for commits and pinning tests). Issue 16 — found during
 13–15's own final review — is *guarded* rather than resolved: retrying a
 compensated saga is refused as a safe no-op instead of being made to work;
-see its section for the two design directions a real fix could take. Issues
-11 and 12 remain open by deliberate design decision (see "Known
-limitations").
+see its section for the two design directions a real fix could take. Issue
+17 — the first finding of the multi-instance verification cycle — is
+resolved (see its section). Issues 11 and 12 remain open by deliberate
+design decision (see "Known limitations").
 
 ---
 

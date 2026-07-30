@@ -152,11 +152,13 @@ parallel branches, saga with compensation, failing activity with retry.
   time. Use short durations (≤ 1s) and a fast `TimerPoller` (`Duration.ofMillis(200)`).
 - Awaitility bounds: **generous** (5–15s), poll interval short. A generous bound
   on a fast condition is not slow; it is what makes CI stable.
-- `SignalManager`'s parked-workflow re-check interval is a hardcoded **30s** and
-  is **not reachable** from `WorkflowExecutor`'s public API (only a
-  package-private `SignalManager` constructor takes it). Any test that depends
-  on the no-notifier re-check path must therefore either supply a
-  `SignalNotifier` or get a library seam added first — see *Open items*.
+- The parked-workflow re-check interval (signals **and**, since Issue 17,
+  timers) defaults to **30s** and is configurable through `WorkflowExecutor`'s
+  full constructor (`maestro.signal.wake-recheck-interval`). The harness
+  exposes it as `MaestroEngineHarness.Builder.wakeRecheckInterval(Duration)` —
+  use a short interval (≈200–500ms) for any test that depends on the
+  store-re-check wake path (no-notifier signal delivery, cross-node timer
+  fire/cancel; see `multinode.MultiNodeTimerWakeIT`).
 - A phase is done only when its suites pass **3 consecutive** `--rerun-tasks` runs.
 
 ## Library-bug protocol
