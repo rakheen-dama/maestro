@@ -140,7 +140,8 @@ the reasoning behind each.
   won.
 - `WorkflowExecutor.retryWorkflow(String workflowId, WorkflowRegistration
   registration)` → `RetryOutcome` (`RETRIED`, `NOT_FAILED`, `NOT_FOUND`,
-  `ALREADY_RUNNING_LOCALLY`, `LOCK_HELD_ELSEWHERE`).
+  `ALREADY_RUNNING_LOCALLY`, `LOCK_HELD_ELSEWHERE`,
+  `COMPENSATED_NOT_RETRYABLE`).
 - `WorkflowExecutor.terminateWorkflow(String workflowId, @Nullable String
   reason)` → `TerminateOutcome` (`TERMINATED`, `ALREADY_TERMINAL`,
   `NOT_FOUND`).
@@ -161,15 +162,18 @@ the reasoning behind each.
 
 - **Admin Retry and Terminate are now real actions**, not inert buttons.
   Retry is for transient failures (an external dependency that has since
-  recovered) — it is not a way to correct bad workflow logic or bad input,
-  and retrying a workflow whose saga already compensated re-executes the
-  failed step *after* those compensations ran (Maestro doesn't detect or
-  block this; it's an operator judgment call). Terminate stops any active
-  workflow, including one currently compensating, with no compensation and
-  no activity interruption. Full semantics, an idempotency table, and the
-  security posture (no authentication on the command path — restrict with
-  Kafka ACLs on `maestro.signals.*` if this matters for your deployment) are
-  in `docs/admin.md`.
+  recovered) — it is not a way to correct bad workflow logic or bad input.
+  Retrying a workflow whose saga already ran compensations is **not
+  supported**: Maestro detects it (a `COMPENSATION_STARTED` event in the
+  log) and refuses with the new `COMPENSATED_NOT_RETRYABLE` outcome — logged
+  at `WARN` and acknowledged as a safe no-op, instance left untouched —
+  rather than risk corrupting the replay (compensations re-run or get
+  wrongly skipped, or the run's terminal event is lost). Terminate stops any
+  active workflow, including one currently compensating, with no
+  compensation and no activity interruption. Full semantics, an idempotency
+  table, and the security posture (no authentication on the command path —
+  restrict with Kafka ACLs on `maestro.signals.*` if this matters for your
+  deployment) are in `docs/admin.md`.
 - **No new configuration properties** in this release, and no database
   migration — `deleteFailureEvents` is a `DELETE` against existing columns,
   and the timer/event schema is unchanged.

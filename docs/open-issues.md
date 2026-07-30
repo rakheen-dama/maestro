@@ -182,7 +182,9 @@ module, then carry on. Never work around a proven engine bug inside a test.
 outcome, commit references, and pinning tests). Issues 11 and 12 remain open
 by deliberate decision — see "Known limitations" at the end of §5. Three new
 issues (13–15), found while doing this work, were opened along the way and
-are **now resolved too** (see each section below).
+are **now resolved too** (see each section below). A fourth (16), found
+during the final whole-branch review of 13–15, is **guarded off, not
+resolved** — see its section for why.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -215,6 +217,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [13](#issue-13) | `CANCELLED` timers can strand a replaying workflow | Library defect | Medium | **Resolved** |
 | [14](#issue-14) | `SagaManager` re-appends `COMPENSATION_STARTED` on replay | Library gap | Low | **Resolved** |
 | [15](#issue-15) | Admin dashboard retry/terminate signals are unconsumed | Library gap | Medium | **Resolved** |
+| [16](#issue-16) | Retrying a compensated saga is guarded off, not supported | Library gap | Medium | Open, guarded |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -1025,6 +1028,100 @@ end-to-end test, not just a controller-layer smoke test.
 
 ---
 
+### Issue 16 — Retrying a compensated saga is guarded off, not supported {#issue-16}
+
+> **Guarded, not fixed.** Found during the final whole-branch review of
+> Issues 13–15, before merge — see `.superpowers/sdd/issues-13-15-plan/final-review.md`
+> §Important #1. `WorkflowExecutor.retryWorkflow` now probes the event log
+> for `COMPENSATION_STARTED` right after the `FAILED` check and, if found,
+> returns a new `RetryOutcome.COMPENSATED_NOT_RETRYABLE` without touching the
+> instance — no CAS, no `deleteFailureEvents`, nothing written.
+> `AdminCommandDispatcher` logs it at `WARN` and acknowledges like every
+> other no-op outcome. This closes the corruption hazard below by refusing
+> the operation instead of performing it safely; retrying a compensated saga
+> remains genuinely unsupported. Pinned by
+> `WorkflowExecutorRetryTest.retryOfCompensatedSaga_isCompensatedNotRetryableNoOp`
+> (zero state change: status, version, and the surviving `ACTIVITY_FAILED`/
+> `WORKFLOW_FAILED` memos are all asserted untouched) and
+> `AdminCommandDispatcherTest.retryCompensatedSagaWorkflow_isAckedNoOp`
+> (dispatcher-level, over the real signal path). `docs/admin.md` and
+> `docs/release-notes.md`'s 0.4.0 operator note were corrected to stop
+> promising the opposite. The rest of this section is kept as the record of
+> the underlying defect this guard prevents.
+
+**What's wrong.** Issue 15's `retryWorkflow` only deletes a `FAILED`
+instance's `ACTIVITY_FAILED`/`WORKFLOW_FAILED` memos before relaunching in
+replay mode. If the workflow's saga already ran compensations before it
+failed, the compensation events survive — but at sequence positions anchored
+to the *original* failure point (`compensate()` anchors at `F+1` where `F` is
+the failed step's sequence, with each entry's replay-skip guard at
+`(F+1)*1000+(i+1)*1000`). If the retried run's previously-failed step now
+*succeeds* (`ACTIVITY_COMPLETED`@F), the forward path continues into seq
+`F+1` — which holds `COMPENSATION_STARTED`, not the next real step's outcome.
+Two ways this breaks, depending on whether the failed step was last:
+- **More steps follow:** the next activity's replay check hits
+  `ActivityInvocationHandler.handleReplay`'s `default` branch →
+  `IllegalStateException("Unexpected event type COMPENSATION_STARTED…")` →
+  `handleWorkflowFailure` → `compensate()` runs *again*, now anchored at
+  `F+2`. Every per-entry guard reads a slot shifted by one anchor step:
+  entries durable at the `F+1`-anchored blocks are **re-invoked** (real
+  side effects — refunds, releases — run twice), and depending on entry
+  counts a stale event can land exactly on a shifted guard slot and
+  **wrongly skip** an entry that never ran.
+- **The failed step was last:** `executeWorkflow`'s `WORKFLOW_COMPLETED`
+  append at `F+1` collides with the stale `COMPENSATION_STARTED` row already
+  there, and `WorkflowExecutor.appendEvent`'s duplicate-swallow (needed for
+  the legitimate replay-skip cases elsewhere) silently eats it — leaving a
+  `COMPLETED` instance whose log ends mid-compensation with no terminal
+  event.
+
+The benign case — the failed step re-fails identically on retry — is
+unaffected: the anchors never shift because compensation never runs a second
+time. QA's Issue 15 gate-4 sign-off only exercised that path; no test in the
+Issue 13–15 branch ever drove a retry through a workflow that had actually
+compensated (confirmed by grep before this guard was added).
+
+**Why it matters.** Silent replay corruption in the one path an operator
+reaches for specifically to fix a broken workflow. Worst case: financial or
+inventory side effects run twice, or a workflow reports `COMPLETED` while its
+event log is truncated mid-compensation with no audit trail of how it got
+there.
+
+**Where.**
+`maestro-core/src/main/java/io/b2mash/maestro/core/engine/WorkflowExecutor.java`
+(`retryWorkflow`, now with the guard) ×
+`maestro-core/src/main/java/io/b2mash/maestro/core/saga/SagaManager.java`
+(`compensate()`'s anchor-relative guard blocks, unchanged — the guard sits
+upstream of them rather than reworking their addressing).
+
+**What a fix looks like.** Two directions worth designing between, neither
+attempted here:
+1. **Fresh-run / `runId` relaunch.** Give the retry a new `runId` and replay
+   the completed prefix into a fresh event log up to (not including) the
+   failure, instead of resuming the old log in place — sidesteps the
+   anchor-collision problem entirely because the retried run never writes
+   into the old compensation block's sequence range.
+2. **Compensation-aware sequence rebase.** Detect the compensated case (as
+   this guard already does) and, instead of refusing, relocate the surviving
+   compensation events to sequence positions that can't collide with the
+   forward path — e.g. a reserved high-sequence band — before clearing the
+   failure memo and relaunching.
+Either way the fix needs to decide what "retry after compensation" even
+*means* operationally (should the compensations that already ran still count
+once the step succeeds?) before it's safe to implement — a design
+conversation, not a quick patch.
+
+**Done when.** A test drives a workflow through activity failure → saga
+compensation → `FAILED`, fixes the fault, retries, and asserts the retried
+run reaches a clean terminal state (`COMPLETED` or a well-formed `FAILED`)
+with no re-invoked compensation side effects, no wrongly-skipped entries,
+and a genuine terminal event in the log — the mirror image of
+`WorkflowExecutorRetryTest.retryOfExhaustedActivity_reExecutesFailedStepAndCompletes`
+for the compensated case. Until then, `COMPENSATED_NOT_RETRYABLE` stays the
+correct outcome.
+
+---
+
 ## 6. Suggested order
 
 **Historical note:** the order below was the plan followed by the
@@ -1050,10 +1147,13 @@ and remove documented-but-false behaviour.
 want measurements or an SPI change rather than a quick patch — still open,
 still deliberate.
 
-**What's left:** nothing tracked as open except the two deliberate known
-limitations. Issues 13, 14, and 15 — none were on the original plan; all
-three were found as a side effect of fixing something else nearby — are now
-resolved too (see each section above for commits and pinning tests). Issues
+**What's left:** the two deliberate known limitations, plus one guarded gap.
+Issues 13, 14, and 15 — none were on the original plan; all three were found
+as a side effect of fixing something else nearby — are now resolved too (see
+each section above for commits and pinning tests). Issue 16 — found during
+13–15's own final review — is *guarded* rather than resolved: retrying a
+compensated saga is refused as a safe no-op instead of being made to work;
+see its section for the two design directions a real fix could take. Issues
 11 and 12 remain open by deliberate design decision (see "Known
 limitations").
 

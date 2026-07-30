@@ -204,7 +204,7 @@ Operators can take the following actions from the workflow detail page. Each act
 
 | Action | Endpoint | Description | Use Case |
 |---|---|---|---|
-| **Retry** | `POST /admin/workflows/{id}/retry` | Sends a `$maestro:retry` signal. The workflow resumes from its last failed step. | Transient failures resolved, external API outage ended. |
+| **Retry** | `POST /admin/workflows/{id}/retry` | Sends a `$maestro:retry` signal. The workflow resumes from its last failed step — unless its saga already compensated, in which case retry is refused as a safe no-op (see below). | Transient failures resolved, external API outage ended. |
 | **Terminate** | `POST /admin/workflows/{id}/terminate` | Sends a `$maestro:terminate` signal. The workflow stops immediately without compensation. | Stuck workflows, bad data, manual intervention needed. |
 | **Send Signal** | `POST /admin/workflows/{id}/signal` | Sends an application-level signal with a name and optional JSON payload. | Missing Kafka events, manual approval flows, testing. |
 
@@ -214,21 +214,26 @@ All actions produce a flash message confirming success or reporting failure, the
 
 **Semantics:**
 
-- **Retry** applies only to a `FAILED` workflow. It discards the workflow's
-  memoized failure (the `ACTIVITY_FAILED`/`WORKFLOW_FAILED` events), marks the
-  instance `RUNNING`, and relaunches it exactly like crash recovery: every
-  step before the failure replays from its stored result — it does **not**
-  re-execute — and the step that failed re-executes live with a fresh
-  retry-policy budget. Nothing else changes: memoized successful steps and any
-  compensations that already ran stay memoized and are never re-run. Retry is
+- **Retry** applies only to a `FAILED` workflow whose saga, if any, never
+  reached compensation. It discards the workflow's memoized failure (the
+  `ACTIVITY_FAILED`/`WORKFLOW_FAILED` events), marks the instance `RUNNING`,
+  and relaunches it exactly like crash recovery: every step before the
+  failure replays from its stored result — it does **not** re-execute — and
+  the step that failed re-executes live with a fresh retry-policy budget.
+  Nothing else changes: memoized successful steps stay memoized. Retry is
   intended for transient failures (an external dependency that has since
   recovered), not for correcting bad workflow logic or bad input.
-  **Compensated-saga caveat:** if the workflow's saga already ran
-  compensations before it failed, retrying replays with those compensation
-  events still memoized (skipped, not re-run), so the failed step re-executes
-  *after* its compensations already ran. Maestro does not detect or block
-  this — deciding whether that is safe for a given workflow is an operator
-  judgment call.
+  **Compensated-saga caveat:** retrying a workflow whose saga already ran
+  compensations is **not supported**. Its compensation events sit at
+  sequence positions anchored to the failed run; if the previously-failed
+  step succeeds on a hypothetical retry, the forward path would collide with
+  those stale positions — re-running real compensating side effects,
+  wrongly skipping others, or losing the terminal event entirely. Rather
+  than risk that, Maestro detects this case (a `COMPENSATION_STARTED` event
+  in the log) and refuses: the command is logged at `WARN` and acknowledged
+  as a safe no-op, and the instance is left exactly as it was. There is no
+  supported way to retry a compensated saga today; see the tracked
+  follow-up in `docs/open-issues.md`.
 - **Terminate** applies to any active workflow, including one currently
   compensating. It durably marks the instance `TERMINATED` and stops it —
   **without running any compensation** and **without interrupting an
@@ -250,7 +255,8 @@ remainder or stands down as a no-op:
 
 | Command | Instance state | Behaviour |
 |---|---|---|
-| Retry | `FAILED` | Discards failure memo, `RUNNING`, relaunches in replay mode |
+| Retry | `FAILED`, saga never compensated | Discards failure memo, `RUNNING`, relaunches in replay mode |
+| Retry | `FAILED`, saga already compensated | No-op (`COMPENSATED_NOT_RETRYABLE`) — logged at `WARN`, unsupported today |
 | Retry | `RUNNING` / `WAITING_*` / `COMPENSATING` | No-op (not failed) |
 | Retry | `COMPLETED` / `TERMINATED` | No-op (not failed) |
 | Retry | unknown workflow ID | No-op (not found) |
