@@ -219,20 +219,26 @@ policy, all transports), `maestro.admin.events.enabled` (now actually wired;
 - **Jackson 3:** Use `tools.jackson` packages everywhere. Never `com.fasterxml.jackson`.
 - **Immutability:** Records for DTOs. Final fields + builders for mutable domain objects.
 - **Exceptions:** All extend `MaestroException`. Specific subtypes for each failure mode.
-  **One deliberate exception:** `ExecutorShutdownException` extends `Error`, not
-  `MaestroException`. It signals that a workflow's local run was abandoned because
-  the node is shutting down — not that the workflow failed. If it were a
+  **Two deliberate exceptions — the engine's control-flow signals:**
+  `ExecutorShutdownException` (this node is stopping while the workflow was
+  parked) and `WorkflowTerminatedException` (an operator terminated the
+  workflow) extend `Error`, not `MaestroException`. Neither means the workflow
+  failed; both mean a workflow's *local run* must stop now. If either were a
   `RuntimeException` like everything else, a workflow author's ordinary
-  `try { ... } catch (Exception e) { ... }` around `awaitSignal()`/`sleep()` would
-  silently swallow it and reinstate the exact bug it exists to prevent: a routine
-  deploy recorded as a workflow failure, running compensations for work that never
-  failed. Making it an `Error` means `catch (Exception)` — and most `catch
-  (Throwable)` "log and continue" blocks — cannot intercept it (Temporal takes the
-  same approach for the same problem). Anywhere reflection is involved
-  (`Method.invoke`, `CompletableFuture` completion), unwrap the cause and check
-  `instanceof Error` *before* checking `instanceof Exception`/`RuntimeException` —
-  otherwise the unwrap silently re-wraps it into a catchable type. See its Javadoc
-  for the full rationale.
+  `try { ... } catch (Exception e) { ... }` around `awaitSignal()`/`sleep()`
+  would silently swallow it and reinstate the exact bug it exists to prevent —
+  a routine deploy recorded as a workflow failure and compensations run for
+  work that never failed, or a terminated workflow carrying on executing
+  activities an operator asked you to stop. Making them `Error`s means `catch
+  (Exception)` — and most `catch (Throwable)` "log and continue" blocks —
+  cannot intercept them (Temporal takes the same approach for the same
+  problem). Anywhere reflection is involved (`Method.invoke`,
+  `CompletableFuture` completion), unwrap the cause and check `instanceof
+  Error` *before* checking `instanceof Exception`/`RuntimeException` —
+  otherwise the unwrap silently re-wraps it into a catchable type. Anywhere a
+  broad `catch (Throwable)` collects outcomes (e.g. parallel branches), check
+  for both types and rethrow before recording anything as a failure. See their
+  Javadoc for the full rationale.
 - **Logging:** SLF4J. MDC with `workflowId`, `runId`, `activityName`.
 - **No Lombok.** Records and IDE-generated code only.
 - **Javadoc:** All public APIs. SPIs especially.

@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.context.WorkflowMDC;
 import io.b2mash.maestro.core.exception.CompensationException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
+import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
@@ -231,13 +232,16 @@ public final class SagaManager {
             ctx.setSequence(stepBaseSeq);
 
             try {
-                // catch (Exception e) deliberately does not catch
-                // ExecutorShutdownException: it extends Error, not Exception.
+                // catch (Exception e) deliberately does not catch the engine's
+                // control-flow signals — ExecutorShutdownException and
+                // WorkflowTerminatedException both extend Error, not Exception.
                 // A compensation action that parks (sleep()/awaitSignal()) and
-                // is abandoned by shutdown propagates out of this loop
-                // uncaught — no step is recorded failed, and the remaining
+                // is abandoned by either propagates out of this loop uncaught,
+                // so no step is recorded failed. For a shutdown the remaining
                 // (not-yet-run) compensations are left for a recovering node,
-                // which replays this one's memoized side effects and continues.
+                // which replays this one's memoized side effects and continues;
+                // for a terminate they are simply never run, which is
+                // terminate's contract.
                 // Any entry already recorded COMPLETED earlier in this same
                 // call (i.e. before the entry that threw) stays durable —
                 // its append already happened, in an earlier loop iteration.
@@ -368,11 +372,11 @@ public final class SagaManager {
                                             publishLifecycleEvent(ctx, entry.stepName(),
                                                     LifecycleEventType.COMPENSATION_STEP_COMPLETED);
                                         } catch (Throwable t) {
-                                            // Caught broadly (including ExecutorShutdownException,
-                                            // an Error) so the branch thread always counts down the
-                                            // latch instead of dying uncaught; the check below tells
-                                            // a shutdown apart from a real compensation failure before
-                                            // anything is recorded.
+                                            // Caught broadly (including the engine's control-flow
+                                            // signals, which are Errors) so the branch thread always
+                                            // counts down the latch instead of dying uncaught; the
+                                            // check below tells a shutdown or a terminate apart from
+                                            // a real compensation failure before anything is recorded.
                                             errors.get(index).set(t);
                                         }
                                     });
@@ -405,6 +409,12 @@ public final class SagaManager {
         for (var errorRef : errors) {
             if (errorRef.get() instanceof ExecutorShutdownException shutdown) {
                 throw shutdown;
+            }
+            // Same reasoning for a terminate: the branch never failed, the
+            // attempt is simply over. WorkflowExecutor leaves the
+            // already-durable TERMINATED row alone.
+            if (errorRef.get() instanceof WorkflowTerminatedException terminated) {
+                throw terminated;
             }
         }
 

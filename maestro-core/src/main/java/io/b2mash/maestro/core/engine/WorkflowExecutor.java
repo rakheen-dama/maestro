@@ -55,6 +55,9 @@ import java.util.concurrent.atomic.AtomicReference;
  *   <li><b>Timer cancel:</b> Marks a pending timer as cancelled and unparks a
  *       sleeping workflow with a catchable
  *       {@link io.b2mash.maestro.core.exception.TimerCancelledException}.</li>
+ *   <li><b>Terminate:</b> Marks a workflow {@code TERMINATED} from any node and
+ *       stops it — without compensation — evicting its virtual thread if this
+ *       node happens to own it.</li>
  *   <li><b>Shutdown:</b> Stops accepting new work, waits for in-flight
  *       workflows to drain, and leaves parked workflows in their
  *       {@code WAITING_*} status for another node to recover — a graceful
@@ -540,6 +543,147 @@ public final class WorkflowExecutor {
                     timerId, workflowId);
         }
         return cancelled;
+    }
+
+    // ── Terminate ──────────────────────────────────────────────────────
+
+    /**
+     * The outcome of a {@link #terminateWorkflow(String, String)} call.
+     *
+     * <p>Every constant is a <em>deterministic</em> outcome: retrying the same
+     * command can never turn one into another, so a caller driving terminate
+     * from an at-least-once transport should acknowledge the message for all of
+     * them. Only genuinely transient conditions (the store being unavailable, a
+     * version conflict that never clears) are signalled as exceptions instead.
+     */
+    public enum TerminateOutcome {
+
+        /** This call moved the workflow to {@code TERMINATED}. */
+        TERMINATED,
+
+        /**
+         * The workflow was already {@code COMPLETED}, {@code FAILED} or
+         * {@code TERMINATED}. Nothing was written — a finished workflow's
+         * outcome is durable truth and terminate does not rewrite history.
+         */
+        ALREADY_TERMINAL,
+
+        /** No instance with this workflow ID exists in this service's store. */
+        NOT_FOUND
+    }
+
+    /**
+     * Terminates a workflow: marks it {@code TERMINATED} and stops it.
+     *
+     * <p>This is the engine side of the admin dashboard's Terminate button.
+     *
+     * <h2>Durable first, then local eviction</h2>
+     * <p>The instance row is moved to {@code TERMINATED} by an optimistic
+     * compare-and-set before anything else happens, and the row's
+     * {@code version} — not the instance lock — is the arbiter. That is what
+     * lets this method be called on <b>any</b> node: the command arrives on
+     * whichever member of the consumer group the transport picks, which is
+     * usually not the node running the workflow. Only afterwards, and only if
+     * this node happens to own the workflow, is the running virtual thread
+     * evicted by abandoning its parks with a
+     * {@link WorkflowTerminatedException}.
+     *
+     * <p>A workflow owned by <em>another</em> node converges without any
+     * cross-node signalling: its thread hits the terminal-status guard the next
+     * time it writes a status, and a thread parked on {@code awaitSignal()}
+     * notices within one wake-recheck interval. In every case the durable state
+     * is already {@code TERMINATED} — convergence only bounds when the zombie
+     * thread stops.
+     *
+     * <h2>What terminate does not do</h2>
+     * <ul>
+     *   <li><b>No compensation.</b> Terminate marks and stops; it does not
+     *       unwind a saga. Compensation steps that already ran stay memoized,
+     *       pending ones never run. ("Cancel", which compensates, is a
+     *       different and larger feature.)</li>
+     *   <li><b>No interruption of an in-flight activity.</b> Consistent with
+     *       {@link #shutdown()}: the activity finishes and memoizes its result
+     *       (harmless), and the run stands down at its next park or at its
+     *       final transition.</li>
+     *   <li><b>No memoization-log event.</b> Appending one from outside the
+     *       workflow's own thread would race that thread's sequence counter
+     *       against the {@code (workflow_instance_id, sequence_number)} unique
+     *       index. The instance row plus the
+     *       {@link LifecycleEventType#WORKFLOW_TERMINATED} lifecycle event are
+     *       the durable record.</li>
+     *   <li><b>No timer cancellation.</b> A pending timer row may still fire;
+     *       the terminal-status guard makes that a no-op.</li>
+     * </ul>
+     *
+     * <h2>Idempotency</h2>
+     * <p>Safe under at-least-once redelivery: a second delivery re-reads the
+     * row, finds it terminal and returns {@link TerminateOutcome#ALREADY_TERMINAL}
+     * without overwriting the first call's reason.
+     *
+     * <p><b>Thread safety:</b> thread-safe; may be called concurrently from any
+     * thread, including several nodes at once.
+     *
+     * @param workflowId the business workflow ID to terminate
+     * @param reason     an operator-supplied reason recorded on the instance's
+     *                   {@code output}, or {@code null}
+     * @return what this call did — see {@link TerminateOutcome}
+     * @throws OptimisticLockException if the instance row is being written
+     *                                 continuously and the attempt budget is
+     *                                 exhausted. Transient: the caller should
+     *                                 <em>not</em> acknowledge, so the command is
+     *                                 redelivered against fresh state.
+     */
+    public TerminateOutcome terminateWorkflow(String workflowId, @Nullable String reason) {
+        for (var attempt = 1; ; attempt++) {
+            var existing = store.getInstance(workflowId);
+            if (existing.isEmpty()) {
+                logger.warn("Cannot terminate workflow '{}' — no such instance in this service", workflowId);
+                return TerminateOutcome.NOT_FOUND;
+            }
+            var latest = existing.get();
+            if (latest.status().isTerminal()) {
+                logger.warn("Workflow '{}' is already {} — not terminating", workflowId, latest.status());
+                return TerminateOutcome.ALREADY_TERMINAL;
+            }
+
+            var now = Instant.now();
+            var terminated = latest.toBuilder()
+                    .status(WorkflowStatus.TERMINATED)
+                    .output(serializer.serialize(new TerminationDetail(reason, "admin")))
+                    .completedAt(now)
+                    .updatedAt(now)
+                    .version(latest.version() + 1)
+                    .build();
+            try {
+                store.updateInstance(terminated);
+            } catch (OptimisticLockException e) {
+                if (attempt >= TERMINAL_TRANSITION_ATTEMPTS) {
+                    // Unlike the workflow's own finalisation — which leaves the
+                    // instance recoverable rather than recording an outcome it
+                    // could not persist — an unwritable terminate must be
+                    // surfaced: the caller has to not-acknowledge so the command
+                    // is redelivered, otherwise the operator's action is lost.
+                    logger.error("Could not terminate workflow '{}' after {} attempts — "
+                                    + "the instance row is being written continuously", workflowId, attempt);
+                    throw e;
+                }
+                logger.debug("Version conflict terminating workflow '{}' (attempt {}) — "
+                        + "retrying against a fresh read", workflowId, attempt);
+                continue;
+            }
+
+            publishLifecycleEvent(terminated, LifecycleEventType.WORKFLOW_TERMINATED, null);
+
+            // Best-effort local eviction. Only this node's threads can be
+            // abandoned; a remote owner converges via the terminal-status guard.
+            if (runningWorkflows.containsKey(workflowId)) {
+                parkingLot.abandonWorkflow(workflowId, reason);
+            }
+
+            logger.info("Terminated workflow '{}' (previous status={}, reason={})",
+                    workflowId, latest.status(), reason);
+            return TerminateOutcome.TERMINATED;
+        }
     }
 
     // ── Timer poller ────────────────────────────────────────────────────
@@ -1298,4 +1442,10 @@ public final class WorkflowExecutor {
      * Error detail stored in the workflow output on failure.
      */
     private record ErrorDetail(String exceptionType, @Nullable String message) {}
+
+    /**
+     * Termination detail stored in the workflow output when an admin terminates
+     * it — the audit trail for why an operator stopped this workflow.
+     */
+    private record TerminationDetail(@Nullable String reason, String terminatedBy) {}
 }
