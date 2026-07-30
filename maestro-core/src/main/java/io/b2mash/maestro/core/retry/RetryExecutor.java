@@ -2,6 +2,7 @@ package io.b2mash.maestro.core.retry;
 
 import io.b2mash.maestro.core.exception.ActivityExecutionException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
+import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -54,6 +55,12 @@ public final class RetryExecutor {
                 // Retrying (with a backoff sleep) would delay the drain for no
                 // reason, and wrapping it in ActivityExecutionException would
                 // hide it from executeWorkflow's shutdown handling.
+                throw e;
+            } catch (WorkflowTerminatedException e) {
+                // Not a retryable failure — the workflow has been terminated by an
+                // admin action. Retrying (with a backoff sleep) would delay the
+                // unwind for no reason, and wrapping it in ActivityExecutionException
+                // would hide it from executeWorkflow's terminate handling.
                 throw e;
             } catch (Throwable e) {
                 var unwrapped = unwrap(e);

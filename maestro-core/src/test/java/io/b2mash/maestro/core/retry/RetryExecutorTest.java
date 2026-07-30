@@ -2,6 +2,7 @@ package io.b2mash.maestro.core.retry;
 
 import io.b2mash.maestro.core.exception.ActivityExecutionException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
+import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -277,6 +278,31 @@ class RetryExecutorTest {
 
         assertEquals(1, counter.get(), "a shutdown signal must not be retried");
         assertSame(shutdownSignal, thrown, "the original exception instance must propagate, not a wrapper");
+    }
+
+    @Test
+    @DisplayName("WorkflowTerminatedException propagates unwrapped, without being retried")
+    void workflowTerminatedExceptionPropagatesWithoutRetry() {
+        // Same reasoning as executorShutdownExceptionPropagatesWithoutRetry above:
+        // an admin terminate is not a retryable activity failure, and wrapping it in
+        // ActivityExecutionException would hide it from executeWorkflow's terminate
+        // handling (it is an Error, not a RuntimeException — see its Javadoc).
+        // maxAttempts is deliberately > 1 so a regression that treats it as
+        // retryable would show up as counter > 1, not just as the wrong exception
+        // type.
+        var policy = fastPolicy(5);
+        var counter = new AtomicInteger();
+        var terminatedSignal = new WorkflowTerminatedException("wf-11", "admin requested");
+        Callable<String> task = () -> {
+            counter.incrementAndGet();
+            throw terminatedSignal;
+        };
+
+        var thrown = assertThrows(WorkflowTerminatedException.class,
+                () -> executor.executeWithRetry(policy, task, "parkingActivity", "wf-11"));
+
+        assertEquals(1, counter.get(), "a terminate signal must not be retried");
+        assertSame(terminatedSignal, thrown, "the original exception instance must propagate, not a wrapper");
     }
 
     @Test

@@ -7,6 +7,8 @@ import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.retry.RetryExecutor;
+import io.b2mash.maestro.core.retry.RetryPolicy;
 import io.b2mash.maestro.core.spi.LifecycleEventType;
 import io.b2mash.maestro.core.spi.SignalMessage;
 import io.b2mash.maestro.core.spi.TaskMessage;
@@ -24,6 +26,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 import static org.awaitility.Awaitility.await;
@@ -231,6 +234,46 @@ class WorkflowExecutorTerminateTest {
         assertEquals(WorkflowStatus.TERMINATED,
                 store.getInstance("term-activity").orElseThrow().status(),
                 "a body that finished after terminate must not overwrite TERMINATED");
+    }
+
+    @Test
+    @DisplayName("terminate while a retried activity is parked propagates without being retried or wrapped")
+    void terminateWithRetriedActivityParked_propagatesWithoutRetryOrWrap() throws Exception {
+        // Mirrors WorkflowExecutorShutdownTest.shutdown_withRetriedActivityParked_
+        // propagatesWithoutRetryOrWrap, reusing its fixtures: drives the FULL
+        // activity proxy dispatch — Method.invoke() wrapping the park in
+        // InvocationTargetException, ActivityInvocationHandler.invokeActivity's
+        // cause-unwrap, and RetryExecutor.executeWithRetry — not just
+        // RetryExecutor in isolation (see RetryExecutorTest for that).
+        var invocations = new AtomicInteger();
+        var activityImpl = new WorkflowExecutorShutdownTest.ParkingActivityImpl(
+                invocations, WorkflowExecutorShutdownTest.RetryShutdownWorkflow.RESUME_SIGNAL);
+        var proxy = new ActivityProxyFactory().createProxy(
+                WorkflowExecutorShutdownTest.ParkingActivity.class, activityImpl, store, null, null,
+                RetryPolicy.builder().maxAttempts(5).initialInterval(Duration.ofMillis(1))
+                        .maxInterval(Duration.ofMillis(10)).backoffMultiplier(1.0).build(),
+                Duration.ofSeconds(30), serializer, new RetryExecutor());
+        var workflow = new WorkflowExecutorShutdownTest.RetryShutdownWorkflow(proxy);
+        var method = WorkflowExecutorShutdownTest.RetryShutdownWorkflow.class.getMethod("run", String.class);
+        executor.startWorkflow("term-retry-activity", "RetryShutdownWorkflow", "default", "input",
+                workflow, method);
+
+        awaitStatus("term-retry-activity", WorkflowStatus.WAITING_SIGNAL);
+        assertEquals(1, invocations.get(), "must not have been retried before terminate either");
+
+        assertEquals(WorkflowExecutor.TerminateOutcome.TERMINATED,
+                executor.terminateWorkflow("term-retry-activity", "kill it mid-retry-park"));
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertFalse(executor.isRunning("term-retry-activity")));
+        assertEquals(1, invocations.get(),
+                "a terminate signal reaching a retried activity (maxAttempts=5) must not be retried");
+        var instance = store.getInstance("term-retry-activity").orElseThrow();
+        assertEquals(WorkflowStatus.TERMINATED, instance.status(),
+                "must not be wrapped into ActivityExecutionException and recorded as this workflow's failure");
+        assertTrue(events(instance.id(), EventType.ACTIVITY_FAILED).isEmpty(),
+                "must not be recorded as an exhausted-retries activity failure");
+        assertTrue(events(instance.id(), EventType.WORKFLOW_FAILED).isEmpty());
     }
 
     // ── Idempotency and validation ─────────────────────────────────────
