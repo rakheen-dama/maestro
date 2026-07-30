@@ -30,3 +30,11 @@ commits survived a death during final verification). Rule: every implementer
 dispatch for >30-min work must include the incremental-commit instruction, and
 recovery is: read `git log`/`git status`, send a precise state summary, resume
 — or fresh agent over the surviving tree after two deaths.
+
+## Shared scratchpads need artifact identity, not just process identity (2026-07-30)
+The coordinator read gate2-run2/3.log as this cycle's passing evidence; both were
+stale leftovers from the PREVIOUS cycle's (deleted) worktree — caught by QA
+grepping the worktree paths inside the logs. Rule: evidence logs must embed
+their own identity (pwd + git rev-parse + timestamp INSIDE the file at write
+time), live in a per-cycle subdirectory, and be pruned at cycle start. Never
+trust a log by filename + recency alone.
