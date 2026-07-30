@@ -33,6 +33,7 @@ class SignalSubscriptionRunnerTest {
 
     private InMemoryWorkflowStore store;
     private WorkflowExecutor executor;
+    private AdminCommandDispatcher commandDispatcher;
     private MaestroProperties properties;
     private RecordingMessaging messaging;
 
@@ -41,6 +42,7 @@ class SignalSubscriptionRunnerTest {
         store = new InMemoryWorkflowStore();
         var serializer = new PayloadSerializer(new ObjectMapper());
         executor = new WorkflowExecutor(store, null, null, null, serializer, "order-service");
+        commandDispatcher = new AdminCommandDispatcher(executor, store, new WorkflowRegistrar(executor));
         properties = new MaestroProperties();
         properties.setServiceName("order-service");
         messaging = new RecordingMessaging();
@@ -49,7 +51,7 @@ class SignalSubscriptionRunnerTest {
     @Test
     @DisplayName("subscribes to inbound signals with the configured service name")
     void subscribesWithConfiguredServiceName() {
-        var runner = new SignalSubscriptionRunner(executor, messaging, properties);
+        var runner = new SignalSubscriptionRunner(executor, commandDispatcher, messaging, properties);
 
         runner.run(null);
 
@@ -60,7 +62,7 @@ class SignalSubscriptionRunnerTest {
     @Test
     @DisplayName("registered handler routes inbound signals to executor.deliverSignal")
     void handlerPersistsDeliveredSignal() {
-        var runner = new SignalSubscriptionRunner(executor, messaging, properties);
+        var runner = new SignalSubscriptionRunner(executor, commandDispatcher, messaging, properties);
         runner.run(null);
 
         var payload = new ObjectMapper().createObjectNode().put("status", "APPROVED");
@@ -76,7 +78,7 @@ class SignalSubscriptionRunnerTest {
     @Test
     @DisplayName("no WorkflowMessaging configured — runner is a no-op")
     void nullMessagingIsNoOp() {
-        var runner = new SignalSubscriptionRunner(executor, null, properties);
+        var runner = new SignalSubscriptionRunner(executor, commandDispatcher, null, properties);
 
         assertDoesNotThrow(() -> runner.run(null));
     }
@@ -88,7 +90,9 @@ class SignalSubscriptionRunnerTest {
         var serializer = new PayloadSerializer(new ObjectMapper());
         var failingExecutor = new WorkflowExecutor(
                 failingStore, null, null, null, serializer, "order-service");
-        var runner = new SignalSubscriptionRunner(failingExecutor, messaging, properties);
+        var failingDispatcher = new AdminCommandDispatcher(
+                failingExecutor, failingStore, new WorkflowRegistrar(failingExecutor));
+        var runner = new SignalSubscriptionRunner(failingExecutor, failingDispatcher, messaging, properties);
         runner.run(null);
 
         assertThrows(RuntimeException.class, () ->
@@ -98,22 +102,37 @@ class SignalSubscriptionRunnerTest {
     }
 
     @Test
-    @DisplayName("admin command signals ($maestro:*) are not persisted as workflow signals")
-    void adminCommandSignalsAreNotPersisted() {
-        var runner = new SignalSubscriptionRunner(executor, messaging, properties);
+    @DisplayName("admin command signals ($maestro:*) are diverted to the dispatcher, never persisted as workflow signals")
+    void adminCommandSignalsAreDivertedNotPersisted() {
+        var runner = new SignalSubscriptionRunner(executor, commandDispatcher, messaging, properties);
         runner.run(null);
 
+        // "order-1" has no instance in this test's store, so the dispatcher's
+        // terminateWorkflow call is a clean NOT_FOUND no-op — the point of
+        // this test is that the command never becomes a WorkflowSignal row,
+        // not any particular terminate outcome.
         assertDoesNotThrow(() ->
                 messaging.handler.accept(new SignalMessage("order-1", "$maestro:terminate", null)));
 
         assertTrue(store.getUnconsumedSignals("order-1", "$maestro:terminate").isEmpty(),
-                "unimplemented admin commands must not pollute the signal table");
+                "admin commands must never be persisted as application signals — "
+                        + "deliverSignal must not be reached for a $maestro:* name");
+    }
+
+    @Test
+    @DisplayName("an unknown admin command propagates so the transport does not ack it")
+    void unknownAdminCommandPropagates() {
+        var runner = new SignalSubscriptionRunner(executor, commandDispatcher, messaging, properties);
+        runner.run(null);
+
+        assertThrows(io.b2mash.maestro.core.exception.AdminCommandException.class, () ->
+                messaging.handler.accept(new SignalMessage("order-1", "$maestro:bogus", null)));
     }
 
     @Test
     @DisplayName("runs right after StartupRecoveryRunner")
     void orderedAfterStartupRecovery() {
-        var runner = new SignalSubscriptionRunner(executor, messaging, properties);
+        var runner = new SignalSubscriptionRunner(executor, commandDispatcher, messaging, properties);
 
         assertTrue(runner.getOrder() > new StartupRecoveryRunner(executor, new WorkflowRegistrar(executor), properties).getOrder(),
                 "signal subscription must start after startup recovery");

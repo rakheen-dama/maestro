@@ -22,6 +22,11 @@ import org.springframework.core.Ordered;
  * on {@code deliverSignal}, which persists the signal before any in-memory
  * delivery.
  *
+ * <p>One exception: a signal name starting with {@code $maestro:} is an admin
+ * command (Retry, Terminate), not an application signal, and is diverted to
+ * {@link AdminCommandDispatcher} before {@code deliverSignal} is ever called
+ * — see that class's Javadoc for why.
+ *
  * <p><b>Idempotency:</b> transports are at-least-once, so a redelivered
  * message persists a second signal row. Duplicate unconsumed rows are
  * tolerated by design — each await consumes exactly one row (guarded by the
@@ -44,23 +49,28 @@ public class SignalSubscriptionRunner implements ApplicationRunner, Ordered {
     private static final String ADMIN_COMMAND_PREFIX = "$maestro:";
 
     private final WorkflowExecutor executor;
+    private final AdminCommandDispatcher commandDispatcher;
     private final @Nullable WorkflowMessaging messaging;
     private final MaestroProperties properties;
 
     /**
      * Creates a new signal subscription runner.
      *
-     * @param executor   the workflow executor signals are delivered to
-     * @param messaging  optional messaging backend; when {@code null}, inbound
-     *                   signal subscription is disabled
-     * @param properties Maestro configuration (provides the service name)
+     * @param executor          the workflow executor signals are delivered to
+     * @param commandDispatcher routes {@code $maestro:*} admin-command signals
+     *                          before they would otherwise reach {@code deliverSignal}
+     * @param messaging         optional messaging backend; when {@code null}, inbound
+     *                          signal subscription is disabled
+     * @param properties        Maestro configuration (provides the service name)
      */
     public SignalSubscriptionRunner(
             WorkflowExecutor executor,
+            AdminCommandDispatcher commandDispatcher,
             @Nullable WorkflowMessaging messaging,
             MaestroProperties properties
     ) {
         this.executor = executor;
+        this.commandDispatcher = commandDispatcher;
         this.messaging = messaging;
         this.properties = properties;
     }
@@ -83,14 +93,12 @@ public class SignalSubscriptionRunner implements ApplicationRunner, Ordered {
 
     private void handleSignal(SignalMessage message) {
         if (message.signalName().startsWith(ADMIN_COMMAND_PREFIX)) {
-            // TODO(admin-commands): engine-side handling of $maestro:retry /
-            // $maestro:terminate is not implemented yet. Dropped rather than
-            // persisted — an unconsumable command row would pollute the signal
-            // table and could be adopted by a future instance of the same
-            // workflowId.
-            logger.warn("Dropping admin command signal '{}' for workflow '{}' — "
-                            + "engine-side command handling is not yet implemented",
-                    message.signalName(), message.workflowId());
+            // Diverted here, before deliverSignal: a $maestro:* command must
+            // never become a WorkflowSignal row — see AdminCommandDispatcher's
+            // Javadoc. Exceptions propagate exactly like a deliverSignal
+            // failure below, so the transport does not ack a command that
+            // failed to route or execute.
+            commandDispatcher.dispatch(message);
             return;
         }
         try {
