@@ -212,15 +212,32 @@ All actions produce a flash message confirming success or reporting failure, the
 
 **Note:** Admin commands use internal signal names prefixed with `$maestro:` (e.g., `$maestro:retry`, `$maestro:terminate`) to distinguish them from application-level signals.
 
-**Known limitation:** Retry and Terminate publish their `$maestro:retry` /
-`$maestro:terminate` signal to the target service's signal topic, and the
-dashboard reports success once the publish succeeds — but no engine-side
-listener currently consumes those two internal signal names, so nothing in
-the target service actually acts on them yet. The buttons are not functional
-end-to-end. "Send Signal" is unaffected — an application-level signal you
-send is delivered and consumed exactly like any other signal, since
-`awaitSignal(...)` doesn't care who published it. See
-[open-issues.md](open-issues.md) for tracking.
+**Semantics:**
+
+- **Retry** applies only to a `FAILED` workflow. It clears the workflow's
+  memoized failure, marks it `RUNNING`, and relaunches it exactly like crash
+  recovery: every step before the failure replays from its stored result, and
+  the step that failed re-executes live with a fresh retry-policy budget.
+  Retry is intended for transient failures (an external dependency that has
+  since recovered). Retrying a workflow whose saga already ran compensations
+  is an operator judgment call — the failed step re-executes *after* its
+  compensations already ran.
+- **Terminate** applies to any active workflow (including one compensating).
+  It marks the instance `TERMINATED` and stops it — **without compensation**
+  and **without interrupting an in-flight activity**, consistent with a
+  graceful shutdown. It is safe to call from any node: an optimistic
+  version check, not the instance lock, is the arbiter, so the command need
+  not reach the node that owns the workflow.
+- Both commands are idempotent under at-least-once redelivery: retrying a
+  workflow that is no longer `FAILED`, or terminating one that is already
+  terminal, is a logged no-op that acknowledges the message rather than
+  retrying forever.
+
+**Security posture:** there is no authentication, authorization, or
+provenance check on the admin-command path — anyone who can publish to
+`maestro.signals.{serviceName}` can retry or terminate any workflow, the same
+way they could already inject an application signal. Restrict who can produce
+to that topic with Kafka ACLs if this matters for your deployment.
 
 ---
 

@@ -42,6 +42,7 @@ public class EventProjector {
             LifecycleEventType.WORKFLOW_COMPLETED,
             LifecycleEventType.WORKFLOW_FAILED,
             LifecycleEventType.WORKFLOW_TERMINATED,
+            LifecycleEventType.WORKFLOW_RETRIED,
             LifecycleEventType.COMPENSATION_STARTED
     );
 
@@ -177,8 +178,13 @@ public class EventProjector {
                     ts,
                     ts,
                     ts);
-        } else if (eventType == LifecycleEventType.COMPENSATION_STARTED) {
-            // COMPENSATION_STARTED changes status but is not terminal (no completed_at)
+        } else if (eventType == LifecycleEventType.COMPENSATION_STARTED
+                || eventType == LifecycleEventType.WORKFLOW_RETRIED) {
+            // Both change status but are not terminal (no completed_at write).
+            // Known limitation: WORKFLOW_RETRIED does not clear a stale
+            // completed_at left over from the FAILED run it retried — the
+            // dashboard may briefly show a completed_at timestamp on a
+            // RUNNING workflow until its next terminal event overwrites it.
             jdbc.update("""
                     INSERT INTO admin_workflow (workflow_instance_id, workflow_id, workflow_type,
                         service_name, task_queue, status, last_step_name, started_at, updated_at, event_count)
@@ -330,6 +336,7 @@ public class EventProjector {
             case WORKFLOW_COMPLETED -> "COMPLETED";
             case WORKFLOW_FAILED -> "FAILED";
             case WORKFLOW_TERMINATED -> "TERMINATED";
+            case WORKFLOW_RETRIED -> "RUNNING";
             case COMPENSATION_STARTED -> "COMPENSATING";
             default -> null;
         };
