@@ -491,6 +491,11 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
         }
 
         @Override
+        public int deleteFailureEvents(UUID instanceId) {
+            return delegate.deleteFailureEvents(instanceId);
+        }
+
+        @Override
         public void saveSignal(WorkflowSignal signal) {
             delegate.saveSignal(signal);
         }

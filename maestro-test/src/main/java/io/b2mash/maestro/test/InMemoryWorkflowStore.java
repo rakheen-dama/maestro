@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowNotFoundException;
+import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.TimerStatus;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
@@ -135,6 +136,21 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
         return instanceEvents.values().stream()
                 .sorted(Comparator.comparingInt(WorkflowEvent::sequenceNumber))
                 .toList();
+    }
+
+    @Override
+    public int deleteFailureEvents(UUID instanceId) {
+        var instanceEvents = events.get(instanceId);
+        if (instanceEvents == null) {
+            return 0;
+        }
+        // Exactly the two failure types — success and compensation memos must
+        // survive a retry, or its replay re-runs real side effects.
+        var before = instanceEvents.size();
+        instanceEvents.values().removeIf(event ->
+                event.eventType() == EventType.ACTIVITY_FAILED
+                        || event.eventType() == EventType.WORKFLOW_FAILED);
+        return before - instanceEvents.size();
     }
 
     // ── Signal operations ────────────────────────────────────────────────

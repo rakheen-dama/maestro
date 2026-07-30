@@ -162,6 +162,11 @@ class SignalSubscriptionRunnerTest {
         }
 
         @Override
+        public int deleteFailureEvents(java.util.UUID instanceId) {
+            return 0;
+        }
+
+        @Override
         public void saveSignal(WorkflowSignal signal) {
             throw new RuntimeException("Simulated store failure");
         }

@@ -309,6 +309,26 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         return queryList(sql, ps -> ps.setObject(1, instanceId), this::mapEvent);
     }
 
+    @Override
+    public int deleteFailureEvents(UUID instanceId) {
+        Objects.requireNonNull(instanceId, "instanceId");
+
+        // Scoped to the instance AND to the two failure types — deliberately
+        // not a sequence range, which would take the success and compensation
+        // memos with it. See the SPI Javadoc for why those must survive.
+        String sql = "DELETE FROM " + tableName("workflow_event")
+                + " WHERE workflow_instance_id = ? AND event_type IN (?, ?)";
+
+        int deleted = update(sql, ps -> {
+            ps.setObject(1, instanceId);
+            ps.setString(2, EventType.ACTIVITY_FAILED.name());
+            ps.setString(3, EventType.WORKFLOW_FAILED.name());
+        });
+
+        log.debug("Deleted {} failure event(s) for workflow instance {}", deleted, instanceId);
+        return deleted;
+    }
+
     // ── Signal operations ─────────────────────────────────────────────────
 
     @Override

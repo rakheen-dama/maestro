@@ -32,6 +32,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
+import static io.b2mash.maestro.core.TestEventLogs.removeFailureEvents;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -376,6 +377,10 @@ class SagaManagerTest {
 
         @Override public List<WorkflowEvent> getEvents(UUID instanceId) {
             return events.stream().filter(e -> e.workflowInstanceId().equals(instanceId)).toList();
+        }
+
+        @Override public int deleteFailureEvents(UUID instanceId) {
+            return removeFailureEvents(events, instanceId);
         }
 
         @Override public void saveSignal(WorkflowSignal signal) {}

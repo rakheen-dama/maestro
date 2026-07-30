@@ -19,6 +19,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static io.b2mash.maestro.core.TestEventLogs.removeFailureEvents;
+
 /**
  * In-memory {@link WorkflowStore} that enforces the two durable invariants the
  * admin-command tests depend on, which the simpler per-test fakes elsewhere in
@@ -149,6 +151,13 @@ class VersionedInMemoryStore implements WorkflowStore {
     @Override
     public List<WorkflowEvent> getEvents(UUID instanceId) {
         return events.stream().filter(e -> e.workflowInstanceId().equals(instanceId)).toList();
+    }
+
+    @Override
+    public int deleteFailureEvents(UUID instanceId) {
+        synchronized (events) {
+            return removeFailureEvents(events, instanceId);
+        }
     }
 
     // ── Signals ─────────────────────────────────────────────────────────

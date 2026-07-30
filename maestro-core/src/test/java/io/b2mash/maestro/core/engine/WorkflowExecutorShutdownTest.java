@@ -32,6 +32,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static io.b2mash.maestro.core.TestEventLogs.removeFailureEvents;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -1039,6 +1040,11 @@ class WorkflowExecutorShutdownTest {
         @Override
         public List<WorkflowEvent> getEvents(UUID instanceId) {
             return events.stream().filter(e -> e.workflowInstanceId().equals(instanceId)).toList();
+        }
+
+        @Override
+        public int deleteFailureEvents(UUID instanceId) {
+            return removeFailureEvents(events, instanceId);
         }
 
         @Override
