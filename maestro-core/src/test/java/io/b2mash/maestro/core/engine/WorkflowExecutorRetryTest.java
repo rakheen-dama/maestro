@@ -205,7 +205,6 @@ class WorkflowExecutorRetryTest {
     @DisplayName("a redelivered retry converges instead of relaunching twice")
     void duplicateRetry_secondDeliverySeesNonFailed_noOp() throws Exception {
         var activityImpl = new FlakyThreeStepActivitiesImpl();
-        activityImpl.faultFixed.set(true);
         var proxy = new ActivityProxyFactory().createProxy(
                 FlakyThreeStepActivities.class, activityImpl, store, null, messaging,
                 RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
@@ -213,7 +212,6 @@ class WorkflowExecutorRetryTest {
         var method = ThreeStepWorkflow.class.getMethod("run");
         var registration = new WorkflowRegistration("ThreeStepWorkflow", "default", workflow, method);
 
-        activityImpl.faultFixed.set(false);
         executor.startWorkflow("retry-dup", "ThreeStepWorkflow", "default", null, workflow, method);
         awaitStatus("retry-dup", WorkflowStatus.FAILED);
 
