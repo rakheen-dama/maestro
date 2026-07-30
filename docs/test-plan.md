@@ -17,6 +17,11 @@ best-effort; RabbitMQ/Postgres-messaging are secondary).
 > references. `docs/open-issues.md` is the current source of truth for open
 > work; treat the rest of this document as the historical record of how the
 > gaps were found.
+>
+> **Further update (2026-07-30):** Issues 13, 14, and 15 — found during the
+> pass above — are also now fixed, including item 17 below (admin
+> retry/terminate). See `docs/open-issues.md` and `docs/release-notes.md`
+> (0.4.0) for details.
 
 ## Why this document exists
 
@@ -99,7 +104,7 @@ entire integration seams unverified. This plan makes those seams explicit.
 | maestro-test kit (in-memory SPIs, TestWorkflowEnvironment, clock) | ✅ U (3 classes) |
 | maestro-lock-valkey | ✅ I (lock + notifier mechanics) |
 | maestro-messaging-rabbitmq | ✅ real suite (`RabbitMqWorkflowMessagingTest`); the shared ack-on-failure defect it carried is fixed alongside Kafka and Postgres |
-| maestro-admin / admin-client | ✅ real suites (`DashboardSmokeMockMvcTest`, `EventIngestionRoundTripTest`, `AdminEventPublisherTest`, others). `$maestro:retry`/`terminate` commands are still unconsumed end-to-end (no engine-side dispatcher) — dashboard buttons are still non-functional end-to-end; see `docs/open-issues.md` Issue 15 |
+| maestro-admin / admin-client | ✅ real suites (`DashboardSmokeMockMvcTest`, `EventIngestionRoundTripTest`, `AdminEventPublisherTest`, `AdminCommandDispatcherTest`, `AdminCommandKafkaIT`, others). `$maestro:retry`/`terminate` commands are now consumed end-to-end by a starter-side `AdminCommandDispatcher` — dashboard buttons are functional; see `docs/open-issues.md` Issue 15 (**Resolved**) |
 | Loan-origination E2E (5 scenarios) | ✅ E — but **manual**, single-node, and Valkey-profile only |
 
 ---
@@ -253,9 +258,11 @@ recollection. "Unverified" below means no test asserts the behaviour either way.
    replay consult the row's actual status and self-heal — append the missing
    `TIMER_FIRED` and continue — rather than re-parking. Pinned by
    `EnginePostgresTimerIT.timerFiredBeforeEventAppend_recoveryCompletesTheWorkflow`.
-   **A related, narrower case remains open:** a timer *cancelled* (not fired)
-   while a workflow is parked on it still strands the workflow the same way —
-   see `docs/open-issues.md` Issue 13.
+   **A related, narrower case — a timer *cancelled* (not fired) while a
+   workflow is parked on it — is also fixed** (`docs/open-issues.md`
+   Issue 13): cancelling now unparks the workflow with a catchable
+   `TimerCancelledException` instead of stranding it. Pinned by
+   `EnginePostgresTimerIT.timerCancelledBeforeEventAppend_recoveryFailsTheWorkflowDeterministically`.
 
 3. **Lifecycle publishing can stall workflow start.** *Medium.* **Fixed.**
    `publishLifecycleEvent` was fire-and-forget for *errors* but not for
@@ -347,12 +354,14 @@ recollection. "Unverified" below means no test asserts the behaviour either way.
     backend** — a query against a node not running the workflow throws
     `WorkflowNotQueryableException`. No integration test pins that.
 
-17. **The admin dashboard is unverified end-to-end.** Controller-layer
-    coverage now exists (`DashboardSmokeMockMvcTest`,
-    `EventIngestionRoundTripTest`), but `$maestro:retry` and
-    `$maestro:terminate` are still published without being consumed anywhere
-    — no engine-side command dispatcher exists, so the dashboard buttons
-    still do nothing end-to-end. Tracked as `docs/open-issues.md` Issue 15.
+17. **The admin dashboard is unverified end-to-end.** **Fixed** — beyond the
+    controller-layer coverage (`DashboardSmokeMockMvcTest`,
+    `EventIngestionRoundTripTest`), `$maestro:retry` and `$maestro:terminate`
+    are now consumed by a new starter-side `AdminCommandDispatcher`, wired
+    ahead of ordinary signal delivery, and proven end-to-end against a real
+    Kafka broker by `AdminCommandKafkaIT` and the rewritten
+    `KafkaSignalChannelIT.adminCommand_terminatesWorkflowAndIsNeverPersisted`.
+    Tracked as `docs/open-issues.md` Issue 15 (**Resolved**).
 
 18. **`DeterminismChecker` catches only between-run nondeterminism** — randomness,
     clock reads, mutable static state. A value that is stable for a JVM's
