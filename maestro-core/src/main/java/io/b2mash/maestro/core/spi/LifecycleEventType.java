@@ -24,6 +24,9 @@ public enum LifecycleEventType {
     /** Workflow was terminated by admin action. */
     WORKFLOW_TERMINATED,
 
+    /** A {@code FAILED} workflow was re-driven by admin action (manual retry). */
+    WORKFLOW_RETRIED,
+
     /** An activity execution started. */
     ACTIVITY_STARTED,
 

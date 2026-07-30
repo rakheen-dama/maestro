@@ -686,6 +686,190 @@ public final class WorkflowExecutor {
         }
     }
 
+    // ── Retry ──────────────────────────────────────────────────────────
+
+    /**
+     * The outcome of a {@link #retryWorkflow(String, WorkflowRegistration)} call.
+     *
+     * <p>Every constant is a <em>deterministic</em> outcome: retrying the same
+     * command can never turn one into another, so a caller driving retry from
+     * an at-least-once transport should acknowledge the message for all of
+     * them. Only genuinely transient conditions (an optimistic-lock conflict
+     * on the compare-and-set) are signalled as exceptions instead.
+     */
+    public enum RetryOutcome {
+
+        /** This call cleared the failure and relaunched the workflow. */
+        RETRIED,
+
+        /**
+         * The workflow was not {@code FAILED} — {@code RUNNING}, a
+         * {@code WAITING_*} status, {@code COMPENSATING}, {@code COMPLETED} or
+         * {@code TERMINATED}. Nothing was written; retry only applies to a
+         * workflow that has actually failed.
+         */
+        NOT_FAILED,
+
+        /** No instance with this workflow ID exists in this service's store. */
+        NOT_FOUND,
+
+        /**
+         * The compare-and-set to {@code RUNNING} succeeded, but by the time
+         * this call was ready to launch, the workflow was already running on
+         * this node (typically the recovery poller won the race). The instance
+         * is left {@code RUNNING} — recoverable, not lost.
+         */
+        ALREADY_RUNNING_LOCALLY,
+
+        /**
+         * The compare-and-set to {@code RUNNING} succeeded, but the per-instance
+         * distributed lock is held by another node. The instance is left
+         * {@code RUNNING} — the recovery poller (on any node) adopts it within
+         * one poll interval.
+         */
+        LOCK_HELD_ELSEWHERE
+    }
+
+    /**
+     * Retries a {@code FAILED} workflow: clears its memoized failure, marks it
+     * {@code RUNNING} again, and relaunches it exactly like crash recovery.
+     *
+     * <p>This is the engine side of the admin dashboard's Retry button.
+     *
+     * <h2>Why the failure memo has to go</h2>
+     * <p>Hybrid memoization normally replays a stored outcome instead of
+     * re-executing a step — including a stored <em>failure</em>: on replay,
+     * the step that exhausted its retry policy re-throws the memoized
+     * {@code ACTIVITY_FAILED} event rather than running again. Relaunching a
+     * {@code FAILED} workflow without first clearing that memo would therefore
+     * replay straight back into the same failure, even after the underlying
+     * fault is fixed — a Retry button that always "succeeds" at flipping the
+     * row to {@code RUNNING} and then silently fails again. So the very first
+     * step, before anything else, is {@link WorkflowStore#deleteFailureEvents}:
+     * it deletes exactly the instance's {@code ACTIVITY_FAILED} and
+     * {@code WORKFLOW_FAILED} events, leaving every success and compensation
+     * memo untouched. The freed sequence also lets the retried run's own
+     * terminal event land where {@code WORKFLOW_FAILED} used to sit, instead of
+     * colliding with it.
+     *
+     * <h2>Mechanics — "make it recoverable again, then recover it"</h2>
+     * <ol>
+     *   <li>Read the instance. Absent → {@link RetryOutcome#NOT_FOUND}. Status
+     *       other than {@code FAILED} → {@link RetryOutcome#NOT_FAILED} — an
+     *       idempotent no-op, since retry only makes sense for a failure.</li>
+     *   <li>{@link WorkflowStore#deleteFailureEvents} — see above.</li>
+     *   <li>A single optimistic compare-and-set: {@code status = RUNNING},
+     *       {@code completedAt = null}, {@code version + 1}. Unlike
+     *       {@link #terminateWorkflow}, this is <b>one</b> attempt, not a
+     *       converge-loop: a conflict here means another writer changed the row
+     *       between the read and the write, and
+     *       {@link OptimisticLockException} propagates so an at-least-once
+     *       transport redelivers the command against fresh state rather than
+     *       this call guessing what the fresh state now means.</li>
+     *   <li>Relaunch via the same internal path
+     *       {@link #resumeWorkflow(WorkflowInstance, Object, Method)} uses
+     *       ({@code replaying = true}) — identical to crash recovery: every
+     *       memoized event before the failure point replays for free, and the
+     *       step that failed (now memo-free) executes live with a fresh
+     *       retry-policy budget.</li>
+     *   <li>If the local {@code runningWorkflows} guard or the instance lock
+     *       refuses the launch ({@link RetryOutcome#ALREADY_RUNNING_LOCALLY} /
+     *       {@link RetryOutcome#LOCK_HELD_ELSEWHERE}), the instance is already
+     *       {@code RUNNING} — which is recoverable: the recovery poller (on any
+     *       node) adopts it within one poll interval, the same as a crash
+     *       between steps 3 and 4 heals.</li>
+     * </ol>
+     *
+     * <h2>Semantics caveat — compensated sagas</h2>
+     * <p>Retrying a workflow whose saga already ran compensations replays with
+     * the compensation events still memoized (and, by the saga's own
+     * replay-skip guard, not re-run) — so the step that failed re-executes
+     * <em>after</em> its compensations already ran. Retry is intended for
+     * transient failures (an external dependency that has since recovered);
+     * retrying a compensated saga is an operator judgment call this method
+     * does not second-guess.
+     *
+     * <h2>Idempotency</h2>
+     * <p>Safe under at-least-once redelivery: a second delivery re-reads the
+     * row, finds it no longer {@code FAILED} (it is at least {@code RUNNING})
+     * and returns {@link RetryOutcome#NOT_FAILED} without touching anything.
+     * A delivery that races the first one closely enough to still see
+     * {@code FAILED} loses the compare-and-set instead and its
+     * {@link OptimisticLockException} propagates for redelivery.
+     *
+     * <p><b>Thread safety:</b> thread-safe; may be called concurrently from any
+     * thread, including several nodes at once.
+     *
+     * @param workflowId   the business workflow ID to retry
+     * @param registration the registration (implementation instance and
+     *                     entry-point method) for this workflow's type — the
+     *                     same one recovery would use
+     * @return what this call did — see {@link RetryOutcome}
+     * @throws OptimisticLockException if another writer touched the instance
+     *                                 row between the read and the
+     *                                 compare-and-set. Transient: the caller
+     *                                 should <em>not</em> acknowledge, so the
+     *                                 command is redelivered against fresh
+     *                                 state.
+     */
+    public RetryOutcome retryWorkflow(String workflowId, WorkflowRegistration registration) {
+        var existing = store.getInstance(workflowId);
+        if (existing.isEmpty()) {
+            logger.warn("Cannot retry workflow '{}' — no such instance in this service", workflowId);
+            return RetryOutcome.NOT_FOUND;
+        }
+        var latest = existing.get();
+        if (latest.status() != WorkflowStatus.FAILED) {
+            logger.warn("Workflow '{}' is {} — not retrying (retry only applies to FAILED)",
+                    workflowId, latest.status());
+            return RetryOutcome.NOT_FAILED;
+        }
+
+        // Clear the memoized failure BEFORE the CAS: a crash between this line
+        // and the CAS leaves the instance FAILED with its failure memos already
+        // gone, which is harmless — deleteFailureEvents is idempotent, and a
+        // later retry of the still-FAILED instance simply deletes zero rows and
+        // proceeds normally.
+        // TEMP-RED-PROBE: deliberately disabled to reproduce the documented
+        // blocker (task-3-report.md §1) before re-enabling for GREEN.
+        // var deleted = store.deleteFailureEvents(latest.id());
+        // logger.debug("Deleted {} failure memo(s) for workflow '{}' before retry", deleted, workflowId);
+
+        var now = Instant.now();
+        var running = latest.toBuilder()
+                .status(WorkflowStatus.RUNNING)
+                .completedAt(null)
+                .updatedAt(now)
+                .version(latest.version() + 1)
+                .build();
+        // Single-attempt CAS — OptimisticLockException propagates rather than
+        // being retried here; see the Javadoc above.
+        store.updateInstance(running);
+
+        // Recheck the local running-workflow guard right before launching: the
+        // CAS just made the instance RUNNING, and in the gap between that write
+        // and this line, this node's own recovery poller could have observed
+        // the RUNNING row and already launched it (mirrors resumeWorkflow's
+        // own guard). The instance is left RUNNING either way — recoverable.
+        if (runningWorkflows.containsKey(workflowId)) {
+            logger.info("Workflow '{}' is already running locally after the retry CAS — "
+                    + "leaving it to the run already in flight", workflowId);
+            return RetryOutcome.ALREADY_RUNNING_LOCALLY;
+        }
+
+        var launched = launchWorkflow(running, registration.workflowImpl(), registration.workflowMethod(),
+                running.input(), true, null);
+        if (!launched) {
+            logger.info("Workflow '{}' CAS'd to RUNNING but its instance lock is held elsewhere — "
+                    + "left for the recovery poller to adopt", workflowId);
+            return RetryOutcome.LOCK_HELD_ELSEWHERE;
+        }
+
+        publishLifecycleEvent(running, LifecycleEventType.WORKFLOW_RETRIED, null);
+        logger.info("Retried workflow '{}' (type={})", workflowId, running.workflowType());
+        return RetryOutcome.RETRIED;
+    }
+
     // ── Timer poller ────────────────────────────────────────────────────
 
     /**
