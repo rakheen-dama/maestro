@@ -157,5 +157,5 @@ Binding plan: `tasks/issues-13-15-plan.md`. Branch: `worktree-issues-13-15` off 
 - [x] Task 1 — Issue 14: SagaManager replay-skip guard (both loops, LIFO-order gap closed)
 - [x] Task 2 — Issue 13: timer cancel → TimerCancelledException, memoized + 3-way heal
 - [x] Task 3 — Issue 15: $maestro:retry/terminate live end-to-end (dispatcher, retryWorkflow + deleteFailureEvents ruling, terminateWorkflow, resurrection guards, Kafka E2E)
-- [ ] Task 4 — Docs close-out (open-issues 13-15 Resolved, release notes, admin.md reconciled)
-- [ ] Task 5 — QA cycle (build, 3× reruns, loan E2E process-identity, dashboard Retry/Terminate live)
+- [x] Task 4 — Docs close-out: 13-15 Resolved callouts, 0.4.0 release notes, test-plan reconciled
+- [x] Task 5 — QA cycle: all gates pass (incl. live dashboard retry/terminate); stale-artifact contamination caught and re-verified
