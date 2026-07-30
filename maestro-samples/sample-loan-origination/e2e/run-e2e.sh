@@ -297,22 +297,39 @@ start_infra() {
     err "kafka-init did not finish within 120s"; return 1
 }
 
-# wait_for_consumer_group <group> <timeout> - group Stable with members, so
-# messages produced afterwards are guaranteed to be consumed (the sample's
-# @KafkaListeners use default auto.offset.reset=latest).
-wait_for_consumer_group() {
-    local group="$1" timeout="$2" deadline=$((SECONDS + $2)) kafka_cid
+# consumer_group_members <group> - prints the group's current member count
+# (0 if the group is missing or not Stable). The --state output's last
+# column is #MEMBERS.
+consumer_group_members() {
+    local group="$1" kafka_cid line
     kafka_cid="$(compose ps -q kafka)"
+    line="$(docker exec "$kafka_cid" /opt/kafka/bin/kafka-consumer-groups.sh \
+            --bootstrap-server localhost:9092 --describe --group "$group" --state 2>/dev/null \
+            | grep "Stable" || true)"
+    if [[ -n "$line" ]]; then
+        awk '{print $NF}' <<<"$line"
+    else
+        echo 0
+    fi
+}
+
+# wait_for_consumer_group <group> <timeout> [min-members] - group Stable with
+# at least min-members members (default 1), so messages produced afterwards
+# are guaranteed to be consumed (the sample's @KafkaListeners use default
+# auto.offset.reset=latest). The member floor matters when a SECOND instance
+# joins an already-Stable group: without it the check passes trivially
+# before the new members have even started their rebalance.
+wait_for_consumer_group() {
+    local group="$1" timeout="$2" min_members="${3:-1}" deadline=$((SECONDS + $2)) members
     while (( SECONDS < deadline )); do
-        if docker exec "$kafka_cid" /opt/kafka/bin/kafka-consumer-groups.sh \
-                --bootstrap-server localhost:9092 --describe --group "$group" --state 2>/dev/null \
-                | grep -q "Stable"; then
-            log "Kafka consumer group '$group' is stable."
+        members="$(consumer_group_members "$group")"
+        if [[ "$members" =~ ^[0-9]+$ ]] && (( members >= min_members )); then
+            log "Kafka consumer group '$group' is stable ($members member(s), needed >=$min_members)."
             return 0
         fi
         sleep 2
     done
-    err "Kafka consumer group '$group' not stable within ${timeout}s"
+    err "Kafka consumer group '$group' not stable with >=$min_members member(s) within ${timeout}s (last: ${members:-0})"
     return 1
 }
 
@@ -419,11 +436,40 @@ start_all_services() {
 
     if [[ "$E2E_CLUSTER" == 1 ]]; then
         log "E2E_CLUSTER=1 - starting second instance of each service (6 processes total)..."
+        # loan-application's @MaestroSignalListener consumers of the business
+        # topics loans.verification.results / loans.underwriting.decisions use
+        # base group "maestro-<service-name>" (see resolveBaseConsumerGroup in
+        # MaestroSignalListenerBeanPostProcessor); loan node B will join it
+        # too, so it needs the same rebalance treatment as the @KafkaListener
+        # groups. Ensure it is stable before baselining.
+        wait_for_consumer_group "maestro-loan-application" 90
+
+        # Baseline single-node membership per group, so the post-join waits
+        # below can demand the count DOUBLES. Without a member floor the
+        # re-wait would pass trivially: the group still reports Stable in the
+        # window before the new node's consumers begin their rebalance.
+        local vg_base uw_base loan_base
+        vg_base="$(consumer_group_members verification-gateway)"
+        uw_base="$(consumer_group_members underwriting)"
+        loan_base="$(consumer_group_members maestro-loan-application)"
+
         start_loan_node_b || return 1
         start_service_instance verification-gateway-service "$VERIFY_PORT_B" "$VERIFY_NODE_B" || return 1
         start_service_instance underwriting-service "$UW_PORT_B" "$UW_NODE_B" || return 1
         wait_for_http "$VERIFY_NODE_B" "$VERIFY_URL_B/webhooks/credit/__probe__" 120
         wait_for_http "$UW_NODE_B" "$UW_URL_B/underwriting/pending" 120
+
+        # Each joining consumer forces a group rebalance; with the sample's
+        # default auto.offset.reset=latest a message published mid-rebalance
+        # can be silently skipped (same reason the single-node path waits
+        # above). Re-wait until every affected group is Stable with both
+        # nodes' members (2x the single-node baseline; the instances run the
+        # same jar and config, so membership is symmetric) before any
+        # scenario publishes.
+        wait_for_consumer_group "verification-gateway" 90 $(( vg_base > 0 ? vg_base * 2 : 2 ))
+        wait_for_consumer_group "underwriting" 90 $(( uw_base > 0 ? uw_base * 2 : 2 ))
+        wait_for_consumer_group "maestro-loan-application" 90 $(( loan_base > 0 ? loan_base * 2 : 2 ))
+
         assert_distinct_pids loan-application-service "$LOAN_NODE_B" \
             verification-gateway-service "$VERIFY_NODE_B" \
             underwriting-service "$UW_NODE_B"
