@@ -10,6 +10,8 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.retry.RetryExecutor;
+import io.b2mash.maestro.core.retry.RetryPolicy;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
 import io.b2mash.maestro.core.spi.SignalMessage;
@@ -35,6 +37,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 import static org.awaitility.Awaitility.await;
@@ -541,6 +544,81 @@ class WorkflowExecutorTest {
         assertEquals(0, events.stream().filter(e -> e.eventType() == EventType.TIMER_FIRED).count());
         assertTrue(store.findTimer(instance.id(), "sleep-1").isEmpty(),
                 "no timer row was ever saved for this seeded log — replay must not create one");
+    }
+
+    @Test
+    @DisplayName("Replay of a caught TIMER_CANCELLED does not re-invoke the catch handler's activity")
+    void replayOnly_catchHandlerActivityAlreadyMemoized_isNotReInvoked() throws Exception {
+        // Extends the replay-only proof above one step further: a workflow
+        // that catches TimerCancelledException and calls a real (proxied)
+        // activity in its handler. The log already contains TIMER_SCHEDULED,
+        // TIMER_CANCELLED, and the handler activity's ACTIVITY_COMPLETED —
+        // as if a prior run already lived through the catch-and-continue
+        // path in full. Replaying must reproduce the exact same output
+        // WITHOUT re-invoking the real activity (design §9 item 3 / §7).
+        var completed = new CountDownLatch(1);
+        var activityImpl = new CountingHandlerActivity();
+        var proxyFactory = new ActivityProxyFactory();
+        var activityProxy = proxyFactory.createProxy(
+                HandlerActivity.class,
+                activityImpl,
+                store,
+                null,
+                messaging,
+                RetryPolicy.noRetry(),
+                Duration.ofSeconds(30),
+                serializer,
+                new RetryExecutor());
+        var workflow = new CancellableSleepWorkflowWithActivity(
+                Duration.ofMinutes(10), completed, activityProxy);
+        var method = CancellableSleepWorkflowWithActivity.class.getMethod("run", String.class);
+
+        var instance = WorkflowInstance.builder()
+                .id(UUID.randomUUID())
+                .workflowId("timer-cancel-replay-handler-1")
+                .runId(UUID.randomUUID())
+                .workflowType("CancellableSleepWorkflowWithActivity")
+                .taskQueue("default")
+                .status(WorkflowStatus.WAITING_TIMER)
+                .serviceName("test-service")
+                .startedAt(Instant.now())
+                .updatedAt(Instant.now())
+                .build();
+        store.createInstance(instance);
+        store.appendEvent(new WorkflowEvent(UUID.randomUUID(), instance.id(), 1,
+                EventType.TIMER_SCHEDULED, "$maestro:sleep",
+                serializer.serialize(new SeedTimerDetail("sleep-1", Duration.ofMinutes(10).toString())),
+                Instant.now()));
+        store.appendEvent(new WorkflowEvent(UUID.randomUUID(), instance.id(), 2,
+                EventType.TIMER_CANCELLED, "$maestro:timer-cancelled", null, Instant.now()));
+        // The catch handler's activity call already completed durably in the
+        // "prior run" this log stands in for.
+        var memoizedOutcome = "cancelled:seed-handled";
+        store.appendEvent(new WorkflowEvent(UUID.randomUUID(), instance.id(), 3,
+                EventType.ACTIVITY_COMPLETED, "HandlerActivity.handle",
+                serializer.serialize(memoizedOutcome), Instant.now()));
+
+        var registration = new WorkflowRegistration(
+                "CancellableSleepWorkflowWithActivity", "default", workflow, method);
+        assertEquals(1, executor.recoverWorkflows(Map.of("CancellableSleepWorkflowWithActivity", registration)));
+
+        assertTrue(completed.await(5, TimeUnit.SECONDS), "the handler must run to completion on replay");
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertEquals(WorkflowStatus.COMPLETED,
+                        store.getInstance("timer-cancel-replay-handler-1").orElseThrow().status()));
+
+        assertEquals(0, activityImpl.invocations.get(),
+                "the handler's activity must replay from the memoized event, never re-invoke the real impl");
+        assertEquals(memoizedOutcome,
+                serializer.deserialize(
+                        store.getInstance("timer-cancel-replay-handler-1").orElseThrow().output(), String.class),
+                "replay must produce the exact same output as the original run");
+
+        // No new writes beyond the workflow's own terminal event.
+        var events = store.getEvents(instance.id());
+        assertEquals(4, events.size(), "the only new event must be the workflow's own WORKFLOW_COMPLETED");
+        assertEquals(1, events.stream().filter(e -> e.eventType() == EventType.ACTIVITY_COMPLETED).count(),
+                "replay must not duplicate the already-memoized ACTIVITY_COMPLETED event");
     }
 
     private record SeedTimerDetail(String timerId, String duration) {}
@@ -1111,6 +1189,60 @@ class WorkflowExecutorTest {
                 outcome = "fired";
             } catch (TimerCancelledException e) {
                 outcome = "cancelled:" + e.timerId();
+            }
+            completed.countDown();
+            return outcome;
+        }
+    }
+
+    /**
+     * Activity interface for {@link CancellableSleepWorkflowWithActivity}'s
+     * catch handler — real activity-proxy memoization, not a bare Java call,
+     * so replaying the handler after a cancel proves the handler's activity
+     * is not re-invoked (Issue 13).
+     */
+    public interface HandlerActivity {
+        String handle(String input);
+    }
+
+    /**
+     * Counts real invocations so a test can assert replay never reaches it.
+     */
+    public static class CountingHandlerActivity implements HandlerActivity {
+        final AtomicInteger invocations = new AtomicInteger();
+
+        @Override
+        public String handle(String input) {
+            invocations.incrementAndGet();
+            return input + "-handled";
+        }
+    }
+
+    /**
+     * Like {@link CancellableSleepWorkflow}, but the catch handler calls a
+     * memoizing activity proxy instead of doing plain Java — the fixture for
+     * proving a caught {@link TimerCancelledException}'s handler activity is
+     * not re-invoked on replay (Issue 13).
+     */
+    public static class CancellableSleepWorkflowWithActivity {
+        private final Duration nap;
+        private final CountDownLatch completed;
+        private final HandlerActivity activity;
+
+        public CancellableSleepWorkflowWithActivity(
+                Duration nap, CountDownLatch completed, HandlerActivity activity) {
+            this.nap = nap;
+            this.completed = completed;
+            this.activity = activity;
+        }
+
+        public String run(String input) {
+            String outcome;
+            try {
+                WorkflowContext.current().sleep(nap);
+                outcome = activity.handle("fired:" + input);
+            } catch (TimerCancelledException e) {
+                outcome = activity.handle("cancelled:" + input);
             }
             completed.countDown();
             return outcome;
