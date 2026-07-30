@@ -11,6 +11,7 @@ import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowExecutionException;
 import io.b2mash.maestro.core.exception.WorkflowNotQueryableException;
 import io.b2mash.maestro.core.exception.WorkflowNotFoundException;
+import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
@@ -964,6 +965,13 @@ public final class WorkflowExecutor {
             // the shutdown path visually first as the case the rest of this
             // method must never treat as a failure.
             handleShutdownSuspension(ctx);
+        } catch (WorkflowTerminatedException e) {
+            // Also not a failure, and — unlike shutdown — not recoverable
+            // either: terminateWorkflow already wrote TERMINATED. Writes
+            // nothing and runs no compensation (terminate marks and stops).
+            // Ahead of catch (Exception e) for the same readability reason as
+            // the shutdown case above.
+            handleTermination(ctx, e);
         } catch (Exception e) {
             try {
                 handleWorkflowFailure(ctx, instance, e, compensationStack, parallelCompensation);
@@ -977,6 +985,11 @@ public final class WorkflowExecutor {
                 // Treat it exactly like a shutdown during a park: leave the
                 // durable state alone for the next node to finish.
                 handleShutdownSuspension(ctx);
+            } catch (WorkflowTerminatedException terminatedDuringCompensation) {
+                // Terminate landed while compensating. The remaining
+                // compensations do not run — that is terminate's contract —
+                // and the TERMINATED row already stands, so nothing is written.
+                handleTermination(ctx, terminatedDuringCompensation);
             }
         } finally {
             // Remove-then-release: a concurrent recovery attempt in the gap
@@ -986,6 +999,9 @@ public final class WorkflowExecutor {
             // Drop orphaned wake permits (e.g. duplicate signal deliveries
             // that arrived after the last await) now that the run is over
             parkingLot.clearPending(ctx.workflowId());
+            // Drop the sticky terminate poison: this run is over, so a future
+            // run of the same workflowId must be able to park again
+            parkingLot.clearTerminated(ctx.workflowId());
         }
     }
 
@@ -1030,6 +1046,20 @@ public final class WorkflowExecutor {
                 .orElse(null);
         logger.info("Workflow '{}' suspended by shutdown while {} — left recoverable",
                 ctx.workflowId(), status);
+    }
+
+    // ── Internal: termination ──────────────────────────────────────────
+
+    /**
+     * Records that a workflow's local run ended because the workflow was
+     * terminated. Deliberately writes nothing:
+     * {@link #terminateWorkflow(String, String)} already wrote {@code TERMINATED}
+     * — on this node or another — and that row is the durable record. No
+     * compensation runs either; terminate marks and stops.
+     */
+    private void handleTermination(WorkflowContext ctx, WorkflowTerminatedException e) {
+        logger.info("Workflow '{}' abandoned its local run — terminated{}",
+                ctx.workflowId(), e.reason() != null ? " (" + e.reason() + ")" : "");
     }
 
     // ── Internal: failure handling ─────────────────────────────────────

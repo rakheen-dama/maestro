@@ -552,17 +552,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
     }
 
     private void updateInstanceStatus(WorkflowContext ctx, WorkflowStatus newStatus) {
-        var instance = store.getInstance(ctx.workflowId());
-        if (instance.isEmpty()) {
-            logger.warn("Cannot update status to {} — workflow '{}' not found", newStatus, ctx.workflowId());
-            return;
-        }
-        var updated = instance.get().toBuilder()
-                .status(newStatus)
-                .updatedAt(Instant.now())
-                .version(instance.get().version() + 1)
-                .build();
-        store.updateInstance(updated);
+        InstanceStatusWriter.write(store, ctx.workflowId(), newStatus);
     }
 
     private void publishLifecycleEvent(WorkflowContext ctx, String stepName, LifecycleEventType eventType) {
