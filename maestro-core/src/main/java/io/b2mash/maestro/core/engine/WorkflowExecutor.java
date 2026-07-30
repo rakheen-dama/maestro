@@ -11,6 +11,7 @@ import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowExecutionException;
 import io.b2mash.maestro.core.exception.WorkflowNotQueryableException;
 import io.b2mash.maestro.core.exception.WorkflowNotFoundException;
+import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
@@ -51,6 +52,12 @@ import java.util.concurrent.atomic.AtomicReference;
  *       re-invokes each in replay mode.</li>
  *   <li><b>Signal delivery:</b> Persists signals and unparks waiting workflows.</li>
  *   <li><b>Timer fire:</b> Marks timers as fired and unparks sleeping workflows.</li>
+ *   <li><b>Timer cancel:</b> Marks a pending timer as cancelled and unparks a
+ *       sleeping workflow with a catchable
+ *       {@link io.b2mash.maestro.core.exception.TimerCancelledException}.</li>
+ *   <li><b>Terminate:</b> Marks a workflow {@code TERMINATED} from any node and
+ *       stops it — without compensation — evicting its virtual thread if this
+ *       node happens to own it.</li>
  *   <li><b>Shutdown:</b> Stops accepting new work, waits for in-flight
  *       workflows to drain, and leaves parked workflows in their
  *       {@code WAITING_*} status for another node to recover — a graceful
@@ -487,6 +494,418 @@ public final class WorkflowExecutor {
         }
     }
 
+    // ── Timer cancel ───────────────────────────────────────────────────
+
+    /**
+     * Cancels a pending timer, unparking a sleeping workflow with a
+     * catchable, durable "cancelled" outcome.
+     *
+     * <p>The store transition ({@code PENDING → CANCELLED}) is the single
+     * arbiter of the outcome — arbitrated by the same compare-and-set
+     * {@link #fireTimer(String, String, UUID)} uses for firing, so exactly
+     * one of a racing fire and cancel wins. This is the only supported
+     * cancellation entry point: unlike a hypothetical store-only cancel, it
+     * also unparks the waiting workflow, so {@code sleep()} does not stall
+     * forever on a row that will never become {@code FIRED}.
+     *
+     * <p>If this call wins the compare-and-set, the workflow's virtual
+     * thread — if parked here — resumes, reads the now-{@code CANCELLED} row,
+     * and its {@code sleep()} call throws
+     * {@link io.b2mash.maestro.core.exception.TimerCancelledException}. The
+     * same exception is thrown on every later replay, because the outcome is
+     * memoized as a {@code TIMER_CANCELLED} event at the sequence a
+     * {@code TIMER_FIRED} event would otherwise occupy. If the workflow is
+     * not parked on this node — it may be running on another node, or about
+     * to re-park after a crash — the cancellation is still durable and is
+     * observed at the workflow's next wake or recovery, the same
+     * eventual-consistency contract a cross-node {@link #fireTimer} has today.
+     *
+     * <p>Cancelling a timer that has already fired, or was already
+     * cancelled, is a {@code false} no-op: the row's outcome is already
+     * decided and the caller is told it lost the race rather than being left
+     * to guess.
+     *
+     * @param workflowId the workflow's business ID
+     * @param timerId    the timer's logical ID (e.g., {@code "sleep-5"})
+     * @param timerDbId  the timer's database UUID (for store transition)
+     * @return {@code true} if this call transitioned the timer
+     *         {@code PENDING → CANCELLED}; {@code false} if the timer had
+     *         already fired or was already cancelled
+     */
+    public boolean cancelTimer(String workflowId, String timerId, UUID timerDbId) {
+        var cancelled = store.markTimerCancelled(timerDbId);
+        if (cancelled) {
+            var parkKey = workflowId + ":timer:" + timerId;
+            parkingLot.unpark(parkKey, null);
+            logger.debug("Cancelled timer '{}' for workflow '{}'", timerId, workflowId);
+        } else {
+            logger.debug("Timer '{}' for workflow '{}' already fired or cancelled — skipping unpark",
+                    timerId, workflowId);
+        }
+        return cancelled;
+    }
+
+    // ── Terminate ──────────────────────────────────────────────────────
+
+    /**
+     * The outcome of a {@link #terminateWorkflow(String, String)} call.
+     *
+     * <p>Every constant is a <em>deterministic</em> outcome: retrying the same
+     * command can never turn one into another, so a caller driving terminate
+     * from an at-least-once transport should acknowledge the message for all of
+     * them. Only genuinely transient conditions (the store being unavailable, a
+     * version conflict that never clears) are signalled as exceptions instead.
+     */
+    public enum TerminateOutcome {
+
+        /** This call moved the workflow to {@code TERMINATED}. */
+        TERMINATED,
+
+        /**
+         * The workflow was already {@code COMPLETED}, {@code FAILED} or
+         * {@code TERMINATED}. Nothing was written — a finished workflow's
+         * outcome is durable truth and terminate does not rewrite history.
+         */
+        ALREADY_TERMINAL,
+
+        /** No instance with this workflow ID exists in this service's store. */
+        NOT_FOUND
+    }
+
+    /**
+     * Terminates a workflow: marks it {@code TERMINATED} and stops it.
+     *
+     * <p>This is the engine side of the admin dashboard's Terminate button.
+     *
+     * <h2>Durable first, then local eviction</h2>
+     * <p>The instance row is moved to {@code TERMINATED} by an optimistic
+     * compare-and-set before anything else happens, and the row's
+     * {@code version} — not the instance lock — is the arbiter. That is what
+     * lets this method be called on <b>any</b> node: the command arrives on
+     * whichever member of the consumer group the transport picks, which is
+     * usually not the node running the workflow. Only afterwards, and only if
+     * this node happens to own the workflow, is the running virtual thread
+     * evicted by abandoning its parks with a
+     * {@link WorkflowTerminatedException}.
+     *
+     * <p>A workflow owned by <em>another</em> node converges without any
+     * cross-node signalling: its thread hits the terminal-status guard the next
+     * time it writes a status, and a thread parked on {@code awaitSignal()}
+     * notices within one wake-recheck interval. In every case the durable state
+     * is already {@code TERMINATED} — convergence only bounds when the zombie
+     * thread stops.
+     *
+     * <h2>What terminate does not do</h2>
+     * <ul>
+     *   <li><b>No compensation.</b> Terminate marks and stops; it does not
+     *       unwind a saga. Compensation steps that already ran stay memoized,
+     *       pending ones never run. ("Cancel", which compensates, is a
+     *       different and larger feature.)</li>
+     *   <li><b>No interruption of an in-flight activity.</b> Consistent with
+     *       {@link #shutdown()}: the activity finishes and memoizes its result
+     *       (harmless), and the run stands down at its next park or at its
+     *       final transition.</li>
+     *   <li><b>No memoization-log event.</b> Appending one from outside the
+     *       workflow's own thread would race that thread's sequence counter
+     *       against the {@code (workflow_instance_id, sequence_number)} unique
+     *       index. The instance row plus the
+     *       {@link LifecycleEventType#WORKFLOW_TERMINATED} lifecycle event are
+     *       the durable record.</li>
+     *   <li><b>No timer cancellation.</b> A pending timer row may still fire;
+     *       the terminal-status guard makes that a no-op.</li>
+     * </ul>
+     *
+     * <h2>Idempotency</h2>
+     * <p>Safe under at-least-once redelivery: a second delivery re-reads the
+     * row, finds it terminal and returns {@link TerminateOutcome#ALREADY_TERMINAL}
+     * without overwriting the first call's reason.
+     *
+     * <p><b>Thread safety:</b> thread-safe; may be called concurrently from any
+     * thread, including several nodes at once.
+     *
+     * @param workflowId the business workflow ID to terminate
+     * @param reason     an operator-supplied reason recorded on the instance's
+     *                   {@code output}, or {@code null}
+     * @return what this call did — see {@link TerminateOutcome}
+     * @throws OptimisticLockException if the instance row is being written
+     *                                 continuously and the attempt budget is
+     *                                 exhausted. Transient: the caller should
+     *                                 <em>not</em> acknowledge, so the command is
+     *                                 redelivered against fresh state.
+     */
+    public TerminateOutcome terminateWorkflow(String workflowId, @Nullable String reason) {
+        for (var attempt = 1; ; attempt++) {
+            var existing = store.getInstance(workflowId);
+            if (existing.isEmpty()) {
+                logger.warn("Cannot terminate workflow '{}' — no such instance in this service", workflowId);
+                return TerminateOutcome.NOT_FOUND;
+            }
+            var latest = existing.get();
+            if (latest.status().isTerminal()) {
+                logger.warn("Workflow '{}' is already {} — not terminating", workflowId, latest.status());
+                return TerminateOutcome.ALREADY_TERMINAL;
+            }
+
+            var now = Instant.now();
+            var terminated = latest.toBuilder()
+                    .status(WorkflowStatus.TERMINATED)
+                    .output(serializer.serialize(new TerminationDetail(reason, "admin")))
+                    .completedAt(now)
+                    .updatedAt(now)
+                    .version(latest.version() + 1)
+                    .build();
+            try {
+                store.updateInstance(terminated);
+            } catch (OptimisticLockException e) {
+                if (attempt >= TERMINAL_TRANSITION_ATTEMPTS) {
+                    // Unlike the workflow's own finalisation — which leaves the
+                    // instance recoverable rather than recording an outcome it
+                    // could not persist — an unwritable terminate must be
+                    // surfaced: the caller has to not-acknowledge so the command
+                    // is redelivered, otherwise the operator's action is lost.
+                    logger.error("Could not terminate workflow '{}' after {} attempts — "
+                                    + "the instance row is being written continuously", workflowId, attempt);
+                    throw e;
+                }
+                logger.debug("Version conflict terminating workflow '{}' (attempt {}) — "
+                        + "retrying against a fresh read", workflowId, attempt);
+                continue;
+            }
+
+            publishLifecycleEvent(terminated, LifecycleEventType.WORKFLOW_TERMINATED, null);
+
+            // Best-effort local eviction. Only this node's threads can be
+            // abandoned; a remote owner converges via the terminal-status guard.
+            if (runningWorkflows.containsKey(workflowId)) {
+                parkingLot.abandonWorkflow(workflowId, reason);
+            }
+
+            logger.info("Terminated workflow '{}' (previous status={}, reason={})",
+                    workflowId, latest.status(), reason);
+            return TerminateOutcome.TERMINATED;
+        }
+    }
+
+    // ── Retry ──────────────────────────────────────────────────────────
+
+    /**
+     * The outcome of a {@link #retryWorkflow(String, WorkflowRegistration)} call.
+     *
+     * <p>Every constant is a <em>deterministic</em> outcome: retrying the same
+     * command can never turn one into another, so a caller driving retry from
+     * an at-least-once transport should acknowledge the message for all of
+     * them. Only genuinely transient conditions (an optimistic-lock conflict
+     * on the compare-and-set) are signalled as exceptions instead.
+     */
+    public enum RetryOutcome {
+
+        /** This call cleared the failure and relaunched the workflow. */
+        RETRIED,
+
+        /**
+         * The workflow was not {@code FAILED} — {@code RUNNING}, a
+         * {@code WAITING_*} status, {@code COMPENSATING}, {@code COMPLETED} or
+         * {@code TERMINATED}. Nothing was written; retry only applies to a
+         * workflow that has actually failed.
+         */
+        NOT_FAILED,
+
+        /** No instance with this workflow ID exists in this service's store. */
+        NOT_FOUND,
+
+        /**
+         * The compare-and-set to {@code RUNNING} succeeded, but by the time
+         * this call was ready to launch, the workflow was already running on
+         * this node (typically the recovery poller won the race). The instance
+         * is left {@code RUNNING} — recoverable, not lost.
+         */
+        ALREADY_RUNNING_LOCALLY,
+
+        /**
+         * The compare-and-set to {@code RUNNING} succeeded, but the per-instance
+         * distributed lock is held by another node. The instance is left
+         * {@code RUNNING} — the recovery poller (on any node) adopts it within
+         * one poll interval.
+         */
+        LOCK_HELD_ELSEWHERE,
+
+        /**
+         * The workflow is {@code FAILED}, but its event log carries a
+         * {@code COMPENSATION_STARTED} event — its saga already ran
+         * compensations before the instance terminated. Nothing was written:
+         * relaunching would replay the surviving compensation events at their
+         * original, now-stale sequence positions, and if the previously-failed
+         * step succeeds this time the forward path collides with them —
+         * re-running real compensating side effects, wrongly skipping others,
+         * or silently swallowing the run's terminal event as a duplicate. This
+         * outcome is a deliberate, acknowledged no-op until a dedicated design
+         * (a fresh-run/{@code runId} relaunch, or a compensation-aware sequence
+         * rebase) makes retrying a compensated saga safe; see the tracked
+         * follow-up issue in {@code docs/open-issues.md}.
+         */
+        COMPENSATED_NOT_RETRYABLE
+    }
+
+    /**
+     * Retries a {@code FAILED} workflow: clears its memoized failure, marks it
+     * {@code RUNNING} again, and relaunches it exactly like crash recovery.
+     *
+     * <p>This is the engine side of the admin dashboard's Retry button.
+     *
+     * <h2>Why the failure memo has to go</h2>
+     * <p>Hybrid memoization normally replays a stored outcome instead of
+     * re-executing a step — including a stored <em>failure</em>: on replay,
+     * the step that exhausted its retry policy re-throws the memoized
+     * {@code ACTIVITY_FAILED} event rather than running again. Relaunching a
+     * {@code FAILED} workflow without first clearing that memo would therefore
+     * replay straight back into the same failure, even after the underlying
+     * fault is fixed — a Retry button that always "succeeds" at flipping the
+     * row to {@code RUNNING} and then silently fails again. So the very first
+     * step, before anything else, is {@link WorkflowStore#deleteFailureEvents}:
+     * it deletes exactly the instance's {@code ACTIVITY_FAILED} and
+     * {@code WORKFLOW_FAILED} events, leaving every success and compensation
+     * memo untouched. The freed sequence also lets the retried run's own
+     * terminal event land where {@code WORKFLOW_FAILED} used to sit, instead of
+     * colliding with it.
+     *
+     * <h2>Mechanics — "make it recoverable again, then recover it"</h2>
+     * <ol>
+     *   <li>Read the instance. Absent → {@link RetryOutcome#NOT_FOUND}. Status
+     *       other than {@code FAILED} → {@link RetryOutcome#NOT_FAILED} — an
+     *       idempotent no-op, since retry only makes sense for a failure.</li>
+     *   <li>Probe the event log for {@code COMPENSATION_STARTED} — if the
+     *       saga already ran compensations, return
+     *       {@link RetryOutcome#COMPENSATED_NOT_RETRYABLE} without touching
+     *       anything; see that constant's Javadoc for why relaunching is
+     *       unsafe on this path.</li>
+     *   <li>{@link WorkflowStore#deleteFailureEvents} — see above.</li>
+     *   <li>A single optimistic compare-and-set: {@code status = RUNNING},
+     *       {@code completedAt = null}, {@code version + 1}. Unlike
+     *       {@link #terminateWorkflow}, this is <b>one</b> attempt, not a
+     *       converge-loop: a conflict here means another writer changed the row
+     *       between the read and the write, and
+     *       {@link OptimisticLockException} propagates so an at-least-once
+     *       transport redelivers the command against fresh state rather than
+     *       this call guessing what the fresh state now means.</li>
+     *   <li>Relaunch via the same internal path
+     *       {@link #resumeWorkflow(WorkflowInstance, Object, Method)} uses
+     *       ({@code replaying = true}) — identical to crash recovery: every
+     *       memoized event before the failure point replays for free, and the
+     *       step that failed (now memo-free) executes live with a fresh
+     *       retry-policy budget.</li>
+     *   <li>If the local {@code runningWorkflows} guard or the instance lock
+     *       refuses the launch ({@link RetryOutcome#ALREADY_RUNNING_LOCALLY} /
+     *       {@link RetryOutcome#LOCK_HELD_ELSEWHERE}), the instance is already
+     *       {@code RUNNING} — which is recoverable: the recovery poller (on any
+     *       node) adopts it within one poll interval, the same as a crash
+     *       between steps 3 and 4 heals.</li>
+     * </ol>
+     *
+     * <h2>Semantics caveat — compensated sagas</h2>
+     * <p>Retry is guarded off for a workflow whose saga already ran
+     * compensations: see {@link RetryOutcome#COMPENSATED_NOT_RETRYABLE}. The
+     * compensation events are anchored to the sequence position the failure
+     * occupied on the failed run; a retry that lets the previously-failed step
+     * succeed this time would run the forward path straight into those stale
+     * positions, corrupting the replay rather than safely skipping already-run
+     * compensations. Retrying a compensated saga is not yet supported — this
+     * method returns the guarded no-op instead of guessing.
+     *
+     * <h2>Idempotency</h2>
+     * <p>Safe under at-least-once redelivery: a second delivery re-reads the
+     * row, finds it no longer {@code FAILED} (it is at least {@code RUNNING})
+     * and returns {@link RetryOutcome#NOT_FAILED} without touching anything.
+     * A delivery that races the first one closely enough to still see
+     * {@code FAILED} loses the compare-and-set instead and its
+     * {@link OptimisticLockException} propagates for redelivery.
+     *
+     * <p><b>Thread safety:</b> thread-safe; may be called concurrently from any
+     * thread, including several nodes at once.
+     *
+     * @param workflowId   the business workflow ID to retry
+     * @param registration the registration (implementation instance and
+     *                     entry-point method) for this workflow's type — the
+     *                     same one recovery would use
+     * @return what this call did — see {@link RetryOutcome}
+     * @throws OptimisticLockException if another writer touched the instance
+     *                                 row between the read and the
+     *                                 compare-and-set. Transient: the caller
+     *                                 should <em>not</em> acknowledge, so the
+     *                                 command is redelivered against fresh
+     *                                 state.
+     */
+    public RetryOutcome retryWorkflow(String workflowId, WorkflowRegistration registration) {
+        var existing = store.getInstance(workflowId);
+        if (existing.isEmpty()) {
+            logger.warn("Cannot retry workflow '{}' — no such instance in this service", workflowId);
+            return RetryOutcome.NOT_FOUND;
+        }
+        var latest = existing.get();
+        if (latest.status() != WorkflowStatus.FAILED) {
+            logger.warn("Workflow '{}' is {} — not retrying (retry only applies to FAILED)",
+                    workflowId, latest.status());
+            return RetryOutcome.NOT_FAILED;
+        }
+
+        // A saga that already compensated leaves its compensation events
+        // anchored to the failed run's sequence positions. If the retried run
+        // lets the previously-failed step succeed this time, the forward path
+        // collides with those stale positions — see COMPENSATED_NOT_RETRYABLE's
+        // Javadoc for the full failure mode. Guard it off rather than corrupt
+        // the replay; getEvents is the cheapest correct read the store SPI
+        // offers (no targeted "by event type" probe exists).
+        var alreadyCompensated = store.getEvents(latest.id()).stream()
+                .anyMatch(e -> e.eventType() == EventType.COMPENSATION_STARTED);
+        if (alreadyCompensated) {
+            logger.warn("Workflow '{}' already ran saga compensations — not retrying "
+                    + "(retry of a compensated saga is not yet supported; see "
+                    + "RetryOutcome.COMPENSATED_NOT_RETRYABLE)", workflowId);
+            return RetryOutcome.COMPENSATED_NOT_RETRYABLE;
+        }
+
+        // Clear the memoized failure BEFORE the CAS: a crash between this line
+        // and the CAS leaves the instance FAILED with its failure memos already
+        // gone, which is harmless — deleteFailureEvents is idempotent, and a
+        // later retry of the still-FAILED instance simply deletes zero rows and
+        // proceeds normally.
+        var deleted = store.deleteFailureEvents(latest.id());
+        logger.debug("Deleted {} failure memo(s) for workflow '{}' before retry", deleted, workflowId);
+
+        var now = Instant.now();
+        var running = latest.toBuilder()
+                .status(WorkflowStatus.RUNNING)
+                .completedAt(null)
+                .updatedAt(now)
+                .version(latest.version() + 1)
+                .build();
+        // Single-attempt CAS — OptimisticLockException propagates rather than
+        // being retried here; see the Javadoc above.
+        store.updateInstance(running);
+
+        // Recheck the local running-workflow guard right before launching: the
+        // CAS just made the instance RUNNING, and in the gap between that write
+        // and this line, this node's own recovery poller could have observed
+        // the RUNNING row and already launched it (mirrors resumeWorkflow's
+        // own guard). The instance is left RUNNING either way — recoverable.
+        if (runningWorkflows.containsKey(workflowId)) {
+            logger.info("Workflow '{}' is already running locally after the retry CAS — "
+                    + "leaving it to the run already in flight", workflowId);
+            return RetryOutcome.ALREADY_RUNNING_LOCALLY;
+        }
+
+        var launched = launchWorkflow(running, registration.workflowImpl(), registration.workflowMethod(),
+                running.input(), true, null);
+        if (!launched) {
+            logger.info("Workflow '{}' CAS'd to RUNNING but its instance lock is held elsewhere — "
+                    + "left for the recovery poller to adopt", workflowId);
+            return RetryOutcome.LOCK_HELD_ELSEWHERE;
+        }
+
+        publishLifecycleEvent(running, LifecycleEventType.WORKFLOW_RETRIED, null);
+        logger.info("Retried workflow '{}' (type={})", workflowId, running.workflowType());
+        return RetryOutcome.RETRIED;
+    }
+
     // ── Timer poller ────────────────────────────────────────────────────
 
     /**
@@ -910,6 +1329,13 @@ public final class WorkflowExecutor {
             // the shutdown path visually first as the case the rest of this
             // method must never treat as a failure.
             handleShutdownSuspension(ctx);
+        } catch (WorkflowTerminatedException e) {
+            // Also not a failure, and — unlike shutdown — not recoverable
+            // either: terminateWorkflow already wrote TERMINATED. Writes
+            // nothing and runs no compensation (terminate marks and stops).
+            // Ahead of catch (Exception e) for the same readability reason as
+            // the shutdown case above.
+            handleTermination(ctx, e);
         } catch (Exception e) {
             try {
                 handleWorkflowFailure(ctx, instance, e, compensationStack, parallelCompensation);
@@ -923,6 +1349,11 @@ public final class WorkflowExecutor {
                 // Treat it exactly like a shutdown during a park: leave the
                 // durable state alone for the next node to finish.
                 handleShutdownSuspension(ctx);
+            } catch (WorkflowTerminatedException terminatedDuringCompensation) {
+                // Terminate landed while compensating. The remaining
+                // compensations do not run — that is terminate's contract —
+                // and the TERMINATED row already stands, so nothing is written.
+                handleTermination(ctx, terminatedDuringCompensation);
             }
         } finally {
             // Remove-then-release: a concurrent recovery attempt in the gap
@@ -932,6 +1363,9 @@ public final class WorkflowExecutor {
             // Drop orphaned wake permits (e.g. duplicate signal deliveries
             // that arrived after the last await) now that the run is over
             parkingLot.clearPending(ctx.workflowId());
+            // Drop the sticky terminate poison: this run is over, so a future
+            // run of the same workflowId must be able to park again
+            parkingLot.clearTerminated(ctx.workflowId());
         }
     }
 
@@ -976,6 +1410,20 @@ public final class WorkflowExecutor {
                 .orElse(null);
         logger.info("Workflow '{}' suspended by shutdown while {} — left recoverable",
                 ctx.workflowId(), status);
+    }
+
+    // ── Internal: termination ──────────────────────────────────────────
+
+    /**
+     * Records that a workflow's local run ended because the workflow was
+     * terminated. Deliberately writes nothing:
+     * {@link #terminateWorkflow(String, String)} already wrote {@code TERMINATED}
+     * — on this node or another — and that row is the durable record. No
+     * compensation runs either; terminate marks and stops.
+     */
+    private void handleTermination(WorkflowContext ctx, WorkflowTerminatedException e) {
+        logger.info("Workflow '{}' abandoned its local run — terminated{}",
+                ctx.workflowId(), e.reason() != null ? " (" + e.reason() + ")" : "");
     }
 
     // ── Internal: failure handling ─────────────────────────────────────
@@ -1214,4 +1662,10 @@ public final class WorkflowExecutor {
      * Error detail stored in the workflow output on failure.
      */
     private record ErrorDetail(String exceptionType, @Nullable String message) {}
+
+    /**
+     * Termination detail stored in the workflow output when an admin terminates
+     * it — the audit trail for why an operator stopped this workflow.
+     */
+    private record TerminationDetail(@Nullable String reason, String terminatedBy) {}
 }

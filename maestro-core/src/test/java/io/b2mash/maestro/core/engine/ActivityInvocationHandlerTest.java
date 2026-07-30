@@ -596,6 +596,15 @@ class ActivityInvocationHandlerTest {
             return new ArrayList<>(eventsBySequence.values());
         }
 
+        @Override
+        public int deleteFailureEvents(UUID instanceId) {
+            var before = eventsBySequence.size();
+            eventsBySequence.values().removeIf(e ->
+                    e.eventType() == EventType.ACTIVITY_FAILED
+                            || e.eventType() == EventType.WORKFLOW_FAILED);
+            return before - eventsBySequence.size();
+        }
+
         // ── Unused operations (not called by the proxy) ──
 
         @Override
@@ -659,7 +668,7 @@ class ActivityInvocationHandlerTest {
         }
 
         @Override
-        public void markTimerCancelled(UUID timerId) {
+        public boolean markTimerCancelled(UUID timerId) {
             throw new UnsupportedOperationException();
         }
     }

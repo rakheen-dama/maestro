@@ -204,7 +204,7 @@ Operators can take the following actions from the workflow detail page. Each act
 
 | Action | Endpoint | Description | Use Case |
 |---|---|---|---|
-| **Retry** | `POST /admin/workflows/{id}/retry` | Sends a `$maestro:retry` signal. The workflow resumes from its last failed step. | Transient failures resolved, external API outage ended. |
+| **Retry** | `POST /admin/workflows/{id}/retry` | Sends a `$maestro:retry` signal. The workflow resumes from its last failed step — unless its saga already compensated, in which case retry is refused as a safe no-op (see below). | Transient failures resolved, external API outage ended. |
 | **Terminate** | `POST /admin/workflows/{id}/terminate` | Sends a `$maestro:terminate` signal. The workflow stops immediately without compensation. | Stuck workflows, bad data, manual intervention needed. |
 | **Send Signal** | `POST /admin/workflows/{id}/signal` | Sends an application-level signal with a name and optional JSON payload. | Missing Kafka events, manual approval flows, testing. |
 
@@ -212,15 +212,70 @@ All actions produce a flash message confirming success or reporting failure, the
 
 **Note:** Admin commands use internal signal names prefixed with `$maestro:` (e.g., `$maestro:retry`, `$maestro:terminate`) to distinguish them from application-level signals.
 
-**Known limitation:** Retry and Terminate publish their `$maestro:retry` /
-`$maestro:terminate` signal to the target service's signal topic, and the
-dashboard reports success once the publish succeeds — but no engine-side
-listener currently consumes those two internal signal names, so nothing in
-the target service actually acts on them yet. The buttons are not functional
-end-to-end. "Send Signal" is unaffected — an application-level signal you
-send is delivered and consumed exactly like any other signal, since
-`awaitSignal(...)` doesn't care who published it. See
-[open-issues.md](open-issues.md) for tracking.
+**Semantics:**
+
+- **Retry** applies only to a `FAILED` workflow whose saga, if any, never
+  reached compensation. It discards the workflow's memoized failure (the
+  `ACTIVITY_FAILED`/`WORKFLOW_FAILED` events), marks the instance `RUNNING`,
+  and relaunches it exactly like crash recovery: every step before the
+  failure replays from its stored result — it does **not** re-execute — and
+  the step that failed re-executes live with a fresh retry-policy budget.
+  Nothing else changes: memoized successful steps stay memoized. Retry is
+  intended for transient failures (an external dependency that has since
+  recovered), not for correcting bad workflow logic or bad input.
+  **Compensated-saga caveat:** retrying a workflow whose saga already ran
+  compensations is **not supported**. Its compensation events sit at
+  sequence positions anchored to the failed run; if the previously-failed
+  step succeeds on a hypothetical retry, the forward path would collide with
+  those stale positions — re-running real compensating side effects,
+  wrongly skipping others, or losing the terminal event entirely. Rather
+  than risk that, Maestro detects this case (a `COMPENSATION_STARTED` event
+  in the log) and refuses: the command is logged at `WARN` and acknowledged
+  as a safe no-op, and the instance is left exactly as it was. There is no
+  supported way to retry a compensated saga today; see the tracked
+  follow-up in `docs/open-issues.md`.
+- **Terminate** applies to any active workflow, including one currently
+  compensating. It durably marks the instance `TERMINATED` and stops it —
+  **without running any compensation** and **without interrupting an
+  in-flight activity** (consistent with a graceful shutdown; the activity's
+  result is still memoized if it completes, but the run stands down at its
+  next checkpoint instead of continuing). A parked thread (waiting on a
+  signal or timer) is unwound promptly wherever it happens to be running.
+  Terminate is safe to call from any node: an optimistic version check, not
+  the instance lock, is the arbiter, so the command need not reach the node
+  that owns the workflow. The instance row is updated immediately regardless
+  of which node processes the command; a *remote* node's own parked thread
+  converges — notices the terminal state and stops — within one
+  `maestro.signal.wake-recheck-interval` (default 30s) for a signal-parked
+  workflow, or at its next timer fire / activity checkpoint otherwise.
+
+Both commands are idempotent under at-least-once redelivery — a duplicate or
+out-of-order command re-reads current state and either completes the
+remainder or stands down as a no-op:
+
+| Command | Instance state | Behaviour |
+|---|---|---|
+| Retry | `FAILED`, saga never compensated | Discards failure memo, `RUNNING`, relaunches in replay mode |
+| Retry | `FAILED`, saga already compensated | No-op (`COMPENSATED_NOT_RETRYABLE`) — logged at `WARN`, unsupported today |
+| Retry | `RUNNING` / `WAITING_*` / `COMPENSATING` | No-op (not failed) |
+| Retry | `COMPLETED` / `TERMINATED` | No-op (not failed) |
+| Retry | unknown workflow ID | No-op (not found) |
+| Terminate | any active state (incl. `COMPENSATING`) | `TERMINATED`, no compensation, local eviction if this node owns it |
+| Terminate | `COMPLETED` / `FAILED` / `TERMINATED` | No-op (already terminal) |
+| Terminate | unknown workflow ID | No-op (not found) |
+
+No-op outcomes are logged and the command is acknowledged — they are
+deterministic non-actions, so retrying delivery of them can never help.
+
+**Security posture:** there is no authentication, authorization, or
+provenance check on the admin-command path — anyone who can publish to
+`maestro.signals.{serviceName}` can retry or terminate any workflow, and can
+already inject an arbitrary application signal the same way. The dashboard
+adds no additional control of its own. If this matters for your deployment,
+the real control is Kafka ACLs: restrict `Write`/produce on
+`maestro.signals.*` to the admin app's principal and the owning services
+themselves, the same way you would restrict any other privileged control
+topic.
 
 ---
 

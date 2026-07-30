@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.exception.TimerCancelledException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.TimerStatus;
@@ -9,6 +10,8 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.retry.RetryExecutor;
+import io.b2mash.maestro.core.retry.RetryPolicy;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
 import io.b2mash.maestro.core.spi.SignalMessage;
@@ -34,8 +37,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
+import static io.b2mash.maestro.core.TestEventLogs.removeFailureEvents;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -349,6 +354,275 @@ class WorkflowExecutorTest {
             nodeB.shutdown();
         }
     }
+
+    // ── Timer cancel (Issue 13) ──────────────────────────────────────────
+
+    @Test
+    @DisplayName("cancelTimer unparks a workflow parked on it; uncaught it fails the workflow deterministically")
+    void cancelTimer_unparksWorkflow_uncaughtFailsTheWorkflow() throws Exception {
+        // Today (pre-fix): nothing unparks the workflow and it hangs forever.
+        // This is the live-cancel repro from the design's test plan (§9.1).
+        var completed = new CountDownLatch(1);
+        var workflow = new SleepingWorkflow(Duration.ofMinutes(10), completed);
+        var method = SleepingWorkflow.class.getMethod("run", String.class);
+
+        var instanceId = executor.startWorkflow("timer-cancel-1", "SleepingWorkflow", "default",
+                "hello", workflow, method);
+
+        await().atMost(Duration.ofSeconds(5)).until(() ->
+                store.getInstance("timer-cancel-1")
+                        .map(i -> i.status() == WorkflowStatus.WAITING_TIMER)
+                        .orElse(false));
+
+        var timer = store.findTimer(instanceId, "sleep-1").orElseThrow();
+        assertEquals(TimerStatus.PENDING, timer.status());
+        assertTrue(executor.cancelTimer("timer-cancel-1", "sleep-1", timer.id()),
+                "cancel must win the CAS against a PENDING timer");
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertEquals(WorkflowStatus.FAILED,
+                        store.getInstance("timer-cancel-1").orElseThrow().status()));
+        assertFalse(completed.await(300, TimeUnit.MILLISECONDS),
+                "an uncaught TimerCancelledException must not reach the workflow's own return path");
+
+        var events = store.getEvents(instanceId);
+        assertEquals(1, events.stream().filter(e -> e.eventType() == EventType.TIMER_CANCELLED).count(),
+                "the cancelled outcome must be memoized exactly once");
+        assertEquals(0, events.stream().filter(e -> e.eventType() == EventType.TIMER_FIRED).count());
+        assertEquals(TimerStatus.CANCELLED, store.findTimer(instanceId, "sleep-1").orElseThrow().status());
+    }
+
+    @Test
+    @DisplayName("a caught TimerCancelledException lets the workflow take a fallback branch")
+    void cancelTimer_caught_takesFallbackBranch() throws Exception {
+        var completed = new CountDownLatch(1);
+        var workflow = new CancellableSleepWorkflow(Duration.ofMinutes(10), completed);
+        var method = CancellableSleepWorkflow.class.getMethod("run", String.class);
+
+        var instanceId = executor.startWorkflow("timer-cancel-catch-1", "CancellableSleepWorkflow", "default",
+                "hello", workflow, method);
+
+        await().atMost(Duration.ofSeconds(5)).until(() ->
+                store.getInstance("timer-cancel-catch-1")
+                        .map(i -> i.status() == WorkflowStatus.WAITING_TIMER)
+                        .orElse(false));
+
+        var timer = store.findTimer(instanceId, "sleep-1").orElseThrow();
+        assertTrue(executor.cancelTimer("timer-cancel-catch-1", "sleep-1", timer.id()));
+
+        assertTrue(completed.await(5, TimeUnit.SECONDS), "the catch block must let the workflow finish");
+        await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
+                assertEquals(WorkflowStatus.COMPLETED,
+                        store.getInstance("timer-cancel-catch-1").orElseThrow().status()));
+        assertEquals(1, store.getEvents(instanceId).stream()
+                .filter(e -> e.eventType() == EventType.TIMER_CANCELLED).count());
+    }
+
+    @Test
+    @DisplayName("cancelTimer on an already-fired timer is a false no-op (R1)")
+    void cancelTimer_onFiredTimer_returnsFalse() throws Exception {
+        var completed = new CountDownLatch(1);
+        var workflow = new SleepingWorkflow(Duration.ofMillis(10), completed);
+        var method = SleepingWorkflow.class.getMethod("run", String.class);
+
+        var instanceId = executor.startWorkflow("timer-cancel-2", "SleepingWorkflow", "default",
+                "hello", workflow, method);
+
+        await().atMost(Duration.ofSeconds(5)).until(() ->
+                store.getInstance("timer-cancel-2")
+                        .map(i -> i.status() == WorkflowStatus.WAITING_TIMER)
+                        .orElse(false));
+
+        var timer = store.findTimer(instanceId, "sleep-1").orElseThrow();
+        executor.fireTimer("timer-cancel-2", "sleep-1", timer.id());
+        assertTrue(completed.await(5, TimeUnit.SECONDS));
+        await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
+                assertEquals(WorkflowStatus.COMPLETED, store.getInstance("timer-cancel-2").orElseThrow().status()));
+
+        assertFalse(executor.cancelTimer("timer-cancel-2", "sleep-1", timer.id()),
+                "a FIRED timer must never transition to CANCELLED");
+        assertEquals(1, store.getEvents(instanceId).stream()
+                .filter(e -> e.eventType() == EventType.TIMER_FIRED).count());
+        assertEquals(0, store.getEvents(instanceId).stream()
+                .filter(e -> e.eventType() == EventType.TIMER_CANCELLED).count());
+    }
+
+    @Test
+    @DisplayName("Recovery heals a timer cancelled before its TIMER_CANCELLED event was appended")
+    void recoverWorkflowsHealsTimerCancelledBeforeEventAppend() throws Exception {
+        // The crash window inside cancelTimer: the row goes PENDING → CANCELLED,
+        // then the node dies before its workflow thread appends
+        // TIMER_CANCELLED. Mirrors recoverWorkflowsHealsTimerFiredBeforeEventAppend
+        // exactly, with the cancelled outcome instead of fired (design §6, C2/C3).
+        // Today (pre-fix): recovery re-parks the workflow forever.
+        var nodeAWorkflow = new CancellableSleepWorkflow(Duration.ofMinutes(10), new CountDownLatch(1));
+        var method = CancellableSleepWorkflow.class.getMethod("run", String.class);
+
+        var instanceId = executor.startWorkflow("timer-cancel-heal-1", "CancellableSleepWorkflow", "default",
+                "hello", nodeAWorkflow, method);
+
+        await().atMost(Duration.ofSeconds(5)).until(() ->
+                store.getInstance("timer-cancel-heal-1")
+                        .map(i -> i.status() == WorkflowStatus.WAITING_TIMER)
+                        .orElse(false));
+
+        var timer = store.findTimer(instanceId, "sleep-1").orElseThrow();
+        assertEquals(TimerStatus.PENDING, timer.status());
+        assertTrue(store.markTimerCancelled(timer.id()), "the crash window opens once the row transitions");
+        // node-a is now gone: nothing unparks its thread, nothing appends TIMER_CANCELLED.
+
+        var completed = new CountDownLatch(1);
+        var nodeBWorkflow = new CancellableSleepWorkflow(Duration.ofMinutes(10), completed);
+        var registration = new WorkflowRegistration(
+                "CancellableSleepWorkflow", "default", nodeBWorkflow, method);
+        var nodeB = new WorkflowExecutor(store, null, messaging, null, serializer, "node-b");
+        try {
+            assertEquals(1, nodeB.recoverWorkflows(Map.of("CancellableSleepWorkflow", registration)));
+
+            assertTrue(completed.await(5, TimeUnit.SECONDS),
+                    "a timer already marked CANCELLED must not re-park the workflow forever");
+            await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                    assertEquals(WorkflowStatus.COMPLETED,
+                            store.getInstance("timer-cancel-heal-1").orElseThrow().status()));
+
+            var cancelledEvents = store.getEvents(instanceId).stream()
+                    .filter(e -> e.eventType() == EventType.TIMER_CANCELLED)
+                    .toList();
+            assertEquals(1, cancelledEvents.size(),
+                    "replay must heal the missing TIMER_CANCELLED event exactly once");
+        } finally {
+            nodeB.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("Replay of a log ending in TIMER_CANCELLED throws deterministically without new store writes")
+    void replayOnly_timerCancelledEvent_throwsWithoutNewStoreWrites() throws Exception {
+        // A finished decision: TIMER_SCHEDULED then TIMER_CANCELLED are already
+        // in the log, as if a prior run already lived through the live-cancel
+        // path. Replaying sleep() from this log must reproduce the throw purely
+        // by reading the log — no new events, no timer row ever touched
+        // (design §3.4, §7).
+        var completed = new CountDownLatch(1);
+        var workflow = new SleepingWorkflow(Duration.ofMinutes(10), completed);
+        var method = SleepingWorkflow.class.getMethod("run", String.class);
+
+        var instance = WorkflowInstance.builder()
+                .id(UUID.randomUUID())
+                .workflowId("timer-cancel-replay-1")
+                .runId(UUID.randomUUID())
+                .workflowType("SleepingWorkflow")
+                .taskQueue("default")
+                .status(WorkflowStatus.WAITING_TIMER)
+                .serviceName("test-service")
+                .startedAt(Instant.now())
+                .updatedAt(Instant.now())
+                .build();
+        store.createInstance(instance);
+        store.appendEvent(new WorkflowEvent(UUID.randomUUID(), instance.id(), 1,
+                EventType.TIMER_SCHEDULED, "$maestro:sleep",
+                serializer.serialize(new SeedTimerDetail("sleep-1", Duration.ofMinutes(10).toString())),
+                Instant.now()));
+        store.appendEvent(new WorkflowEvent(UUID.randomUUID(), instance.id(), 2,
+                EventType.TIMER_CANCELLED, "$maestro:timer-cancelled", null, Instant.now()));
+
+        var registration = new WorkflowRegistration("SleepingWorkflow", "default", workflow, method);
+        assertEquals(1, executor.recoverWorkflows(Map.of("SleepingWorkflow", registration)));
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertEquals(WorkflowStatus.FAILED,
+                        store.getInstance("timer-cancel-replay-1").orElseThrow().status()));
+        assertFalse(completed.await(300, TimeUnit.MILLISECONDS),
+                "an uncaught TimerCancelledException must not reach the workflow's own return path");
+
+        // The only new event is WORKFLOW_FAILED — the workflow's own terminal
+        // transition. Replaying sleep() itself must not touch the store at
+        // all: no duplicate TIMER_CANCELLED, no TIMER_FIRED, no timer row.
+        var events = store.getEvents(instance.id());
+        assertEquals(3, events.size(), "the only new event must be the workflow's own WORKFLOW_FAILED");
+        assertEquals(1, events.stream().filter(e -> e.eventType() == EventType.TIMER_CANCELLED).count(),
+                "replay must not duplicate the already-memoized TIMER_CANCELLED event");
+        assertEquals(0, events.stream().filter(e -> e.eventType() == EventType.TIMER_FIRED).count());
+        assertTrue(store.findTimer(instance.id(), "sleep-1").isEmpty(),
+                "no timer row was ever saved for this seeded log — replay must not create one");
+    }
+
+    @Test
+    @DisplayName("Replay of a caught TIMER_CANCELLED does not re-invoke the catch handler's activity")
+    void replayOnly_catchHandlerActivityAlreadyMemoized_isNotReInvoked() throws Exception {
+        // Extends the replay-only proof above one step further: a workflow
+        // that catches TimerCancelledException and calls a real (proxied)
+        // activity in its handler. The log already contains TIMER_SCHEDULED,
+        // TIMER_CANCELLED, and the handler activity's ACTIVITY_COMPLETED —
+        // as if a prior run already lived through the catch-and-continue
+        // path in full. Replaying must reproduce the exact same output
+        // WITHOUT re-invoking the real activity (design §9 item 3 / §7).
+        var completed = new CountDownLatch(1);
+        var activityImpl = new CountingHandlerActivity();
+        var proxyFactory = new ActivityProxyFactory();
+        var activityProxy = proxyFactory.createProxy(
+                HandlerActivity.class,
+                activityImpl,
+                store,
+                null,
+                messaging,
+                RetryPolicy.noRetry(),
+                Duration.ofSeconds(30),
+                serializer,
+                new RetryExecutor());
+        var workflow = new CancellableSleepWorkflowWithActivity(
+                Duration.ofMinutes(10), completed, activityProxy);
+        var method = CancellableSleepWorkflowWithActivity.class.getMethod("run", String.class);
+
+        var instance = WorkflowInstance.builder()
+                .id(UUID.randomUUID())
+                .workflowId("timer-cancel-replay-handler-1")
+                .runId(UUID.randomUUID())
+                .workflowType("CancellableSleepWorkflowWithActivity")
+                .taskQueue("default")
+                .status(WorkflowStatus.WAITING_TIMER)
+                .serviceName("test-service")
+                .startedAt(Instant.now())
+                .updatedAt(Instant.now())
+                .build();
+        store.createInstance(instance);
+        store.appendEvent(new WorkflowEvent(UUID.randomUUID(), instance.id(), 1,
+                EventType.TIMER_SCHEDULED, "$maestro:sleep",
+                serializer.serialize(new SeedTimerDetail("sleep-1", Duration.ofMinutes(10).toString())),
+                Instant.now()));
+        store.appendEvent(new WorkflowEvent(UUID.randomUUID(), instance.id(), 2,
+                EventType.TIMER_CANCELLED, "$maestro:timer-cancelled", null, Instant.now()));
+        // The catch handler's activity call already completed durably in the
+        // "prior run" this log stands in for.
+        var memoizedOutcome = "cancelled:seed-handled";
+        store.appendEvent(new WorkflowEvent(UUID.randomUUID(), instance.id(), 3,
+                EventType.ACTIVITY_COMPLETED, "HandlerActivity.handle",
+                serializer.serialize(memoizedOutcome), Instant.now()));
+
+        var registration = new WorkflowRegistration(
+                "CancellableSleepWorkflowWithActivity", "default", workflow, method);
+        assertEquals(1, executor.recoverWorkflows(Map.of("CancellableSleepWorkflowWithActivity", registration)));
+
+        assertTrue(completed.await(5, TimeUnit.SECONDS), "the handler must run to completion on replay");
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertEquals(WorkflowStatus.COMPLETED,
+                        store.getInstance("timer-cancel-replay-handler-1").orElseThrow().status()));
+
+        assertEquals(0, activityImpl.invocations.get(),
+                "the handler's activity must replay from the memoized event, never re-invoke the real impl");
+        assertEquals(memoizedOutcome,
+                serializer.deserialize(
+                        store.getInstance("timer-cancel-replay-handler-1").orElseThrow().output(), String.class),
+                "replay must produce the exact same output as the original run");
+
+        // No new writes beyond the workflow's own terminal event.
+        var events = store.getEvents(instance.id());
+        assertEquals(4, events.size(), "the only new event must be the workflow's own WORKFLOW_COMPLETED");
+        assertEquals(1, events.stream().filter(e -> e.eventType() == EventType.ACTIVITY_COMPLETED).count(),
+                "replay must not duplicate the already-memoized ACTIVITY_COMPLETED event");
+    }
+
+    private record SeedTimerDetail(String timerId, String duration) {}
 
     // ── Instance lock ──────────────────────────────────────────────────
 
@@ -896,6 +1170,87 @@ class WorkflowExecutorTest {
     }
 
     /**
+     * Sleeps like {@link SleepingWorkflow} but catches a cancelled timer and
+     * takes a fallback branch instead of failing — the fixture for
+     * {@link TimerCancelledException} determinism (Issue 13).
+     */
+    public static class CancellableSleepWorkflow {
+        private final Duration nap;
+        private final CountDownLatch completed;
+
+        public CancellableSleepWorkflow(Duration nap, CountDownLatch completed) {
+            this.nap = nap;
+            this.completed = completed;
+        }
+
+        public String run(String input) {
+            String outcome;
+            try {
+                WorkflowContext.current().sleep(nap);
+                outcome = "fired";
+            } catch (TimerCancelledException e) {
+                outcome = "cancelled:" + e.timerId();
+            }
+            completed.countDown();
+            return outcome;
+        }
+    }
+
+    /**
+     * Activity interface for {@link CancellableSleepWorkflowWithActivity}'s
+     * catch handler — real activity-proxy memoization, not a bare Java call,
+     * so replaying the handler after a cancel proves the handler's activity
+     * is not re-invoked (Issue 13).
+     */
+    public interface HandlerActivity {
+        String handle(String input);
+    }
+
+    /**
+     * Counts real invocations so a test can assert replay never reaches it.
+     */
+    public static class CountingHandlerActivity implements HandlerActivity {
+        final AtomicInteger invocations = new AtomicInteger();
+
+        @Override
+        public String handle(String input) {
+            invocations.incrementAndGet();
+            return input + "-handled";
+        }
+    }
+
+    /**
+     * Like {@link CancellableSleepWorkflow}, but the catch handler calls a
+     * memoizing activity proxy instead of doing plain Java — the fixture for
+     * proving a caught {@link TimerCancelledException}'s handler activity is
+     * not re-invoked on replay (Issue 13).
+     */
+    public static class CancellableSleepWorkflowWithActivity {
+        private final Duration nap;
+        private final CountDownLatch completed;
+        private final HandlerActivity activity;
+
+        public CancellableSleepWorkflowWithActivity(
+                Duration nap, CountDownLatch completed, HandlerActivity activity) {
+            this.nap = nap;
+            this.completed = completed;
+            this.activity = activity;
+        }
+
+        public String run(String input) {
+            String outcome;
+            try {
+                WorkflowContext.current().sleep(nap);
+                outcome = activity.handle("fired:" + input);
+            } catch (TimerCancelledException e) {
+                outcome = activity.handle("cancelled:" + input);
+            }
+            completed.countDown();
+            return outcome;
+        }
+    }
+
+    /**
      * Workflow with no input parameter.
      */
     public static class NoInputWorkflow {
@@ -1081,6 +1436,11 @@ class WorkflowExecutorTest {
         }
 
         @Override
+        public int deleteFailureEvents(UUID instanceId) {
+            return removeFailureEvents(events, instanceId);
+        }
+
+        @Override
         public void saveSignal(WorkflowSignal signal) {
             signals.add(signal);
         }
@@ -1157,16 +1517,17 @@ class WorkflowExecutorTest {
         }
 
         @Override
-        public void markTimerCancelled(UUID timerId) {
+        public boolean markTimerCancelled(UUID timerId) {
             for (int i = 0; i < timers.size(); i++) {
                 var t = timers.get(i);
                 if (t.id().equals(timerId) && t.status() == TimerStatus.PENDING) {
                     timers.set(i, new WorkflowTimer(
                             t.id(), t.workflowInstanceId(), t.workflowId(), t.timerId(),
                             t.fireAt(), TimerStatus.CANCELLED, t.createdAt()));
-                    return;
+                    return true;
                 }
             }
+            return false;
         }
     }
 

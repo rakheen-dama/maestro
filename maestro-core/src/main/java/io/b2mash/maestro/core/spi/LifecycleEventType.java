@@ -24,6 +24,9 @@ public enum LifecycleEventType {
     /** Workflow was terminated by admin action. */
     WORKFLOW_TERMINATED,
 
+    /** A {@code FAILED} workflow was re-driven by admin action (manual retry). */
+    WORKFLOW_RETRIED,
+
     /** An activity execution started. */
     ACTIVITY_STARTED,
 
@@ -44,6 +47,9 @@ public enum LifecycleEventType {
 
     /** A durable timer fired. */
     TIMER_FIRED,
+
+    /** A durable timer was cancelled while the workflow was waiting on it. */
+    TIMER_CANCELLED,
 
     /** Saga compensation started. */
     COMPENSATION_STARTED,

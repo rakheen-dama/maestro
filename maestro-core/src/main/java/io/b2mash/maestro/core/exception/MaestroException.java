@@ -34,12 +34,14 @@ public sealed class MaestroException extends RuntimeException
                 WorkflowExecutionException,
                 ActivityExecutionException,
                 SignalTimeoutException,
+                TimerCancelledException,
                 RetryExhaustedException,
                 LockAcquisitionException,
                 LockBackendException,
                 SerializationException,
                 CompensationException,
-                QueryException {
+                QueryException,
+                AdminCommandException {
 
     /**
      * Creates a new exception with the given message.

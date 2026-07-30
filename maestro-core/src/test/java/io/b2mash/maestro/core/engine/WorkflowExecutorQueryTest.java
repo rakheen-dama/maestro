@@ -35,6 +35,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
+import static io.b2mash.maestro.core.TestEventLogs.removeFailureEvents;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -416,6 +417,11 @@ class WorkflowExecutorQueryTest {
         }
 
         @Override
+        public int deleteFailureEvents(UUID instanceId) {
+            return removeFailureEvents(events, instanceId);
+        }
+
+        @Override
         public void saveSignal(WorkflowSignal signal) { signals.add(signal); }
 
         @Override
@@ -482,15 +488,16 @@ class WorkflowExecutorQueryTest {
         }
 
         @Override
-        public void markTimerCancelled(UUID timerId) {
+        public boolean markTimerCancelled(UUID timerId) {
             for (int i = 0; i < timers.size(); i++) {
                 var t = timers.get(i);
                 if (t.id().equals(timerId) && t.status() == TimerStatus.PENDING) {
                     timers.set(i, new WorkflowTimer(t.id(), t.workflowInstanceId(), t.workflowId(),
                             t.timerId(), t.fireAt(), TimerStatus.CANCELLED, t.createdAt()));
-                    return;
+                    return true;
                 }
             }
+            return false;
         }
     }
 

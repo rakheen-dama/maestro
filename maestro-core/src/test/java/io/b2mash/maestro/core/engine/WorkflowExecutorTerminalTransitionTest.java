@@ -28,6 +28,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static io.b2mash.maestro.core.TestEventLogs.removeFailureEvents;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -287,6 +288,11 @@ class WorkflowExecutorTerminalTransitionTest {
         }
 
         @Override
+        public int deleteFailureEvents(UUID instanceId) {
+            return removeFailureEvents(events, instanceId);
+        }
+
+        @Override
         public void saveSignal(WorkflowSignal signal) {
             // no signals in these tests
         }
@@ -327,8 +333,9 @@ class WorkflowExecutorTerminalTransitionTest {
         }
 
         @Override
-        public void markTimerCancelled(UUID timerId) {
+        public boolean markTimerCancelled(UUID timerId) {
             // no timers in these tests
+            return false;
         }
     }
 

@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
+import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -50,6 +51,15 @@ import java.util.concurrent.TimeoutException;
  * shutdown began throws immediately instead of blocking out its timeout, which
  * is what bounds how long {@code shutdown()} has to wait.
  *
+ * <h2>Terminate</h2>
+ * <p>{@link #abandonWorkflow(String, String)} is the per-workflow analogue:
+ * every waiter belonging to one workflow is abandoned with a
+ * {@link WorkflowTerminatedException}, and the poison is likewise sticky so a
+ * park racing the sweep fails fast. Unlike shutdown, the abandoned run is not
+ * recoverable — its instance row is already {@code TERMINATED} — and the poison
+ * is per-workflow and cleared by {@link #clearTerminated(String)} when the run
+ * unwinds, so this lot stays usable for every other workflow.
+ *
  * <h2>Thread Safety</h2>
  * <p>All operations are thread-safe. The underlying {@link ConcurrentHashMap}
  * handles concurrent park/unpark from different virtual threads.
@@ -61,8 +71,22 @@ final class ParkingLot {
     /** Marker for a permit delivered with a {@code null} payload. */
     private static final Object NULL_PAYLOAD = new Object();
 
+    /** Reason marker for a terminate that carried no operator-supplied reason. */
+    private static final String NO_REASON = "";
+
     private final ConcurrentHashMap<String, CompletableFuture<Object>> futures = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Object> pendingWakes = new ConcurrentHashMap<>();
+
+    /**
+     * Sticky per-workflow terminate poison: {@code workflowId → reason}. Mirrors
+     * {@link #shuttingDown} but scoped to one workflow, so a park that registers
+     * just after {@link #abandonWorkflow} swept the lot throws immediately
+     * instead of blocking out its timeout. Normally empty, so the common park
+     * path costs one {@code isEmpty()} check; entries are dropped by
+     * {@link #clearTerminated} when the run ends.
+     */
+    private final ConcurrentHashMap<String, String> terminatedWorkflows = new ConcurrentHashMap<>();
+
     private volatile boolean shuttingDown = false;
 
     /**
@@ -149,7 +173,32 @@ final class ParkingLot {
             futures.remove(key, future);
             throw shutdownSignal(key);
         }
+        var terminated = terminatedSignal(key);
+        if (terminated != null) {
+            futures.remove(key, future);
+            throw terminated;
+        }
         return future;
+    }
+
+    /**
+     * Builds the terminate signal for a key whose workflow has been terminated,
+     * or returns {@code null} if it has not.
+     *
+     * <p>Short-circuits on the common empty case; the prefix scan only runs while
+     * some workflow on this node is mid-termination, which is at most as long as
+     * one run takes to unwind.
+     */
+    private @Nullable WorkflowTerminatedException terminatedSignal(String key) {
+        if (terminatedWorkflows.isEmpty()) {
+            return null;
+        }
+        for (var entry : terminatedWorkflows.entrySet()) {
+            if (key.startsWith(entry.getKey() + ":")) {
+                return terminateSignal(entry.getKey(), entry.getValue());
+            }
+        }
+        return null;
     }
 
     /**
@@ -248,6 +297,68 @@ final class ParkingLot {
             }
         });
         pendingWakes.clear();
+    }
+
+    /**
+     * Abandons every waiter belonging to one workflow because that workflow has
+     * been terminated, and refuses further parks for it.
+     *
+     * <p>The per-workflow analogue of {@link #shutdown()}, and sticky for the
+     * same reason: a park that registers between the sweep and the run's unwind
+     * must fail fast rather than block out its timeout. Unlike shutdown, the
+     * abandoned run is <em>not</em> recoverable — {@code terminateWorkflow} has
+     * already written {@code TERMINATED}, so
+     * {@link WorkflowTerminatedException} tells the executor to write nothing
+     * and run no compensation.
+     *
+     * <p>Only meaningful on the node that actually runs the workflow. A node
+     * that terminates a workflow it does not own has nothing to sweep; the owner
+     * converges via the terminal-status guards instead.
+     *
+     * <p>The poison is dropped by {@link #clearTerminated(String)} once the run
+     * has unwound, so a later run of the same {@code workflowId} can park again.
+     *
+     * @param workflowId the workflow whose parks are abandoned
+     * @param reason     the operator-supplied termination reason, or {@code null}
+     */
+    void abandonWorkflow(String workflowId, @Nullable String reason) {
+        terminatedWorkflows.put(workflowId, reason != null ? reason : NO_REASON);
+        var prefix = workflowId + ":";
+        futures.forEach((key, future) -> {
+            if (key.startsWith(prefix)
+                    && future.completeExceptionally(terminateSignal(workflowId, reason))) {
+                logger.debug("Abandoned park at key '{}' — workflow was terminated", key);
+            }
+        });
+        pendingWakes.keySet().removeIf(key -> key.startsWith(prefix));
+    }
+
+    /**
+     * Drops the sticky terminate poison for a workflow, so a future run of the
+     * same {@code workflowId} can park again. Called when a run ends, alongside
+     * {@link #clearPending(String)}.
+     *
+     * @param workflowId the workflow whose poison is cleared
+     */
+    void clearTerminated(String workflowId) {
+        terminatedWorkflows.remove(workflowId);
+    }
+
+    /**
+     * Returns whether a workflow is currently poisoned by a terminate.
+     * Primarily for testing.
+     *
+     * @param workflowId the workflow ID
+     * @return {@code true} while parks for this workflow are refused
+     */
+    boolean isTerminated(String workflowId) {
+        return terminatedWorkflows.containsKey(workflowId);
+    }
+
+    private static WorkflowTerminatedException terminateSignal(
+            String workflowId, @Nullable String reason) {
+        return new WorkflowTerminatedException(
+                workflowId, NO_REASON.equals(reason) ? null : reason);
     }
 
     private static ExecutorShutdownException shutdownSignal(String key) {

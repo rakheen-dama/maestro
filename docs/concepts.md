@@ -255,6 +255,27 @@ var status = payment.checkStatus(orderId);
 
 A leader-elected **timer poller** runs on one node in the cluster, querying Postgres for due timers and firing them. The leader election uses Valkey with a 15-second TTL lease.
 
+### Cancelling a timer
+
+An operator (or, eventually, an admin action) can cancel a pending timer via `WorkflowExecutor.cancelTimer(workflowId, timerId, timerDbId)`. This is the *only* supported cancellation path -- there is no store-only cancel, because a store-only cancel would leave the parked workflow with nothing to wake it.
+
+Cancelling a timer a workflow is currently waiting on unparks it with a durable, catchable outcome: `sleep()` throws `TimerCancelledException` instead of returning, both on the live path and on every later replay.
+
+```java
+try {
+    workflow.sleep(Duration.ofMinutes(30));
+    // ... normal path
+} catch (TimerCancelledException e) {
+    // an operator skipped the cooling-off period -- take the fallback branch
+}
+```
+
+Left uncaught, `TimerCancelledException` propagates like any other exception: saga compensation runs (if registered) and the instance ends `FAILED`. Both outcomes -- caught and uncaught -- are deterministic and visible, unlike a cancel that silently strands the workflow in `WAITING_TIMER` forever.
+
+Cancellation is arbitrated the same way firing is: a compare-and-set on the timer row (`PENDING -> CANCELLED`). `cancelTimer` returns `true` if it won the race, `false` if the timer had already fired or was already cancelled -- the caller is told, rather than left to guess.
+
+`awaitSignal(name, timeout)` is unaffected by any of this: its timeout is an in-memory recheck loop, not a durable timer row, so there is nothing for `cancelTimer` to reach.
+
 ---
 
 ## Queries

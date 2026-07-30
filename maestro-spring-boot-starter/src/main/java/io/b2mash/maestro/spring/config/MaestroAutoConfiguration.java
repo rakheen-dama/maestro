@@ -118,12 +118,23 @@ public class MaestroAutoConfiguration {
     }
 
     @Bean
+    @ConditionalOnMissingBean
+    public AdminCommandDispatcher maestroAdminCommandDispatcher(
+            WorkflowExecutor executor,
+            WorkflowStore store,
+            WorkflowRegistrar registrar
+    ) {
+        return new AdminCommandDispatcher(executor, store, registrar);
+    }
+
+    @Bean
     public SignalSubscriptionRunner maestroSignalSubscriptionRunner(
             WorkflowExecutor executor,
+            AdminCommandDispatcher commandDispatcher,
             @Nullable WorkflowMessaging messaging,
             MaestroProperties properties
     ) {
-        return new SignalSubscriptionRunner(executor, messaging, properties);
+        return new SignalSubscriptionRunner(executor, commandDispatcher, messaging, properties);
     }
 
     @Bean

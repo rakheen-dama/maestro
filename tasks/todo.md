@@ -149,3 +149,13 @@ All 10 tasks complete; issues 1–10 closed, 11/12 documented as known limitatio
 - Defects found and fixed BEYOND the original issue list: admin missing kafka+flyway starters (boot-breaking), admin-client silently dropping async send failures, `enabled=false` leaking ACTIVITY_*/SIGNAL_*/TIMER_*/COMPENSATION_* events (caught by QA gate 5 live E2E, fixed via GatedWorkflowMessaging).
 - Verification: full `./gradlew build` green post-fix; integration suite 69/69 across 3 `--rerun-tasks` runs; loan E2E 6/6 with process-identity proof; admin ingestion verified over HTTP.
 - Breaking changes (all in docs/release-notes.md): WorkflowStore.findTimer, ExecutorShutdownException→Error, KafkaMessagingConfig fields, @MaestroSignalListener KafkaTemplate requirement. Operators must pre-create .DLT topics before upgrading.
+
+# Milestone: Issues 13–15 + QA cycle
+
+Binding plan: `tasks/issues-13-15-plan.md`. Branch: `worktree-issues-13-15` off `main` @ PR #28 merge.
+
+- [x] Task 1 — Issue 14: SagaManager replay-skip guard (both loops, LIFO-order gap closed)
+- [x] Task 2 — Issue 13: timer cancel → TimerCancelledException, memoized + 3-way heal
+- [x] Task 3 — Issue 15: $maestro:retry/terminate live end-to-end (dispatcher, retryWorkflow + deleteFailureEvents ruling, terminateWorkflow, resurrection guards, Kafka E2E)
+- [x] Task 4 — Docs close-out: 13-15 Resolved callouts, 0.4.0 release notes, test-plan reconciled
+- [x] Task 5 — QA cycle: all gates pass (incl. live dashboard retry/terminate); stale-artifact contamination caught and re-verified

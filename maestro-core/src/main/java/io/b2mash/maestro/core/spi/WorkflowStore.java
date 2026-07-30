@@ -136,6 +136,47 @@ public interface WorkflowStore {
      */
     List<WorkflowEvent> getEvents(UUID instanceId);
 
+    /**
+     * Deletes a workflow instance's <b>failure</b> memos — and nothing else —
+     * so a manual retry can re-execute the step that failed.
+     *
+     * <p>Deletes exactly the events whose type is
+     * {@link io.b2mash.maestro.core.model.EventType#ACTIVITY_FAILED} or
+     * {@link io.b2mash.maestro.core.model.EventType#WORKFLOW_FAILED} for the
+     * given instance. <b>Every other event must survive</b>, and the distinction
+     * is load-bearing rather than cosmetic:
+     * <ul>
+     *   <li><b>Success memos</b> ({@code ACTIVITY_COMPLETED},
+     *       {@code SIGNAL_RECEIVED}, {@code TIMER_FIRED}, {@code SIDE_EFFECT},
+     *       …) are what make the retry replay the completed prefix instead of
+     *       re-executing it. Deleting them would re-run real side effects.</li>
+     *   <li><b>Compensation events</b> ({@code COMPENSATION_*}) record side
+     *       effects that genuinely happened, and their memos are what stop the
+     *       compensations running a second time on the retry replay.</li>
+     * </ul>
+     *
+     * <p>Why deleting the failures is what a retry means: a failed activity's
+     * outcome is memoized, and replay deliberately re-throws a stored
+     * {@code ACTIVITY_FAILED} rather than re-executing the step. Without this
+     * operation a retry would replay the recorded failure and fail again
+     * identically, however long ago the underlying fault was fixed. Removing
+     * the {@code WORKFLOW_FAILED} event additionally frees the sequence number
+     * the retried run needs for its own terminal event.
+     *
+     * <p><b>Idempotent.</b> Called on an instance with no failure memos it
+     * deletes nothing and returns {@code 0}.
+     *
+     * <p><b>Implementation note:</b> this is the only operation that removes
+     * rows from the event log. Implementations must scope the delete to the
+     * given instance and to those two event types — never to a sequence range,
+     * which would take compensation and success memos with it.
+     *
+     * @param instanceId the workflow instance UUID whose failure memos to delete
+     * @return the number of events deleted
+     * @see io.b2mash.maestro.core.engine.WorkflowExecutor#retryWorkflow
+     */
+    int deleteFailureEvents(UUID instanceId);
+
     // ── Signal operations ────────────────────────────────────────────────
 
     /**
@@ -258,13 +299,20 @@ public interface WorkflowStore {
     boolean markTimerFired(UUID timerId);
 
     /**
-     * Marks a timer as cancelled.
+     * Marks a timer as cancelled (atomic compare-and-set: PENDING → CANCELLED).
      *
-     * <p>Updates the timer status from {@code PENDING} to {@code CANCELLED}.
-     * If the timer has already been fired or cancelled, this is a no-op
-     * (idempotent).
+     * <p>Only transitions timers in {@code PENDING} status. If the timer is
+     * already {@code FIRED} or {@code CANCELLED}, this is a no-op and returns
+     * {@code false}. This allows callers to detect whether they won the race
+     * (e.g., cancel vs. fire) — the live cancellation path
+     * ({@link io.b2mash.maestro.core.engine.WorkflowExecutor#cancelTimer})
+     * only unparks the waiting workflow when this call returns {@code true},
+     * so a caller that discards the return value would silently leave a lost
+     * race un-observed rather than reporting it.
      *
      * @param timerId the timer UUID to cancel
+     * @return {@code true} if the transition was applied (PENDING → CANCELLED),
+     *         {@code false} if the timer was already in a terminal state
      */
-    void markTimerCancelled(UUID timerId);
+    boolean markTimerCancelled(UUID timerId);
 }

@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Test;
 import java.sql.Connection;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -379,6 +380,64 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
             assertTrue(found.payload().get("reserved").booleanValue());
             assertEquals(5, found.payload().get("count").intValue());
         }
+
+        @Test
+        @DisplayName("deleteFailureEvents deletes only ACTIVITY_FAILED and WORKFLOW_FAILED")
+        void deleteFailureEvents_deletesOnlyFailures() {
+            var instance = newInstance("order-del-failures");
+            store.createInstance(instance);
+
+            // A realistic failed run: two successful steps, a failed third,
+            // compensation for the successful ones, then the terminal failure.
+            store.appendEvent(newEvent(instance.id(), 1, EventType.ACTIVITY_COMPLETED));
+            store.appendEvent(newEvent(instance.id(), 2, EventType.ACTIVITY_COMPLETED));
+            store.appendEvent(newEvent(instance.id(), 3, EventType.ACTIVITY_FAILED));
+            store.appendEvent(newEvent(instance.id(), 4, EventType.COMPENSATION_STARTED));
+            store.appendEvent(newEvent(instance.id(), 5, EventType.COMPENSATION_STEP_COMPLETED));
+            store.appendEvent(newEvent(instance.id(), 6, EventType.COMPENSATION_COMPLETED));
+            store.appendEvent(newEvent(instance.id(), 7, EventType.WORKFLOW_FAILED));
+
+            assertEquals(2, store.deleteFailureEvents(instance.id()));
+
+            var remaining = store.getEvents(instance.id()).stream()
+                    .map(WorkflowEvent::eventType).toList();
+            assertEquals(List.of(
+                            EventType.ACTIVITY_COMPLETED,
+                            EventType.ACTIVITY_COMPLETED,
+                            EventType.COMPENSATION_STARTED,
+                            EventType.COMPENSATION_STEP_COMPLETED,
+                            EventType.COMPENSATION_COMPLETED),
+                    remaining,
+                    "success and compensation memos must survive — they are what stops a "
+                            + "retry replay re-running work that already happened");
+            assertTrue(store.getEventBySequence(instance.id(), 3).isEmpty(),
+                    "the failed step's sequence must be free for a live re-execution");
+            assertTrue(store.getEventBySequence(instance.id(), 7).isEmpty(),
+                    "the terminal sequence must be free for the retried run's own outcome");
+        }
+
+        @Test
+        @DisplayName("deleteFailureEvents is idempotent and scoped to one instance")
+        void deleteFailureEvents_isIdempotentAndScoped() {
+            var target = newInstance("order-del-scope-a");
+            var other = newInstance("order-del-scope-b");
+            store.createInstance(target);
+            store.createInstance(other);
+            store.appendEvent(newEvent(target.id(), 1, EventType.ACTIVITY_FAILED));
+            store.appendEvent(newEvent(other.id(), 1, EventType.ACTIVITY_FAILED));
+
+            assertEquals(1, store.deleteFailureEvents(target.id()));
+            assertEquals(0, store.deleteFailureEvents(target.id()),
+                    "a second call deletes nothing — retry must be safe to redeliver");
+            assertEquals(1, store.getEvents(other.id()).size(),
+                    "another instance's failure memo must be untouched");
+        }
+
+        @Test
+        @DisplayName("deleteFailureEvents on an unknown instance deletes nothing")
+        void deleteFailureEvents_unknownInstance() {
+            assertEquals(0, store.deleteFailureEvents(UUID.randomUUID()));
+        }
     }
 
     // ── Signal Tests ──────────────────────────────────────────────────────
@@ -676,14 +735,14 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
                     Instant.now().minusSeconds(10), TimerStatus.PENDING);
             store.saveTimer(timer);
 
-            store.markTimerCancelled(timer.id());
+            assertTrue(store.markTimerCancelled(timer.id()), "the first cancel must win the CAS");
 
             // Should no longer appear as due
             assertTrue(store.getDueTimers(Instant.now(), 10).isEmpty());
         }
 
         @Test
-        @DisplayName("markTimerCancelled is idempotent")
+        @DisplayName("markTimerCancelled is idempotent — CAS, not a blind write")
         void markTimerCancelled_isIdempotent() {
             var instance = newInstance("order-cancel-idem");
             store.createInstance(instance);
@@ -692,8 +751,24 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
                     Instant.now().minusSeconds(10), TimerStatus.PENDING);
             store.saveTimer(timer);
 
-            store.markTimerCancelled(timer.id());
-            assertDoesNotThrow(() -> store.markTimerCancelled(timer.id()));
+            assertTrue(store.markTimerCancelled(timer.id()));
+            assertFalse(store.markTimerCancelled(timer.id()),
+                    "a second cancel of an already-cancelled timer must lose the CAS");
+        }
+
+        @Test
+        @DisplayName("markTimerCancelled returns false for an already-fired timer")
+        void markTimerCancelled_returnsFalseForFired() {
+            var instance = newInstance("order-cancel-fired");
+            store.createInstance(instance);
+
+            var timer = newTimer(instance.id(), "order-cancel-fired",
+                    Instant.now().minusSeconds(10), TimerStatus.PENDING);
+            store.saveTimer(timer);
+
+            assertTrue(store.markTimerFired(timer.id()));
+            assertFalse(store.markTimerCancelled(timer.id()),
+                    "cancelling an already-fired timer must lose the CAS");
         }
     }
 

@@ -2,6 +2,7 @@ package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.SignalTimeoutException;
+import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowSignal;
@@ -282,6 +283,11 @@ final class SignalManager {
                     woken = false;
                 }
 
+                // Terminate outranks a signal: if the instance is TERMINATED,
+                // consuming a signal now would memoize a SIGNAL_RECEIVED event
+                // for a run that must not continue.
+                standDownIfTerminated(ctx.workflowId());
+
                 var signals = store.getUnconsumedSignals(ctx.workflowId(), signalName);
                 if (!signals.isEmpty()) {
                     var result = consumeSignal(ctx, seq, stepName, signalName, signals.getFirst(), type);
@@ -434,17 +440,32 @@ final class SignalManager {
     }
 
     private void updateInstanceStatus(WorkflowContext ctx, WorkflowStatus newStatus) {
-        var instance = store.getInstance(ctx.workflowId());
-        if (instance.isEmpty()) {
-            logger.warn("Cannot update status to {} — workflow '{}' not found", newStatus, ctx.workflowId());
-            return;
+        InstanceStatusWriter.write(store, ctx.workflowId(), newStatus);
+    }
+
+    /**
+     * Stands the current run down if the workflow has been terminated while it
+     * was parked.
+     *
+     * <p>Called once per wake-recheck chunk of {@link #awaitSignal}. A terminate
+     * usually arrives on a node that is <em>not</em> the owner, so nothing local
+     * unparks this thread; the periodic re-read the await already performs for
+     * missed signal notifications is the cheapest place to also notice a
+     * terminal row, and it bounds cross-node terminate convergence for a parked
+     * await to one interval.
+     *
+     * @param workflowId the workflow's business ID
+     * @throws WorkflowTerminatedException if the instance row is {@code TERMINATED}
+     */
+    private void standDownIfTerminated(String workflowId) {
+        var terminated = store.getInstance(workflowId)
+                .map(instance -> instance.status() == WorkflowStatus.TERMINATED)
+                .orElse(false);
+        if (terminated) {
+            logger.info("Workflow '{}' was terminated while parked on a signal — abandoning this run",
+                    workflowId);
+            throw new WorkflowTerminatedException(workflowId, null);
         }
-        var updated = instance.get().toBuilder()
-                .status(newStatus)
-                .updatedAt(Instant.now())
-                .version(instance.get().version() + 1)
-                .build();
-        store.updateInstance(updated);
     }
 
     private void publishLifecycleEvent(WorkflowContext ctx, String stepName, LifecycleEventType eventType) {

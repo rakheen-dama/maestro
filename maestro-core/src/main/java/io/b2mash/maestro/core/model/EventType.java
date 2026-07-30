@@ -32,6 +32,9 @@ public enum EventType {
     /** A durable timer fired, resuming the workflow. */
     TIMER_FIRED,
 
+    /** A durable timer was cancelled while the workflow was waiting on it. */
+    TIMER_CANCELLED,
+
     /** Saga compensation began (unwinding completed activities in reverse order). */
     COMPENSATION_STARTED,
 

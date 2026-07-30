@@ -355,6 +355,11 @@ class ActivityProxyFactoryTest {
         }
 
         @Override
+        public int deleteFailureEvents(UUID instanceId) {
+            throw new UnsupportedOperationException("stub");
+        }
+
+        @Override
         public void saveSignal(WorkflowSignal signal) {
             throw new UnsupportedOperationException("stub");
         }
@@ -395,7 +400,7 @@ class ActivityProxyFactoryTest {
         }
 
         @Override
-        public void markTimerCancelled(UUID timerId) {
+        public boolean markTimerCancelled(UUID timerId) {
             throw new UnsupportedOperationException("stub");
         }
     }

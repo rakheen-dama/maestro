@@ -16,6 +16,7 @@ import java.time.Duration;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -93,32 +94,43 @@ class KafkaSignalChannelIT extends KafkaSpringIntegrationSupport {
     }
 
     @Test
-    @DisplayName("an admin command on the channel is dropped without persisting a signal row")
-    void adminCommand_isDroppedAndNeverPersisted() throws Exception {
+    @DisplayName("an admin command on the channel actually terminates the workflow, "
+            + "and is never persisted as a signal row")
+    void adminCommand_terminatesWorkflowAndIsNeverPersisted() throws Exception {
         var workflowId = "channel-admin-" + UUID.randomUUID().toString().substring(0, 8);
 
         maestro.newWorkflow(KafkaTestWorkflows.ApprovalWorkflow.class,
                 WorkflowOptions.builder().workflowId(workflowId).build()).startAsync("seed");
         awaitStatus(workflowId, WorkflowStatus.WAITING_SIGNAL, BOUND);
 
-        // Engine-side handling of $maestro: commands is not implemented, so
-        // SignalSubscriptionRunner drops them rather than persisting a row no
-        // await could ever consume. Pinning that here keeps the dashboard's
-        // known-inert buttons from silently becoming signal-table pollution.
+        // Engine-side handling of $maestro: commands is now implemented (Issue 15,
+        // sub-task 3b): SignalSubscriptionRunner diverts this to
+        // AdminCommandDispatcher before deliverSignal is ever called, so the
+        // workflow is genuinely terminated rather than the command being dropped.
+        // See AdminCommandKafkaIT for the dedicated end-to-end suite; this test's
+        // remaining job is narrower — pin that the engine-level channel itself
+        // (as opposed to the starter unit tests) still never turns a $maestro:*
+        // name into a WorkflowSignal row.
         messaging.publishSignal(SERVICE, new SignalMessage(
                 workflowId, "$maestro:terminate", objectMapper.valueToTree("now")));
 
+        awaitStatus(workflowId, WorkflowStatus.TERMINATED, BOUND);
+
         // Both records carry the same key, so they land on the same partition in
-        // order: once the approval has been consumed, the command provably was
-        // handled first — no sleep needed to prove a negative.
+        // order: this signal is only ever consumed by a workflow that reaches
+        // its awaitSignal() call, which a terminated run's abandoned thread
+        // never will — the resurrection guard must keep the instance TERMINATED.
         messaging.publishSignal(SERVICE, new SignalMessage(
                 workflowId, KafkaTestWorkflows.APPROVAL_SIGNAL, objectMapper.valueToTree("granted")));
 
-        var completed = awaitStatus(workflowId, WorkflowStatus.COMPLETED, BOUND);
-        assertEquals("seed:granted", serializer.deserialize(completed.output(), String.class));
+        await().atMost(BOUND).untilAsserted(() -> {
+            var rows = signalRows(workflowId);
+            assertEquals(1, rows.size(), "the admin command must not have been persisted, "
+                    + "only the application signal published afterward");
+            assertEquals(KafkaTestWorkflows.APPROVAL_SIGNAL, rows.getFirst().signalName());
+        });
 
-        var rows = signalRows(workflowId);
-        assertEquals(1, rows.size(), "the admin command must not have been persisted");
-        assertEquals(KafkaTestWorkflows.APPROVAL_SIGNAL, rows.getFirst().signalName());
+        assertEquals(WorkflowStatus.TERMINATED, store.getInstance(workflowId).orElseThrow().status(),
+                "a signal delivered after termination must not resurrect the workflow");
     }
 }

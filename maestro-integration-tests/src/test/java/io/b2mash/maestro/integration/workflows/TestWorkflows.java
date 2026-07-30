@@ -5,6 +5,7 @@ import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.Saga;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.exception.TimerCancelledException;
 import io.b2mash.maestro.integration.workflows.CountingActivities.ChainActivities;
 import io.b2mash.maestro.integration.workflows.CountingActivities.FlakyActivities;
 import io.b2mash.maestro.integration.workflows.CountingActivities.SagaActivities;
@@ -144,6 +145,44 @@ public final class TestWorkflows {
             var one = activities.stepOne(input);
             WorkflowContext.current().sleep(nap);
             return activities.stepTwo(one);
+        }
+    }
+
+    /**
+     * Sleeps like {@link SleepingWorkflow} but catches a cancelled timer and
+     * takes a fallback branch instead of failing — the fixture for
+     * {@link TimerCancelledException} determinism against a real Postgres
+     * store (Issue 13).
+     */
+    @DurableWorkflow(name = "CancellableSleepWorkflow")
+    public static class CancellableSleepWorkflow {
+
+        @ActivityStub
+        ChainActivities activities;
+
+        private final Duration nap;
+
+        /** @param nap how long the durable sleep should last */
+        public CancellableSleepWorkflow(Duration nap) {
+            this.nap = nap;
+        }
+
+        /**
+         * @param input the seed value
+         * @return the result of the post-sleep activity, tagged with whether
+         *         the sleep fired normally or was cancelled
+         */
+        @WorkflowMethod
+        public String run(String input) {
+            var one = activities.stepOne(input);
+            String outcome;
+            try {
+                WorkflowContext.current().sleep(nap);
+                outcome = one + "-fired";
+            } catch (TimerCancelledException e) {
+                outcome = one + "-cancelled";
+            }
+            return activities.stepTwo(outcome);
         }
     }
 

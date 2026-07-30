@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.context.WorkflowMDC;
 import io.b2mash.maestro.core.exception.RetryExhaustedException;
 import io.b2mash.maestro.core.exception.SignalTimeoutException;
+import io.b2mash.maestro.core.exception.TimerCancelledException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.model.TimerStatus;
@@ -110,30 +111,57 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         var storedEvent = store.getEventBySequence(ctx.workflowInstanceId(), seq);
         if (storedEvent.isPresent()) {
             if (storedEvent.get().eventType() == EventType.TIMER_SCHEDULED) {
-                // Check if TIMER_FIRED exists at the next sequence
+                // Check whether the outcome at the next sequence is already
+                // memoized. Pure deterministic re-derivation from the event
+                // log — no writes, no timer-row read — for both terminal outcomes.
                 var nextSeq = seq + 1;
-                var firedEvent = store.getEventBySequence(ctx.workflowInstanceId(), nextSeq);
-                if (firedEvent.isPresent() && firedEvent.get().eventType() == EventType.TIMER_FIRED) {
+                var nextEvent = store.getEventBySequence(ctx.workflowInstanceId(), nextSeq);
+                if (nextEvent.isPresent() && nextEvent.get().eventType() == EventType.TIMER_FIRED) {
                     // Both events exist — skip the sleep entirely
                     ctx.nextSequence(); // advance past TIMER_FIRED
                     logger.debug("Replaying completed sleep at seq {} (skipped)", seq);
                     return;
                 }
-                // TIMER_SCHEDULED exists but TIMER_FIRED does not. Either the
-                // timer really is still pending, or the node that owned this
-                // workflow died inside the window between the timer row going
-                // PENDING → FIRED and this thread appending TIMER_FIRED. The
-                // durable row is what tells the two apart: only a PENDING timer
-                // will ever be handed to a poller again, so re-parking on a
-                // FIRED one would wait forever.
+                if (nextEvent.isPresent() && nextEvent.get().eventType() == EventType.TIMER_CANCELLED) {
+                    ctx.nextSequence(); // advance past TIMER_CANCELLED
+                    var timerId = extractTimerId(storedEvent.get().payload());
+                    logger.debug("Replaying cancelled sleep at seq {} (skipped)", seq);
+                    throw new TimerCancelledException(ctx.workflowId(), timerId);
+                }
+                // TIMER_SCHEDULED exists but no terminal event does yet. Either
+                // the timer really is still pending, or the node that owned
+                // this workflow died inside the window between the timer row
+                // transitioning and this thread appending the terminal event.
+                // The durable row is what tells the two apart: only a PENDING
+                // timer will ever be handed to a poller again, so re-parking
+                // on a FIRED or CANCELLED one would wait forever.
                 var timerId = extractTimerId(storedEvent.get().payload());
-                if (alreadyFired(ctx, timerId)) {
+                var rowStatus = store.findTimer(ctx.workflowInstanceId(), timerId)
+                        .map(WorkflowTimer::status)
+                        .orElse(null);
+
+                if (rowStatus == TimerStatus.CANCELLED) {
+                    logger.debug("Replaying sleep at seq {} whose timer '{}' was cancelled — "
+                            + "healing the missing TIMER_CANCELLED event instead of re-parking",
+                            seq, timerId);
+                    recordTimerCancelled(ctx);
+                    updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
+                    publishLifecycleEvent(ctx, stepName, LifecycleEventType.TIMER_CANCELLED);
+                    throw new TimerCancelledException(ctx.workflowId(), timerId);
+                }
+
+                if (rowStatus == TimerStatus.FIRED) {
                     logger.debug("Replaying sleep at seq {} whose timer '{}' already fired — "
                             + "healing the missing TIMER_FIRED event instead of re-parking",
                             seq, timerId);
                 } else {
                     logger.debug("Replaying pending sleep at seq {} — re-parking", seq);
                     parkForTimer(ctx, timerId);
+                    // The wake that ends the re-park can be a fire or a
+                    // cancel racing in after this node came back up — the row
+                    // decides, exactly as it does on the live path below.
+                    recordWakeOutcome(ctx, stepName, timerId);
+                    return;
                 }
                 // Timer fired — record the TIMER_FIRED event
                 recordTimerFired(ctx);
@@ -172,13 +200,8 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         logger.debug("Workflow '{}' sleeping for {} (timerId={})", ctx.workflowId(), duration, timerId);
         parkForTimer(ctx, timerId);
 
-        // Timer fired — record TIMER_FIRED event
-        recordTimerFired(ctx);
-
-        // Update status back to RUNNING
-        updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
-        publishLifecycleEvent(ctx, stepName, LifecycleEventType.TIMER_FIRED);
-        logger.debug("Workflow '{}' woke from sleep (timerId={})", ctx.workflowId(), timerId);
+        // Timer fired or cancelled — the row decides which (§3.1)
+        recordWakeOutcome(ctx, stepName, timerId);
     }
 
     private void parkForTimer(WorkflowContext ctx, String timerId) {
@@ -187,25 +210,66 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
     }
 
     /**
-     * Whether this workflow's timer has already been marked fired durably.
+     * After a park on the timer's key resolves — whether from a fresh sleep
+     * or a heal re-park — decides fired vs. cancelled from the durable timer
+     * row, never from the in-memory unpark payload: the row is the single
+     * source of truth for the outcome. Records the corresponding
+     * {@code seq+1} event, restores {@code RUNNING} status, publishes the
+     * matching lifecycle event, and either returns normally (fired) or
+     * throws {@link TimerCancelledException} (cancelled) — the same outcome
+     * is reproduced on every later replay because it is the event this call
+     * appends that replay reads back.
      *
-     * <p>Answers "has the wake already happened and been lost?" — the question
-     * the event log alone cannot answer, because the {@code TIMER_FIRED} event
-     * is appended by the workflow thread <em>after</em> the row transitions.
+     * @param ctx      the current workflow context
+     * @param stepName the step name for the lifecycle event
+     * @param timerId  the logical timer ID that was just woken
+     * @throws TimerCancelledException if the timer's durable row is {@code CANCELLED}
+     */
+    private void recordWakeOutcome(WorkflowContext ctx, String stepName, String timerId) {
+        if (isCancelled(ctx, timerId)) {
+            recordTimerCancelled(ctx);
+            updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
+            publishLifecycleEvent(ctx, stepName, LifecycleEventType.TIMER_CANCELLED);
+            logger.debug("Workflow '{}' woke from sleep — timer '{}' was cancelled",
+                    ctx.workflowId(), timerId);
+            throw new TimerCancelledException(ctx.workflowId(), timerId);
+        }
+        // FIRED, or defensively absent — preserves today's behaviour
+        // bit-for-bit for every workflow whose timers are never cancelled.
+        recordTimerFired(ctx);
+        updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
+        publishLifecycleEvent(ctx, stepName, LifecycleEventType.TIMER_FIRED);
+        logger.debug("Workflow '{}' woke from sleep (timerId={})", ctx.workflowId(), timerId);
+    }
+
+    /**
+     * Whether this workflow's timer has been cancelled durably — used by
+     * {@link #recordWakeOutcome} after a wake, when either outcome (fired or
+     * cancelled) is still possible.
+     *
+     * <p>Answers "has the wake already happened and been lost?" for the
+     * cancelled case — the question the event log alone cannot answer,
+     * because the {@code TIMER_CANCELLED} event is appended by the workflow
+     * thread <em>after</em> the row transitions.
      *
      * @param ctx     the current workflow context
-     * @param timerId the logical timer ID from the {@code TIMER_SCHEDULED} event
-     * @return {@code true} if the store holds a FIRED timer with that ID
+     * @param timerId the logical timer ID that was just woken
+     * @return {@code true} if the store holds a CANCELLED timer with that ID
      */
-    private boolean alreadyFired(WorkflowContext ctx, String timerId) {
+    private boolean isCancelled(WorkflowContext ctx, String timerId) {
         return store.findTimer(ctx.workflowInstanceId(), timerId)
-                .map(timer -> timer.status() == TimerStatus.FIRED)
+                .map(timer -> timer.status() == TimerStatus.CANCELLED)
                 .orElse(false);
     }
 
     private void recordTimerFired(WorkflowContext ctx) {
         var firedSeq = ctx.nextSequence();
         appendEvent(ctx, firedSeq, EventType.TIMER_FIRED, "$maestro:timer-fired", null);
+    }
+
+    private void recordTimerCancelled(WorkflowContext ctx) {
+        var cancelledSeq = ctx.nextSequence();
+        appendEvent(ctx, cancelledSeq, EventType.TIMER_CANCELLED, "$maestro:timer-cancelled", null);
     }
 
     private String extractTimerId(@Nullable JsonNode payload) {
@@ -488,17 +552,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
     }
 
     private void updateInstanceStatus(WorkflowContext ctx, WorkflowStatus newStatus) {
-        var instance = store.getInstance(ctx.workflowId());
-        if (instance.isEmpty()) {
-            logger.warn("Cannot update status to {} — workflow '{}' not found", newStatus, ctx.workflowId());
-            return;
-        }
-        var updated = instance.get().toBuilder()
-                .status(newStatus)
-                .updatedAt(Instant.now())
-                .version(instance.get().version() + 1)
-                .build();
-        store.updateInstance(updated);
+        InstanceStatusWriter.write(store, ctx.workflowId(), newStatus);
     }
 
     private void publishLifecycleEvent(WorkflowContext ctx, String stepName, LifecycleEventType eventType) {

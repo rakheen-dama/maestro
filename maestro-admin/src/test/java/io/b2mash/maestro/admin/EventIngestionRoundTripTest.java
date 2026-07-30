@@ -124,4 +124,54 @@ class EventIngestionRoundTripTest extends AdminAppTestSupport {
                 .andExpect(status().isOk())
                 .andExpect(model().attributeExists("workflow", "events"));
     }
+
+    @Test
+    @DisplayName("WORKFLOW_FAILED then WORKFLOW_RETRIED projects a FAILED-then-RUNNING workflow — "
+            + "the Retry button visibly does something on the dashboard")
+    void failedThenRetried_projectsRunningAgain() {
+        var instanceId = UUID.randomUUID();
+        var workflowId = "ingest-retry-" + instanceId;
+        var serviceName = "ingestion-retry-test-service-" + instanceId;
+        var startedAt = Instant.now().minusSeconds(10);
+        var failedAt = Instant.now().minusSeconds(5);
+        var retriedAt = Instant.now();
+
+        publish(ADMIN_TOPIC, workflowId, new WorkflowLifecycleEvent(
+                instanceId, workflowId, "IngestionRetryTestWorkflow", serviceName, "default",
+                LifecycleEventType.WORKFLOW_STARTED, null, null, startedAt));
+        await().atMost(BOUND).untilAsserted(() ->
+                assertThat(workflowRepository.findByWorkflowId(workflowId)).isPresent());
+
+        publish(ADMIN_TOPIC, workflowId, new WorkflowLifecycleEvent(
+                instanceId, workflowId, "IngestionRetryTestWorkflow", serviceName, "default",
+                LifecycleEventType.WORKFLOW_FAILED, null, null, failedAt));
+        await().atMost(BOUND).untilAsserted(() -> {
+            var workflow = workflowRepository.findByWorkflowId(workflowId);
+            assertThat(workflow).isPresent();
+            assertThat(workflow.get().status()).isEqualTo("FAILED");
+        });
+
+        var overviewAfterFailure = metricsRepository.getOverview();
+        assertThat(overviewAfterFailure.get(serviceName)).containsEntry("FAILED", 1L);
+
+        publish(ADMIN_TOPIC, workflowId, new WorkflowLifecycleEvent(
+                instanceId, workflowId, "IngestionRetryTestWorkflow", serviceName, "default",
+                LifecycleEventType.WORKFLOW_RETRIED, null, null, retriedAt));
+
+        await().atMost(BOUND).untilAsserted(() -> {
+            var workflow = workflowRepository.findByWorkflowId(workflowId);
+            assertThat(workflow).isPresent();
+            assertThat(workflow.get().status()).isEqualTo("RUNNING");
+        });
+
+        var timeline = eventRepository.findByWorkflowInstanceId(instanceId);
+        assertThat(timeline).extracting(e -> e.eventType())
+                .containsExactly("WORKFLOW_STARTED", "WORKFLOW_FAILED", "WORKFLOW_RETRIED");
+
+        // Metrics reflect the retry: FAILED decremented, RUNNING incremented.
+        var overview = metricsRepository.getOverview();
+        assertThat(overview.get(serviceName))
+                .containsEntry("RUNNING", 1L)
+                .doesNotContainEntry("FAILED", 1L);
+    }
 }

@@ -24,6 +24,7 @@ import java.util.UUID;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -220,6 +221,128 @@ class EnginePostgresTimerIT extends PostgresIntegrationSupport {
         assertEquals(1, eventsOfType(handle.events(), EventType.TIMER_FIRED).size(),
                 "replay must heal the missing TIMER_FIRED event exactly once");
         assertEquals(TimerStatus.FIRED, readSingleTimerRow(workflowId).status());
+    }
+
+    @Test
+    @DisplayName("cancelling a timer a workflow is parked on unparks it; uncaught it fails the workflow (Issue 13)")
+    void cancelTimer_unparksWorkflow_uncaughtFailsDeterministically() throws Exception {
+        // Today (pre-fix): WorkflowExecutor has no cancelTimer, and a
+        // store-only cancel (TimerManager.cancelTimer) never unparks the
+        // workflow — it hangs in WAITING_TIMER forever. This is the design's
+        // live-cancel repro (§9.1).
+        harness = newHarness("timer-node", true);
+        registerSleeper(harness, Duration.ofMinutes(10)); // long nap; only cancel wakes it
+
+        var workflowId = MaestroEngineHarness.uniqueWorkflowId("timer-cancel-live");
+        var handle = harness.start(workflowId, TestWorkflows.SleepingWorkflow.class, "seed");
+        handle.awaitStatus(WorkflowStatus.WAITING_TIMER, BOUND);
+
+        var timer = readSingleTimerRow(workflowId);
+        assertEquals(TimerStatus.PENDING, timer.status());
+        assertTrue(harness.executor().cancelTimer(workflowId, timer.timerId(), timer.id()),
+                "cancel must win the CAS against a PENDING timer");
+
+        assertEquals(WorkflowStatus.FAILED, handle.awaitTerminal(BOUND),
+                "an uncaught TimerCancelledException must fail the workflow, not strand it");
+
+        var output = handle.instance().output();
+        assertNotNull(output, "the FAILED instance must record the exception detail");
+        assertTrue(output.get("exceptionType").stringValue().contains("TimerCancelledException"),
+                "the recorded failure must be the cancellation, not some other error");
+
+        assertEquals(1, eventsOfType(handle.events(), EventType.TIMER_CANCELLED).size());
+        assertEquals(0, eventsOfType(handle.events(), EventType.TIMER_FIRED).size());
+        assertEquals(1, recorder.count("stepOne"));
+        assertEquals(0, recorder.count("stepTwo"), "the post-sleep activity must never run");
+        assertEquals(TimerStatus.CANCELLED, readSingleTimerRow(workflowId).status());
+    }
+
+    @Test
+    @DisplayName("a caught TimerCancelledException lets the workflow complete via a fallback branch (Issue 13)")
+    void cancelTimer_caught_completesViaFallbackBranch() throws Exception {
+        harness = newHarness("timer-node", true);
+        harness.registerActivities(ChainActivities.class,
+                new CountingActivities.RecordingChainActivities(recorder));
+        harness.registerWorkflow(new TestWorkflows.CancellableSleepWorkflow(Duration.ofMinutes(10)));
+
+        var workflowId = MaestroEngineHarness.uniqueWorkflowId("timer-cancel-catch");
+        var handle = harness.start(workflowId, TestWorkflows.CancellableSleepWorkflow.class, "seed");
+        handle.awaitStatus(WorkflowStatus.WAITING_TIMER, BOUND);
+
+        var timer = readSingleTimerRow(workflowId);
+        assertTrue(harness.executor().cancelTimer(workflowId, timer.timerId(), timer.id()));
+
+        assertEquals(WorkflowStatus.COMPLETED, handle.awaitTerminal(BOUND),
+                "a caught TimerCancelledException must let the workflow take its fallback branch");
+        assertEquals("seed-one-cancelled-two", handle.result(String.class));
+        assertEquals(1, recorder.count("stepOne"));
+        assertEquals(1, recorder.count("stepTwo"), "the fallback branch's activity must run exactly once");
+        assertEquals(1, eventsOfType(handle.events(), EventType.TIMER_CANCELLED).size());
+        assertEquals(0, eventsOfType(handle.events(), EventType.TIMER_FIRED).size());
+    }
+
+    @Test
+    @DisplayName("a timer cancelled before its TIMER_CANCELLED event was appended is healed by recovery (Issue 13)")
+    void timerCancelledBeforeEventAppend_recoveryFailsTheWorkflowDeterministically() throws Exception {
+        // Mirrors timerFiredBeforeEventAppend_recoveryCompletesTheWorkflow
+        // exactly, with the cancelled outcome instead of fired: the crash
+        // window inside cancelTimer opens once markTimerCancelled's CAS
+        // commits but before this node's workflow thread appends
+        // TIMER_CANCELLED. Today (pre-fix): recovery re-parks the workflow
+        // forever, because getDueTimers only ever returns PENDING rows and
+        // nothing else looks at this timer again. This is the design's
+        // cancel+crash replay repro (§9.2).
+        harness = newHarness("node-a", false);
+        registerSleeper(harness, NAP);
+
+        var workflowId = MaestroEngineHarness.uniqueWorkflowId("timer-cancel-crash");
+        var handle = harness.start(workflowId, TestWorkflows.SleepingWorkflow.class, "seed");
+        handle.awaitStatus(WorkflowStatus.WAITING_TIMER, BOUND);
+
+        var timerDbId = readSingleTimerRow(workflowId).id();
+        assertTrue(store.markTimerCancelled(timerDbId),
+                "the crash window only opens once the row has transitioned");
+        // node-a is now gone: nothing unparks its thread, nothing appends TIMER_CANCELLED.
+
+        secondHarness = newHarness("node-b", false);
+        registerSleeper(secondHarness, NAP);
+        // Running a poller proves the poller is no rescue: the row is no longer due.
+        secondHarness.startTimerPoller(POLL_INTERVAL, 10);
+
+        assertEquals(1, secondHarness.recover(),
+                "node-b must adopt the WAITING_TIMER instance left behind by node-a");
+
+        assertEquals(WorkflowStatus.FAILED, handle.awaitTerminal(BOUND),
+                "a timer already marked CANCELLED must not re-park the workflow forever");
+
+        assertEquals(1, recorder.count("stepOne"),
+                "the pre-sleep activity must replay, not re-execute, on the second executor");
+        assertEquals(0, recorder.count("stepTwo"), "the post-sleep activity must never run");
+        assertEquals(1, eventsOfType(handle.events(), EventType.TIMER_CANCELLED).size(),
+                "replay must heal the missing TIMER_CANCELLED event exactly once");
+        assertEquals(TimerStatus.CANCELLED, readSingleTimerRow(workflowId).status());
+    }
+
+    @Test
+    @DisplayName("cancelTimer on an already-fired timer is a false no-op (R1) and does not disturb completion")
+    void cancelTimer_onFiredTimer_isANoOp() throws Exception {
+        harness = newHarness("timer-node", true);
+        registerSleeper(harness, NAP);
+
+        var workflowId = MaestroEngineHarness.uniqueWorkflowId("timer-cancel-fired");
+        var handle = harness.start(workflowId, TestWorkflows.SleepingWorkflow.class, "seed");
+        handle.awaitStatus(WorkflowStatus.WAITING_TIMER, BOUND);
+
+        var timer = readSingleTimerRow(workflowId);
+        fireWhenDue(harness);
+        assertEquals(WorkflowStatus.COMPLETED, handle.awaitTerminal(BOUND));
+
+        assertFalse(harness.executor().cancelTimer(workflowId, timer.timerId(), timer.id()),
+                "a FIRED timer must never transition to CANCELLED");
+        assertEquals(1, eventsOfType(handle.events(), EventType.TIMER_FIRED).size());
+        assertEquals(0, eventsOfType(handle.events(), EventType.TIMER_CANCELLED).size());
+        assertEquals(WorkflowStatus.COMPLETED, handle.status(),
+                "a losing cancel must not disturb the already-completed workflow");
     }
 
     // ── helpers ────────────────────────────────────────────────────────
