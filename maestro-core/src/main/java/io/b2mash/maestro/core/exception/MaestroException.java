@@ -40,7 +40,8 @@ public sealed class MaestroException extends RuntimeException
                 LockBackendException,
                 SerializationException,
                 CompensationException,
-                QueryException {
+                QueryException,
+                AdminCommandException {
 
     /**
      * Creates a new exception with the given message.
