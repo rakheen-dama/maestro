@@ -727,7 +727,23 @@ public final class WorkflowExecutor {
          * {@code RUNNING} — the recovery poller (on any node) adopts it within
          * one poll interval.
          */
-        LOCK_HELD_ELSEWHERE
+        LOCK_HELD_ELSEWHERE,
+
+        /**
+         * The workflow is {@code FAILED}, but its event log carries a
+         * {@code COMPENSATION_STARTED} event — its saga already ran
+         * compensations before the instance terminated. Nothing was written:
+         * relaunching would replay the surviving compensation events at their
+         * original, now-stale sequence positions, and if the previously-failed
+         * step succeeds this time the forward path collides with them —
+         * re-running real compensating side effects, wrongly skipping others,
+         * or silently swallowing the run's terminal event as a duplicate. This
+         * outcome is a deliberate, acknowledged no-op until a dedicated design
+         * (a fresh-run/{@code runId} relaunch, or a compensation-aware sequence
+         * rebase) makes retrying a compensated saga safe; see the tracked
+         * follow-up issue in {@code docs/open-issues.md}.
+         */
+        COMPENSATED_NOT_RETRYABLE
     }
 
     /**
@@ -757,6 +773,11 @@ public final class WorkflowExecutor {
      *   <li>Read the instance. Absent → {@link RetryOutcome#NOT_FOUND}. Status
      *       other than {@code FAILED} → {@link RetryOutcome#NOT_FAILED} — an
      *       idempotent no-op, since retry only makes sense for a failure.</li>
+     *   <li>Probe the event log for {@code COMPENSATION_STARTED} — if the
+     *       saga already ran compensations, return
+     *       {@link RetryOutcome#COMPENSATED_NOT_RETRYABLE} without touching
+     *       anything; see that constant's Javadoc for why relaunching is
+     *       unsafe on this path.</li>
      *   <li>{@link WorkflowStore#deleteFailureEvents} — see above.</li>
      *   <li>A single optimistic compare-and-set: {@code status = RUNNING},
      *       {@code completedAt = null}, {@code version + 1}. Unlike
@@ -781,13 +802,14 @@ public final class WorkflowExecutor {
      * </ol>
      *
      * <h2>Semantics caveat — compensated sagas</h2>
-     * <p>Retrying a workflow whose saga already ran compensations replays with
-     * the compensation events still memoized (and, by the saga's own
-     * replay-skip guard, not re-run) — so the step that failed re-executes
-     * <em>after</em> its compensations already ran. Retry is intended for
-     * transient failures (an external dependency that has since recovered);
-     * retrying a compensated saga is an operator judgment call this method
-     * does not second-guess.
+     * <p>Retry is guarded off for a workflow whose saga already ran
+     * compensations: see {@link RetryOutcome#COMPENSATED_NOT_RETRYABLE}. The
+     * compensation events are anchored to the sequence position the failure
+     * occupied on the failed run; a retry that lets the previously-failed step
+     * succeed this time would run the forward path straight into those stale
+     * positions, corrupting the replay rather than safely skipping already-run
+     * compensations. Retrying a compensated saga is not yet supported — this
+     * method returns the guarded no-op instead of guessing.
      *
      * <h2>Idempotency</h2>
      * <p>Safe under at-least-once redelivery: a second delivery re-reads the
@@ -823,6 +845,22 @@ public final class WorkflowExecutor {
             logger.warn("Workflow '{}' is {} — not retrying (retry only applies to FAILED)",
                     workflowId, latest.status());
             return RetryOutcome.NOT_FAILED;
+        }
+
+        // A saga that already compensated leaves its compensation events
+        // anchored to the failed run's sequence positions. If the retried run
+        // lets the previously-failed step succeed this time, the forward path
+        // collides with those stale positions — see COMPENSATED_NOT_RETRYABLE's
+        // Javadoc for the full failure mode. Guard it off rather than corrupt
+        // the replay; getEvents is the cheapest correct read the store SPI
+        // offers (no targeted "by event type" probe exists).
+        var alreadyCompensated = store.getEvents(latest.id()).stream()
+                .anyMatch(e -> e.eventType() == EventType.COMPENSATION_STARTED);
+        if (alreadyCompensated) {
+            logger.warn("Workflow '{}' already ran saga compensations — not retrying "
+                    + "(retry of a compensated saga is not yet supported; see "
+                    + "RetryOutcome.COMPENSATED_NOT_RETRYABLE)", workflowId);
+            return RetryOutcome.COMPENSATED_NOT_RETRYABLE;
         }
 
         // Clear the memoized failure BEFORE the CAS: a crash between this line

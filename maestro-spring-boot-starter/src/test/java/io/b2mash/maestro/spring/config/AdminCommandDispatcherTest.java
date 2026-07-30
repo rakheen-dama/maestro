@@ -116,6 +116,43 @@ class AdminCommandDispatcherTest {
     }
 
     @Test
+    @DisplayName("$maestro:retry on a FAILED workflow whose saga already compensated is an "
+            + "acknowledged no-op (COMPENSATED_NOT_RETRYABLE)")
+    void retryCompensatedSagaWorkflow_isAckedNoOp() {
+        var instanceId = UUID.randomUUID();
+        var now = Instant.now();
+        store.createInstance(WorkflowInstance.builder()
+                .id(instanceId)
+                .workflowId("wf-retry-compensated")
+                .runId(UUID.randomUUID())
+                .workflowType(WORKFLOW_TYPE)
+                .taskQueue("default")
+                .status(WorkflowStatus.FAILED)
+                .serviceName("test-service")
+                .startedAt(now)
+                .updatedAt(now)
+                .completedAt(now)
+                .version(0)
+                .build());
+        store.appendEvent(new io.b2mash.maestro.core.model.WorkflowEvent(
+                UUID.randomUUID(), instanceId, 1,
+                io.b2mash.maestro.core.model.EventType.ACTIVITY_FAILED, "step-1", null, now));
+        store.appendEvent(new io.b2mash.maestro.core.model.WorkflowEvent(
+                UUID.randomUUID(), instanceId, 2,
+                io.b2mash.maestro.core.model.EventType.COMPENSATION_STARTED, "$maestro:compensation", null, now));
+        store.appendEvent(new io.b2mash.maestro.core.model.WorkflowEvent(
+                UUID.randomUUID(), instanceId, 3,
+                io.b2mash.maestro.core.model.EventType.WORKFLOW_FAILED, null, null, now));
+
+        assertDoesNotThrow(() ->
+                dispatcher.dispatch(new SignalMessage("wf-retry-compensated", "$maestro:retry", null)));
+
+        var after = store.getInstance("wf-retry-compensated").orElseThrow();
+        assertEquals(WorkflowStatus.FAILED, after.status(), "the guard must not touch the instance");
+        assertEquals(0, after.version(), "the guard must not write the row at all");
+    }
+
+    @Test
     @DisplayName("$maestro:retry for a workflow type with no registration throws (redeliver -> DLT)")
     void retryWithMissingRegistration_throws() {
         seedInstance("wf-retry-unregistered", WorkflowStatus.FAILED, "SomeOtherType");

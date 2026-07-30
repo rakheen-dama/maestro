@@ -328,6 +328,52 @@ class WorkflowExecutorRetryTest {
         }
     }
 
+    // ── Compensated saga guard ───────────────────────────────────────────
+
+    @Test
+    @DisplayName("retrying a FAILED workflow whose saga already compensated is a guarded no-op")
+    void retryOfCompensatedSaga_isCompensatedNotRetryableNoOp() throws Exception {
+        var workflow = new ParkedWorkflow();
+        var method = ParkedWorkflow.class.getMethod("run");
+        var registration = new WorkflowRegistration("ParkedWorkflow", "default", workflow, method);
+
+        // Seed a FAILED instance whose event log carries a completed
+        // compensation — the state retryWorkflow would see after a saga ran
+        // its compensations and the workflow terminated FAILED.
+        var instanceId = UUID.randomUUID();
+        var failedInstance = WorkflowInstance.builder()
+                .id(instanceId)
+                .workflowId("retry-compensated")
+                .runId(UUID.randomUUID())
+                .workflowType("ParkedWorkflow")
+                .taskQueue("default")
+                .status(WorkflowStatus.FAILED)
+                .serviceName("test-service")
+                .startedAt(Instant.now())
+                .updatedAt(Instant.now())
+                .completedAt(Instant.now())
+                .version(0)
+                .build();
+        store.createInstance(failedInstance);
+        store.appendEvent(activityEvent(instanceId, 1, EventType.ACTIVITY_FAILED, "one-failed"));
+        store.appendEvent(activityEvent(instanceId, 2, EventType.COMPENSATION_STARTED, null));
+        store.appendEvent(activityEvent(instanceId, 3, EventType.COMPENSATION_COMPLETED, null));
+        store.appendEvent(activityEvent(instanceId, 4, EventType.WORKFLOW_FAILED, null));
+
+        var outcome = executor.retryWorkflow("retry-compensated", registration);
+
+        assertEquals(WorkflowExecutor.RetryOutcome.COMPENSATED_NOT_RETRYABLE, outcome);
+
+        var after = store.getInstance("retry-compensated").orElseThrow();
+        assertEquals(WorkflowStatus.FAILED, after.status(), "the guard must not touch the instance status");
+        assertEquals(failedInstance.version(), after.version(), "the guard must not write the row at all");
+        assertTrue(hasEvent(instanceId, EventType.ACTIVITY_FAILED),
+                "deleteFailureEvents must NOT have been applied — the guard fires before it");
+        assertTrue(hasEvent(instanceId, EventType.WORKFLOW_FAILED),
+                "deleteFailureEvents must NOT have been applied — the guard fires before it");
+        assertEquals(0, messaging.events.size(), "a guarded no-op must publish nothing");
+    }
+
     // ── Crash-window coverage ────────────────────────────────────────────
 
     @Test
