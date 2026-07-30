@@ -7,6 +7,9 @@ context on how these issues were found.
 `worktree-release-readiness`) — issues 1 and 3–10 are now resolved, issue 2
 was already resolved, issues 11 and 12 remain open by design (see §5,
 "Known limitations"), and three new issues (13–15) were found along the way.
+**Updated again:** 2026-07-30 — issues 13, 14, and 15 are now resolved too
+(branch `worktree-issues-13-15`); see each section for commits and pinning
+tests.
 
 This document is self-contained. You should not need to read the PR, the commit
 history, or `docs/test-plan.md` to act on anything here — though
@@ -178,7 +181,8 @@ module, then carry on. Never work around a proven engine bug inside a test.
 **All of issues 1–10 are now resolved** (see each section below for the
 outcome, commit references, and pinning tests). Issues 11 and 12 remain open
 by deliberate decision — see "Known limitations" at the end of §5. Three new
-issues (13–15), found while doing this work, are open and unfixed.
+issues (13–15), found while doing this work, were opened along the way and
+are **now resolved too** (see each section below).
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -208,9 +212,9 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [10](#issue-10) | Four modules have no tests at all | Testing gap | Medium | **Resolved** |
 | [11](#issue-11) | Lost locks don't stop the workflow (no fencing) | Library gap — **known limitation** | Medium | Open, by design |
 | [12](#issue-12) | Recovery polling doesn't scale | Library gap — **known limitation** | Low now | Open, by design |
-| [13](#issue-13) | `CANCELLED` timers can strand a replaying workflow | Library defect | Medium | Open |
-| [14](#issue-14) | `SagaManager` re-appends `COMPENSATION_STARTED` on replay | Library gap | Low | Open |
-| [15](#issue-15) | Admin dashboard retry/terminate signals are unconsumed | Library gap | Medium | Open |
+| [13](#issue-13) | `CANCELLED` timers can strand a replaying workflow | Library defect | Medium | **Resolved** |
+| [14](#issue-14) | `SagaManager` re-appends `COMPENSATION_STARTED` on replay | Library gap | Low | **Resolved** |
+| [15](#issue-15) | Admin dashboard retry/terminate signals are unconsumed | Library gap | Medium | **Resolved** |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -795,6 +799,36 @@ don't optimise it blind.
 
 ### Issue 13 — `CANCELLED` timers can strand a replaying workflow {#issue-13}
 
+> **Resolved.** Cancelling a timer a workflow is parked on now unparks it
+> with a durable, catchable outcome instead of stranding it — option (a) from
+> the open question below, decided and implemented.
+> `WorkflowExecutor.cancelTimer(String, String, UUID)` is the new, only
+> supported entry point (`TimerManager.cancelTimer` is **removed** — it had
+> zero production callers): it CASes the timer row `PENDING → CANCELLED` via
+> `WorkflowStore.markTimerCancelled`, now returning `boolean` instead of
+> `void` (**source-breaking** for third-party stores — see
+> `docs/release-notes.md`), and unparks the workflow only if the CAS won.
+> `DefaultWorkflowOperations.sleep()` now performs a three-way heal off the
+> durable timer row instead of the old two-way (fired/pending) check: `FIRED`
+> behaves byte-for-byte as before the change; `CANCELLED` appends a new
+> `TIMER_CANCELLED` event (at the same `seq+1` slot `TIMER_FIRED` used to
+> occupy) and throws the new, catchable `TimerCancelledException`, memoized
+> so replay reproduces the same outcome from the log alone, no store read;
+> `PENDING` still re-parks. Left uncaught, the exception fails the workflow
+> with compensation — a defined outcome, never a silent stall. New
+> `LifecycleEventType.TIMER_CANCELLED`, added per the coordinator's §12
+> approval; `maestro-admin`'s `EventProjector` was checked and found
+> tolerant of unknown lifecycle types by construction (allow-list branches,
+> `switch` with `default -> null`), so no admin-side change was needed.
+> Commits `eaac670`..`9c58371`. Pinned by
+> `WorkflowExecutorTest.recoverWorkflowsHealsTimerCancelledBeforeEventAppend`
+> (the C2/C3 heal), `WorkflowExecutorTest.replayOnly_timerCancelledEvent_throwsWithoutNewStoreWrites`
+> and `WorkflowExecutorTest.replayOnly_catchHandlerActivityAlreadyMemoized_isNotReInvoked`
+> (replay determinism, including a caught handler's own activity call), and
+> `EnginePostgresTimerIT.timerCancelledBeforeEventAppend_recoveryFailsTheWorkflowDeterministically`
+> against real Postgres. Documented in `docs/concepts.md` § "Cancelling a
+> timer". The rest of this section is kept as the record of the defect.
+
 **What's wrong.** This is the same stall shape as the original Issue 2, with
 a different trigger. If a timer is cancelled via `TimerManager.cancelTimer`
 (the admin dashboard's cancel-timer path) while a workflow is parked on it,
@@ -831,6 +865,31 @@ waiting on" decided and documented.
 ---
 
 ### Issue 14 — `SagaManager` re-appends `COMPENSATION_STARTED` on replay {#issue-14}
+
+> **Resolved.** `SagaManager.compensate()` now gives every compensation entry
+> — in both the sequential and parallel loops — its own reserved sequence
+> block (`blockBase = anchorSeq * BRANCH_MULTIPLIER + (i + 1) *
+> BRANCH_MULTIPLIER`), reusing the exact isolation scheme the file already
+> used for `parallel()`-style branches, applied one level up to compensation
+> entries themselves. Before an entry's action runs, its block's guard
+> sequence is checked against the store: if an event already exists there,
+> the action is **not** re-invoked — a stored `COMPENSATION_STEP_FAILED` is
+> re-added to the failures list without re-running, a stored
+> `COMPENSATION_STEP_COMPLETED` is skipped entirely. This closes the real
+> hazard: a manually-registered compensation (`wf.addCompensation(Runnable)`)
+> is not memoized the way a `@Compensate` activity's result is, so without
+> this guard a completed-but-not-yet-persisted-as-such compensation could be
+> re-invoked on a recovery replay. `COMPENSATION_STARTED`/
+> `COMPENSATION_COMPLETED` in `compensate()` itself also gained an explicit
+> already-appended check before writing, instead of relying on
+> `DuplicateEventException` being silently swallowed. Commit `0500259`.
+> Pinned by `SagaManagerTest.sequentialReplayDoesNotReinvokeAnAlreadyCompletedCompensation`,
+> `SagaManagerTest.parallelReplayDoesNotReinvokeAnAlreadyCompletedCompensation`,
+> and `WorkflowExecutorShutdownTest.shutdown_duringCompensationWithEarlierStepAlreadyCompleted_doesNotReinvokeItOnRecovery`
+> — the last one is exactly the "a step completes before a later one (not
+> first in LIFO order) is interrupted" shape this section originally called
+> out as untested by the existing shutdown fixtures. The rest of this section
+> is kept as the record of the defect.
 
 **What's wrong.** `SagaManager.compensate()` has no replay-skip guard of its
 own. On a recovery re-run it unconditionally re-appends
@@ -870,6 +929,64 @@ regular activity is proven not to re-execute on replay.
 ---
 
 ### Issue 15 — Admin dashboard retry/terminate signals are unconsumed {#issue-15}
+
+> **Resolved.** `$maestro:retry` and `$maestro:terminate` are now consumed
+> end-to-end. `SignalSubscriptionRunner` diverts any `$maestro:`-prefixed
+> signal to a new `AdminCommandDispatcher` (`maestro-spring-boot-starter`)
+> *before* `deliverSignal` runs, so the commands are structurally invisible
+> to `awaitSignal()` — an unroutable command (unknown name, or a workflow
+> type with no `@DurableWorkflow` registration on the receiving node) throws
+> `AdminCommandException` and dead-letters instead of silently no-opping.
+>
+> **Terminate** (`WorkflowExecutor.terminateWorkflow`) durably marks the
+> instance `TERMINATED`, with no compensation and no activity interruption,
+> and best-effort local eviction via a new `WorkflowTerminatedException
+> extends Error` — the second control-flow signal of this shape alongside
+> `ExecutorShutdownException` (Issue 4). Idempotent under redelivery
+> (converge-loop CAS, same budget as the existing terminal-transition path).
+>
+> **Retry** (`WorkflowExecutor.retryWorkflow`) needed more than the original
+> design assumed: relaunching a `FAILED` instance in replay mode alone does
+> nothing, because the failed step's `ACTIVITY_FAILED` event is itself
+> memoized and replay deterministically re-throws it instead of
+> re-executing — proven empirically before any fix was written. The
+> resolution (coordinator ruling) is a new, **source-breaking** abstract SPI
+> operation, `WorkflowStore.deleteFailureEvents(UUID instanceId)`, which
+> discards exactly the `ACTIVITY_FAILED`/`WORKFLOW_FAILED` memos for that
+> instance (never compensation or success events) before the CAS
+> `FAILED → RUNNING` and the replay relaunch — so the failed step genuinely
+> re-executes with a fresh retry budget, while everything before and after
+> it stays memoized. This also frees the sequence slot the old
+> `WORKFLOW_FAILED` occupied, so the retried run's `WORKFLOW_COMPLETED`
+> lands cleanly instead of colliding with it.
+>
+> Both commands required closing a **terminal-state resurrection** hazard
+> found along the way: a late signal, timer fire, or wake could flip a
+> `TERMINATED` instance back to `RUNNING`/`WAITING_*`. Closed by unifying two
+> duplicate status-writer helpers (`SignalManager` and
+> `DefaultWorkflowOperations` each had their own copy) into one
+> `InstanceStatusWriter` that throws `WorkflowTerminatedException` on a
+> freshly-read `TERMINATED`, plus the same guard added to
+> `SagaManager.transitionToCompensating` (a remote terminate racing a local
+> failure could otherwise overwrite `TERMINATED` with `COMPENSATING`).
+>
+> New `LifecycleEventType.WORKFLOW_RETRIED`, published on a successful retry
+> and projected by the admin `EventProjector` to status `RUNNING` (documented
+> minor cosmetic gap: a stale `completed_at` from the retried `FAILED` run
+> isn't cleared until the next terminal event). `docs/admin.md` documents the
+> full Retry/Terminate semantics, a 7-row idempotency table, and the security
+> posture (no auth on the command path — restrict with Kafka ACLs). Commits
+> `85bec43`..`e5ed1d4`. Pinned by
+> `WorkflowExecutorRetryTest.retryOfExhaustedActivity_reExecutesFailedStepAndCompletes`
+> (the headline case: a step that exhausted its retry budget genuinely
+> re-invokes, not just replays), `WorkflowTerminalStateGuardTest` and
+> `WorkflowExecutorTerminateTest` (resurrection guard and terminate outcomes),
+> `SagaManagerTest.terminateRacingAFailure_doesNotOverwriteTerminatedWithCompensating`,
+> `AdminCommandDispatcherTest` (13 cases pinning the full validation/
+> idempotency table), and `AdminCommandKafkaIT` plus the rewritten
+> `KafkaSignalChannelIT.adminCommand_terminatesWorkflowAndIsNeverPersisted`
+> against a real Kafka broker. The rest of this section is kept as the record
+> of the defect.
 
 **What's wrong.** The dashboard's Retry and Terminate actions
 (`POST /admin/workflows/{id}/retry`, `.../terminate`) publish
@@ -933,11 +1050,12 @@ and remove documented-but-false behaviour.
 want measurements or an SPI change rather than a quick patch — still open,
 still deliberate.
 
-**What's left, for whoever picks this up next:** Issues 13, 14, and 15 — none
-were on the original plan; all three were found as a side effect of fixing
-something else nearby. 13 is the most urgent (same failure shape as the
-original Issue 2); 14 is currently harmless but cheap to close properly; 15
-needs a small design decision (a `$maestro:` command dispatcher) before code.
+**What's left:** nothing tracked as open except the two deliberate known
+limitations. Issues 13, 14, and 15 — none were on the original plan; all
+three were found as a side effect of fixing something else nearby — are now
+resolved too (see each section above for commits and pinning tests). Issues
+11 and 12 remain open by deliberate design decision (see "Known
+limitations").
 
 ---
 
