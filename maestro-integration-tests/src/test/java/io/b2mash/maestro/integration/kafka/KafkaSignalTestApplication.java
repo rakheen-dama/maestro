@@ -17,7 +17,7 @@ import tools.jackson.databind.json.JsonMapper;
  *
  * <p>Its package is also the auto-configuration package, which is what lets
  * {@code DurableWorkflowBeanRegistrar} discover the {@code @DurableWorkflow}
- * fixtures in {@link KafkaTestWorkflows}.
+ * fixtures in {@link KafkaTestWorkflows} and {@link AdminCommandWorkflows}.
  *
  * <h2>Why the ObjectMapper is declared here</h2>
  * <p>{@code maestro-integration-tests} deliberately does not depend on
@@ -39,5 +39,16 @@ public class KafkaSignalTestApplication {
     @Bean
     public ObjectMapper objectMapper() {
         return JsonMapper.builder().build();
+    }
+
+    /**
+     * @return the {@link AdminCommandWorkflows.FlakyActivities} implementation
+     *         every context needs so {@link AdminCommandWorkflows.FlakyWorkflow}
+     *         can be wired — see that class's Javadoc for why this bean is
+     *         global rather than scoped to {@code AdminCommandKafkaIT}
+     */
+    @Bean
+    public AdminCommandWorkflows.FlakyActivitiesImpl flakyActivities() {
+        return new AdminCommandWorkflows.FlakyActivitiesImpl();
     }
 }
