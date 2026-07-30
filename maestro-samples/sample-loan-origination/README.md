@@ -77,6 +77,12 @@ can run side by side.
 | Valkey | 6380 | Locks and signal notifications |
 | Kafka | 29093 | External listener for host-run services |
 
+`E2E_CLUSTER=1 ./e2e/run-e2e.sh` runs a second instance of every service for
+the whole run (6 processes) — same `maestro.service-name`/consumer
+group/store per service pair, ports offset by +3: loan-application 8094,
+verification-gateway 8095, underwriting 8096. See the port-allocation
+comment at the top of `e2e/run-e2e.sh`.
+
 ## REST API, workflows, and scenarios
 
 See [SPEC.md](SPEC.md) for the exact REST endpoints, workflow IDs, signal

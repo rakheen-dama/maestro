@@ -16,8 +16,27 @@
 #   E2E_SKIP_BUILD=1 ./e2e/run-e2e.sh   # reuse previously built boot jars
 #   E2E_NO_TEARDOWN=1 ./e2e/run-e2e.sh  # leave infra + services running afterwards
 #   E2E_REUSE=1 ./e2e/run-e2e.sh        # assume infra + services are already up
+#   E2E_CLUSTER=1 ./e2e/run-e2e.sh      # "cluster mode": bring up a SECOND instance
+#                                        # of every service (6 processes total) for
+#                                        # the whole run, not just during scenario 6.
+#                                        # Foundation for multi-node failure scenarios;
+#                                        # this task only wires up start/stop plumbing.
 #
 # Requires: bash, curl, docker compose, and jq (falls back to python3).
+#
+# ── Port allocation ──────────────────────────────────────────────────────
+# No service in this sample configures a separate management/actuator port
+# (server.port, bound from SERVER_PORT, is the only port Spring binds), so
+# HTTP port is the only thing that must differ between two instances of the
+# same service. Second instances keep the same maestro.service-name (same
+# Kafka consumer group, same Postgres store, same lock namespace) - only the
+# port differs.
+#
+#   service                        node A (always)   node B (E2E_CLUSTER=1
+#                                                      or scenario 6)
+#   loan-application-service       8091               8094
+#   verification-gateway-service   8092               8095
+#   underwriting-service           8093               8096
 
 set -euo pipefail
 
@@ -31,16 +50,27 @@ mkdir -p "$LOG_DIR" "$PID_DIR"
 
 # ── Configuration ────────────────────────────────────────────────────────
 LOAN_URL="http://localhost:8091"
-# Scenario 6 runs a SECOND loan-application-service instance — same service
-# name, so the same Kafka consumer group and the same Postgres store.
-LOAN_URL_B="http://localhost:8094"
-LOAN_NODE_B="loan-application-service-b"
 VERIFY_URL="http://localhost:8092"
 UW_URL="http://localhost:8093"
+
+# Second-node ports/URLs (see port allocation table above). Scenario 6 always
+# runs a SECOND loan-application-service instance; E2E_CLUSTER=1 additionally
+# runs second instances of the other two services for the whole run. Same
+# service name -> same Kafka consumer group and same Postgres store.
+LOAN_PORT_B=8094
+VERIFY_PORT_B=8095
+UW_PORT_B=8096
+LOAN_URL_B="http://localhost:$LOAN_PORT_B"
+VERIFY_URL_B="http://localhost:$VERIFY_PORT_B"
+UW_URL_B="http://localhost:$UW_PORT_B"
+LOAN_NODE_B="loan-application-service-b"
+VERIFY_NODE_B="verification-gateway-service-b"
+UW_NODE_B="underwriting-service-b"
 
 E2E_SKIP_BUILD="${E2E_SKIP_BUILD:-0}"
 E2E_NO_TEARDOWN="${E2E_NO_TEARDOWN:-0}"
 E2E_REUSE="${E2E_REUSE:-0}"
+E2E_CLUSTER="${E2E_CLUSTER:-0}"
 
 # Verification fan-in takes ~8s real time (appraisal latency); allow slack.
 WAIT_PENDING_SECS=90       # create -> underwriting human queue
@@ -119,6 +149,22 @@ api_get() {
     if [[ "$code" == 404 ]]; then rm -f "$tmp"; echo ""; return 0; fi
     if [[ "$code" -ge 400 ]]; then rm -f "$tmp"; return 1; fi
     cat "$tmp"; rm -f "$tmp"
+}
+
+# port_in_use <port> - success (0) if something is accepting TCP connections
+# on 127.0.0.1:<port>, failure (1) otherwise. No lsof/nc dependency.
+port_in_use() {
+    (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
+}
+
+# assert_port_free <label> <port> - fail loudly instead of letting the JVM
+# fail to bind with a much less obvious error later.
+assert_port_free() {
+    if port_in_use "$2"; then
+        err "$1: port $2 is already in use - refusing to start (stale process from a previous run?)"
+        return 1
+    fi
+    return 0
 }
 
 # wait_for_http <name> <url> <timeout-secs> - any HTTP response (<500) counts
@@ -295,12 +341,37 @@ build_services() {
     done
 }
 
-start_service() { # <name>
-    local name="$1" jar
-    jar="$(service_jar "$name")"
-    log "Starting $name..."
-    java -jar "$jar" >>"$LOG_DIR/$name.log" 2>&1 &
-    echo $! >"$PID_DIR/$name.pid"
+# start_service_instance <service> <port> <instance-name>
+# Generic single-process launcher: every service and every second ("-b")
+# node routes through this. <service> selects the boot jar (the source
+# directory / SERVICES entry); <instance-name> selects the pid/log file
+# names, so a second node of the same service gets its own pid/log without
+# touching the primary's.
+start_service_instance() {
+    local svc="$1" port="$2" iname="$3" jar
+    jar="$(service_jar "$svc")"
+    assert_port_free "$iname" "$port" || return 1
+    : >"$LOG_DIR/$iname.log"
+    log "Starting $iname (service=$svc) on port $port..."
+    SERVER_PORT="$port" java -jar "$jar" >>"$LOG_DIR/$iname.log" 2>&1 &
+    echo $! >"$PID_DIR/$iname.pid"
+}
+
+# default_port_for <service> - the node-A port baked into each service's
+# application.yml (server.port: ${SERVER_PORT:<this value>}).
+default_port_for() {
+    case "$1" in
+        loan-application-service) echo 8091 ;;
+        verification-gateway-service) echo 8092 ;;
+        underwriting-service) echo 8093 ;;
+        *) err "No default port known for service '$1'"; return 1 ;;
+    esac
+}
+
+start_service() { # <name> - node-A instance; instance name == service name
+    local name="$1" port
+    port="$(default_port_for "$name")" || return 1
+    start_service_instance "$name" "$port" "$name"
 }
 
 stop_service() { # <name> [signal]
@@ -317,10 +388,24 @@ stop_service() { # <name> [signal]
     rm -f "$PID_DIR/$name.pid"
 }
 
+# assert_distinct_pids <instance-name>... - fail if any two pid files in the
+# list resolve to the same PID (cluster-mode sanity check).
+assert_distinct_pids() {
+    local n pid seen pids=()
+    for n in "$@"; do
+        [[ -f "$PID_DIR/$n.pid" ]] || { err "Missing pid file for $n"; return 1; }
+        pid="$(cat "$PID_DIR/$n.pid")"
+        for seen in ${pids[@]+"${pids[@]}"}; do
+            [[ "$seen" != "$pid" ]] || { err "$n shares PID $pid with another instance"; return 1; }
+        done
+        pids+=("$pid")
+    done
+    log "Distinct PIDs confirmed for: $*"
+}
+
 start_all_services() {
     local svc
     for svc in "${SERVICES[@]}"; do
-        : >"$LOG_DIR/$svc.log"
         start_service "$svc"
     done
     wait_for_http "loan-application-service" "$LOAN_URL/applications/__probe__" 120
@@ -331,6 +416,18 @@ start_all_services() {
     # (default auto.offset.reset=latest on the sample's @KafkaListeners).
     wait_for_consumer_group "verification-gateway" 90
     wait_for_consumer_group "underwriting" 90
+
+    if [[ "$E2E_CLUSTER" == 1 ]]; then
+        log "E2E_CLUSTER=1 - starting second instance of each service (6 processes total)..."
+        start_loan_node_b || return 1
+        start_service_instance verification-gateway-service "$VERIFY_PORT_B" "$VERIFY_NODE_B" || return 1
+        start_service_instance underwriting-service "$UW_PORT_B" "$UW_NODE_B" || return 1
+        wait_for_http "$VERIFY_NODE_B" "$VERIFY_URL_B/webhooks/credit/__probe__" 120
+        wait_for_http "$UW_NODE_B" "$UW_URL_B/underwriting/pending" 120
+        assert_distinct_pids loan-application-service "$LOAN_NODE_B" \
+            verification-gateway-service "$VERIFY_NODE_B" \
+            underwriting-service "$UW_NODE_B"
+    fi
 }
 
 TEARDOWN_DONE=0
@@ -344,7 +441,11 @@ teardown() {
     log "Tearing down services and infrastructure..."
     local svc
     for svc in "${SERVICES[@]}"; do stop_service "$svc" || true; done
+    # Second nodes: no-op (stop_service returns immediately) when they were
+    # never started, so this is safe in both default and cluster mode.
     stop_service "$LOAN_NODE_B" || true
+    stop_service "$VERIFY_NODE_B" || true
+    stop_service "$UW_NODE_B" || true
     if [[ "$E2E_REUSE" != 1 ]]; then
         compose down -v >/dev/null 2>&1 || true
     fi
@@ -377,11 +478,14 @@ run_scenario() { # <name> <function>
 # it a genuine second node of the same service: one consumer group, one store,
 # one instance-lock namespace.
 start_loan_node_b() {
-    local jar; jar="$(service_jar loan-application-service)"
-    : >"$LOG_DIR/$LOAN_NODE_B.log"
-    log "Starting second loan-application node on 8094..."
-    SERVER_PORT=8094 java -jar "$jar" >>"$LOG_DIR/$LOAN_NODE_B.log" 2>&1 &
-    echo $! >"$PID_DIR/$LOAN_NODE_B.pid"
+    # In cluster mode the second loan node is already running for the whole
+    # run (started by start_all_services); reuse it rather than trying to
+    # bind the same port twice. In default mode this is always a fresh start.
+    if [[ -f "$PID_DIR/$LOAN_NODE_B.pid" ]] && kill -0 "$(cat "$PID_DIR/$LOAN_NODE_B.pid")" 2>/dev/null; then
+        log "$LOAN_NODE_B already running (cluster mode) - reusing for scenario 6."
+    else
+        start_service_instance loan-application-service "$LOAN_PORT_B" "$LOAN_NODE_B" || return 1
+    fi
     wait_for_http "$LOAN_NODE_B" "$LOAN_URL_B/applications/__probe__" 120
 }
 
@@ -563,6 +667,14 @@ sweep_logs() {
 scenario_two_node() {
     local id="e2e-${RUN_ID}-s6"
 
+    # Cluster mode already has node B running for the whole run; only stop it
+    # at the end of this scenario if THIS scenario is the one that started it
+    # (default mode) - never tear down a node the cluster-mode run still needs.
+    local started_node_b=1
+    if [[ -f "$PID_DIR/$LOAN_NODE_B.pid" ]] && kill -0 "$(cat "$PID_DIR/$LOAN_NODE_B.pid")" 2>/dev/null; then
+        started_node_b=0
+    fi
+
     start_loan_node_b || return 1
 
     local pid_a pid_b
@@ -607,11 +719,18 @@ scenario_two_node() {
     kill -0 "$pid_a" 2>/dev/null || { err "Node A ($pid_a) died during the scenario"; return 1; }
     kill -0 "$pid_b" 2>/dev/null || { err "Node B ($pid_b) died during the scenario"; return 1; }
 
-    stop_service "$LOAN_NODE_B"
+    if [[ "$started_node_b" == 1 ]]; then
+        stop_service "$LOAN_NODE_B"
+    else
+        log "$LOAN_NODE_B was started by cluster mode - leaving it running for the rest of the run."
+    fi
 }
 
 main() {
     log "Loan-origination E2E run $RUN_ID (logs: $LOG_DIR)"
+    if [[ "$E2E_CLUSTER" == 1 ]]; then
+        log "E2E_CLUSTER=1 - cluster mode: 6 processes (2 per service)."
+    fi
 
     if [[ "$E2E_REUSE" == 1 ]]; then
         log "E2E_REUSE=1 - assuming infra and services are already running."
