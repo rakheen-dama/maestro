@@ -830,10 +830,8 @@ public final class WorkflowExecutor {
         // gone, which is harmless — deleteFailureEvents is idempotent, and a
         // later retry of the still-FAILED instance simply deletes zero rows and
         // proceeds normally.
-        // TEMP-RED-PROBE: deliberately disabled to reproduce the documented
-        // blocker (task-3-report.md §1) before re-enabling for GREEN.
-        // var deleted = store.deleteFailureEvents(latest.id());
-        // logger.debug("Deleted {} failure memo(s) for workflow '{}' before retry", deleted, workflowId);
+        var deleted = store.deleteFailureEvents(latest.id());
+        logger.debug("Deleted {} failure memo(s) for workflow '{}' before retry", deleted, workflowId);
 
         var now = Instant.now();
         var running = latest.toBuilder()
