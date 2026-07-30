@@ -5,6 +5,7 @@ import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.exception.CompensationException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
+import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.TimerStatus;
 import io.b2mash.maestro.core.model.WorkflowEvent;
@@ -204,6 +205,34 @@ class SagaManagerTest {
 
         var events = store.getEvents(instance.id());
         assertTrue(events.isEmpty());
+    }
+
+    @Test
+    @DisplayName("A terminate racing a failing workflow must not overwrite TERMINATED with COMPENSATING")
+    void terminateRacingAFailure_doesNotOverwriteTerminatedWithCompensating() {
+        // Model WorkflowExecutor.terminateWorkflow having already won the race
+        // and durably written TERMINATED before this (separate) failing run
+        // reaches its own compensation phase.
+        store.updateInstance(instance.toBuilder()
+                .status(WorkflowStatus.TERMINATED)
+                .completedAt(Instant.now())
+                .version(instance.version() + 1)
+                .build());
+
+        var order = new ArrayList<String>();
+        var stack = new CompensationStack();
+        stack.push("step-A", () -> order.add("A"));
+
+        var thrown = org.junit.jupiter.api.Assertions.assertThrows(
+                WorkflowTerminatedException.class,
+                () -> sagaManager.compensate(ctx, instance, stack, false));
+        assertEquals("test-workflow", thrown.workflowId());
+
+        assertEquals(WorkflowStatus.TERMINATED, store.getInstance("test-workflow").orElseThrow().status(),
+                "TERMINATED must not be resurrected as COMPENSATING");
+        assertTrue(order.isEmpty(), "no compensation may run once the instance is terminated");
+        assertTrue(store.getEvents(instance.id()).isEmpty(),
+                "no COMPENSATION_STARTED may be recorded for a run that must not compensate");
     }
 
     @Test
