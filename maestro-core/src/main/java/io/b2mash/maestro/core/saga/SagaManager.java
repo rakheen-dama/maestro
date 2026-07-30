@@ -443,9 +443,40 @@ public final class SagaManager {
 
     // ── Internal helpers ──────────────────────────────────────────────
 
+    /**
+     * Writes {@code COMPENSATING}, standing down against a freshly-read
+     * terminal status instead of overwriting it — the same guard
+     * {@link io.b2mash.maestro.core.engine.InstanceStatusWriter} applies to a
+     * workflow's own {@code WAITING_*}/{@code RUNNING} writes.
+     *
+     * <p>{@code WorkflowExecutor.terminateWorkflow} can write {@code TERMINATED}
+     * from any node, including one racing this failing run's compensation
+     * phase. Without this check, the read-then-write below would blindly
+     * overwrite that {@code TERMINATED} row with {@code COMPENSATING} — briefly
+     * resurrecting a workflow an operator already stopped, and letting
+     * compensations neither the operator nor the row's own history called for
+     * start running. A freshly-read {@code TERMINATED} therefore throws
+     * {@link WorkflowTerminatedException} instead of writing anything, which
+     * propagates out of {@link #compensate} uncaught — an {@code Error}, not
+     * caught by this method's own {@code catch (Exception e)} below — for
+     * {@code WorkflowExecutor.executeWorkflow}'s
+     * {@code catch (WorkflowTerminatedException)} to unwind without recording
+     * a failure.
+     */
     private void transitionToCompensating(WorkflowContext ctx, WorkflowInstance instance) {
+        var latest = store.getInstance(ctx.workflowId()).orElse(instance);
+        if (latest.status() == WorkflowStatus.TERMINATED) {
+            logger.info("Workflow '{}' is TERMINATED — not starting compensation; abandoning this run",
+                    ctx.workflowId());
+            throw new WorkflowTerminatedException(ctx.workflowId(), null);
+        }
+        if (latest.status().isTerminal()) {
+            logger.warn("Workflow '{}' is already {} — another runner finalised it first; "
+                            + "not transitioning to COMPENSATING",
+                    ctx.workflowId(), latest.status());
+            return;
+        }
         try {
-            var latest = store.getInstance(ctx.workflowId()).orElse(instance);
             var compensating = latest.toBuilder()
                     .status(WorkflowStatus.COMPENSATING)
                     .updatedAt(Instant.now())
