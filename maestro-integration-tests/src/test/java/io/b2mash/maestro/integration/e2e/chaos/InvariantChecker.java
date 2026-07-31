@@ -57,6 +57,15 @@ public final class InvariantChecker {
     public record Violation(String invariant, String detail, List<String> workflowIds) {
     }
 
+    /**
+     * Outcome of the authoritative check: hard violations plus the
+     * redelivered-signal findings (Ruling 3: unconsumed rows with a consumed
+     * byte-identical twin — Kafka at-least-once redelivery — do not fail the
+     * run but are mandatory, prominently-reported findings).
+     */
+    public record VerifyResult(List<Violation> violations, List<String> redeliveredUnconsumedSignals) {
+    }
+
     // ---------------------------------------------------------- periodic mode
 
     /**
@@ -95,9 +104,9 @@ public final class InvariantChecker {
      * Full authoritative verification after heal-all + drain: I1 (+ledger join),
      * I2, I3(a–d), I4, I5. Writes failure dumps for every offending workflow.
      *
-     * @return all violations found (empty ⇒ the run passed)
+     * @return violations (empty ⇒ the run passed) plus redelivered-signal findings
      */
-    public List<Violation> verifyAuthoritative() {
+    public VerifyResult verifyAuthoritative() {
         var v = new ArrayList<Violation>();
 
         // I1 — ledger workflows terminal within SLA + expected outcome (loan DB).
@@ -114,12 +123,13 @@ public final class InvariantChecker {
             v.addAll(terminalIsMaxSequence(svc));      // I3c
             v.addAll(densityWithinBound(svc));         // I3d (calibrated)
         }
-        v.addAll(unconsumedApplicationSignals());      // I4 (loan DB)
+        var i4 = unconsumedApplicationSignals();       // I4 (loan DB, Ruling 3 split)
+        v.addAll(i4.violations());
 
         if (!v.isEmpty()) {
             dumpFailures(v);
         }
-        return v;
+        return new VerifyResult(v, i4.redeliveredUnconsumedSignals());
     }
 
     // ------------------------------------------------------------ invariants
@@ -309,17 +319,29 @@ public final class InvariantChecker {
     }
 
     /**
-     * I4 — zero unconsumed application signals for COMPLETED workflows (loan
-     * DB). Each hit is annotated with whether a CONSUMED twin (same workflow,
-     * signal name and payload) exists — the discriminator between a
-     * transport-level at-least-once redelivery of a message the workflow
-     * demonstrably received ({@code consumedTwin=true}) and a genuinely missed
-     * signal ({@code consumedTwin=false}).
+     * I4 — unconsumed application signals for COMPLETED workflows (loan DB),
+     * split per Ruling 3:
+     *
+     * <ul>
+     *   <li>{@code consumedTwin=false} — no byte-identical consumed row exists
+     *       for the same workflow and signal name: a genuinely missed/lost
+     *       signal. <b>Hard violation.</b></li>
+     *   <li>{@code consumedTwin=true} — a byte-identical consumed twin exists:
+     *       a Kafka at-least-once redelivery of a message the workflow
+     *       demonstrably received, persisted per "never discard a signal" and
+     *       correctly never consumed by the completed workflow. Reported as a
+     *       mandatory finding, never a failure.</li>
+     * </ul>
+     *
+     * <p>Caveat (recorded in the design changelog): byte-identity implies
+     * same-logical-signal only because the loan workload's signals are
+     * logically keyed (signerId, round numbers, verification type); a future
+     * workload with unkeyed identical payloads must re-examine this split.
      */
-    private List<Violation> unconsumedApplicationSignals() {
-        var ids = queryStrings(Service.LOAN_APPLICATION,
-                "SELECT s.workflow_id || ':' || s.signal_name || ' x' || COUNT(*) "
-                + "|| ' consumedTwin=' || BOOL_AND(EXISTS ("
+    private I4Result unconsumedApplicationSignals() {
+        String sql =
+                "SELECT s.workflow_id || ':' || s.signal_name || ' x' || COUNT(*), "
+                + "BOOL_AND(EXISTS ("
                 + "     SELECT 1 FROM maestro_workflow_signal t "
                 + "     WHERE t.workflow_id = s.workflow_id "
                 + "       AND t.signal_name = s.signal_name "
@@ -329,10 +351,29 @@ public final class InvariantChecker {
                 + "JOIN maestro_workflow_instance i ON i.workflow_id = s.workflow_id "
                 + "WHERE i.status = 'COMPLETED' AND s.consumed = FALSE "
                 + "AND s.signal_name NOT LIKE '$maestro:%' "
-                + "GROUP BY s.workflow_id, s.signal_name");
-        return ids.isEmpty() ? List.of()
-                : List.of(new Violation("I4", "unconsumed application signal for COMPLETED "
-                + "workflow (loan DB)", ids));
+                + "GROUP BY s.workflow_id, s.signal_name";
+        var missed = new ArrayList<String>();
+        var redelivered = new ArrayList<String>();
+        try (var c = ds(Service.LOAN_APPLICATION).getConnection();
+             var st = c.createStatement();
+             ResultSet rs = st.executeQuery(sql)) {
+            while (rs.next()) {
+                if (rs.getBoolean(2)) {
+                    redelivered.add(rs.getString(1) + " consumedTwin=true");
+                } else {
+                    missed.add(rs.getString(1) + " consumedTwin=false");
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[chaos] I4 query failed: {}", e.toString());
+        }
+        var violations = missed.isEmpty() ? List.<Violation>of()
+                : List.of(new Violation("I4", "unconsumed application signal with NO consumed "
+                + "twin for COMPLETED workflow (loan DB) — genuinely missed signal", missed));
+        return new I4Result(violations, redelivered);
+    }
+
+    private record I4Result(List<Violation> violations, List<String> redeliveredUnconsumedSignals) {
     }
 
     // ------------------------------------------------------------- failure dumps

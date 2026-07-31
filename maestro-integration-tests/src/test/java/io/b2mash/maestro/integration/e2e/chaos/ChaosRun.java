@@ -117,17 +117,26 @@ public final class ChaosRun {
             drain(cluster, driver, config.drainSla());
 
             periodic.stop();
-            sampler.stop();
 
             var checker = new InvariantChecker(cluster, evidence, driver.ledger());
-            violations = checker.verifyAuthoritative();
+            var verify = checker.verifyAuthoritative();
+            violations = verify.violations();
 
             var censusRunner = new SideEffectCensus(cluster, evidence, driver.ledger());
             census = censusRunner.run();
 
-            writeSummary(evidence, driver.ledger(), violations, census);
-            surface(violations, census);
+            writeSummary(evidence, driver.ledger(), verify, census);
+            surface(verify, census);
 
+            // Issue 12 benchmark tail (design §6, Ruling 3): soak-only, after
+            // verify — chaos off, steady low rate, one measurement phase at 6
+            // nodes then one at 3. The sampler keeps running so the phases land
+            // in metrics.csv (liveNodes 6 vs 3, chaosActive=false).
+            if (config.mode() == ChaosMode.SOAK && violations.isEmpty()) {
+                benchmarkTail(cluster, driver, evidence);
+            }
+
+            sampler.stop();
             driver.close();
         }
 
@@ -181,8 +190,9 @@ public final class ChaosRun {
     // --------------------------------------------------------------- reporting
 
     private void writeSummary(EvidenceWriter evidence, List<LedgerEntry> ledger,
-                              List<InvariantChecker.Violation> violations,
+                              InvariantChecker.VerifyResult verify,
                               SideEffectCensus.Result census) {
+        var violations = verify.violations();
         var byPath = new LinkedHashMap<String, Long>();
         for (LedgerEntry e : ledger) {
             byPath.merge(e.path().name(), 1L, Long::sum);
@@ -196,6 +206,10 @@ public final class ChaosRun {
         summary.put("workflowsByPath", byPath);
         summary.put("verdict", violations.isEmpty() ? "PASS" : "FAIL");
         summary.put("violations", violations);
+        // Ruling 3 mandatory finding: redelivered-but-unconsumed signal rows
+        // (byte-identical consumed twin exists — Kafka at-least-once redelivery).
+        summary.put("redeliveredUnconsumedSignals", verify.redeliveredUnconsumedSignals());
+        summary.put("redeliveredUnconsumedSignalGroups", verify.redeliveredUnconsumedSignals().size());
         summary.put("sideEffectDuplicates", census.totalDuplicates());
         summary.put("explainedDuplicates", census.explained());
         summary.put("unexplainedDuplicates", census.unexplained());
@@ -204,10 +218,16 @@ public final class ChaosRun {
         evidence.writeJson("run-summary.json", summary);
     }
 
-    private void surface(List<InvariantChecker.Violation> violations, SideEffectCensus.Result census) {
+    private void surface(InvariantChecker.VerifyResult verify, SideEffectCensus.Result census) {
+        var violations = verify.violations();
         System.out.println("[chaos] VERDICT: " + (violations.isEmpty() ? "PASS" : "FAIL"));
         System.out.println("[chaos] side-effect duplicates: total=" + census.totalDuplicates()
                 + " explained=" + census.explained() + " unexplained=" + census.unexplained());
+        if (!verify.redeliveredUnconsumedSignals().isEmpty()) {
+            System.out.println("[chaos] FINDING (Ruling 3): redelivered-but-unconsumed signals "
+                    + "(consumedTwin=true, Kafka at-least-once redelivery): "
+                    + verify.redeliveredUnconsumedSignals());
+        }
         if (census.unexplained() > 0) {
             System.out.println("[chaos] !!! UNEXPLAINED DUPLICATES (triage required, Q8): "
                     + census.unexplainedWorkflows());
@@ -218,6 +238,51 @@ public final class ChaosRun {
         }
         violations.forEach(v -> System.out.println("[chaos] VIOLATION [" + v.invariant() + "] "
                 + v.detail() + " -> " + v.workflowIds()));
+    }
+
+    // ---------------------------------------------------------- benchmark tail
+
+    /**
+     * The Issue 12 vs-node-count benchmark tail (design §6): chaos off, a
+     * steady low-rate workload, one measurement phase with all six nodes live,
+     * then a graceful stop of one node per service and a second phase at three
+     * nodes. Phase boundaries, node sets and workflow counts are recorded in
+     * {@code benchmark-tail.json}; the rates themselves live in
+     * {@code metrics.csv} rows (distinguished by {@code liveNodes} 6 vs 3 with
+     * {@code chaosActive=false}). Phase length: 300s, compressible for smokes
+     * via {@code -Dmaestro.chaos.tailPhaseSeconds}.
+     */
+    private void benchmarkTail(ChaosCluster cluster, WorkloadDriver driver, EvidenceWriter evidence) {
+        int phaseSeconds = Integer.getInteger("maestro.chaos.tailPhaseSeconds", 300);
+        int ratePerMinute = Integer.getInteger("maestro.chaos.tailRatePerMinute", 6);
+        var tail = new LinkedHashMap<String, Object>();
+        tail.put("phaseSeconds", phaseSeconds);
+        tail.put("ratePerMinute", ratePerMinute);
+        log.info("[chaos] benchmark tail begins: {}s per phase at {}/min", phaseSeconds, ratePerMinute);
+
+        tail.put("phase6NodesStartUtc", java.time.Instant.now().toString());
+        int sixNodeWorkflows = driver.generateAt(ratePerMinute,
+                Duration.ofSeconds(phaseSeconds), "tail6");
+        tail.put("phase6NodesEndUtc", java.time.Instant.now().toString());
+        tail.put("phase6NodesWorkflows", sixNodeWorkflows);
+
+        // Gracefully stop one node of each service (the B instances). The
+        // sampler's liveNodes column drops to 3 for the second phase.
+        var stopped = List.of(NodeRole.LOAN_B, NodeRole.VERIFY_B, NodeRole.UW_B);
+        for (NodeRole node : stopped) {
+            cluster.stopGraceful(node);
+        }
+        tail.put("stoppedNodes", stopped.stream().map(Enum::name).toList());
+
+        tail.put("phase3NodesStartUtc", java.time.Instant.now().toString());
+        int threeNodeWorkflows = driver.generateAt(ratePerMinute,
+                Duration.ofSeconds(phaseSeconds), "tail3");
+        tail.put("phase3NodesEndUtc", java.time.Instant.now().toString());
+        tail.put("phase3NodesWorkflows", threeNodeWorkflows);
+
+        evidence.writeJson("benchmark-tail.json", tail);
+        log.info("[chaos] benchmark tail complete: {} + {} workflows",
+                sixNodeWorkflows, threeNodeWorkflows);
     }
 
     private void mirrorEvidence(Path runDir, String runId) {

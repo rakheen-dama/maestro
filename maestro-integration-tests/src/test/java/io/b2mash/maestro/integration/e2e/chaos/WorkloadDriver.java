@@ -94,11 +94,26 @@ public final class WorkloadDriver {
      * @param durationMinutes generation window
      */
     public void generate(int durationMinutes) {
-        double lambdaPerSec = config.ratePerMinute() / 60.0;
-        long endNanos = System.nanoTime() + Duration.ofMinutes(durationMinutes).toNanos();
+        generateAt(config.ratePerMinute(), Duration.ofMinutes(durationMinutes), "chaos");
+    }
+
+    /**
+     * Generates Poisson arrivals at an explicit rate for a bounded window —
+     * used by the soak benchmark tail (design §6: steady low rate, chaos off).
+     * Blocks for the window.
+     *
+     * @param ratePerMinute arrival rate
+     * @param window        generation window
+     * @param idPrefix      workflow-id prefix segment (distinguishes tail
+     *                      workflows in the ledger and store)
+     * @return the number of workflows submitted
+     */
+    public int generateAt(int ratePerMinute, Duration window, String idPrefix) {
+        double lambdaPerSec = ratePerMinute / 60.0;
+        long endNanos = System.nanoTime() + window.toNanos();
         int seq = 0;
-        log.info("[chaos] workload generation begins: {}/min for {} min",
-                config.ratePerMinute(), durationMinutes);
+        log.info("[chaos] workload generation begins: {}/min for {} ({})",
+                ratePerMinute, window, idPrefix);
         while (System.nanoTime() < endNanos) {
             double u = rng.nextDouble();
             long waitNanos = (long) (-Math.log(1 - u) / lambdaPerSec * 1_000_000_000L);
@@ -107,10 +122,12 @@ public final class WorkloadDriver {
                 break;
             }
             LoanPath path = LoanPath.pick(rng.nextInt(100));
-            String appId = appId(seq++);
+            String appId = idPrefix + "-" + Long.toUnsignedString(config.seed()) + "-" + seq++;
             futures.add(executor.submit(() -> runScript(appId, path, true)));
         }
-        log.info("[chaos] workload generation window closed: {} workflows submitted", seq);
+        log.info("[chaos] workload generation window closed: {} workflows submitted ({})",
+                seq, idPrefix);
+        return seq;
     }
 
     /**
@@ -568,10 +585,6 @@ public final class WorkloadDriver {
             // absent / unparseable
         }
         return Optional.empty();
-    }
-
-    private String appId(int seq) {
-        return "chaos-" + Long.toUnsignedString(config.seed()) + "-" + seq;
     }
 
     private static String nowUtc() {

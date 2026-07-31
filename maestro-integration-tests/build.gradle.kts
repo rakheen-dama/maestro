@@ -70,5 +70,6 @@ tasks.named<Test>("e2eTest") {
         "maestro.chaos.mode", "maestro.chaos.seed", "maestro.chaos.durationMinutes",
         "maestro.chaos.ratePerMinute", "maestro.chaos.soak", "maestro.chaos.golden",
         "maestro.chaos.smoke", "maestro.chaos.evidenceDir", "maestro.chaos.drainSeconds",
+        "maestro.chaos.tailPhaseSeconds", "maestro.chaos.tailRatePerMinute",
     ).forEach { key -> System.getProperty(key)?.let { systemProperty(key, it) } }
 }
