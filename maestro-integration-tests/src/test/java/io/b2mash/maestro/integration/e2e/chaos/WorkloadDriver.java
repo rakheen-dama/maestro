@@ -51,7 +51,6 @@ public final class WorkloadDriver {
     private static final long INCOME = 100_000;   // amount ends in 0 -> verifications approved
     private static final long PROPERTY = 500_000;
     private static final List<String> BORROWERS = List.of("borrower-a", "borrower-b");
-    private static final List<String> VERIFICATION_TYPES = List.of("credit", "employment", "appraisal");
 
     private final ChaosCluster cluster;
     private final ChaosConfig config;
@@ -252,59 +251,27 @@ public final class WorkloadDriver {
         }
     }
 
+    /**
+     * Waits for the underwriting child workflow of {@code round} to exist.
+     *
+     * <p>No out-of-band verification fallback: verification workflows are
+     * durable — a chaos-killed node's workflows are adopted and replayed, and
+     * their {@code publishResult} activity is memoized — so a result is never
+     * lost, only late. An earlier webhook fallback raced the real (late) Kafka
+     * result and manufactured a near-duplicate signal row with different
+     * payload bytes, which is exactly the {@code consumedTwin=false} shape I4
+     * hard-fails on (triaged in evidence run 20260731-221119-203). Waiting the
+     * full deadline is the honest driving strategy; a genuinely stuck
+     * verification surfaces at drain as an I1 finding with this ledger note.
+     */
     private void ensureUnderwritingRequested(String applicationId, int round, List<String> notes) {
         String childId = "underwriting-" + applicationId + "-round" + round;
-        String workflowId = "loan-" + applicationId;
         boolean requested = pollUntil(
                 () -> instanceExists(Service.UNDERWRITING, childId),
-                Duration.ofSeconds(45), Duration.ofSeconds(1));
-        if (!requested && round == 1) {
-            // Verification results may be missing (a verification workflow lost
-            // mid-chaos). Per the design (§3), a re-post that could over-deliver
-            // a counted signal happens ONLY after a store-level check that the
-            // signal never landed: webhook only the verification types with no
-            // signal row, so an already-delivered (or merely slow) result is
-            // never duplicated into an unconsumable row (I4 shaping).
-            var missing = missingVerificationTypes(workflowId);
-            if (!missing.isEmpty()) {
-                notes.add("verification-webhook-fallback:" + missing);
-                for (String type : missing) {
-                    post(Service.VERIFICATION_GATEWAY,
-                            "/webhooks/" + type + "/" + applicationId, "{\"approved\":true}");
-                }
-            }
-            requested = pollUntil(() -> instanceExists(Service.UNDERWRITING, childId),
-                    config.sampleTimeout(), Duration.ofSeconds(1));
-        }
+                config.sampleTimeout(), Duration.ofSeconds(1));
         if (!requested) {
             notes.add("underwriting-round-" + round + "-not-requested");
         }
-    }
-
-    /** Verification types with no {@code verification.result} signal row yet. */
-    private List<String> missingVerificationTypes(String workflowId) {
-        var present = new ArrayList<String>();
-        String sql = "SELECT payload::text FROM maestro_workflow_signal "
-                + "WHERE workflow_id = ? AND signal_name = 'verification.result'";
-        try (var c = cluster.dataSource(Service.LOAN_APPLICATION).getConnection();
-             var ps = c.prepareStatement(sql)) {
-            ps.setString(1, workflowId);
-            try (var rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    String payload = rs.getString(1);
-                    for (String type : VERIFICATION_TYPES) {
-                        if (payload != null && payload.contains("\"" + type + "\"")) {
-                            present.add(type);
-                        }
-                    }
-                }
-            }
-        } catch (Exception e) {
-            // Store unreachable (backend outage window): treat nothing as
-            // missing — re-check happens on the next poll cycle.
-            return List.of();
-        }
-        return VERIFICATION_TYPES.stream().filter(t -> !present.contains(t)).toList();
     }
 
     private void decide(String applicationId, int round, String verdict, List<String> conditions,
