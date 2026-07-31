@@ -3,6 +3,7 @@ package io.b2mash.maestro.core.saga;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.context.WorkflowMDC;
 import io.b2mash.maestro.core.exception.CompensationException;
+import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.EventType;
@@ -251,6 +252,19 @@ public final class SagaManager {
                 appendEvent(ctx, stepBaseSeq, EventType.COMPENSATION_STEP_COMPLETED, entry.stepName(), null);
                 publishLifecycleEvent(ctx, entry.stepName(),
                         LifecycleEventType.COMPENSATION_STEP_COMPLETED);
+            } catch (DuplicateEventException staleRun) {
+                // Issue 18: an append collision here means a concurrent runner
+                // owns this workflow's compensation progress (the replay-skip
+                // guard above read the store before the winner's event landed).
+                // That is not a step failure — recording COMPENSATION_STEP_FAILED
+                // would durably contradict the winner's COMPLETED entry at the
+                // same sequence. Rethrow so the whole attempt stands down
+                // (WorkflowExecutor leaves the instance COMPENSATING and
+                // recoverable; the winner's run finishes the job) — the exact
+                // treatment ExecutorShutdownException gets here, and ahead of
+                // catch (Exception e) because DuplicateEventException is a
+                // MaestroException.
+                throw staleRun;
             } catch (Exception e) {
                 logger.error("Compensation {} '{}' failed for workflow '{}': {}",
                         i, entry.stepName(), ctx.workflowId(), e.getMessage(), e);
@@ -416,6 +430,15 @@ public final class SagaManager {
             if (errorRef.get() instanceof WorkflowTerminatedException terminated) {
                 throw terminated;
             }
+            // Issue 18: a branch whose append collided with a concurrent
+            // runner's event means the whole attempt is stale — a peer owns
+            // this workflow's compensation progress. Not a step failure;
+            // recording it would contradict the winner's durable entry.
+            // Rethrow so WorkflowExecutor stands the run down (instance stays
+            // COMPENSATING, recoverable; the winner finishes the job).
+            if (errorRef.get() instanceof DuplicateEventException staleRun) {
+                throw staleRun;
+            }
         }
 
         // Collect failures from branches that genuinely ran this call.
@@ -513,6 +536,11 @@ public final class SagaManager {
             ));
             appendEvent(ctx, seq, EventType.COMPENSATION_STEP_FAILED, stepName, errorPayload);
             publishLifecycleEvent(ctx, stepName, LifecycleEventType.COMPENSATION_STEP_FAILED);
+        } catch (DuplicateEventException staleRun) {
+            // Issue 18: the winner already recorded an outcome at this
+            // sequence — this run's view of the step is stale. Stand down
+            // rather than mislabelling the collision as a recorded failure.
+            throw staleRun;
         } catch (Exception e) {
             logger.warn("Failed to record compensation step failure for '{}' in workflow '{}'",
                     stepName, ctx.workflowId(), e);
@@ -532,6 +560,14 @@ public final class SagaManager {
                     Instant.now()
             );
             store.appendEvent(event);
+        } catch (DuplicateEventException staleRun) {
+            // Issue 18: a compensation-phase append that hits the store's
+            // (instance, sequence) unique guard means a concurrent runner owns
+            // this workflow's compensation progress — swallowing it here (as
+            // this method does for other append problems) would let a stale
+            // run keep executing compensation ACTIONS the winner also runs.
+            // Propagate so the whole attempt stands down at the executor.
+            throw staleRun;
         } catch (Exception e) {
             logger.warn("Failed to append {} event for workflow '{}'", type, ctx.workflowId(), e);
         }
