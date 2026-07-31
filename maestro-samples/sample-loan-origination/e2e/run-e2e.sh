@@ -658,10 +658,16 @@ start_service_instance() {
     else
         log "Starting $iname (service=$svc) on port $port..."
     fi
-    # NOTE: dynamic "${extra_env[@]}" words are NOT recognized as env-var-
+    # NOTE 1: dynamic "${extra_env[@]}" words are NOT recognized as env-var-
     # assignment prefixes by bash (that recognition is lexical/literal, not
     # value-based) - `env` is required to apply them to the child process.
-    SERVER_PORT="$port" env "${extra_env[@]}" java -jar "$jar" >>"$LOG_DIR/$iname.log" 2>&1 &
+    # NOTE 2: the ${arr[@]+...} guard (same pattern as assert_distinct_pids)
+    # is required for bash 3.2 (macOS stock /bin/bash): under set -u, an
+    # EMPTY array's "${arr[@]}" is an "unbound variable" error there - which
+    # is every zero-extra-args call site (all of scenarios 1-8). Verified
+    # against /bin/bash 3.2.57: unguarded fails (exit 127), guarded passes
+    # with both zero and space-containing KEY=VALUE args.
+    SERVER_PORT="$port" env ${extra_env[@]+"${extra_env[@]}"} java -jar "$jar" >>"$LOG_DIR/$iname.log" 2>&1 &
     echo $! >"$PID_DIR/$iname.pid"
 }
 
