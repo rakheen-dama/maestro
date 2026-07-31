@@ -133,14 +133,17 @@ class ChaosGoldenRunE2EIT {
     private Map<String, Long> sideEffectCounts(ChaosCluster cluster, String workflowId) {
         String id = workflowId.substring("loan-".length());
         var counts = new LinkedHashMap<String, Long>();
-        counts.put("rateLock", countLogMatches(cluster, "Reserved rate lock", "for loan " + id));
-        counts.put("disbursement", countLogMatches(cluster, "Disbursed", "for loan " + id));
+        counts.put("rateLock", countLogMatches(cluster, "Reserved rate lock", id));
+        counts.put("disbursement", countLogMatches(cluster, "Disbursed", id));
         counts.put("compensation",
-                countLogMatches(cluster, "COMPENSATION: released rate lock", "for loan " + id));
+                countLogMatches(cluster, "COMPENSATION: released rate lock", id));
         return counts;
     }
 
-    private long countLogMatches(ChaosCluster cluster, String a, String b) {
+    /** Boundary-checked count (an id must not prefix-match a longer id's line). */
+    private long countLogMatches(ChaosCluster cluster, String marker, String loanId) {
+        var pattern = java.util.regex.Pattern.compile(
+                java.util.regex.Pattern.quote("for loan " + loanId) + "(?![\\w-])");
         long count = 0;
         for (NodeRole role : List.of(NodeRole.LOAN_A, NodeRole.LOAN_B)) {
             for (var file : cluster.logFiles(role)) {
@@ -149,7 +152,7 @@ class ChaosGoldenRunE2EIT {
                         continue;
                     }
                     for (String line : java.nio.file.Files.readString(file).split("\n")) {
-                        if (line.contains(a) && line.contains(b)) {
+                        if (line.contains(marker) && pattern.matcher(line).find()) {
                             count++;
                         }
                     }

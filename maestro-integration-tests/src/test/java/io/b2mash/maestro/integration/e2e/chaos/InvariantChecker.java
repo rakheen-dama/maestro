@@ -308,10 +308,23 @@ public final class InvariantChecker {
                 : List.of(new Violation("I1", "non-terminal instance in " + svc.databaseName(), ids));
     }
 
-    /** I4 — zero unconsumed application signals for COMPLETED workflows (loan DB). */
+    /**
+     * I4 — zero unconsumed application signals for COMPLETED workflows (loan
+     * DB). Each hit is annotated with whether a CONSUMED twin (same workflow,
+     * signal name and payload) exists — the discriminator between a
+     * transport-level at-least-once redelivery of a message the workflow
+     * demonstrably received ({@code consumedTwin=true}) and a genuinely missed
+     * signal ({@code consumedTwin=false}).
+     */
     private List<Violation> unconsumedApplicationSignals() {
         var ids = queryStrings(Service.LOAN_APPLICATION,
                 "SELECT s.workflow_id || ':' || s.signal_name || ' x' || COUNT(*) "
+                + "|| ' consumedTwin=' || BOOL_AND(EXISTS ("
+                + "     SELECT 1 FROM maestro_workflow_signal t "
+                + "     WHERE t.workflow_id = s.workflow_id "
+                + "       AND t.signal_name = s.signal_name "
+                + "       AND t.consumed = TRUE "
+                + "       AND t.payload::text = s.payload::text)) "
                 + "FROM maestro_workflow_signal s "
                 + "JOIN maestro_workflow_instance i ON i.workflow_id = s.workflow_id "
                 + "WHERE i.status = 'COMPLETED' AND s.consumed = FALSE "

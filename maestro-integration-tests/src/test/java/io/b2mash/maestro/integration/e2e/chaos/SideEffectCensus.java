@@ -77,9 +77,9 @@ public final class SideEffectCensus {
 
         for (LedgerEntry e : ledger) {
             String id = e.applicationId();
-            long rateLock = count(allLogs, "Reserved rate lock", "for loan " + id);
-            long disburse = count(allLogs, "Disbursed", "for loan " + id);
-            long comp = count(allLogs, "COMPENSATION: released rate lock", "for loan " + id);
+            long rateLock = count(allLogs, "Reserved rate lock", id);
+            long disburse = count(allLogs, "Disbursed", id);
+            long comp = count(allLogs, "COMPENSATION: released rate lock", id);
 
             perEffectTotals.merge("rateLock", rateLock, Long::sum);
             perEffectTotals.merge("disbursement", disburse, Long::sum);
@@ -209,10 +209,18 @@ public final class SideEffectCensus {
         return sb.toString();
     }
 
-    private long count(String logs, String a, String b) {
+    /**
+     * Counts lines carrying {@code marker} and the exact loan id — with a
+     * boundary check so {@code chaos-101-1} never matches a
+     * {@code chaos-101-10} line (the id is always followed by a space or end
+     * of line in the {@code SimulatedFundingActivities} messages).
+     */
+    private long count(String logs, String marker, String loanId) {
+        var pattern = java.util.regex.Pattern.compile(
+                java.util.regex.Pattern.quote("for loan " + loanId) + "(?![\\w-])");
         long count = 0;
         for (String line : logs.split("\\R")) {
-            if (line.contains(a) && line.contains(b)) {
+            if (line.contains(marker) && pattern.matcher(line).find()) {
                 count++;
             }
         }

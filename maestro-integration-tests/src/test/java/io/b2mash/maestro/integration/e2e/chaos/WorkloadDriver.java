@@ -356,8 +356,12 @@ public final class WorkloadDriver {
     }
 
     private void awaitRateLockReserved(String applicationId, List<String> notes) {
+        // Boundary-checked id match: "chaos-...-1" must not match a
+        // "chaos-...-10" line (the id is followed by a space in this message).
+        var pattern = java.util.regex.Pattern.compile(
+                java.util.regex.Pattern.quote("for loan " + applicationId) + "(?![\\w-])");
         boolean reserved = pollUntil(
-                () -> logsContain("Reserved rate lock", "for loan " + applicationId),
+                () -> logsMatch("Reserved rate lock", pattern),
                 config.sampleTimeout(), Duration.ofSeconds(1));
         if (!reserved) {
             notes.add("rate-lock-reservation-not-observed");
@@ -524,7 +528,7 @@ public final class WorkloadDriver {
         }
     }
 
-    private boolean logsContain(String... needles) {
+    private boolean logsMatch(String marker, java.util.regex.Pattern pattern) {
         for (NodeRole role : List.of(NodeRole.LOAN_A, NodeRole.LOAN_B)) {
             for (var file : cluster.logFiles(role)) {
                 try {
@@ -533,14 +537,7 @@ public final class WorkloadDriver {
                     }
                     String content = java.nio.file.Files.readString(file);
                     for (String line : content.split("\n")) {
-                        boolean all = true;
-                        for (String n : needles) {
-                            if (!line.contains(n)) {
-                                all = false;
-                                break;
-                            }
-                        }
-                        if (all) {
+                        if (line.contains(marker) && pattern.matcher(line).find()) {
                             return true;
                         }
                     }
