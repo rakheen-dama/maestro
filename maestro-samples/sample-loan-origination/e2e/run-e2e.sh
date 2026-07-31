@@ -23,6 +23,8 @@
 #   E2E_SKIP_BUILD=1 ./e2e/run-e2e.sh   # reuse previously built boot jars
 #   E2E_NO_TEARDOWN=1 ./e2e/run-e2e.sh  # leave infra + services running afterwards
 #   E2E_REUSE=1 ./e2e/run-e2e.sh        # assume infra + services are already up
+#   E2E_ONLY="7" ./e2e/run-e2e.sh       # run only the listed scenario number(s)
+#                                        # (space-separated); unset = all.
 #   E2E_CLUSTER=1 ./e2e/run-e2e.sh      # "cluster mode": bring up a SECOND instance
 #                                        # of every service (6 processes total) for
 #                                        # the whole run, not just during scenario 6.
@@ -78,6 +80,10 @@ E2E_SKIP_BUILD="${E2E_SKIP_BUILD:-0}"
 E2E_NO_TEARDOWN="${E2E_NO_TEARDOWN:-0}"
 E2E_REUSE="${E2E_REUSE:-0}"
 E2E_CLUSTER="${E2E_CLUSTER:-0}"
+# E2E_ONLY: space-separated scenario numbers to run (e.g. E2E_ONLY="7", or
+# E2E_ONLY="1 2 3"). Unset/empty = run all scenarios (default behaviour
+# unchanged). Skipped scenarios do not appear in the results table.
+E2E_ONLY="${E2E_ONLY:-}"
 
 # Verification fan-in takes ~8s real time (appraisal latency); allow slack.
 WAIT_PENDING_SECS=90       # create -> underwriting human queue
@@ -139,11 +145,15 @@ except Exception:
 }
 
 # ── HTTP helpers ─────────────────────────────────────────────────────────
+# Every curl is bounded (--max-time 10): without it, one hung connection
+# blows straight through the wait_for_* deadlines (observed: a 90s-bounded
+# wait ran 1003s during a host freeze). wait_for_http already bounds at 2s.
+
 # api_post <url> <json-body>  -> body on 2xx, nonzero + message on error
 api_post() {
     local url="$1" body="$2" code tmp
     tmp="$(mktemp)"
-    code="$(curl -sS -o "$tmp" -w '%{http_code}' \
+    code="$(curl -sS --max-time 10 -o "$tmp" -w '%{http_code}' \
         -X POST -H 'Content-Type: application/json' -d "$body" "$url" 2>&1)" || {
         err "POST $url failed: $code"; rm -f "$tmp"; return 1; }
     if [[ "$code" -ge 300 ]]; then
@@ -158,7 +168,7 @@ api_post() {
 api_get() {
     local url="$1" code tmp
     tmp="$(mktemp)"
-    code="$(curl -sS -o "$tmp" -w '%{http_code}' "$url" 2>/dev/null)" || {
+    code="$(curl -sS --max-time 10 -o "$tmp" -w '%{http_code}' "$url" 2>/dev/null)" || {
         rm -f "$tmp"; return 1; }
     if [[ "$code" == 404 ]]; then rm -f "$tmp"; echo ""; return 0; fi
     if [[ "$code" -ge 400 ]]; then rm -f "$tmp"; return 1; fi
@@ -588,8 +598,22 @@ trap teardown EXIT
 RESULT_NAMES=(); RESULT_STATUS=(); RESULT_SECS=()
 OVERALL_FAIL=0
 
-run_scenario() { # <name> <function>
+# scenario_selected <num> - true when E2E_ONLY is empty (all scenarios) or
+# lists this scenario number.
+scenario_selected() {
+    [[ -z "$E2E_ONLY" ]] && return 0
+    local n
+    for n in $E2E_ONLY; do [[ "$n" == "$1" ]] && return 0; done
+    return 1
+}
+
+run_scenario() { # <name> <function>   (name must start "<num>. ...")
     local name="$1" fn="$2" start=$SECONDS rc=0
+    local num="${name%%.*}"
+    if ! scenario_selected "$num"; then
+        log "E2E_ONLY='$E2E_ONLY' - skipping scenario $num."
+        return 0
+    fi
     printf '\n%s=== SCENARIO: %s ===%s\n' "$BOLD" "$name" "$NC"
     if "$fn"; then rc=0; else rc=1; fi
     local elapsed=$((SECONDS - start))
@@ -1029,6 +1053,10 @@ main() {
     sweep_logs
 
     printf '\n%s=== RESULTS ===%s\n' "$BOLD" "$NC"
+    if [[ "${#RESULT_NAMES[@]}" == 0 ]]; then
+        err "No scenarios ran (E2E_ONLY='$E2E_ONLY' matched nothing)."
+        exit 1
+    fi
     local i
     for i in "${!RESULT_NAMES[@]}"; do
         local color=$GREEN; [[ "${RESULT_STATUS[$i]}" == FAIL ]] && color=$RED
