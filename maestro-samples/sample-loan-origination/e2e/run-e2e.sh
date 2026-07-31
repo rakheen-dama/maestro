@@ -10,6 +10,13 @@
 #                          compensation visible in the service log.
 #   5. Crash recovery    — kill -9 loan-application-service mid-underwriting
 #                          wait, restart, deliver the decision -> FUNDED.
+#   7. Owner-kill adoption — kill -9 the OWNER node mid-underwriting wait and
+#                          never restart it; the peer node alone adopts and
+#                          completes the workflow (recovery poller + instance
+#                          lock TTL). Unlike scenario 5, the owner never
+#                          comes back. Runs LAST (see main()) because it
+#                          permanently removes node A from the rest of the
+#                          run.
 #
 # Usage:
 #   ./e2e/run-e2e.sh                    # full run: infra up, services up, scenarios, teardown
@@ -76,6 +83,13 @@ E2E_CLUSTER="${E2E_CLUSTER:-0}"
 WAIT_PENDING_SECS=90       # create -> underwriting human queue
 WAIT_TERMINAL_SECS=90      # decision/signatures -> terminal status
 WAIT_RECOVERY_SECS=150     # crash-recovery scenario end-to-end after restart
+
+# Owner-kill peer-adoption bound: default maestro.lock.ttl=30s (instance lock
+# expiry) + default maestro.recovery.poll-interval=60s (worst case the peer's
+# poller just missed a cycle) + slack for query/JVM overhead. Overridable so
+# the "prove it can fail" run can pass an absurdly short bound without
+# touching the kill/adoption logic itself.
+WAIT_ADOPTION_SECS="${WAIT_ADOPTION_SECS:-150}"
 
 SERVICES=(loan-application-service verification-gateway-service underwriting-service)
 
@@ -209,13 +223,24 @@ webhook_verification() { # <type> <loanId> <approved>
 }
 
 app_status_json() { api_get "$LOAN_URL/applications/$1"; }
+# app_status_json_via <baseUrl> <id> - same as app_status_json but against an
+# explicit node. Needed whenever node A (the $LOAN_URL default) may be dead,
+# e.g. scenario 7 after the kill.
+app_status_json_via() { api_get "$1/applications/$2"; }
 
 # wait_for_engine_status <appId> <expectedStatus> <timeout>
 # Fails fast when a DIFFERENT terminal status is reached.
 wait_for_engine_status() {
-    local id="$1" expected="$2" timeout="$3" deadline=$((SECONDS + $3)) body status=""
+    wait_for_engine_status_via "$LOAN_URL" "$1" "$2" "$3"
+}
+
+# wait_for_engine_status_via <baseUrl> <appId> <expectedStatus> <timeout>
+# Same as wait_for_engine_status, polling an explicit node instead of the
+# hardcoded node-A default - required once node A may be dead (scenario 7).
+wait_for_engine_status_via() {
+    local url="$1" id="$2" expected="$3" timeout="$4" deadline=$((SECONDS + $4)) body status=""
     while (( SECONDS < deadline )); do
-        body="$(app_status_json "$id" || echo "")"
+        body="$(app_status_json_via "$url" "$id" || echo "")"
         status="$(json_get "$body" status)"
         if [[ "$status" == "$expected" ]]; then return 0; fi
         case "$status" in
@@ -282,6 +307,54 @@ assert_eq() { # <label> <expected> <actual>
     fi
     err "  assert FAILED: $1 - expected '$2', got '$3'"
     return 1
+}
+
+# psql_loan <sql> - runs SQL against loan-application-service's own Postgres
+# database (compose service "postgres", database "loan_application" - see
+# loan-application-service/src/main/resources/application.yml) via the
+# compose Postgres container, tuples-only/unaligned so callers can parse
+# pipe-separated columns directly.
+psql_loan() {
+    compose exec -T postgres psql -U maestro -d loan_application -tAc "$1"
+}
+
+# assert_event_log_integrity <workflowId> - queries Postgres DIRECTLY (not
+# through the engine) for the instance's event log and asserts:
+#   1. no duplicate (workflow_instance_id, sequence_number) pairs
+#      (COUNT(*) == COUNT(DISTINCT sequence_number));
+#   2. no sequence gaps below the terminal event
+#      (MAX(sequence_number) - MIN(sequence_number) + 1 == COUNT(*)).
+# LoanApplicationWorkflow has no workflow.parallel()/fork call (grep-
+# verified), so unlike a workflow with parallel branches its sequence
+# numbers are NOT partitioned into per-branch bands (see CLAUDE.md "Parallel
+# branches partition the sequence space") - they must be perfectly
+# contiguous, not merely gap-tolerant.
+assert_event_log_integrity() {
+    local wfid="$1" instance_id status event_seq_col counts
+    local total distinct_seq min_seq max_seq
+
+    instance_id="$(psql_loan "SELECT id FROM maestro_workflow_instance WHERE workflow_id = '$wfid';" | tr -d '[:space:]')"
+    if [[ -z "$instance_id" ]]; then
+        err "SQL: no maestro_workflow_instance row found for workflow_id='$wfid'"
+        return 1
+    fi
+    status="$(psql_loan "SELECT status FROM maestro_workflow_instance WHERE id = '$instance_id';" | tr -d '[:space:]')"
+    event_seq_col="$(psql_loan "SELECT event_sequence FROM maestro_workflow_instance WHERE id = '$instance_id';" | tr -d '[:space:]')"
+    log "SQL: maestro_workflow_instance id=$instance_id workflow_id=$wfid status=$status event_sequence=$event_seq_col"
+
+    counts="$(psql_loan "SELECT COUNT(*), COUNT(DISTINCT sequence_number), MIN(sequence_number), MAX(sequence_number) FROM maestro_workflow_event WHERE workflow_instance_id = '$instance_id';")"
+    total="$(awk -F'|' '{print $1}' <<<"$counts" | tr -d '[:space:]')"
+    distinct_seq="$(awk -F'|' '{print $2}' <<<"$counts" | tr -d '[:space:]')"
+    min_seq="$(awk -F'|' '{print $3}' <<<"$counts" | tr -d '[:space:]')"
+    max_seq="$(awk -F'|' '{print $4}' <<<"$counts" | tr -d '[:space:]')"
+    log "SQL: maestro_workflow_event for $instance_id -> total=$total distinct_sequences=$distinct_seq min_seq=$min_seq max_seq=$max_seq"
+
+    assert_eq "no duplicate (workflow_instance_id, sequence_number)" "$total" "$distinct_seq" || return 1
+
+    local expected_count=$(( max_seq - min_seq + 1 ))
+    assert_eq "event log density below terminal event (max-min+1 == count, no gaps)" "$expected_count" "$total" || return 1
+
+    log "  assert OK: event log for $wfid is dense and duplicate-free ($total events, sequence $min_seq..$max_seq)"
 }
 
 # ── Infrastructure ───────────────────────────────────────────────────────
@@ -785,6 +858,147 @@ scenario_two_node() {
     fi
 }
 
+# ── Scenario 7: owner-kill -> peer adoption ─────────────────────────────
+# The claim scenario 5 does NOT make: scenario 5 kill -9's the owner and then
+# RESTARTS THE SAME NODE. Here node A (the owner) is kill -9'd mid-underwriting
+# wait and NEVER comes back for the rest of this scenario; node B alone must
+# adopt the orphaned instance (recovery poller + instance-lock TTL) and drive
+# it to FUNDED. Runs LAST in main() - see that function for why.
+scenario_owner_kill_adoption() {
+    local id="e2e-${RUN_ID}-s7"
+    local wfid="loan-$id"
+    local loan_log="$LOG_DIR/loan-application-service.log"
+    local loan_log_b="$LOG_DIR/$LOAN_NODE_B.log"
+
+    # Node B must already be up (same service name -> same consumer group,
+    # store, and lock namespace) before the kill, or "adoption" would really
+    # just be "cold start of the only surviving node".
+    local started_node_b=1
+    if [[ -f "$PID_DIR/$LOAN_NODE_B.pid" ]] && kill -0 "$(cat "$PID_DIR/$LOAN_NODE_B.pid")" 2>/dev/null; then
+        started_node_b=0
+    fi
+    start_loan_node_b || return 1
+
+    local pid_a pid_b
+    pid_a="$(cat "$PID_DIR/loan-application-service.pid")"
+    pid_b="$(cat "$PID_DIR/$LOAN_NODE_B.pid")"
+    [[ "$pid_a" != "$pid_b" ]] || { err "Both nodes report the same PID $pid_a"; return 1; }
+    log "Node A (owner-to-be) pid=$pid_a, node B (peer) pid=$pid_b"
+
+    # DTI = 400000/100000 = 4.0 -> HUMAN_REVIEW (same shape as scenarios 1/5).
+    # Deliberately create via LOAN_URL (node A's port) so node A is the one
+    # that starts and parks the instance.
+    create_app "$id" '["grace"]' 400000 100000 650000 '["pay-stub"]' || return 1
+    upload_doc "$id" "pay-stub" "grace" || return 1
+    log "Created $id on node A (port 8091) - node A is the owner-to-be"
+
+    wait_for_pending_review "$id" 1 "$WAIT_PENDING_SECS" || return 1
+    wait_for_log_line "$loan_log" "Requested underwriting round 1 for loan $id" 30 || return 1
+
+    # ── Ownership proof BEFORE the kill ─────────────────────────────────
+    if grep -qE "Requested underwriting round 1 for loan $id" "$loan_log_b" 2>/dev/null; then
+        err "Node B's log ALSO shows 'Requested underwriting round 1' for $id - ownership is ambiguous"
+        return 1
+    fi
+    log "OWNERSHIP PROOF (log): only node A's log ($loan_log) shows 'Requested underwriting round 1 for loan $id'"
+
+    # Extra-credit ownership proof: inspect the Valkey instance-lock key
+    # directly. Best-effort - the compose service name / valkey-cli
+    # availability aren't asserted elsewhere, so a miss here is a warning,
+    # not a scenario failure (the log-based proof above is authoritative).
+    local lock_key="maestro:lock:workflow:$wfid" token_before=""
+    token_before="$(compose exec -T valkey valkey-cli GET "$lock_key" 2>/dev/null | tr -d '\r')"
+    if [[ -n "$token_before" ]]; then
+        log "OWNERSHIP PROOF (lock, extra credit): $lock_key = '$token_before' (held pre-kill)"
+    else
+        warn "Lock inspection: could not read $lock_key via valkey-cli - proceeding on the log-based proof alone"
+    fi
+
+    # ── kill -9 node A; do NOT restart it for the rest of this scenario ──
+    local kill_epoch
+    kill_epoch=$(date +%s)
+    log "kill -9 loan-application-service (pid $pid_a, OWNER of $wfid) - will NOT be restarted until after assertions pass"
+    kill -KILL "$pid_a"
+    sleep 1
+    if kill -0 "$pid_a" 2>/dev/null; then err "Process $pid_a survived kill -9"; return 1; fi
+    rm -f "$PID_DIR/loan-application-service.pid"
+
+    # Deliver the rest of the workflow's inputs with node A dead. The
+    # decision goes through underwriting (never killed, node-agnostic
+    # store-backed signal); the signature is routed to node B explicitly
+    # per the task's requirement that node B alone drives completion.
+    post_decision "$id" 1 "APPROVED" '[]' || return 1
+    sign_app_via "$LOAN_URL_B" "$id" "grace" || return 1
+    log "Decision + signature delivered with node A dead (signature routed via node B, port $LOAN_PORT_B)"
+
+    log "Waiting for node B to adopt $wfid (bound ${WAIT_ADOPTION_SECS}s = lock TTL 30s + recovery poll-interval 60s + slack)..."
+    wait_for_log_line "$loan_log_b" "Resuming workflow '$wfid' \(type=" "$WAIT_ADOPTION_SECS" || return 1
+    local adopted_epoch adoption_latency
+    adopted_epoch=$(date +%s)
+    adoption_latency=$(( adopted_epoch - kill_epoch ))
+    log "ADOPTION LATENCY: ${adoption_latency}s (kill -> node B's 'Resuming workflow' log line)"
+
+    # Node A is dead - MUST poll node B (wait_for_engine_status defaults to
+    # the node-A-hardcoded $LOAN_URL, which would just fail here).
+    wait_for_engine_status_via "$LOAN_URL_B" "$id" COMPLETED "$WAIT_RECOVERY_SECS" || return 1
+    local body
+    body="$(api_get "$LOAN_URL_B/applications/$id")"
+    assert_eq "engine status (via node B)" "COMPLETED" "$(json_get "$body" status)" || return 1
+    assert_eq "loan result (via node B)"   "FUNDED"    "$(json_get "$body" output.status)" || return 1
+
+    # Node A must have stayed dead throughout.
+    if kill -0 "$pid_a" 2>/dev/null; then
+        err "Node A ($pid_a) is alive - this scenario requires it stay dead until after assertions pass"
+        return 1
+    fi
+    log "Node A confirmed dead throughout (never restarted before this line)"
+
+    # Extra-credit lock proof: the lock was reacquired (token changed) by
+    # whichever node adopted the instance.
+    local token_after
+    token_after="$(compose exec -T valkey valkey-cli GET "$lock_key" 2>/dev/null | tr -d '\r')"
+    if [[ -n "$token_before" && -n "$token_after" ]]; then
+        if [[ "$token_before" != "$token_after" ]]; then
+            log "OWNERSHIP PROOF (lock, extra credit): $lock_key token changed '$token_before' -> '$token_after' (reacquired)"
+        else
+            warn "Lock token unchanged ('$token_after') - unexpected but non-fatal (log-based proof already established adoption)"
+        fi
+    fi
+
+    # Side-effect count: grep the disbursement line for THIS loan id across
+    # BOTH loan-node logs. Case-insensitive substring match on "Disbursed"
+    # (SimulatedFundingActivities logs "Disbursed {} for loan {} ..." with a
+    # capital D - a lowercase-only "disburs" pattern, as scenario 6 uses,
+    # never matches it; that is scenario 6's known gap, not reproduced here).
+    local disbursed_a disbursed_b total
+    disbursed_a="$(grep -ciE "Disbursed .* for loan $id " "$loan_log" 2>/dev/null || true)"
+    disbursed_b="$(grep -ciE "Disbursed .* for loan $id " "$loan_log_b" 2>/dev/null || true)"
+    total=$(( ${disbursed_a:-0} + ${disbursed_b:-0} ))
+    log "SIDE-EFFECT COUNT: loan $id disbursed A=$disbursed_a B=$disbursed_b total=$total (Issue 11: >1 tolerated only if documented duplication - recorded as observed, not asserted away)"
+    if (( total < 1 )); then
+        err "Loan $id was never disbursed on either node"
+        return 1
+    fi
+
+    # Event-log assertions: query Postgres directly.
+    assert_event_log_integrity "$wfid" || return 1
+
+    # ── Cleanup: restart node A now that the scenario's assertions have
+    # passed (the "do not restart" constraint applies only until then), and
+    # stop node B if THIS scenario started it - mirrors scenario 6's
+    # cluster-mode-aware cleanup so a subsequent run (or E2E_NO_TEARDOWN=1)
+    # finds the topology it expects.
+    log "Assertions passed - restarting node A (post-scenario cleanup, not required for the scenario's own claim)"
+    start_service "loan-application-service"
+    wait_for_http "loan-application-service" "$LOAN_URL/applications/__probe__" 120 || return 1
+
+    if [[ "$started_node_b" == 1 ]]; then
+        stop_service "$LOAN_NODE_B"
+    else
+        log "$LOAN_NODE_B was started by cluster mode - leaving it running for the rest of the run."
+    fi
+}
+
 main() {
     log "Loan-origination E2E run $RUN_ID (logs: $LOG_DIR)"
     if [[ "$E2E_CLUSTER" == 1 ]]; then
@@ -805,6 +1019,12 @@ main() {
     run_scenario "4. Withdrawal after rate lock (saga)"       scenario_withdrawal_after_rate_lock
     run_scenario "5. Crash recovery (kill -9 + replay)"       scenario_crash_recovery
     run_scenario "6. Two-node loan-application (multi-node)"  scenario_two_node
+    # Scenario 7 kill -9's node A (the primary loan-application-service used
+    # by every scenario above via $LOAN_URL) and only restarts it after its
+    # own assertions pass. It MUST run last: any earlier position would leave
+    # node A dead (or racing its own restart) while scenarios 1-6 still
+    # expect it to be the live, addressable primary at $LOAN_URL.
+    run_scenario "7. Owner-kill -> peer adoption (multi-node)" scenario_owner_kill_adoption
 
     sweep_logs
 
