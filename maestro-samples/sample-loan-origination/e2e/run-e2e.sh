@@ -230,24 +230,37 @@ wait_for_engine_status() {
 }
 
 # wait_for_pending_review <loanId> <round> <timeout>
+#
+# The pending queue (GET /underwriting/pending) is served from
+# PendingReviewRegistry — a documented best-effort NODE-LOCAL in-memory view,
+# populated only on the node whose Kafka consumer happened to receive the
+# review request. In cluster mode the review can therefore surface on either
+# underwriting instance, so BOTH are polled. The decision endpoints do NOT
+# need the same routing: POST .../decision only signals the
+# underwriting-{loanId}-round{n} workflow via MaestroClient (store-backed,
+# node-agnostic), so it works from any node.
 wait_for_pending_review() {
-    local id="$1" round="$2" timeout="$3" deadline=$((SECONDS + $3)) body
+    local id="$1" round="$2" timeout="$3" deadline=$((SECONDS + $3)) body url
+    local urls=("$UW_URL")
+    [[ "$E2E_CLUSTER" == 1 ]] && urls+=("$UW_URL_B")
     while (( SECONDS < deadline )); do
-        body="$(api_get "$UW_URL/underwriting/pending" || echo "")"
-        if [[ "$HAVE_JQ" == 1 ]]; then
-            if jq -e --arg id "$id" --argjson r "$round" \
-                'map(select(.loanId == $id and .round == $r)) | length > 0' \
-                <<<"$body" >/dev/null 2>&1; then return 0; fi
-        else
-            if python3 -c '
+        for url in "${urls[@]}"; do
+            body="$(api_get "$url/underwriting/pending" || echo "")"
+            if [[ "$HAVE_JQ" == 1 ]]; then
+                if jq -e --arg id "$id" --argjson r "$round" \
+                    'map(select(.loanId == $id and .round == $r)) | length > 0' \
+                    <<<"$body" >/dev/null 2>&1; then return 0; fi
+            else
+                if python3 -c '
 import json, sys
 rows = json.loads(sys.argv[1] or "[]")
 sys.exit(0 if any(r.get("loanId")==sys.argv[2] and r.get("round")==int(sys.argv[3]) for r in rows) else 1)
 ' "$body" "$id" "$round" 2>/dev/null; then return 0; fi
-        fi
+            fi
+        done
         sleep 1
     done
-    err "Loan $id round $round never appeared in the underwriting pending queue within ${timeout}s"
+    err "Loan $id round $round never appeared in any underwriting pending queue within ${timeout}s (polled: ${urls[*]})"
     return 1
 }
 
