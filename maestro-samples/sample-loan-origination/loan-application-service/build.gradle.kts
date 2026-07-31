@@ -9,6 +9,14 @@ dependencies {
     implementation(project(":maestro-store-postgres"))
     implementation(project(":maestro-messaging-kafka"))
     implementation(project(":maestro-lock-valkey"))
+    // Both lock backends on the classpath; maestro.lock.type (default
+    // "valkey", set by application.yml) picks which auto-configuration
+    // activates - see PostgresLockAutoConfiguration/ValkeyLockAutoConfiguration's
+    // @ConditionalOnProperty. Lets the E2E harness switch backends via
+    // MAESTRO_LOCK_TYPE=postgres (E2E_LOCK_BACKEND=postgres) without a
+    // rebuild. Runtime default is unchanged: Valkey wins whenever the
+    // property is absent (matchIfMissing = true on the Valkey side).
+    implementation(project(":maestro-lock-postgres"))
     implementation(libs.spring.boot.starter.webmvc)
     runtimeOnly(libs.postgresql)
     // Spring Boot 4 modular auto-configuration: JDBC (DataSource), Flyway
