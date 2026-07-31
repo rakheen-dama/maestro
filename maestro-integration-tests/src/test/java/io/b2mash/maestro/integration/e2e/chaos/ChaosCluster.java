@@ -280,7 +280,7 @@ public final class ChaosCluster implements AutoCloseable {
         env.put("POSTGRES_DB", svc.databaseName());
         env.put("POSTGRES_USER", "maestro");
         env.put("POSTGRES_PASSWORD", "maestro");
-        env.put("KAFKA_BOOTSTRAP", "kafka:19092");
+        env.put("KAFKA_BOOTSTRAP", "kafka:9092");
         env.put("VALKEY_HOST", "valkey");
         env.put("VALKEY_PORT", "6379");
         env.put("SERVER_PORT", String.valueOf(NODE_PORT));
