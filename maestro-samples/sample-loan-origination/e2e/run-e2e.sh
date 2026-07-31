@@ -14,9 +14,17 @@
 #                          never restart it; the peer node alone adopts and
 #                          completes the workflow (recovery poller + instance
 #                          lock TTL). Unlike scenario 5, the owner never
-#                          comes back. Runs LAST (see main()) because it
-#                          permanently removes node A from the rest of the
-#                          run.
+#                          comes back. Runs second-to-last (see main()).
+#   8. Rolling restart    — graceful SIGTERM (not kill -9) of node A with
+#                          THREE workflows parked in distinct WAITING_SIGNAL
+#                          states (awaiting docs / awaiting underwriting
+#                          decision / awaiting signatures); asserts node A's
+#                          own log shows the graceful-shutdown path leaving
+#                          them WAITING_SIGNAL (never FAILED); node B serves a
+#                          status read and ingests a signal while node A is
+#                          down; node A restarts and all three reach
+#                          COMPLETED with zero FAILED/compensation. Runs LAST
+#                          (see main()) for the same reason as scenario 7.
 #
 # Usage:
 #   ./e2e/run-e2e.sh                    # full run: infra up, services up, scenarios, teardown
@@ -96,6 +104,20 @@ WAIT_RECOVERY_SECS=150     # crash-recovery scenario end-to-end after restart
 # the "prove it can fail" run can pass an absurdly short bound without
 # touching the kill/adoption logic itself.
 WAIT_ADOPTION_SECS="${WAIT_ADOPTION_SECS:-150}"
+
+# Scenario 8 (rolling restart): dedicated SIGTERM grace period for
+# stop_service_graceful — default maestro.shutdown.timeout=30s (drains
+# in-flight workflows) + slack for JVM/Spring-context-close overhead
+# (Kafka listener containers, DataSource pool, etc.). Deliberately NOT the
+# shared stop_service()'s 15s teardown wait: 15s is fine for teardown (which
+# falls back to KILL and doesn't care), but scenario 8 exists to PROVE a real
+# graceful shutdown drained parked workflows without failing them, so it must
+# never silently escalate to KILL — see stop_service_graceful.
+WAIT_SHUTDOWN_GRACE_SECS="${WAIT_SHUTDOWN_GRACE_SECS:-40}"
+# Scenario 8's "zero FAILED among the deploy-window workflows" assertion,
+# expressed as an expected count so the prove-it-can-fail run can demand a
+# wrong count (e.g. 1) without touching the scenario's kill/restart logic.
+EXPECT_FAILED_COUNT="${EXPECT_FAILED_COUNT:-0}"
 
 SERVICES=(loan-application-service verification-gateway-service underwriting-service)
 
@@ -390,6 +412,63 @@ assert_event_log_integrity() {
     assert_eq "terminal event at max sequence $max_seq" "WORKFLOW_COMPLETED" "$terminal_type" || return 1
 
     log "  assert OK: event log for $wfid is duplicate-free with exactly the designed timed-out-await gap(s) {${missing:-}} ($total events, sequence $min_seq..$max_seq)"
+}
+
+# wait_for_signal_received_count <workflowId> <signalName> <count> <timeout>
+#
+# Polls Postgres directly for the number of SIGNAL_RECEIVED events recorded
+# for <signalName> on this instance (step_name = "$maestro:awaitSignal:
+# <signalName>" — SignalManager.awaitSignal.java:229; collectSignals just
+# calls awaitSignal in a loop, so the same step_name applies). Needed because
+# the engine's WAITING_SIGNAL status is identical across every await in the
+# workflow (verification.result, document.uploaded, underwriting.decision,
+# package.signed) and does NOT by itself say which one a parked instance is
+# on — e.g. LoanApplicationWorkflow parks on verification.result immediately
+# after creation, then (once fan-in completes) on document.uploaded, both as
+# plain WAITING_SIGNAL. Waiting for "3 verification.result signals consumed"
+# is how scenario 8 confirms a workflow with no documents uploaded has moved
+# PAST verification fan-in and is now parked specifically on document.uploaded
+# (rather than still mid-fan-in).
+wait_for_signal_received_count() {
+    local wfid="$1" signal="$2" want="$3" timeout="$4" deadline=$((SECONDS + $4))
+    local instance_id="" count=""
+    while (( SECONDS < deadline )); do
+        [[ -z "$instance_id" ]] && instance_id="$(psql_loan "SELECT id FROM maestro_workflow_instance WHERE workflow_id = '$wfid';" | tr -d '[:space:]')"
+        if [[ -n "$instance_id" ]]; then
+            count="$(psql_loan "SELECT COUNT(*) FROM maestro_workflow_event WHERE workflow_instance_id = '$instance_id' AND event_type = 'SIGNAL_RECEIVED' AND step_name = '\$maestro:awaitSignal:$signal';" | tr -d '[:space:]')"
+            [[ "$count" =~ ^[0-9]+$ ]] && (( count >= want )) && return 0
+        fi
+        sleep 1
+    done
+    err "wfid=$wfid: SIGNAL_RECEIVED count for '$signal' never reached $want within ${timeout}s (last: ${count:-<no instance row yet>})"
+    return 1
+}
+
+# stop_service_graceful <name> <grace-secs> - SIGTERM only, no KILL fallback.
+#
+# stop_service() (teardown's workhorse) escalates to KILL after its wait, by
+# design - teardown doesn't care HOW a process dies. Scenario 8 exists
+# specifically to prove that a REAL graceful Spring shutdown (not a disguised
+# kill) leaves parked workflows WAITING_* instead of FAILED, so silently
+# falling back to KILL here would defeat the scenario's own claim: if the
+# grace period is too short, this function fails loudly instead of masking
+# a slow/hung shutdown as a clean one.
+stop_service_graceful() {
+    local name="$1" grace="$2" pid i
+    [[ -f "$PID_DIR/$name.pid" ]] || { err "No pid file for $name - cannot SIGTERM"; return 1; }
+    pid="$(cat "$PID_DIR/$name.pid")"
+    kill -0 "$pid" 2>/dev/null || { err "$name (pid $pid) is not running - cannot SIGTERM"; return 1; }
+    kill -TERM "$pid" || { err "SIGTERM to $name (pid $pid) failed"; return 1; }
+    for (( i = 0; i < grace; i++ )); do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            rm -f "$PID_DIR/$name.pid"
+            log "$name (pid $pid) exited gracefully ${i}s after SIGTERM (grace budget ${grace}s) - no KILL fallback used"
+            return 0
+        fi
+        sleep 1
+    done
+    err "$name (pid $pid) did NOT exit within ${grace}s of SIGTERM - real Spring shutdown exceeded the grace period (maestro.shutdown.timeout default 30s); refusing to KILL so this is visible instead of disguised as a clean shutdown"
+    return 1
 }
 
 # ── Infrastructure ───────────────────────────────────────────────────────
@@ -1065,6 +1144,196 @@ scenario_owner_kill_adoption() {
     fi
 }
 
+# ── Scenario 8: rolling restart (graceful SIGTERM mid-flight) ──────────
+#
+# Task 3 (spec Phase 1 Task C). Unlike scenario 7 (kill -9, owner never
+# returns), this scenario SIGTERMs node A - a real Spring/Maestro graceful
+# shutdown - with THREE workflows parked in distinct WAITING_SIGNAL states,
+# asserts node A's own log proves the graceful path (not a failure), has
+# node B read status + ingest a signal while node A is down, then restarts
+# node A and drives every workflow to COMPLETED.
+#
+# Parked-state coverage (see task-3-report.md for the full writeup):
+#   - awaiting document.uploaded  (after verification fan-in, before docs)
+#   - awaiting underwriting.decision (after doc collection + gate 1)
+#   - awaiting package.signed     (after decision + rate-lock reservation)
+# All three are WAITING_SIGNAL - the spec's third bucket (parked on a durable
+# TIMER) is NOT claimed here: verified in source, SignalManager.awaitSignal's
+# timeout (which backs the withdrawal gates AND every await's timeout
+# parameter) is a plain in-memory parkingLot.parkWithTimeout with periodic
+# store recheck - it never calls WorkflowStore.saveTimer, so no
+# maestro_workflow_timer row backs it. Only DefaultWorkflowOperations.sleep()
+# creates durable timer rows, and the only sleep() in this sample
+# (VerificationWorkflow's simulated provider latency) runs on
+# verification-gateway-service, a node this scenario does not touch. Runs
+# LAST (see main()) - same reason as scenario 7: it kills node A, the
+# primary every earlier scenario addresses via $LOAN_URL.
+scenario_rolling_restart() {
+    local base="e2e-${RUN_ID}-s8"
+    local id_docs="${base}-docs" id_decision="${base}-decision" id_sign="${base}-sign"
+    local wf_docs="loan-$id_docs" wf_decision="loan-$id_decision" wf_sign="loan-$id_sign"
+    local loan_log="$LOG_DIR/loan-application-service.log"
+    local loan_log_b="$LOG_DIR/$LOAN_NODE_B.log"
+
+    # Pre-flight repair: mirrors scenario 7 - a previous failed scenario-8
+    # run can exit before restarting node A, leaving it dead for the next run.
+    if ! port_in_use 8091; then
+        warn "Node A (port 8091) is not up at scenario start - restoring it (leftover from a previous failed run?)"
+        start_service "loan-application-service" || return 1
+        wait_for_http "loan-application-service" "$LOAN_URL/applications/__probe__" 120 || return 1
+    fi
+
+    # Node B must be up BEFORE anything parks on node A, so its status
+    # read / signal ingestion during the downtime window is a genuine peer,
+    # not a cold start racing the workflow's own creation.
+    local started_node_b=1
+    if [[ -f "$PID_DIR/$LOAN_NODE_B.pid" ]] && kill -0 "$(cat "$PID_DIR/$LOAN_NODE_B.pid")" 2>/dev/null; then
+        started_node_b=0
+    fi
+    start_loan_node_b || return 1
+
+    local pid_a pid_b
+    pid_a="$(cat "$PID_DIR/loan-application-service.pid")"
+    pid_b="$(cat "$PID_DIR/$LOAN_NODE_B.pid")"
+    [[ "$pid_a" != "$pid_b" ]] || { err "Both nodes report the same PID $pid_a"; return 1; }
+    log "Node A (to be SIGTERM'd) pid=$pid_a, node B (peer) pid=$pid_b"
+
+    # ── Bring up 3 workflows on node A, each headed for a distinct
+    # WAITING_SIGNAL state. Same shape (1 borrower, 1 required doc "pay-stub",
+    # amount/income -> DTI 4.0 -> HUMAN_REVIEW) as scenarios 1/5/7 so the
+    # event-log gap assertion below reuses that proven baseline ("9,16").
+    # Creates/uploads fired back-to-back so the ~8s verification-fan-in
+    # latency overlaps across all three instead of serializing 3x.
+    create_app "$id_docs" '["s8a"]' 400000 100000 650000 '["pay-stub"]' || return 1
+    log "Created $id_docs (document withheld - will park awaiting document.uploaded)"
+
+    create_app "$id_decision" '["s8b"]' 400000 100000 650000 '["pay-stub"]' || return 1
+    upload_doc "$id_decision" "pay-stub" "s8b" || return 1
+    log "Created $id_decision (doc uploaded - will park awaiting underwriting.decision)"
+
+    create_app "$id_sign" '["s8c"]' 400000 100000 650000 '["pay-stub"]' || return 1
+    upload_doc "$id_sign" "pay-stub" "s8c" || return 1
+    log "Created $id_sign (doc uploaded - decision will be approved immediately, then parks awaiting package.signed)"
+
+    wait_for_pending_review "$id_decision" 1 "$WAIT_PENDING_SECS" || return 1
+    wait_for_log_line "$loan_log" "Requested underwriting round 1 for loan $id_decision" 30 || return 1
+    log "$id_decision parked awaiting underwriting.decision"
+
+    wait_for_pending_review "$id_sign" 1 "$WAIT_PENDING_SECS" || return 1
+    post_decision "$id_sign" 1 "APPROVED" '[]' || return 1
+    wait_for_log_line "$loan_log" "Reserved rate lock .* for loan $id_sign " 30 || return 1
+    log "$id_sign parked awaiting package.signed"
+
+    # Confirms verification fan-in has actually completed (3/3 verification.
+    # result signals consumed) - only then is $id_docs genuinely parked on
+    # document.uploaded rather than still mid-fan-in (both are WAITING_SIGNAL).
+    wait_for_signal_received_count "$wf_docs" "verification.result" 3 "$WAIT_PENDING_SECS" || return 1
+    log "$id_docs parked awaiting document.uploaded (verification fan-in confirmed complete: 3/3)"
+
+    local body id
+    for id in "$id_docs" "$id_decision" "$id_sign"; do
+        body="$(app_status_json "$id")"
+        assert_eq "pre-SIGTERM engine status ($id)" "WAITING_SIGNAL" "$(json_get "$body" status)" || return 1
+    done
+
+    # ── Graceful SIGTERM of node A, mid-flight, with all 3 parked ───────
+    log "SIGTERM node A (pid $pid_a) - 3 workflows parked, grace ${WAIT_SHUTDOWN_GRACE_SECS}s (maestro.shutdown.timeout default 30s + slack)"
+    stop_service_graceful "loan-application-service" "$WAIT_SHUTDOWN_GRACE_SECS" || return 1
+
+    # ── Graceful-shutdown evidence, read from node A's OWN log ──────────
+    wait_for_log_line "$loan_log" "Maestro graceful shutdown initiated" 5 || return 1
+    for id in "$wf_docs" "$wf_decision" "$wf_sign"; do
+        wait_for_log_line "$loan_log" "Workflow '$id' suspended by shutdown while WAITING_SIGNAL — left recoverable" 5 || return 1
+    done
+    wait_for_log_line "$loan_log" "Maestro graceful shutdown complete" 5 || return 1
+    log "GRACEFUL-SHUTDOWN EVIDENCE: all 3 parked workflows suspended WAITING_SIGNAL (not FAILED) - node A's log confirms the graceful path, not a kill"
+
+    # ── While node A is down: node B serves a status read AND ingests a
+    # signal for an in-flight (node-A-owned) workflow ──────────────────
+    body="$(app_status_json_via "$LOAN_URL_B" "$id_decision")"
+    local read_status; read_status="$(json_get "$body" status)"
+    log "NODE-B STATUS READ (node A down): $id_decision -> $read_status"
+    case "$read_status" in
+        COMPLETED|FAILED|TERMINATED|null)
+            err "Unexpected status '$read_status' for $id_decision read via node B while node A is down"; return 1 ;;
+    esac
+
+    upload_doc_via "$LOAN_URL_B" "$id_docs" "pay-stub" "s8a" || return 1
+    log "NODE-B SIGNAL INGESTED (node A down): document.uploaded for $id_docs"
+
+    kill -0 "$pid_a" 2>/dev/null && { err "Node A ($pid_a) is alive during the 'node A down' window - it must stay down until the restart step"; return 1; }
+    log "Node A confirmed dead throughout the downtime window"
+
+    # ── Restart node A ───────────────────────────────────────────────
+    log "Restarting node A..."
+    start_service "loan-application-service" || return 1
+    wait_for_http "loan-application-service" "$LOAN_URL/applications/__probe__" 120 || return 1
+
+    # ── Drive all three workflows to COMPLETED ──────────────────────
+    wait_for_pending_review "$id_docs" 1 "$WAIT_RECOVERY_SECS" || return 1
+    post_decision "$id_docs" 1 "APPROVED" '[]' || return 1
+    sign_app "$id_docs" "s8a" || return 1
+
+    post_decision "$id_decision" 1 "APPROVED" '[]' || return 1
+    sign_app "$id_decision" "s8b" || return 1
+
+    sign_app "$id_sign" "s8c" || return 1
+
+    for id in "$id_docs" "$id_decision" "$id_sign"; do
+        wait_for_engine_status "$id" COMPLETED "$WAIT_RECOVERY_SECS" || return 1
+        body="$(app_status_json "$id")"
+        assert_eq "engine status ($id)" "COMPLETED" "$(json_get "$body" status)" || return 1
+        assert_eq "loan result ($id)"   "FUNDED"    "$(json_get "$body" output.status)" || return 1
+    done
+    log "All 3 deploy-window workflows reached COMPLETED/FUNDED after node A's restart"
+
+    # ── Zero-FAILED assertion (SQL, independent of the wait loop above) ──
+    local failed_count
+    failed_count="$(psql_loan "SELECT COUNT(*) FROM maestro_workflow_instance WHERE workflow_id IN ('$wf_docs','$wf_decision','$wf_sign') AND status = 'FAILED';" | tr -d '[:space:]')"
+    log "SQL: FAILED count among deploy-window workflows ($wf_docs, $wf_decision, $wf_sign) = $failed_count"
+    assert_eq "FAILED count among deploy-window workflows" "$EXPECT_FAILED_COUNT" "$failed_count" || return 1
+
+    # ── Zero-compensation assertion, scoped to THESE 3 ids (scenario 4's
+    # own legitimate compensation lines for a DIFFERENT loan id must not
+    # false-positive this check when the full suite runs before scenario 8) ──
+    local comp_hits=0
+    for id in "$id_docs" "$id_decision" "$id_sign"; do
+        if grep -qE "COMPENSATION: .* for loan $id( |$)" "$loan_log" "$loan_log_b" 2>/dev/null; then
+            comp_hits=$((comp_hits + 1))
+            err "Found a COMPENSATION log line for deploy-window workflow $id"
+        fi
+    done
+    assert_eq "compensation log lines attributable to the deploy-window workflows" "0" "$comp_hits" || return 1
+
+    # ── Status/version sanity via SQL (optimistic-locking version advanced,
+    # proving the row was genuinely updated across the deploy, not just
+    # written once at creation) ─────────────────────────────────────────
+    local row st ver
+    for id in "$wf_docs" "$wf_decision" "$wf_sign"; do
+        row="$(psql_loan "SELECT status, version FROM maestro_workflow_instance WHERE workflow_id = '$id';")"
+        st="$(awk -F'|' '{print $1}' <<<"$row" | tr -d '[:space:]')"
+        ver="$(awk -F'|' '{print $2}' <<<"$row" | tr -d '[:space:]')"
+        log "SQL: $id -> status=$st version=$ver"
+        assert_eq "SQL status ($id)" "COMPLETED" "$st" || return 1
+        if [[ ! "$ver" =~ ^[0-9]+$ ]] || (( ver < 1 )); then
+            err "Suspicious version ($ver) for $id - expected optimistic-locking updates across the deploy window"
+            return 1
+        fi
+    done
+
+    # ── Event-log integrity per instance (same shape as scenarios 1/5/7 ->
+    # same designed gap set: the two withdrawal-gate awaitSignal timeouts) ──
+    assert_event_log_integrity "$wf_docs"     "9,16" || return 1
+    assert_event_log_integrity "$wf_decision" "9,16" || return 1
+    assert_event_log_integrity "$wf_sign"     "9,16" || return 1
+
+    if [[ "$started_node_b" == 1 ]]; then
+        stop_service "$LOAN_NODE_B"
+    else
+        log "$LOAN_NODE_B was started by cluster mode - leaving it running for the rest of the run."
+    fi
+}
+
 main() {
     log "Loan-origination E2E run $RUN_ID (logs: $LOG_DIR)"
     if [[ "$E2E_CLUSTER" == 1 ]]; then
@@ -1085,12 +1354,13 @@ main() {
     run_scenario "4. Withdrawal after rate lock (saga)"       scenario_withdrawal_after_rate_lock
     run_scenario "5. Crash recovery (kill -9 + replay)"       scenario_crash_recovery
     run_scenario "6. Two-node loan-application (multi-node)"  scenario_two_node
-    # Scenario 7 kill -9's node A (the primary loan-application-service used
-    # by every scenario above via $LOAN_URL) and only restarts it after its
-    # own assertions pass. It MUST run last: any earlier position would leave
-    # node A dead (or racing its own restart) while scenarios 1-6 still
-    # expect it to be the live, addressable primary at $LOAN_URL.
+    # Scenarios 7 and 8 both take node A (the primary loan-application-service
+    # used by every scenario above via $LOAN_URL) down mid-run. They MUST run
+    # last: any earlier position would leave node A dead (or racing its own
+    # restart) while scenarios 1-6 still expect it to be the live, addressable
+    # primary at $LOAN_URL. Scenario 8 runs after 7 for the same reason.
     run_scenario "7. Owner-kill -> peer adoption (multi-node)" scenario_owner_kill_adoption
+    run_scenario "8. Rolling restart (graceful SIGTERM mid-flight)" scenario_rolling_restart
 
     sweep_logs
 
