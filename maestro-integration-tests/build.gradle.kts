@@ -68,6 +68,7 @@ tasks.named<Test>("e2eTest") {
     // the Gradle invocation into the test JVM.
     listOf(
         "maestro.chaos.mode", "maestro.chaos.seed", "maestro.chaos.durationMinutes",
-        "maestro.chaos.ratePerMinute", "maestro.chaos.soak", "maestro.chaos.evidenceDir",
+        "maestro.chaos.ratePerMinute", "maestro.chaos.soak", "maestro.chaos.golden",
+        "maestro.chaos.smoke", "maestro.chaos.evidenceDir", "maestro.chaos.drainSeconds",
     ).forEach { key -> System.getProperty(key)?.let { systemProperty(key, it) } }
 }
