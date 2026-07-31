@@ -38,3 +38,16 @@ grepping the worktree paths inside the logs. Rule: evidence logs must embed
 their own identity (pwd + git rev-parse + timestamp INSIDE the file at write
 time), live in a per-cycle subdirectory, and be pruned at cycle start. Never
 trust a log by filename + recency alone.
+
+## Worktree tasks: verify the target tree BEFORE the first edit (2026-07-31)
+Task 5's first four file edits landed in the MAIN checkout instead of the
+assigned worktree: relative Read/Edit paths resolved against the main repo
+because early exploration used `cd /Users/.../maestro && ...` compound
+commands, and the edits reused those (now-wrong) absolute paths. Caught only
+when a smoke run showed unstamped script output; cost a full revert+redo
+cycle. Rules: (1) in a worktree task, NEVER `cd` into the main checkout, even
+for "just a build" - run everything from the worktree; (2) before the first
+Edit, `git -C <worktree> status` AND `git -C <main> status` to prove which
+tree is about to change; (3) after each commit checkpoint, re-check the main
+checkout is still clean. Also: one bounded FOREGROUND Bash call per e2e step -
+a backgrounded run dies silently when the agent turn ends.
