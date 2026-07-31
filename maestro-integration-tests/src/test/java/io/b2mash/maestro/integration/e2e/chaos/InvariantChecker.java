@@ -198,9 +198,10 @@ public final class InvariantChecker {
     }
 
     /**
-     * I3d (calibrated, §14.2) — per terminal workflow, the count of missing
-     * sequence numbers (below terminal, per band) must not exceed the path's
-     * calibrated maximum (loan ledger workflows) or 2 (child workflows).
+     * I3d — per terminal workflow, the count of missing sequence numbers
+     * (below terminal, per band) must be zero (Issue 19 removed designed
+     * gaps; §14.8). The per-path bound plumbing is retained should a future
+     * workflow shape reintroduce legitimate gaps.
      */
     private List<Violation> densityWithinBound(Service svc) {
         var offenders = new ArrayList<String>();
@@ -233,8 +234,10 @@ public final class InvariantChecker {
     }
 
     private int boundFor(String workflowId) {
+        // Zero everywhere since Issue 19 (timeouts memoized; §14.8): any gap
+        // in a terminal log — ledger workflow or underwriting child — is real.
         LedgerEntry e = ledgerByWorkflowId.get(workflowId);
-        return e != null ? e.path().maxEventLogGaps() : 2;
+        return e != null ? e.path().maxEventLogGaps() : 0;
     }
 
     private static int gapCount(TreeSet<Integer> seqs) {

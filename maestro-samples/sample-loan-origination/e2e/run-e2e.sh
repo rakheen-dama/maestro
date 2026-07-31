@@ -515,26 +515,24 @@ leader_token() {
 #   1. no duplicate (workflow_instance_id, sequence_number) pairs
 #      (COUNT(*) == COUNT(DISTINCT sequence_number));
 #   2. the SET of missing sequence numbers below the terminal event is
-#      EXACTLY <expected-missing-csv> (ascending CSV, e.g. "9,16"; "" =
-#      none). Set equality, not just gap COUNT: a regression that dropped
-#      one designed gap while introducing an unrelated real gap would net
-#      the same cardinality and slip past a count-only check.
+#      EXACTLY <expected-missing-csv> (ascending CSV; "" = none, the
+#      expected value everywhere since Issue 19 removed designed gaps).
+#      Set equality, not just gap COUNT, so any real hole is named.
 #   3. the event at MAX(sequence_number) is WORKFLOW_COMPLETED (so "below
 #      the terminal event" genuinely covers the whole log).
 #
-# Why gaps are expected at all: SignalManager.awaitSignal allocates its
-# sequence number at entry (ctx.nextSequence(), SignalManager.java:228) and,
-# when the await TIMES OUT, throws SignalTimeoutException (line 279) WITHOUT
-# appending any event at that sequence - a timed-out await deliberately
-# consumes a sequence and leaves a hole. LoanApplicationWorkflow's two
-# withdrawal gates (checkWithdrawalGate: awaitSignal("loan.withdrawn"),
-# maestro.sample.gate-timeout=1s) both time out on every FUNDED path, so a
-# funded loan has exactly those two holes by design - at deterministic
-# positions, because sequence layout is a pure function of the workflow's
-# deterministic step order. Verified against baseline: every COMPLETED loan
-# instance from scenarios 1/2/3/5/6 (no owner kill involved) shows the same
-# designed-gap pattern with this exact query.
-# (The workflow has no parallel branches, so no per-branch sequence bands.)
+# Why the expected missing set is EMPTY (Issue 19 supersedes the Task 2
+# "designed gap" ratification): a timed-out awaitSignal now memoizes a
+# SIGNAL_TIMEOUT event at its allocated sequence slot before throwing
+# (SignalManager.awaitSignal), so replay re-raises the timeout
+# deterministically instead of consuming a signal that arrived late — the
+# divergence that leaked a saga's rate lock under a routine rolling restart
+# (docs/open-issues.md Issue 19). LoanApplicationWorkflow's two withdrawal
+# gates therefore contribute two SIGNAL_TIMEOUT events (at the former gap
+# positions 9 and 16) rather than two holes: a FUNDED loan's event log is
+# fully contiguous. Any missing sequence below the terminal is now a real
+# anomaly. (The workflow has no parallel branches, so no per-branch
+# sequence bands.)
 #
 # Optional 3rd arg <expected-terminal-type> (default WORKFLOW_COMPLETED):
 # lets a non-completed instance (e.g. scenario 10's TERMINATED-via-admin-
@@ -582,7 +580,7 @@ assert_event_log_integrity() {
         log "  (skipping terminal-event-type check - expected_terminal='' - e.g. a TERMINATED instance appends no event of its own)"
     fi
 
-    log "  assert OK: event log for $wfid is duplicate-free with exactly the designed timed-out-await gap(s) {${missing:-}} ($total events, sequence $min_seq..$max_seq)"
+    log "  assert OK: event log for $wfid is duplicate-free and contiguous below the terminal ($total events, sequence $min_seq..$max_seq)"
 }
 
 # wait_for_signal_received_count <workflowId> <signalName> <count> <timeout>
@@ -1414,13 +1412,13 @@ scenario_owner_kill_adoption() {
     fi
 
     # Event-log assertions: query Postgres directly. Expected missing set =
-    # {9,16}: the two withdrawal-gate awaitSignal("loan.withdrawn") calls
-    # time out on every FUNDED path and each consumes a sequence number
-    # without appending an event; this scenario's fixed shape (1 borrower,
+    # "" (Issue 19): the two withdrawal-gate awaitSignal("loan.withdrawn")
+    # calls time out on every FUNDED path and each memoizes a SIGNAL_TIMEOUT
+    # event at its slot; this scenario's fixed shape (1 borrower,
     # 1 doc, 3 verifications, round-1 approval, 1 signature) puts gate 1 at
     # seq 9 and gate 2 at seq 16 deterministically (see
     # assert_event_log_integrity's header comment).
-    assert_event_log_integrity "$wfid" "9,16" || return 1
+    assert_event_log_integrity "$wfid" "" || return 1
 
     # ── Cleanup: restart node A now that the scenario's assertions have
     # passed (the "do not restart" constraint applies only until then), and
@@ -1495,7 +1493,7 @@ scenario_rolling_restart() {
     # ── Bring up 3 workflows on node A, each headed for a distinct
     # WAITING_SIGNAL state. Same shape (1 borrower, 1 required doc "pay-stub",
     # amount/income -> DTI 4.0 -> HUMAN_REVIEW) as scenarios 1/5/7 so the
-    # event-log gap assertion below reuses that proven baseline ("9,16").
+    # event-log contiguity assertion below reuses that proven baseline ("").
     # Creates/uploads fired back-to-back so the ~8s verification-fan-in
     # latency overlaps across all three instead of serializing 3x.
     create_app "$id_docs" '["s8a"]' 400000 100000 650000 '["pay-stub"]' || return 1
@@ -1616,10 +1614,10 @@ scenario_rolling_restart() {
     done
 
     # ── Event-log integrity per instance (same shape as scenarios 1/5/7 ->
-    # same designed gap set: the two withdrawal-gate awaitSignal timeouts) ──
-    assert_event_log_integrity "$wf_docs"     "9,16" || return 1
-    assert_event_log_integrity "$wf_decision" "9,16" || return 1
-    assert_event_log_integrity "$wf_sign"     "9,16" || return 1
+    # contiguous logs; the two withdrawal gates memoized as SIGNAL_TIMEOUT) ──
+    assert_event_log_integrity "$wf_docs"     "" || return 1
+    assert_event_log_integrity "$wf_decision" "" || return 1
+    assert_event_log_integrity "$wf_sign"     "" || return 1
 
     if [[ "$started_node_b" == 1 ]]; then
         stop_service "$LOAN_NODE_B"
@@ -1796,8 +1794,8 @@ scenario_timer_leader_failover() {
     log "Loan $id_target progressed to FUNDED after the timer-poller leader failover"
 
     # Same shape as scenarios 1/5/7/8 (1 borrower, 1 doc, round-1 approval,
-    # 1 signature) -> same designed gap set (the two withdrawal-gate timeouts).
-    assert_event_log_integrity "loan-$id_target" "9,16" || return 1
+    # 1 signature) -> same contiguous log shape (gates memoized, Issue 19).
+    assert_event_log_integrity "loan-$id_target" "" || return 1
 
     # ── Cleanup: restore both vg nodes to default (non-DEBUG) config ────
     log "Assertions passed - restoring vg node A to default (non-DEBUG) config"
@@ -1979,17 +1977,19 @@ scenario_cross_node_admin() {
     log "ADMIN-EVENTS PROOF: WORKFLOW_TERMINATED for $wfid_term found on maestro.admin.events"
 
     # ── Event-log integrity ──────────────────────────────────────────────
-    # $wfid_retry: retried past the decision-timeout gap and completed
-    # normally - the gap the timed-out await left behind gets filled in by
-    # the retry's live (successful) re-execution at the SAME deterministic
-    # sequence number, so the final shape matches the scenario 1/5/7/8
-    # baseline exactly (only the two withdrawal-gate timeout gaps remain).
-    assert_event_log_integrity "$wfid_retry" "9,16" || return 1
+    # $wfid_retry: retried past the decision timeout and completed
+    # normally - retry deletes the FAILING timeout memo (Issue 19), so the
+    # re-driven await runs live at the SAME deterministic sequence number
+    # and memoizes the consumed decision; the final shape matches the
+    # scenario 1/5/7/8 baseline exactly (fully contiguous, the two
+    # withdrawal gates memoized as SIGNAL_TIMEOUT events).
+    assert_event_log_integrity "$wfid_retry" "" || return 1
     # $wfid_term: terminated mid-flight, WAITING_SIGNAL on the underwriting
     # decision (never resolved) - terminateWorkflow appends NO event of its
     # own (see its Javadoc), so there is no WORKFLOW_COMPLETED to check for;
-    # only gate 1's designed timeout gap (seq 9) has been reached.
-    assert_event_log_integrity "$wfid_term" "9" "" || return 1
+    # gate 1's timeout is memoized as SIGNAL_TIMEOUT (Issue 19), so the log
+    # below its max event is fully contiguous.
+    assert_event_log_integrity "$wfid_term" "" "" || return 1
 
     # ── Cleanup: restart node A with default config, node B with default
     # config, matching pre-scenario topology ────────────────────────────

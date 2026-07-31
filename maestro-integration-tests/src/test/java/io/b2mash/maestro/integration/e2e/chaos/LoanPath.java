@@ -11,26 +11,17 @@ package io.b2mash.maestro.integration.e2e.chaos;
  */
 public enum LoanPath {
 
-    /** Human-review approval → two signatures → funded. Gaps {9,18} (gates 1+2). */
-    HAPPY(40, "COMPLETED", "FUNDED", false, 2),
+    /** Human-review approval → two signatures → funded. */
+    HAPPY(40, "COMPLETED", "FUNDED", false, 0),
 
-    /** Conditions on round 1, extra doc, approval on round 2 → funded. Gaps {9,23}. */
-    CONDITIONS_LOOP(20, "COMPLETED", "FUNDED", false, 2),
+    /** Conditions on round 1, extra doc, approval on round 2 → funded. */
+    CONDITIONS_LOOP(20, "COMPLETED", "FUNDED", false, 0),
 
-    /**
-     * Approve, reach rate-lock reservation, withdraw at gate #2 → compensated
-     * FAILED. Golden gap {9}; bound 2 because under chaos the decision await
-     * itself may time out (still FAILED, one extra gap — §14.6).
-     */
-    SAGA_WITHDRAWAL(20, "FAILED", null, true, 2),
+    /** Approve, reach rate-lock reservation, withdraw at gate #2 → compensated FAILED. */
+    SAGA_WITHDRAWAL(20, "FAILED", null, true, 0),
 
-    /**
-     * Never answer underwriting → FAILED. Golden gap {9}; bound 2: the parent
-     * fails either by consuming the child's double-timeout REJECTED (no gap)
-     * or by its own decision-await timeout (one extra gap) — a race, both
-     * legitimate (§14.6).
-     */
-    SIGNAL_TIMEOUT(20, "FAILED", null, false, 2);
+    /** Never answer underwriting → the decision times out or the child rejects → FAILED. */
+    SIGNAL_TIMEOUT(20, "FAILED", null, false, 0);
 
     private final int weight;
     private final String expectedTerminal;
@@ -48,10 +39,11 @@ public enum LoanPath {
     }
 
     /**
-     * @return the calibrated maximum number of event-log sequence gaps for this
-     *         path (golden-run calibration §14.2). A count above this is an
-     *         I3(d) anomaly; positions may shift under chaos but the count is
-     *         bounded by the path's timed-out-gate structure.
+     * @return the maximum number of event-log sequence gaps for this path —
+     *         zero everywhere since Issue 19: timed-out awaits memoize a
+     *         SIGNAL_TIMEOUT event at their slot, so a terminal workflow's
+     *         log is fully contiguous and ANY gap is an anomaly (design
+     *         changelog §14.8, superseding §14.2/§14.6).
      */
     public int maxEventLogGaps() {
         return maxEventLogGaps;
