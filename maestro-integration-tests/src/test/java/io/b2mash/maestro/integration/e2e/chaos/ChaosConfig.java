@@ -85,7 +85,13 @@ public record ChaosConfig(
                 seed,
                 durationMinutes,
                 ratePerMinute,
-                Duration.ofSeconds(longProp("maestro.chaos.drainSeconds", 120)),
+                // 240s, calibrated up from the design's 120s starting value
+                // (§14.7): a SIGNAL_TIMEOUT submitted at the end of generation
+                // spawns an underwriting child whose double-timeout terminal
+                // (2:00 underwriter + 0:30 senior + processing) lands ~2:35
+                // after the child starts — observed missing a 120s drain by
+                // 2 seconds (run 20260731-222409).
+                Duration.ofSeconds(longProp("maestro.chaos.drainSeconds", 240)),
                 Duration.ofSeconds(longProp("maestro.chaos.metricsWindowSeconds", 15)),
                 Duration.ofSeconds(longProp("maestro.chaos.sampleTimeoutSeconds", 120)),
                 Duration.ofSeconds(longProp("maestro.chaos.gateTimeoutSeconds", 1)),
