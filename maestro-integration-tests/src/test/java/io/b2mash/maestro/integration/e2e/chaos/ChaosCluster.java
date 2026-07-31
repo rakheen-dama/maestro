@@ -86,6 +86,7 @@ public final class ChaosCluster implements AutoCloseable {
     private final Set<NodeRole> paused = ConcurrentHashMap.newKeySet();
     private final Set<NodeRole> partitioned = ConcurrentHashMap.newKeySet();
     private final Set<NodeRole> dead = ConcurrentHashMap.newKeySet();
+    private final Set<String> pausedBackends = ConcurrentHashMap.newKeySet();
 
     /**
      * @param config   run configuration (jar paths, timeouts)
@@ -423,13 +424,25 @@ public final class ChaosCluster implements AutoCloseable {
     /** {@code docker pause}/{@code unpause} a backend container by name. */
     public void pauseBackend(String backend) {
         docker.pauseContainerCmd(backendId(backend)).exec();
+        pausedBackends.add(backend);
         log.info("[chaos] BACKEND_OUTAGE pause {}", backend);
     }
 
     /** Unpause a previously paused backend container. */
     public void unpauseBackend(String backend) {
         docker.unpauseContainerCmd(backendId(backend)).exec();
+        pausedBackends.remove(backend);
         log.info("[chaos] BACKEND_OUTAGE unpause {}", backend);
+    }
+
+    /** @return true if any node is harassed or any backend is paused. */
+    public boolean anyChaosActive() {
+        return !harassedRoles().isEmpty() || !pausedBackends.isEmpty();
+    }
+
+    /** @return the count of nodes currently not harassed. */
+    public int liveNodeCount() {
+        return NodeRole.values().length - harassedRoles().size();
     }
 
     private String backendId(String backend) {

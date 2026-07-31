@@ -1,0 +1,268 @@
+package io.b2mash.maestro.integration.e2e.chaos;
+
+import io.b2mash.maestro.integration.e2e.chaos.NodeRole.Service;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.sql.Connection;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.SplittableRandom;
+import java.util.concurrent.TimeUnit;
+
+/**
+ * End-to-end orchestrator for one chaos/soak run (chaos-harness-design.md §1–§9).
+ * Boots the cluster, starts the metrics sampler and (for non-golden modes) the
+ * chaos controller and workload generator, then at {@code T_gen_end} hard-stops
+ * chaos, heals all, drains, and runs the authoritative invariant check + Issue 11
+ * side-effect census. All evidence is written under a per-run directory and the
+ * small summary artifacts are mirrored to the SDD evidence tree.
+ *
+ * <h2>Thread Safety</h2>
+ * <p>Orchestration is driven from the calling (test) thread; the controller,
+ * sampler and workload scripts run on their own threads and communicate only
+ * through the store and thread-safe evidence writers.
+ */
+public final class ChaosRun {
+
+    private static final Logger log = LoggerFactory.getLogger(ChaosRun.class);
+
+    private final ChaosConfig config;
+
+    /** @param config the resolved run configuration */
+    public ChaosRun(ChaosConfig config) {
+        this.config = config;
+    }
+
+    /** Immutable outcome of a run. */
+    public record Result(List<InvariantChecker.Violation> violations,
+                         SideEffectCensus.Result census,
+                         long seed,
+                         Path runDir) {
+
+        /** @return true if the run passed (no hard invariant violations). */
+        public boolean passed() {
+            return violations.isEmpty();
+        }
+
+        /** @return a JUnit failure message naming invariants, seed and dump dir. */
+        public String failureMessage() {
+            var sb = new StringBuilder("Chaos run FAILED (seed=").append(seed)
+                    .append(", dumps=").append(runDir.resolve("failures")).append("):\n");
+            for (var v : violations) {
+                sb.append("  [").append(v.invariant()).append("] ").append(v.detail())
+                        .append(" -> ").append(v.workflowIds()).append('\n');
+            }
+            sb.append("Re-run: ./gradlew :maestro-integration-tests:e2eTest -Dmaestro.chaos.seed=")
+                    .append(seed);
+            return sb.toString();
+        }
+    }
+
+    /**
+     * Executes the full run and returns its result. The caller asserts on
+     * {@link Result#passed()}.
+     *
+     * @return the run result
+     */
+    public Result execute() {
+        var identity = RunIdentity.capture(config.seed(), config.mode());
+        var evidence = new EvidenceWriter(identity, config.evidenceRoot());
+        System.out.println("[chaos] ================= CHAOS RUN =================");
+        System.out.println("[chaos] mode=" + config.mode() + " seed=" + config.seed()
+                + " runId=" + identity.runId());
+        System.out.println("[chaos] re-run: ./gradlew :maestro-integration-tests:e2eTest "
+                + "-Dmaestro.chaos.seed=" + config.seed());
+
+        var master = new SplittableRandom(config.seed());
+        var driverRng = master.split();
+        var controllerRng = master.split();
+
+        List<InvariantChecker.Violation> violations = new ArrayList<>();
+        SideEffectCensus.Result census;
+
+        try (var cluster = new ChaosCluster(config, evidence)) {
+            cluster.start();
+
+            var sampler = new MetricsSampler(cluster, config, evidence);
+            var driver = new WorkloadDriver(cluster, config, evidence, driverRng);
+            var controller = new ChaosController(cluster, config.mode(), evidence, controllerRng);
+            var periodic = new PeriodicChecker(cluster, evidence, driver);
+
+            sampler.start();
+            periodic.start();
+
+            Thread controllerThread = new Thread(
+                    () -> controller.run(config.durationMinutes()), "chaos-controller");
+            controllerThread.start();
+
+            // Workload generation blocks for the window; chaos runs concurrently.
+            driver.generate(config.durationMinutes());
+            joinQuietly(controllerThread);
+            controller.close();
+
+            // Stop-before-verify: heal all, wait consumer groups stable, drain.
+            log.info("[chaos] generation + chaos complete; healing");
+            cluster.healAll();
+            cluster.awaitConsumerGroup("verification-gateway", 2, Duration.ofSeconds(60));
+            cluster.awaitConsumerGroup("underwriting", 2, Duration.ofSeconds(60));
+
+            driver.awaitScriptsSettled(config.sampleTimeout().plusSeconds(60));
+            drain(cluster, driver, config.drainSla());
+
+            periodic.stop();
+            sampler.stop();
+
+            var checker = new InvariantChecker(cluster, evidence, driver.ledger());
+            violations = checker.verifyAuthoritative();
+
+            var censusRunner = new SideEffectCensus(cluster, evidence, driver.ledger());
+            census = censusRunner.run();
+
+            writeSummary(evidence, driver.ledger(), violations, census);
+            surface(violations, census);
+
+            driver.close();
+        }
+
+        mirrorEvidence(evidence.runDir(), identity.runId());
+        return new Result(violations, census, config.seed(), evidence.runDir());
+    }
+
+    // ------------------------------------------------------------------- drain
+
+    private void drain(ChaosCluster cluster, WorkloadDriver driver, Duration drainSla) {
+        log.info("[chaos] drain: waiting up to {}s for all ledger workflows terminal",
+                drainSla.toSeconds());
+        long end = System.nanoTime() + drainSla.toNanos();
+        while (System.nanoTime() < end) {
+            if (allLedgerTerminal(cluster, driver)) {
+                log.info("[chaos] drain: all ledger workflows terminal");
+                return;
+            }
+            sleep(2000);
+        }
+        log.warn("[chaos] drain: SLA elapsed with non-terminal ledger workflows (I1 will report)");
+    }
+
+    private boolean allLedgerTerminal(ChaosCluster cluster, WorkloadDriver driver) {
+        var ledger = driver.ledger();
+        if (ledger.isEmpty()) {
+            return true;
+        }
+        try (Connection c = cluster.dataSource(Service.LOAN_APPLICATION).getConnection();
+             var ps = c.prepareStatement(
+                     "SELECT COUNT(*) FROM maestro_workflow_instance "
+                     + "WHERE status NOT IN ('COMPLETED','FAILED','TERMINATED')")) {
+            try (var rs = ps.executeQuery()) {
+                return rs.next() && rs.getInt(1) == 0;
+            }
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    // --------------------------------------------------------------- reporting
+
+    private void writeSummary(EvidenceWriter evidence, List<LedgerEntry> ledger,
+                              List<InvariantChecker.Violation> violations,
+                              SideEffectCensus.Result census) {
+        var byPath = new LinkedHashMap<String, Long>();
+        for (LedgerEntry e : ledger) {
+            byPath.merge(e.path().name(), 1L, Long::sum);
+        }
+        var summary = new LinkedHashMap<String, Object>();
+        summary.put("seed", config.seed());
+        summary.put("mode", config.mode().name());
+        summary.put("durationMinutes", config.durationMinutes());
+        summary.put("ratePerMinute", config.ratePerMinute());
+        summary.put("workflowsSubmitted", ledger.size());
+        summary.put("workflowsByPath", byPath);
+        summary.put("verdict", violations.isEmpty() ? "PASS" : "FAIL");
+        summary.put("violations", violations);
+        summary.put("sideEffectDuplicates", census.totalDuplicates());
+        summary.put("explainedDuplicates", census.explained());
+        summary.put("unexplainedDuplicates", census.unexplained());
+        summary.put("unexplainedWorkflows", census.unexplainedWorkflows());
+        summary.put("missingSagaCompensation", census.missingSagaCompensation());
+        evidence.writeJson("run-summary.json", summary);
+    }
+
+    private void surface(List<InvariantChecker.Violation> violations, SideEffectCensus.Result census) {
+        System.out.println("[chaos] VERDICT: " + (violations.isEmpty() ? "PASS" : "FAIL"));
+        System.out.println("[chaos] side-effect duplicates: total=" + census.totalDuplicates()
+                + " explained=" + census.explained() + " unexplained=" + census.unexplained());
+        if (census.unexplained() > 0) {
+            System.out.println("[chaos] !!! UNEXPLAINED DUPLICATES (triage required, Q8): "
+                    + census.unexplainedWorkflows());
+        }
+        if (!census.missingSagaCompensation().isEmpty()) {
+            System.out.println("[chaos] !!! SAGA reserved a rate lock but no compensation logged: "
+                    + census.missingSagaCompensation());
+        }
+        violations.forEach(v -> System.out.println("[chaos] VIOLATION [" + v.invariant() + "] "
+                + v.detail() + " -> " + v.workflowIds()));
+    }
+
+    private void mirrorEvidence(Path runDir, String runId) {
+        Path sddChaos = Path.of(System.getProperty("user.dir"))
+                .resolve("../.superpowers/sdd/multi-instance/evidence/chaos").resolve(runId).normalize();
+        Path task7 = Path.of(System.getProperty("user.dir"))
+                .resolve("../.superpowers/sdd/multi-instance/evidence/task7").resolve(runId).normalize();
+        List<String> summaryArtifacts = List.of("run-summary.json", "side-effects.json",
+                "metrics.csv", "ledger.jsonl", "chaos-actions.jsonl", "calibration.json");
+        for (Path dest : List.of(sddChaos, task7)) {
+            try {
+                Files.createDirectories(dest);
+                for (String name : summaryArtifacts) {
+                    Path src = runDir.resolve(name);
+                    if (Files.exists(src)) {
+                        Files.copy(src, dest.resolve(name), StandardCopyOption.REPLACE_EXISTING);
+                    }
+                }
+                Path failures = runDir.resolve("failures");
+                if (Files.exists(failures)) {
+                    copyTree(failures, dest.resolve("failures"));
+                }
+            } catch (IOException e) {
+                log.warn("[chaos] evidence mirror to {} failed: {}", dest, e.toString());
+            }
+        }
+    }
+
+    private void copyTree(Path from, Path to) throws IOException {
+        try (var walk = Files.walk(from)) {
+            for (Path p : walk.toList()) {
+                Path target = to.resolve(from.relativize(p));
+                if (Files.isDirectory(p)) {
+                    Files.createDirectories(target);
+                } else {
+                    Files.createDirectories(target.getParent());
+                    Files.copy(p, target, StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+        }
+    }
+
+    private static void joinQuietly(Thread t) {
+        try {
+            t.join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static void sleep(long millis) {
+        try {
+            TimeUnit.MILLISECONDS.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+}

@@ -11,28 +11,41 @@ package io.b2mash.maestro.integration.e2e.chaos;
  */
 public enum LoanPath {
 
-    /** Human-review approval → two signatures → funded. */
-    HAPPY(40, "COMPLETED", "FUNDED", false),
+    /** Human-review approval → two signatures → funded. Gaps {9,18} (gates 1+2). */
+    HAPPY(40, "COMPLETED", "FUNDED", false, 2),
 
-    /** Conditions on round 1, extra doc, approval on round 2 → funded. */
-    CONDITIONS_LOOP(20, "COMPLETED", "FUNDED", false),
+    /** Conditions on round 1, extra doc, approval on round 2 → funded. Gaps {9,23}. */
+    CONDITIONS_LOOP(20, "COMPLETED", "FUNDED", false, 2),
 
-    /** Approve, reach rate-lock reservation, withdraw at gate #2 → compensated FAILED. */
-    SAGA_WITHDRAWAL(20, "FAILED", null, true),
+    /** Approve, reach rate-lock reservation, withdraw at gate #2 → compensated FAILED. Gap {9}. */
+    SAGA_WITHDRAWAL(20, "FAILED", null, true, 1),
 
-    /** Never answer underwriting → the decision await/round rejects → FAILED. */
-    SIGNAL_TIMEOUT(20, "FAILED", null, false);
+    /** Never answer underwriting → the round rejects → FAILED. Gap {9}. */
+    SIGNAL_TIMEOUT(20, "FAILED", null, false, 1);
 
     private final int weight;
     private final String expectedTerminal;
     private final String expectedOutput;
     private final boolean compensationExpected;
+    private final int maxEventLogGaps;
 
-    LoanPath(int weight, String expectedTerminal, String expectedOutput, boolean compensationExpected) {
+    LoanPath(int weight, String expectedTerminal, String expectedOutput,
+             boolean compensationExpected, int maxEventLogGaps) {
         this.weight = weight;
         this.expectedTerminal = expectedTerminal;
         this.expectedOutput = expectedOutput;
         this.compensationExpected = compensationExpected;
+        this.maxEventLogGaps = maxEventLogGaps;
+    }
+
+    /**
+     * @return the calibrated maximum number of event-log sequence gaps for this
+     *         path (golden-run calibration §14.2). A count above this is an
+     *         I3(d) anomaly; positions may shift under chaos but the count is
+     *         bounded by the path's timed-out-gate structure.
+     */
+    public int maxEventLogGaps() {
+        return maxEventLogGaps;
     }
 
     /** @return relative arrival weight (percent). */
