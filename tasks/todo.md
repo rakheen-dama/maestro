@@ -197,3 +197,12 @@ FUNDED loan misses seq {9,16}; FAILED saga has compensation events ~seq 19000.
 - Secondary (mine, not blocker): I4 verification-webhook over-delivery + PT30S uw
   timeout — driver-shaping fix queued for after unblock (Q7).
 - Remaining after unblock: driver-shaping fix, PR-gate green 3x, CI workflow commit.
+
+## Ruling 3 execution (2026-08-01)
+- [x] I4 consumedTwin split (hard-fail only twin=false; twin=true = mandatory finding) — §14.4
+- [x] Benchmark tail implemented as soak tail + chaosActive=false in tail — §14.5
+- [x] I3(d) FAILED-path bounds -> 2 (decision-await race) — §14.6
+- [x] Webhook fallback removed (TOCTOU near-duplicate was the real I4 twin=false source)
+- [x] Compressed soak smoke PASS (seed 204): verdict PASS, finding surfaced, tail ran 6->3
+- [ ] PR-gate 3x green (fresh seeds) — run 1 in flight
+- [ ] Evidence mirror + index; report finalization
