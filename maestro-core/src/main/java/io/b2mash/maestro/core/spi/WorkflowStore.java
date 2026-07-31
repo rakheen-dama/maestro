@@ -163,13 +163,26 @@ public interface WorkflowStore {
      * the {@code WORKFLOW_FAILED} event additionally frees the sequence number
      * the retried run needs for its own terminal event.
      *
+     * <p><b>The failing timeout memo (Issue 19).</b> A timed-out await
+     * memoizes a {@code SIGNAL_TIMEOUT} event so replay re-raises the timeout
+     * deterministically. When the workflow FAILED <em>because</em> of that
+     * timeout, the memo is itself a failure record: implementations must also
+     * delete the {@code SIGNAL_TIMEOUT} event at the highest sequence below
+     * the terminal (i.e. the last memo before {@code WORKFLOW_FAILED}), so the
+     * retried await runs live and can consume the now-delivered signal.
+     * Earlier <em>caught</em> gate timeouts have later events above them, are
+     * never that maximum, and must survive — deleting them would let a retry
+     * replay consume a late-arrived signal at the gate and diverge from the
+     * pre-failure execution.
+     *
      * <p><b>Idempotent.</b> Called on an instance with no failure memos it
      * deletes nothing and returns {@code 0}.
      *
      * <p><b>Implementation note:</b> this is the only operation that removes
      * rows from the event log. Implementations must scope the delete to the
-     * given instance and to those two event types — never to a sequence range,
-     * which would take compensation and success memos with it.
+     * given instance and to those event types (plus the single failing-timeout
+     * memo) — never to a sequence range, which would take compensation and
+     * success memos with it.
      *
      * @param instanceId the workflow instance UUID whose failure memos to delete
      * @return the number of events deleted

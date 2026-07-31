@@ -70,14 +70,19 @@ class SignalTimeoutReplayDeterminismTest {
     @Test
     @DisplayName("replay re-raises the timeout and does not consume the late signal")
     void replayAfterLateSignal_reRaisesTimeout_leavesSignalUnconsumed() throws Exception {
-        var workflow = new GatedWorkflow();
+        var proceeded = new java.util.concurrent.CountDownLatch(1);
+        var workflow = new GatedWorkflow(proceeded);
         var method = GatedWorkflow.class.getMethod("run");
         var workflowId = "determinism-1";
 
         nodeA.startWorkflow(workflowId, "GatedWorkflow", "default", null, workflow, method);
 
-        // Original execution: the gate times out (300ms), the workflow proceeds
-        // and parks awaiting "second".
+        // Original execution: wait until the gate has GENUINELY timed out (the
+        // latch trips inside the catch) — shutting down during the gate park
+        // itself would be the legitimate crash-before-memo window, a different
+        // scenario — then until the run parks awaiting "second".
+        assertTrue(proceeded.await(5, java.util.concurrent.TimeUnit.SECONDS),
+                "the gate should time out and the workflow proceed");
         await().atMost(Duration.ofSeconds(5)).until(() ->
                 store.getInstance(workflowId)
                         .map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL)
@@ -92,7 +97,8 @@ class SignalTimeoutReplayDeterminismTest {
         nodeB.deliverSignal(workflowId, "gate", "late-arrival");
 
         // Recovery replay on the replacement node.
-        var reg = new WorkflowRegistration("GatedWorkflow", "default", new GatedWorkflow(), method);
+        var reg = new WorkflowRegistration("GatedWorkflow", "default",
+                new GatedWorkflow(new java.util.concurrent.CountDownLatch(1)), method);
         nodeB.recoverWorkflows(Map.of("GatedWorkflow", reg));
 
         // Let the replay reach the "second" park again, then release it.
@@ -165,8 +171,130 @@ class SignalTimeoutReplayDeterminismTest {
                         + "left it leaked");
     }
 
+    @Test
+    @DisplayName("retry of a timeout-failed workflow deletes the failing timeout memo and re-drives")
+    void retryAfterTimeoutFailure_reDrivesThroughTheAwait() throws Exception {
+        var workflow = new SingleAwaitWorkflow();
+        var method = SingleAwaitWorkflow.class.getMethod("run");
+        var workflowId = "retry-redrive-1";
+
+        nodeA.startWorkflow(workflowId, "SingleAwaitWorkflow", "default", null, workflow, method);
+
+        // The await times out uncaught → FAILED, with a SIGNAL_TIMEOUT memo.
+        await().atMost(Duration.ofSeconds(5)).until(() ->
+                store.getInstance(workflowId)
+                        .map(i -> i.status() == WorkflowStatus.FAILED)
+                        .orElse(false));
+
+        // Operator fixes the fault (delivers the signal) and retries.
+        nodeA.deliverSignal(workflowId, "approval", "granted");
+        var reg = new WorkflowRegistration("SingleAwaitWorkflow", "default",
+                new SingleAwaitWorkflow(), method);
+        nodeA.retryWorkflow(workflowId, reg);
+
+        await().atMost(Duration.ofSeconds(5)).until(() ->
+                store.getInstance(workflowId)
+                        .map(i -> i.status().isTerminal())
+                        .orElse(false));
+
+        var instance = store.getInstance(workflowId).orElseThrow();
+        assertEquals(WorkflowStatus.COMPLETED, instance.status(),
+                "retry must delete the FAILING timeout memo so the re-driven await can "
+                        + "consume the now-delivered signal — not deterministically re-time-out");
+        assertEquals("granted", serializer.deserialize(instance.output(), String.class));
+    }
+
+    @Test
+    @DisplayName("retry preserves an earlier CAUGHT gate-timeout memo (pre-failure determinism)")
+    void retryAfterActivityFailure_preservesCaughtGateTimeoutMemo() throws Exception {
+        var failOnce = new AtomicInteger(1);
+        var proceeded = new java.util.concurrent.CountDownLatch(1);
+        var workflow = new GateThenFlakyWorkflow(failOnce, proceeded);
+        var method = GateThenFlakyWorkflow.class.getMethod("run");
+        var workflowId = "retry-gate-memo-1";
+
+        nodeA.startWorkflow(workflowId, "GateThenFlakyWorkflow", "default", null, workflow, method);
+
+        // Gate times out (caught, memoized); the flaky step then fails → FAILED.
+        assertTrue(proceeded.await(5, java.util.concurrent.TimeUnit.SECONDS));
+        await().atMost(Duration.ofSeconds(5)).until(() ->
+                store.getInstance(workflowId)
+                        .map(i -> i.status() == WorkflowStatus.FAILED)
+                        .orElse(false));
+
+        // A late gate signal arrives before the retry. The retry's replay must
+        // STILL take the timed-out branch (the caught memo survives) — deleting
+        // it would resurrect the Issue 19 divergence through the retry door.
+        nodeA.deliverSignal(workflowId, "gate", "late-arrival");
+        var reg = new WorkflowRegistration("GateThenFlakyWorkflow", "default",
+                new GateThenFlakyWorkflow(failOnce, new java.util.concurrent.CountDownLatch(1)),
+                method);
+        nodeA.retryWorkflow(workflowId, reg);
+
+        await().atMost(Duration.ofSeconds(5)).until(() ->
+                store.getInstance(workflowId)
+                        .map(i -> i.status().isTerminal())
+                        .orElse(false));
+
+        var instance = store.getInstance(workflowId).orElseThrow();
+        assertEquals(WorkflowStatus.COMPLETED, instance.status());
+        assertEquals("proceeded", serializer.deserialize(instance.output(), String.class),
+                "the caught gate memo must survive retry — the replay must not consume "
+                        + "the late gate signal");
+        assertFalse(store.getUnconsumedSignals(workflowId, "gate").isEmpty(),
+                "the late gate signal stays durably unconsumed across the retry");
+    }
+
     /** Matches the executor's error-payload shape for FAILED outputs. */
     record ErrorShape(String exceptionType, String message) {
+    }
+
+    /** One uncaught timeout-guarded await: fails on timeout, returns the payload otherwise. */
+    @DurableWorkflow(name = "SingleAwaitWorkflow")
+    public static class SingleAwaitWorkflow {
+
+        /** @return the awaited payload */
+        @WorkflowMethod
+        public String run() {
+            return WorkflowContext.current()
+                    .awaitSignal("approval", String.class, Duration.ofMillis(300));
+        }
+    }
+
+    /**
+     * Caught gate timeout followed by a step that fails on its first
+     * invocation — the retry re-drives the step while the gate memo must
+     * replay deterministically.
+     */
+    @DurableWorkflow(name = "GateThenFlakyWorkflow")
+    public static class GateThenFlakyWorkflow {
+
+        private final AtomicInteger failuresRemaining;
+        private final java.util.concurrent.CountDownLatch proceeded;
+
+        GateThenFlakyWorkflow(AtomicInteger failuresRemaining,
+                              java.util.concurrent.CountDownLatch proceeded) {
+            this.failuresRemaining = failuresRemaining;
+            this.proceeded = proceeded;
+        }
+
+        /** @return which branch the gate took */
+        @WorkflowMethod
+        public String run() {
+            var wf = WorkflowContext.current();
+            String outcome;
+            try {
+                wf.awaitSignal("gate", String.class, Duration.ofMillis(300));
+                outcome = "gate-signal-consumed";
+            } catch (SignalTimeoutException e) {
+                outcome = "proceeded";
+                proceeded.countDown();
+            }
+            if (failuresRemaining.getAndDecrement() > 0) {
+                throw new RuntimeException("flaky step failure");
+            }
+            return outcome;
+        }
     }
 
     /**
@@ -175,6 +303,12 @@ class SignalTimeoutReplayDeterminismTest {
      */
     @DurableWorkflow(name = "GatedWorkflow")
     public static class GatedWorkflow {
+
+        private final java.util.concurrent.CountDownLatch proceeded;
+
+        GatedWorkflow(java.util.concurrent.CountDownLatch proceeded) {
+            this.proceeded = proceeded;
+        }
 
         /** @return which branch ran, plus the second signal's payload */
         @WorkflowMethod
@@ -186,6 +320,7 @@ class SignalTimeoutReplayDeterminismTest {
                 outcome = "gate-signal-consumed";
             } catch (SignalTimeoutException e) {
                 outcome = "proceeded";
+                proceeded.countDown();
             }
             String second = wf.awaitSignal("second", String.class, Duration.ofMinutes(5));
             return outcome + ":" + second;

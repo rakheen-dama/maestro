@@ -234,6 +234,20 @@ final class SignalManager {
             logger.debug("Replaying signal '{}' at seq {}", signalName, seq);
             return serializer.deserialize(storedEvent.get().payload(), type);
         }
+        // Replay check: a memoized timeout re-raises deterministically — from
+        // the log alone, with no store read and no signal consumption. Without
+        // this (Issue 19), a replay whose awaited signal had ARRIVED since the
+        // original timeout consumed it at this slot and diverged from the
+        // original execution — observed as a saga compensating at the wrong
+        // gate and leaking its reserved resource after a routine rolling
+        // restart. The late signal stays durably unconsumed (never discarded);
+        // a later await of the same name (e.g. the loan sample's gate #2) will
+        // find and consume it. Mirrors Issue 13's TIMER_CANCELLED memoization.
+        if (storedEvent.isPresent() && storedEvent.get().eventType() == EventType.SIGNAL_TIMEOUT) {
+            logger.debug("Replaying timed-out await of '{}' at seq {} — re-raising deterministically",
+                    signalName, seq);
+            throw new SignalTimeoutException(ctx.workflowId(), signalName, timeout);
+        }
 
         // Live path
         ctx.setReplaying(false);
@@ -275,6 +289,19 @@ final class SignalManager {
             while (true) {
                 var remaining = Duration.between(Instant.now(), deadline);
                 if (!remaining.isPositive()) {
+                    // Memoize the timeout BEFORE throwing (Issue 19): once any
+                    // later event exists, the timeout memo is durably ahead of
+                    // it, so replay re-raises here instead of consuming a
+                    // signal that arrived after the fact. A crash before this
+                    // append leaves no post-timeout history at all, so a
+                    // replay that then consumes a late signal is a legitimate
+                    // fresh choice, not divergence. A DuplicateEventException
+                    // from this append means another runner already owns this
+                    // slot — it propagates to the executor's Issue 18
+                    // stand-down, exactly like any other stale append.
+                    var timeoutDetail = serializer.serialize(
+                            new SignalTimeoutDetail(signalName, timeout.toString()));
+                    appendEvent(ctx, seq, EventType.SIGNAL_TIMEOUT, stepName, timeoutDetail);
                     updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
                     throw new SignalTimeoutException(ctx.workflowId(), signalName, timeout);
                 }
@@ -428,6 +455,13 @@ final class SignalManager {
         publishLifecycleEvent(ctx, stepName, LifecycleEventType.SIGNAL_RECEIVED);
         logger.debug("Consumed signal '{}' for workflow '{}'", signalName, ctx.workflowId());
         return serializer.deserialize(signal.payload(), type);
+    }
+
+    /**
+     * Payload of a {@link EventType#SIGNAL_TIMEOUT} event: which signal the
+     * await was waiting for and the timeout that elapsed (ISO-8601).
+     */
+    record SignalTimeoutDetail(String signalName, String timeout) {
     }
 
     private void appendEvent(WorkflowContext ctx, int seq, EventType type,
