@@ -206,3 +206,7 @@ FUNDED loan misses seq {9,16}; FAILED saga has compensation events ~seq 19000.
 - [x] Compressed soak smoke PASS (seed 204): verdict PASS, finding surfaced, tail ran 6->3
 - [ ] PR-gate 3x green (fresh seeds) — run 1 in flight
 - [ ] Evidence mirror + index; report finalization
+- [x] Ruling 3 items complete; soak smoke PASS (204); streak A PASS (16m33s)
+- [!] BLOCKED again: streak run B found NEW engine defect (proposed Issue 19) —
+  divergent replay of timed-out-gate gap after graceful rolling restart; rate
+  lock leaked, WORKFLOW_FAILED append collided (I3b). Full analysis report §6a.
