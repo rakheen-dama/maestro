@@ -328,20 +328,30 @@ psql_loan() {
     compose exec -T postgres psql -U maestro -d loan_application -tAc "$1"
 }
 
-# assert_event_log_integrity <workflowId> - queries Postgres DIRECTLY (not
-# through the engine) for the instance's event log and asserts:
+# assert_event_log_integrity <workflowId> <expected-gaps> - queries Postgres
+# DIRECTLY (not through the engine) for the instance's event log and asserts:
 #   1. no duplicate (workflow_instance_id, sequence_number) pairs
 #      (COUNT(*) == COUNT(DISTINCT sequence_number));
-#   2. no sequence gaps below the terminal event
-#      (MAX(sequence_number) - MIN(sequence_number) + 1 == COUNT(*)).
-# LoanApplicationWorkflow has no workflow.parallel()/fork call (grep-
-# verified), so unlike a workflow with parallel branches its sequence
-# numbers are NOT partitioned into per-branch bands (see CLAUDE.md "Parallel
-# branches partition the sequence space") - they must be perfectly
-# contiguous, not merely gap-tolerant.
+#   2. the number of sequence gaps below the terminal event is EXACTLY
+#      <expected-gaps> (gaps = MAX(seq) - MIN(seq) + 1 - COUNT(*));
+#   3. the event at MAX(sequence_number) is WORKFLOW_COMPLETED (so "below
+#      the terminal event" genuinely covers the whole log).
+#
+# Why expected-gaps instead of zero: SignalManager.awaitSignal allocates its
+# sequence number at entry (ctx.nextSequence(), SignalManager.java:228) and,
+# when the await TIMES OUT, throws SignalTimeoutException (line 279) WITHOUT
+# appending any event at that sequence - a timed-out await deliberately
+# consumes a sequence and leaves a hole. LoanApplicationWorkflow's two
+# withdrawal gates (checkWithdrawalGate: awaitSignal("loan.withdrawn"),
+# maestro.sample.gate-timeout=1s) both time out on every FUNDED path, so a
+# funded loan has EXACTLY 2 gaps by design. Verified against baseline: every
+# COMPLETED loan instance from scenarios 1/2/3/5/6 (no owner kill involved)
+# shows gaps=2 with this exact query. Asserting the exact expected count
+# keeps the check sharp - a genuinely lost event would change it.
+# (The workflow has no parallel branches, so no per-branch sequence bands.)
 assert_event_log_integrity() {
-    local wfid="$1" instance_id status event_seq_col counts
-    local total distinct_seq min_seq max_seq
+    local wfid="$1" expected_gaps="$2" instance_id status event_seq_col counts
+    local total distinct_seq min_seq max_seq missing terminal_type
 
     instance_id="$(psql_loan "SELECT id FROM maestro_workflow_instance WHERE workflow_id = '$wfid';" | tr -d '[:space:]')"
     if [[ -z "$instance_id" ]]; then
@@ -352,19 +362,27 @@ assert_event_log_integrity() {
     event_seq_col="$(psql_loan "SELECT event_sequence FROM maestro_workflow_instance WHERE id = '$instance_id';" | tr -d '[:space:]')"
     log "SQL: maestro_workflow_instance id=$instance_id workflow_id=$wfid status=$status event_sequence=$event_seq_col"
 
+    log "SQL> SELECT COUNT(*), COUNT(DISTINCT sequence_number), MIN(sequence_number), MAX(sequence_number) FROM maestro_workflow_event WHERE workflow_instance_id = '$instance_id';"
     counts="$(psql_loan "SELECT COUNT(*), COUNT(DISTINCT sequence_number), MIN(sequence_number), MAX(sequence_number) FROM maestro_workflow_event WHERE workflow_instance_id = '$instance_id';")"
     total="$(awk -F'|' '{print $1}' <<<"$counts" | tr -d '[:space:]')"
     distinct_seq="$(awk -F'|' '{print $2}' <<<"$counts" | tr -d '[:space:]')"
     min_seq="$(awk -F'|' '{print $3}' <<<"$counts" | tr -d '[:space:]')"
     max_seq="$(awk -F'|' '{print $4}' <<<"$counts" | tr -d '[:space:]')"
-    log "SQL: maestro_workflow_event for $instance_id -> total=$total distinct_sequences=$distinct_seq min_seq=$min_seq max_seq=$max_seq"
+    log "SQL: result -> total=$total distinct_sequences=$distinct_seq min_seq=$min_seq max_seq=$max_seq"
 
     assert_eq "no duplicate (workflow_instance_id, sequence_number)" "$total" "$distinct_seq" || return 1
 
-    local expected_count=$(( max_seq - min_seq + 1 ))
-    assert_eq "event log density below terminal event (max-min+1 == count, no gaps)" "$expected_count" "$total" || return 1
+    local gaps=$(( max_seq - min_seq + 1 - total ))
+    # List the missing sequences so the evidence log shows WHERE the holes
+    # are (they must line up with the timed-out gate awaits, not activities).
+    missing="$(psql_loan "SELECT string_agg(s::text, ',') FROM generate_series($min_seq, $max_seq) s WHERE NOT EXISTS (SELECT 1 FROM maestro_workflow_event WHERE workflow_instance_id = '$instance_id' AND sequence_number = s);")"
+    log "SQL: missing sequence numbers in $min_seq..$max_seq -> ${missing:-<none>}"
+    assert_eq "sequence gaps below terminal event (timed-out gate awaits only)" "$expected_gaps" "$gaps" || return 1
 
-    log "  assert OK: event log for $wfid is dense and duplicate-free ($total events, sequence $min_seq..$max_seq)"
+    terminal_type="$(psql_loan "SELECT event_type FROM maestro_workflow_event WHERE workflow_instance_id = '$instance_id' AND sequence_number = $max_seq;" | tr -d '[:space:]')"
+    assert_eq "terminal event at max sequence $max_seq" "WORKFLOW_COMPLETED" "$terminal_type" || return 1
+
+    log "  assert OK: event log for $wfid is duplicate-free with exactly $gaps expected timed-out-await gap(s) ($total events, sequence $min_seq..$max_seq)"
 }
 
 # ── Infrastructure ───────────────────────────────────────────────────────
@@ -1004,8 +1022,11 @@ scenario_owner_kill_adoption() {
         return 1
     fi
 
-    # Event-log assertions: query Postgres directly.
-    assert_event_log_integrity "$wfid" || return 1
+    # Event-log assertions: query Postgres directly. Expected gaps = 2: the
+    # two withdrawal-gate awaitSignal("loan.withdrawn") calls time out on
+    # every FUNDED path and each consumes a sequence number without
+    # appending an event (see assert_event_log_integrity's header comment).
+    assert_event_log_integrity "$wfid" 2 || return 1
 
     # ── Cleanup: restart node A now that the scenario's assertions have
     # passed (the "do not restart" constraint applies only until then), and
