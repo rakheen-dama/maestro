@@ -328,29 +328,34 @@ psql_loan() {
     compose exec -T postgres psql -U maestro -d loan_application -tAc "$1"
 }
 
-# assert_event_log_integrity <workflowId> <expected-gaps> - queries Postgres
-# DIRECTLY (not through the engine) for the instance's event log and asserts:
+# assert_event_log_integrity <workflowId> <expected-missing-csv> - queries
+# Postgres DIRECTLY (not through the engine) for the instance's event log
+# and asserts:
 #   1. no duplicate (workflow_instance_id, sequence_number) pairs
 #      (COUNT(*) == COUNT(DISTINCT sequence_number));
-#   2. the number of sequence gaps below the terminal event is EXACTLY
-#      <expected-gaps> (gaps = MAX(seq) - MIN(seq) + 1 - COUNT(*));
+#   2. the SET of missing sequence numbers below the terminal event is
+#      EXACTLY <expected-missing-csv> (ascending CSV, e.g. "9,16"; "" =
+#      none). Set equality, not just gap COUNT: a regression that dropped
+#      one designed gap while introducing an unrelated real gap would net
+#      the same cardinality and slip past a count-only check.
 #   3. the event at MAX(sequence_number) is WORKFLOW_COMPLETED (so "below
 #      the terminal event" genuinely covers the whole log).
 #
-# Why expected-gaps instead of zero: SignalManager.awaitSignal allocates its
+# Why gaps are expected at all: SignalManager.awaitSignal allocates its
 # sequence number at entry (ctx.nextSequence(), SignalManager.java:228) and,
 # when the await TIMES OUT, throws SignalTimeoutException (line 279) WITHOUT
 # appending any event at that sequence - a timed-out await deliberately
 # consumes a sequence and leaves a hole. LoanApplicationWorkflow's two
 # withdrawal gates (checkWithdrawalGate: awaitSignal("loan.withdrawn"),
 # maestro.sample.gate-timeout=1s) both time out on every FUNDED path, so a
-# funded loan has EXACTLY 2 gaps by design. Verified against baseline: every
-# COMPLETED loan instance from scenarios 1/2/3/5/6 (no owner kill involved)
-# shows gaps=2 with this exact query. Asserting the exact expected count
-# keeps the check sharp - a genuinely lost event would change it.
+# funded loan has exactly those two holes by design - at deterministic
+# positions, because sequence layout is a pure function of the workflow's
+# deterministic step order. Verified against baseline: every COMPLETED loan
+# instance from scenarios 1/2/3/5/6 (no owner kill involved) shows the same
+# designed-gap pattern with this exact query.
 # (The workflow has no parallel branches, so no per-branch sequence bands.)
 assert_event_log_integrity() {
-    local wfid="$1" expected_gaps="$2" instance_id status event_seq_col counts
+    local wfid="$1" expected_missing="$2" instance_id status event_seq_col counts
     local total distinct_seq min_seq max_seq missing terminal_type
 
     instance_id="$(psql_loan "SELECT id FROM maestro_workflow_instance WHERE workflow_id = '$wfid';" | tr -d '[:space:]')"
@@ -372,17 +377,19 @@ assert_event_log_integrity() {
 
     assert_eq "no duplicate (workflow_instance_id, sequence_number)" "$total" "$distinct_seq" || return 1
 
-    local gaps=$(( max_seq - min_seq + 1 - total ))
-    # List the missing sequences so the evidence log shows WHERE the holes
-    # are (they must line up with the timed-out gate awaits, not activities).
-    missing="$(psql_loan "SELECT string_agg(s::text, ',') FROM generate_series($min_seq, $max_seq) s WHERE NOT EXISTS (SELECT 1 FROM maestro_workflow_event WHERE workflow_instance_id = '$instance_id' AND sequence_number = s);")"
+    # Assert the exact SET of missing sequences (ascending CSV), not just
+    # how many there are: the holes must sit precisely at the timed-out
+    # gate awaits, and a real lost event elsewhere must fail even if a
+    # count would coincidentally still match.
+    log "SQL> SELECT string_agg(s::text, ',' ORDER BY s) FROM generate_series($min_seq, $max_seq) s WHERE NOT EXISTS (SELECT 1 FROM maestro_workflow_event WHERE workflow_instance_id = '$instance_id' AND sequence_number = s);"
+    missing="$(psql_loan "SELECT string_agg(s::text, ',' ORDER BY s) FROM generate_series($min_seq, $max_seq) s WHERE NOT EXISTS (SELECT 1 FROM maestro_workflow_event WHERE workflow_instance_id = '$instance_id' AND sequence_number = s);" | tr -d '[:space:]')"
     log "SQL: missing sequence numbers in $min_seq..$max_seq -> ${missing:-<none>}"
-    assert_eq "sequence gaps below terminal event (timed-out gate awaits only)" "$expected_gaps" "$gaps" || return 1
+    assert_eq "missing-sequence set below terminal event (timed-out gate awaits only)" "$expected_missing" "$missing" || return 1
 
     terminal_type="$(psql_loan "SELECT event_type FROM maestro_workflow_event WHERE workflow_instance_id = '$instance_id' AND sequence_number = $max_seq;" | tr -d '[:space:]')"
     assert_eq "terminal event at max sequence $max_seq" "WORKFLOW_COMPLETED" "$terminal_type" || return 1
 
-    log "  assert OK: event log for $wfid is duplicate-free with exactly $gaps expected timed-out-await gap(s) ($total events, sequence $min_seq..$max_seq)"
+    log "  assert OK: event log for $wfid is duplicate-free with exactly the designed timed-out-await gap(s) {${missing:-}} ($total events, sequence $min_seq..$max_seq)"
 }
 
 # ── Infrastructure ───────────────────────────────────────────────────────
@@ -1033,11 +1040,14 @@ scenario_owner_kill_adoption() {
         return 1
     fi
 
-    # Event-log assertions: query Postgres directly. Expected gaps = 2: the
-    # two withdrawal-gate awaitSignal("loan.withdrawn") calls time out on
-    # every FUNDED path and each consumes a sequence number without
-    # appending an event (see assert_event_log_integrity's header comment).
-    assert_event_log_integrity "$wfid" 2 || return 1
+    # Event-log assertions: query Postgres directly. Expected missing set =
+    # {9,16}: the two withdrawal-gate awaitSignal("loan.withdrawn") calls
+    # time out on every FUNDED path and each consumes a sequence number
+    # without appending an event; this scenario's fixed shape (1 borrower,
+    # 1 doc, 3 verifications, round-1 approval, 1 signature) puts gate 1 at
+    # seq 9 and gate 2 at seq 16 deterministically (see
+    # assert_event_log_integrity's header comment).
+    assert_event_log_integrity "$wfid" "9,16" || return 1
 
     # ── Cleanup: restart node A now that the scenario's assertions have
     # passed (the "do not restart" constraint applies only until then), and
