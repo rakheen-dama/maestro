@@ -186,7 +186,9 @@ are **now resolved too** (see each section below). A fourth (16), found
 during the final whole-branch review of 13–15, is **guarded off, not
 resolved** — see its section for why. A fifth (17), found on day one of the
 multi-instance verification cycle (running every service at two instances),
-is **now resolved** — see its section.
+is **now resolved** — see its section. A sixth (18), found by the chaos
+harness's first live run (the mandated Issue 11 split-brain trigger), is
+**now resolved** — see its section.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -221,6 +223,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [15](#issue-15) | Admin dashboard retry/terminate signals are unconsumed | Library gap | Medium | **Resolved** |
 | [16](#issue-16) | Retrying a compensated saga is guarded off, not supported | Library gap | Medium | Open, guarded |
 | [17](#issue-17) | Cross-node timer fires never wake the sleeping workflow | Library defect | High | **Resolved** |
+| [18](#issue-18) | A stale run's duplicate append is recorded as workflow failure | Library defect | High | **Resolved** |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -1187,6 +1190,80 @@ fires (or an operator on node B cancels) its timer, within a bounded
 interval, with the identical event log a single-node wake produces — proven
 at unit level against in-memory SPIs and end-to-end against real Postgres
 with two engine instances.
+
+### Issue 18 — A stale run's duplicate append is recorded as workflow failure {#issue-18}
+
+> **Resolved.** A `DuplicateEventException` that reaches
+> `WorkflowExecutor.executeWorkflow`'s top level now stands the local run
+> down — mirroring the shutdown and termination cases — instead of falling
+> into the generic `catch (Exception)` that treats workflow failures. The
+> stand-down writes nothing, runs no compensation, and releases the local
+> run; the concurrent runner's durable state governs, and if no concurrent
+> runner exists the instance stays active and recovery replays it from the
+> log. The sibling collection points got the same audit Issues 4/5's
+> control-flow exceptions did: `SagaManager.appendEvent` and
+> `recordStepFailure` no longer swallow the exception (a stale run must not
+> keep executing compensation actions the winner also runs),
+> `executeSequential` rethrows it instead of recording
+> `COMPENSATION_STEP_FAILED`, and `executeParallel`'s outcome collection
+> rethrows it with the same priority as shutdown/termination.
+> `ActivityInvocationHandler` is deliberately unchanged: its
+> adopt-the-stored-result handling of the same exception (return the
+> memoized payload at that sequence) is correct memoization semantics —
+> only an append that escapes to the executor's top level means the whole
+> local run is stale. Commit `0fe8bd7`, reproduced RED-first in `73af765`.
+> Pinned by `WorkflowExecutorDuplicateEventStandDownTest` (three tests: the
+> loser adopts a winner's COMPLETED outcome — no FAILED write, no
+> compensation; with no winner the instance stays active and recoverable;
+> a duplicate landing mid-compensation stands the whole attempt down
+> without recording a step failure). The rest of this section is the record
+> of the defect.
+
+**What's wrong.** In the Issue 11 no-fencing window — a node frozen past the
+30s instance-lock TTL (long GC pause, `docker pause`), partitioned, or racing
+on the no-lock-backend degradation — a peer node adopts and re-runs the
+workflow. When the stale node resumes, its next event append collides with
+the event the winner already persisted at that sequence, and the store's
+`(workflow_instance_id, sequence_number)` unique guard throws
+`DuplicateEventException` — the dedup mechanism working exactly as designed.
+But the exception is a `MaestroException` (a `RuntimeException`), so it fell
+into `executeWorkflow`'s generic `catch (Exception)` and was treated as *the
+workflow failing*: the instance was durably marked `FAILED` with the
+conflict message as its output, a `WORKFLOW_FAILED` event was appended (or
+half-appended — the terminal event append often collided too, leaving a
+terminal instance with no terminal event), and the saga's compensations ran,
+reversing side effects of work that had **succeeded** on the winner.
+`SagaManager`'s own event appends swallowed the exception outright, so a
+stale run could also march through compensation actions the winner was
+concurrently running.
+
+**Why it matters.** The architecture's documented split-brain contract is
+"the loser's writes fail and it adopts the winner's results" — duplicate
+*side effects* are the tolerated Issue 11 consequence, store-level
+correctness is not negotiable. This path instead produced a durably wrong
+terminal state (a funded loan recorded `FAILED`) and real compensation-side
+effects (a reserved rate lock released after disbursement). Found by the
+chaos harness's first live run: the mandated `PAUSE_RESUME` split-brain
+trigger hit it deterministically — 3 of 13 workflows in a one-minute
+shakeout window (`.superpowers/sdd/multi-instance/rulings.md` Ruling 2).
+It is the mid-run sibling of BUG7 (the finalize-time
+`OptimisticLockException` that recorded a successful workflow `FAILED`),
+which the convergent terminal transition fixed without covering the
+event-append collision.
+
+**Where.** `maestro-core/src/main/java/.../engine/WorkflowExecutor.java` —
+`executeWorkflow`'s catch chain (the new stand-down catch, plus the
+duplicate-during-compensation catch around `handleWorkflowFailure`) and
+`handleStaleRunStandDown`; `maestro-core/src/main/java/.../saga/SagaManager.java`
+— `appendEvent`, `recordStepFailure`, `executeSequential`,
+`executeParallel`; `maestro-core/src/main/java/.../engine/ActivityInvocationHandler.java`
+— `appendEventSafe` (unchanged, deliberately).
+
+**Done when.** Under the chaos harness's split-brain trigger, every workflow
+reaches the terminal state its path script declared (invariant I1), terminal
+event logs are well-formed (I3), and the only Issue 11 residue is counted
+duplicate side effects — proven by the harness's PR-gate mode running green
+and pinned at unit level by `WorkflowExecutorDuplicateEventStandDownTest`.
 
 ---
 

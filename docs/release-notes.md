@@ -4,6 +4,23 @@
 
 ### Bug Fixes
 
+- **A stale run whose event append collides with a concurrent runner now
+  stands down instead of failing the workflow** (`docs/open-issues.md`
+  Issue 18). Previously, when a node lost its instance lock mid-run (frozen
+  past the lock TTL, partitioned, or the no-lock-backend race) and a peer
+  adopted the workflow, the stale node's resumed run hit the store's
+  `(workflow_instance_id, sequence_number)` unique guard — and the resulting
+  `DuplicateEventException` was treated as a workflow failure: a workflow
+  that had succeeded on the adopting node was durably marked `FAILED` and
+  its saga compensations ran, reversing completed work. The executor now
+  treats the collision as "another run owns this workflow's progress" and
+  stands down like the shutdown/termination cases: nothing is written, no
+  compensation runs, the concurrent runner's durable outcome governs (and
+  with no concurrent runner the instance stays recoverable). Memoized
+  activity-result adoption inside the activity proxy is unchanged. Found by
+  the multi-instance chaos harness; pinned by
+  `WorkflowExecutorDuplicateEventStandDownTest`.
+
 - **Cross-node timer fires (and cancels) now wake the sleeping workflow**
   (`docs/open-issues.md` Issue 17). Previously, in any multi-instance
   deployment, a timer fired by the timer-poller leader on a node other than
