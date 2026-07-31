@@ -17,11 +17,20 @@ public enum LoanPath {
     /** Conditions on round 1, extra doc, approval on round 2 → funded. Gaps {9,23}. */
     CONDITIONS_LOOP(20, "COMPLETED", "FUNDED", false, 2),
 
-    /** Approve, reach rate-lock reservation, withdraw at gate #2 → compensated FAILED. Gap {9}. */
-    SAGA_WITHDRAWAL(20, "FAILED", null, true, 1),
+    /**
+     * Approve, reach rate-lock reservation, withdraw at gate #2 → compensated
+     * FAILED. Golden gap {9}; bound 2 because under chaos the decision await
+     * itself may time out (still FAILED, one extra gap — §14.6).
+     */
+    SAGA_WITHDRAWAL(20, "FAILED", null, true, 2),
 
-    /** Never answer underwriting → the round rejects → FAILED. Gap {9}. */
-    SIGNAL_TIMEOUT(20, "FAILED", null, false, 1);
+    /**
+     * Never answer underwriting → FAILED. Golden gap {9}; bound 2: the parent
+     * fails either by consuming the child's double-timeout REJECTED (no gap)
+     * or by its own decision-await timeout (one extra gap) — a race, both
+     * legitimate (§14.6).
+     */
+    SIGNAL_TIMEOUT(20, "FAILED", null, false, 2);
 
     private final int weight;
     private final String expectedTerminal;
