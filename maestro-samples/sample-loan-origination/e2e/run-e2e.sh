@@ -912,6 +912,17 @@ scenario_owner_kill_adoption() {
     local loan_log="$LOG_DIR/loan-application-service.log"
     local loan_log_b="$LOG_DIR/$LOAN_NODE_B.log"
 
+    # Pre-flight repair: a PREVIOUS failed scenario-7 run exits before its
+    # cleanup step, leaving node A dead (killed, pid file removed). Restore
+    # node A first so consecutive runs (E2E_ONLY=7 E2E_REUSE=1 loops) don't
+    # inherit a poisoned topology. Within THIS run node A still stays dead
+    # from its kill until the assertions pass.
+    if ! port_in_use 8091; then
+        warn "Node A (port 8091) is not up at scenario start - restoring it (leftover from a previous failed run?)"
+        start_service "loan-application-service" || return 1
+        wait_for_http "loan-application-service" "$LOAN_URL/applications/__probe__" 120 || return 1
+    fi
+
     # Node B must already be up (same service name -> same consumer group,
     # store, and lock namespace) before the kill, or "adoption" would really
     # just be "cold start of the only surviving node".
