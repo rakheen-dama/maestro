@@ -255,6 +255,7 @@ public final class ChaosRun {
     private void benchmarkTail(ChaosCluster cluster, WorkloadDriver driver, EvidenceWriter evidence) {
         int phaseSeconds = Integer.getInteger("maestro.chaos.tailPhaseSeconds", 300);
         int ratePerMinute = Integer.getInteger("maestro.chaos.tailRatePerMinute", 6);
+        cluster.enterBenchmarkTailMode();
         var tail = new LinkedHashMap<String, Object>();
         tail.put("phaseSeconds", phaseSeconds);
         tail.put("ratePerMinute", ratePerMinute);

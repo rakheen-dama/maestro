@@ -445,9 +445,23 @@ public final class ChaosCluster implements AutoCloseable {
         log.info("[chaos] BACKEND_OUTAGE unpause {}", backend);
     }
 
+    private volatile boolean benchmarkTailMode;
+
+    /**
+     * Marks the run as being in the Issue 12 benchmark tail: no chaos actions
+     * run, and nodes stopped from here on are deliberate topology (the 6→3
+     * vs-node-count measurement), not harassment — so the metrics sampler's
+     * {@code chaosActive} column stays {@code false} and the tail's rows remain
+     * usable as calm-window attribution points. {@link #liveNodeCount()} still
+     * reports the reduced node count.
+     */
+    public void enterBenchmarkTailMode() {
+        benchmarkTailMode = true;
+    }
+
     /** @return true if any node is harassed or any backend is paused. */
     public boolean anyChaosActive() {
-        return !harassedRoles().isEmpty() || !pausedBackends.isEmpty();
+        return !benchmarkTailMode && (!harassedRoles().isEmpty() || !pausedBackends.isEmpty());
     }
 
     /** @return the count of nodes currently not harassed. */
