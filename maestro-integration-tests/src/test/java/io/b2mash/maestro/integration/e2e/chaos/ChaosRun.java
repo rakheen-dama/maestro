@@ -138,34 +138,44 @@ public final class ChaosRun {
     // ------------------------------------------------------------------- drain
 
     private void drain(ChaosCluster cluster, WorkloadDriver driver, Duration drainSla) {
-        log.info("[chaos] drain: waiting up to {}s for all ledger workflows terminal",
+        log.info("[chaos] drain: waiting up to {}s for all workflows terminal in all services",
                 drainSla.toSeconds());
         long end = System.nanoTime() + drainSla.toNanos();
         while (System.nanoTime() < end) {
-            if (allLedgerTerminal(cluster, driver)) {
-                log.info("[chaos] drain: all ledger workflows terminal");
+            if (allInstancesTerminal(cluster, driver)) {
+                log.info("[chaos] drain: all workflows terminal in all three services");
                 return;
             }
             sleep(2000);
         }
-        log.warn("[chaos] drain: SLA elapsed with non-terminal ledger workflows (I1 will report)");
+        log.warn("[chaos] drain: SLA elapsed with non-terminal workflows (I1 will report)");
     }
 
-    private boolean allLedgerTerminal(ChaosCluster cluster, WorkloadDriver driver) {
-        var ledger = driver.ledger();
-        if (ledger.isEmpty()) {
+    /**
+     * True when every instance in all three service databases is terminal —
+     * the same population I1's authoritative check covers, so drain waits for
+     * exactly what verify asserts (underwriting children included: an
+     * unanswered child needs its own double-timeout to reject).
+     */
+    private boolean allInstancesTerminal(ChaosCluster cluster, WorkloadDriver driver) {
+        if (driver.ledger().isEmpty()) {
             return true;
         }
-        try (Connection c = cluster.dataSource(Service.LOAN_APPLICATION).getConnection();
-             var ps = c.prepareStatement(
-                     "SELECT COUNT(*) FROM maestro_workflow_instance "
-                     + "WHERE status NOT IN ('COMPLETED','FAILED','TERMINATED')")) {
-            try (var rs = ps.executeQuery()) {
-                return rs.next() && rs.getInt(1) == 0;
+        for (Service svc : Service.values()) {
+            try (Connection c = cluster.dataSource(svc).getConnection();
+                 var ps = c.prepareStatement(
+                         "SELECT COUNT(*) FROM maestro_workflow_instance "
+                         + "WHERE status NOT IN ('COMPLETED','FAILED','TERMINATED')")) {
+                try (var rs = ps.executeQuery()) {
+                    if (!rs.next() || rs.getInt(1) != 0) {
+                        return false;
+                    }
+                }
+            } catch (Exception e) {
+                return false;
             }
-        } catch (Exception e) {
-            return false;
         }
+        return true;
     }
 
     // --------------------------------------------------------------- reporting

@@ -297,10 +297,20 @@ public final class ChaosCluster implements AutoCloseable {
         env.put("MAESTRO_SAMPLE_SIGN_TIMEOUT", t);
         env.put("MAESTRO_SAMPLE_DECISION_TIMEOUT", t);
         env.put("MAESTRO_SAMPLE_GATE_TIMEOUT", isoSeconds(config.gateTimeout()));
-        // Underwriter/senior timeouts short so a never-answered underwriting
-        // child rejects (double-timeout) and reaches terminal within the SLA.
-        env.put("MAESTRO_SAMPLE_UNDERWRITER_TIMEOUT", "PT30S");
+        // Underwriter timeout matches the driver's decision deadline so a
+        // chaos-delayed decision never loses to the child's own escalation
+        // (which would turn a HAPPY path into a REJECTED loan); the senior
+        // timeout stays short so a deliberately-unanswered child
+        // (SIGNAL_TIMEOUT path) still reaches terminal (double-timeout
+        // REJECTED) within the drain SLA.
+        env.put("MAESTRO_SAMPLE_UNDERWRITER_TIMEOUT", t);
         env.put("MAESTRO_SAMPLE_SENIOR_TIMEOUT", "PT30S");
+        // A consumer group's FIRST offset for a partition is 'earliest' so a
+        // business event published before the group finished forming (node
+        // boot / chaos-replacement) is consumed, not skipped — the design §3
+        // Risk 1 hazard, removed at the source. Standard Spring relaxed
+        // binding overrides the sample's application.yml value.
+        env.put("SPRING_KAFKA_CONSUMER_AUTO_OFFSET_RESET", "earliest");
         return env;
     }
 

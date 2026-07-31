@@ -164,7 +164,7 @@ public final class WorkloadDriver {
         String submittedAt = nowUtc();
         try {
             createApplication(applicationId, notes);
-            uploadDoc(workflowId, applicationId, "income-proof", BORROWERS.get(0), 1, notes);
+            uploadDoc(workflowId, applicationId, "income-proof", BORROWERS.get(0), notes);
             ensureUnderwritingRequested(applicationId, 1, notes);
 
             switch (path) {
@@ -174,7 +174,7 @@ public final class WorkloadDriver {
                 }
                 case CONDITIONS_LOOP -> {
                     decide(applicationId, 1, "CONDITIONS", List.of("proof-of-insurance"), notes);
-                    uploadDoc(workflowId, applicationId, "proof-of-insurance", BORROWERS.get(0), 2, notes);
+                    uploadDoc(workflowId, applicationId, "proof-of-insurance", BORROWERS.get(0), notes);
                     ensureUnderwritingRequested(applicationId, 2, notes);
                     decide(applicationId, 2, "APPROVED", List.of(), notes);
                     signAll(workflowId, applicationId, notes);
@@ -215,11 +215,20 @@ public final class WorkloadDriver {
     }
 
     private void uploadDoc(String workflowId, String applicationId, String docType,
-                           String uploadedBy, int expectedTotal, List<String> notes) {
+                           String uploadedBy, List<String> notes) {
         String body = String.format("{\"docType\":\"%s\",\"uploadedBy\":\"%s\"}", docType, uploadedBy);
+        // Store-checked re-post keyed by docType (design §3: document re-posts
+        // only after a store-level check that the first signal row never landed).
         boolean ok = effectWithRepost(
-                () -> post(Service.LOAN_APPLICATION, "/applications/" + applicationId + "/documents", body),
-                () -> signalCount(Service.LOAN_APPLICATION, workflowId, "document.uploaded") >= expectedTotal,
+                () -> {
+                    if (signalCountWithPayload(Service.LOAN_APPLICATION, workflowId,
+                            "document.uploaded", "\"" + docType + "\"") == 0) {
+                        post(Service.LOAN_APPLICATION,
+                                "/applications/" + applicationId + "/documents", body);
+                    }
+                },
+                () -> signalCountWithPayload(Service.LOAN_APPLICATION, workflowId,
+                        "document.uploaded", "\"" + docType + "\"") >= 1,
                 Duration.ofSeconds(20), config.sampleTimeout());
         if (!ok) {
             notes.add("doc-not-landed:" + docType);
@@ -228,17 +237,24 @@ public final class WorkloadDriver {
 
     private void ensureUnderwritingRequested(String applicationId, int round, List<String> notes) {
         String childId = "underwriting-" + applicationId + "-round" + round;
+        String workflowId = "loan-" + applicationId;
         boolean requested = pollUntil(
                 () -> instanceExists(Service.UNDERWRITING, childId),
-                Duration.ofSeconds(25), Duration.ofSeconds(1));
+                Duration.ofSeconds(45), Duration.ofSeconds(1));
         if (!requested && round == 1) {
-            // Verifications may be stalled (verify nodes harassed / rebalance skip).
-            // Deliver the three results out-of-band via the webhook (approved),
-            // which the loan workflow dedupes by type (Risk 1 mitigation).
-            notes.add("verification-webhook-fallback");
-            for (String type : VERIFICATION_TYPES) {
-                post(Service.VERIFICATION_GATEWAY,
-                        "/webhooks/" + type + "/" + applicationId, "{\"approved\":true}");
+            // Verification results may be missing (a verification workflow lost
+            // mid-chaos). Per the design (§3), a re-post that could over-deliver
+            // a counted signal happens ONLY after a store-level check that the
+            // signal never landed: webhook only the verification types with no
+            // signal row, so an already-delivered (or merely slow) result is
+            // never duplicated into an unconsumable row (I4 shaping).
+            var missing = missingVerificationTypes(workflowId);
+            if (!missing.isEmpty()) {
+                notes.add("verification-webhook-fallback:" + missing);
+                for (String type : missing) {
+                    post(Service.VERIFICATION_GATEWAY,
+                            "/webhooks/" + type + "/" + applicationId, "{\"approved\":true}");
+                }
             }
             requested = pollUntil(() -> instanceExists(Service.UNDERWRITING, childId),
                     config.sampleTimeout(), Duration.ofSeconds(1));
@@ -248,6 +264,32 @@ public final class WorkloadDriver {
         }
     }
 
+    /** Verification types with no {@code verification.result} signal row yet. */
+    private List<String> missingVerificationTypes(String workflowId) {
+        var present = new ArrayList<String>();
+        String sql = "SELECT payload::text FROM maestro_workflow_signal "
+                + "WHERE workflow_id = ? AND signal_name = 'verification.result'";
+        try (var c = cluster.dataSource(Service.LOAN_APPLICATION).getConnection();
+             var ps = c.prepareStatement(sql)) {
+            ps.setString(1, workflowId);
+            try (var rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String payload = rs.getString(1);
+                    for (String type : VERIFICATION_TYPES) {
+                        if (payload != null && payload.contains("\"" + type + "\"")) {
+                            present.add(type);
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // Store unreachable (backend outage window): treat nothing as
+            // missing — re-check happens on the next poll cycle.
+            return List.of();
+        }
+        return VERIFICATION_TYPES.stream().filter(t -> !present.contains(t)).toList();
+    }
+
     private void decide(String applicationId, int round, String verdict, List<String> conditions,
                         List<String> notes) {
         String conds = conditions.isEmpty() ? "[]"
@@ -255,8 +297,17 @@ public final class WorkloadDriver {
         String body = String.format("{\"verdict\":\"%s\",\"conditions\":%s}", verdict, conds);
         String path = "/underwriting/" + applicationId + "/rounds/" + round + "/decision";
         String childId = "underwriting-" + applicationId + "-round" + round;
+        // Store-checked re-post (I4 shaping): the durable decision signal lives
+        // in the underwriting DB; once its row exists the workflow WILL consume
+        // it (pre-arrived signals are consumed instantly), so re-posting after
+        // that would only create an unconsumable duplicate. The effect awaited
+        // is still the child reaching terminal.
         boolean ok = effectWithRepost(
-                () -> post(Service.UNDERWRITING, path, body),
+                () -> {
+                    if (signalCount(Service.UNDERWRITING, childId, "underwriter.decision") == 0) {
+                        post(Service.UNDERWRITING, path, body);
+                    }
+                },
                 () -> isTerminal(Service.UNDERWRITING, childId),
                 Duration.ofSeconds(25), config.sampleTimeout());
         if (!ok) {
@@ -265,14 +316,22 @@ public final class WorkloadDriver {
     }
 
     private void signAll(String workflowId, String applicationId, List<String> notes) {
-        for (int i = 0; i < BORROWERS.size(); i++) {
-            String signer = BORROWERS.get(i);
-            int expected = i + 1;
+        for (String signer : BORROWERS) {
+            // Store-checked re-post keyed by signerId: once this signer's row
+            // exists it will be consumed by the signature fan-in (or deduped
+            // while it is open); re-posting would only risk an unconsumable
+            // duplicate after the fan-in closes (I4 shaping).
             boolean ok = effectWithRepost(
-                    () -> post(Service.LOAN_APPLICATION,
-                            "/applications/" + applicationId + "/sign",
-                            "{\"signerId\":\"" + signer + "\"}"),
-                    () -> signalCount(Service.LOAN_APPLICATION, workflowId, "package.signed") >= expected,
+                    () -> {
+                        if (signalCountWithPayload(Service.LOAN_APPLICATION, workflowId,
+                                "package.signed", "\"" + signer + "\"") == 0) {
+                            post(Service.LOAN_APPLICATION,
+                                    "/applications/" + applicationId + "/sign",
+                                    "{\"signerId\":\"" + signer + "\"}");
+                        }
+                    },
+                    () -> signalCountWithPayload(Service.LOAN_APPLICATION, workflowId,
+                            "package.signed", "\"" + signer + "\"") >= 1,
                     Duration.ofSeconds(20), config.sampleTimeout());
             if (!ok) {
                 notes.add("signature-not-landed:" + signer);
@@ -282,9 +341,13 @@ public final class WorkloadDriver {
 
     private void withdraw(String workflowId, String applicationId, List<String> notes) {
         boolean ok = effectWithRepost(
-                () -> post(Service.LOAN_APPLICATION,
-                        "/applications/" + applicationId + "/withdraw",
-                        "{\"reason\":\"chaos-saga-withdrawal\"}"),
+                () -> {
+                    if (signalCount(Service.LOAN_APPLICATION, workflowId, "application.withdrawn") == 0) {
+                        post(Service.LOAN_APPLICATION,
+                                "/applications/" + applicationId + "/withdraw",
+                                "{\"reason\":\"chaos-saga-withdrawal\"}");
+                    }
+                },
                 () -> signalCount(Service.LOAN_APPLICATION, workflowId, "application.withdrawn") >= 1,
                 Duration.ofSeconds(20), config.sampleTimeout());
         if (!ok) {
@@ -354,14 +417,27 @@ public final class WorkloadDriver {
 
     /**
      * POSTs {@code body} to {@code path} on a live node of {@code svc}, trying
-     * both node roles until one accepts (status &lt; 300) or a short deadline
-     * elapses. Never throws.
+     * the service's <em>non-harassed</em> node roles until one accepts (status
+     * &lt; 300) or a short deadline elapses. Never throws.
+     *
+     * <p>Harassed nodes (paused, partitioned, killed, stopping) are skipped
+     * deliberately — this is the live-endpoint-registry routing the design
+     * mandates, and it matters for correctness of the I4 invariant: a request
+     * sent to a <em>paused</em> node queues in its socket backlog and replays
+     * when the node is unpaused, delivering a late duplicate signal after the
+     * workflow's fan-in has closed. Routing around harassed nodes (as a
+     * health-checked load balancer would) removes that over-delivery mechanism
+     * at its source.
      */
     private void post(Service svc, String path, String body) {
-        long end = System.nanoTime() + Duration.ofSeconds(20).toNanos();
+        long end = System.nanoTime() + Duration.ofSeconds(30).toNanos();
         int attempt = 0;
         while (System.nanoTime() < end) {
+            var harassed = cluster.harassedRoles();
             for (NodeRole role : svc.roles()) {
+                if (harassed.contains(role)) {
+                    continue;   // never queue a request on a frozen/partitioned node
+                }
                 String base = baseUrlOrNull(role);
                 if (base == null) {
                     continue;
@@ -423,6 +499,23 @@ public final class WorkloadDriver {
              var ps = c.prepareStatement(sql)) {
             ps.setString(1, workflowId);
             ps.setString(2, signalName);
+            try (var rs = ps.executeQuery()) {
+                return rs.next() ? rs.getLong(1) : 0;
+            }
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    /** Signal rows for {@code workflowId}/{@code signalName} whose payload contains {@code needle}. */
+    private long signalCountWithPayload(Service svc, String workflowId, String signalName, String needle) {
+        String sql = "SELECT COUNT(*) FROM maestro_workflow_signal "
+                + "WHERE workflow_id = ? AND signal_name = ? AND payload::text LIKE ?";
+        try (var c = cluster.dataSource(svc).getConnection();
+             var ps = c.prepareStatement(sql)) {
+            ps.setString(1, workflowId);
+            ps.setString(2, signalName);
+            ps.setString(3, "%" + needle + "%");
             try (var rs = ps.executeQuery()) {
                 return rs.next() ? rs.getLong(1) : 0;
             }
