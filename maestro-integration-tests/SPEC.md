@@ -38,8 +38,19 @@ io.b2mash.maestro.integration
 ├── engine/      — P0: engine × Postgres
 ├── kafka/       — P1: Kafka in CI
 ├── multinode/   — P2: two-node topology
-└── shutdown/    — P5: graceful-shutdown contract
+├── shutdown/    — P5: graceful-shutdown contract
+└── e2e/chaos/   — Phase 2: chaos/soak harness (coordinator-owned)
 ```
+
+The `e2e/chaos/` package holds the multi-instance chaos/soak harness
+(`chaos-harness-design.md`, Task 7): a Testcontainers-orchestrated 6-node
+loan-origination cluster driven by a `@Tag("e2e")` JUnit suite that kills,
+pauses, partitions and rolls nodes while asserting store-level invariants and
+capturing the Issue 11 (duplicate side-effect) and Issue 12 (recovery-polling
+scale) evidence. Its fixtures are coordinator-owned — ask before editing.
+Boot jars for the three loan services are supplied to `e2eTest` via
+`dependsOn` on their `bootJar` tasks plus system-property jar paths (never in
+`build`/`check`).
 
 Two phases deliberately live outside this module: **P3** (lock-postgres and
 messaging-postgres) belongs in those modules' own `src/test`, because a backend

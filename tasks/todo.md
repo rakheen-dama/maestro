@@ -159,3 +159,29 @@ Binding plan: `tasks/issues-13-15-plan.md`. Branch: `worktree-issues-13-15` off 
 - [x] Task 3 — Issue 15: $maestro:retry/terminate live end-to-end (dispatcher, retryWorkflow + deleteFailureEvents ruling, terminateWorkflow, resurrection guards, Kafka E2E)
 - [x] Task 4 — Docs close-out: 13-15 Resolved callouts, 0.4.0 release notes, test-plan reconciled
 - [x] Task 5 — QA cycle: all gates pass (incl. live dashboard retry/terminate); stale-artifact contamination caught and re-verified
+
+---
+
+# Task 7 — Chaos/Soak Harness (multi-instance verification cycle)
+
+Implementing `.superpowers/sdd/multi-instance/chaos-harness-design.md` exactly (per §13 rulings).
+
+- [x] 1. FIRST COMMIT: amend SPEC.md — add e2e/chaos/ to pinned layout (Q1)
+- [ ] 2. Gradle wiring: e2eTest.dependsOn 3 sample bootJar tasks + jar-path sysprops (Q2 a)
+- [ ] 3. EvidenceWriter — identity headers, run directory (§9)
+- [ ] 4. ChaosCluster — Testcontainers infra + 6 nodes, topics, log streaming, endpoint registry (§2)
+- [ ] 5. WorkloadDriver — path scripts, ledger (§3)
+- [ ] 6. ChaosController — actions, safety rules, action log, heal-all (§4)
+- [ ] 7. InvariantChecker — SQL I1-I6 + ledger join + dumps (§5)
+- [ ] 8. MetricsSampler — pg_stat_statements + Valkey INFO -> metrics.csv (§6)
+- [ ] 9. Side-effect census — log counters + correlation verdict (§7)
+- [ ] 10. ChaosPrGateE2EIT + ChaosSoakE2EIT (§8)
+- [ ] 11. Golden-run calibration; refine I3(d); record in design Changelog (Q6)
+- [ ] 12. PR-gate green 3×; ./gradlew build green
+- [ ] 13. CI: chaos-pr-gate (nightly 3x) + chaos-soak (weekly+dispatch) (Q5)
+- [ ] 14. Evidence mirror + index; report
+
+Rulings: Valkey-lock only (Q3), safety as designed (Q4), I4 hard-fail (Q7),
+unexplained dups flag-and-report (Q8), constants as approved (Q9).
+Phase-1 facts: awaitSignal(timeout) leaves NO timer rows (I2 -> verify wf only);
+FUNDED loan misses seq {9,16}; FAILED saga has compensation events ~seq 19000.
