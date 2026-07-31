@@ -4,6 +4,23 @@
 
 ### Bug Fixes
 
+- **Timed-out `awaitSignal` calls are now memoized and replay
+  deterministically** (`docs/open-issues.md` Issue 19). Previously a timed-out
+  await left its sequence slot empty; a recovery replay whose awaited signal
+  had arrived late consumed it at that slot and diverged from the original
+  execution — observed as a saga compensating at the wrong gate and leaking
+  its reserved resource after a routine rolling restart. The live timeout path
+  now appends a `SIGNAL_TIMEOUT` event (signal name + timeout in the payload)
+  before throwing, and replay re-raises the timeout from the log alone; the
+  late signal stays durably unconsumed for a later await of the same name.
+  **Observable changes:** event logs no longer contain timed-out-await
+  sequence gaps (tooling that asserted the old "designed gap" positions must
+  expect contiguous logs with `SIGNAL_TIMEOUT` events instead), and
+  `$maestro:retry` of a workflow that failed *because of* a signal timeout
+  deletes that failing timeout memo so the retried await re-drives — earlier
+  caught gate timeouts still replay identically after a retry. Found by the
+  multi-instance chaos harness; pinned by `SignalTimeoutReplayDeterminismTest`.
+
 - **A stale run whose event append collides with a concurrent runner now
   stands down instead of failing the workflow** (`docs/open-issues.md`
   Issue 18). Previously, when a node lost its instance lock mid-run (frozen

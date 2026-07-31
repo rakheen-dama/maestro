@@ -188,7 +188,9 @@ resolved** — see its section for why. A fifth (17), found on day one of the
 multi-instance verification cycle (running every service at two instances),
 is **now resolved** — see its section. A sixth (18), found by the chaos
 harness's first live run (the mandated Issue 11 split-brain trigger), is
-**now resolved** — see its section.
+**now resolved** — see its section. A seventh (19), found by the chaos
+harness's PR-gate streak (a routine graceful rolling restart racing a late
+signal), is **now resolved** — see its section.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -224,6 +226,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [16](#issue-16) | Retrying a compensated saga is guarded off, not supported | Library gap | Medium | Open, guarded |
 | [17](#issue-17) | Cross-node timer fires never wake the sleeping workflow | Library defect | High | **Resolved** |
 | [18](#issue-18) | A stale run's duplicate append is recorded as workflow failure | Library defect | High | **Resolved** |
+| [19](#issue-19) | Timed-out awaits replay nondeterministically (late signal consumed at the gap) | Library defect | High | **Resolved** |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -1264,6 +1267,69 @@ reaches the terminal state its path script declared (invariant I1), terminal
 event logs are well-formed (I3), and the only Issue 11 residue is counted
 duplicate side effects — proven by the harness's PR-gate mode running green
 and pinned at unit level by `WorkflowExecutorDuplicateEventStandDownTest`.
+
+
+### Issue 19 — Timed-out awaits replay nondeterministically {#issue-19}
+
+> **Resolved.** A timed-out `awaitSignal` now memoizes a `SIGNAL_TIMEOUT`
+> event at its allocated sequence slot <em>before</em> throwing
+> `SignalTimeoutException` (payload: signal name + timeout), and replay that
+> finds `SIGNAL_TIMEOUT` at the slot re-raises the timeout deterministically
+> from the log alone — no store read, no signal consumption. A late-arriving
+> signal stays durably unconsumed ("never discard a signal") for a later
+> await of the same name to find. This is the signal analogue of Issue 13's
+> `TIMER_CANCELLED` memoization; the append-then-throw ordering closes the
+> crash window (any later event implies the memo is durable; a crash before
+> the append leaves no post-timeout history, so a fresh consume is a
+> legitimate choice, not divergence). Retry ripple: `deleteFailureEvents`
+> also deletes the FAILING timeout memo — the highest-sequenced
+> `SIGNAL_TIMEOUT`, and only when `WORKFLOW_FAILED` records a
+> `SignalTimeoutException` as the cause — so a retried await re-drives and
+> consumes the now-delivered signal; caught gate memos survive retry (any
+> other deletion would resurrect the divergence through the retry door).
+> Commit `9ab457e`, reproduced RED-first in `6eed32c`. Pinned by
+> `SignalTimeoutReplayDeterminismTest` (four tests: replay re-raises and the
+> late signal stays unconsumed; the saga shape honours the withdrawal at
+> gate #2 and compensates — no leak; retry re-drives a timeout failure;
+> retry preserves caught gate memos). Event logs no longer contain
+> timed-out-await gaps: the loan E2E's expected missing sets and the chaos
+> harness's I3(d) bounds were re-derived to empty/zero, superseding the
+> earlier "designed gap" ratification. The rest of this section is the
+> record of the defect.
+
+**What's wrong.** `SignalManager.awaitSignal` allocated its sequence number
+at entry and, on timeout, threw without appending any event — the sequence
+slot stayed empty (the "designed gap" earlier verification work ratified as
+benign). On recovery replay the await re-executed at that slot; if the
+awaited signal had ARRIVED since the original timeout, the replay consumed
+it there and took a different branch than the original execution — a replay
+determinism violation, the exact class of bug the memoization log exists to
+prevent.
+
+**Why it matters.** The trigger is routine: a graceful rolling restart
+(deploy) racing a late signal — no failure injection required. Observed by
+the chaos harness (PR-gate streak run B, seed -825499340287642346): a saga
+loan's original run timed out withdrawal gate #1, approved, reserved its
+rate lock, and parked; the node was rolled; the withdrawal landed between
+stop and recovery; the replacement's replay consumed the withdrawal at gate
+#1's slot, threw there — before `reserveRateLock` — so its compensation
+stack was empty: the reserved rate lock LEAKED, and the divergent
+`WORKFLOW_FAILED` append collided with a memoized event, leaving a terminal
+instance with no terminal event. Any workflow combining timeout-guarded
+awaits with saga compensation is exposed.
+
+**Where.** `maestro-core/src/main/java/.../engine/SignalManager.java` —
+`awaitSignal` (the memo append + replay re-raise); `maestro-core/src/main/
+java/.../model/EventType.java` — `SIGNAL_TIMEOUT`;
+`maestro-store-jdbc/.../AbstractJdbcWorkflowStore.java` and
+`maestro-test/.../InMemoryWorkflowStore.java` — `deleteFailureEvents` (the
+failing-timeout-memo rule); `maestro-core/src/main/java/.../spi/
+WorkflowStore.java` — the SPI contract.
+
+**Done when.** The chaos harness's PR-gate mode runs green with strict
+event-log contiguity (I3(d) bound zero), the loan E2E's re-derived empty
+missing-sets pass, and the four pinning tests hold — replay determinism,
+no saga leak, retry re-drive, caught-memo preservation.
 
 ---
 
