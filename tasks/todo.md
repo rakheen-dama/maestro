@@ -185,3 +185,15 @@ Rulings: Valkey-lock only (Q3), safety as designed (Q4), I4 hard-fail (Q7),
 unexplained dups flag-and-report (Q8), constants as approved (Q9).
 Phase-1 facts: awaitSignal(timeout) leaves NO timer rows (I2 -> verify wf only);
 FUNDED loan misses seq {9,16}; FAILED saga has compensation events ~seq 19000.
+
+## STATUS: BLOCKED (2026-07-31) — engine defect found on first live chaos run
+- Golden calibration GREEN (all 4 paths). Harness complete (16 classes).
+- DEFECT: DuplicateEventException (Issue 11 no-fencing adoption race) recorded as
+  WORKFLOW_FAILED -> succeeding workflow stored FAILED. WorkflowExecutor.java:1353
+  catch(Exception) -> handleWorkflowFailure. Sibling of fixed BUG7. Deterministic
+  (mandated loan-node PAUSE_RESUME triggers it). PR-gate cannot be green until fixed.
+- maestro-core untouched pending coordinator ruling (dispatch: BLOCKED first).
+- Full analysis + question -> .superpowers/sdd/task-7-report.md §3/§7.
+- Secondary (mine, not blocker): I4 verification-webhook over-delivery + PT30S uw
+  timeout — driver-shaping fix queued for after unblock (Q7).
+- Remaining after unblock: driver-shaping fix, PR-gate green 3x, CI workflow commit.
