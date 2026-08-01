@@ -317,3 +317,41 @@ I-1/I-2 are covered structurally plus by the running soak and the next PR gate.
 ### Round 1 commits
 - 2ac7a57 `fix(e2e/chaos): back-pressure is loud and accounted, never silent truncation (I-3 driver side)`
 - eac200e `fix(e2e/chaos): every-exit-path teardown, Error-safe generation catch, back-pressure surfacing (I-1, I-2, I-3)`
+
+## 7. Fix loop round 2 (re-review: I-1/I-2 RESOLVED; R1-2 Important + R1-1 Minor)
+
+### R1-2 — back-pressure surface now covers the benchmark tail
+Pre-fix, `writeSummary`/`surface` ran before `benchmarkTail`, so a throttle
+during tail6/tail3 — the actual Issue 12 measurement windows — left
+`generationBackPressure.delayedArrivals: 0` on the summary and no banner.
+Now `WorkloadDriver` publishes an immutable `BackPressureWindow` snapshot
+(delayedArrivals / per-window maxWaitMs / blockedMs) at every window close;
+`benchmarkTail` writes `phase6NodesBackPressure` / `phase3NodesBackPressure`
+into `benchmark-tail.json` (per-phase, so a tail3-only throttle stays
+attributable to tail3) and prints
+`!!! BENCHMARK TAIL <phase> WAS BACK-PRESSURED … NOT comparable` when a phase
+shed. The close-out WARN reports the true per-window max (the "(run)"
+cumulative-max labeling that R1-2b flagged is gone with its cause).
+Unit pin: clean main window then permit-drained tail window — shedding is
+attributed to the tail snapshot (`awaitScriptsSettled` makes the drain
+deterministic).
+
+### R1-1 — finally-top interrupt clear
+Pacer aborts reached the teardown finally with the interrupt flag re-asserted,
+silently skipping every join in it. `Thread.interrupted()` now runs at the TOP
+of the finally as well as the end (a controller death can interrupt during the
+joins themselves).
+
+### Verification (isolated worktree, soak attempt 3 untouched)
+Verbatim from `evidence/task7/green-fixloop2-unit-tests.log` (HEAD 8cd2754):
+
+```
+WorkloadDriverBackPressureTest > a throttled benchmark-tail phase is attributed to THAT window, not diluted into totals (R1-2) PASSED
+BUILD SUCCESSFUL in 13s
+EXIT=0
+```
+(8/8 chaos unit tests PASSED — full list in the evidence file. Same RED-honesty
+note as round 1: the snapshot accessor cannot compile pre-fix.)
+
+### Round 2 commits
+- 8cd2754 `fix(e2e/chaos): per-phase back-pressure attribution covers the benchmark tail (R1-2); clear interrupt at finally top (R1-1)`

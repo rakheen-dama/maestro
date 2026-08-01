@@ -1,0 +1,19 @@
+# GREEN evidence — fix loop round 2 (R1-2 per-phase tail attribution, R1-1 finally-top interrupt clear)
+# main pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/multi-instance-verification
+# verification worktree: .../scratchpad/verify-fixloop2 (detached at 8cd2754, removed after run)
+# gitHead under test: 8cd2754c9b4bfbd60ae00c14143d18b557ad37cd
+# branch: worktree-multi-instance-verification
+# timestampUtc: 2026-08-01T21:46:33Z
+# command (literal, executable): ./gradlew :maestro-integration-tests:test --tests "io.b2mash.maestro.integration.e2e.chaos.WorkloadDriverPacingTest" --tests "io.b2mash.maestro.integration.e2e.chaos.WorkloadDriverBackPressureTest" --tests "io.b2mash.maestro.integration.e2e.chaos.LogTailScannerTest" --tests "io.b2mash.maestro.integration.e2e.chaos.ChaosControllerInterruptTest"
+# note: isolated worktree because soak attempt 3 (pid 27956) owns this worktree's gradle/build dirs
+
+ChaosControllerInterruptTest > an interrupted controller aborts the schedule loudly before dispatching any action PASSED
+LogTailScannerTest > boundary-checked id match still works on whole lines across polls PASSED
+LogTailScannerTest > effect line split across two polls is still matched once complete PASSED
+WorkloadDriverBackPressureTest > normal load never touches the back-pressure accounting PASSED
+WorkloadDriverBackPressureTest > a fully back-pressured window is accounted: waits, max wait, blocked time, zero submissions PASSED
+WorkloadDriverBackPressureTest > a throttled benchmark-tail phase is attributed to THAT window, not diluted into totals (R1-2) PASSED
+WorkloadDriverPacingTest > interrupt at T+2s of a 10s/600-per-min window: generated count stays <= 3x budget, abort is prompt PASSED
+WorkloadDriverPacingTest > interrupt pending before the first park: generation aborts at seq 0/1 immediately PASSED
+BUILD SUCCESSFUL in 13s
+EXIT=0
