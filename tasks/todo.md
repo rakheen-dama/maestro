@@ -252,3 +252,25 @@ FUNDED loan misses seq {9,16}; FAILED saga has compensation events ~seq 19000.
   completes — do not run gradle/docker in this worktree while it's live
 - Report: `.superpowers/sdd/task-8-report.md`
 - [x] Evidence mirrored + INDEX updated
+
+## Task 7 addendum — soak-failure fix validation (2026-08-01)
+- [x] Diagnosed 2h-soak OOM (test-JVM 512m heap, 27.5 min in): unbounded
+  log accumulation in the harness (full-log re-reads per SAGA poll,
+  per-frame file open/close backpressure, whole-log census String);
+  fixes committed as 7ed16d8 (heap telemetry, checker-blindness metric,
+  backend heal) + da9142d (LogTailScanner, persistent log writers,
+  streaming census, capped excerpts, e2eTest maxHeapSize=2g)
+- [x] AFTER validation: 8-min compressed soak, seed 558112, clean host —
+  TWO back-to-back SOAK runs in one JVM, both VERDICT PASS (168 wf each,
+  0 dups, 0 missing comp); heap bounded: peaks 58MB then 234MB vs 2g cap
+  (plateau, no growth); checker-blind 0/22 cycles; benchmark tail ran;
+  sampler cadence 15.2s max gap (BEFORE: 1048s gaps, 18m27s heals)
+- [x] Host-contention control (seed 910203) kept in evidence: post-fix run
+  beside a stray gradle worker FAILED I1 on sample timeouts with bounded
+  heap — chaos calibrations assume an uncontended Docker host; verify 0
+  workers/containers before runs
+- [ ] PR-gate post-fix regression (seed 661901) — in flight at time of
+  this entry; result recorded in task-7-report.md §10.4 + evidence INDEX
+- Report: `.superpowers/sdd/task-7-report.md` §10; evidence
+  `.superpowers/sdd/multi-instance/evidence/task7/` (soak-console.log,
+  *-777-BEFORE, *-910203, *-558112, prgate-postfix.log)
