@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end scenario driver for the loan-origination sample.
-# See SPEC.md ("E2E scenario") for the five scenarios this script covers:
+# See SPEC.md ("E2E scenario") for the original five single-node scenarios;
+# scenarios 6-10 below were added by the multi-instance verification cycle
+# and are documented here and in README.md, not (yet) in SPEC.md's own list:
 #
 #   1. Happy path        — human underwriting approval, co-borrower signs FIRST.
 #   2. Out-of-order      — document uploaded BEFORE the application exists
@@ -10,6 +12,11 @@
 #                          compensation visible in the service log.
 #   5. Crash recovery    — kill -9 loan-application-service mid-underwriting
 #                          wait, restart, deliver the decision -> FUNDED.
+#   6. Two-node loan-application — a second loan-application-service instance
+#                          (same service-name/consumer-group/store/lock
+#                          namespace) joins for this scenario; proves the
+#                          shared store/lock/messaging make the two instances
+#                          genuine peers. Foundation for E2E_CLUSTER=1 below.
 #   7. Owner-kill adoption — kill -9 the OWNER node mid-underwriting wait and
 #                          never restart it; the peer node alone adopts and
 #                          completes the workflow (recovery poller + instance

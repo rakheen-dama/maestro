@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### For third-party `WorkflowStore` implementers
+
+- **`WorkflowStore.deleteFailureEvents`'s contract changed** (`docs/open-issues.md`
+  Issue 19). This is the same abstract SPI method 0.4.0 introduced for Issue
+  15's Retry command (not a new method — no recompile needed), but its
+  required *behaviour* is now stricter. Previously the contract was "delete
+  exactly the `ACTIVITY_FAILED`/`WORKFLOW_FAILED` events for this instance,
+  nothing else." It now also requires: **if `WORKFLOW_FAILED` records a
+  `SignalTimeoutException` as its cause, also delete the instance's
+  highest-sequenced `SIGNAL_TIMEOUT` event.** `AbstractJdbcWorkflowStore` (and
+  therefore `PostgresWorkflowStore`) and the `maestro-test` in-memory store
+  both implement the new rule; **if you maintain a custom `WorkflowStore`
+  implementation with your own `deleteFailureEvents`, you must add this
+  exceptionType-gated deletion or `$maestro:retry` will silently loop forever**
+  on any workflow that failed because a timeout-guarded `awaitSignal` timed
+  out: replay will keep finding the `SIGNAL_TIMEOUT` memo at its sequence slot
+  and deterministically re-raise the same timeout on every retry attempt,
+  with no error surfaced (the command dispatcher reports `RETRIED`, not a
+  failure). A plain workflow-code failure after a *caught* gate timeout is
+  unaffected — the exceptionType gate exists precisely so that memo survives
+  retry undisturbed (deleting it unconditionally would resurrect the Issue 19
+  replay-divergence bug through the retry door — see the fix's rationale in
+  `docs/open-issues.md` Issue 19).
+
 ### Bug Fixes
 
 - **Timed-out `awaitSignal` calls are now memoized and replay
@@ -20,6 +44,9 @@
   deletes that failing timeout memo so the retried await re-drives — earlier
   caught gate timeouts still replay identically after a retry. Found by the
   multi-instance chaos harness; pinned by `SignalTimeoutReplayDeterminismTest`.
+  **If you maintain a custom `WorkflowStore`, read "For third-party
+  `WorkflowStore` implementers" above — this is a behavioural contract
+  change, not just an engine fix.**
 
 - **A stale run whose event append collides with a concurrent runner now
   stands down instead of failing the workflow** (`docs/open-issues.md`

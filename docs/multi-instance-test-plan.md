@@ -1,5 +1,29 @@
 # Multi-Instance Verification Plan
 
+**Status: COMPLETE as of 2026-08-01** (soak run pending — see below). All
+three phases below shipped: Phase 1 (Tasks A-E, real multi-process E2E
+scenarios on both lock backends), Phase 2 (the chaos/soak harness, which
+found and fixed two further engine defects, Issues 18 and 19), and Phase 3
+(the docs this plan asked for). Results:
+
+- `docs/operations.md` — the measured deployment guarantees this plan's
+  Phase 3 asked for, with every number traceable to an evidence file.
+- `docs/open-issues.md` Issues 11 and 12 — the measured evidence base and
+  benchmark this plan's Phase 3 asked for (PR-gate data now; the coordinator's
+  multi-hour soak run will add a longer-window data point, marked
+  PENDING-SOAK in both sections).
+- `docs/open-issues.md` Issues 17, 18, 19 — three real `maestro-core` defects
+  found and fixed along the way, all via the library-bug protocol this plan's
+  §6 mandated.
+- The stale "`e2eTest` matches nothing" note this plan's §4 flagged for
+  removal is gone — `e2eTest` now runs the chaos/soak harness.
+
+This document is kept as the historical record of what was planned and why;
+read `docs/operations.md` and `docs/open-issues.md` for the current state.
+The rest of this file (below) is unchanged from when it was written.
+
+---
+
 **Goal:** prove Maestro works when the microservices embedding it run as
 multiple instances — real processes, real failures between them — and produce
 the measurements Issues 11 and 12 have been waiting for.
