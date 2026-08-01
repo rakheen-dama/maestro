@@ -29,6 +29,19 @@ public final class PeriodicChecker {
     private volatile boolean running;
     private Thread thread;
 
+    // DB-visibility accounting (soak-failure fix, report §10): a checker that
+    // silently cannot reach the store must not look like health. Each cycle
+    // probes all three databases with SELECT 1; unreachable cycles are counted,
+    // streaks are surfaced at ERROR level, and the totals land in the run
+    // summary via the getters below.
+    private final java.util.concurrent.atomic.AtomicInteger unreachableCycles =
+            new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicInteger maxUnreachableStreak =
+            new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicInteger totalCycles =
+            new java.util.concurrent.atomic.AtomicInteger();
+    private int currentStreak;
+
     /**
      * @param cluster  the cluster
      * @param evidence evidence writer
@@ -58,18 +71,39 @@ public final class PeriodicChecker {
 
     private void loop() {
         while (running) {
-            try {
-                var checker = new InvariantChecker(cluster, evidence, driver.ledger());
-                checker.checkAlwaysInexcusable().forEach(v ->
-                        log.warn("[chaos] PERIODIC inexcusable [{}] {} -> {}",
-                                v.invariant(), v.detail(), v.workflowIds()));
-                if (!cluster.anyChaosActive()) {
-                    checker.checkStuckWaitingTimer().forEach(v ->
-                            log.warn("[chaos] PERIODIC calm-window [{}] {} -> {}",
+            totalCycles.incrementAndGet();
+            if (probeDatabases()) {
+                currentStreak = 0;
+                try {
+                    var checker = new InvariantChecker(cluster, evidence, driver.ledger());
+                    checker.checkAlwaysInexcusable().forEach(v ->
+                            log.warn("[chaos] PERIODIC inexcusable [{}] {} -> {}",
                                     v.invariant(), v.detail(), v.workflowIds()));
+                    if (!cluster.anyChaosActive()) {
+                        checker.checkStuckWaitingTimer().forEach(v ->
+                                log.warn("[chaos] PERIODIC calm-window [{}] {} -> {}",
+                                        v.invariant(), v.detail(), v.workflowIds()));
+                    }
+                } catch (RuntimeException e) {
+                    log.debug("[chaos] periodic check cycle failed: {}", e.toString());
                 }
-            } catch (RuntimeException e) {
-                log.debug("[chaos] periodic check cycle failed: {}", e.toString());
+            } else {
+                unreachableCycles.incrementAndGet();
+                currentStreak++;
+                maxUnreachableStreak.accumulateAndGet(currentStreak, Math::max);
+                // One line per cycle at WARN; escalate loudly once the outage
+                // outlives any bounded BACKEND_OUTAGE window (>= 2 cycles = 60s
+                // vs the 30s outage cap) — this is the "silence looked like
+                // health" failure mode made explicit.
+                if (currentStreak >= 2) {
+                    log.error("[chaos] PERIODIC CHECKER BLIND: store unreachable for {} "
+                            + "consecutive cycles (~{}s) — exceeds any bounded backend outage; "
+                            + "invariants are NOT being watched", currentStreak,
+                            currentStreak * INTERVAL.toSeconds());
+                } else {
+                    log.warn("[chaos] periodic checker: store unreachable this cycle "
+                            + "(expected only inside a bounded backend-outage window)");
+                }
             }
             try {
                 Thread.sleep(INTERVAL.toMillis());
@@ -78,5 +112,33 @@ public final class PeriodicChecker {
                 return;
             }
         }
+    }
+
+    /** @return true if all three service databases answer {@code SELECT 1}. */
+    private boolean probeDatabases() {
+        for (var svc : NodeRole.Service.values()) {
+            try (var c = cluster.dataSource(svc).getConnection();
+                 var st = c.createStatement()) {
+                st.execute("SELECT 1");
+            } catch (Exception e) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** @return cycles in which the store was unreachable (run-summary field). */
+    public int unreachableCycles() {
+        return unreachableCycles.get();
+    }
+
+    /** @return the longest consecutive unreachable streak (run-summary field). */
+    public int maxUnreachableStreak() {
+        return maxUnreachableStreak.get();
+    }
+
+    /** @return total periodic cycles executed. */
+    public int totalCycles() {
+        return totalCycles.get();
     }
 }

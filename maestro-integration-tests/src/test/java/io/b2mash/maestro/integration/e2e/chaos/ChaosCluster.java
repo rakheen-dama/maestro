@@ -500,12 +500,23 @@ public final class ChaosCluster implements AutoCloseable {
     // --------------------------------------------------------------- heal-all
 
     /**
-     * Heal-all (chaos-harness-design.md §4 stop-before-verify): unpause
-     * everything paused, reconnect everything partitioned, replace anything
-     * dead, then wait for all six roles healthy. Idempotent.
+     * Heal-all (chaos-harness-design.md §4 stop-before-verify): unpause every
+     * paused backend AND node, reconnect everything partitioned, replace
+     * anything dead, then wait for all six roles healthy. Idempotent. Backends
+     * are healed first and explicitly — if the controller thread dies mid-
+     * {@code BACKEND_OUTAGE} (the soak-failure shape, report §10), the paused
+     * backend would otherwise stay frozen forever and every later DB/Valkey
+     * access would fail while looking like a node problem.
      */
     public void healAll() {
         log.info("[chaos] heal-all begin");
+        for (String backend : Set.copyOf(pausedBackends)) {
+            try {
+                unpauseBackend(backend);
+            } catch (RuntimeException e) {
+                log.warn("[chaos] heal-all: unpause of backend {} failed: {}", backend, e.toString());
+            }
+        }
         Set.copyOf(paused).forEach(this::unpause);
         Set.copyOf(partitioned).forEach(this::reconnect);
         Set.copyOf(dead).forEach(this::replace);

@@ -49,6 +49,7 @@ public final class MetricsSampler {
     private final ChaosCluster cluster;
     private final ChaosConfig config;
     private final EvidenceWriter.CsvWriter csv;
+    private final EvidenceWriter.CsvWriter heapCsv;
     private volatile boolean running;
     private Thread thread;
 
@@ -65,6 +66,11 @@ public final class MetricsSampler {
         this.cluster = cluster;
         this.config = config;
         this.csv = evidence.openCsv("metrics.csv", HEADER);
+        // Test-JVM heap telemetry (soak-failure diagnosis, report §10): one row
+        // per metrics window so unbounded accumulation shows as a rising curve
+        // in the evidence rather than as a terminal OOM 28 minutes in.
+        this.heapCsv = evidence.openCsv("heap-samples.csv",
+                "timestampUtc,usedMb,committedMb,maxMb");
     }
 
     /** Starts the sampler thread. */
@@ -91,6 +97,7 @@ public final class MetricsSampler {
                     + "the store SQL may have changed (Risk 3); recovery rate column is unreliable");
         }
         csv.close();
+        heapCsv.close();
     }
 
     private void loop() {
@@ -101,6 +108,7 @@ public final class MetricsSampler {
             } catch (RuntimeException e) {
                 log.warn("[chaos] metrics sample failed: {}", e.toString());
             }
+            sampleHeap();
             try {
                 Thread.sleep(config.metricsWindow().toMillis());
             } catch (InterruptedException e) {
@@ -139,6 +147,19 @@ public final class MetricsSampler {
                 str(lockProbe), str(lockRenew), str(subscribe), str(unsubscribe),
                 str(pubsubChannels), Boolean.toString(chaosActive));
         csv.append(row);
+    }
+
+    /** Appends one test-JVM heap sample row (used/committed/max, MB). */
+    private void sampleHeap() {
+        try {
+            Runtime rt = Runtime.getRuntime();
+            long usedMb = (rt.totalMemory() - rt.freeMemory()) / (1024 * 1024);
+            long committedMb = rt.totalMemory() / (1024 * 1024);
+            long maxMb = rt.maxMemory() / (1024 * 1024);
+            heapCsv.append(ISO.format(Instant.now()) + "," + usedMb + "," + committedMb + "," + maxMb);
+        } catch (RuntimeException e) {
+            log.debug("[chaos] heap sample failed: {}", e.toString());
+        }
     }
 
     // ---------------------------------------------------------------- sources

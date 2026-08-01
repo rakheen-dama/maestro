@@ -98,8 +98,18 @@ public final class ChaosRun {
             sampler.start();
             periodic.start();
 
-            Thread controllerThread = new Thread(
-                    () -> controller.run(config.durationMinutes()), "chaos-controller");
+            // The controller must never die silently: an uncaught throwable
+            // (e.g. the soak OOM, report §10) mid-BACKEND_OUTAGE would leave a
+            // backend paused forever. heal-all now unpauses backends
+            // regardless, and the death itself is surfaced loudly here.
+            Thread controllerThread = new Thread(() -> {
+                try {
+                    controller.run(config.durationMinutes());
+                } catch (Throwable t) {
+                    log.error("[chaos] CONTROLLER DIED mid-schedule — chaos stops early; "
+                            + "heal-all will recover paused backends/nodes", t);
+                }
+            }, "chaos-controller");
             controllerThread.start();
 
             // Workload generation blocks for the window; chaos runs concurrently.
@@ -125,8 +135,8 @@ public final class ChaosRun {
             var censusRunner = new SideEffectCensus(cluster, evidence, driver.ledger());
             census = censusRunner.run();
 
-            writeSummary(evidence, driver.ledger(), verify, census);
-            surface(verify, census);
+            writeSummary(evidence, driver.ledger(), verify, census, periodic);
+            surface(verify, census, periodic);
 
             // Issue 12 benchmark tail (design §6, Ruling 3): soak-only, after
             // verify — chaos off, steady low rate, one measurement phase at 6
@@ -191,7 +201,8 @@ public final class ChaosRun {
 
     private void writeSummary(EvidenceWriter evidence, List<LedgerEntry> ledger,
                               InvariantChecker.VerifyResult verify,
-                              SideEffectCensus.Result census) {
+                              SideEffectCensus.Result census,
+                              PeriodicChecker periodic) {
         var violations = verify.violations();
         var byPath = new LinkedHashMap<String, Long>();
         for (LedgerEntry e : ledger) {
@@ -215,12 +226,24 @@ public final class ChaosRun {
         summary.put("unexplainedDuplicates", census.unexplained());
         summary.put("unexplainedWorkflows", census.unexplainedWorkflows());
         summary.put("missingSagaCompensation", census.missingSagaCompensation());
+        // Checker visibility accounting (§10): a run whose periodic checker was
+        // blind for part of the window says so in its own summary.
+        summary.put("periodicCheckerCycles", periodic.totalCycles());
+        summary.put("periodicCheckerUnreachableCycles", periodic.unreachableCycles());
+        summary.put("periodicCheckerMaxUnreachableStreak", periodic.maxUnreachableStreak());
         evidence.writeJson("run-summary.json", summary);
     }
 
-    private void surface(InvariantChecker.VerifyResult verify, SideEffectCensus.Result census) {
+    private void surface(InvariantChecker.VerifyResult verify, SideEffectCensus.Result census,
+                         PeriodicChecker periodic) {
         var violations = verify.violations();
         System.out.println("[chaos] VERDICT: " + (violations.isEmpty() ? "PASS" : "FAIL"));
+        if (periodic.unreachableCycles() > 0) {
+            System.out.println("[chaos] !!! PERIODIC CHECKER WAS BLIND for "
+                    + periodic.unreachableCycles() + " of " + periodic.totalCycles()
+                    + " cycles (max streak " + periodic.maxUnreachableStreak()
+                    + ") — invariants were unwatched during those windows");
+        }
         System.out.println("[chaos] side-effect duplicates: total=" + census.totalDuplicates()
                 + " explained=" + census.explained() + " unexplained=" + census.unexplained());
         if (!verify.redeliveredUnconsumedSignals().isEmpty()) {
