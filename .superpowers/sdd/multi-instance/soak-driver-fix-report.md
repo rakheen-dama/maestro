@@ -241,3 +241,79 @@ SMOKE_EXIT=0
 - 467bc09 `fix(e2e/chaos): checker/sampler log their swallowed causes; JDBC probes fail fast`
 - b2b5c65 `fix(e2e/chaos): controller interrupt aborts loudly; a dead controller fails the run`
 - (this report + smoke evidence + wrapper: docs/evidence commit, SHA recorded in the final reply)
+
+## 6. Fix loop round 1 (delta-review-2: 0 Critical, 3 Important, 7 Minor)
+
+Minors parked for final-review triage per the coordinator. The three Importants:
+
+### I-1 — generation catch missed `Error`s (ChaosRun.java:130)
+`catch (RuntimeException)` → `catch (Throwable)` with house-rule rethrow
+order: `instanceof Error` checked and rethrown FIRST (a concurrent controller
+death attached as suppressed), controller-death `IllegalStateException` next
+(generation failure suppressed), `RuntimeException` rethrown as-is, checked
+throwables wrapped. The observed disease class was this wave's own RED-run OOM;
+pre-fix it skipped the catch, leaving the controller thread alive, unjoined,
+and armed to interrupt the Test worker during a LATER test. The catch now only
+decides what to throw — teardown moved to the I-2 finally.
+
+### I-2 — no failure-path teardown (checker/sampler/driver/controller leak)
+All teardown now lives in a `finally` covering every exit path of the
+orchestration: `controllerStopRequested.set(true)` + controller interrupt +
+join, `periodic.stop()`, `sampler.stop()` (made idempotent with a `stopped`
+guard), `driver.close()`, `controller.close()`, then `Thread.interrupted()` so
+no stray controller-death interrupt leaks into the next test. Pre-fix, any of
+the new loud aborts left the daemon PeriodicChecker ERROR-spamming
+`CHECKER BLIND … cause: …` every 30s through the next run's console in the same
+JVM — corrupting the `grep -c BLIND == 0` evidence criterion this cycle
+established. Normal-path ordering preserved: `periodic.stop()` still precedes
+verify; sampler still runs through the benchmark tail (finally executes after).
+
+### I-3 — silent load truncation under back-pressure
+Driver side (2ac7a57): the first delayed arrival WARNs at the moment the
+`tryAcquire` fast path fails (deterministic — the old close-time
+`availablePermits()==0` peek was racy and could skip); every wait is accounted
+(count / max wait / total blocked ms, cross-thread atomics); a throttled window
+emits a close-out WARN with submitted-vs-intended numbers; a shed final arrival
+is named. Run side (eac200e): `run-summary.json` gains
+`generationBackPressure {delayedArrivals, maxWaitMs, totalBlockedMs}` and the
+console a `!!! GENERATION WAS BACK-PRESSURED` banner marking the run's Issue 12
+curves NOT comparable.
+
+**Decision — shedding does not hard-fail the run, justified:** back-pressure is
+the designed survival response to a store stall; the stall itself already gates
+the run through I1/drain/checker signals; hard-failing on shedding would abort
+exactly the brownouts the harness exists to exercise. The harness principle
+("never limp on silently degraded") is honoured by making degradation loud and
+machine-checkable — the `!!!` banner + summary fields mean a throttled window
+cannot pass unnoticed into benchmark selection. If the coordinator wants a hard
+threshold (e.g. submitted < 50% of intended), it is a two-line addition on top
+of these fields.
+
+### Verification (soak attempt 3 running in this worktree — no gradle here)
+
+Per instruction, tests ran in an isolated temp worktree
+(`git worktree add …/scratchpad/verify-fixloop1 eac200e`, removed after).
+Verbatim from `evidence/task7/green-fixloop1-unit-tests.log`:
+
+```
+ChaosControllerInterruptTest > an interrupted controller aborts the schedule loudly before dispatching any action PASSED
+LogTailScannerTest > boundary-checked id match still works on whole lines across polls PASSED
+LogTailScannerTest > effect line split across two polls is still matched once complete PASSED
+WorkloadDriverBackPressureTest > normal load never touches the back-pressure accounting PASSED
+WorkloadDriverBackPressureTest > a fully back-pressured window is accounted: waits, max wait, blocked time, zero submissions PASSED
+WorkloadDriverPacingTest > interrupt at T+2s of a 10s/600-per-min window: generated count stays <= 3x budget, abort is prompt PASSED
+WorkloadDriverPacingTest > interrupt pending before the first park: generation aborts at seq 0/1 immediately PASSED
+BUILD SUCCESSFUL in 24s
+EXIT=0
+```
+
+RED-run honesty: no executable pre-fix RED exists for this round — I-1/I-2 live
+in `ChaosRun.execute`, which boots the full container cluster (not
+unit-testable; unit-level-only constraint), and I-3's accounting surface did
+not exist pre-fix to assert against (a test naming the getters cannot compile
+at the pre-fix commit). The BackPressure pins hold the contract going forward;
+I-1/I-2 are covered structurally plus by the running soak and the next PR gate.
+
+### Round 1 commits
+- 2ac7a57 `fix(e2e/chaos): back-pressure is loud and accounted, never silent truncation (I-3 driver side)`
+- eac200e `fix(e2e/chaos): every-exit-path teardown, Error-safe generation catch, back-pressure surfacing (I-1, I-2, I-3)`

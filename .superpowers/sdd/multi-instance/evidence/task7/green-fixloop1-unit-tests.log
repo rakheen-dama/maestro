@@ -1,0 +1,18 @@
+# GREEN evidence — fix loop round 1 (I-1/I-2/I-3), isolated verification worktree
+# main pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/multi-instance-verification
+# verification worktree: /private/tmp/claude-501/-Users-rakheendama-Projects-2026-maestro/cc624dd2-e777-4129-91f4-84b83efb4a78/scratchpad/verify-fixloop1 (detached at eac200e, removed after run)
+# gitHead under test: eac200e4d13adb4b4a9a15c5b57ed49a5318ecbd
+# branch: worktree-multi-instance-verification
+# timestampUtc: 2026-08-01T21:38:30Z
+# command (literal, executable): ./gradlew :maestro-integration-tests:test --tests "io.b2mash.maestro.integration.e2e.chaos.WorkloadDriverPacingTest" --tests "io.b2mash.maestro.integration.e2e.chaos.WorkloadDriverBackPressureTest" --tests "io.b2mash.maestro.integration.e2e.chaos.LogTailScannerTest" --tests "io.b2mash.maestro.integration.e2e.chaos.ChaosControllerInterruptTest"
+# note: run in the temp worktree because soak attempt 3 (pid 27956) owns this worktree's gradle/build dirs
+
+ChaosControllerInterruptTest > an interrupted controller aborts the schedule loudly before dispatching any action PASSED
+LogTailScannerTest > boundary-checked id match still works on whole lines across polls PASSED
+LogTailScannerTest > effect line split across two polls is still matched once complete PASSED
+WorkloadDriverBackPressureTest > normal load never touches the back-pressure accounting PASSED
+WorkloadDriverBackPressureTest > a fully back-pressured window is accounted: waits, max wait, blocked time, zero submissions PASSED
+WorkloadDriverPacingTest > interrupt at T+2s of a 10s/600-per-min window: generated count stays <= 3x budget, abort is prompt PASSED
+WorkloadDriverPacingTest > interrupt pending before the first park: generation aborts at seq 0/1 immediately PASSED
+BUILD SUCCESSFUL in 24s
+EXIT=0
