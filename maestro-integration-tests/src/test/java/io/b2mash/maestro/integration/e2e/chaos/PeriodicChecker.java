@@ -72,7 +72,8 @@ public final class PeriodicChecker {
     private void loop() {
         while (running) {
             totalCycles.incrementAndGet();
-            if (probeDatabases()) {
+            String probeFailure = probeDatabases();
+            if (probeFailure == null) {
                 currentStreak = 0;
                 try {
                     var checker = new InvariantChecker(cluster, evidence, driver.ledger());
@@ -95,14 +96,18 @@ public final class PeriodicChecker {
                 // outlives any bounded BACKEND_OUTAGE window (>= 2 cycles = 60s
                 // vs the 30s outage cap) — this is the "silence looked like
                 // health" failure mode made explicit.
+                // Always carry the underlying cause (investigation §7: "never
+                // go blind about WHY you are blind" — the swallowed exception
+                // cost the soak triage a full hypothesis tree).
                 if (currentStreak >= 2) {
                     log.error("[chaos] PERIODIC CHECKER BLIND: store unreachable for {} "
                             + "consecutive cycles (~{}s) — exceeds any bounded backend outage; "
-                            + "invariants are NOT being watched", currentStreak,
-                            currentStreak * INTERVAL.toSeconds());
+                            + "invariants are NOT being watched — cause: {}", currentStreak,
+                            currentStreak * INTERVAL.toSeconds(), probeFailure);
                 } else {
                     log.warn("[chaos] periodic checker: store unreachable this cycle "
-                            + "(expected only inside a bounded backend-outage window)");
+                            + "(expected only inside a bounded backend-outage window) — "
+                            + "cause: {}", probeFailure);
                 }
             }
             try {
@@ -114,17 +119,23 @@ public final class PeriodicChecker {
         }
     }
 
-    /** @return true if all three service databases answer {@code SELECT 1}. */
-    private boolean probeDatabases() {
+    /**
+     * Probes all three service databases with {@code SELECT 1}.
+     *
+     * @return {@code null} if all answer; otherwise the first failure as
+     *         {@code "<service>: <exception class + message>"} — the cause is
+     *         part of every unreachable-cycle log line
+     */
+    private String probeDatabases() {
         for (var svc : NodeRole.Service.values()) {
             try (var c = cluster.dataSource(svc).getConnection();
                  var st = c.createStatement()) {
                 st.execute("SELECT 1");
             } catch (Exception e) {
-                return false;
+                return svc + ": " + e;
             }
         }
-        return true;
+        return null;
     }
 
     /** @return cycles in which the store was unreachable (run-summary field). */

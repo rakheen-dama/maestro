@@ -338,6 +338,15 @@ public final class ChaosCluster implements AutoCloseable {
         ds.setDatabaseName(svc.databaseName());
         ds.setUser("maestro");
         ds.setPassword("maestro");
+        // A dead host->postgres path must FAIL FAST, never hang (investigation
+        // §7: the sampler once sat 92 minutes in a login read with none of
+        // these set). connect/login bound TCP + auth at 5s; socketTimeout
+        // bounds any read stall at 30s — an order of magnitude above the
+        // heaviest verify/census query on soak-scale data, three orders below
+        // the observed hang.
+        ds.setConnectTimeout(5);
+        ds.setLoginTimeout(5);
+        ds.setSocketTimeout(30);
         return ds;
     }
 

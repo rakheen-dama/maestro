@@ -56,6 +56,11 @@ public final class MetricsSampler {
     private long lastRecoveryCalls = -1;
     private final Map<String, Long> lastCmdCalls = new HashMap<>();
     private boolean recoveryEverMatched;
+    // First-of-streak cause logging (investigation §7: the sampler's silent
+    // per-window catch hid WHY every DB-derived column dropped to zero at the
+    // soak's blindness knee). Sampler-thread confined.
+    private boolean statusProbeFailingStreak;
+    private boolean recoveryProbeFailingStreak;
 
     /**
      * @param cluster  the live cluster
@@ -166,6 +171,7 @@ public final class MetricsSampler {
 
     private Map<String, Long> statusCounts() {
         var totals = new HashMap<String, Long>();
+        boolean anyFailed = false;
         for (Service svc : Service.values()) {
             try (Connection c = cluster.dataSource(svc).getConnection();
                  var st = c.createStatement();
@@ -175,9 +181,17 @@ public final class MetricsSampler {
                     totals.merge(rs.getString(1), rs.getLong(2), Long::sum);
                 }
             } catch (Exception e) {
-                // a backend blip; this window's counts are best-effort
+                // Counts stay best-effort per window, but the CAUSE is logged
+                // (class + message) on the first failure of each streak.
+                if (!statusProbeFailingStreak && !anyFailed) {
+                    log.warn("[chaos] metrics: status-count probe failed for {} — {} "
+                            + "(first of streak; DB-derived columns are zero/stale while "
+                            + "this persists)", svc, e.toString());
+                }
+                anyFailed = true;
             }
         }
+        statusProbeFailingStreak = anyFailed;
         return totals;
     }
 
@@ -190,10 +204,15 @@ public final class MetricsSampler {
                 if (calls > 0) {
                     recoveryEverMatched = true;
                 }
+                recoveryProbeFailingStreak = false;
                 return calls;
             }
         } catch (Exception e) {
-            log.debug("[chaos] recovery-calls query failed: {}", e.toString());
+            if (!recoveryProbeFailingStreak) {
+                log.warn("[chaos] metrics: recovery-calls probe failed — {} "
+                        + "(first of streak)", e.toString());
+                recoveryProbeFailingStreak = true;
+            }
         }
         return lastRecoveryCalls < 0 ? 0 : lastRecoveryCalls;
     }
