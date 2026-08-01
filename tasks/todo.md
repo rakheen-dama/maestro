@@ -218,4 +218,37 @@ FUNDED loan misses seq {9,16}; FAILED saga has compensation events ~seq 19000.
   + release note
 - [x] PR-gate 3x GREEN consecutively (seeds 3430218812008443518,
   -200961534721746905, 886868793817033505)
+
+## Task 8 — Findings and evidence docs (2026-08-01)
+- [x] docs/open-issues.md §Issue 11: measured 0/211 duplicate-side-effect
+  evidence from the 3 PR-gate streak runs + the Issue 18 "loser loses fast"
+  explanation + honest caveats; PENDING-SOAK placeholder for the longer soak
+  window
+- [x] docs/open-issues.md §Issue 12: calm-window benchmark methodology +
+  real PR-gate metrics.csv sample rows; PENDING-SOAK vs-node-count
+  benchmark-of-record skeleton table for the soak-mode benchmark tail
+- [x] New docs/operations.md: measured multi-instance deployment bounds
+  (owner-kill adoption, rolling-restart safety, timer-leader failover,
+  cross-node admin commands, cross-node wake, split-brain, lock-backend
+  matrix, chaos harness how-to-run), cross-linked from
+  docs/maestro-architecture.md §14 and docs/open-issues.md
+- [x] docs/open-issues.md §3: removed the stale "e2eTest matches nothing"
+  note — documents the chaos/soak harness now tagged @Tag("e2e"); §6
+  "what's left" now names Issues 18/19, not just 17
+- [x] docs/release-notes.md: explicit third-party WorkflowStore.
+  deleteFailureEvents contract-change callout for Issue 19 (exceptionType-
+  gated timeout-memo delete) so custom-store maintainers don't ship a
+  silent infinite retry loop
+- [x] Sample docs: Flyway inert-postgres-lock-tables note (Task 5
+  coordinator note), E2E_LOCK_BACKEND mention, scenario count 5->10 fixed
+  in README.md, SPEC.md, and run-e2e.sh's header comment
+- [x] Stale-claims sweep: docs/test-plan.md's E2E legend/matrix (manual->CI,
+  5->10 scenarios, "never tested"->closed with pointer to
+  docs/operations.md), its out-of-scope list (>TTL chaos no longer
+  out-of-scope), docs/multi-instance-test-plan.md completion banner
+- [ ] PENDING-SOAK: coordinator to fill both open-issues.md placeholders
+  (Issue 11 longer-window duplicate count; Issue 12 vs-node-count table)
+  once the in-flight 2-hour soak run (`benchmark-tail.json` + `metrics.csv`)
+  completes — do not run gradle/docker in this worktree while it's live
+- Report: `.superpowers/sdd/task-8-report.md`
 - [x] Evidence mirrored + INDEX updated
