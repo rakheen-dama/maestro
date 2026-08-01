@@ -653,6 +653,7 @@ public final class ChaosCluster implements AutoCloseable {
             implements java.util.function.Consumer<OutputFrame>, AutoCloseable {
         private final Path file;
         private java.io.Writer out;
+        private boolean closed;
 
         FileLogConsumer(Path file) {
             this.file = file;
@@ -661,6 +662,10 @@ public final class ChaosCluster implements AutoCloseable {
         @Override
         public synchronized void accept(OutputFrame frame) {
             try {
+                if (closed) {
+                    return;   // a late frame after close() must not silently
+                              // reopen a writer nobody will ever close
+                }
                 if (out == null) {
                     out = Files.newBufferedWriter(file, StandardCharsets.UTF_8,
                             StandardOpenOption.CREATE, StandardOpenOption.APPEND);
@@ -674,6 +679,7 @@ public final class ChaosCluster implements AutoCloseable {
 
         @Override
         public synchronized void close() {
+            closed = true;
             if (out != null) {
                 try {
                     out.close();

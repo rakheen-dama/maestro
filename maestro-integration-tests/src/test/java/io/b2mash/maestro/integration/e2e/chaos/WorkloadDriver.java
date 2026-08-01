@@ -474,6 +474,8 @@ public final class WorkloadDriver {
      * without a cluster (delta-review Important #1).
      */
     static final class LogTailScanner {
+        private static final int MAX_CHUNK = 4 * 1024 * 1024;
+
         private final java.util.function.Supplier<List<java.nio.file.Path>> files;
         private final java.util.Map<java.nio.file.Path, Long> offsets = new java.util.HashMap<>();
         private boolean primed;
@@ -504,11 +506,32 @@ public final class WorkloadDriver {
                     }
                     try (var raf = new java.io.RandomAccessFile(file.toFile(), "r")) {
                         raf.seek(from);
-                        byte[] chunk = new byte[(int) Math.min(size - from, 4 * 1024 * 1024)];
+                        byte[] chunk = new byte[(int) Math.min(size - from, MAX_CHUNK)];
                         int read = raf.read(chunk);
                         if (read > 0) {
-                            offsets.put(file, from + read);
-                            String text = new String(chunk, 0, read,
+                            // Standard tail semantics (delta-review Important
+                            // #1): advance only past the last COMPLETE line —
+                            // a partial trailing line (writer flush racing our
+                            // size/read) is left in place and re-read whole on
+                            // the next poll, never consumed in halves.
+                            int lastNewline = -1;
+                            for (int i = read - 1; i >= 0; i--) {
+                                if (chunk[i] == '\n') {
+                                    lastNewline = i;
+                                    break;
+                                }
+                            }
+                            if (lastNewline < 0) {
+                                // No complete line yet. Escape hatch: a single
+                                // line filling the whole 4MB cap can never
+                                // complete — skip it rather than wedge.
+                                if (read == MAX_CHUNK) {
+                                    offsets.put(file, from + read);
+                                }
+                                continue;
+                            }
+                            offsets.put(file, from + lastNewline + 1);
+                            String text = new String(chunk, 0, lastNewline,
                                     java.nio.charset.StandardCharsets.UTF_8);
                             for (String line : text.split("\n")) {
                                 if (line.contains(marker) && pattern.matcher(line).find()) {
