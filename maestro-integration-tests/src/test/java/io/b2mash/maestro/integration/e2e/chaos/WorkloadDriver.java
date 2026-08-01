@@ -57,9 +57,21 @@ public final class WorkloadDriver {
     private final SplittableRandom rng;
     private final EvidenceWriter.JsonlWriter ledgerWriter;
     private final List<LedgerEntry> ledger = new CopyOnWriteArrayList<>();
-    private final List<Future<?>> futures = new CopyOnWriteArrayList<>();
+    // O(1) add: the previous CopyOnWriteArrayList copied the whole array per
+    // submission — O(n^2) cumulative, the GC-death amplifier of the pacer
+    // runaway (investigation §5 mech. 2).
+    private final java.util.Collection<Future<?>> futures =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
     private final java.util.concurrent.atomic.AtomicInteger generatedCount =
             new java.util.concurrent.atomic.AtomicInteger();
+    // In-flight bound (investigation §7.4): a stalled store back-pressures
+    // generation instead of accumulating unbounded virtual threads. Sized by
+    // Little's law: in-flight = arrival rate x script latency; the worst
+    // legitimate script (CONDITIONS_LOOP with every effect check burning its
+    // full 120s sampleTimeout under chaos) is ~12 min, so 15 min of arrivals
+    // can never throttle real load (soak 20/min -> 300; PR gate 12/min -> 180;
+    // floor 60 covers golden/tail rates).
+    private final java.util.concurrent.Semaphore inFlight;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(3)).build();
@@ -78,6 +90,8 @@ public final class WorkloadDriver {
         this.rng = rng;
         this.mapper = evidence.mapper();
         this.ledgerWriter = evidence.openJsonl("ledger.jsonl");
+        this.inFlight = new java.util.concurrent.Semaphore(
+                Math.max(60, 15 * config.ratePerMinute()));
     }
 
     /** @return an immutable snapshot of the ledger. */
@@ -117,24 +131,98 @@ public final class WorkloadDriver {
     public int generateAt(int ratePerMinute, Duration window, String idPrefix) {
         double lambdaPerSec = ratePerMinute / 60.0;
         long endNanos = System.nanoTime() + window.toNanos();
+        // Belt-and-braces runaway guard (investigation §7.2): whatever the
+        // trigger, generation may never exceed 3x the intended rate budget for
+        // the window (+100 slack for tiny windows / Poisson variance).
+        long runawayCap = 3 * Math.max(1,
+                Math.round(ratePerMinute * (window.toMillis() / 60_000.0))) + 100;
         int seq = 0;
-        log.info("[chaos] workload generation begins: {}/min for {} ({})",
-                ratePerMinute, window, idPrefix);
+        log.info("[chaos] workload generation begins: {}/min for {} ({}, runaway cap {})",
+                ratePerMinute, window, idPrefix, runawayCap);
         while (System.nanoTime() < endNanos) {
             double u = rng.nextDouble();
             long waitNanos = (long) (-Math.log(1 - u) / lambdaPerSec * 1_000_000_000L);
-            parkNanos(waitNanos);
+            pace(waitNanos, seq);
             if (System.nanoTime() >= endNanos) {
                 break;
+            }
+            if (seq >= runawayCap) {
+                log.error("[chaos] RUNAWAY GENERATION: seq {} exceeds 3x the intended "
+                        + "budget for {}/min over {} — failing the run", seq, ratePerMinute, window);
+                throw new IllegalStateException("Runaway workload generation: " + seq
+                        + " scripts exceeds the 3x rate budget cap (" + runawayCap + ") for "
+                        + ratePerMinute + "/min over " + window
+                        + " — pacing is broken; failing the run loudly");
+            }
+            if (!acquireInFlightPermit(endNanos, seq)) {
+                if (inFlight.availablePermits() == 0) {
+                    log.warn("[chaos] generation back-pressured at the in-flight bound "
+                            + "after {} scripts; window closed while waiting for a permit", seq);
+                }
+                break;   // window elapsed (possibly while back-pressured)
             }
             LoanPath path = LoanPath.pick(rng.nextInt(100));
             String appId = idPrefix + "-" + Long.toUnsignedString(config.seed()) + "-" + seq++;
             generatedCount.incrementAndGet();
-            futures.add(executor.submit(() -> runScript(appId, path, true)));
+            futures.add(executor.submit(() -> {
+                try {
+                    runScript(appId, path, true);
+                } finally {
+                    inFlight.release();
+                }
+            }));
         }
         log.info("[chaos] workload generation window closed: {} workflows submitted ({})",
                 seq, idPrefix);
         return seq;
+    }
+
+    /**
+     * Sleeps the Poisson inter-arrival gap. An interrupt aborts generation
+     * LOUDLY: nothing in the harness legitimately interrupts mid-window, and a
+     * swallowed interrupt previously degraded the pacer into a hot loop
+     * (1.8M runaway submissions, both failed 2h soaks — investigation §5).
+     */
+    private void pace(long waitNanos, int seq) {
+        if (waitNanos > 0) {
+            try {
+                TimeUnit.NANOSECONDS.sleep(waitNanos);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                abortGeneration(seq, e);
+            }
+        }
+        if (Thread.currentThread().isInterrupted()) {
+            abortGeneration(seq, null);   // pending interrupt / interrupted outside sleep
+        }
+    }
+
+    /**
+     * Acquires an in-flight permit, waiting no longer than the generation
+     * window. An interrupt while waiting aborts generation loudly (same
+     * contract as {@link #pace}).
+     *
+     * @return true if a permit was acquired; false if the window elapsed first
+     */
+    private boolean acquireInFlightPermit(long endNanos, int seq) {
+        try {
+            long remain = endNanos - System.nanoTime();
+            return remain > 0 && inFlight.tryAcquire(remain, TimeUnit.NANOSECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            abortGeneration(seq, e);
+            return false;   // unreachable
+        }
+    }
+
+    private void abortGeneration(int seq, /* nullable */ InterruptedException cause) {
+        log.error("[chaos] GENERATION INTERRUPTED at seq {} on thread '{}' — aborting "
+                + "generation and failing the run (a swallowed interrupt here caused the "
+                + "soak-killing pacer runaway)", seq, Thread.currentThread().getName(), cause);
+        throw new IllegalStateException("Workload generation interrupted at seq " + seq
+                + " on thread '" + Thread.currentThread().getName()
+                + "' — nothing in the harness legitimately interrupts mid-window; "
+                + "failing the run loudly instead of hot-looping", cause);
     }
 
     /**
@@ -459,7 +547,9 @@ public final class WorkloadDriver {
                 action.run();
                 lastPost = System.nanoTime();
             }
-            parkNanos(Duration.ofMillis(500).toNanos());
+            if (!parkNanos(Duration.ofMillis(500).toNanos())) {
+                break;   // interrupted (shutdown): stop waiting, final check below
+            }
         }
         return safe(effect);
     }
@@ -470,7 +560,9 @@ public final class WorkloadDriver {
             if (safe(cond)) {
                 return true;
             }
-            parkNanos(interval.toNanos());
+            if (!parkNanos(interval.toNanos())) {
+                break;   // interrupted (shutdown): stop waiting, final check below
+            }
         }
         return safe(cond);
     }
@@ -529,7 +621,9 @@ public final class WorkloadDriver {
                     // try the peer node
                 }
             }
-            parkNanos(Duration.ofMillis(300 + 100L * attempt++).toNanos());
+            if (!parkNanos(Duration.ofMillis(300 + 100L * attempt++).toNanos())) {
+                return;   // interrupted (shutdown): give up the post
+            }
         }
     }
 
@@ -623,14 +717,23 @@ public final class WorkloadDriver {
         return DateTimeFormatter.ISO_INSTANT.format(Instant.now());
     }
 
-    private static void parkNanos(long nanos) {
+    /**
+     * Script-side sleep. Returns {@code false} if the thread is interrupted
+     * (executor shutdown), re-asserting the flag — callers must then abort
+     * their wait loop instead of hot-spinning on a no-op sleep (the swallowed
+     * interrupt that destroyed the pacer also made interrupted scripts burn
+     * CPU until their deadlines).
+     */
+    private static boolean parkNanos(long nanos) {
         if (nanos <= 0) {
-            return;
+            return !Thread.currentThread().isInterrupted();
         }
         try {
             TimeUnit.NANOSECONDS.sleep(nanos);
+            return true;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            return false;
         }
     }
 }
