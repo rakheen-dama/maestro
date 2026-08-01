@@ -269,8 +269,15 @@ FUNDED loan misses seq {9,16}; FAILED saga has compensation events ~seq 19000.
   beside a stray gradle worker FAILED I1 on sample timeouts with bounded
   heap — chaos calibrations assume an uncontended Docker host; verify 0
   workers/containers before runs
-- [ ] PR-gate post-fix regression (seed 661901) — in flight at time of
-  this entry; result recorded in task-7-report.md §10.4 + evidence INDEX
+- [x] PR-gate post-fix regression (seed 661901): VERDICT FAIL on I3d only —
+  diagnosed as a NEW engine finding (proposed Issue 20): a 39s node
+  partition exceeding HikariCP's 30s connectionTimeout made
+  standDownIfTerminated's getInstance throw UncheckedSqlException inside
+  awaitSignal's wake-recheck; the executor's generic catch(Exception)
+  durably FAILED two healthy parked workflows (gap = burned await slot).
+  Issue 18 family (infra outage recorded as workflow failure). NOT a
+  calibration issue — BLOCKED on coordinator ruling per the library-bug
+  protocol; evidence 20260801-093053-661901 + task-7-report.md §10.4
 - Report: `.superpowers/sdd/task-7-report.md` §10; evidence
   `.superpowers/sdd/multi-instance/evidence/task7/` (soak-console.log,
   *-777-BEFORE, *-910203, *-558112, prgate-postfix.log)
