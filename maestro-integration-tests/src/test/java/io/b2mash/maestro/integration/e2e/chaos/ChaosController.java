@@ -249,11 +249,25 @@ public final class ChaosController {
         return ISO.format(Instant.now());
     }
 
+    /**
+     * Controller-side sleep. An interrupt aborts the schedule LOUDLY: the old
+     * swallow-and-continue would zero every inter-action gap and pause/outage
+     * duration, blasting docker operations in a hot loop (the same
+     * swallowed-interrupt disease that destroyed the workload pacer —
+     * checker-blindness investigation §5). Nothing legitimately interrupts the
+     * controller thread mid-schedule.
+     */
     private static void sleep(long millis) {
         try {
             TimeUnit.MILLISECONDS.sleep(millis);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            log.error("[chaos] CONTROLLER INTERRUPTED mid-schedule on thread '{}' — "
+                    + "aborting the chaos schedule loudly", Thread.currentThread().getName(), e);
+            throw new IllegalStateException("Chaos controller interrupted mid-schedule on "
+                    + "thread '" + Thread.currentThread().getName()
+                    + "' — aborting loudly instead of hot-looping docker ops on zeroed "
+                    + "gaps/durations", e);
         }
     }
 }

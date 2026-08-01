@@ -98,24 +98,61 @@ public final class ChaosRun {
             sampler.start();
             periodic.start();
 
-            // The controller must never die silently: an uncaught throwable
-            // (e.g. the soak OOM, report §10) mid-BACKEND_OUTAGE would leave a
-            // backend paused forever. heal-all now unpauses backends
-            // regardless, and the death itself is surfaced loudly here.
+            // The controller must never die silently (FAIL LOUDLY): the
+            // 2h-soak controller died at 16:08Z on a failed VERIFY_A replace
+            // and chaos stopped for the remaining ~105 min with nothing
+            // failing the run. A controller death now (a) is recorded and
+            // ERROR-logged, (b) promptly aborts the concurrent generation by
+            // interrupting the orchestrating thread (the interrupt-hardened
+            // pacer turns that into a loud abort, never a hot loop), and
+            // (c) fails the run with the controller's throwable as cause.
+            var controllerFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            var controllerStopRequested = new java.util.concurrent.atomic.AtomicBoolean();
+            Thread orchestrator = Thread.currentThread();
             Thread controllerThread = new Thread(() -> {
                 try {
                     controller.run(config.durationMinutes());
                 } catch (Throwable t) {
-                    log.error("[chaos] CONTROLLER DIED mid-schedule — chaos stops early; "
-                            + "heal-all will recover paused backends/nodes", t);
+                    if (controllerStopRequested.get()) {
+                        log.info("[chaos] controller stopped after a generation failure: {}",
+                                t.toString());
+                        return;
+                    }
+                    controllerFailure.set(t);
+                    log.error("[chaos] CONTROLLER DIED mid-schedule — failing the run "
+                            + "(chaos silently stopping mid-soak is not allowed)", t);
+                    orchestrator.interrupt();
                 }
             }, "chaos-controller");
             controllerThread.start();
 
             // Workload generation blocks for the window; chaos runs concurrently.
-            driver.generate(config.durationMinutes());
+            try {
+                driver.generate(config.durationMinutes());
+            } catch (RuntimeException generationFailure) {
+                Throwable death = controllerFailure.get();   // read BEFORE stopping it
+                controllerStopRequested.set(true);
+                controllerThread.interrupt();   // don't sit out the rest of the window
+                joinQuietly(controllerThread);
+                Thread.interrupted();   // clear any controller-death interrupt
+                if (death != null) {
+                    var e = new IllegalStateException(
+                            "CHAOS CONTROLLER DIED mid-schedule — chaos stopped; run aborted "
+                            + "(fail-loudly)", death);
+                    e.addSuppressed(generationFailure);
+                    throw e;
+                }
+                throw generationFailure;
+            }
             joinQuietly(controllerThread);
             controller.close();
+            Throwable death = controllerFailure.get();
+            if (death != null) {
+                Thread.interrupted();   // clear the controller-death interrupt
+                throw new IllegalStateException(
+                        "CHAOS CONTROLLER DIED mid-schedule — chaos stopped; run aborted "
+                        + "(fail-loudly)", death);
+            }
 
             // Stop-before-verify: heal all, wait consumer groups stable, drain.
             log.info("[chaos] generation + chaos complete; healing");
