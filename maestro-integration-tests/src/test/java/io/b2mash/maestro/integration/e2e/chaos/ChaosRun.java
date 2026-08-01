@@ -95,9 +95,6 @@ public final class ChaosRun {
             var controller = new ChaosController(cluster, config.mode(), evidence, controllerRng);
             var periodic = new PeriodicChecker(cluster, evidence, driver);
 
-            sampler.start();
-            periodic.start();
-
             // The controller must never die silently (FAIL LOUDLY): the
             // 2h-soak controller died at 16:08Z on a failed VERIFY_A replace
             // and chaos stopped for the remaining ~105 min with nothing
@@ -124,67 +121,99 @@ public final class ChaosRun {
                     orchestrator.interrupt();
                 }
             }, "chaos-controller");
-            controllerThread.start();
 
-            // Workload generation blocks for the window; chaos runs concurrently.
             try {
-                driver.generate(config.durationMinutes());
-            } catch (RuntimeException generationFailure) {
-                Throwable death = controllerFailure.get();   // read BEFORE stopping it
-                controllerStopRequested.set(true);
-                controllerThread.interrupt();   // don't sit out the rest of the window
+                sampler.start();
+                periodic.start();
+                controllerThread.start();
+
+                // Workload generation blocks for the window; chaos runs concurrently.
+                try {
+                    driver.generate(config.durationMinutes());
+                } catch (Throwable generationFailure) {
+                    // Throwable, not RuntimeException (delta-review-2 I-1): the
+                    // observed disease class here is an Error (the RED run's
+                    // OOM); missing it left the controller alive and armed to
+                    // interrupt the Test worker during a LATER test. Teardown
+                    // happens in the finally below; this block only decides
+                    // what to throw — Error before Exception (house rule).
+                    Throwable death = controllerFailure.get();   // read BEFORE the deliberate stop
+                    controllerStopRequested.set(true);
+                    if (generationFailure instanceof Error err) {
+                        if (death != null) {
+                            err.addSuppressed(new IllegalStateException(
+                                    "CHAOS CONTROLLER also DIED mid-schedule", death));
+                        }
+                        throw err;
+                    }
+                    if (death != null) {
+                        var e = new IllegalStateException(
+                                "CHAOS CONTROLLER DIED mid-schedule — chaos stopped; run aborted "
+                                + "(fail-loudly)", death);
+                        e.addSuppressed(generationFailure);
+                        throw e;
+                    }
+                    if (generationFailure instanceof RuntimeException re) {
+                        throw re;
+                    }
+                    throw new IllegalStateException("workload generation failed",
+                            generationFailure);
+                }
                 joinQuietly(controllerThread);
-                Thread.interrupted();   // clear any controller-death interrupt
+                Throwable death = controllerFailure.get();
                 if (death != null) {
-                    var e = new IllegalStateException(
+                    Thread.interrupted();   // clear the controller-death interrupt
+                    throw new IllegalStateException(
                             "CHAOS CONTROLLER DIED mid-schedule — chaos stopped; run aborted "
                             + "(fail-loudly)", death);
-                    e.addSuppressed(generationFailure);
-                    throw e;
                 }
-                throw generationFailure;
+
+                // Stop-before-verify: heal all, wait consumer groups stable, drain.
+                log.info("[chaos] generation + chaos complete; healing");
+                cluster.healAll();
+                cluster.awaitConsumerGroup("verification-gateway", 2, Duration.ofSeconds(60));
+                cluster.awaitConsumerGroup("underwriting", 2, Duration.ofSeconds(60));
+
+                driver.awaitScriptsSettled(config.sampleTimeout().plusSeconds(60));
+                drain(cluster, driver, config.drainSla());
+
+                periodic.stop();
+
+                var checker = new InvariantChecker(cluster, evidence, driver.ledger());
+                var verify = checker.verifyAuthoritative();
+                violations = verify.violations();
+
+                var censusRunner = new SideEffectCensus(cluster, evidence, driver.ledger());
+                census = censusRunner.run();
+
+                writeSummary(evidence, driver, verify, census, periodic);
+                surface(verify, census, periodic, driver);
+
+                // Issue 12 benchmark tail (design §6, Ruling 3): soak-only, after
+                // verify — chaos off, steady low rate, one measurement phase at 6
+                // nodes then one at 3. The sampler keeps running so the phases land
+                // in metrics.csv (liveNodes 6 vs 3, chaosActive=false).
+                if (config.mode() == ChaosMode.SOAK && violations.isEmpty()) {
+                    benchmarkTail(cluster, driver, evidence);
+                }
+            } finally {
+                // Teardown on EVERY exit path (delta-review-2 I-2): a leaked
+                // periodic checker would spam CHECKER BLIND into the next
+                // run's console in the same JVM — corrupting the grep-based
+                // evidence criterion — and a leaked controller thread would
+                // keep issuing docker ops and could interrupt the Test worker
+                // during a LATER test (I-1). Everything here is idempotent;
+                // order: stop the actors, close their writers, then clear any
+                // stray interrupt so it cannot leak into the next test.
+                controllerStopRequested.set(true);
+                controllerThread.interrupt();       // no-op if already finished
+                joinQuietly(controllerThread);
+                periodic.stop();
+                sampler.stop();
+                driver.close();
+                controller.close();
+                Thread.interrupted();
             }
-            joinQuietly(controllerThread);
-            controller.close();
-            Throwable death = controllerFailure.get();
-            if (death != null) {
-                Thread.interrupted();   // clear the controller-death interrupt
-                throw new IllegalStateException(
-                        "CHAOS CONTROLLER DIED mid-schedule — chaos stopped; run aborted "
-                        + "(fail-loudly)", death);
-            }
-
-            // Stop-before-verify: heal all, wait consumer groups stable, drain.
-            log.info("[chaos] generation + chaos complete; healing");
-            cluster.healAll();
-            cluster.awaitConsumerGroup("verification-gateway", 2, Duration.ofSeconds(60));
-            cluster.awaitConsumerGroup("underwriting", 2, Duration.ofSeconds(60));
-
-            driver.awaitScriptsSettled(config.sampleTimeout().plusSeconds(60));
-            drain(cluster, driver, config.drainSla());
-
-            periodic.stop();
-
-            var checker = new InvariantChecker(cluster, evidence, driver.ledger());
-            var verify = checker.verifyAuthoritative();
-            violations = verify.violations();
-
-            var censusRunner = new SideEffectCensus(cluster, evidence, driver.ledger());
-            census = censusRunner.run();
-
-            writeSummary(evidence, driver.ledger(), verify, census, periodic);
-            surface(verify, census, periodic);
-
-            // Issue 12 benchmark tail (design §6, Ruling 3): soak-only, after
-            // verify — chaos off, steady low rate, one measurement phase at 6
-            // nodes then one at 3. The sampler keeps running so the phases land
-            // in metrics.csv (liveNodes 6 vs 3, chaosActive=false).
-            if (config.mode() == ChaosMode.SOAK && violations.isEmpty()) {
-                benchmarkTail(cluster, driver, evidence);
-            }
-
-            sampler.stop();
-            driver.close();
         }
 
         mirrorEvidence(evidence.runDir(), identity.runId());
@@ -236,10 +265,11 @@ public final class ChaosRun {
 
     // --------------------------------------------------------------- reporting
 
-    private void writeSummary(EvidenceWriter evidence, List<LedgerEntry> ledger,
+    private void writeSummary(EvidenceWriter evidence, WorkloadDriver driver,
                               InvariantChecker.VerifyResult verify,
                               SideEffectCensus.Result census,
                               PeriodicChecker periodic) {
+        List<LedgerEntry> ledger = driver.ledger();
         var violations = verify.violations();
         var byPath = new LinkedHashMap<String, Long>();
         for (LedgerEntry e : ledger) {
@@ -268,13 +298,35 @@ public final class ChaosRun {
         summary.put("periodicCheckerCycles", periodic.totalCycles());
         summary.put("periodicCheckerUnreachableCycles", periodic.unreachableCycles());
         summary.put("periodicCheckerMaxUnreachableStreak", periodic.maxUnreachableStreak());
+        // Load-shedding accounting (delta-review-2 I-3): a back-pressured run
+        // says so machine-checkably — Issue 12 benchmark selection must be
+        // able to reject a window whose submitted load was throttled.
+        var backPressure = new LinkedHashMap<String, Object>();
+        backPressure.put("delayedArrivals", driver.backPressureWaits());
+        backPressure.put("maxWaitMs", driver.backPressureMaxWaitMs());
+        backPressure.put("totalBlockedMs", driver.backPressureTotalBlockedMs());
+        summary.put("generationBackPressure", backPressure);
         evidence.writeJson("run-summary.json", summary);
     }
 
     private void surface(InvariantChecker.VerifyResult verify, SideEffectCensus.Result census,
-                         PeriodicChecker periodic) {
+                         PeriodicChecker periodic, WorkloadDriver driver) {
         var violations = verify.violations();
         System.out.println("[chaos] VERDICT: " + (violations.isEmpty() ? "PASS" : "FAIL"));
+        // I-3: a throttled run must never look benchmark-comparable. This is a
+        // loud FINDING, deliberately not a hard verdict failure: back-pressure
+        // is the designed survival response to a store stall, and the stall
+        // itself already gates the run through I1/drain/checker signals —
+        // aborting on shedding would kill exactly the brownouts the harness
+        // exists to exercise. The banner + summary fields make the degraded
+        // load impossible to miss (or to feed into Issue 12 curves).
+        if (driver.backPressureWaits() > 0) {
+            System.out.println("[chaos] !!! GENERATION WAS BACK-PRESSURED: "
+                    + driver.backPressureWaits() + " delayed arrivals, max wait "
+                    + driver.backPressureMaxWaitMs() + " ms, total blocked "
+                    + driver.backPressureTotalBlockedMs() + " ms — submitted load is below "
+                    + "the intended rate; this run's Issue 12 curves are NOT comparable");
+        }
         if (periodic.unreachableCycles() > 0) {
             System.out.println("[chaos] !!! PERIODIC CHECKER WAS BLIND for "
                     + periodic.unreachableCycles() + " of " + periodic.totalCycles()

@@ -51,6 +51,7 @@ public final class MetricsSampler {
     private final EvidenceWriter.CsvWriter csv;
     private final EvidenceWriter.CsvWriter heapCsv;
     private volatile boolean running;
+    private volatile boolean stopped;
     private Thread thread;
 
     private long lastRecoveryCalls = -1;
@@ -86,8 +87,12 @@ public final class MetricsSampler {
         thread.start();
     }
 
-    /** Stops the sampler thread and closes the CSV. */
+    /** Stops the sampler thread and closes the CSV. Idempotent (failure-path teardown re-invokes it). */
     public void stop() {
+        if (stopped) {
+            return;
+        }
+        stopped = true;
         running = false;
         if (thread != null) {
             thread.interrupt();
