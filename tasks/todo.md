@@ -210,3 +210,12 @@ FUNDED loan misses seq {9,16}; FAILED saga has compensation events ~seq 19000.
 - [!] BLOCKED again: streak run B found NEW engine defect (proposed Issue 19) —
   divergent replay of timed-out-gate gap after graceful rolling restart; rate
   lock leaked, WORKFLOW_FAILED append collided (I3b). Full analysis report §6a.
+- [x] Ruling 4: Issue 19 fixed RED-first (SIGNAL_TIMEOUT memoization + retry
+  failing-memo rule); 4 pins green; full build green
+- [x] Ripples swept: run-e2e.sh empty missing-sets (scenario 7 re-run PASS,
+  probe evidence), golden re-calibration gaps=[] all paths, I3(d) bounds 0,
+  projector/DeterminismChecker/in-memory store verified no-op; Issue 19 docs
+  + release note
+- [x] PR-gate 3x GREEN consecutively (seeds 3430218812008443518,
+  -200961534721746905, 886868793817033505)
+- [x] Evidence mirrored + INDEX updated
