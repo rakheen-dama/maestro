@@ -13,6 +13,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.SplittableRandom;
 import java.util.concurrent.TimeUnit;
 
@@ -205,6 +206,13 @@ public final class ChaosRun {
                 // during a LATER test (I-1). Everything here is idempotent;
                 // order: stop the actors, close their writers, then clear any
                 // stray interrupt so it cannot leak into the next test.
+                //
+                // R1-1: clear the flag FIRST — pacer aborts arrive here with
+                // the interrupt re-asserted, and a set flag would silently
+                // skip every join below (controller unjoined, sampler CSVs
+                // closed mid-write). Cleared again at the end because a
+                // controller death can interrupt us DURING these joins.
+                Thread.interrupted();
                 controllerStopRequested.set(true);
                 controllerThread.interrupt();       // no-op if already finished
                 joinQuietly(controllerThread);
@@ -378,6 +386,8 @@ public final class ChaosRun {
                 Duration.ofSeconds(phaseSeconds), "tail6");
         tail.put("phase6NodesEndUtc", java.time.Instant.now().toString());
         tail.put("phase6NodesWorkflows", sixNodeWorkflows);
+        tail.put("phase6NodesBackPressure", backPressureMap(driver.lastWindowBackPressure()));
+        tailBackPressureBanner("tail6", driver.lastWindowBackPressure());
 
         // Gracefully stop one node of each service (the B instances). The
         // sampler's liveNodes column drops to 3 for the second phase.
@@ -392,10 +402,35 @@ public final class ChaosRun {
                 Duration.ofSeconds(phaseSeconds), "tail3");
         tail.put("phase3NodesEndUtc", java.time.Instant.now().toString());
         tail.put("phase3NodesWorkflows", threeNodeWorkflows);
+        tail.put("phase3NodesBackPressure", backPressureMap(driver.lastWindowBackPressure()));
+        tailBackPressureBanner("tail3", driver.lastWindowBackPressure());
 
         evidence.writeJson("benchmark-tail.json", tail);
         log.info("[chaos] benchmark tail complete: {} + {} workflows",
                 sixNodeWorkflows, threeNodeWorkflows);
+    }
+
+    /**
+     * Per-phase back-pressure attribution for {@code benchmark-tail.json}
+     * (re-review R1-2): the tail phases are the Issue 12 measurement windows —
+     * the machine-checkable shedding surface must cover them, and per-phase
+     * snapshots keep a tail3-only throttle attributable to tail3.
+     */
+    private static Map<String, Object> backPressureMap(WorkloadDriver.BackPressureWindow w) {
+        var m = new LinkedHashMap<String, Object>();
+        m.put("delayedArrivals", w.delayedArrivals());
+        m.put("maxWaitMs", w.maxWaitMs());
+        m.put("totalBlockedMs", w.totalBlockedMs());
+        return m;
+    }
+
+    private static void tailBackPressureBanner(String phase, WorkloadDriver.BackPressureWindow w) {
+        if (w.delayedArrivals() > 0) {
+            System.out.println("[chaos] !!! BENCHMARK TAIL " + phase + " WAS BACK-PRESSURED: "
+                    + w.delayedArrivals() + " delayed arrivals, max wait " + w.maxWaitMs()
+                    + " ms, blocked " + w.totalBlockedMs()
+                    + " ms — this phase's Issue 12 curve is NOT comparable");
+        }
     }
 
     private void mirrorEvidence(Path runDir, String runId) {

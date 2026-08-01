@@ -58,6 +58,37 @@ class WorkloadDriverBackPressureTest {
     }
 
     @Test
+    @Timeout(60)
+    @DisplayName("a throttled benchmark-tail phase is attributed to THAT window, not diluted into totals (R1-2)")
+    void tailPhaseThrottle_isAttributedPerWindow() {
+        WorkloadDriver driver = newDriver();
+
+        // Main window: unthrottled. Settle all scripts so every permit is
+        // released before the drain below (deterministic tail setup).
+        driver.generateAt(600, Duration.ofSeconds(1), "main");
+        driver.awaitScriptsSettled(Duration.ofSeconds(10));
+        var main = driver.lastWindowBackPressure();
+        assertEquals(0, main.delayedArrivals(), "main window was unthrottled");
+        assertEquals(0, main.maxWaitMs());
+
+        // Tail phase: stalled store pins every permit.
+        driver.inFlightForTest().drainPermits();
+        int submitted = driver.generateAt(600, Duration.ofSeconds(2), "tail6");
+        var tail = driver.lastWindowBackPressure();
+
+        assertEquals(0, submitted);
+        assertTrue(tail.delayedArrivals() >= 1,
+                "the tail phase's shedding must be attributed to the tail window "
+                + "(pre-R1-2 it only reached cumulative totals written before the tail)");
+        assertTrue(tail.maxWaitMs() >= 500 && tail.maxWaitMs() <= 4000,
+                "per-window max wait must span the tail window (~2s), was "
+                + tail.maxWaitMs() + " ms");
+        assertTrue(tail.totalBlockedMs() >= 500,
+                "per-window blocked time must be attributed, was "
+                + tail.totalBlockedMs() + " ms");
+    }
+
+    @Test
     @Timeout(30)
     @DisplayName("normal load never touches the back-pressure accounting")
     void normalLoad_noBackPressureNoise() {

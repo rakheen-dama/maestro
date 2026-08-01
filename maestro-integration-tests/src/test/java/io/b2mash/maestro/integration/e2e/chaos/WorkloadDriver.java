@@ -82,6 +82,18 @@ public final class WorkloadDriver {
             new java.util.concurrent.atomic.AtomicLong();
     private final java.util.concurrent.atomic.AtomicLong backPressureMaxWaitNanos =
             new java.util.concurrent.atomic.AtomicLong();
+    // Per-window attribution (re-review R1-2): the benchmark-tail phases are
+    // the primary consumers of the back-pressure flag, and cumulative totals
+    // written before the tail cannot attribute a tail-only throttle. The
+    // generation thread resets this max per window and publishes an immutable
+    // snapshot at window close.
+    private long windowMaxWaitNanos;   // generation-thread confined
+    private volatile BackPressureWindow lastWindowBackPressure = BackPressureWindow.NONE;
+
+    /** Immutable per-generation-window back-pressure attribution (R1-2). */
+    record BackPressureWindow(int delayedArrivals, long maxWaitMs, long totalBlockedMs) {
+        static final BackPressureWindow NONE = new BackPressureWindow(0, 0, 0);
+    }
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(3)).build();
@@ -129,6 +141,11 @@ public final class WorkloadDriver {
         return backPressureBlockedNanos.get() / 1_000_000;
     }
 
+    /** @return back-pressure attribution for the most recently closed generation window. */
+    BackPressureWindow lastWindowBackPressure() {
+        return lastWindowBackPressure;
+    }
+
     /** Test seam: the in-flight semaphore (drained by tests to simulate a stalled store). */
     java.util.concurrent.Semaphore inFlightForTest() {
         return inFlight;
@@ -169,6 +186,7 @@ public final class WorkloadDriver {
         int seq = 0;
         int waitsBefore = backPressureWaits.get();
         long blockedBefore = backPressureBlockedNanos.get();
+        windowMaxWaitNanos = 0;
         log.info("[chaos] workload generation begins: {}/min for {} ({}, runaway cap {})",
                 ratePerMinute, window, idPrefix, runawayCap);
         while (System.nanoTime() < endNanos) {
@@ -203,14 +221,17 @@ public final class WorkloadDriver {
             }));
         }
         int waitsThisWindow = backPressureWaits.get() - waitsBefore;
+        long blockedThisWindowMs = (backPressureBlockedNanos.get() - blockedBefore) / 1_000_000;
+        lastWindowBackPressure = new BackPressureWindow(
+                waitsThisWindow, windowMaxWaitNanos / 1_000_000, blockedThisWindowMs);
         if (waitsThisWindow > 0) {
             // Deterministic close-out (not racy permit-peeking): a throttled
             // window announces itself with numbers a human or grep can act on.
             log.warn("[chaos] GENERATION BACK-PRESSURE this window ({}): {} delayed "
-                    + "arrivals, max wait (run) {} ms, blocked this window {} ms; submitted {} of "
+                    + "arrivals, max wait {} ms, blocked {} ms; submitted {} of "
                     + "intended ~{} — Issue 12 comparability impaired if sustained",
-                    idPrefix, waitsThisWindow, backPressureMaxWaitMs(),
-                    (backPressureBlockedNanos.get() - blockedBefore) / 1_000_000,
+                    idPrefix, waitsThisWindow, windowMaxWaitNanos / 1_000_000,
+                    blockedThisWindowMs,
                     seq, Math.round(ratePerMinute * (window.toMillis() / 60_000.0)));
         }
         log.info("[chaos] workload generation window closed: {} workflows submitted ({})",
@@ -271,6 +292,7 @@ public final class WorkloadDriver {
             long waited = System.nanoTime() - waitStart;
             backPressureBlockedNanos.addAndGet(waited);
             backPressureMaxWaitNanos.accumulateAndGet(waited, Math::max);
+            windowMaxWaitNanos = Math.max(windowMaxWaitNanos, waited);
         }
     }
 
