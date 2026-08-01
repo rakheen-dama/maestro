@@ -214,7 +214,9 @@ is **now resolved** — see its section. A sixth (18), found by the chaos
 harness's first live run (the mandated Issue 11 split-brain trigger), is
 **now resolved** — see its section. A seventh (19), found by the chaos
 harness's PR-gate streak (a routine graceful rolling restart racing a late
-signal), is **now resolved** — see its section.
+signal), is **now resolved** — see its section. An eighth (20), found by a
+PR-gate re-proof run after Issue 19's fix (a transient store outage during a
+parked wake-recheck probe), is **now resolved** — see its section.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -251,6 +253,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [17](#issue-17) | Cross-node timer fires never wake the sleeping workflow | Library defect | High | **Resolved** |
 | [18](#issue-18) | A stale run's duplicate append is recorded as workflow failure | Library defect | High | **Resolved** |
 | [19](#issue-19) | Timed-out awaits replay nondeterministically (late signal consumed at the gap) | Library defect | High | **Resolved** |
+| [20](#issue-20) | A transient store outage during a parked wake-recheck fails a healthy workflow | Library defect | High | **Resolved** |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -1506,6 +1509,82 @@ event-log contiguity (I3(d) bound zero), the loan E2E's re-derived empty
 missing-sets pass, and the four pinning tests hold — replay determinism,
 no saga leak, retry re-drive, caught-memo preservation.
 
+
+### Issue 20 — A transient store outage during a parked wake-recheck fails a healthy workflow {#issue-20}
+
+> **Resolved.** The periodic wake-recheck probes a parked workflow performs —
+> `SignalManager.standDownIfTerminated`'s instance read, the signal-poll read
+> inside `awaitSignal`'s recheck loop, and the Issue 17 `findTimer` recheck in
+> `DefaultWorkflowOperations.sleep()` — are advisory: skipping one interval is
+> always safe, since cross-node terminate convergence and cross-node wake are
+> delayed by at most one interval and no durable state is written by a probe
+> read. A new `ParkProbe.read()` helper (shared by `SignalManager` and
+> `DefaultWorkflowOperations`, mirroring the existing `InstanceStatusWriter`
+> precedent for a guard that must not exist as two drifting copies) now wraps
+> each probe read: a `RuntimeException` from the store is caught, logged at
+> WARN (rate-limited — the first failure of an outage streak and every 20th
+> thereafter, via a shared failure counter reset on the next successful
+> probe), and a fallback is returned that means "inconclusive this interval,
+> try again next chunk" — never a value the caller would treat as a real
+> outcome. State writes (event appends, status CAS transitions, signal
+> consumption) are unaffected and keep failing exactly as before; a probe
+> failure never produces a `WorkflowTerminatedException` or
+> `ExecutorShutdownException` — those `Error`s are only ever thrown once a
+> probe *succeeds* and observes the terminal condition, so ordinary `catch
+> (RuntimeException)` in the new helper cannot intercept them. Commit
+> `d13444e`, reproduced RED-first in `eb807b6`. Pinned by
+> `ParkedProbeStoreOutageTest` (three tests: a parked `awaitSignal` stays
+> `WAITING_SIGNAL` through several failed probes and completes once the store
+> heals and the signal arrives; a parked `sleep()` stays `WAITING_TIMER`
+> through the same shape and wakes on the durable row once healed; a
+> terminate that arrives while the store is unreachable is honoured on the
+> first successful probe after recovery, having left the run parked and
+> untouched while blind). The rest of this section is the record of the
+> defect.
+
+**What's wrong.** `SignalManager.standDownIfTerminated`'s `store.getInstance`
+call, the signal-poll `store.getUnconsumedSignals` call inside
+`awaitSignal`'s recheck loop, and `DefaultWorkflowOperations.sleep()`'s
+`store.findTimer` recheck (Issue 17) all ran unguarded on every wake-recheck
+interval of a parked workflow. Any `RuntimeException` the store raised —
+transient unreachability, a connection-pool timeout — propagated straight out
+of the park loop to `WorkflowExecutor.executeWorkflow`'s generic `catch
+(Exception)`, which durably marked the workflow `WORKFLOW_FAILED` and ran its
+compensations. A workflow that was parked, healthy, and waiting for a signal
+or timer that would have arrived fine got recorded as having failed, purely
+because an advisory read that exists only to notice a *cross-node* event
+happened to run during a blip.
+
+**Why it matters.** No failure injection beyond a routine infra blip is
+required — this is the fourth of the Issue 4/5/18 family (a graceful
+condition misrecorded as a workflow failure) found this cycle, and the first
+triggered by store unavailability rather than shutdown, termination, or a
+duplicate append. Found by the chaos harness's PR-gate mode, seed `661901`: a
+39-second `PARTITION UW_A` exceeded HikariCP's 30s `connectionTimeout`,
+`standDownIfTerminated`'s `getInstance` threw `UncheckedSqlException`, and two
+healthy `PARKED` workflows were durably `WORKFLOW_FAILED` mid-run. The
+in-memory diagnostic double built to reproduce it (`ParkedProbeStoreOutageTest`)
+shows the defect has two faces depending on timing: if the store recovers
+before the failure-handling path's own writes, the result is a durable false
+`WORKFLOW_FAILED` (what the chaos run observed); if the store is still down
+for those writes too, the failure write itself fails, and the instance is
+left wedged in its waiting status (`WAITING_SIGNAL` / `WAITING_TIMER`) with no
+live run on any node — a silent stall no less serious for producing no
+terminal record at all.
+
+**Where.** `maestro-core/src/main/java/.../engine/ParkProbe.java` (new) —
+the shared advisory-read wrapper; `maestro-core/src/main/java/.../engine/SignalManager.java`
+— `standDownIfTerminated` and the recheck loop inside `awaitSignal`;
+`maestro-core/src/main/java/.../engine/DefaultWorkflowOperations.java` —
+`standDownIfTerminated` and `parkForTimer`'s recheck loop.
+
+**Done when.** The chaos harness's PR-gate mode re-run with the originally
+failing seed (`661901`) passes with invariants I1–I5 clean, a fresh seed also
+passes, and the three pinning tests hold — parked `awaitSignal` and `sleep()`
+both ride out several failed probes and complete normally once the store
+heals, and a terminate arriving mid-outage is honoured on the first
+successful probe after recovery.
+
 ---
 
 ## 6. Suggested order
@@ -1542,14 +1621,17 @@ compensated saga is refused as a safe no-op instead of being made to work;
 see its section for the two design directions a real fix could take. Issue
 17 — the first finding of the multi-instance verification cycle, a
 routine-operation cross-node timer-wake stall — is resolved (see its
-section). Issues 18 and 19, both found by the chaos harness built during the
-same cycle (a split-brain duplicate-append misrecorded as workflow failure,
-and a timed-out `awaitSignal` replaying nondeterministically after a routine
-rolling restart), are also resolved (see their sections). Issues 11 and 12
-remain open by deliberate design decision, but both now carry measured
-evidence from the same cycle — Issue 11's split-brain duplicate-side-effect
-count and Issue 12's benchmark — appended to their sections (see "Known
-limitations" below).
+section). Issues 18, 19, and 20, all found by the chaos harness built during
+the same cycle (a split-brain duplicate-append misrecorded as workflow
+failure, a timed-out `awaitSignal` replaying nondeterministically after a
+routine rolling restart, and a transient store outage during a parked
+wake-recheck probe misrecorded as workflow failure), are also resolved (see
+their sections) — Issue 20 in particular surfaced only in the PR-gate
+re-proof run for Issue 19's own fix, the fourth "graceful condition recorded
+as failure" defect the cycle found. Issues 11 and 12 remain open by
+deliberate design decision, but both now carry measured evidence from the
+same cycle — Issue 11's split-brain duplicate-side-effect count and Issue
+12's benchmark — appended to their sections (see "Known limitations" below).
 
 ---
 

@@ -28,6 +28,23 @@
 
 ### Bug Fixes
 
+- **Parked workflows now ride out transient store outages instead of
+  failing** (`docs/open-issues.md` Issue 20). Previously, a `RuntimeException`
+  raised by the store during a parked workflow's periodic wake-recheck probe
+  — `standDownIfTerminated`'s instance read, the signal-poll read inside a
+  parked `awaitSignal`'s recheck loop, or the timer-row recheck inside a
+  parked `sleep()` (Issue 17) — propagated out of the park loop and durably
+  marked a healthy, still-waiting workflow `WORKFLOW_FAILED`, running its
+  compensations. These probes only ever notice something that happened on
+  another node (a cross-node terminate, a signal or timer fire missed by the
+  local notifier) and never write durable state, so a failed probe now logs a
+  rate-limited `WARN` and the park simply continues to the next
+  `maestro.signal.wake-recheck-interval` chunk — cross-node terminate
+  convergence and cross-node wake are delayed by at most one interval, never
+  by a failure. Found by the chaos harness's PR-gate re-proof of Issue 19's
+  fix (a 39s store partition exceeding the connection pool's timeout); pinned
+  by `ParkedProbeStoreOutageTest`.
+
 - **Timed-out `awaitSignal` calls are now memoized and replay
   deterministically** (`docs/open-issues.md` Issue 19). Previously a timed-out
   await left its sequence slot empty; a recovery replay whose awaited signal
