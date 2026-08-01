@@ -72,6 +72,16 @@ public final class WorkloadDriver {
     // can never throttle real load (soak 20/min -> 300; PR gate 12/min -> 180;
     // floor 60 covers golden/tail rates).
     private final java.util.concurrent.Semaphore inFlight;
+    // Back-pressure accounting (delta-review-2 I-3): throttled load must be
+    // LOUD and machine-checkable, never a silent truncation — a degraded soak
+    // must not look Issue 12-comparable. Written by the (single) generation
+    // thread, read by the run summary; atomics for cross-thread visibility.
+    private final java.util.concurrent.atomic.AtomicInteger backPressureWaits =
+            new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicLong backPressureBlockedNanos =
+            new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong backPressureMaxWaitNanos =
+            new java.util.concurrent.atomic.AtomicLong();
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(3)).build();
@@ -102,6 +112,26 @@ public final class WorkloadDriver {
     /** @return total scripts submitted across all generation windows (test observability). */
     int generatedCount() {
         return generatedCount.get();
+    }
+
+    /** @return arrivals that had to wait for an in-flight permit (run-summary field). */
+    int backPressureWaits() {
+        return backPressureWaits.get();
+    }
+
+    /** @return the longest single permit wait, in milliseconds (run-summary field). */
+    long backPressureMaxWaitMs() {
+        return backPressureMaxWaitNanos.get() / 1_000_000;
+    }
+
+    /** @return total generation time spent blocked on permits, in milliseconds (run-summary field). */
+    long backPressureTotalBlockedMs() {
+        return backPressureBlockedNanos.get() / 1_000_000;
+    }
+
+    /** Test seam: the in-flight semaphore (drained by tests to simulate a stalled store). */
+    java.util.concurrent.Semaphore inFlightForTest() {
+        return inFlight;
     }
 
     // ------------------------------------------------------------- generation
@@ -137,6 +167,8 @@ public final class WorkloadDriver {
         long runawayCap = 3 * Math.max(1,
                 Math.round(ratePerMinute * (window.toMillis() / 60_000.0))) + 100;
         int seq = 0;
+        int waitsBefore = backPressureWaits.get();
+        long blockedBefore = backPressureBlockedNanos.get();
         log.info("[chaos] workload generation begins: {}/min for {} ({}, runaway cap {})",
                 ratePerMinute, window, idPrefix, runawayCap);
         while (System.nanoTime() < endNanos) {
@@ -155,11 +187,9 @@ public final class WorkloadDriver {
                         + " — pacing is broken; failing the run loudly");
             }
             if (!acquireInFlightPermit(endNanos, seq)) {
-                if (inFlight.availablePermits() == 0) {
-                    log.warn("[chaos] generation back-pressured at the in-flight bound "
-                            + "after {} scripts; window closed while waiting for a permit", seq);
-                }
-                break;   // window elapsed (possibly while back-pressured)
+                log.warn("[chaos] generation window closed while waiting for an in-flight "
+                        + "permit at seq {} — final arrival shed", seq);
+                break;
             }
             LoanPath path = LoanPath.pick(rng.nextInt(100));
             String appId = idPrefix + "-" + Long.toUnsignedString(config.seed()) + "-" + seq++;
@@ -171,6 +201,17 @@ public final class WorkloadDriver {
                     inFlight.release();
                 }
             }));
+        }
+        int waitsThisWindow = backPressureWaits.get() - waitsBefore;
+        if (waitsThisWindow > 0) {
+            // Deterministic close-out (not racy permit-peeking): a throttled
+            // window announces itself with numbers a human or grep can act on.
+            log.warn("[chaos] GENERATION BACK-PRESSURE this window ({}): {} delayed "
+                    + "arrivals, max wait (run) {} ms, blocked this window {} ms; submitted {} of "
+                    + "intended ~{} — Issue 12 comparability impaired if sustained",
+                    idPrefix, waitsThisWindow, backPressureMaxWaitMs(),
+                    (backPressureBlockedNanos.get() - blockedBefore) / 1_000_000,
+                    seq, Math.round(ratePerMinute * (window.toMillis() / 60_000.0)));
         }
         log.info("[chaos] workload generation window closed: {} workflows submitted ({})",
                 seq, idPrefix);
@@ -202,16 +243,34 @@ public final class WorkloadDriver {
      * window. An interrupt while waiting aborts generation loudly (same
      * contract as {@link #pace}).
      *
+     * <p>Back-pressure is never silent (delta-review-2 I-3): the first delayed
+     * arrival of the run WARNs immediately (not racily at window close), and
+     * every wait is accounted (count, max, total) for the per-window close-out
+     * line and the run summary.
+     *
      * @return true if a permit was acquired; false if the window elapsed first
      */
     private boolean acquireInFlightPermit(long endNanos, int seq) {
+        if (inFlight.tryAcquire()) {
+            return true;   // uncontended fast path: normal load, zero accounting noise
+        }
+        if (backPressureWaits.incrementAndGet() == 1) {
+            log.warn("[chaos] generation BACK-PRESSURED at seq {}: the in-flight bound is "
+                    + "reached — arrivals are delayed and the effective rate is below the "
+                    + "intended rate until scripts complete (stalled store?)", seq);
+        }
+        long waitStart = System.nanoTime();
         try {
-            long remain = endNanos - System.nanoTime();
+            long remain = endNanos - waitStart;
             return remain > 0 && inFlight.tryAcquire(remain, TimeUnit.NANOSECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             abortGeneration(seq, e);
             return false;   // unreachable
+        } finally {
+            long waited = System.nanoTime() - waitStart;
+            backPressureBlockedNanos.addAndGet(waited);
+            backPressureMaxWaitNanos.accumulateAndGet(waited, Math::max);
         }
     }
 
