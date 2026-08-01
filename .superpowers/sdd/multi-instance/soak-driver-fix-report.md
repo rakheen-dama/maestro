@@ -355,3 +355,49 @@ note as round 1: the snapshot accessor cannot compile pre-fix.)
 
 ### Round 2 commits
 - 8cd2754 `fix(e2e/chaos): per-phase back-pressure attribution covers the benchmark tail (R1-2); clear interrupt at finally top (R1-1)`
+
+## 8. Fix loop round 3 — the interrupter identified; suite-selection fix
+
+### Root cause closed (see investigation §10 addendum for the verbatim trace)
+Attempt 3's hardened pacer caught the interrupter: JUnit's
+`TimeoutExtension`/`SameThreadTimeoutInvocation` interrupting
+`ChaosPrGateE2EIT.prGate_clusterSurvivesChaos_allInvariantsIntact` — because
+`-Dmaestro.chaos.soak=true` selected BOTH chaos classes and the PR-gate class
+picked up `durationMinutes=120` in SOAK mode, running a 2h window into its own
+`@Timeout(25 MINUTES)`. `GENERATION INTERRUPTED at seq 503` ≈ 25 min at
+20/min — the ~24-min knee of attempts 1 and 2, finally attributed. The CI
+weekly `chaos-soak` job uses the identical invocation and self-heals via the
+class-level exclusion (no workflow change).
+
+### Fix
+`ChaosPrGateE2EIT` is default-invocation-only: four `@DisabledIfSystemProperty`
+guards (soak=true, golden=true, smoke=true, mode=(?i)(soak|golden) — the
+golden/smoke invocations had the same collision class: a full 9-container
+PR-gate boot inside a calibration/boot-smoke run). Javadoc updated.
+
+### CORRECTION to §4 (smoke characterization)
+§4 described "two back-to-back 8-min SOAK runs". Precisely: run 1
+(20260801-202918-558112) was **ChaosPrGateE2EIT** and run 2
+(20260801-205118-558112) **ChaosSoakE2EIT**, BOTH resolved to SOAK mode by the
+soak flag with `durationMinutes=8` (smoke log lines 128/225 name the PR-gate
+test; the archived log's own line 225 `Chaos PR-gate ... PASSED` is the
+pre-fix both-classes behavior in action). At 8 minutes both fit under the
+25-min timeout — which is exactly why the smoke never surfaced the collision.
+Under the round-3 fix, the same command runs ONLY ChaosSoakE2EIT (one run per
+invocation); future smoke logs will contain a single CHAOS RUN block.
+
+### RED → GREEN (genuine RED this round) + selection proof
+Verbatim from `evidence/task7/fixloop3-suite-selection.log`:
+RED at 11b744c: `a soak invocation must not select the PR gate ... FAILED`,
+`golden / boot-smoke / explicit-mode invocations ... FAILED` (guards absent);
+GREEN at d4720ca: full chaos unit suite 11/11 PASSED. Selection proven at
+execution time (dry-run is non-discriminating — bare `<skipped/>` for
+everything): really executing `e2eTest -Dmaestro.chaos.soak=true --tests
+"...ChaosPrGateE2EIT"` yields `SKIPPED`, `BUILD SUCCESSFUL in 2s`, zero
+cluster output; the default invocation likewise skips `ChaosSoakE2EIT`. The
+complementary halves are proven by the archived logs (PR gate PASSED under the
+pre-fix soak flag, smoke log line 225).
+
+### Round 3 commits
+- 11b744c `test(e2e/chaos): RED pin — dedicated chaos invocations must select only their dedicated class`
+- d4720ca `fix(e2e/chaos): PR-gate runs on the default invocation ONLY — soak/golden/smoke/mode select their dedicated class`

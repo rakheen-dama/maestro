@@ -1,0 +1,23 @@
+# Fix loop round 3 evidence — suite-selection RED/GREEN + execution-time selection proof
+# main pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/multi-instance-verification
+# verification worktree: .../scratchpad/verify-fixloop3 (detached; RED at 11b744c, GREEN at d4720ca; removed after)
+# branch: worktree-multi-instance-verification
+# timestampUtc: 2026-08-01T21:53:22Z
+
+## RED at 11b744c (guards absent) — command: ./gradlew :maestro-integration-tests:test --tests "io.b2mash.maestro.integration.e2e.chaos.ChaosSuiteSelectionTest"
+ChaosSuiteSelectionTest > a soak invocation must not select the PR gate (25-min @Timeout vs 120-min window) FAILED
+ChaosSuiteSelectionTest > golden / boot-smoke / explicit-mode invocations must not select the PR gate either FAILED
+ChaosSuiteSelectionTest > the dedicated suites stay opt-in via their system-property flags PASSED
+BUILD FAILED in 3s
+
+## GREEN at d4720ca — full chaos unit suite 11/11 PASSED, BUILD SUCCESSFUL in 12s (includes ChaosSuiteSelectionTest 3/3)
+
+## Execution-time selection proof at d4720ca (REAL execution, not dry-run; nothing booted — 1-2s builds, zero CHAOS RUN output, testcase time=0.0)
+# ./gradlew :maestro-integration-tests:e2eTest -Dmaestro.chaos.soak=true --tests "io.b2mash.maestro.integration.e2e.chaos.ChaosPrGateE2EIT"
+Chaos PR-gate: 6-node loan cluster stays correct under chaos > cluster survives six minutes of chaos with all store invariants intact SKIPPED
+BUILD SUCCESSFUL in 2s
+# ./gradlew :maestro-integration-tests:e2eTest --tests "io.b2mash.maestro.integration.e2e.chaos.ChaosSoakE2EIT"   (default invocation, no flags)
+Chaos soak: hours-long multi-instance correctness + Issue 12 curves > cluster stays correct across the full soak window SKIPPED
+BUILD SUCCESSFUL in 1s
+
+# Note: gradle --test-dry-run was tried first and is NON-discriminating (marks every test skipped with a bare <skipped/>); the proof above executes for real and relies on JUnit evaluating the conditions at execution start. The complementary halves (PR gate runs by default; soak class runs under soak=true) are proven by the archived logs: soak-after-smoke-postdriverfix.log line 225 shows the PR gate PASSED under -Dmaestro.chaos.soak=true pre-fix.
