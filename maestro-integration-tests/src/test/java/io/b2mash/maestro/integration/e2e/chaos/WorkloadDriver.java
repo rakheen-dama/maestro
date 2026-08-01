@@ -344,11 +344,78 @@ public final class WorkloadDriver {
         // "chaos-...-10" line (the id is followed by a space in this message).
         var pattern = java.util.regex.Pattern.compile(
                 java.util.regex.Pattern.quote("for loan " + applicationId) + "(?![\\w-])");
+        // Incremental tail scan (soak-OOM fix, report §10): the old
+        // implementation re-read EVERY loan log in full every second per
+        // in-flight SAGA script — O(total log size) of humongous String
+        // allocations per poll, growing without bound over a soak. The scanner
+        // remembers a per-file offset and reads only bytes appended since the
+        // last poll; total work is now O(log growth), not O(log size × polls).
+        // Starting at the current end is correct: the reservation line can
+        // only appear after this probe begins (the decision was just posted).
+        var scanner = new LogTailScanner();
         boolean reserved = pollUntil(
-                () -> logsMatch("Reserved rate lock", pattern),
+                () -> scanner.newLinesMatch("Reserved rate lock", pattern),
                 config.sampleTimeout(), Duration.ofSeconds(1));
         if (!reserved) {
             notes.add("rate-lock-reservation-not-observed");
+        }
+    }
+
+    /**
+     * Per-probe incremental scanner over the loan nodes' log files (all
+     * generations): tracks a byte offset per file and scans only newly
+     * appended content on each call.
+     *
+     * <p>Offsets start at each file's length at first sight (see the caller's
+     * rationale). Confined to the owning script's virtual thread.
+     */
+    private final class LogTailScanner {
+        private final java.util.Map<java.nio.file.Path, Long> offsets = new java.util.HashMap<>();
+        private boolean primed;
+
+        boolean newLinesMatch(String marker, java.util.regex.Pattern pattern) {
+            boolean matched = false;
+            for (NodeRole role : List.of(NodeRole.LOAN_A, NodeRole.LOAN_B)) {
+                for (var file : cluster.logFiles(role)) {
+                    try {
+                        if (!java.nio.file.Files.exists(file)) {
+                            continue;
+                        }
+                        long size = java.nio.file.Files.size(file);
+                        Long from = offsets.get(file);
+                        if (from == null) {
+                            // First sight: a file present before the probe
+                            // started is skipped to its end on the priming
+                            // pass; a file born later (container replacement)
+                            // is read from 0.
+                            from = primed ? 0L : size;
+                            offsets.put(file, from);
+                        }
+                        if (size <= from) {
+                            continue;
+                        }
+                        try (var raf = new java.io.RandomAccessFile(file.toFile(), "r")) {
+                            raf.seek(from);
+                            byte[] chunk = new byte[(int) Math.min(size - from, 4 * 1024 * 1024)];
+                            int read = raf.read(chunk);
+                            if (read > 0) {
+                                offsets.put(file, from + read);
+                                String text = new String(chunk, 0, read,
+                                        java.nio.charset.StandardCharsets.UTF_8);
+                                for (String line : text.split("\n")) {
+                                    if (line.contains(marker) && pattern.matcher(line).find()) {
+                                        matched = true;
+                                    }
+                                }
+                            }
+                        }
+                    } catch (Exception ignore) {
+                        // log not readable this cycle
+                    }
+                }
+            }
+            primed = true;
+            return matched;
         }
     }
 
@@ -510,27 +577,6 @@ public final class WorkloadDriver {
         } catch (Exception e) {
             return 0;
         }
-    }
-
-    private boolean logsMatch(String marker, java.util.regex.Pattern pattern) {
-        for (NodeRole role : List.of(NodeRole.LOAN_A, NodeRole.LOAN_B)) {
-            for (var file : cluster.logFiles(role)) {
-                try {
-                    if (!java.nio.file.Files.exists(file)) {
-                        continue;
-                    }
-                    String content = java.nio.file.Files.readString(file);
-                    for (String line : content.split("\n")) {
-                        if (line.contains(marker) && pattern.matcher(line).find()) {
-                            return true;
-                        }
-                    }
-                } catch (Exception ignore) {
-                    // log not readable yet
-                }
-            }
-        }
-        return false;
     }
 
     // ---------------------------------------------------------------- helpers

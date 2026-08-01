@@ -63,7 +63,7 @@ public final class SideEffectCensus {
      * @return the summary result
      */
     public Result run() {
-        String allLogs = readAllLoanLogs();
+        Map<String, long[]> effectCounts = scanLoanLogs();
         List<Window> windows = loadQualifyingWindows();
 
         var perEffectTotals = new LinkedHashMap<String, Long>();
@@ -76,10 +76,10 @@ public final class SideEffectCensus {
         long unexplained = 0;
 
         for (LedgerEntry e : ledger) {
-            String id = e.applicationId();
-            long rateLock = count(allLogs, "Reserved rate lock", id);
-            long disburse = count(allLogs, "Disbursed", id);
-            long comp = count(allLogs, "COMPENSATION: released rate lock", id);
+            long[] counts = effectCounts.getOrDefault(e.applicationId(), new long[3]);
+            long rateLock = counts[0];
+            long disburse = counts[1];
+            long comp = counts[2];
 
             perEffectTotals.merge("rateLock", rateLock, Long::sum);
             perEffectTotals.merge("disbursement", disburse, Long::sum);
@@ -193,38 +193,50 @@ public final class SideEffectCensus {
         return false;
     }
 
-    private String readAllLoanLogs() {
-        var sb = new StringBuilder();
+    /**
+     * Effect-line pattern: marker group + boundary-checked loan id
+     * ({@code chaos-101-1} never matches a {@code chaos-101-10} line — the id
+     * is followed by a space or end of line in the
+     * {@code SimulatedFundingActivities} messages).
+     */
+    private static final java.util.regex.Pattern EFFECT_LINE = java.util.regex.Pattern.compile(
+            "(Reserved rate lock|Disbursed|COMPENSATION: released rate lock).* for loan ([\\w-]+)(?![\\w-])");
+
+    /**
+     * Single streaming pass over every loan node log (all generations),
+     * building per-loan-id counts of {@code [rateLock, disbursement,
+     * compensation]}.
+     *
+     * <p>Replaces the previous whole-log-in-one-String approach (2h of soak
+     * logs would not fit the test heap — report §10) and the per-workflow
+     * re-scan (3 effect scans × N workflows over the full text). Memory is now
+     * one line at a time; work is one pass total.
+     */
+    private Map<String, long[]> scanLoanLogs() {
+        var counts = new LinkedHashMap<String, long[]>();
         for (NodeRole role : List.of(NodeRole.LOAN_A, NodeRole.LOAN_B)) {
             for (Path file : cluster.logFiles(role)) {
-                try {
-                    if (Files.exists(file)) {
-                        sb.append(Files.readString(file)).append('\n');
-                    }
-                } catch (Exception ignore) {
-                    // unreadable generation
+                if (!Files.exists(file)) {
+                    continue;
+                }
+                try (var lines = Files.lines(file, java.nio.charset.StandardCharsets.UTF_8)) {
+                    lines.forEach(line -> {
+                        var m = EFFECT_LINE.matcher(line);
+                        if (m.find()) {
+                            long[] c = counts.computeIfAbsent(m.group(2), k -> new long[3]);
+                            switch (m.group(1)) {
+                                case "Reserved rate lock" -> c[0]++;
+                                case "Disbursed" -> c[1]++;
+                                default -> c[2]++;
+                            }
+                        }
+                    });
+                } catch (Exception e) {
+                    log.warn("[chaos] census: could not stream {}: {}", file, e.toString());
                 }
             }
         }
-        return sb.toString();
-    }
-
-    /**
-     * Counts lines carrying {@code marker} and the exact loan id — with a
-     * boundary check so {@code chaos-101-1} never matches a
-     * {@code chaos-101-10} line (the id is always followed by a space or end
-     * of line in the {@code SimulatedFundingActivities} messages).
-     */
-    private long count(String logs, String marker, String loanId) {
-        var pattern = java.util.regex.Pattern.compile(
-                java.util.regex.Pattern.quote("for loan " + loanId) + "(?![\\w-])");
-        long count = 0;
-        for (String line : logs.split("\\R")) {
-            if (line.contains(marker) && pattern.matcher(line).find()) {
-                count++;
-            }
-        }
-        return count;
+        return counts;
     }
 
     private static String text(JsonNode n, String field) {

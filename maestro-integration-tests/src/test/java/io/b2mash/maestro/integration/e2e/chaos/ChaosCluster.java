@@ -108,10 +108,18 @@ public final class ChaosCluster implements AutoCloseable {
         final NodeRole role;
         volatile GenericContainer<?> container;
         volatile int generation;
+        volatile FileLogConsumer logConsumer;
         final List<Path> logFiles = new CopyOnWriteArrayList<>();
 
         ManagedNode(NodeRole role) {
             this.role = role;
+        }
+
+        void closeLogConsumer() {
+            var c = logConsumer;
+            if (c != null) {
+                c.close();
+            }
         }
     }
 
@@ -261,6 +269,8 @@ public final class ChaosCluster implements AutoCloseable {
         node.logFiles.add(logFile);
 
         String jar = config.jarPaths().get(svc.jarKey());
+        var consumer = new FileLogConsumer(logFile);
+        node.logConsumer = consumer;
         var container = new GenericContainer<>(DockerImageName.parse(NODE_IMAGE))
                 .withNetwork(network)
                 .withNetworkAliases(role.alias())
@@ -268,7 +278,7 @@ public final class ChaosCluster implements AutoCloseable {
                 .withCommand("java", "-jar", "/app/app.jar")
                 .withExposedPorts(NODE_PORT)
                 .withEnv(nodeEnv(svc))
-                .withLogConsumer(new FileLogConsumer(logFile))
+                .withLogConsumer(consumer)
                 .waitingFor(Wait.forLogMessage(".*Started .*Application.*\\n", 1)
                         .withStartupTimeout(Duration.ofMinutes(3)));
         return container;
@@ -485,6 +495,7 @@ public final class ChaosCluster implements AutoCloseable {
      */
     public void replace(NodeRole role) {
         ManagedNode node = nodes.get(role);
+        node.closeLogConsumer();   // the dead generation's writer
         node.generation++;
         node.container = newNodeContainer(node);
         node.container.start();
@@ -595,7 +606,10 @@ public final class ChaosCluster implements AutoCloseable {
 
     @Override
     public void close() {
-        nodes.values().forEach(n -> quietStop(n.container));
+        nodes.values().forEach(n -> {
+            quietStop(n.container);
+            n.closeLogConsumer();
+        });
         quietStop(valkey);
         quietStop(kafka);
         quietStop(postgres);
@@ -618,21 +632,55 @@ public final class ChaosCluster implements AutoCloseable {
         }
     }
 
-    /** Streams container stdout/stderr to a host file, appending per frame. */
-    private static final class FileLogConsumer implements java.util.function.Consumer<OutputFrame> {
+    /**
+     * Streams container stdout/stderr to a host file through one persistent
+     * buffered writer, flushed per frame.
+     *
+     * <p>The original implementation opened and closed the file for every log
+     * frame ({@code Files.writeString(..., APPEND)}) — at soak log volume the
+     * per-frame open/close made this consumer slow enough to back up the
+     * docker-java stream pipeline, one of the accumulation paths behind the
+     * 2h-soak OOM (report §10). A single open writer keeps the consume path to
+     * an in-heap copy + buffered write; the flush preserves the design's
+     * crash-safety (log capture survives {@code kill -9} of the container —
+     * the writer lives in the test JVM).
+     *
+     * <h2>Thread Safety</h2>
+     * <p>docker-java delivers frames for one container on one stream thread;
+     * {@code accept} is synchronized anyway so close() can race safely.
+     */
+    private static final class FileLogConsumer
+            implements java.util.function.Consumer<OutputFrame>, AutoCloseable {
         private final Path file;
+        private java.io.Writer out;
 
         FileLogConsumer(Path file) {
             this.file = file;
         }
 
         @Override
-        public void accept(OutputFrame frame) {
+        public synchronized void accept(OutputFrame frame) {
             try {
-                Files.writeString(file, frame.getUtf8String(), StandardCharsets.UTF_8,
-                        StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+                if (out == null) {
+                    out = Files.newBufferedWriter(file, StandardCharsets.UTF_8,
+                            StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+                }
+                out.write(frame.getUtf8String());
+                out.flush();
             } catch (IOException e) {
                 // Never fail the run on a log write.
+            }
+        }
+
+        @Override
+        public synchronized void close() {
+            if (out != null) {
+                try {
+                    out.close();
+                } catch (IOException ignore) {
+                    // best effort
+                }
+                out = null;
             }
         }
     }

@@ -53,6 +53,14 @@ val loanSampleServices = mapOf(
 tasks.named<Test>("e2eTest") {
     // Chaos runs are Docker-heavy and long; give them room and always show output.
     maxParallelForks = 1
+    // Deliberate heap for the chaos test JVM (soak-failure fix, report §10):
+    // Gradle's 512m default OOMed the 2h soak at 28 minutes. The primary fix
+    // was eliminating unbounded accumulation (streamed log capture, incremental
+    // log probes, single-pass census); 2g is defence in depth — 4x the default,
+    // covering soak-scale transient allocation (docker-java frames for 6 nodes,
+    // end-of-run census and dumps) while fitting a 7GB CI runner beside the
+    // Docker containers (6x256m node JVMs + Kafka + Postgres + Valkey).
+    maxHeapSize = "2g"
     testLogging {
         showStandardStreams = true
     }

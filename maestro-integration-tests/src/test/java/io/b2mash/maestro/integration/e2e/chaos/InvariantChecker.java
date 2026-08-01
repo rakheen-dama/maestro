@@ -422,15 +422,27 @@ public final class InvariantChecker {
     private String logExcerpts(String workflowId) {
         String id = workflowId.startsWith("loan-") ? workflowId.substring(5) : workflowId;
         var sb = new StringBuilder();
+        // Streamed line-by-line: a soak node log does not fit the test heap as
+        // a single String (report §10). Excerpts are additionally capped so a
+        // pathological dump cannot itself exhaust memory.
+        final int maxChars = 2 * 1024 * 1024;
         for (var file : cluster.allLogFiles()) {
+            if (sb.length() >= maxChars) {
+                sb.append("... [excerpt cap reached]\n");
+                break;
+            }
             try {
                 if (!java.nio.file.Files.exists(file)) {
                     continue;
                 }
-                for (String line : java.nio.file.Files.readString(file).split("\n")) {
-                    if (line.contains(workflowId) || line.contains(id)) {
-                        sb.append(file.getFileName()).append(": ").append(line).append('\n');
-                    }
+                try (var lines = java.nio.file.Files.lines(file,
+                        java.nio.charset.StandardCharsets.UTF_8)) {
+                    lines.forEach(line -> {
+                        if (sb.length() < maxChars
+                                && (line.contains(workflowId) || line.contains(id))) {
+                            sb.append(file.getFileName()).append(": ").append(line).append('\n');
+                        }
+                    });
                 }
             } catch (Exception ignore) {
                 // unreadable
