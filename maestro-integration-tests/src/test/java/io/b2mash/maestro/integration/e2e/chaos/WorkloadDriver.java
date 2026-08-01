@@ -58,6 +58,8 @@ public final class WorkloadDriver {
     private final EvidenceWriter.JsonlWriter ledgerWriter;
     private final List<LedgerEntry> ledger = new CopyOnWriteArrayList<>();
     private final List<Future<?>> futures = new CopyOnWriteArrayList<>();
+    private final java.util.concurrent.atomic.AtomicInteger generatedCount =
+            new java.util.concurrent.atomic.AtomicInteger();
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(3)).build();
@@ -81,6 +83,11 @@ public final class WorkloadDriver {
     /** @return an immutable snapshot of the ledger. */
     public List<LedgerEntry> ledger() {
         return List.copyOf(ledger);
+    }
+
+    /** @return total scripts submitted across all generation windows (test observability). */
+    int generatedCount() {
+        return generatedCount.get();
     }
 
     // ------------------------------------------------------------- generation
@@ -122,6 +129,7 @@ public final class WorkloadDriver {
             }
             LoanPath path = LoanPath.pick(rng.nextInt(100));
             String appId = idPrefix + "-" + Long.toUnsignedString(config.seed()) + "-" + seq++;
+            generatedCount.incrementAndGet();
             futures.add(executor.submit(() -> runScript(appId, path, true)));
         }
         log.info("[chaos] workload generation window closed: {} workflows submitted ({})",
@@ -352,7 +360,13 @@ public final class WorkloadDriver {
         // last poll; total work is now O(log growth), not O(log size × polls).
         // Starting at the current end is correct: the reservation line can
         // only appear after this probe begins (the decision was just posted).
-        var scanner = new LogTailScanner();
+        var scanner = new LogTailScanner(() -> {
+            var files = new ArrayList<java.nio.file.Path>();
+            for (NodeRole role : List.of(NodeRole.LOAN_A, NodeRole.LOAN_B)) {
+                files.addAll(cluster.logFiles(role));
+            }
+            return files;
+        });
         boolean reserved = pollUntil(
                 () -> scanner.newLinesMatch("Reserved rate lock", pattern),
                 config.sampleTimeout(), Duration.ofSeconds(1));
@@ -362,56 +376,61 @@ public final class WorkloadDriver {
     }
 
     /**
-     * Per-probe incremental scanner over the loan nodes' log files (all
+     * Per-probe incremental scanner over a supplied set of log files (all
      * generations): tracks a byte offset per file and scans only newly
      * appended content on each call.
      *
      * <p>Offsets start at each file's length at first sight (see the caller's
-     * rationale). Confined to the owning script's virtual thread.
+     * rationale). Confined to the owning script's virtual thread. Static with
+     * an injected file supplier so the offset semantics are unit-testable
+     * without a cluster (delta-review Important #1).
      */
-    private final class LogTailScanner {
+    static final class LogTailScanner {
+        private final java.util.function.Supplier<List<java.nio.file.Path>> files;
         private final java.util.Map<java.nio.file.Path, Long> offsets = new java.util.HashMap<>();
         private boolean primed;
 
+        LogTailScanner(java.util.function.Supplier<List<java.nio.file.Path>> files) {
+            this.files = files;
+        }
+
         boolean newLinesMatch(String marker, java.util.regex.Pattern pattern) {
             boolean matched = false;
-            for (NodeRole role : List.of(NodeRole.LOAN_A, NodeRole.LOAN_B)) {
-                for (var file : cluster.logFiles(role)) {
-                    try {
-                        if (!java.nio.file.Files.exists(file)) {
-                            continue;
-                        }
-                        long size = java.nio.file.Files.size(file);
-                        Long from = offsets.get(file);
-                        if (from == null) {
-                            // First sight: a file present before the probe
-                            // started is skipped to its end on the priming
-                            // pass; a file born later (container replacement)
-                            // is read from 0.
-                            from = primed ? 0L : size;
-                            offsets.put(file, from);
-                        }
-                        if (size <= from) {
-                            continue;
-                        }
-                        try (var raf = new java.io.RandomAccessFile(file.toFile(), "r")) {
-                            raf.seek(from);
-                            byte[] chunk = new byte[(int) Math.min(size - from, 4 * 1024 * 1024)];
-                            int read = raf.read(chunk);
-                            if (read > 0) {
-                                offsets.put(file, from + read);
-                                String text = new String(chunk, 0, read,
-                                        java.nio.charset.StandardCharsets.UTF_8);
-                                for (String line : text.split("\n")) {
-                                    if (line.contains(marker) && pattern.matcher(line).find()) {
-                                        matched = true;
-                                    }
+            for (var file : files.get()) {
+                try {
+                    if (!java.nio.file.Files.exists(file)) {
+                        continue;
+                    }
+                    long size = java.nio.file.Files.size(file);
+                    Long from = offsets.get(file);
+                    if (from == null) {
+                        // First sight: a file present before the probe
+                        // started is skipped to its end on the priming
+                        // pass; a file born later (container replacement)
+                        // is read from 0.
+                        from = primed ? 0L : size;
+                        offsets.put(file, from);
+                    }
+                    if (size <= from) {
+                        continue;
+                    }
+                    try (var raf = new java.io.RandomAccessFile(file.toFile(), "r")) {
+                        raf.seek(from);
+                        byte[] chunk = new byte[(int) Math.min(size - from, 4 * 1024 * 1024)];
+                        int read = raf.read(chunk);
+                        if (read > 0) {
+                            offsets.put(file, from + read);
+                            String text = new String(chunk, 0, read,
+                                    java.nio.charset.StandardCharsets.UTF_8);
+                            for (String line : text.split("\n")) {
+                                if (line.contains(marker) && pattern.matcher(line).find()) {
+                                    matched = true;
                                 }
                             }
                         }
-                    } catch (Exception ignore) {
-                        // log not readable this cycle
                     }
+                } catch (Exception ignore) {
+                    // log not readable this cycle
                 }
             }
             primed = true;
