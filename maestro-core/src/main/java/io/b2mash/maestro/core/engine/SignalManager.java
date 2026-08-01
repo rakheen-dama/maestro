@@ -19,6 +19,7 @@ import tools.jackson.databind.JsonNode;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeoutException;
@@ -320,7 +321,12 @@ final class SignalManager {
                 // for a run that must not continue.
                 standDownIfTerminated(ctx.workflowId());
 
-                var signals = store.getUnconsumedSignals(ctx.workflowId(), signalName);
+                // Advisory probe (Issue 20 / Ruling 5): a store exception here
+                // must not tear down a healthy parked workflow — treat it as
+                // "no signal seen this interval" and try again next chunk.
+                var signals = ParkProbe.read("awaitSignal.getUnconsumedSignals", ctx.workflowId(),
+                        () -> store.getUnconsumedSignals(ctx.workflowId(), signalName),
+                        List.<WorkflowSignal>of());
                 if (!signals.isEmpty()) {
                     var result = consumeSignal(ctx, seq, stepName, signalName, signals.getFirst(), type);
                     updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
@@ -493,13 +499,21 @@ final class SignalManager {
      * terminal row, and it bounds cross-node terminate convergence for a parked
      * await to one interval.
      *
+     * <p>The read itself is advisory (Issue 20 / Ruling 5, via {@link ParkProbe}):
+     * if the store is unreachable this interval, that means "can't prove
+     * terminated" — fail open and keep parking rather than propagate the
+     * store's exception. The instance is only ever actually stood down once a
+     * probe succeeds and observes {@code TERMINATED}.
+     *
      * @param workflowId the workflow's business ID
      * @throws WorkflowTerminatedException if the instance row is {@code TERMINATED}
      */
     private void standDownIfTerminated(String workflowId) {
-        var terminated = store.getInstance(workflowId)
-                .map(instance -> instance.status() == WorkflowStatus.TERMINATED)
-                .orElse(false);
+        var terminated = ParkProbe.read("awaitSignal.standDownIfTerminated", workflowId,
+                () -> store.getInstance(workflowId)
+                        .map(instance -> instance.status() == WorkflowStatus.TERMINATED)
+                        .orElse(false),
+                false);
         if (terminated) {
             logger.info("Workflow '{}' was terminated while parked on a signal — abandoning this run",
                     workflowId);

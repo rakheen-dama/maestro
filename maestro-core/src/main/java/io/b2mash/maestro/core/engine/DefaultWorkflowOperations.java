@@ -284,9 +284,15 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             // that is not the owner, so nothing local unparks this thread.
             standDownIfTerminated(ctx.workflowId());
 
-            var rowStatus = store.findTimer(ctx.workflowInstanceId(), timerId)
-                    .map(WorkflowTimer::status)
-                    .orElse(null);
+            // Advisory probe (Issue 20 / Ruling 5): a store exception here
+            // must not tear down a healthy parked sleep — fall back to
+            // PENDING (unchanged) so the loop simply re-parks and tries the
+            // durable row again next interval.
+            var rowStatus = ParkProbe.read("sleep.findTimer", ctx.workflowId(),
+                    () -> store.findTimer(ctx.workflowInstanceId(), timerId)
+                            .map(WorkflowTimer::status)
+                            .orElse(null),
+                    TimerStatus.PENDING);
             if (rowStatus != TimerStatus.PENDING) {
                 logger.debug("Workflow '{}' timer '{}' transitioned to {} without a local wake — "
                                 + "resuming from the durable row (cross-node fire/cancel)",
@@ -303,13 +309,21 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
      * terminate convergence for a parked {@code sleep()} to one
      * wake-recheck interval.
      *
+     * <p>The read itself is advisory (Issue 20 / Ruling 5, via {@link ParkProbe}):
+     * if the store is unreachable this interval, that means "can't prove
+     * terminated" — fail open and keep parking rather than propagate the
+     * store's exception. The instance is only ever actually stood down once a
+     * probe succeeds and observes {@code TERMINATED}.
+     *
      * @param workflowId the workflow's business ID
      * @throws WorkflowTerminatedException if the instance row is {@code TERMINATED}
      */
     private void standDownIfTerminated(String workflowId) {
-        var terminated = store.getInstance(workflowId)
-                .map(instance -> instance.status() == WorkflowStatus.TERMINATED)
-                .orElse(false);
+        var terminated = ParkProbe.read("sleep.standDownIfTerminated", workflowId,
+                () -> store.getInstance(workflowId)
+                        .map(instance -> instance.status() == WorkflowStatus.TERMINATED)
+                        .orElse(false),
+                false);
         if (terminated) {
             logger.info("Workflow '{}' was terminated while parked on a timer — abandoning this run",
                     workflowId);
