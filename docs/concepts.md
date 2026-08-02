@@ -158,6 +158,8 @@ Because the engine replays the workflow method during crash recovery, any non-de
 
 **Safe between activity calls:** conditionals, loops, string manipulation, arithmetic, creating DTOs from activity results, logging. These are deterministic because they operate on values that were already memoized.
 
+Editing the workflow method itself is the other way to break replay -- an in-flight instance resumes into code that no longer matches what it recorded. Gate the change with [`workflow.version()`](#versioning-workflow-code).
+
 ```java
 @WorkflowMethod
 public OrderResult fulfil(OrderInput input) {
@@ -447,6 +449,45 @@ Throws `RetryExhaustedException` if all attempts are exhausted or the maximum du
 
 ---
 
+## Versioning Workflow Code
+
+Recovery re-runs the workflow method against the **current** code. Change a workflow while long-lived instances are still in flight and a replaying instance takes the new path from wherever it resumed -- half its work done the old way, the rest the new way.
+
+`workflow.version(changeId, minSupported, maxSupported)` makes the choice of path a durable decision, memoized like any other step:
+
+- **Live (first evaluation):** records `maxSupported` as a `VERSION_MARKER` event at the current sequence slot and returns it.
+- **Replay:** returns the *recorded* version -- forever -- even after the code's `maxSupported` moves on. That asymmetry is the point.
+- **Histories that predate the change:** resolve to `WorkflowContext.DEFAULT_VERSION` (`-1`) **without consuming a sequence slot**, so introducing a `version()` call into existing code leaves in-flight instances' event logs unshifted.
+- **Repeated calls** with the same `changeId` in one run return the same value and record nothing further.
+
+### Shipping a change
+
+```java
+// Step 1 — ship the new branch behind a version gate.
+var workflow = WorkflowContext.current();
+int v = workflow.version("shipping-v2", WorkflowContext.DEFAULT_VERSION, 1);
+if (v == WorkflowContext.DEFAULT_VERSION) {
+    shipping.dispatch(order);                       // what in-flight instances recorded
+} else {
+    shipping.dispatchWithCarrier(order, carrier);   // the new branch
+}
+
+// Step 2 — once no pre-change instance can still be running, delete the old
+// branch and raise the floor.
+workflow.version("shipping-v2", 1, 1);
+shipping.dispatchWithCarrier(order, carrier);
+```
+
+Raise the floor too early and an instance whose recorded version is below `minSupported` fails with `UnsupportedWorkflowVersionException`, naming the changeId, the recorded version and the supported range. That is an ordinary deterministic workflow failure -- saga compensation runs if registered, the instance ends `FAILED`. Restore code carrying the old branch and use the admin **Retry** action: retry clears the failure memos but never the version marker, so the retried run replays the same recorded version.
+
+### Rules
+
+- `changeId` must be stable and unique within the workflow definition. It is recorded in the marker's step name (`$maestro:version:{changeId}`), which is what makes version decisions visible to `DeterminismChecker`.
+- Resolve a changeId **before** forking parallel branches that depend on it and pass the value in. Branches share the per-run cache, so two branches racing to be the first resolver would place the marker in whichever branch's sequence space won. A `version()` call made inside a *single* branch is fine -- it allocates from that branch's own sequence block.
+- `VERSION_MARKER` is a 0.4.0 event type. Nodes older than 0.4.0 cannot interpret it: upgrade all nodes of a service together.
+
+---
+
 ## WorkflowContext API Reference
 
 Access the context via `WorkflowContext.current()` or `WorkflowContext.workflow()` (alias) from within a workflow method.
@@ -464,6 +505,7 @@ var workflow = WorkflowContext.current();
 | `currentTime()` | `Instant` | Memoized current time. Use instead of `Instant.now()`. |
 | `randomUUID()` | `String` | Memoized UUID string. Use instead of `UUID.randomUUID()`. |
 | `retryUntil(supplier, predicate, options)` | `<T> T` | Poll with durable backoff. Throws `RetryExhaustedException`. |
+| `version(changeId, minSupported, maxSupported)` | `int` | Memoized change-branching. Returns the recorded version on replay; `DEFAULT_VERSION` for a pre-change history. Throws `UnsupportedWorkflowVersionException` below `minSupported`. |
 | `addCompensation(Runnable)` | `void` | Push an anonymous compensation onto the saga stack. |
 | `addCompensation(name, Runnable)` | `void` | Push a named compensation onto the saga stack. |
 | `workflowId()` | `String` | The business workflow ID (e.g., `"order-abc"`). |
