@@ -58,6 +58,19 @@ public final class InvariantChecker {
     }
 
     /**
+     * A store query an invariant needed could not be executed. Soft on the
+     * <em>periodic</em> path — {@link PeriodicChecker}'s probe-based blindness
+     * accounting counts and escalates unreachable cycles — but HARD on the
+     * <em>authoritative</em> path: a store unreachable at verify time must
+     * fail the run, never yield an empty list the caller reads as PASS.
+     */
+    static final class QueryFailedException extends RuntimeException {
+        QueryFailedException(Service svc, String what, Exception cause) {
+            super("query failed on " + svc.databaseName() + " (" + cause + ") -- " + what, cause);
+        }
+    }
+
+    /**
      * Outcome of the authoritative check: hard violations plus the
      * redelivered-signal findings (Ruling 3: unconsumed rows with a consumed
      * byte-identical twin — Kafka at-least-once redelivery — do not fail the
@@ -78,8 +91,8 @@ public final class InvariantChecker {
     public List<Violation> checkAlwaysInexcusable() {
         var v = new ArrayList<Violation>();
         for (Service svc : Service.values()) {
-            v.addAll(duplicateEvents(svc));
-            v.addAll(adminSignalRows(svc));
+            v.addAll(soft(() -> duplicateEvents(svc)));
+            v.addAll(soft(() -> adminSignalRows(svc)));
         }
         return v;
     }
@@ -93,9 +106,24 @@ public final class InvariantChecker {
     public List<Violation> checkStuckWaitingTimer() {
         var v = new ArrayList<Violation>();
         for (Service svc : Service.values()) {
-            v.addAll(stuckWaitingTimer(svc));
+            v.addAll(soft(() -> stuckWaitingTimer(svc)));
         }
         return v;
+    }
+
+    /**
+     * Periodic-path wrapper: a failed query logs and yields no violations —
+     * the probe-based blindness accounting in {@link PeriodicChecker} owns
+     * reporting outages mid-run, and one dead database must not stop the
+     * cycle checking the stores it can still reach.
+     */
+    private static List<Violation> soft(java.util.function.Supplier<List<Violation>> check) {
+        try {
+            return check.get();
+        } catch (QueryFailedException e) {
+            log.warn("[chaos] periodic invariant query failed (soft): {}", e.getMessage());
+            return List.of();
+        }
     }
 
     // ----------------------------------------------------- authoritative mode
@@ -109,27 +137,57 @@ public final class InvariantChecker {
     public VerifyResult verifyAuthoritative() {
         var v = new ArrayList<Violation>();
 
+        // Every check is wrapped in hard(): an invariant whose query cannot
+        // run has NOT been verified, and the authoritative gate must say so
+        // as a violation — never let a dead store read as "no violations"
+        // (CodeRabbit wave, PR #30: the blind-PASS failure shape).
+
         // I1 — ledger workflows terminal within SLA + expected outcome (loan DB).
-        v.addAll(ledgerTerminalAndOutcome());
+        hard(v, "I1", this::ledgerTerminalAndOutcome);
         // I1 (weak) — every underwriting/verification child terminal.
-        v.addAll(allTerminal(Service.UNDERWRITING));
-        v.addAll(allTerminal(Service.VERIFICATION_GATEWAY));
+        hard(v, "I1", () -> allTerminal(Service.UNDERWRITING));
+        hard(v, "I1", () -> allTerminal(Service.VERIFICATION_GATEWAY));
 
         for (Service svc : Service.values()) {
-            v.addAll(duplicateEvents(svc));            // I3a
-            v.addAll(adminSignalRows(svc));            // I5
-            v.addAll(stuckWaitingTimer(svc));          // I2
-            v.addAll(terminalEventCount(svc));         // I3b
-            v.addAll(terminalIsMaxSequence(svc));      // I3c
-            v.addAll(densityWithinBound(svc));         // I3d (calibrated)
+            hard(v, "I3a", () -> duplicateEvents(svc));
+            hard(v, "I5", () -> adminSignalRows(svc));
+            hard(v, "I2", () -> stuckWaitingTimer(svc));
+            hard(v, "I3b", () -> terminalEventCount(svc));
+            hard(v, "I3c", () -> terminalIsMaxSequence(svc));
+            hard(v, "I3d", () -> densityWithinBound(svc));   // calibrated
         }
-        var i4 = unconsumedApplicationSignals();       // I4 (loan DB, Ruling 3 split)
+        I4Result i4;                                   // I4 (loan DB, Ruling 3 split)
+        try {
+            i4 = unconsumedApplicationSignals();
+        } catch (QueryFailedException e) {
+            v.add(blindViolation("I4", e));
+            i4 = new I4Result(List.of(), List.of());
+        }
         v.addAll(i4.violations());
 
         if (!v.isEmpty()) {
             dumpFailures(v);
         }
         return new VerifyResult(v, i4.redeliveredUnconsumedSignals());
+    }
+
+    /**
+     * Authoritative-path wrapper: a failed query is a hard violation naming
+     * the invariant, database and query — the run fails rather than passing
+     * blind.
+     */
+    private static void hard(List<Violation> out, String invariant,
+                             java.util.function.Supplier<List<Violation>> check) {
+        try {
+            out.addAll(check.get());
+        } catch (QueryFailedException e) {
+            out.add(blindViolation(invariant, e));
+        }
+    }
+
+    private static Violation blindViolation(String invariant, QueryFailedException e) {
+        return new Violation(invariant, "AUTHORITATIVE CHECK BLIND — " + e.getMessage()
+                + " — a store unreachable at verify time is a run failure, not a pass", List.of());
     }
 
     // ------------------------------------------------------------ invariants
@@ -218,8 +276,7 @@ public final class InvariantChecker {
                         .add(rs.getInt(2));
             }
         } catch (Exception e) {
-            log.warn("[chaos] I3d query failed on {}: {}", svc.databaseName(), e.toString());
-            return List.of();
+            throw new QueryFailedException(svc, "I3d event-log density scan: " + sql, e);
         }
         for (var entry : byWorkflow.entrySet()) {
             int gaps = gapCount(entry.getValue());
@@ -297,8 +354,11 @@ public final class InvariantChecker {
                     outputMismatch.add(e.workflowId() + " (expected output=" + e.expectedOutput() + ")");
                 }
             }
+        } catch (QueryFailedException ex) {
+            throw ex;
         } catch (Exception ex) {
-            log.warn("[chaos] I1 query failed: {}", ex.toString());
+            throw new QueryFailedException(Service.LOAN_APPLICATION,
+                    "I1 ledger status/output join", ex);
         }
         if (!nonTerminal.isEmpty()) {
             v.add(new Violation("I1", "ledger workflow not terminal at T_verify", nonTerminal));
@@ -368,7 +428,8 @@ public final class InvariantChecker {
                 }
             }
         } catch (Exception e) {
-            log.warn("[chaos] I4 query failed: {}", e.toString());
+            throw new QueryFailedException(Service.LOAN_APPLICATION,
+                    "I4 unconsumed-signal split: " + sql, e);
         }
         var violations = missed.isEmpty() ? List.<Violation>of()
                 : List.of(new Violation("I4", "unconsumed application signal with NO consumed "
@@ -476,7 +537,7 @@ public final class InvariantChecker {
                 out.add(rs.getString(1));
             }
         } catch (Exception e) {
-            log.warn("[chaos] query failed on {}: {} -- {}", svc.databaseName(), e.toString(), sql);
+            throw new QueryFailedException(svc, sql, e);
         }
         return out;
     }

@@ -485,7 +485,15 @@ public final class ChaosRun {
         try {
             TimeUnit.MILLISECONDS.sleep(millis);
         } catch (InterruptedException e) {
+            // Re-assert AND abort (CodeRabbit wave, PR #30): swallowing the
+            // interrupt turned the drain loop into a hot spin — every
+            // subsequent sleep(2000) threw instantly on the still-set flag,
+            // hammering three databases with allInstancesTerminal queries
+            // until the drain SLA elapsed. An interrupt here means controller
+            // death or a pacer abort; exit the loop loudly instead.
             Thread.currentThread().interrupt();
+            throw new IllegalStateException(
+                    "interrupted mid-wait — aborting the wait loop instead of hot-spinning", e);
         }
     }
 }

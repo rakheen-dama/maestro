@@ -57,19 +57,34 @@ public record RunIdentity(
     }
 
     private static String git(String... args) {
+        // Interrupt hygiene (CodeRabbit wave, PR #30): only a genuine
+        // InterruptedException may re-assert the flag. This runs on the
+        // orchestrating thread, which treats a set flag as controller death /
+        // pacer abort — a blanket re-assert turned a missing `git` binary
+        // (IOException) into an aborted chaos run. waitFor is bounded and the
+        // process is destroyed on any non-clean exit path.
+        Process p = null;
         try {
             var cmd = new java.util.ArrayList<String>();
             cmd.add("git");
             cmd.addAll(java.util.List.of(args));
-            Process p = new ProcessBuilder(cmd)
+            p = new ProcessBuilder(cmd)
                     .redirectErrorStream(true)
                     .start();
+            if (!p.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                return "unknown";   // hung git; finally destroys it
+            }
             String out = new String(p.getInputStream().readAllBytes()).trim();
-            p.waitFor();
             return out.isBlank() ? "unknown" : out;
-        } catch (Exception e) {
+        } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return "unknown";
+        } catch (Exception e) {
+            return "unknown";
+        } finally {
+            if (p != null && p.isAlive()) {
+                p.destroyForcibly();
+            }
         }
     }
 }

@@ -424,8 +424,13 @@ public final class ChaosCluster implements AutoCloseable {
 
     /** {@code docker unpause} the container for {@code role}. */
     public void unpause(NodeRole role) {
-        if (paused.remove(role)) {
+        if (paused.contains(role)) {
+            // Docker op first, state second (CodeRabbit wave, PR #30 —
+            // matching unpauseBackend): only a confirmed unpause may clear
+            // the harassment flag, or a still-frozen node reads as live in
+            // harassedRoles()/anyChaosActive() and heal-all skips it forever.
             docker.unpauseContainerCmd(nodes.get(role).container.getContainerId()).exec();
+            paused.remove(role);
             log.info("[chaos] UNPAUSE {}", role);
         }
     }
@@ -441,11 +446,13 @@ public final class ChaosCluster implements AutoCloseable {
 
     /** {@code docker network connect} — reattach {@code role} with its alias restored. */
     public void reconnect(NodeRole role) {
-        if (partitioned.remove(role)) {
+        if (partitioned.contains(role)) {
+            // Docker op first, state second — see unpause().
             String id = nodes.get(role).container.getContainerId();
             docker.connectToNetworkCmd().withContainerId(id).withNetworkId(network.getId())
                     .withContainerNetwork(new ContainerNetwork()
                             .withAliases(List.of(role.alias()))).exec();
+            partitioned.remove(role);
             log.info("[chaos] RECONNECT {}", role);
         }
     }
@@ -508,8 +515,11 @@ public final class ChaosCluster implements AutoCloseable {
         node.generation++;
         node.container = newNodeContainer(node);
         node.container.start();
-        dead.remove(role);
         awaitNodeHealthy(role, Duration.ofMinutes(3));
+        // Only a node that actually became ready leaves the dead set — a
+        // replacement that never turns healthy must keep reading as dead
+        // (CodeRabbit wave, PR #30).
+        dead.remove(role);
         log.info("[chaos] REPLACED {} -> generation {} at {}", role, node.generation, baseUrl(role));
     }
 
@@ -527,19 +537,52 @@ public final class ChaosCluster implements AutoCloseable {
      * {@code BACKEND_OUTAGE} (the soak-failure shape, report §10), the paused
      * backend would otherwise stay frozen forever and every later DB/Valkey
      * access would fail while looking like a node problem.
+     *
+     * <p>Every heal step is attempted per-item (CodeRabbit wave, PR #30): one
+     * failing unpause/reconnect/replace no longer aborts the rest, and any
+     * failures are collected and thrown at the end listing exactly what did
+     * not heal — a partially-healed cluster must fail the run loudly, not
+     * proceed to a blind verify.
      */
     public void healAll() {
         log.info("[chaos] heal-all begin");
+        var unhealed = new ArrayList<String>();
         for (String backend : Set.copyOf(pausedBackends)) {
             try {
                 unpauseBackend(backend);
             } catch (RuntimeException e) {
                 log.warn("[chaos] heal-all: unpause of backend {} failed: {}", backend, e.toString());
+                unhealed.add("backend " + backend + " (unpause: " + e + ")");
             }
         }
-        Set.copyOf(paused).forEach(this::unpause);
-        Set.copyOf(partitioned).forEach(this::reconnect);
-        Set.copyOf(dead).forEach(this::replace);
+        for (NodeRole role : Set.copyOf(paused)) {
+            try {
+                unpause(role);
+            } catch (RuntimeException e) {
+                log.warn("[chaos] heal-all: unpause of {} failed: {}", role, e.toString());
+                unhealed.add(role + " (unpause: " + e + ")");
+            }
+        }
+        for (NodeRole role : Set.copyOf(partitioned)) {
+            try {
+                reconnect(role);
+            } catch (RuntimeException e) {
+                log.warn("[chaos] heal-all: reconnect of {} failed: {}", role, e.toString());
+                unhealed.add(role + " (reconnect: " + e + ")");
+            }
+        }
+        for (NodeRole role : Set.copyOf(dead)) {
+            try {
+                replace(role);
+            } catch (RuntimeException e) {
+                log.warn("[chaos] heal-all: replace of {} failed: {}", role, e.toString());
+                unhealed.add(role + " (replace: " + e + ")");
+            }
+        }
+        if (!unhealed.isEmpty()) {
+            throw new IllegalStateException("heal-all FAILED to heal: " + unhealed
+                    + " — the cluster is still harassed; verifying now would be blind");
+        }
         awaitAllNodesHealthy(Duration.ofMinutes(3));
         log.info("[chaos] heal-all complete: all nodes healthy");
     }
@@ -609,7 +652,14 @@ public final class ChaosCluster implements AutoCloseable {
         try {
             Thread.sleep(millis);
         } catch (InterruptedException e) {
+            // Re-assert AND abort (CodeRabbit wave, PR #30): swallowing the
+            // interrupt made every polling caller (awaitNodeHealthy,
+            // awaitConsumerGroup) spin hot on a no-op sleep until its
+            // deadline — the same swallowed-interrupt class that destroyed
+            // the soak pacer.
             Thread.currentThread().interrupt();
+            throw new IllegalStateException(
+                    "interrupted mid-wait — aborting the wait loop instead of hot-spinning", e);
         }
     }
 
