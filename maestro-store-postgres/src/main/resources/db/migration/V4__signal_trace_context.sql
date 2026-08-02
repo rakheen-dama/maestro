@@ -19,5 +19,13 @@
 -- longer version field without another migration. No DEFAULT and no NOT NULL, so
 -- this is a metadata-only ALTER on Postgres 11+ (instant, no table rewrite) and
 -- safe to apply to a live table.
+--
+-- Table prefix is hardcoded to 'maestro_'. If JdbcStoreConfiguration uses a custom
+-- prefix, provide a corresponding custom Flyway migration -- and note that this
+-- one is NOT optional: AbstractJdbcWorkflowStore names trace_context
+-- unconditionally in the signal INSERT and SELECT, with no feature detection, so
+-- a prefixed signal table without the column makes saveSignal throw inside the
+-- transport listener, which costs the signal its delivery (no ack -> redelivery
+-- exhausts -> dead-letter).
 ALTER TABLE maestro_workflow_signal
     ADD COLUMN trace_context VARCHAR(128);

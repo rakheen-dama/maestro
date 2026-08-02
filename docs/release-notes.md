@@ -139,6 +139,51 @@ Full reference: [`docs/concepts.md` → Versioning Workflow Code](concepts.md#ve
   `workflow.version()`", **not** "wait for the deploy to finish" — otherwise the
   new stand-down behaviour turns a visible failure into a silent zombie.
 
+### Database Migrations
+
+One new Flyway migration:
+
+- **`V4__signal_trace_context.sql`** (`maestro-store-postgres`, version band
+  1–99) — adds a nullable `trace_context VARCHAR(128)` column to
+  `maestro_workflow_signal`. It carries the W3C `traceparent` captured when the
+  signal was received, so a workflow parked on that signal can adopt the
+  publishing service's span as a remote parent when it resumes — possibly hours
+  later, possibly on another node. The column is opaque: no store or engine
+  logic parses it, branches on it, indexes it or joins on it, and `NULL` (an
+  untraced transport, or a build with tracing disabled) is normal and degrades
+  to a fresh root span rather than to an error. The DDL is a single
+  `ADD COLUMN` with no `DEFAULT` and no `NOT NULL`, so on Postgres 11+ it is
+  metadata-only — instant, no table rewrite, safe to apply to a live table.
+
+**The column must exist before a node running this version handles its first
+signal.** `AbstractJdbcWorkflowStore` names `trace_context` unconditionally in
+both the signal `INSERT` (`saveSignal`) and the signal `SELECT`
+(`getUnconsumedSignals`); there is no feature detection and no fallback path.
+Against a signal table that lacks the column, `saveSignal` throws — and because
+signal delivery runs *inside the transport listener*, that failure means the
+record is never acked, bounded redelivery exhausts, and the signal is
+**dead-lettered**, i.e. discarded. That is the one outcome the engine otherwise
+guarantees against.
+
+- **Default deployments (`maestro.store.table-prefix` left at `maestro_`): no
+  manual step.** Flyway applies `V4` automatically at startup, before the store
+  serves traffic — same as `V1`–`V3`.
+- **Deployments using a custom `maestro.store.table-prefix`: you must add the
+  column to your own migrations before upgrading.** Maestro's shipped
+  migrations hardcode the `maestro_` prefix — the note at the top of
+  `V1__create_maestro_schema.sql` tells custom-prefix users to provide
+  corresponding custom migrations, so such a deployment is already maintaining
+  its own set. `V4` is a new one to mirror there:
+
+  ```sql
+  ALTER TABLE <your_prefix>workflow_signal ADD COLUMN trace_context VARCHAR(128);
+  ```
+
+  This is not an exotic configuration: `docs/cross-service.md` recommends "a
+  unique `maestro.store.table-prefix` per service" for multi-service
+  deployments. Miss the column there and the failure mode is the discarded
+  signal described above, not a startup error.
+
 ### Upgrade notes — mixed-version deployments
 
 - **`VERSION_MARKER` is a new event type — the same upgrade-together rule

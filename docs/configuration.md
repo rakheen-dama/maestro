@@ -41,6 +41,17 @@ giving each a unique prefix. To target a non-default PostgreSQL schema, set it
 on the JDBC connection (e.g. `currentSchema` in the datasource URL) — Maestro
 does not manage schemas itself.
 
+> **A custom prefix means you own the schema, including every future
+> migration.** Maestro's shipped Flyway migrations hardcode `maestro_`, so
+> changing this property means Maestro's own migrations no longer apply to your
+> tables and you maintain equivalents yourself — for new releases as well as the
+> initial schema. The store issues the same SQL either way, so a column Maestro
+> adds and then uses is required, not optional: this release adds
+> `trace_context VARCHAR(128)` to `<prefix>workflow_signal`, and without it
+> `saveSignal` fails inside the transport listener and the signal is eventually
+> dead-lettered. See [`docs/operations.md` §10.6](operations.md#106-schema-migrations-and-a-custom-table-prefix)
+> and the release notes' Database Migrations section before upgrading.
+
 ---
 
 ## Messaging Configuration
