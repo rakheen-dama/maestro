@@ -1,0 +1,46 @@
+{
+  "_identity" : {
+    "pwd" : "/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/multi-instance-verification/maestro-integration-tests",
+    "gitHead" : "7113e069eca5f3ba3bdaa8d519f878cef542de22",
+    "branch" : "worktree-multi-instance-verification",
+    "timestampUtc" : "2026-08-01T21:43:25.642467Z",
+    "seed" : -6973268155056049009,
+    "mode" : "SOAK",
+    "runId" : "20260801-214325--6973268155056049009"
+  },
+  "payload" : {
+    "perEffectTotals" : {
+      "rateLock" : 1904,
+      "disbursement" : 1428,
+      "compensation" : 476
+    },
+    "perPathBreakdown" : {
+      "HAPPY" : {
+        "rateLock" : 974,
+        "disbursement" : 974,
+        "compensation" : 0
+      },
+      "CONDITIONS_LOOP" : {
+        "rateLock" : 454,
+        "disbursement" : 454,
+        "compensation" : 0
+      },
+      "SIGNAL_TIMEOUT" : {
+        "rateLock" : 0,
+        "disbursement" : 0,
+        "compensation" : 0
+      },
+      "SAGA_WITHDRAWAL" : {
+        "rateLock" : 476,
+        "disbursement" : 0,
+        "compensation" : 476
+      }
+    },
+    "duplicatedWorkflows" : [ ],
+    "totalDuplicates" : 0,
+    "explainedDuplicates" : 0,
+    "unexplainedDuplicates" : 0,
+    "unexplainedWorkflows" : [ ],
+    "missingSagaCompensation" : [ ]
+  }
+}

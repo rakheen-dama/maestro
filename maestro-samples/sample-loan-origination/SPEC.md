@@ -206,6 +206,12 @@ services (background, logs to files). Script uses curl + jq, asserts via
    while awaiting underwriting decision, restart it, send the decision →
    FUNDED. (Proves recovery replay + signal-while-down.)
 
+**Scenarios 6-10** (multi-node — added by the multi-instance verification
+cycle: two-node loan-application, owner-kill peer adoption, rolling restart,
+timer-poller leader failover, cross-node admin retry/terminate) are
+documented in the header comment of `e2e/run-e2e.sh` and in `README.md`,
+not duplicated here.
+
 ## Library-bug protocol
 
 If the sample exposes an engine defect: reproduce it FIRST as a failing test

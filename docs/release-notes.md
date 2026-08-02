@@ -1,5 +1,129 @@
 # Release Notes — Maestro
 
+## Unreleased
+
+### Upgrade notes — mixed-version deployments
+
+- **Upgrade every node of a service together (or drain it first) — the new
+  `SIGNAL_TIMEOUT` event type is not readable by the previous version.** This
+  release's Issue 19 fix (below) makes upgraded nodes write `SIGNAL_TIMEOUT`
+  events into the shared event log. A node still running the previous version
+  that adopts such a workflow — the normal cross-node recovery path in a
+  multi-instance service — fails `EventType.valueOf("SIGNAL_TIMEOUT")` while
+  reading the log and cannot replay the workflow until an upgraded node picks
+  it up. In a rolling deploy that window is live traffic, so either upgrade
+  all nodes of a service in one step, or drain the service (stop starting and
+  recovering workflows) before mixing versions. Single-node deployments are
+  unaffected.
+- **Awaits that timed out *before* the upgrade replay live once *after*
+  it.** The determinism guarantee below applies to `SIGNAL_TIMEOUT` events
+  written by upgraded nodes; a pre-upgrade timed-out await left no memo, so
+  its first post-upgrade replay re-executes at that slot exactly as the old
+  version would have (and may consume a late-arrived signal there, the old
+  behaviour). From that replay's own memo onward the new guarantee applies.
+
+### Observability
+
+- The Spring Boot starter now logs one INFO line at startup naming the
+  effective distributed-lock backend (`Maestro distributed-lock backend: ...`,
+  or `none (single-node mode)` when no backend is configured) — so a
+  multi-instance deployment silently running without a lock backend is
+  visible in the boot log.
+
+### For third-party `WorkflowStore` implementers
+
+- **`WorkflowStore.deleteFailureEvents`'s contract changed** (`docs/open-issues.md`
+  Issue 19). This is the same abstract SPI method 0.4.0 introduced for Issue
+  15's Retry command (not a new method — no recompile needed), but its
+  required *behaviour* is now stricter. Previously the contract was "delete
+  exactly the `ACTIVITY_FAILED`/`WORKFLOW_FAILED` events for this instance,
+  nothing else." It now also requires: **if `WORKFLOW_FAILED` records a
+  `SignalTimeoutException` as its cause, also delete the instance's
+  highest-sequenced `SIGNAL_TIMEOUT` event.** `AbstractJdbcWorkflowStore` (and
+  therefore `PostgresWorkflowStore`) and the `maestro-test` in-memory store
+  both implement the new rule; **if you maintain a custom `WorkflowStore`
+  implementation with your own `deleteFailureEvents`, you must add this
+  exceptionType-gated deletion or `$maestro:retry` will silently loop forever**
+  on any workflow that failed because a timeout-guarded `awaitSignal` timed
+  out: replay will keep finding the `SIGNAL_TIMEOUT` memo at its sequence slot
+  and deterministically re-raise the same timeout on every retry attempt,
+  with no error surfaced (the command dispatcher reports `RETRIED`, not a
+  failure). A plain workflow-code failure after a *caught* gate timeout is
+  unaffected — the exceptionType gate exists precisely so that memo survives
+  retry undisturbed (deleting it unconditionally would resurrect the Issue 19
+  replay-divergence bug through the retry door — see the fix's rationale in
+  `docs/open-issues.md` Issue 19).
+
+### Bug Fixes
+
+- **Parked workflows now ride out transient store outages instead of
+  failing** (`docs/open-issues.md` Issue 20). Previously, a `RuntimeException`
+  raised by the store during a parked workflow's periodic wake-recheck probe
+  — `standDownIfTerminated`'s instance read, the signal-poll read inside a
+  parked `awaitSignal`'s recheck loop, or the timer-row recheck inside a
+  parked `sleep()` (Issue 17) — propagated out of the park loop and durably
+  marked a healthy, still-waiting workflow `WORKFLOW_FAILED`, running its
+  compensations. These probes only ever notice something that happened on
+  another node (a cross-node terminate, a signal or timer fire missed by the
+  local notifier) and never write durable state, so a failed probe now logs a
+  rate-limited `WARN` and the park simply continues to the next
+  `maestro.signal.wake-recheck-interval` chunk — cross-node terminate
+  convergence and cross-node wake are delayed by at most one interval, never
+  by a failure. Found by the chaos harness's PR-gate re-proof of Issue 19's
+  fix (a 39s store partition exceeding the connection pool's timeout); pinned
+  by `ParkedProbeStoreOutageTest`.
+
+- **Timed-out `awaitSignal` calls are now memoized and replay
+  deterministically** (`docs/open-issues.md` Issue 19). Previously a timed-out
+  await left its sequence slot empty; a recovery replay whose awaited signal
+  had arrived late consumed it at that slot and diverged from the original
+  execution — observed as a saga compensating at the wrong gate and leaking
+  its reserved resource after a routine rolling restart. The live timeout path
+  now appends a `SIGNAL_TIMEOUT` event (signal name + timeout in the payload)
+  before throwing, and replay re-raises the timeout from the log alone; the
+  late signal stays durably unconsumed for a later await of the same name.
+  **Observable changes:** event logs no longer contain timed-out-await
+  sequence gaps (tooling that asserted the old "designed gap" positions must
+  expect contiguous logs with `SIGNAL_TIMEOUT` events instead), and
+  `$maestro:retry` of a workflow that failed *because of* a signal timeout
+  deletes that failing timeout memo so the retried await re-drives — earlier
+  caught gate timeouts still replay identically after a retry. Found by the
+  multi-instance chaos harness; pinned by `SignalTimeoutReplayDeterminismTest`.
+  **If you maintain a custom `WorkflowStore`, read "For third-party
+  `WorkflowStore` implementers" above — this is a behavioural contract
+  change, not just an engine fix.**
+
+- **A stale run whose event append collides with a concurrent runner now
+  stands down instead of failing the workflow** (`docs/open-issues.md`
+  Issue 18). Previously, when a node lost its instance lock mid-run (frozen
+  past the lock TTL, partitioned, or the no-lock-backend race) and a peer
+  adopted the workflow, the stale node's resumed run hit the store's
+  `(workflow_instance_id, sequence_number)` unique guard — and the resulting
+  `DuplicateEventException` was treated as a workflow failure: a workflow
+  that had succeeded on the adopting node was durably marked `FAILED` and
+  its saga compensations ran, reversing completed work. The executor now
+  treats the collision as "another run owns this workflow's progress" and
+  stands down like the shutdown/termination cases: nothing is written, no
+  compensation runs, the concurrent runner's durable outcome governs (and
+  with no concurrent runner the instance stays recoverable). Memoized
+  activity-result adoption inside the activity proxy is unchanged. Found by
+  the multi-instance chaos harness; pinned by
+  `WorkflowExecutorDuplicateEventStandDownTest`.
+
+- **Cross-node timer fires (and cancels) now wake the sleeping workflow**
+  (`docs/open-issues.md` Issue 17). Previously, in any multi-instance
+  deployment, a timer fired by the timer-poller leader on a node other than
+  the one whose virtual thread was parked in `workflow.sleep()` durably
+  marked the timer `FIRED` but woke nothing — the workflow wedged forever
+  until its owning node restarted. A parked `sleep()` now re-reads its
+  durable timer row every `maestro.signal.wake-recheck-interval` (default
+  30s, unchanged — the property now bounds cross-node timer-fire,
+  timer-cancel and terminate latency as well as signal latency), so a
+  remote fire or cancel takes effect within one interval. Single-node
+  behaviour is unchanged: a local fire still unparks instantly.
+
+---
+
 ## 0.4.0
 
 This release closes out `docs/open-issues.md` Issues 13, 14, and 15 — all

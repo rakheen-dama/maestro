@@ -11,6 +11,8 @@ import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.spring.client.MaestroClient;
 import io.b2mash.maestro.spring.proxy.ActivityStubBeanPostProcessor;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -41,6 +43,8 @@ import tools.jackson.databind.ObjectMapper;
 @ConditionalOnBean(WorkflowStore.class)
 @EnableConfigurationProperties(MaestroProperties.class)
 public class MaestroAutoConfiguration {
+
+    private static final Logger log = LoggerFactory.getLogger(MaestroAutoConfiguration.class);
 
     @Bean
     @ConditionalOnMissingBean
@@ -75,6 +79,14 @@ public class MaestroAutoConfiguration {
             throw new IllegalStateException(
                     "maestro.service-name must be set. Configure it in application.yml or application.properties.");
         }
+        // Runtime proof of which DistributedLock implementation actually wired
+        // up, independent of what maestro.lock.type SAYS: the auto-configuration
+        // that won the @ConditionalOnProperty race injected this exact bean.
+        // Logged at INFO (not DEBUG) so an operator - or an E2E harness grepping
+        // this process's own log - can confirm the effective backend without
+        // trusting configuration alone.
+        log.info("Maestro distributed-lock backend: {}",
+                distributedLock != null ? distributedLock.getClass().getName() : "none (single-node mode)");
         var lock = properties.getLock();
         var lifecycleEventsEnabled = properties.getAdmin().events().enabled();
         var shutdownTimeout = properties.getShutdown().timeout();

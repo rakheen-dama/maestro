@@ -61,15 +61,28 @@ public final class MaestroEngineHarness implements AutoCloseable {
         this.serializer = new PayloadSerializer(builder.objectMapper);
         this.lock = builder.lock;
         this.messaging = builder.messaging;
-        this.executor = new WorkflowExecutor(
-                builder.store,
-                builder.lock,
-                builder.messaging,
-                builder.signalNotifier,
-                this.serializer,
-                builder.serviceName,
-                builder.lockKeyPrefix,
-                builder.instanceLockTtl);
+        this.executor = builder.wakeRecheckInterval == null
+                ? new WorkflowExecutor(
+                        builder.store,
+                        builder.lock,
+                        builder.messaging,
+                        builder.signalNotifier,
+                        this.serializer,
+                        builder.serviceName,
+                        builder.lockKeyPrefix,
+                        builder.instanceLockTtl)
+                : new WorkflowExecutor(
+                        builder.store,
+                        builder.lock,
+                        builder.messaging,
+                        builder.signalNotifier,
+                        this.serializer,
+                        builder.serviceName,
+                        builder.lockKeyPrefix,
+                        builder.instanceLockTtl,
+                        true,
+                        Duration.ofSeconds(30),
+                        builder.wakeRecheckInterval);
     }
 
     /**
@@ -298,6 +311,7 @@ public final class MaestroEngineHarness implements AutoCloseable {
         private String serviceName = "integration-test";
         private String lockKeyPrefix = "maestro:lock:";
         private Duration instanceLockTtl = Duration.ofSeconds(30);
+        private @Nullable Duration wakeRecheckInterval;
 
         private Builder(WorkflowStore store, ObjectMapper objectMapper) {
             this.store = store;
@@ -341,6 +355,20 @@ public final class MaestroEngineHarness implements AutoCloseable {
          */
         public Builder instanceLockTtl(Duration instanceLockTtl) {
             this.instanceLockTtl = instanceLockTtl;
+            return this;
+        }
+
+        /**
+         * @param wakeRecheckInterval how often a parked {@code awaitSignal()} or
+         *                            {@code sleep()} re-reads the store for a wake
+         *                            it may have missed
+         *                            ({@code maestro.signal.wake-recheck-interval});
+         *                            {@code null} keeps the engine's 30s default.
+         *                            A short interval (≈200–500ms) is how
+         *                            cross-node wake tests avoid real-time waits.
+         */
+        public Builder wakeRecheckInterval(@Nullable Duration wakeRecheckInterval) {
+            this.wakeRecheckInterval = wakeRecheckInterval;
             return this;
         }
 

@@ -19,6 +19,7 @@ import tools.jackson.databind.JsonNode;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeoutException;
@@ -72,6 +73,11 @@ final class SignalManager {
      * RabbitMQ messaging without Valkey), or delivered in the narrow window
      * before the park registered. Bounds cross-node signal latency in those
      * cases; with a working notifier the wake is instant and this never fires.
+     *
+     * <p>Also the default interval at which a parked {@code sleep()} re-reads
+     * its durable timer row ({@link DefaultWorkflowOperations}) — a timer
+     * fired or cancelled by a remote timer-poller leader has no local unpark
+     * either (Issue 17).
      */
     static final Duration DEFAULT_WAKE_RECHECK_INTERVAL = Duration.ofSeconds(30);
 
@@ -229,6 +235,20 @@ final class SignalManager {
             logger.debug("Replaying signal '{}' at seq {}", signalName, seq);
             return serializer.deserialize(storedEvent.get().payload(), type);
         }
+        // Replay check: a memoized timeout re-raises deterministically — from
+        // the log alone, with no store read and no signal consumption. Without
+        // this (Issue 19), a replay whose awaited signal had ARRIVED since the
+        // original timeout consumed it at this slot and diverged from the
+        // original execution — observed as a saga compensating at the wrong
+        // gate and leaking its reserved resource after a routine rolling
+        // restart. The late signal stays durably unconsumed (never discarded);
+        // a later await of the same name (e.g. the loan sample's gate #2) will
+        // find and consume it. Mirrors Issue 13's TIMER_CANCELLED memoization.
+        if (storedEvent.isPresent() && storedEvent.get().eventType() == EventType.SIGNAL_TIMEOUT) {
+            logger.debug("Replaying timed-out await of '{}' at seq {} — re-raising deterministically",
+                    signalName, seq);
+            throw new SignalTimeoutException(ctx.workflowId(), signalName, timeout);
+        }
 
         // Live path
         ctx.setReplaying(false);
@@ -270,6 +290,19 @@ final class SignalManager {
             while (true) {
                 var remaining = Duration.between(Instant.now(), deadline);
                 if (!remaining.isPositive()) {
+                    // Memoize the timeout BEFORE throwing (Issue 19): once any
+                    // later event exists, the timeout memo is durably ahead of
+                    // it, so replay re-raises here instead of consuming a
+                    // signal that arrived after the fact. A crash before this
+                    // append leaves no post-timeout history at all, so a
+                    // replay that then consumes a late signal is a legitimate
+                    // fresh choice, not divergence. A DuplicateEventException
+                    // from this append means another runner already owns this
+                    // slot — it propagates to the executor's Issue 18
+                    // stand-down, exactly like any other stale append.
+                    var timeoutDetail = serializer.serialize(
+                            new SignalTimeoutDetail(signalName, timeout.toString()));
+                    appendEvent(ctx, seq, EventType.SIGNAL_TIMEOUT, stepName, timeoutDetail);
                     updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
                     throw new SignalTimeoutException(ctx.workflowId(), signalName, timeout);
                 }
@@ -288,7 +321,12 @@ final class SignalManager {
                 // for a run that must not continue.
                 standDownIfTerminated(ctx.workflowId());
 
-                var signals = store.getUnconsumedSignals(ctx.workflowId(), signalName);
+                // Advisory probe (Issue 20 / Ruling 5): a store exception here
+                // must not tear down a healthy parked workflow — treat it as
+                // "no signal seen this interval" and try again next chunk.
+                var signals = ParkProbe.read("awaitSignal.getUnconsumedSignals", ctx.workflowId(),
+                        () -> store.getUnconsumedSignals(ctx.workflowId(), signalName),
+                        List.<WorkflowSignal>of());
                 if (!signals.isEmpty()) {
                     var result = consumeSignal(ctx, seq, stepName, signalName, signals.getFirst(), type);
                     updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
@@ -425,6 +463,13 @@ final class SignalManager {
         return serializer.deserialize(signal.payload(), type);
     }
 
+    /**
+     * Payload of a {@link EventType#SIGNAL_TIMEOUT} event: which signal the
+     * await was waiting for and the timeout that elapsed (ISO-8601).
+     */
+    record SignalTimeoutDetail(String signalName, String timeout) {
+    }
+
     private void appendEvent(WorkflowContext ctx, int seq, EventType type,
                              String stepName, @Nullable JsonNode payload) {
         var event = new WorkflowEvent(
@@ -454,13 +499,21 @@ final class SignalManager {
      * terminal row, and it bounds cross-node terminate convergence for a parked
      * await to one interval.
      *
+     * <p>The read itself is advisory (Issue 20 / Ruling 5, via {@link ParkProbe}):
+     * if the store is unreachable this interval, that means "can't prove
+     * terminated" — fail open and keep parking rather than propagate the
+     * store's exception. The instance is only ever actually stood down once a
+     * probe succeeds and observes {@code TERMINATED}.
+     *
      * @param workflowId the workflow's business ID
      * @throws WorkflowTerminatedException if the instance row is {@code TERMINATED}
      */
     private void standDownIfTerminated(String workflowId) {
-        var terminated = store.getInstance(workflowId)
-                .map(instance -> instance.status() == WorkflowStatus.TERMINATED)
-                .orElse(false);
+        var terminated = ParkProbe.read("awaitSignal.standDownIfTerminated", workflowId,
+                () -> store.getInstance(workflowId)
+                        .map(instance -> instance.status() == WorkflowStatus.TERMINATED)
+                        .orElse(false),
+                false);
         if (terminated) {
             logger.info("Workflow '{}' was terminated while parked on a signal — abandoning this run",
                     workflowId);

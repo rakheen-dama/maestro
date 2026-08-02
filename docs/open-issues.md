@@ -129,19 +129,43 @@ remember that the fakes have already been wrong about this codebase six times.
 ./gradlew build                              # everything, incl. integration tests (needs Docker)
 ./gradlew :maestro-core:test                 # fast unit tests
 ./gradlew :maestro-integration-tests:test    # real Postgres + Kafka
-./gradlew :maestro-integration-tests:e2eTest # @Tag("e2e") only, not in `build`
-cd maestro-samples/sample-loan-origination && ./e2e/run-e2e.sh   # full E2E, ~4 min
+./gradlew :maestro-integration-tests:e2eTest # @Tag("e2e") only, not in `build` — the chaos/soak harness
+cd maestro-samples/sample-loan-origination && ./e2e/run-e2e.sh   # full E2E, ~9 min, 10 scenarios
 ```
 
-**`e2eTest` currently matches nothing.** No test in the repo carries
-`@Tag("e2e")` — that usage was removed from `maestro-integration-tests`
-during the P0–P6 work (PR #27); the task itself is still registered by
-`maestro.integration-test-conventions.gradle.kts` and runs green, it just
-executes zero tests. This predates this branch and isn't something it
-introduced. Real end-to-end coverage is the loan-origination script above
-(`sample-loan-origination/e2e/run-e2e.sh`), which runs nightly and on demand
-in CI (`.github/workflows/e2e-nightly.yml`) — treat `e2eTest` as dead until
-either a suite is tagged `e2e` again or the task is removed.
+**`e2eTest` now runs the multi-instance chaos/soak harness** (added by the
+2026-08-01 multi-instance verification cycle;
+`maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/
+e2e/chaos/`). It Testcontainers-orchestrates a real six-node loan-origination
+cluster (2 instances each of loan-application, verification-gateway,
+underwriting) over real Postgres + Kafka, drives a seeded workload, injects
+scripted chaos (pause/resume, partition, backend outages, rolling restarts),
+and asserts store-level invariants (terminal-state correctness, event-log
+integrity, no missed signals, no wrongly-tolerated duplicates) plus the
+Issue 11/12 evidence (duplicate side effects, recovery/lock-renewal rates).
+Needs Docker; `e2eTest` `dependsOn` the three sample services' `bootJar`
+tasks (jar paths passed as system properties), so it is never wired into
+`build`/`check`. Two modes, selected by system property:
+
+```bash
+# PR-gate mode (default): ~10-minute chaos window, runs on every e2eTest invocation
+./gradlew :maestro-integration-tests:e2eTest --rerun-tasks
+
+# Soak mode: multi-hour window + the vs-node-count benchmark tail
+./gradlew :maestro-integration-tests:e2eTest --rerun-tasks \
+    -Dmaestro.chaos.soak=true -Dmaestro.chaos.durationMinutes=120
+```
+
+CI runs PR-gate mode nightly (3× consecutive, `.github/workflows/
+e2e-nightly.yml` job `chaos-pr-gate`) and soak mode weekly plus on-demand
+(`chaos-soak`). See `docs/operations.md` for what the harness measures and
+how to read its evidence, and `.superpowers/sdd/multi-instance/
+chaos-harness-design.md` for the full design. The separate
+loan-origination E2E script above (`sample-loan-origination/e2e/run-e2e.sh`,
+10 scenarios including multi-node owner-kill adoption, rolling restart,
+timer-leader failover, and cross-node admin commands on both lock backends)
+still runs nightly and on demand in the same CI file, independent of
+`e2eTest`.
 
 **Where tests belong.** Unit tests live in their module. Tests that need a real
 backend go in `maestro-integration-tests` (see its `SPEC.md` for fixtures and
@@ -184,7 +208,15 @@ by deliberate decision — see "Known limitations" at the end of §5. Three new
 issues (13–15), found while doing this work, were opened along the way and
 are **now resolved too** (see each section below). A fourth (16), found
 during the final whole-branch review of 13–15, is **guarded off, not
-resolved** — see its section for why.
+resolved** — see its section for why. A fifth (17), found on day one of the
+multi-instance verification cycle (running every service at two instances),
+is **now resolved** — see its section. A sixth (18), found by the chaos
+harness's first live run (the mandated Issue 11 split-brain trigger), is
+**now resolved** — see its section. A seventh (19), found by the chaos
+harness's PR-gate streak (a routine graceful rolling restart racing a late
+signal), is **now resolved** — see its section. An eighth (20), found by a
+PR-gate re-proof run after Issue 19's fix (a transient store outage during a
+parked wake-recheck probe), is **now resolved** — see its section.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -218,6 +250,10 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [14](#issue-14) | `SagaManager` re-appends `COMPENSATION_STARTED` on replay | Library gap | Low | **Resolved** |
 | [15](#issue-15) | Admin dashboard retry/terminate signals are unconsumed | Library gap | Medium | **Resolved** |
 | [16](#issue-16) | Retrying a compensated saga is guarded off, not supported | Library gap | Medium | Open, guarded |
+| [17](#issue-17) | Cross-node timer fires never wake the sleeping workflow | Library defect | High | **Resolved** |
+| [18](#issue-18) | A stale run's duplicate append is recorded as workflow failure | Library defect | High | **Resolved** |
+| [19](#issue-19) | Timed-out awaits replay nondeterministically (late signal consumed at the gap) | Library defect | High | **Resolved** |
+| [20](#issue-20) | A transient store outage during a parked wake-recheck fails a healthy workflow | Library defect | High | **Resolved** |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -777,6 +813,145 @@ carry it on the instance row, and reject a write from a stale token. That's a
 **Done when.** A node that has lost its lock cannot persist workflow progress,
 with a multi-node test proving the stale node is fenced out.
 
+**Measured evidence (multi-instance chaos cycle, 2026-08-01).** The chaos
+harness (`.superpowers/sdd/multi-instance/chaos-harness-design.md`) drives a
+real six-node loan-origination cluster and mandates at least 2 loan-node
+`PAUSE_RESUME` actions (`docker pause`/`unpause` past the 30s instance-lock
+TTL) per run — the exact split-brain window this issue describes: the frozen
+node's local run keeps executing while a peer adopts and completes the
+workflow, and the frozen node resumes into a stale run when it thaws. Its
+per-workflow side-effect census (design §7: log-line counts of rate-lock
+reservation, disbursement, and compensation release, correlated against the
+chaos action log) measured this directly across the three consecutive
+PR-gate streak runs that constitute the gate of record
+(`.superpowers/sdd/multi-instance/evidence/task7/INDEX.md`,
+`docs/../task-7-report.md` §0):
+
+| Run ID | Workflows | Loan-node `PAUSE_RESUME` actions | Side-effect duplicates |
+|---|---|---|---|
+| `20260731-234107-3430218812008443518` | 74 | ≥2 (mandated) | **0** |
+| `20260731-235041--200961534721746905` | 75 | ≥2 (mandated) | **0** |
+| `20260801-000014-886868793817033505` | 62 | ≥2 (mandated) | **0** |
+
+Zero duplicate side effects across all 74+75+62 = 211 workflows, every run
+containing at least one mandated split-brain window.
+
+**Why zero, not "rare."** Two engine properties combine to make the loser
+lose fast rather than merely lose eventually:
+
+1. **The unique event index was always the store-correctness backstop** this
+   section describes ("the loser's writes fail and it adopts the winner's
+   results") — that part of the contract was never in doubt.
+2. **Issue 18's fix makes that failure cheap and immediate.** Before Issue 18
+   was fixed, the loser's colliding append threw `DuplicateEventException`
+   into the generic failure handler, which durably marked the (already-won)
+   workflow `FAILED` and ran compensations — real side-effect reversal, and a
+   long detour (a full failure-and-compensation pass) before the loser gave
+   up. After the fix, that same collision is recognised at the top of
+   `executeWorkflow` as "another run owns this workflow's progress" and
+   stands the local run down immediately: no further writes, no
+   compensation, no retry of the activity that would have produced a second
+   side effect. The window in which a stale run could still race ahead and
+   call an external side effect a *second* time is now just "however long
+   between the peer's adoption and the stale node's next event append" —
+   short in this workload's activity shapes, and evidently short enough to
+   round to zero in three ten-minute chaos windows.
+
+**What this means for the fencing decision.** This is evidence, not proof of
+absence: split-brain under the harness's mandated trigger currently produces
+correct durable *state* (invariant I1/I3 clean in all three runs — see
+`docs/../task-7-report.md` §0) with a **measured** duplicate-side-effect rate
+of 0/211 workflows. The fencing gap this issue tracks was always specifically
+about side effects, never about store correctness (that was Issue 18's
+territory, now closed) — and it now has a number instead of a hypothesis:
+under a 10-minute chaos window with a real cluster, real Postgres, real
+Kafka, and the mandated split-brain trigger, duplicate side effects are rare
+enough not to appear at all. That does not retire the issue — fencing tokens
+would make the *guarantee* unconditional instead of "unobserved at this
+sample size" — but it is a materially different starting point for deciding
+whether to prioritise the SPI change than "we don't know how often this
+happens."
+
+**Honest caveats.**
+- **Short windows.** Each streak run is the PR-gate's 10-minute chaos window
+  (plus drain); a duplicate that needs a longer stale-run race to land (e.g.
+  a slow activity call that outlives the adoption-to-next-append gap) would
+  not necessarily show up here.
+- **One workload.** All 211 workflows are loan-origination paths (HAPPY,
+  SAGA_WITHDRAWAL, SIGNAL_TIMEOUT, CONDITIONS_LOOP) with activity latencies
+  in the tens-to-low-hundreds-of-milliseconds range. A workload with slower
+  or blocking side-effect activities has more time for a stale run to race a
+  second call before standing down, and would need its own measurement.
+- **One trigger shape.** Only `PAUSE_RESUME` (freeze past TTL, then resume)
+  and `PARTITION`/`BACKEND_OUTAGE(valkey)` are exercised (design §4); a GC
+  pause or a partition of a different duration is not separately measured.
+
+**Soak-window data point (run `20260801-214325--6973268155056049009`,
+2026-08-01/02).** The multi-hour soak run the earlier placeholder promised
+has landed: SOAK mode, seed `-6973268155056049009`, a 120-minute chaos
+window at 20 workflows/min — **2,376 workflows** (974 HAPPY /
+454 CONDITIONS_LOOP / 472 SIGNAL_TIMEOUT / 476 SAGA_WITHDRAWAL),
+`VERDICT: PASS`, `violations: []` (`run-summary.json` in the run dir under
+`.superpowers/sdd/multi-instance/evidence/task7/`). The side-effect census
+(`side-effects.json`, same dir):
+
+- **0 duplicate side effects** (0 explained / 0 unexplained), no missing
+  saga compensations.
+- Per-effect totals: 1,904 rate-lock reservations, 1,428 disbursements, and
+  **476 compensation releases — exactly the SAGA_WITHDRAWAL count**: every
+  saga path compensated exactly once, and nothing else compensated at all.
+- 13 redelivered-but-unconsumed signal groups, every one `consumedTwin=true`
+  — the known, informational Kafka at-least-once shape (Ruling 3), not a
+  correctness finding.
+- Checker integrity: the run's own periodic checker completed 245 cycles
+  with 1 unreachable cycle (max streak 1) — the invariants were being
+  watched for essentially the entire window.
+- Drain: after the end-of-window heal-all, every in-flight workflow across
+  all three services reached a terminal state in **76s** (console
+  01:45:57 → 01:47:13 SAST) against the harness's 240s drain SLA — the
+  backlog a 2-hour chaos window builds clears in about a minute once chaos
+  stops.
+
+Combined with the PR-gate streaks above, the measured duplicate-side-effect
+rate is now **0 across 2,587 workflows** (211 PR-gate + 2,376 soak). The
+soak window blunts the "short windows" caveat's sharpest edge (a 12×-longer
+chaos window than the PR gate); the "one workload" and "one trigger shape"
+caveats still stand — as does the issue itself: fencing tokens would make
+the guarantee unconditional, whereas this makes it well-measured.
+
+**Soak-run provenance and caveats — stated honestly** (they matter for
+anyone re-reading the raw console, `evidence/task7/soak-console.log`):
+
+1. The same JVM first ran the PR-gate class: the soak invocation predates
+   the `d4720ca` suite-selection fix (which makes dedicated
+   soak/golden/smoke invocations select only their dedicated class), and
+   that PR-gate run aborted at its own 25-minute `@Timeout` — the root
+   cause, finally attributed, of every earlier failed soak attempt. The
+   console therefore ends `BUILD FAILED` / `SOAK_EXIT=1`. **The soak test
+   itself PASSED**; this evidence is evaluated from the soak run's own
+   verdict and run directory, not the JVM's exit code.
+2. The aborted PR-gate leaked its checker/sampler threads (the run's binary
+   predates the `eac200e` failure-path-teardown fix), which spammed
+   `CHECKER BLIND … Mapped port can only be obtained after the container is
+   started` and `execInContainer` WARNs into the console from 23:43 SAST
+   onward — a single monotonic streak, fully attributable to the leaked
+   threads probing the torn-down PR-gate cluster. The soak's own checker was
+   clean: the 245-cycles / 1-unreachable / max-streak-1 numbers above come
+   from `run-summary.json`, not from grepping the polluted console.
+3. Binary provenance: the test binary compiled at `b2b5c65` (the console's
+   identity header, started 23:14 SAST); the run dir's identity stamps
+   `gitHead 7113e06` because the stamp reads git at run start (23:43), after
+   four later commits had landed (`2ac7a57`/`eac200e` harness source,
+   `617a735`/`7113e06` docs). The workload-semantics fixes under test
+   (interrupt-safe pacer, runaway cap, in-flight bound) **are** in
+   `b2b5c65`; the later fix-loop commits touch failure paths, teardown, and
+   reporting only — none of them alter what this run measured.
+4. Schema provenance: the run's `run-summary.json` omits
+   `payload.generationBackPressure` because the `b2b5c65` binary predates
+   that field (added in `8cd2754`). Back-pressure values are therefore
+   unavailable for this run; the historical artifact is not regenerated,
+   and every future soak run records the field.
+
 ---
 
 ### Issue 12 — Recovery polling doesn't scale {#issue-12}
@@ -797,6 +972,106 @@ a Valkey pipeline); scope wake subscriptions to the workflow's lifetime.
 
 **Done when.** There are numbers. This one needs a benchmark before a fix —
 don't optimise it blind.
+
+**Benchmark (multi-instance chaos cycle, 2026-08-01).**
+
+*Methodology* (`.superpowers/sdd/multi-instance/chaos-harness-design.md` §6,
+coordinator-ruled — no engine metrics seam was added; see the design doc's
+§13 Q10 ruling). The metrics this issue asks for are all backend-visible, so
+the chaos harness samples the backends directly rather than instrumenting
+`maestro-core`:
+
+| Metric | Source |
+|---|---|
+| Recovery-query rate | `pg_stat_statements` delta for the `getRecoverableInstances` statement (queryid pinned at runtime per run — fails loudly if the store's SQL changes rather than silently reporting zero) |
+| Lock probes / renewals (Valkey) | `Valkey INFO commandstats` deltas for the exact commands `maestro-lock-valkey` issues |
+| Lock probes / renewals (Postgres lock) | `pg_stat_statements` deltas for the `maestro_lock`-table statements |
+| Wake-subscription churn | Valkey `subscribe`/`unsubscribe` command deltas + the `pubsub_channels` gauge |
+| Parked / running counts, node count | store query + harness controller state |
+
+A sampler thread snapshots all of the above every 15s into `metrics.csv`
+(`windowStartUtc,windowSecs,liveNodes,running,waitingSignal,waitingTimer,
+compensating,recoveryCalls,recoveryRatePerSec,lockProbeCalls,lockRenewCalls,
+subscribeCalls,unsubscribeCalls,pubsubChannels,chaosActive`).
+`pg_stat_statements` cannot attribute calls per node (it aggregates per
+queryid across all nodes sharing a DB user), so **per-node rates are only
+valid in calm windows** (`chaosActive=false`, all 6 nodes healthy) —
+`clusterRate / liveNodes`. Two benchmark axes follow from that constraint:
+
+- **vs parked-workflow count** — a soak run's natural backlog growth/shrink
+  gives a spread of `(parkedCount, recoveryRate, lockProbeRate)` points
+  across calm windows across a long run.
+- **vs node count** — a dedicated benchmark tail (design §6/§14.5): chaos
+  off, steady low-rate workload, one measurement phase at 6 nodes, a graceful
+  stop of one node per service, a second measurement phase at 3 nodes.
+
+*PR-gate metrics samples (illustrative, not the benchmark of record — each
+window below is 15 seconds, far too short to characterise scaling; see
+"vs node count" below for the real benchmark).* Real rows from the three
+PR-gate streak runs that are the gate of record
+(`.superpowers/sdd/multi-instance/evidence/task7/INDEX.md`,
+`.superpowers/sdd/task-7-report.md` §0), one calm and one chaos window per
+run:
+
+| Run | Window | liveNodes | waitingSignal | waitingTimer | recoveryRatePerSec | lockProbeCalls | lockRenewCalls | subscribeCalls | pubsubChannels |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 (`3430218812008443518`) | calm | 6 | 0 | 0 | 0.000 | 0 | 18 | 0 | 0 |
+| 1 (`3430218812008443518`) | chaos | 5 | 4 | 4 | 0.000 | 44 | 61 | 11 | 4 |
+| 2 (`-200961534721746905`) | calm | 6 | 2 | 3 | 0.000 | 36 | 60 | 12 | 2 |
+| 2 (`-200961534721746905`) | chaos | 5 | 11 | 2 | 0.133 | 65 | 114 | 20 | 11 |
+| 3 (`886868793817033505`) | calm | 6 | 3 | 4 | 0.000 | 28 | 45 | 7 | 3 |
+| 3 (`886868793817033505`) | chaos | 5 | 6 | 3 | 0.000 | 29 | 50 | 7 | 6 |
+
+Qualitative read (not a fitted curve — sample size is three 15s windows):
+`liveNodes` drops 6→5 whenever the controller has an active harassed node
+(`chaosActive=true`), and `lockRenewCalls`/`lockProbeCalls` both rise in
+chaos windows (more contention/adoption activity, consistent with Issue 12's
+theory), but a real per-node-scaling number needs the dedicated benchmark
+tail below, not PR-gate noise.
+
+**vs-node-count benchmark of record (soak run
+`20260801-214325--6973268155056049009`, 2026-08-01/02).** The benchmark tail
+(chaos off, steady 6/min workload, one 300s measurement phase at 6 nodes, a
+graceful stop of one node per service — `LOAN_B`, `VERIFY_B`, `UW_B` — then
+a second 300s phase at 3 nodes) ran after the 120-minute soak window's
+passing verify. Sources: `benchmark-tail.json` (phase boundaries, stopped
+nodes, workflow counts) and `metrics.csv` (524 15s samples across the whole
+run, 312 of them calm) in the run dir under
+`.superpowers/sdd/multi-instance/evidence/task7/`. Every sample inside both
+tail phases was calm (`chaosActive=false`), 20 samples per phase; the
+per-15s columns below are averages over those 20 samples.
+
+| Phase | Duration | liveNodes | Workflows | recoveryRatePerSec (calm) | lockProbeCalls/15s (calm) | lockRenewCalls/15s (calm) | parkedCount (avg) |
+|---|---|---|---|---|---|---|---|
+| 6 nodes (`tail6`, 23:47:15–23:52:18Z) | 300s | 6 | 23 | 0.100 | 23.9 | 49.6 | 5.7 |
+| 3 nodes (`tail3`, 23:52:22–23:57:26Z) | 300s | 3 | 27 | 0.050 | 24.0 | 45.2 | 8.1 |
+
+Read of the numbers:
+
+- **The recovery-query rate is proportional to node count — consistent with
+  linear at both measured node counts (6 and 3).** The cluster-wide rate
+  halves with the cluster (0.100 → 0.050 calls/s), i.e. a constant ≈0.0167
+  calls/s per node (one `getRecoverableInstances` poll per node per ~60s) in
+  both phases. That is this issue's core theory confirmed
+  by a clean measurement: every node polls the full recoverable set on its
+  own interval regardless of ownership, so store-side recovery-query load
+  scales with node count (and each poll's cost scales with the active
+  workflow set — the quadratic-ish combination this issue describes).
+- **Lock probe/renew traffic tracks the parked-workflow backlog, not node
+  count.** Halving the nodes left probes flat (23.9 → 24.0 per 15s) and
+  renewals near-flat (49.6 → 45.2 per 15s) while the average parked count
+  rose 5.7 → 8.1 (the 3-node phase inherits the 6-node phase's in-flight
+  workflows on fewer nodes). Renewal round-trips are per held lock, not per
+  node — the serial-renewal concern above is a backlog-scaling cost.
+- The absolute numbers are modest: at this workload (6/min, ≤~10 parked)
+  nothing here is a bottleneck. The issue is about the trend, and the trend
+  is now measured, not hypothesised.
+
+*Run provenance caveats:* same run as Issue 11's soak data point — see
+"Soak-run provenance and caveats" there (PR-gate `@Timeout` collision in the
+same JVM, leaked-checker console noise, `b2b5c65` binary vs `7113e06`
+stamp). None of the three affect the tail phases, which ran chaos-free at
+the end of the soak's own passing run.
 
 ---
 
@@ -1122,6 +1397,292 @@ correct outcome.
 
 ---
 
+### Issue 17 — Cross-node timer fires never wake the sleeping workflow {#issue-17}
+
+> **Resolved.** `DefaultWorkflowOperations.sleep()` no longer parks
+> indefinitely: both the live park and the replay re-park now park in
+> wake-recheck-interval chunks — the exact pattern
+> `SignalManager.awaitSignal` already used to survive missed cross-process
+> wakes — and on every chunk expiry re-read the durable timer row via
+> `WorkflowStore.findTimer`. A row a remote node has already transitioned
+> ends the park: `FIRED` appends the same `TIMER_FIRED` event a local wake
+> would (identical event/sequence semantics to the Issue 2 replay heal),
+> `CANCELLED` takes the Issue 13 outcome (`TIMER_CANCELLED` event +
+> catchable `TimerCancelledException`), `PENDING` keeps parking. A
+> cross-node terminate is also noticed within one interval, mirroring
+> `awaitSignal`'s per-chunk stand-down. The interval is the existing
+> `maestro.signal.wake-recheck-interval` (default 30s, unchanged) — reused
+> rather than a new property, since it already means "how often a parked
+> workflow re-reads the store for a wake it may have missed"; no SPI, schema
+> or messaging change. The local unpark stays the instant fast path, so
+> single-node (leader == owner) behaviour is unchanged. Commit `bdf9cc6`.
+> Pinned by
+> `WorkflowExecutorCrossNodeTimerWakeTest` (store-only `FIRED`/`CANCELLED`
+> transitions wake the parked sleep within the interval; a `PENDING` row
+> keeps it parked; the local fast path is untouched under the 30s default)
+> and `multinode.MultiNodeTimerWakeIT` (two engine harnesses over one real
+> Postgres: node B — sole timer poller, hence leader — fires or cancels, the
+> workflow sleeping on node A completes). The rest of this section is kept
+> as the record of the defect.
+
+**What's wrong.** `TimerPoller` polls due timers only on the elected leader.
+`WorkflowExecutor.fireTimer` CASes the timer row `PENDING → FIRED` in the
+shared store, then unparks via `ParkingLot` — a per-JVM map, so the unpark is
+a no-op when the workflow's parked virtual thread lives on a different node.
+`DefaultWorkflowOperations.sleep()` parked indefinitely (plain
+`ParkingLot.park`) with no periodic recheck — unlike
+`SignalManager.awaitSignal`, which parks in `wakeRecheckInterval` chunks
+precisely to survive missed cross-process wakes. Once the row is `FIRED` it
+is invisible to `getDueTimers` forever, and the Issue 2/13 self-heals only
+run on replay — so nothing short of restarting the owning node recovers the
+workflow. `cancelTimer`'s unpark was local-only too (the same gap for
+cross-node cancellation of a parked sleep), and a cross-node terminate of a
+parked sleep was likewise only noticed at the next status write.
+
+**Why it matters.** This is routine operation, not a failure scenario: in
+*any* multi-instance deployment of a service whose workflows call
+`workflow.sleep()`, every sleep wedges forever whenever the timer-poller
+leader happens not to be the node owning the parked thread — roughly
+(n−1)/n of sleeps in an n-node cluster. Found immediately when the
+loan-origination sample was run with two instances of every service
+(`.superpowers/sdd/multi-instance/rulings.md` Ruling 1); the same silent,
+permanent stall shape as Issues 2 and 13.
+
+**Where.** `maestro-core/src/main/java/.../engine/DefaultWorkflowOperations.java`
+— `sleep`/`parkForTimer`; `maestro-core/src/main/java/.../engine/WorkflowExecutor.java`
+— `fireTimer`/`cancelTimer` (the local-only unpark) and the
+`wakeRecheckInterval` seam; `maestro-core/src/main/java/.../engine/TimerPoller.java`
+— leader-only polling (unchanged; correct once the sleeper rechecks).
+
+**Done when.** A workflow sleeping on node A completes when node B's poller
+fires (or an operator on node B cancels) its timer, within a bounded
+interval, with the identical event log a single-node wake produces — proven
+at unit level against in-memory SPIs and end-to-end against real Postgres
+with two engine instances.
+
+### Issue 18 — A stale run's duplicate append is recorded as workflow failure {#issue-18}
+
+> **Resolved.** A `DuplicateEventException` that reaches
+> `WorkflowExecutor.executeWorkflow`'s top level now stands the local run
+> down — mirroring the shutdown and termination cases — instead of falling
+> into the generic `catch (Exception)` that treats workflow failures. The
+> stand-down writes nothing, runs no compensation, and releases the local
+> run; the concurrent runner's durable state governs, and if no concurrent
+> runner exists the instance stays active and recovery replays it from the
+> log. The sibling collection points got the same audit Issues 4/5's
+> control-flow exceptions did: `SagaManager.appendEvent` and
+> `recordStepFailure` no longer swallow the exception (a stale run must not
+> keep executing compensation actions the winner also runs),
+> `executeSequential` rethrows it instead of recording
+> `COMPENSATION_STEP_FAILED`, and `executeParallel`'s outcome collection
+> rethrows it with the same priority as shutdown/termination.
+> `ActivityInvocationHandler` is deliberately unchanged: its
+> adopt-the-stored-result handling of the same exception (return the
+> memoized payload at that sequence) is correct memoization semantics —
+> only an append that escapes to the executor's top level means the whole
+> local run is stale. Commit `0fe8bd7`, reproduced RED-first in `73af765`.
+> Pinned by `WorkflowExecutorDuplicateEventStandDownTest` (three tests: the
+> loser adopts a winner's COMPLETED outcome — no FAILED write, no
+> compensation; with no winner the instance stays active and recoverable;
+> a duplicate landing mid-compensation stands the whole attempt down
+> without recording a step failure). The rest of this section is the record
+> of the defect.
+
+**What's wrong.** In the Issue 11 no-fencing window — a node frozen past the
+30s instance-lock TTL (long GC pause, `docker pause`), partitioned, or racing
+on the no-lock-backend degradation — a peer node adopts and re-runs the
+workflow. When the stale node resumes, its next event append collides with
+the event the winner already persisted at that sequence, and the store's
+`(workflow_instance_id, sequence_number)` unique guard throws
+`DuplicateEventException` — the dedup mechanism working exactly as designed.
+But the exception is a `MaestroException` (a `RuntimeException`), so it fell
+into `executeWorkflow`'s generic `catch (Exception)` and was treated as *the
+workflow failing*: the instance was durably marked `FAILED` with the
+conflict message as its output, a `WORKFLOW_FAILED` event was appended (or
+half-appended — the terminal event append often collided too, leaving a
+terminal instance with no terminal event), and the saga's compensations ran,
+reversing side effects of work that had **succeeded** on the winner.
+`SagaManager`'s own event appends swallowed the exception outright, so a
+stale run could also march through compensation actions the winner was
+concurrently running.
+
+**Why it matters.** The architecture's documented split-brain contract is
+"the loser's writes fail and it adopts the winner's results" — duplicate
+*side effects* are the tolerated Issue 11 consequence, store-level
+correctness is not negotiable. This path instead produced a durably wrong
+terminal state (a funded loan recorded `FAILED`) and real compensation-side
+effects (a reserved rate lock released after disbursement). Found by the
+chaos harness's first live run: the mandated `PAUSE_RESUME` split-brain
+trigger hit it deterministically — 3 of 13 workflows in a one-minute
+shakeout window (`.superpowers/sdd/multi-instance/rulings.md` Ruling 2).
+It is the mid-run sibling of BUG7 (the finalize-time
+`OptimisticLockException` that recorded a successful workflow `FAILED`),
+which the convergent terminal transition fixed without covering the
+event-append collision.
+
+**Where.** `maestro-core/src/main/java/.../engine/WorkflowExecutor.java` —
+`executeWorkflow`'s catch chain (the new stand-down catch, plus the
+duplicate-during-compensation catch around `handleWorkflowFailure`) and
+`handleStaleRunStandDown`; `maestro-core/src/main/java/.../saga/SagaManager.java`
+— `appendEvent`, `recordStepFailure`, `executeSequential`,
+`executeParallel`; `maestro-core/src/main/java/.../engine/ActivityInvocationHandler.java`
+— `appendEventSafe` (unchanged, deliberately).
+
+**Done when.** Under the chaos harness's split-brain trigger, every workflow
+reaches the terminal state its path script declared (invariant I1), terminal
+event logs are well-formed (I3), and the only Issue 11 residue is counted
+duplicate side effects — proven by the harness's PR-gate mode running green
+and pinned at unit level by `WorkflowExecutorDuplicateEventStandDownTest`.
+
+
+### Issue 19 — Timed-out awaits replay nondeterministically {#issue-19}
+
+> **Resolved.** A timed-out `awaitSignal` now memoizes a `SIGNAL_TIMEOUT`
+> event at its allocated sequence slot <em>before</em> throwing
+> `SignalTimeoutException` (payload: signal name + timeout), and replay that
+> finds `SIGNAL_TIMEOUT` at the slot re-raises the timeout deterministically
+> from the log alone — no store read, no signal consumption. A late-arriving
+> signal stays durably unconsumed ("never discard a signal") for a later
+> await of the same name to find. This is the signal analogue of Issue 13's
+> `TIMER_CANCELLED` memoization; the append-then-throw ordering closes the
+> crash window (any later event implies the memo is durable; a crash before
+> the append leaves no post-timeout history, so a fresh consume is a
+> legitimate choice, not divergence). Retry ripple: `deleteFailureEvents`
+> also deletes the FAILING timeout memo — the highest-sequenced
+> `SIGNAL_TIMEOUT`, and only when `WORKFLOW_FAILED` records a
+> `SignalTimeoutException` as the cause — so a retried await re-drives and
+> consumes the now-delivered signal; caught gate memos survive retry (any
+> other deletion would resurrect the divergence through the retry door).
+> Commit `9ab457e`, reproduced RED-first in `6eed32c`. Pinned by
+> `SignalTimeoutReplayDeterminismTest` (four tests: replay re-raises and the
+> late signal stays unconsumed; the saga shape honours the withdrawal at
+> gate #2 and compensates — no leak; retry re-drives a timeout failure;
+> retry preserves caught gate memos). Event logs no longer contain
+> timed-out-await gaps: the loan E2E's expected missing sets and the chaos
+> harness's I3(d) bounds were re-derived to empty/zero, superseding the
+> earlier "designed gap" ratification. The rest of this section is the
+> record of the defect.
+
+**Mixed-version caveat.** `SIGNAL_TIMEOUT` is a new `EventType` constant: a
+node still running the previous version fails `EventType.valueOf` when it
+adopts a workflow whose log an upgraded node has written to, so all nodes of
+a service must be upgraded together (or the service drained first) — see the
+"Upgrade notes" section in `docs/release-notes.md`. And an await that timed
+out *pre*-upgrade left no memo, so it replays live once post-upgrade; the
+determinism guarantee covers events written by upgraded nodes.
+
+**What's wrong.** `SignalManager.awaitSignal` allocated its sequence number
+at entry and, on timeout, threw without appending any event — the sequence
+slot stayed empty (the "designed gap" earlier verification work ratified as
+benign). On recovery replay the await re-executed at that slot; if the
+awaited signal had ARRIVED since the original timeout, the replay consumed
+it there and took a different branch than the original execution — a replay
+determinism violation, the exact class of bug the memoization log exists to
+prevent.
+
+**Why it matters.** The trigger is routine: a graceful rolling restart
+(deploy) racing a late signal — no failure injection required. Observed by
+the chaos harness (PR-gate streak run B, seed -825499340287642346): a saga
+loan's original run timed out withdrawal gate #1, approved, reserved its
+rate lock, and parked; the node was rolled; the withdrawal landed between
+stop and recovery; the replacement's replay consumed the withdrawal at gate
+#1's slot, threw there — before `reserveRateLock` — so its compensation
+stack was empty: the reserved rate lock LEAKED, and the divergent
+`WORKFLOW_FAILED` append collided with a memoized event, leaving a terminal
+instance with no terminal event. Any workflow combining timeout-guarded
+awaits with saga compensation is exposed.
+
+**Where.** `maestro-core/src/main/java/.../engine/SignalManager.java` —
+`awaitSignal` (the memo append + replay re-raise); `maestro-core/src/main/
+java/.../model/EventType.java` — `SIGNAL_TIMEOUT`;
+`maestro-store-jdbc/.../AbstractJdbcWorkflowStore.java` and
+`maestro-test/.../InMemoryWorkflowStore.java` — `deleteFailureEvents` (the
+failing-timeout-memo rule); `maestro-core/src/main/java/.../spi/
+WorkflowStore.java` — the SPI contract.
+
+**Done when.** The chaos harness's PR-gate mode runs green with strict
+event-log contiguity (I3(d) bound zero), the loan E2E's re-derived empty
+missing-sets pass, and the four pinning tests hold — replay determinism,
+no saga leak, retry re-drive, caught-memo preservation.
+
+
+### Issue 20 — A transient store outage during a parked wake-recheck fails a healthy workflow {#issue-20}
+
+> **Resolved.** The periodic wake-recheck probes a parked workflow performs —
+> `SignalManager.standDownIfTerminated`'s instance read, the signal-poll read
+> inside `awaitSignal`'s recheck loop, and the Issue 17 `findTimer` recheck in
+> `DefaultWorkflowOperations.sleep()` — are advisory: skipping one interval is
+> always safe, since cross-node terminate convergence and cross-node wake are
+> delayed by at most one interval and no durable state is written by a probe
+> read. A new `ParkProbe.read()` helper (shared by `SignalManager` and
+> `DefaultWorkflowOperations`, mirroring the existing `InstanceStatusWriter`
+> precedent for a guard that must not exist as two drifting copies) now wraps
+> each probe read: a `RuntimeException` from the store is caught, logged at
+> WARN (rate-limited — the first failure of an outage streak and every 20th
+> thereafter, via a shared failure counter reset on the next successful
+> probe), and a fallback is returned that means "inconclusive this interval,
+> try again next chunk" — never a value the caller would treat as a real
+> outcome. State writes (event appends, status CAS transitions, signal
+> consumption) are unaffected and keep failing exactly as before; a probe
+> failure never produces a `WorkflowTerminatedException` or
+> `ExecutorShutdownException` — those `Error`s are only ever thrown once a
+> probe *succeeds* and observes the terminal condition, so ordinary `catch
+> (RuntimeException)` in the new helper cannot intercept them. Commit
+> `d13444e`, reproduced RED-first in `eb807b6`. Pinned by
+> `ParkedProbeStoreOutageTest` (three tests: a parked `awaitSignal` stays
+> `WAITING_SIGNAL` through several failed probes and completes once the store
+> heals and the signal arrives; a parked `sleep()` stays `WAITING_TIMER`
+> through the same shape and wakes on the durable row once healed; a
+> terminate that arrives while the store is unreachable is honoured on the
+> first successful probe after recovery, having left the run parked and
+> untouched while blind). The rest of this section is the record of the
+> defect.
+
+**What's wrong.** `SignalManager.standDownIfTerminated`'s `store.getInstance`
+call, the signal-poll `store.getUnconsumedSignals` call inside
+`awaitSignal`'s recheck loop, and `DefaultWorkflowOperations.sleep()`'s
+`store.findTimer` recheck (Issue 17) all ran unguarded on every wake-recheck
+interval of a parked workflow. Any `RuntimeException` the store raised —
+transient unreachability, a connection-pool timeout — propagated straight out
+of the park loop to `WorkflowExecutor.executeWorkflow`'s generic `catch
+(Exception)`, which durably marked the workflow `WORKFLOW_FAILED` and ran its
+compensations. A workflow that was parked, healthy, and waiting for a signal
+or timer that would have arrived fine got recorded as having failed, purely
+because an advisory read that exists only to notice a *cross-node* event
+happened to run during a blip.
+
+**Why it matters.** No failure injection beyond a routine infra blip is
+required — this is the fourth of the Issue 4/5/18 family (a graceful
+condition misrecorded as a workflow failure) found this cycle, and the first
+triggered by store unavailability rather than shutdown, termination, or a
+duplicate append. Found by the chaos harness's PR-gate mode, seed `661901`: a
+39-second `PARTITION UW_A` exceeded HikariCP's 30s `connectionTimeout`,
+`standDownIfTerminated`'s `getInstance` threw `UncheckedSqlException`, and two
+healthy `PARKED` workflows were durably `WORKFLOW_FAILED` mid-run. The
+in-memory diagnostic double built to reproduce it (`ParkedProbeStoreOutageTest`)
+shows the defect has two faces depending on timing: if the store recovers
+before the failure-handling path's own writes, the result is a durable false
+`WORKFLOW_FAILED` (what the chaos run observed); if the store is still down
+for those writes too, the failure write itself fails, and the instance is
+left wedged in its waiting status (`WAITING_SIGNAL` / `WAITING_TIMER`) with no
+live run on any node — a silent stall no less serious for producing no
+terminal record at all.
+
+**Where.** `maestro-core/src/main/java/.../engine/ParkProbe.java` (new) —
+the shared advisory-read wrapper; `maestro-core/src/main/java/.../engine/SignalManager.java`
+— `standDownIfTerminated` and the recheck loop inside `awaitSignal`;
+`maestro-core/src/main/java/.../engine/DefaultWorkflowOperations.java` —
+`standDownIfTerminated` and `parkForTimer`'s recheck loop.
+
+**Done when.** The chaos harness's PR-gate mode re-run with the originally
+failing seed (`661901`) passes with invariants I1–I5 clean, a fresh seed also
+passes, and the three pinning tests hold — parked `awaitSignal` and `sleep()`
+both ride out several failed probes and complete normally once the store
+heals, and a terminate arriving mid-outage is honoured on the first
+successful probe after recovery.
+
+---
+
 ## 6. Suggested order
 
 **Historical note:** the order below was the plan followed by the
@@ -1153,9 +1714,20 @@ as a side effect of fixing something else nearby — are now resolved too (see
 each section above for commits and pinning tests). Issue 16 — found during
 13–15's own final review — is *guarded* rather than resolved: retrying a
 compensated saga is refused as a safe no-op instead of being made to work;
-see its section for the two design directions a real fix could take. Issues
-11 and 12 remain open by deliberate design decision (see "Known
-limitations").
+see its section for the two design directions a real fix could take. Issue
+17 — the first finding of the multi-instance verification cycle, a
+routine-operation cross-node timer-wake stall — is resolved (see its
+section). Issues 18, 19, and 20, all found by the chaos harness built during
+the same cycle (a split-brain duplicate-append misrecorded as workflow
+failure, a timed-out `awaitSignal` replaying nondeterministically after a
+routine rolling restart, and a transient store outage during a parked
+wake-recheck probe misrecorded as workflow failure), are also resolved (see
+their sections) — Issue 20 in particular surfaced only in the PR-gate
+re-proof run for Issue 19's own fix, the fourth "graceful condition recorded
+as failure" defect the cycle found. Issues 11 and 12 remain open by
+deliberate design decision, but both now carry measured evidence from the
+same cycle — Issue 11's split-brain duplicate-side-effect count and Issue
+12's benchmark — appended to their sections (see "Known limitations" below).
 
 ---
 

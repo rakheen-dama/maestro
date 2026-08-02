@@ -77,8 +77,37 @@ can run side by side.
 | Valkey | 6380 | Locks and signal notifications |
 | Kafka | 29093 | External listener for host-run services |
 
+`E2E_CLUSTER=1 ./e2e/run-e2e.sh` runs a second instance of every service for
+the whole run (6 processes) — same `maestro.service-name`/consumer
+group/store per service pair, ports offset by +3: loan-application 8094,
+verification-gateway 8095, underwriting 8096. See the port-allocation
+comment at the top of `e2e/run-e2e.sh`.
+
+`E2E_LOCK_BACKEND=postgres ./e2e/run-e2e.sh` boots every service with
+`maestro-lock-postgres` instead of the default `maestro-lock-valkey`, with
+the effective backend runtime-verified from each service's own boot log
+(not just the property that requested it). See
+`.superpowers/sdd/multi-instance/evidence/task5/backend-timings.md` for a
+timing comparison of the two backends across the multi-node scenarios below.
+
+**Schema footprint note.** All three services now depend on both
+`maestro-lock-valkey` and `maestro-lock-postgres` (to make the switch above
+possible), so Flyway's default classpath scan picks up
+`V100__maestro_lock_postgres.sql` regardless of which backend is configured.
+A **default (Valkey) boot now also creates the `maestro_distributed_lock` and
+`maestro_leader_election` tables** in all three sample databases — unused and
+inert when `maestro.lock.type` is `valkey` (the default), since nothing reads
+or writes them in that mode. If you're diffing this sample's schema against
+an older version and see two new empty tables on a Valkey-only run, this is
+why.
+
 ## REST API, workflows, and scenarios
 
 See [SPEC.md](SPEC.md) for the exact REST endpoints, workflow IDs, signal
-names, Kafka topics, and the five E2E scenarios. Service builders extend this
-README with per-service usage examples.
+names, Kafka topics, and the original five single-node E2E scenarios.
+`e2e/run-e2e.sh` covers ten scenarios in total — the original five plus five
+added by the multi-instance verification cycle (two-node loan-application,
+owner-kill peer adoption, rolling restart, timer-poller leader failover, and
+cross-node admin retry/terminate) — see the scenario list in the header
+comment of `e2e/run-e2e.sh` for the full, current set. Service builders
+extend this README with per-service usage examples.

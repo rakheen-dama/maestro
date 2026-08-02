@@ -28,7 +28,17 @@ public final class TestEventLogs {
 
     /**
      * Removes an instance's {@code ACTIVITY_FAILED} and {@code WORKFLOW_FAILED}
-     * events from a fake's event collection, leaving every other event intact.
+     * events — plus, when the failure cause recorded in {@code WORKFLOW_FAILED}
+     * was a {@code SignalTimeoutException}, the <em>failing</em>
+     * {@code SIGNAL_TIMEOUT} memo (the highest-sequenced one — Issue 19). For
+     * any other failure cause every {@code SIGNAL_TIMEOUT} memo is a caught
+     * gate that must survive, preserving pre-failure replay determinism. All
+     * other events stay intact.
+     *
+     * <p>The signal-timeout discriminator is anchored to the payload's
+     * {@code exceptionType} field (matching the shipped stores) — never a
+     * whole-payload substring match, which would also fire on a failure whose
+     * {@code message} merely embeds the FQCN.
      *
      * @param events     the fake's event collection, mutated in place
      * @param instanceId the workflow instance whose failure memos to drop
@@ -36,9 +46,28 @@ public final class TestEventLogs {
      */
     public static int removeFailureEvents(Collection<WorkflowEvent> events, UUID instanceId) {
         var before = events.size();
+        var failedByTimeout = events.stream()
+                .filter(e -> e.workflowInstanceId().equals(instanceId)
+                        && e.eventType() == EventType.WORKFLOW_FAILED
+                        && e.payload() != null)
+                .anyMatch(e -> {
+                    var exceptionType = e.payload().path("exceptionType");
+                    return exceptionType.isString()
+                            && "io.b2mash.maestro.core.exception.SignalTimeoutException"
+                                    .equals(exceptionType.stringValue());
+                });
+        var failingTimeoutSeq = events.stream()
+                .filter(e -> e.workflowInstanceId().equals(instanceId)
+                        && e.eventType() == EventType.SIGNAL_TIMEOUT)
+                .mapToInt(WorkflowEvent::sequenceNumber)
+                .max();
         events.removeIf(event -> event.workflowInstanceId().equals(instanceId)
                 && (event.eventType() == EventType.ACTIVITY_FAILED
-                || event.eventType() == EventType.WORKFLOW_FAILED));
+                || event.eventType() == EventType.WORKFLOW_FAILED
+                || (failedByTimeout
+                        && event.eventType() == EventType.SIGNAL_TIMEOUT
+                        && failingTimeoutSeq.isPresent()
+                        && event.sequenceNumber() == failingTimeoutSeq.getAsInt())));
         return before - events.size();
     }
 }

@@ -163,13 +163,30 @@ public interface WorkflowStore {
      * the {@code WORKFLOW_FAILED} event additionally frees the sequence number
      * the retried run needs for its own terminal event.
      *
+     * <p><b>The failing timeout memo (Issue 19).</b> A timed-out await
+     * memoizes a {@code SIGNAL_TIMEOUT} event so replay re-raises the timeout
+     * deterministically. When the workflow FAILED <em>because</em> of that
+     * timeout (the {@code WORKFLOW_FAILED} payload's {@code exceptionType}
+     * records a {@code SignalTimeoutException}), the memo is itself a failure
+     * record: implementations must also delete the instance's
+     * highest-sequenced {@code SIGNAL_TIMEOUT} event. That memo is <em>not</em>
+     * necessarily the last memo before {@code WORKFLOW_FAILED} — an uncaught
+     * timeout in a saga appends {@code COMPENSATION_*} events between the
+     * failing memo and the terminal, and the memo must be deleted regardless.
+     * Deleting it frees the retried await to run live and consume the
+     * now-delivered signal. Earlier <em>caught</em> gate timeouts sit at lower
+     * sequences, are never that maximum, and must survive — deleting them
+     * would let a retry replay consume a late-arrived signal at the gate and
+     * diverge from the pre-failure execution.
+     *
      * <p><b>Idempotent.</b> Called on an instance with no failure memos it
      * deletes nothing and returns {@code 0}.
      *
      * <p><b>Implementation note:</b> this is the only operation that removes
      * rows from the event log. Implementations must scope the delete to the
-     * given instance and to those two event types — never to a sequence range,
-     * which would take compensation and success memos with it.
+     * given instance and to those event types (plus the single failing-timeout
+     * memo) — never to a sequence range, which would take compensation and
+     * success memos with it.
      *
      * @param instanceId the workflow instance UUID whose failure memos to delete
      * @return the number of events deleted

@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.annotation.Saga;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.context.WorkflowMDC;
 import io.b2mash.maestro.core.exception.CompensationException;
+import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.QueryNotDefinedException;
@@ -110,6 +111,7 @@ public final class WorkflowExecutor {
     private final WorkflowInstanceLockManager instanceLockManager;
     private final boolean lifecycleEventsEnabled;
     private final Duration shutdownTimeout;
+    private final Duration wakeRecheckInterval;
     private final LifecycleEventPublisher lifecycleEventPublisher;
     private final ConcurrentHashMap<String, RunningWorkflow> runningWorkflows;
     private final AtomicBoolean shuttingDown;
@@ -234,9 +236,13 @@ public final class WorkflowExecutor {
      * @param shutdownTimeout        how long {@link #shutdown()} waits for in-flight
      *                               workflows to drain before returning — must be strictly
      *                               positive. Corresponds to {@code maestro.shutdown.timeout}.
-     * @param wakeRecheckInterval    how often a parked {@code awaitSignal()} re-checks the
-     *                               store for a signal persisted without a notification
-     *                               reaching this instance — must be strictly positive.
+     * @param wakeRecheckInterval    how often a parked {@code awaitSignal()} or
+     *                               {@code sleep()} re-checks the store for a wake that
+     *                               happened without a local unpark — a signal persisted
+     *                               on another node, or a timer fired/cancelled by a
+     *                               remote timer-poller leader — must be strictly
+     *                               positive. Bounds cross-node signal, timer-fire and
+     *                               timer-cancel latency for a parked workflow.
      *                               Corresponds to {@code maestro.signal.wake-recheck-interval}.
      * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
      *                                  or {@code wakeRecheckInterval} is {@code null}, zero,
@@ -289,6 +295,7 @@ public final class WorkflowExecutor {
         this.queryRegistry = new QueryRegistry();
         this.lifecycleEventsEnabled = lifecycleEventsEnabled;
         this.shutdownTimeout = shutdownTimeout;
+        this.wakeRecheckInterval = wakeRecheckInterval;
         this.lifecycleEventPublisher = new LifecycleEventPublisher(serviceName);
         this.runningWorkflows = new ConcurrentHashMap<>();
         this.shuttingDown = new AtomicBoolean(false);
@@ -478,6 +485,13 @@ public final class WorkflowExecutor {
      * The store transition is persisted before unparking to prevent the
      * timer poller from redelivering.
      *
+     * <p>The unpark is local to this JVM. If the sleeping workflow's thread
+     * is parked on <em>another</em> node — routine whenever the timer-poller
+     * leader is not the owner — the durable {@code FIRED} row is what wakes
+     * it: a parked {@code sleep()} re-reads its timer row every wake-recheck
+     * interval ({@code maestro.signal.wake-recheck-interval}) and resumes
+     * within one interval of this call.
+     *
      * @param workflowId  the workflow's business ID
      * @param timerId     the timer's logical ID (e.g., {@code "sleep-5"})
      * @param timerDbId   the timer's database UUID (for store transition)
@@ -515,10 +529,11 @@ public final class WorkflowExecutor {
      * same exception is thrown on every later replay, because the outcome is
      * memoized as a {@code TIMER_CANCELLED} event at the sequence a
      * {@code TIMER_FIRED} event would otherwise occupy. If the workflow is
-     * not parked on this node — it may be running on another node, or about
+     * not parked on this node — it may be parked on another node, or about
      * to re-park after a crash — the cancellation is still durable and is
-     * observed at the workflow's next wake or recovery, the same
-     * eventual-consistency contract a cross-node {@link #fireTimer} has today.
+     * observed within one wake-recheck interval by the owning node's parked
+     * {@code sleep()}, or at the workflow's next recovery — the same
+     * cross-node wake contract {@link #fireTimer} has.
      *
      * <p>Cancelling a timer that has already fired, or was already
      * cancelled, is a {@code false} no-op: the row's outcome is already
@@ -1247,7 +1262,7 @@ public final class WorkflowExecutor {
         var compensationStack = new CompensationStack();
         var operations = new DefaultWorkflowOperations(
                 store, distributedLock, messaging, serializer, parkingLot, compensationStack,
-                signalManager);
+                signalManager, wakeRecheckInterval);
 
         var ctx = new WorkflowContext(
                 instance.id(),
@@ -1336,6 +1351,23 @@ public final class WorkflowExecutor {
             // Ahead of catch (Exception e) for the same readability reason as
             // the shutdown case above.
             handleTermination(ctx, e);
+        } catch (DuplicateEventException staleRun) {
+            // Issue 18: a DuplicateEventException that reaches this level means
+            // "another run owns this workflow's progress — this node's view is
+            // stale". It is the store's (workflow_instance_id, sequence_number)
+            // dedup guard doing its job in the Issue 11 no-fencing window: this
+            // node lost its instance lock (frozen past TTL, partitioned, or a
+            // no-lock-backend race), a peer adopted the workflow, and the peer's
+            // event at this sequence is already the durable truth. Recording a
+            // FAILURE here — as the generic catch below would — durably marks a
+            // workflow that SUCCEEDED on the winner as FAILED and compensates
+            // completed work. Instead this run STANDS DOWN like the shutdown and
+            // termination cases above: write nothing, compensate nothing,
+            // release the local run. The winner's durable state governs; if no
+            // winner exists (a pure self-conflict), the instance stays active
+            // and recovery replays it from the log. MUST stay ahead of
+            // catch (Exception e) — DuplicateEventException is a MaestroException.
+            handleStaleRunStandDown(ctx, staleRun);
         } catch (Exception e) {
             try {
                 handleWorkflowFailure(ctx, instance, e, compensationStack, parallelCompensation);
@@ -1354,6 +1386,15 @@ public final class WorkflowExecutor {
                 // compensations do not run — that is terminate's contract —
                 // and the TERMINATED row already stands, so nothing is written.
                 handleTermination(ctx, terminatedDuringCompensation);
+            } catch (DuplicateEventException staleDuringCompensation) {
+                // The duplicate landed while compensating a genuine failure:
+                // another runner adopted the workflow and is compensating it
+                // (or already finished). SagaManager rethrows instead of
+                // recording COMPENSATION_STEP_FAILED, exactly like the shutdown
+                // case; the instance stays COMPENSATING — active and
+                // recoverable — and the winner's compensation run finishes the
+                // job. Nothing is written here.
+                handleStaleRunStandDown(ctx, staleDuringCompensation);
             }
         } finally {
             // Remove-then-release: a concurrent recovery attempt in the gap
@@ -1424,6 +1465,33 @@ public final class WorkflowExecutor {
     private void handleTermination(WorkflowContext ctx, WorkflowTerminatedException e) {
         logger.info("Workflow '{}' abandoned its local run — terminated{}",
                 ctx.workflowId(), e.reason() != null ? " (" + e.reason() + ")" : "");
+    }
+
+    // ── Internal: stale-run stand-down (Issue 18) ──────────────────────
+
+    /**
+     * Records that a workflow's local run stood down because its event append
+     * collided with a concurrent runner's already-persisted event (the
+     * {@code (workflow_instance_id, sequence_number)} unique guard — see
+     * {@link DuplicateEventException}). Deliberately writes nothing: the other
+     * runner's durable state — its events, its terminal outcome, its
+     * compensation progress — is the record. If no other runner exists, the
+     * instance is still active and recovery replays it from the log.
+     *
+     * <p>This is the executor-level meaning only. Inside
+     * {@code ActivityInvocationHandler} the same exception keeps its
+     * adopt-the-stored-result semantics (the memoized payload at that sequence
+     * is returned); only an append that escapes to this level means the whole
+     * local run is stale.
+     */
+    private void handleStaleRunStandDown(WorkflowContext ctx, DuplicateEventException e) {
+        var status = store.getInstance(ctx.workflowId())
+                .map(WorkflowInstance::status)
+                .orElse(null);
+        logger.warn("Workflow '{}' stood down: event append at sequence {} collided with a "
+                        + "concurrent runner (instance status now {}) — no failure recorded, "
+                        + "no compensation run; the concurrent runner's durable state governs",
+                ctx.workflowId(), e.sequenceNumber(), status);
     }
 
     // ── Internal: failure handling ─────────────────────────────────────

@@ -144,12 +144,38 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
         if (instanceEvents == null) {
             return 0;
         }
-        // Exactly the two failure types — success and compensation memos must
+        // The two failure types plus — only when the WORKFLOW_FAILED payload
+        // records a SignalTimeoutException as the cause — the FAILING timeout
+        // memo (Issue 19: the highest-sequenced SIGNAL_TIMEOUT, written by the
+        // await whose timeout failed the workflow), so a retried await can
+        // consume the now-delivered signal. For any other failure cause every
+        // SIGNAL_TIMEOUT memo is a CAUGHT gate that must survive, preserving
+        // pre-failure replay determinism. Success and compensation memos must
         // survive a retry, or its replay re-runs real side effects.
+        // The discriminator is anchored to the payload's exceptionType field —
+        // never a whole-payload substring match, which would also fire on a
+        // failure whose message merely embeds the FQCN ("... " + e wrapping of
+        // a CAUGHT gate timeout) and wrongly delete a caught-gate memo.
         var before = instanceEvents.size();
+        var failedByTimeout = instanceEvents.values().stream()
+                .filter(e -> e.eventType() == EventType.WORKFLOW_FAILED && e.payload() != null)
+                .anyMatch(e -> {
+                    var exceptionType = e.payload().path("exceptionType");
+                    return exceptionType.isString()
+                            && "io.b2mash.maestro.core.exception.SignalTimeoutException"
+                                    .equals(exceptionType.stringValue());
+                });
+        var failingTimeoutSeq = instanceEvents.values().stream()
+                .filter(e -> e.eventType() == EventType.SIGNAL_TIMEOUT)
+                .mapToInt(io.b2mash.maestro.core.model.WorkflowEvent::sequenceNumber)
+                .max();
         instanceEvents.values().removeIf(event ->
                 event.eventType() == EventType.ACTIVITY_FAILED
-                        || event.eventType() == EventType.WORKFLOW_FAILED);
+                        || event.eventType() == EventType.WORKFLOW_FAILED
+                        || (failedByTimeout
+                                && event.eventType() == EventType.SIGNAL_TIMEOUT
+                                && failingTimeoutSeq.isPresent()
+                                && event.sequenceNumber() == failingTimeoutSeq.getAsInt()));
         return before - instanceEvents.size();
     }
 

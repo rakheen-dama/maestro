@@ -669,6 +669,12 @@ failed compensation step.
 - **Signals:** At-least-once delivery. `consumed` flag prevents double-processing.
 - **Timers:** At-least-once. Slight delay possible based on poll interval.
 
+**Measured, multi-instance version of this table:** `docs/operations.md`
+gives observed latency bounds (owner-kill adoption, rolling-restart safety,
+timer-leader failover, cross-node admin commands, split-brain duplicate-rate)
+for every row above under a real multi-node deployment, each traceable to an
+evidence file.
+
 ---
 
 ## 15. Technology Stack

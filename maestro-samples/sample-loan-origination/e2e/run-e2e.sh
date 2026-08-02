@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end scenario driver for the loan-origination sample.
-# See SPEC.md ("E2E scenario") for the five scenarios this script covers:
+# See SPEC.md ("E2E scenario") for the original five single-node scenarios;
+# scenarios 6-10 below were added by the multi-instance verification cycle
+# and are documented here and in README.md, not (yet) in SPEC.md's own list:
 #
 #   1. Happy path        — human underwriting approval, co-borrower signs FIRST.
 #   2. Out-of-order      — document uploaded BEFORE the application exists
@@ -10,14 +12,85 @@
 #                          compensation visible in the service log.
 #   5. Crash recovery    — kill -9 loan-application-service mid-underwriting
 #                          wait, restart, deliver the decision -> FUNDED.
+#   6. Two-node loan-application — a second loan-application-service instance
+#                          (same service-name/consumer-group/store/lock
+#                          namespace) joins for this scenario; proves the
+#                          shared store/lock/messaging make the two instances
+#                          genuine peers. Foundation for E2E_CLUSTER=1 below.
+#   7. Owner-kill adoption — kill -9 the OWNER node mid-underwriting wait and
+#                          never restart it; the peer node alone adopts and
+#                          completes the workflow (recovery poller + instance
+#                          lock TTL). Unlike scenario 5, the owner never
+#                          comes back. Runs second-to-last (see main()).
+#   8. Rolling restart    — graceful SIGTERM (not kill -9) of node A with
+#                          THREE workflows parked in distinct WAITING_SIGNAL
+#                          states (awaiting docs / awaiting underwriting
+#                          decision / awaiting signatures); asserts node A's
+#                          own log shows the graceful-shutdown path leaving
+#                          them WAITING_SIGNAL (never FAILED); node B serves a
+#                          status read and ingests a signal while node A is
+#                          down; node A restarts and all three reach
+#                          COMPLETED with zero FAILED/compensation. Runs LAST
+#                          (see main()) for the same reason as scenario 7.
+#   9. Timer-poller leader failover — kill -9 the ELECTED timer-poller
+#                          leader among two verification-gateway nodes while
+#                          a workflow.sleep()-backed verification is mid-sleep
+#                          on the OTHER (surviving, non-leader) node; asserts
+#                          the durable timer still fires and the verification
+#                          -> loan progresses within leader TTL + poll
+#                          interval + wake-recheck. Leader identity proven via
+#                          a DEBUG-log follower count BEFORE the kill.
+#  10. Cross-node admin retry/terminate — drives a loan to FAILED without
+#                          compensation (uncaught SignalTimeoutException at
+#                          the underwriting-decision await) while owned by
+#                          node A; kills node A; issues $maestro:retry via a
+#                          raw Kafka publish (mirrors AdminCommandService)
+#                          with only node B alive, delivers the decision
+#                          promptly, and asserts completion + a
+#                          WORKFLOW_RETRIED lifecycle event on the admin
+#                          events topic. Also terminates a second, still-
+#                          active node-A-owned workflow the same way and
+#                          asserts WORKFLOW_TERMINATED. See task-4-report.md
+#                          for the admin-transport decision (no maestro-admin
+#                          in this compose; raw Kafka publish instead).
 #
 # Usage:
 #   ./e2e/run-e2e.sh                    # full run: infra up, services up, scenarios, teardown
 #   E2E_SKIP_BUILD=1 ./e2e/run-e2e.sh   # reuse previously built boot jars
 #   E2E_NO_TEARDOWN=1 ./e2e/run-e2e.sh  # leave infra + services running afterwards
 #   E2E_REUSE=1 ./e2e/run-e2e.sh        # assume infra + services are already up
+#   E2E_ONLY="7" ./e2e/run-e2e.sh       # run only the listed scenario number(s)
+#                                        # (space-separated); unset = all.
+#   E2E_CLUSTER=1 ./e2e/run-e2e.sh      # "cluster mode": bring up a SECOND instance
+#                                        # of every service (6 processes total) for
+#                                        # the whole run, not just during scenario 6.
+#                                        # Foundation for multi-node failure scenarios;
+#                                        # this task only wires up start/stop plumbing.
+#   E2E_LOCK_BACKEND=postgres ./e2e/run-e2e.sh   # boot every service with
+#                                        # maestro-lock-postgres instead of
+#                                        # maestro-lock-valkey (default
+#                                        # "valkey" - byte-identical to today's
+#                                        # behaviour). Runtime-verified: every
+#                                        # service start blocks on the
+#                                        # effective DistributedLock class
+#                                        # actually logged, not just the
+#                                        # property that requested it.
 #
 # Requires: bash, curl, docker compose, and jq (falls back to python3).
+#
+# ── Port allocation ──────────────────────────────────────────────────────
+# No service in this sample configures a separate management/actuator port
+# (server.port, bound from SERVER_PORT, is the only port Spring binds), so
+# HTTP port is the only thing that must differ between two instances of the
+# same service. Second instances keep the same maestro.service-name (same
+# Kafka consumer group, same Postgres store, same lock namespace) - only the
+# port differs.
+#
+#   service                        node A (always)   node B (E2E_CLUSTER=1
+#                                                      or scenario 6)
+#   loan-application-service       8091               8094
+#   verification-gateway-service   8092               8095
+#   underwriting-service           8093               8096
 
 set -euo pipefail
 
@@ -31,21 +104,114 @@ mkdir -p "$LOG_DIR" "$PID_DIR"
 
 # ── Configuration ────────────────────────────────────────────────────────
 LOAN_URL="http://localhost:8091"
-# Scenario 6 runs a SECOND loan-application-service instance — same service
-# name, so the same Kafka consumer group and the same Postgres store.
-LOAN_URL_B="http://localhost:8094"
-LOAN_NODE_B="loan-application-service-b"
 VERIFY_URL="http://localhost:8092"
 UW_URL="http://localhost:8093"
+
+# Second-node ports/URLs (see port allocation table above). Scenario 6 always
+# runs a SECOND loan-application-service instance; E2E_CLUSTER=1 additionally
+# runs second instances of the other two services for the whole run. Same
+# service name -> same Kafka consumer group and same Postgres store.
+LOAN_PORT_B=8094
+VERIFY_PORT_B=8095
+UW_PORT_B=8096
+LOAN_URL_B="http://localhost:$LOAN_PORT_B"
+VERIFY_URL_B="http://localhost:$VERIFY_PORT_B"
+UW_URL_B="http://localhost:$UW_PORT_B"
+LOAN_NODE_B="loan-application-service-b"
+VERIFY_NODE_B="verification-gateway-service-b"
+UW_NODE_B="underwriting-service-b"
 
 E2E_SKIP_BUILD="${E2E_SKIP_BUILD:-0}"
 E2E_NO_TEARDOWN="${E2E_NO_TEARDOWN:-0}"
 E2E_REUSE="${E2E_REUSE:-0}"
+E2E_CLUSTER="${E2E_CLUSTER:-0}"
+# E2E_ONLY: space-separated scenario numbers to run (e.g. E2E_ONLY="7", or
+# E2E_ONLY="1 2 3"). Unset/empty = run all scenarios (default behaviour
+# unchanged). Skipped scenarios do not appear in the results table.
+E2E_ONLY="${E2E_ONLY:-}"
+
+# E2E_LOCK_BACKEND: "valkey" (default, unchanged behaviour) or "postgres".
+# Every service instance this harness starts (start_service_instance, the
+# single choke point for ALL of scenarios 1-10's process launches, including
+# every mid-scenario kill/restart) gets MAESTRO_LOCK_TYPE=<backend> injected
+# via Spring Boot env-var relaxed binding, which overrides application.yml's
+# "maestro.lock.type: valkey" for JUST that property (the JDBC/Postgres
+# driver is already on every service's classpath for the workflow store, and
+# Task 5 adds maestro-lock-postgres as a compile-time dependency alongside
+# maestro-lock-valkey - both auto-configurations are present; maestro.lock.
+# type picks which one's @ConditionalOnProperty wins). "Config says so" is
+# not proof: start_service_instance also blocks on the effective backend's
+# own startup log line (assert_lock_backend) before returning, so a
+# misconfigured classpath or a property that silently failed to bind fails
+# the START, not a downstream scenario assertion three minutes later.
+E2E_LOCK_BACKEND="${E2E_LOCK_BACKEND:-valkey}"
+case "$E2E_LOCK_BACKEND" in
+    valkey|postgres) ;;
+    *) echo "E2E_LOCK_BACKEND must be 'valkey' or 'postgres', got '$E2E_LOCK_BACKEND'" >&2; exit 1 ;;
+esac
 
 # Verification fan-in takes ~8s real time (appraisal latency); allow slack.
 WAIT_PENDING_SECS=90       # create -> underwriting human queue
 WAIT_TERMINAL_SECS=90      # decision/signatures -> terminal status
 WAIT_RECOVERY_SECS=150     # crash-recovery scenario end-to-end after restart
+
+# Owner-kill peer-adoption bound: default maestro.lock.ttl=30s (instance lock
+# expiry) + default maestro.recovery.poll-interval=60s (worst case the peer's
+# poller just missed a cycle) + slack for query/JVM overhead. Overridable so
+# the "prove it can fail" run can pass an absurdly short bound without
+# touching the kill/adoption logic itself.
+WAIT_ADOPTION_SECS="${WAIT_ADOPTION_SECS:-150}"
+
+# Scenario 8 (rolling restart): dedicated SIGTERM grace period for
+# stop_service_graceful — default maestro.shutdown.timeout=30s (drains
+# in-flight workflows) + slack for JVM/Spring-context-close overhead
+# (Kafka listener containers, DataSource pool, etc.). Deliberately NOT the
+# shared stop_service()'s 15s teardown wait: 15s is fine for teardown (which
+# falls back to KILL and doesn't care), but scenario 8 exists to PROVE a real
+# graceful shutdown drained parked workflows without failing them, so it must
+# never silently escalate to KILL — see stop_service_graceful.
+WAIT_SHUTDOWN_GRACE_SECS="${WAIT_SHUTDOWN_GRACE_SECS:-40}"
+# Scenario 8's "zero FAILED among the deploy-window workflows" assertion,
+# expressed as an expected count so the prove-it-can-fail run can demand a
+# wrong count (e.g. 1) without touching the scenario's kill/restart logic.
+EXPECT_FAILED_COUNT="${EXPECT_FAILED_COUNT:-0}"
+
+# Scenario 9 (timer-poller leader failover): TimerPoller.LEADER_TTL (15s,
+# hardcoded in maestro-core) + maestro.timer.poll-interval (5s default,
+# unchanged by this sample) + this sample's maestro.signal.wake-recheck-
+# interval (5s — sleep() rechecks the durable timer row on that cadence,
+# Issue 17) + slack for JVM/election overhead. Overridable so the "prove it
+# can fail" run can demand an absurdly short bound without touching the
+# kill/election logic itself.
+WAIT_TIMER_FAILOVER_SECS="${WAIT_TIMER_FAILOVER_SECS:-60}"
+# How many fresh loan applications scenario 9 will try before giving up on
+# finding one whose verification workflows land on the NON-leader vg node.
+# "loans.verification.requests" (3 partitions) is keyed by loanId
+# (KafkaLoanMessagingActivities), so a given loan's ownership is deterministic
+# but which vg node that is is not something this harness controls directly.
+# A 2-consumer range assignment typically splits 2:1, so the "wrong" 2/3 of
+# partitions has an ~(2/3)^n chance of being hit n times running (n=8 -> 4%,
+# observed once in development) - 20 pushes that below 0.04%.
+OWNER_SEARCH_MAX_ATTEMPTS="${OWNER_SEARCH_MAX_ATTEMPTS:-20}"
+
+# Scenario 10 (cross-node admin retry/terminate): short decision-timeout
+# override applied ONLY to node A, so the retry-target workflow reaches
+# FAILED (an uncaught SignalTimeoutException at the underwriting-decision
+# await — LoanApplicationWorkflow.awaitDecisionForRound, never caught by the
+# workflow) within seconds instead of the SPEC default 10 minutes. Node B
+# keeps the SPEC default (10m) so the retried run has ample time to receive
+# the decision this harness delivers promptly after issuing $maestro:retry.
+RETRY_DECISION_TIMEOUT="${RETRY_DECISION_TIMEOUT:-PT8S}"
+WAIT_FAILURE_SECS="${WAIT_FAILURE_SECS:-30}"
+# Observed empirically: a $maestro:* command published to a Kafka partition
+# that belonged to the now-dead node A is NOT delivered to node B until the
+# "maestro-loan-application" consumer group's coordinator evicts node A's
+# session and reassigns its partitions — bounded by the Kafka client's
+# session.timeout.ms (default 45s, unconfigured by this sample), not by
+# anything in Maestro. First-command latency is therefore up to ~45s worst
+# case (a message on a partition B did not already own); every command AFTER
+# that rebalance has already happened is near-instant. Generous slack on top.
+WAIT_ADMIN_COMMAND_SECS="${WAIT_ADMIN_COMMAND_SECS:-90}"
 
 SERVICES=(loan-application-service verification-gateway-service underwriting-service)
 
@@ -95,11 +261,15 @@ except Exception:
 }
 
 # ── HTTP helpers ─────────────────────────────────────────────────────────
+# Every curl is bounded (--max-time 10): without it, one hung connection
+# blows straight through the wait_for_* deadlines (observed: a 90s-bounded
+# wait ran 1003s during a host freeze). wait_for_http already bounds at 2s.
+
 # api_post <url> <json-body>  -> body on 2xx, nonzero + message on error
 api_post() {
     local url="$1" body="$2" code tmp
     tmp="$(mktemp)"
-    code="$(curl -sS -o "$tmp" -w '%{http_code}' \
+    code="$(curl -sS --max-time 10 -o "$tmp" -w '%{http_code}' \
         -X POST -H 'Content-Type: application/json' -d "$body" "$url" 2>&1)" || {
         err "POST $url failed: $code"; rm -f "$tmp"; return 1; }
     if [[ "$code" -ge 300 ]]; then
@@ -114,11 +284,27 @@ api_post() {
 api_get() {
     local url="$1" code tmp
     tmp="$(mktemp)"
-    code="$(curl -sS -o "$tmp" -w '%{http_code}' "$url" 2>/dev/null)" || {
+    code="$(curl -sS --max-time 10 -o "$tmp" -w '%{http_code}' "$url" 2>/dev/null)" || {
         rm -f "$tmp"; return 1; }
     if [[ "$code" == 404 ]]; then rm -f "$tmp"; echo ""; return 0; fi
     if [[ "$code" -ge 400 ]]; then rm -f "$tmp"; return 1; fi
     cat "$tmp"; rm -f "$tmp"
+}
+
+# port_in_use <port> - success (0) if something is accepting TCP connections
+# on 127.0.0.1:<port>, failure (1) otherwise. No lsof/nc dependency.
+port_in_use() {
+    (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
+}
+
+# assert_port_free <label> <port> - fail loudly instead of letting the JVM
+# fail to bind with a much less obvious error later.
+assert_port_free() {
+    if port_in_use "$2"; then
+        err "$1: port $2 is already in use - refusing to start (stale process from a previous run?)"
+        return 1
+    fi
+    return 0
 }
 
 # wait_for_http <name> <url> <timeout-secs> - any HTTP response (<500) counts
@@ -163,13 +349,24 @@ webhook_verification() { # <type> <loanId> <approved>
 }
 
 app_status_json() { api_get "$LOAN_URL/applications/$1"; }
+# app_status_json_via <baseUrl> <id> - same as app_status_json but against an
+# explicit node. Needed whenever node A (the $LOAN_URL default) may be dead,
+# e.g. scenario 7 after the kill.
+app_status_json_via() { api_get "$1/applications/$2"; }
 
 # wait_for_engine_status <appId> <expectedStatus> <timeout>
 # Fails fast when a DIFFERENT terminal status is reached.
 wait_for_engine_status() {
-    local id="$1" expected="$2" timeout="$3" deadline=$((SECONDS + $3)) body status=""
+    wait_for_engine_status_via "$LOAN_URL" "$1" "$2" "$3"
+}
+
+# wait_for_engine_status_via <baseUrl> <appId> <expectedStatus> <timeout>
+# Same as wait_for_engine_status, polling an explicit node instead of the
+# hardcoded node-A default - required once node A may be dead (scenario 7).
+wait_for_engine_status_via() {
+    local url="$1" id="$2" expected="$3" timeout="$4" deadline=$((SECONDS + $4)) body status=""
     while (( SECONDS < deadline )); do
-        body="$(app_status_json "$id" || echo "")"
+        body="$(app_status_json_via "$url" "$id" || echo "")"
         status="$(json_get "$body" status)"
         if [[ "$status" == "$expected" ]]; then return 0; fi
         case "$status" in
@@ -184,24 +381,37 @@ wait_for_engine_status() {
 }
 
 # wait_for_pending_review <loanId> <round> <timeout>
+#
+# The pending queue (GET /underwriting/pending) is served from
+# PendingReviewRegistry — a documented best-effort NODE-LOCAL in-memory view,
+# populated only on the node whose Kafka consumer happened to receive the
+# review request. In cluster mode the review can therefore surface on either
+# underwriting instance, so BOTH are polled. The decision endpoints do NOT
+# need the same routing: POST .../decision only signals the
+# underwriting-{loanId}-round{n} workflow via MaestroClient (store-backed,
+# node-agnostic), so it works from any node.
 wait_for_pending_review() {
-    local id="$1" round="$2" timeout="$3" deadline=$((SECONDS + $3)) body
+    local id="$1" round="$2" timeout="$3" deadline=$((SECONDS + $3)) body url
+    local urls=("$UW_URL")
+    [[ "$E2E_CLUSTER" == 1 ]] && urls+=("$UW_URL_B")
     while (( SECONDS < deadline )); do
-        body="$(api_get "$UW_URL/underwriting/pending" || echo "")"
-        if [[ "$HAVE_JQ" == 1 ]]; then
-            if jq -e --arg id "$id" --argjson r "$round" \
-                'map(select(.loanId == $id and .round == $r)) | length > 0' \
-                <<<"$body" >/dev/null 2>&1; then return 0; fi
-        else
-            if python3 -c '
+        for url in "${urls[@]}"; do
+            body="$(api_get "$url/underwriting/pending" || echo "")"
+            if [[ "$HAVE_JQ" == 1 ]]; then
+                if jq -e --arg id "$id" --argjson r "$round" \
+                    'map(select(.loanId == $id and .round == $r)) | length > 0' \
+                    <<<"$body" >/dev/null 2>&1; then return 0; fi
+            else
+                if python3 -c '
 import json, sys
 rows = json.loads(sys.argv[1] or "[]")
 sys.exit(0 if any(r.get("loanId")==sys.argv[2] and r.get("round")==int(sys.argv[3]) for r in rows) else 1)
 ' "$body" "$id" "$round" 2>/dev/null; then return 0; fi
-        fi
+            fi
+        done
         sleep 1
     done
-    err "Loan $id round $round never appeared in the underwriting pending queue within ${timeout}s"
+    err "Loan $id round $round never appeared in any underwriting pending queue within ${timeout}s (polled: ${urls[*]})"
     return 1
 }
 
@@ -222,6 +432,218 @@ assert_eq() { # <label> <expected> <actual>
         return 0
     fi
     err "  assert FAILED: $1 - expected '$2', got '$3'"
+    return 1
+}
+
+# psql_loan <sql> - runs SQL against loan-application-service's own Postgres
+# database (compose service "postgres", database "loan_application" - see
+# loan-application-service/src/main/resources/application.yml) via the
+# compose Postgres container, tuples-only/unaligned so callers can parse
+# pipe-separated columns directly.
+psql_loan() {
+    compose exec -T postgres psql -U maestro -d loan_application -tAc "$1"
+}
+
+# psql_verify <sql> - same as psql_loan but against verification-gateway's
+# own database ("verification_gateway" - see verification-gateway-service's
+# application.yml). Used by scenario 9 to inspect maestro_workflow_timer
+# directly.
+psql_verify() {
+    compose exec -T postgres psql -U maestro -d verification_gateway -tAc "$1"
+}
+
+# expected_lock_class - fully-qualified DistributedLock implementation class
+# name MaestroAutoConfiguration's startup log line should show for the
+# current E2E_LOCK_BACKEND. Overridable via E2E_LOCK_ASSERT_OVERRIDE - same
+# idiom as WAIT_ADOPTION_SECS/EXPECT_FAILED_COUNT elsewhere in this file -
+# so a prove-it-can-fail run can demand the WRONG class without touching
+# assert_lock_backend itself.
+expected_lock_class() {
+    if [[ -n "${E2E_LOCK_ASSERT_OVERRIDE:-}" ]]; then
+        echo "$E2E_LOCK_ASSERT_OVERRIDE"
+    elif [[ "$E2E_LOCK_BACKEND" == "postgres" ]]; then
+        echo "io.b2mash.maestro.lock.postgres.PostgresDistributedLock"
+    else
+        echo "io.b2mash.maestro.lock.valkey.ValkeyDistributedLock"
+    fi
+}
+
+# assert_lock_backend <log-file> <label> - blocks (<=60s) on the effective-
+# backend proof MaestroAutoConfiguration.maestroWorkflowExecutor logs at INFO
+# on every boot ("Maestro distributed-lock backend: <FQCN>"). This is a
+# runtime fact, not configuration: it is the class of the DistributedLock
+# bean that actually won @ConditionalOnProperty and got injected into
+# WorkflowExecutor - "config says so" is deliberately never treated as proof
+# anywhere in this harness. Called from start_service_instance, the single
+# choke point for every process this harness starts, so EVERY service start
+# across every scenario (both backends) is verified, not just Task 5's new
+# scenario coverage.
+assert_lock_backend() {
+    local log_file="$1" label="$2" expected
+    expected="$(expected_lock_class)"
+    if wait_for_log_line "$log_file" "Maestro distributed-lock backend: $expected" 60; then
+        log "LOCK BACKEND VERIFIED ($label, E2E_LOCK_BACKEND=$E2E_LOCK_BACKEND): $expected"
+        return 0
+    fi
+    err "$label: expected lock backend '$expected' (E2E_LOCK_BACKEND=$E2E_LOCK_BACKEND) not confirmed by $log_file within 60s"
+    return 1
+}
+
+# lock_token <psql-fn> <lock-key> - current holder token for an INSTANCE
+# lock, backend-aware: Valkey GET vs a SELECT against maestro_distributed_
+# lock (maestro-lock-postgres's V100 migration - see PostgresDistributedLock
+# Javadoc). <psql-fn> is psql_loan or psql_verify (selects which service's
+# own Postgres database to query - PostgresDistributedLock shares the
+# workflow store's DataSource, so the lock row lives in THAT service's own
+# schema, not a shared one).
+lock_token() {
+    local psql_fn="$1" lock_key="$2"
+    if [[ "$E2E_LOCK_BACKEND" == "postgres" ]]; then
+        "$psql_fn" "SELECT token FROM maestro_distributed_lock WHERE lock_key = '$lock_key';" | tr -d '[:space:]'
+    else
+        compose exec -T valkey valkey-cli GET "$lock_key" 2>/dev/null | tr -d '\r'
+    fi
+}
+
+# leader_token <psql-fn> <election-key> - current leader candidate id,
+# backend-aware equivalent of lock_token for maestro_leader_election.
+leader_token() {
+    local psql_fn="$1" election_key="$2"
+    if [[ "$E2E_LOCK_BACKEND" == "postgres" ]]; then
+        "$psql_fn" "SELECT candidate_id FROM maestro_leader_election WHERE election_key = '$election_key';" | tr -d '[:space:]'
+    else
+        compose exec -T valkey valkey-cli GET "$election_key" 2>/dev/null | tr -d '\r'
+    fi
+}
+
+# assert_event_log_integrity <workflowId> <expected-missing-csv> - queries
+# Postgres DIRECTLY (not through the engine) for the instance's event log
+# and asserts:
+#   1. no duplicate (workflow_instance_id, sequence_number) pairs
+#      (COUNT(*) == COUNT(DISTINCT sequence_number));
+#   2. the SET of missing sequence numbers below the terminal event is
+#      EXACTLY <expected-missing-csv> (ascending CSV; "" = none, the
+#      expected value everywhere since Issue 19 removed designed gaps).
+#      Set equality, not just gap COUNT, so any real hole is named.
+#   3. the event at MAX(sequence_number) is WORKFLOW_COMPLETED (so "below
+#      the terminal event" genuinely covers the whole log).
+#
+# Why the expected missing set is EMPTY (Issue 19 supersedes the Task 2
+# "designed gap" ratification): a timed-out awaitSignal now memoizes a
+# SIGNAL_TIMEOUT event at its allocated sequence slot before throwing
+# (SignalManager.awaitSignal), so replay re-raises the timeout
+# deterministically instead of consuming a signal that arrived late — the
+# divergence that leaked a saga's rate lock under a routine rolling restart
+# (docs/open-issues.md Issue 19). LoanApplicationWorkflow's two withdrawal
+# gates therefore contribute two SIGNAL_TIMEOUT events (at the former gap
+# positions 9 and 16) rather than two holes: a FUNDED loan's event log is
+# fully contiguous. Any missing sequence below the terminal is now a real
+# anomaly. (The workflow has no parallel branches, so no per-branch
+# sequence bands.)
+#
+# Optional 3rd arg <expected-terminal-type> (default WORKFLOW_COMPLETED):
+# lets a non-completed instance (e.g. scenario 10's TERMINATED-via-admin-
+# command workflow, which appends NO event of its own — see
+# WorkflowExecutor#terminateWorkflow's Javadoc, "No memoization-log event")
+# pass an empty string to skip the terminal-event-type check entirely and
+# get just the duplicate/gap checks.
+assert_event_log_integrity() {
+    local wfid="$1" expected_missing="$2" expected_terminal="${3-WORKFLOW_COMPLETED}"
+    local instance_id status event_seq_col counts
+    local total distinct_seq min_seq max_seq missing terminal_type
+
+    instance_id="$(psql_loan "SELECT id FROM maestro_workflow_instance WHERE workflow_id = '$wfid';" | tr -d '[:space:]')"
+    if [[ -z "$instance_id" ]]; then
+        err "SQL: no maestro_workflow_instance row found for workflow_id='$wfid'"
+        return 1
+    fi
+    status="$(psql_loan "SELECT status FROM maestro_workflow_instance WHERE id = '$instance_id';" | tr -d '[:space:]')"
+    event_seq_col="$(psql_loan "SELECT event_sequence FROM maestro_workflow_instance WHERE id = '$instance_id';" | tr -d '[:space:]')"
+    log "SQL: maestro_workflow_instance id=$instance_id workflow_id=$wfid status=$status event_sequence=$event_seq_col"
+
+    log "SQL> SELECT COUNT(*), COUNT(DISTINCT sequence_number), MIN(sequence_number), MAX(sequence_number) FROM maestro_workflow_event WHERE workflow_instance_id = '$instance_id';"
+    counts="$(psql_loan "SELECT COUNT(*), COUNT(DISTINCT sequence_number), MIN(sequence_number), MAX(sequence_number) FROM maestro_workflow_event WHERE workflow_instance_id = '$instance_id';")"
+    total="$(awk -F'|' '{print $1}' <<<"$counts" | tr -d '[:space:]')"
+    distinct_seq="$(awk -F'|' '{print $2}' <<<"$counts" | tr -d '[:space:]')"
+    min_seq="$(awk -F'|' '{print $3}' <<<"$counts" | tr -d '[:space:]')"
+    max_seq="$(awk -F'|' '{print $4}' <<<"$counts" | tr -d '[:space:]')"
+    log "SQL: result -> total=$total distinct_sequences=$distinct_seq min_seq=$min_seq max_seq=$max_seq"
+
+    assert_eq "no duplicate (workflow_instance_id, sequence_number)" "$total" "$distinct_seq" || return 1
+
+    # Assert the exact SET of missing sequences (ascending CSV), not just
+    # how many there are: the holes must sit precisely at the timed-out
+    # gate awaits, and a real lost event elsewhere must fail even if a
+    # count would coincidentally still match.
+    log "SQL> SELECT string_agg(s::text, ',' ORDER BY s) FROM generate_series($min_seq, $max_seq) s WHERE NOT EXISTS (SELECT 1 FROM maestro_workflow_event WHERE workflow_instance_id = '$instance_id' AND sequence_number = s);"
+    missing="$(psql_loan "SELECT string_agg(s::text, ',' ORDER BY s) FROM generate_series($min_seq, $max_seq) s WHERE NOT EXISTS (SELECT 1 FROM maestro_workflow_event WHERE workflow_instance_id = '$instance_id' AND sequence_number = s);" | tr -d '[:space:]')"
+    log "SQL: missing sequence numbers in $min_seq..$max_seq -> ${missing:-<none>}"
+    assert_eq "missing-sequence set below terminal event (timed-out gate awaits only)" "$expected_missing" "$missing" || return 1
+
+    if [[ -n "$expected_terminal" ]]; then
+        terminal_type="$(psql_loan "SELECT event_type FROM maestro_workflow_event WHERE workflow_instance_id = '$instance_id' AND sequence_number = $max_seq;" | tr -d '[:space:]')"
+        assert_eq "terminal event at max sequence $max_seq" "$expected_terminal" "$terminal_type" || return 1
+    else
+        log "  (skipping terminal-event-type check - expected_terminal='' - e.g. a TERMINATED instance appends no event of its own)"
+    fi
+
+    log "  assert OK: event log for $wfid is duplicate-free and contiguous below the terminal ($total events, sequence $min_seq..$max_seq)"
+}
+
+# wait_for_signal_received_count <workflowId> <signalName> <count> <timeout>
+#
+# Polls Postgres directly for the number of SIGNAL_RECEIVED events recorded
+# for <signalName> on this instance (step_name = "$maestro:awaitSignal:
+# <signalName>" — SignalManager.awaitSignal.java:229; collectSignals just
+# calls awaitSignal in a loop, so the same step_name applies). Needed because
+# the engine's WAITING_SIGNAL status is identical across every await in the
+# workflow (verification.result, document.uploaded, underwriting.decision,
+# package.signed) and does NOT by itself say which one a parked instance is
+# on — e.g. LoanApplicationWorkflow parks on verification.result immediately
+# after creation, then (once fan-in completes) on document.uploaded, both as
+# plain WAITING_SIGNAL. Waiting for "3 verification.result signals consumed"
+# is how scenario 8 confirms a workflow with no documents uploaded has moved
+# PAST verification fan-in and is now parked specifically on document.uploaded
+# (rather than still mid-fan-in).
+wait_for_signal_received_count() {
+    local wfid="$1" signal="$2" want="$3" timeout="$4" deadline=$((SECONDS + $4))
+    local instance_id="" count=""
+    while (( SECONDS < deadline )); do
+        [[ -z "$instance_id" ]] && instance_id="$(psql_loan "SELECT id FROM maestro_workflow_instance WHERE workflow_id = '$wfid';" | tr -d '[:space:]')"
+        if [[ -n "$instance_id" ]]; then
+            count="$(psql_loan "SELECT COUNT(*) FROM maestro_workflow_event WHERE workflow_instance_id = '$instance_id' AND event_type = 'SIGNAL_RECEIVED' AND step_name = '\$maestro:awaitSignal:$signal';" | tr -d '[:space:]')"
+            [[ "$count" =~ ^[0-9]+$ ]] && (( count >= want )) && return 0
+        fi
+        sleep 1
+    done
+    err "wfid=$wfid: SIGNAL_RECEIVED count for '$signal' never reached $want within ${timeout}s (last: ${count:-<no instance row yet>})"
+    return 1
+}
+
+# stop_service_graceful <name> <grace-secs> - SIGTERM only, no KILL fallback.
+#
+# stop_service() (teardown's workhorse) escalates to KILL after its wait, by
+# design - teardown doesn't care HOW a process dies. Scenario 8 exists
+# specifically to prove that a REAL graceful Spring shutdown (not a disguised
+# kill) leaves parked workflows WAITING_* instead of FAILED, so silently
+# falling back to KILL here would defeat the scenario's own claim: if the
+# grace period is too short, this function fails loudly instead of masking
+# a slow/hung shutdown as a clean one.
+stop_service_graceful() {
+    local name="$1" grace="$2" pid i
+    [[ -f "$PID_DIR/$name.pid" ]] || { err "No pid file for $name - cannot SIGTERM"; return 1; }
+    pid="$(cat "$PID_DIR/$name.pid")"
+    kill -0 "$pid" 2>/dev/null || { err "$name (pid $pid) is not running - cannot SIGTERM"; return 1; }
+    kill -TERM "$pid" || { err "SIGTERM to $name (pid $pid) failed"; return 1; }
+    for (( i = 0; i < grace; i++ )); do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            rm -f "$PID_DIR/$name.pid"
+            log "$name (pid $pid) exited gracefully ${i}s after SIGTERM (grace budget ${grace}s) - no KILL fallback used"
+            return 0
+        fi
+        sleep 1
+    done
+    err "$name (pid $pid) did NOT exit within ${grace}s of SIGTERM - real Spring shutdown exceeded the grace period (maestro.shutdown.timeout default 30s); refusing to KILL so this is visible instead of disguised as a clean shutdown"
     return 1
 }
 
@@ -251,22 +673,39 @@ start_infra() {
     err "kafka-init did not finish within 120s"; return 1
 }
 
-# wait_for_consumer_group <group> <timeout> - group Stable with members, so
-# messages produced afterwards are guaranteed to be consumed (the sample's
-# @KafkaListeners use default auto.offset.reset=latest).
-wait_for_consumer_group() {
-    local group="$1" timeout="$2" deadline=$((SECONDS + $2)) kafka_cid
+# consumer_group_members <group> - prints the group's current member count
+# (0 if the group is missing or not Stable). The --state output's last
+# column is #MEMBERS.
+consumer_group_members() {
+    local group="$1" kafka_cid line
     kafka_cid="$(compose ps -q kafka)"
+    line="$(docker exec "$kafka_cid" /opt/kafka/bin/kafka-consumer-groups.sh \
+            --bootstrap-server localhost:9092 --describe --group "$group" --state 2>/dev/null \
+            | grep "Stable" || true)"
+    if [[ -n "$line" ]]; then
+        awk '{print $NF}' <<<"$line"
+    else
+        echo 0
+    fi
+}
+
+# wait_for_consumer_group <group> <timeout> [min-members] - group Stable with
+# at least min-members members (default 1), so messages produced afterwards
+# are guaranteed to be consumed (the sample's @KafkaListeners use default
+# auto.offset.reset=latest). The member floor matters when a SECOND instance
+# joins an already-Stable group: without it the check passes trivially
+# before the new members have even started their rebalance.
+wait_for_consumer_group() {
+    local group="$1" timeout="$2" min_members="${3:-1}" deadline=$((SECONDS + $2)) members
     while (( SECONDS < deadline )); do
-        if docker exec "$kafka_cid" /opt/kafka/bin/kafka-consumer-groups.sh \
-                --bootstrap-server localhost:9092 --describe --group "$group" --state 2>/dev/null \
-                | grep -q "Stable"; then
-            log "Kafka consumer group '$group' is stable."
+        members="$(consumer_group_members "$group")"
+        if [[ "$members" =~ ^[0-9]+$ ]] && (( members >= min_members )); then
+            log "Kafka consumer group '$group' is stable ($members member(s), needed >=$min_members)."
             return 0
         fi
         sleep 2
     done
-    err "Kafka consumer group '$group' not stable within ${timeout}s"
+    err "Kafka consumer group '$group' not stable with >=$min_members member(s) within ${timeout}s (last: ${members:-0})"
     return 1
 }
 
@@ -295,12 +734,70 @@ build_services() {
     done
 }
 
-start_service() { # <name>
-    local name="$1" jar
-    jar="$(service_jar "$name")"
-    log "Starting $name..."
-    java -jar "$jar" >>"$LOG_DIR/$name.log" 2>&1 &
-    echo $! >"$PID_DIR/$name.pid"
+# start_service_instance <service> <port> <instance-name> [KEY=VALUE ...]
+# Generic single-process launcher: every service and every second ("-b")
+# node routes through this. <service> selects the boot jar (the source
+# directory / SERVICES entry); <instance-name> selects the pid/log file
+# names, so a second node of the same service gets its own pid/log without
+# touching the primary's. Any trailing KEY=VALUE args are exported as extra
+# environment overrides for JUST this process (Spring Boot relaxed binding,
+# e.g. MAESTRO_SAMPLE_DECISION_TIMEOUT=PT8S or
+# LOGGING_LEVEL_IO_B2MASH_MAESTRO_CORE_ENGINE=DEBUG) - used by scenarios 9
+# and 10 to reconfigure one node without touching the others.
+start_service_instance() {
+    local svc="$1" port="$2" iname="$3"
+    shift 3
+    local extra_env=("$@") jar
+    jar="$(service_jar "$svc")"
+    assert_port_free "$iname" "$port" || return 1
+    : >"$LOG_DIR/$iname.log"
+    # E2E_LOCK_BACKEND=postgres: append MAESTRO_LOCK_TYPE=postgres AFTER any
+    # scenario-supplied extra_env so a scenario can never accidentally shadow
+    # it (none currently sets MAESTRO_LOCK_TYPE themselves - this is just
+    # "last write wins" made deliberate rather than incidental).
+    if [[ "$E2E_LOCK_BACKEND" == "postgres" ]]; then
+        extra_env+=("MAESTRO_LOCK_TYPE=postgres")
+    fi
+    if [[ "${#extra_env[@]}" -gt 0 ]]; then
+        log "Starting $iname (service=$svc) on port $port, extra env: ${extra_env[*]}..."
+    else
+        log "Starting $iname (service=$svc) on port $port..."
+    fi
+    # NOTE 1: dynamic "${extra_env[@]}" words are NOT recognized as env-var-
+    # assignment prefixes by bash (that recognition is lexical/literal, not
+    # value-based) - `env` is required to apply them to the child process.
+    # NOTE 2: the ${arr[@]+...} guard (same pattern as assert_distinct_pids)
+    # is required for bash 3.2 (macOS stock /bin/bash): under set -u, an
+    # EMPTY array's "${arr[@]}" is an "unbound variable" error there - which
+    # is every zero-extra-args call site (all of scenarios 1-8). Verified
+    # against /bin/bash 3.2.57: unguarded fails (exit 127), guarded passes
+    # with both zero and space-containing KEY=VALUE args.
+    SERVER_PORT="$port" env ${extra_env[@]+"${extra_env[@]}"} java -jar "$jar" >>"$LOG_DIR/$iname.log" 2>&1 &
+    echo $! >"$PID_DIR/$iname.pid"
+    # Runtime-verify the effective lock backend BEFORE returning to the
+    # caller - "config says so" is not proof (see E2E_LOCK_BACKEND comment
+    # above). This is a tighter, independent bound than the wait_for_http
+    # every caller performs afterward; failing here points straight at the
+    # classpath/property wiring instead of a much later, harder-to-diagnose
+    # scenario timeout.
+    assert_lock_backend "$LOG_DIR/$iname.log" "$iname" || return 1
+}
+
+# default_port_for <service> - the node-A port baked into each service's
+# application.yml (server.port: ${SERVER_PORT:<this value>}).
+default_port_for() {
+    case "$1" in
+        loan-application-service) echo 8091 ;;
+        verification-gateway-service) echo 8092 ;;
+        underwriting-service) echo 8093 ;;
+        *) err "No default port known for service '$1'"; return 1 ;;
+    esac
+}
+
+start_service() { # <name> - node-A instance; instance name == service name
+    local name="$1" port
+    port="$(default_port_for "$name")" || return 1
+    start_service_instance "$name" "$port" "$name"
 }
 
 stop_service() { # <name> [signal]
@@ -317,10 +814,24 @@ stop_service() { # <name> [signal]
     rm -f "$PID_DIR/$name.pid"
 }
 
+# assert_distinct_pids <instance-name>... - fail if any two pid files in the
+# list resolve to the same PID (cluster-mode sanity check).
+assert_distinct_pids() {
+    local n pid seen pids=()
+    for n in "$@"; do
+        [[ -f "$PID_DIR/$n.pid" ]] || { err "Missing pid file for $n"; return 1; }
+        pid="$(cat "$PID_DIR/$n.pid")"
+        for seen in ${pids[@]+"${pids[@]}"}; do
+            [[ "$seen" != "$pid" ]] || { err "$n shares PID $pid with another instance"; return 1; }
+        done
+        pids+=("$pid")
+    done
+    log "Distinct PIDs confirmed for: $*"
+}
+
 start_all_services() {
     local svc
     for svc in "${SERVICES[@]}"; do
-        : >"$LOG_DIR/$svc.log"
         start_service "$svc"
     done
     wait_for_http "loan-application-service" "$LOAN_URL/applications/__probe__" 120
@@ -331,6 +842,47 @@ start_all_services() {
     # (default auto.offset.reset=latest on the sample's @KafkaListeners).
     wait_for_consumer_group "verification-gateway" 90
     wait_for_consumer_group "underwriting" 90
+
+    if [[ "$E2E_CLUSTER" == 1 ]]; then
+        log "E2E_CLUSTER=1 - starting second instance of each service (6 processes total)..."
+        # loan-application's @MaestroSignalListener consumers of the business
+        # topics loans.verification.results / loans.underwriting.decisions use
+        # base group "maestro-<service-name>" (see resolveBaseConsumerGroup in
+        # MaestroSignalListenerBeanPostProcessor); loan node B will join it
+        # too, so it needs the same rebalance treatment as the @KafkaListener
+        # groups. Ensure it is stable before baselining.
+        wait_for_consumer_group "maestro-loan-application" 90
+
+        # Baseline single-node membership per group, so the post-join waits
+        # below can demand the count DOUBLES. Without a member floor the
+        # re-wait would pass trivially: the group still reports Stable in the
+        # window before the new node's consumers begin their rebalance.
+        local vg_base uw_base loan_base
+        vg_base="$(consumer_group_members verification-gateway)"
+        uw_base="$(consumer_group_members underwriting)"
+        loan_base="$(consumer_group_members maestro-loan-application)"
+
+        start_loan_node_b || return 1
+        start_service_instance verification-gateway-service "$VERIFY_PORT_B" "$VERIFY_NODE_B" || return 1
+        start_service_instance underwriting-service "$UW_PORT_B" "$UW_NODE_B" || return 1
+        wait_for_http "$VERIFY_NODE_B" "$VERIFY_URL_B/webhooks/credit/__probe__" 120
+        wait_for_http "$UW_NODE_B" "$UW_URL_B/underwriting/pending" 120
+
+        # Each joining consumer forces a group rebalance; with the sample's
+        # default auto.offset.reset=latest a message published mid-rebalance
+        # can be silently skipped (same reason the single-node path waits
+        # above). Re-wait until every affected group is Stable with both
+        # nodes' members (2x the single-node baseline; the instances run the
+        # same jar and config, so membership is symmetric) before any
+        # scenario publishes.
+        wait_for_consumer_group "verification-gateway" 90 $(( vg_base > 0 ? vg_base * 2 : 2 ))
+        wait_for_consumer_group "underwriting" 90 $(( uw_base > 0 ? uw_base * 2 : 2 ))
+        wait_for_consumer_group "maestro-loan-application" 90 $(( loan_base > 0 ? loan_base * 2 : 2 ))
+
+        assert_distinct_pids loan-application-service "$LOAN_NODE_B" \
+            verification-gateway-service "$VERIFY_NODE_B" \
+            underwriting-service "$UW_NODE_B"
+    fi
 }
 
 TEARDOWN_DONE=0
@@ -344,7 +896,11 @@ teardown() {
     log "Tearing down services and infrastructure..."
     local svc
     for svc in "${SERVICES[@]}"; do stop_service "$svc" || true; done
+    # Second nodes: no-op (stop_service returns immediately) when they were
+    # never started, so this is safe in both default and cluster mode.
     stop_service "$LOAN_NODE_B" || true
+    stop_service "$VERIFY_NODE_B" || true
+    stop_service "$UW_NODE_B" || true
     if [[ "$E2E_REUSE" != 1 ]]; then
         compose down -v >/dev/null 2>&1 || true
     fi
@@ -355,8 +911,22 @@ trap teardown EXIT
 RESULT_NAMES=(); RESULT_STATUS=(); RESULT_SECS=()
 OVERALL_FAIL=0
 
-run_scenario() { # <name> <function>
+# scenario_selected <num> - true when E2E_ONLY is empty (all scenarios) or
+# lists this scenario number.
+scenario_selected() {
+    [[ -z "$E2E_ONLY" ]] && return 0
+    local n
+    for n in $E2E_ONLY; do [[ "$n" == "$1" ]] && return 0; done
+    return 1
+}
+
+run_scenario() { # <name> <function>   (name must start "<num>. ...")
     local name="$1" fn="$2" start=$SECONDS rc=0
+    local num="${name%%.*}"
+    if ! scenario_selected "$num"; then
+        log "E2E_ONLY='$E2E_ONLY' - skipping scenario $num."
+        return 0
+    fi
     printf '\n%s=== SCENARIO: %s ===%s\n' "$BOLD" "$name" "$NC"
     if "$fn"; then rc=0; else rc=1; fi
     local elapsed=$((SECONDS - start))
@@ -377,11 +947,14 @@ run_scenario() { # <name> <function>
 # it a genuine second node of the same service: one consumer group, one store,
 # one instance-lock namespace.
 start_loan_node_b() {
-    local jar; jar="$(service_jar loan-application-service)"
-    : >"$LOG_DIR/$LOAN_NODE_B.log"
-    log "Starting second loan-application node on 8094..."
-    SERVER_PORT=8094 java -jar "$jar" >>"$LOG_DIR/$LOAN_NODE_B.log" 2>&1 &
-    echo $! >"$PID_DIR/$LOAN_NODE_B.pid"
+    # In cluster mode the second loan node is already running for the whole
+    # run (started by start_all_services); reuse it rather than trying to
+    # bind the same port twice. In default mode this is always a fresh start.
+    if [[ -f "$PID_DIR/$LOAN_NODE_B.pid" ]] && kill -0 "$(cat "$PID_DIR/$LOAN_NODE_B.pid")" 2>/dev/null; then
+        log "$LOAN_NODE_B already running (cluster mode) - reusing for scenario 6."
+    else
+        start_service_instance loan-application-service "$LOAN_PORT_B" "$LOAN_NODE_B" || return 1
+    fi
     wait_for_http "$LOAN_NODE_B" "$LOAN_URL_B/applications/__probe__" 120
 }
 
@@ -390,6 +963,96 @@ upload_doc_via() { # <baseUrl> <id> <docType> <uploadedBy>
 }
 sign_app_via() { # <baseUrl> <id> <signerId>
     api_post "$1/applications/$2/sign" "{\"signerId\":\"$3\"}" >/dev/null
+}
+
+# start_verify_node_b - mirrors start_loan_node_b for the verification-gateway
+# service. Used by scenario 9, which needs TWO vg nodes for timer-poller
+# leader election to be meaningful (a lone node is always its own leader).
+start_verify_node_b() {
+    if [[ -f "$PID_DIR/$VERIFY_NODE_B.pid" ]] && kill -0 "$(cat "$PID_DIR/$VERIFY_NODE_B.pid")" 2>/dev/null; then
+        log "$VERIFY_NODE_B already running (cluster mode) - reusing for scenario 9."
+    else
+        start_service_instance verification-gateway-service "$VERIFY_PORT_B" "$VERIFY_NODE_B" || return 1
+    fi
+    wait_for_http "$VERIFY_NODE_B" "$VERIFY_URL_B/webhooks/credit/__probe__" 120
+}
+
+# determine_timer_leader <log_a> <log_b> <settle_secs> <observe_secs> -
+# prints "A" or "B" to stdout: the vg node whose TimerPoller log shows ZERO
+# "Another instance holds timer poller leadership" DEBUG lines in a POST-
+# SETTLE observation window, while the other shows >=1. REQUIRES both nodes
+# started with LOGGING_LEVEL_IO_B2MASH_MAESTRO_CORE_ENGINE=DEBUG (TimerPoller
+# logs that line at DEBUG on every poll cycle a non-leader loses the
+# trySetLeader race - TimerPoller.java isLeader()).
+#
+# Two-phase, not "watch from t=0": a fresh restart of both nodes races for
+# the SAME election key, and if either process reused a service that just
+# held that key (as this scenario's own vg-node-A restart does — see the
+# caller), the OLD candidate's entry can still be live with up to the full
+# 15s TTL remaining, during which BOTH new candidates lose every attempt —
+# observed empirically (both sides logged nonzero follower lines for the
+# first ~15s, one settled to zero once it won, the other one never did).
+# <settle_secs> (>= LEADER_TTL, 15s) is slept UNCOUNTED first so any stale
+# entry fully expires and a winner is decided; only the FOLLOWING
+# <observe_secs> (>= 2 poll cycles, 5s each) counts toward the verdict, via a
+# "new lines since the settle mark" diff so leftover pre-settle noise on the
+# eventual winner cannot cause a false "both nonzero" verdict.
+#
+# CAUTION for callers: this function is invoked as `leader="$(determine_
+# timer_leader ...)"` — a command substitution — so every diagnostic line
+# it emits MUST go to stderr (log()/warn() default to stdout and would
+# otherwise silently splice themselves into $leader, corrupting every later
+# `[[ "$leader" == "A" ]]` string comparison; caught in development by
+# noticing $leader always fell through to the "else" branch).
+determine_timer_leader() {
+    local log_a="$1" log_b="$2" settle_secs="$3" observe_secs="$4"
+    local pattern="Another instance holds timer poller leadership for service 'verification-gateway'"
+    log "Waiting ${settle_secs}s for the timer-poller election to settle (any stale leader-key entry to expire)..." >&2
+    sleep "$settle_secs"
+    local mark_a mark_b
+    mark_a="$(wc -l < "$log_a" | tr -d '[:space:]')"
+    mark_b="$(wc -l < "$log_b" | tr -d '[:space:]')"
+    log "Observing ${observe_secs}s post-settle (marks: A@line$mark_a, B@line$mark_b)..." >&2
+    sleep "$observe_secs"
+    local count_a count_b
+    count_a="$(tail -n "+$((mark_a + 1))" "$log_a" 2>/dev/null | grep -cF "$pattern" || true)"
+    count_b="$(tail -n "+$((mark_b + 1))" "$log_b" 2>/dev/null | grep -cF "$pattern" || true)"
+    count_a="${count_a:-0}"; count_b="${count_b:-0}"
+    log "Post-settle follower-line counts: A=$count_a B=$count_b" >&2
+    if (( count_a > 0 && count_b == 0 )); then echo "B"; return 0; fi
+    if (( count_b > 0 && count_a == 0 )); then echo "A"; return 0; fi
+    err "Could not determine a single timer-poller leader post-settle (follower-line counts: A=$count_a B=$count_b) - both zero means neither lost an election in the window (increase observe_secs), both nonzero means leadership flapped (increase settle_secs)"
+    return 1
+}
+
+# kafka_produce_signal <topic> <workflowId> <json-value> - publishes a single
+# record keyed by workflowId via the Kafka container's console producer.
+# This is EXACTLY the wire format AdminCommandService.sendSignal produces
+# (KafkaTemplate<String, byte[]>.send(topic, workflowId, jacksonBytes) of a
+# SignalMessage) minus running the maestro-admin service itself, which this
+# sample's compose does not include - see task-4-report.md for why. Key
+# separator '|' is safe here: workflow ids in this sample never contain '|',
+# and kafka-console-producer's LineMessageReader splits on the FIRST
+# occurrence only, so a JSON value containing '|' would still be fine.
+kafka_produce_signal() {
+    local topic="$1" wfid="$2" json="$3" kafka_cid
+    kafka_cid="$(compose ps -q kafka)"
+    printf '%s|%s\n' "$wfid" "$json" | docker exec -i "$kafka_cid" \
+        /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 \
+        --topic "$topic" --property parse.key=true --property key.separator='|'
+}
+
+# kafka_read_admin_events <timeout-ms> - bounded read of the admin events
+# topic from the beginning, printed to stdout. Safe to call repeatedly across
+# runs: every workflow id in this suite is RUN_ID-scoped, so grepping the
+# output for a specific id after a --from-beginning read is unambiguous even
+# though the topic accumulates events across runs (E2E_REUSE/E2E_NO_TEARDOWN).
+kafka_read_admin_events() {
+    local timeout_ms="$1" kafka_cid
+    kafka_cid="$(compose ps -q kafka)"
+    docker exec "$kafka_cid" /opt/kafka/bin/kafka-console-consumer.sh \
+        --bootstrap-server localhost:9092 --topic maestro.admin.events \
+        --from-beginning --timeout-ms "$timeout_ms" 2>/dev/null || true
 }
 
 scenario_happy_path() {
@@ -563,6 +1226,14 @@ sweep_logs() {
 scenario_two_node() {
     local id="e2e-${RUN_ID}-s6"
 
+    # Cluster mode already has node B running for the whole run; only stop it
+    # at the end of this scenario if THIS scenario is the one that started it
+    # (default mode) - never tear down a node the cluster-mode run still needs.
+    local started_node_b=1
+    if [[ -f "$PID_DIR/$LOAN_NODE_B.pid" ]] && kill -0 "$(cat "$PID_DIR/$LOAN_NODE_B.pid")" 2>/dev/null; then
+        started_node_b=0
+    fi
+
     start_loan_node_b || return 1
 
     local pid_a pid_b
@@ -607,11 +1278,746 @@ scenario_two_node() {
     kill -0 "$pid_a" 2>/dev/null || { err "Node A ($pid_a) died during the scenario"; return 1; }
     kill -0 "$pid_b" 2>/dev/null || { err "Node B ($pid_b) died during the scenario"; return 1; }
 
+    if [[ "$started_node_b" == 1 ]]; then
+        stop_service "$LOAN_NODE_B"
+    else
+        log "$LOAN_NODE_B was started by cluster mode - leaving it running for the rest of the run."
+    fi
+}
+
+# ── Scenario 7: owner-kill -> peer adoption ─────────────────────────────
+# The claim scenario 5 does NOT make: scenario 5 kill -9's the owner and then
+# RESTARTS THE SAME NODE. Here node A (the owner) is kill -9'd mid-underwriting
+# wait and NEVER comes back for the rest of this scenario; node B alone must
+# adopt the orphaned instance (recovery poller + instance-lock TTL) and drive
+# it to FUNDED. Runs LAST in main() - see that function for why.
+scenario_owner_kill_adoption() {
+    local id="e2e-${RUN_ID}-s7"
+    local wfid="loan-$id"
+    local loan_log="$LOG_DIR/loan-application-service.log"
+    local loan_log_b="$LOG_DIR/$LOAN_NODE_B.log"
+
+    # Pre-flight repair: a PREVIOUS failed scenario-7 run exits before its
+    # cleanup step, leaving node A dead (killed, pid file removed). Restore
+    # node A first so consecutive runs (E2E_ONLY=7 E2E_REUSE=1 loops) don't
+    # inherit a poisoned topology. Within THIS run node A still stays dead
+    # from its kill until the assertions pass.
+    if ! port_in_use 8091; then
+        warn "Node A (port 8091) is not up at scenario start - restoring it (leftover from a previous failed run?)"
+        start_service "loan-application-service" || return 1
+        wait_for_http "loan-application-service" "$LOAN_URL/applications/__probe__" 120 || return 1
+    fi
+
+    # Node B must already be up (same service name -> same consumer group,
+    # store, and lock namespace) before the kill, or "adoption" would really
+    # just be "cold start of the only surviving node".
+    local started_node_b=1
+    if [[ -f "$PID_DIR/$LOAN_NODE_B.pid" ]] && kill -0 "$(cat "$PID_DIR/$LOAN_NODE_B.pid")" 2>/dev/null; then
+        started_node_b=0
+    fi
+    start_loan_node_b || return 1
+
+    local pid_a pid_b
+    pid_a="$(cat "$PID_DIR/loan-application-service.pid")"
+    pid_b="$(cat "$PID_DIR/$LOAN_NODE_B.pid")"
+    [[ "$pid_a" != "$pid_b" ]] || { err "Both nodes report the same PID $pid_a"; return 1; }
+    log "Node A (owner-to-be) pid=$pid_a, node B (peer) pid=$pid_b"
+
+    # DTI = 400000/100000 = 4.0 -> HUMAN_REVIEW (same shape as scenarios 1/5).
+    # Deliberately create via LOAN_URL (node A's port) so node A is the one
+    # that starts and parks the instance.
+    create_app "$id" '["grace"]' 400000 100000 650000 '["pay-stub"]' || return 1
+    upload_doc "$id" "pay-stub" "grace" || return 1
+    log "Created $id on node A (port 8091) - node A is the owner-to-be"
+
+    wait_for_pending_review "$id" 1 "$WAIT_PENDING_SECS" || return 1
+    wait_for_log_line "$loan_log" "Requested underwriting round 1 for loan $id" 30 || return 1
+
+    # ── Ownership proof BEFORE the kill ─────────────────────────────────
+    if grep -qE "Requested underwriting round 1 for loan $id" "$loan_log_b" 2>/dev/null; then
+        err "Node B's log ALSO shows 'Requested underwriting round 1' for $id - ownership is ambiguous"
+        return 1
+    fi
+    log "OWNERSHIP PROOF (log): only node A's log ($loan_log) shows 'Requested underwriting round 1 for loan $id'"
+
+    # Extra-credit ownership proof: inspect the Valkey instance-lock key
+    # directly. Best-effort - the compose service name / valkey-cli
+    # availability aren't asserted elsewhere, so a miss here is a warning,
+    # not a scenario failure (the log-based proof above is authoritative).
+    local lock_key="maestro:lock:workflow:$wfid" token_before=""
+    token_before="$(lock_token psql_loan "$lock_key")"
+    if [[ -n "$token_before" ]]; then
+        log "OWNERSHIP PROOF (lock, extra credit): $lock_key = '$token_before' (held pre-kill)"
+    else
+        warn "Lock inspection: could not read $lock_key via valkey-cli - proceeding on the log-based proof alone"
+    fi
+
+    # ── kill -9 node A; do NOT restart it for the rest of this scenario ──
+    local kill_epoch
+    kill_epoch=$(date +%s)
+    log "kill -9 loan-application-service (pid $pid_a, OWNER of $wfid) - will NOT be restarted until after assertions pass"
+    kill -KILL "$pid_a"
+    sleep 1
+    if kill -0 "$pid_a" 2>/dev/null; then err "Process $pid_a survived kill -9"; return 1; fi
+    rm -f "$PID_DIR/loan-application-service.pid"
+
+    # Deliver the rest of the workflow's inputs with node A dead. The
+    # decision goes through underwriting (never killed, node-agnostic
+    # store-backed signal); the signature is routed to node B explicitly
+    # per the task's requirement that node B alone drives completion.
+    post_decision "$id" 1 "APPROVED" '[]' || return 1
+    sign_app_via "$LOAN_URL_B" "$id" "grace" || return 1
+    log "Decision + signature delivered with node A dead (signature routed via node B, port $LOAN_PORT_B)"
+
+    log "Waiting for node B to adopt $wfid (bound ${WAIT_ADOPTION_SECS}s = lock TTL 30s + recovery poll-interval 60s + slack)..."
+    wait_for_log_line "$loan_log_b" "Resuming workflow '$wfid' \(type=" "$WAIT_ADOPTION_SECS" || return 1
+    local adopted_epoch adoption_latency
+    adopted_epoch=$(date +%s)
+    adoption_latency=$(( adopted_epoch - kill_epoch ))
+    log "ADOPTION LATENCY: ${adoption_latency}s (kill -> node B's 'Resuming workflow' log line)"
+
+    # Node A is dead - MUST poll node B (wait_for_engine_status defaults to
+    # the node-A-hardcoded $LOAN_URL, which would just fail here).
+    wait_for_engine_status_via "$LOAN_URL_B" "$id" COMPLETED "$WAIT_RECOVERY_SECS" || return 1
+    local body
+    body="$(api_get "$LOAN_URL_B/applications/$id")"
+    assert_eq "engine status (via node B)" "COMPLETED" "$(json_get "$body" status)" || return 1
+    assert_eq "loan result (via node B)"   "FUNDED"    "$(json_get "$body" output.status)" || return 1
+
+    # Node A must have stayed dead throughout.
+    if kill -0 "$pid_a" 2>/dev/null; then
+        err "Node A ($pid_a) is alive - this scenario requires it stay dead until after assertions pass"
+        return 1
+    fi
+    log "Node A confirmed dead throughout (never restarted before this line)"
+
+    # Extra-credit lock proof: the lock was reacquired (token changed) by
+    # whichever node adopted the instance.
+    local token_after
+    token_after="$(lock_token psql_loan "$lock_key")"
+    if [[ -n "$token_before" && -n "$token_after" ]]; then
+        if [[ "$token_before" != "$token_after" ]]; then
+            log "OWNERSHIP PROOF (lock, extra credit): $lock_key token changed '$token_before' -> '$token_after' (reacquired)"
+        else
+            warn "Lock token unchanged ('$token_after') - unexpected but non-fatal (log-based proof already established adoption)"
+        fi
+    fi
+
+    # Side-effect count: grep the disbursement line for THIS loan id across
+    # BOTH loan-node logs. Case-insensitive substring match on "Disbursed"
+    # (SimulatedFundingActivities logs "Disbursed {} for loan {} ..." with a
+    # capital D - a lowercase-only "disburs" pattern, as scenario 6 uses,
+    # never matches it; that is scenario 6's known gap, not reproduced here).
+    local disbursed_a disbursed_b total
+    disbursed_a="$(grep -ciE "Disbursed .* for loan $id " "$loan_log" 2>/dev/null || true)"
+    disbursed_b="$(grep -ciE "Disbursed .* for loan $id " "$loan_log_b" 2>/dev/null || true)"
+    total=$(( ${disbursed_a:-0} + ${disbursed_b:-0} ))
+    log "SIDE-EFFECT COUNT: loan $id disbursed A=$disbursed_a B=$disbursed_b total=$total (Issue 11: >1 tolerated only if documented duplication - recorded as observed, not asserted away)"
+    if (( total < 1 )); then
+        err "Loan $id was never disbursed on either node"
+        return 1
+    fi
+
+    # Event-log assertions: query Postgres directly. Expected missing set =
+    # "" (Issue 19): the two withdrawal-gate awaitSignal("loan.withdrawn")
+    # calls time out on every FUNDED path and each memoizes a SIGNAL_TIMEOUT
+    # event at its slot; this scenario's fixed shape (1 borrower,
+    # 1 doc, 3 verifications, round-1 approval, 1 signature) puts gate 1 at
+    # seq 9 and gate 2 at seq 16 deterministically (see
+    # assert_event_log_integrity's header comment).
+    assert_event_log_integrity "$wfid" "" || return 1
+
+    # ── Cleanup: restart node A now that the scenario's assertions have
+    # passed (the "do not restart" constraint applies only until then), and
+    # stop node B if THIS scenario started it - mirrors scenario 6's
+    # cluster-mode-aware cleanup so a subsequent run (or E2E_NO_TEARDOWN=1)
+    # finds the topology it expects.
+    log "Assertions passed - restarting node A (post-scenario cleanup, not required for the scenario's own claim)"
+    start_service "loan-application-service"
+    wait_for_http "loan-application-service" "$LOAN_URL/applications/__probe__" 120 || return 1
+
+    if [[ "$started_node_b" == 1 ]]; then
+        stop_service "$LOAN_NODE_B"
+    else
+        log "$LOAN_NODE_B was started by cluster mode - leaving it running for the rest of the run."
+    fi
+}
+
+# ── Scenario 8: rolling restart (graceful SIGTERM mid-flight) ──────────
+#
+# Task 3 (spec Phase 1 Task C). Unlike scenario 7 (kill -9, owner never
+# returns), this scenario SIGTERMs node A - a real Spring/Maestro graceful
+# shutdown - with THREE workflows parked in distinct WAITING_SIGNAL states,
+# asserts node A's own log proves the graceful path (not a failure), has
+# node B read status + ingest a signal while node A is down, then restarts
+# node A and drives every workflow to COMPLETED.
+#
+# Parked-state coverage (see task-3-report.md for the full writeup):
+#   - awaiting document.uploaded  (after verification fan-in, before docs)
+#   - awaiting underwriting.decision (after doc collection + gate 1)
+#   - awaiting package.signed     (after decision + rate-lock reservation)
+# All three are WAITING_SIGNAL - the spec's third bucket (parked on a durable
+# TIMER) is NOT claimed here: verified in source, SignalManager.awaitSignal's
+# timeout (which backs the withdrawal gates AND every await's timeout
+# parameter) is a plain in-memory parkingLot.parkWithTimeout with periodic
+# store recheck - it never calls WorkflowStore.saveTimer, so no
+# maestro_workflow_timer row backs it. Only DefaultWorkflowOperations.sleep()
+# creates durable timer rows, and the only sleep() in this sample
+# (VerificationWorkflow's simulated provider latency) runs on
+# verification-gateway-service, a node this scenario does not touch. Runs
+# LAST (see main()) - same reason as scenario 7: it kills node A, the
+# primary every earlier scenario addresses via $LOAN_URL.
+scenario_rolling_restart() {
+    local base="e2e-${RUN_ID}-s8"
+    local id_docs="${base}-docs" id_decision="${base}-decision" id_sign="${base}-sign"
+    local wf_docs="loan-$id_docs" wf_decision="loan-$id_decision" wf_sign="loan-$id_sign"
+    local loan_log="$LOG_DIR/loan-application-service.log"
+    local loan_log_b="$LOG_DIR/$LOAN_NODE_B.log"
+
+    # Pre-flight repair: mirrors scenario 7 - a previous failed scenario-8
+    # run can exit before restarting node A, leaving it dead for the next run.
+    if ! port_in_use 8091; then
+        warn "Node A (port 8091) is not up at scenario start - restoring it (leftover from a previous failed run?)"
+        start_service "loan-application-service" || return 1
+        wait_for_http "loan-application-service" "$LOAN_URL/applications/__probe__" 120 || return 1
+    fi
+
+    # Node B must be up BEFORE anything parks on node A, so its status
+    # read / signal ingestion during the downtime window is a genuine peer,
+    # not a cold start racing the workflow's own creation.
+    local started_node_b=1
+    if [[ -f "$PID_DIR/$LOAN_NODE_B.pid" ]] && kill -0 "$(cat "$PID_DIR/$LOAN_NODE_B.pid")" 2>/dev/null; then
+        started_node_b=0
+    fi
+    start_loan_node_b || return 1
+
+    local pid_a pid_b
+    pid_a="$(cat "$PID_DIR/loan-application-service.pid")"
+    pid_b="$(cat "$PID_DIR/$LOAN_NODE_B.pid")"
+    [[ "$pid_a" != "$pid_b" ]] || { err "Both nodes report the same PID $pid_a"; return 1; }
+    log "Node A (to be SIGTERM'd) pid=$pid_a, node B (peer) pid=$pid_b"
+
+    # ── Bring up 3 workflows on node A, each headed for a distinct
+    # WAITING_SIGNAL state. Same shape (1 borrower, 1 required doc "pay-stub",
+    # amount/income -> DTI 4.0 -> HUMAN_REVIEW) as scenarios 1/5/7 so the
+    # event-log contiguity assertion below reuses that proven baseline ("").
+    # Creates/uploads fired back-to-back so the ~8s verification-fan-in
+    # latency overlaps across all three instead of serializing 3x.
+    create_app "$id_docs" '["s8a"]' 400000 100000 650000 '["pay-stub"]' || return 1
+    log "Created $id_docs (document withheld - will park awaiting document.uploaded)"
+
+    create_app "$id_decision" '["s8b"]' 400000 100000 650000 '["pay-stub"]' || return 1
+    upload_doc "$id_decision" "pay-stub" "s8b" || return 1
+    log "Created $id_decision (doc uploaded - will park awaiting underwriting.decision)"
+
+    create_app "$id_sign" '["s8c"]' 400000 100000 650000 '["pay-stub"]' || return 1
+    upload_doc "$id_sign" "pay-stub" "s8c" || return 1
+    log "Created $id_sign (doc uploaded - decision will be approved immediately, then parks awaiting package.signed)"
+
+    wait_for_pending_review "$id_decision" 1 "$WAIT_PENDING_SECS" || return 1
+    wait_for_log_line "$loan_log" "Requested underwriting round 1 for loan $id_decision" 30 || return 1
+    log "$id_decision parked awaiting underwriting.decision"
+
+    wait_for_pending_review "$id_sign" 1 "$WAIT_PENDING_SECS" || return 1
+    post_decision "$id_sign" 1 "APPROVED" '[]' || return 1
+    wait_for_log_line "$loan_log" "Reserved rate lock .* for loan $id_sign " 30 || return 1
+    log "$id_sign parked awaiting package.signed"
+
+    # Confirms verification fan-in has actually completed (3/3 verification.
+    # result signals consumed) - only then is $id_docs genuinely parked on
+    # document.uploaded rather than still mid-fan-in (both are WAITING_SIGNAL).
+    wait_for_signal_received_count "$wf_docs" "verification.result" 3 "$WAIT_PENDING_SECS" || return 1
+    log "$id_docs parked awaiting document.uploaded (verification fan-in confirmed complete: 3/3)"
+
+    local body id
+    for id in "$id_docs" "$id_decision" "$id_sign"; do
+        body="$(app_status_json "$id")"
+        assert_eq "pre-SIGTERM engine status ($id)" "WAITING_SIGNAL" "$(json_get "$body" status)" || return 1
+    done
+
+    # ── Graceful SIGTERM of node A, mid-flight, with all 3 parked ───────
+    log "SIGTERM node A (pid $pid_a) - 3 workflows parked, grace ${WAIT_SHUTDOWN_GRACE_SECS}s (maestro.shutdown.timeout default 30s + slack)"
+    stop_service_graceful "loan-application-service" "$WAIT_SHUTDOWN_GRACE_SECS" || return 1
+
+    # ── Graceful-shutdown evidence, read from node A's OWN log ──────────
+    wait_for_log_line "$loan_log" "Maestro graceful shutdown initiated" 5 || return 1
+    for id in "$wf_docs" "$wf_decision" "$wf_sign"; do
+        wait_for_log_line "$loan_log" "Workflow '$id' suspended by shutdown while WAITING_SIGNAL — left recoverable" 5 || return 1
+    done
+    wait_for_log_line "$loan_log" "Maestro graceful shutdown complete" 5 || return 1
+    log "GRACEFUL-SHUTDOWN EVIDENCE: all 3 parked workflows suspended WAITING_SIGNAL (not FAILED) - node A's log confirms the graceful path, not a kill"
+
+    # ── While node A is down: node B serves a status read AND ingests a
+    # signal for an in-flight (node-A-owned) workflow ──────────────────
+    body="$(app_status_json_via "$LOAN_URL_B" "$id_decision")"
+    local read_status; read_status="$(json_get "$body" status)"
+    log "NODE-B STATUS READ (node A down): $id_decision -> $read_status"
+    case "$read_status" in
+        COMPLETED|FAILED|TERMINATED|null)
+            err "Unexpected status '$read_status' for $id_decision read via node B while node A is down"; return 1 ;;
+    esac
+
+    upload_doc_via "$LOAN_URL_B" "$id_docs" "pay-stub" "s8a" || return 1
+    log "NODE-B SIGNAL INGESTED (node A down): document.uploaded for $id_docs"
+
+    kill -0 "$pid_a" 2>/dev/null && { err "Node A ($pid_a) is alive during the 'node A down' window - it must stay down until the restart step"; return 1; }
+    log "Node A confirmed dead throughout the downtime window"
+
+    # ── Restart node A ───────────────────────────────────────────────
+    log "Restarting node A..."
+    start_service "loan-application-service" || return 1
+    wait_for_http "loan-application-service" "$LOAN_URL/applications/__probe__" 120 || return 1
+
+    # ── Drive all three workflows to COMPLETED ──────────────────────
+    wait_for_pending_review "$id_docs" 1 "$WAIT_RECOVERY_SECS" || return 1
+    post_decision "$id_docs" 1 "APPROVED" '[]' || return 1
+    sign_app "$id_docs" "s8a" || return 1
+
+    post_decision "$id_decision" 1 "APPROVED" '[]' || return 1
+    sign_app "$id_decision" "s8b" || return 1
+
+    sign_app "$id_sign" "s8c" || return 1
+
+    for id in "$id_docs" "$id_decision" "$id_sign"; do
+        wait_for_engine_status "$id" COMPLETED "$WAIT_RECOVERY_SECS" || return 1
+        body="$(app_status_json "$id")"
+        assert_eq "engine status ($id)" "COMPLETED" "$(json_get "$body" status)" || return 1
+        assert_eq "loan result ($id)"   "FUNDED"    "$(json_get "$body" output.status)" || return 1
+    done
+    log "All 3 deploy-window workflows reached COMPLETED/FUNDED after node A's restart"
+
+    # ── Zero-FAILED assertion (SQL, independent of the wait loop above) ──
+    local failed_count
+    failed_count="$(psql_loan "SELECT COUNT(*) FROM maestro_workflow_instance WHERE workflow_id IN ('$wf_docs','$wf_decision','$wf_sign') AND status = 'FAILED';" | tr -d '[:space:]')"
+    log "SQL: FAILED count among deploy-window workflows ($wf_docs, $wf_decision, $wf_sign) = $failed_count"
+    assert_eq "FAILED count among deploy-window workflows" "$EXPECT_FAILED_COUNT" "$failed_count" || return 1
+
+    # ── Zero-compensation assertion, scoped to THESE 3 ids (scenario 4's
+    # own legitimate compensation lines for a DIFFERENT loan id must not
+    # false-positive this check when the full suite runs before scenario 8) ──
+    local comp_hits=0
+    for id in "$id_docs" "$id_decision" "$id_sign"; do
+        if grep -qE "COMPENSATION: .* for loan $id( |$)" "$loan_log" "$loan_log_b" 2>/dev/null; then
+            comp_hits=$((comp_hits + 1))
+            err "Found a COMPENSATION log line for deploy-window workflow $id"
+        fi
+    done
+    assert_eq "compensation log lines attributable to the deploy-window workflows" "0" "$comp_hits" || return 1
+
+    # ── Status/version sanity via SQL (optimistic-locking version advanced,
+    # proving the row was genuinely updated across the deploy, not just
+    # written once at creation) ─────────────────────────────────────────
+    local row st ver
+    for id in "$wf_docs" "$wf_decision" "$wf_sign"; do
+        row="$(psql_loan "SELECT status, version FROM maestro_workflow_instance WHERE workflow_id = '$id';")"
+        st="$(awk -F'|' '{print $1}' <<<"$row" | tr -d '[:space:]')"
+        ver="$(awk -F'|' '{print $2}' <<<"$row" | tr -d '[:space:]')"
+        log "SQL: $id -> status=$st version=$ver"
+        assert_eq "SQL status ($id)" "COMPLETED" "$st" || return 1
+        if [[ ! "$ver" =~ ^[0-9]+$ ]] || (( ver < 1 )); then
+            err "Suspicious version ($ver) for $id - expected optimistic-locking updates across the deploy window"
+            return 1
+        fi
+    done
+
+    # ── Event-log integrity per instance (same shape as scenarios 1/5/7 ->
+    # contiguous logs; the two withdrawal gates memoized as SIGNAL_TIMEOUT) ──
+    assert_event_log_integrity "$wf_docs"     "" || return 1
+    assert_event_log_integrity "$wf_decision" "" || return 1
+    assert_event_log_integrity "$wf_sign"     "" || return 1
+
+    if [[ "$started_node_b" == 1 ]]; then
+        stop_service "$LOAN_NODE_B"
+    else
+        log "$LOAN_NODE_B was started by cluster mode - leaving it running for the rest of the run."
+    fi
+}
+
+# ── Scenario 9: timer-poller leader failover (verification-gateway) ─────
+#
+# Task 4 (spec Phase 1 Task D), sub-scenario 1. Durable timers in this sample
+# only come from workflow.sleep() — VerificationWorkflow's simulated provider
+# latency (credit 2s / employment 5s / appraisal 8s, VerificationGateway
+# Properties defaults). TimerPoller elects ONE leader per service via
+# DistributedLock.trySetLeader(key="maestro:leader:timer-poller:verification
+# -gateway", ttl=15s) and only the leader scans+fires due timers. This
+# scenario kills the ELECTED LEADER — not necessarily the node that started
+# the workflow — while a verification is mid-sleep, and asserts the sleep
+# still completes via the surviving node's poller (Issue 17's fix: sleep()
+# rechecks the durable timer row every wake-recheck-interval, 5s here, so a
+# workflow parked on a DIFFERENT node than the timer-poller leader still
+# wakes up without needing recovery).
+#
+# Ownership vs. leadership are deliberately decoupled: "loans.verification.
+# requests" is keyed by loanId (KafkaLoanMessagingActivities), so all 3 of
+# one loan's verification workflows land on whichever vg node's Kafka
+# consumer owns that partition — not something this harness controls
+# directly. The scenario proves BOTH identities BEFORE the kill (leader via
+# a DEBUG-log follower-line count, owner via the "Started verification
+# workflow" log line) and only proceeds once they differ, retrying with a
+# fresh loan id otherwise: if leader==owner, killing the leader would ALSO
+# kill the workflow's own thread, and recovery would be bounded by the much
+# slower recovery poller (scenario 7's mechanism) instead of the timer-
+# poller leader TTL — conflating the two instead of isolating this one.
+scenario_timer_leader_failover() {
+    # Pre-flight repair, same as scenarios 7/8/10: a previous failed run of
+    # THIS scenario can exit before its cleanup step, leaving vg node A dead
+    # (killed as the elected leader) or the leader-election DEBUG env still
+    # applied. Restore node A to a known-good default state first.
+    if ! port_in_use "$(default_port_for verification-gateway-service)"; then
+        warn "vg node A (port $(default_port_for verification-gateway-service)) is not up at scenario start - restoring it (leftover from a previous failed run?)"
+        start_service "verification-gateway-service" || return 1
+        wait_for_http "verification-gateway-service" "$VERIFY_URL/webhooks/credit/__probe__" 120 || return 1
+    fi
+
+    local started_verify_b=1
+    if [[ -f "$PID_DIR/$VERIFY_NODE_B.pid" ]] && kill -0 "$(cat "$PID_DIR/$VERIFY_NODE_B.pid")" 2>/dev/null; then
+        started_verify_b=0
+    fi
+    start_verify_node_b || return 1
+
+    # Package-level, not class-level: Spring Boot's env-var relaxed binding
+    # lowercases map keys sourced from SystemEnvironmentPropertySource, so a
+    # mixed-case class name like ...ENGINE_TIMERPOLLER never matches the
+    # logger named "...engine.TimerPoller" (verified empirically - silently
+    # inert, zero DEBUG lines emitted). The package name is already all
+    # lowercase, so it maps cleanly; this enables DEBUG for the whole
+    # io.b2mash.maestro.core.engine package (chattier, but scoped to this
+    # scenario's two short-lived processes).
+    local debug_env="LOGGING_LEVEL_IO_B2MASH_MAESTRO_CORE_ENGINE=DEBUG"
+    local log_a="$LOG_DIR/verification-gateway-service.log" log_b="$LOG_DIR/$VERIFY_NODE_B.log"
+    log "Restarting both verification-gateway nodes with DEBUG timer-poller logging (leader-election evidence)..."
+    stop_service verification-gateway-service
+    stop_service "$VERIFY_NODE_B"
+    start_service_instance verification-gateway-service "$(default_port_for verification-gateway-service)" \
+        verification-gateway-service "$debug_env" || return 1
+    start_service_instance verification-gateway-service "$VERIFY_PORT_B" "$VERIFY_NODE_B" "$debug_env" || return 1
+    wait_for_http "verification-gateway-service" "$VERIFY_URL/webhooks/credit/__probe__" 120 || return 1
+    wait_for_http "$VERIFY_NODE_B" "$VERIFY_URL_B/webhooks/credit/__probe__" 120 || return 1
+    wait_for_consumer_group "verification-gateway" 90 2 || return 1
+
+    # ── Leader identity proof BEFORE any kill ───────────────────────────
+    local leader
+    leader="$(determine_timer_leader "$log_a" "$log_b" 17 12)" || return 1
+    log "LEADER PROOF (log): vg node $leader shows ZERO 'Another instance holds timer poller leadership' DEBUG lines - it is the elected timer-poller leader for service 'verification-gateway'"
+
+    local leader_key="maestro:leader:timer-poller:verification-gateway" leader_token_1 leader_token_2
+    leader_token_1="$(leader_token psql_verify "$leader_key")"
+    sleep 3
+    leader_token_2="$(leader_token psql_verify "$leader_key")"
+    if [[ -n "$leader_token_1" && "$leader_token_1" == "$leader_token_2" ]]; then
+        log "LEADER PROOF (lock, extra credit): $leader_key stable at '$leader_token_1' across a 3s window - single consistent leader"
+    else
+        warn "Lock inspection inconclusive ('$leader_token_1' -> '$leader_token_2') - proceeding on the log-based proof alone"
+    fi
+
+    local pid_a pid_b
+    pid_a="$(cat "$PID_DIR/verification-gateway-service.pid")"
+    pid_b="$(cat "$PID_DIR/$VERIFY_NODE_B.pid")"
+    [[ "$pid_a" != "$pid_b" ]] || { err "Both vg nodes report the same PID $pid_a"; return 1; }
+
+    local leader_iname
+    if [[ "$leader" == "A" ]]; then
+        leader_iname="verification-gateway-service"
+    else
+        leader_iname="$VERIFY_NODE_B"
+    fi
+    local leader_pid; leader_pid="$(cat "$PID_DIR/$leader_iname.pid")"
+
+    # ── Owner identity proof BEFORE the kill: find a loan whose verification
+    # workflows land on the NON-leader node (retry with a fresh id otherwise;
+    # a leader==owner loan is simply abandoned - see scenario header comment) ──
+    local id_target="" owner_log="" attempt=0 found=0 matched
+    while (( attempt < OWNER_SEARCH_MAX_ATTEMPTS )); do
+        attempt=$((attempt + 1))
+        # $RANDOM suffix (not just the attempt counter) so a run of near-
+        # identical sequential ids can't structurally hash to the same
+        # partition every time - see OWNER_SEARCH_MAX_ATTEMPTS above.
+        local id="e2e-${RUN_ID}-s9-${attempt}-${RANDOM}"
+        create_app "$id" '["s9"]' 400000 100000 650000 '["pay-stub"]' || return 1
+
+        matched=""
+        local deadline=$((SECONDS + 5))
+        while (( SECONDS < deadline )); do
+            if grep -qF "Started verification workflow 'verification-$id-appraisal'" "$log_a" 2>/dev/null; then matched="A"; break; fi
+            if grep -qF "Started verification workflow 'verification-$id-appraisal'" "$log_b" 2>/dev/null; then matched="B"; break; fi
+            sleep 1
+        done
+        if [[ -z "$matched" ]]; then
+            err "verification-$id-appraisal never started on either vg node within 5s"
+            return 1
+        fi
+        if [[ "$matched" != "$leader" ]]; then
+            found=1; id_target="$id"
+            [[ "$matched" == "A" ]] && owner_log="$log_a" || owner_log="$log_b"
+            log "OWNERSHIP PROOF (log): verification-$id_target-appraisal started on node $matched, the NON-leader node (leader=$leader) - attempt $attempt/$OWNER_SEARCH_MAX_ATTEMPTS"
+            break
+        fi
+        warn "Attempt $attempt: verification-$id-appraisal landed on the LEADER node ($matched) - abandoning $id (left running; harmless test debris, never asserted on) and trying a fresh loan id"
+    done
+    if (( found == 0 )); then
+        err "Could not find a loan whose verification workflows land on the non-leader vg node within $OWNER_SEARCH_MAX_ATTEMPTS attempts"
+        return 1
+    fi
+
+    # ── kill -9 the LEADER; the owner of id_target's verifications is the
+    # OTHER node and stays alive throughout ─────────────────────────────
+    local kill_epoch
+    kill_epoch=$(date +%s)
+    log "kill -9 vg node $leader (pid $leader_pid, TIMER-POLLER LEADER) - $id_target's verification workflows are owned by the surviving node and stay alive throughout"
+    kill -KILL "$leader_pid"
+    sleep 1
+    if kill -0 "$leader_pid" 2>/dev/null; then err "Process $leader_pid survived kill -9"; return 1; fi
+    rm -f "$PID_DIR/$leader_iname.pid"
+
+    wait_for_log_line "$owner_log" "Published appraisal verification result for loan $id_target" "$WAIT_TIMER_FAILOVER_SECS" || return 1
+    local fired_epoch elapsed
+    fired_epoch=$(date +%s)
+    elapsed=$((fired_epoch - kill_epoch))
+    log "TIMER FAILOVER LATENCY: ${elapsed}s (leader kill -> appraisal verification result published by the surviving owner node), bound ${WAIT_TIMER_FAILOVER_SECS}s (TTL 15s + poll 5s + wake-recheck 5s + slack)"
+
+    wait_for_log_line "$owner_log" "Published credit verification result for loan $id_target" 30 || return 1
+    wait_for_log_line "$owner_log" "Published employment verification result for loan $id_target" 30 || return 1
+
+    # ── SQL proof: the durable timer row actually fired (not some other path) ──
+    local vfid="verification-$id_target-appraisal" v_instance_id v_timer_status v_wf_status
+    v_instance_id="$(psql_verify "SELECT id FROM maestro_workflow_instance WHERE workflow_id = '$vfid';" | tr -d '[:space:]')"
+    [[ -n "$v_instance_id" ]] || { err "No maestro_workflow_instance row for $vfid"; return 1; }
+    v_timer_status="$(psql_verify "SELECT status FROM maestro_workflow_timer WHERE workflow_instance_id = '$v_instance_id';" | tr -d '[:space:]')"
+    v_wf_status="$(psql_verify "SELECT status FROM maestro_workflow_instance WHERE id = '$v_instance_id';" | tr -d '[:space:]')"
+    log "SQL: $vfid timer status=$v_timer_status, workflow status=$v_wf_status"
+    assert_eq "verification appraisal durable timer status" "FIRED" "$v_timer_status" || return 1
+    assert_eq "verification appraisal workflow status" "COMPLETED" "$v_wf_status" || return 1
+
+    # ── The owning LOAN workflow progresses to completion ───────────────
+    upload_doc "$id_target" "pay-stub" "s9" || return 1
+    wait_for_pending_review "$id_target" 1 "$WAIT_PENDING_SECS" || return 1
+    post_decision "$id_target" 1 "APPROVED" '[]' || return 1
+    sign_app "$id_target" "s9" || return 1
+    wait_for_engine_status "$id_target" COMPLETED "$WAIT_TERMINAL_SECS" || return 1
+    local body; body="$(app_status_json "$id_target")"
+    assert_eq "engine status" "COMPLETED" "$(json_get "$body" status)" || return 1
+    assert_eq "loan result"   "FUNDED"    "$(json_get "$body" output.status)" || return 1
+    log "Loan $id_target progressed to FUNDED after the timer-poller leader failover"
+
+    # Same shape as scenarios 1/5/7/8 (1 borrower, 1 doc, round-1 approval,
+    # 1 signature) -> same contiguous log shape (gates memoized, Issue 19).
+    assert_event_log_integrity "loan-$id_target" "" || return 1
+
+    # ── Cleanup: restore both vg nodes to default (non-DEBUG) config ────
+    log "Assertions passed - restoring vg node A to default (non-DEBUG) config"
+    stop_service verification-gateway-service
+    start_service "verification-gateway-service" || return 1
+    wait_for_http "verification-gateway-service" "$VERIFY_URL/webhooks/credit/__probe__" 120 || return 1
+
+    stop_service "$VERIFY_NODE_B"
+    if [[ "$started_verify_b" == 1 ]]; then
+        log "$VERIFY_NODE_B was started by this scenario - left stopped."
+    else
+        start_verify_node_b || return 1
+        log "$VERIFY_NODE_B was started by cluster mode - restarted with default (non-DEBUG) config for the rest of the run."
+    fi
+    wait_for_consumer_group "verification-gateway" 90 || return 1
+}
+
+# ── Scenario 10: cross-node admin retry/terminate ───────────────────────
+#
+# Task 4 (spec Phase 1 Task D), sub-scenario 2. The admin dashboard's Retry
+# and Terminate buttons publish $maestro:retry / $maestro:terminate signals
+# (AdminCommandService) to the target workflow's service signal topic; any
+# node's AdminCommandDispatcher consumes and executes them (node-agnostic —
+# WorkflowExecutor.retryWorkflow/terminateWorkflow are pure store CAS
+# operations keyed by workflowId, not by which node happens to own the
+# instance). This sample's compose does not run maestro-admin (see
+# task-4-report.md for why this harness publishes the raw signal directly
+# via kafka_produce_signal instead of standing up the admin service).
+#
+# Retry target: a loan driven to FAILED WITHOUT saga compensation — an
+# uncaught SignalTimeoutException at the underwriting-decision await
+# (LoanApplicationWorkflow.awaitDecisionForRound has no timeout catch, unlike
+# the withdrawal gates). This happens BEFORE reserveRateLock (the only
+# @Compensate-registered step), so compensationStack is empty and no
+# COMPENSATION_STARTED event is ever written — verified via SQL below, and
+# required per Issue 16 (WorkflowExecutor.RetryOutcome.COMPENSATED_NOT_
+# RETRYABLE guards off retrying a saga that already compensated). Node A runs
+# with a short maestro.sample.decision-timeout override so this happens in
+# seconds instead of the SPEC default 10 minutes; node B keeps the SPEC
+# default so the retried run has time to receive the decision this harness
+# delivers promptly after the retry.
+#
+# Terminate target: a second, still-ACTIVE (WAITING_SIGNAL) node-A-owned
+# workflow, created and parked just before the kill so it has no chance to
+# also hit the short decision-timeout.
+scenario_cross_node_admin() {
+    # Pre-flight repair, same as scenarios 7/8: restore node A if a previous
+    # failed run left it dead.
+    if ! port_in_use 8091; then
+        warn "Node A (port 8091) is not up at scenario start - restoring it (leftover from a previous failed run?)"
+        start_service "loan-application-service" || return 1
+        wait_for_http "loan-application-service" "$LOAN_URL/applications/__probe__" 120 || return 1
+    fi
+
+    local started_node_b=1
+    if [[ -f "$PID_DIR/$LOAN_NODE_B.pid" ]] && kill -0 "$(cat "$PID_DIR/$LOAN_NODE_B.pid")" 2>/dev/null; then
+        started_node_b=0
+    fi
+
+    log "Restarting node A with a short decision-timeout ($RETRY_DECISION_TIMEOUT) and node B with admin events enabled..."
+    stop_service loan-application-service
     stop_service "$LOAN_NODE_B"
+    start_service_instance loan-application-service "$(default_port_for loan-application-service)" \
+        loan-application-service "MAESTRO_SAMPLE_DECISION_TIMEOUT=$RETRY_DECISION_TIMEOUT" || return 1
+    start_service_instance loan-application-service "$LOAN_PORT_B" "$LOAN_NODE_B" \
+        "MAESTRO_ADMIN_EVENTS_ENABLED=true" || return 1
+    wait_for_http "loan-application-service" "$LOAN_URL/applications/__probe__" 120 || return 1
+    wait_for_http "$LOAN_NODE_B" "$LOAN_URL_B/applications/__probe__" 120 || return 1
+    wait_for_consumer_group "maestro-loan-application" 90 2 || return 1
+
+    local pid_a pid_b
+    pid_a="$(cat "$PID_DIR/loan-application-service.pid")"
+    pid_b="$(cat "$PID_DIR/$LOAN_NODE_B.pid")"
+    [[ "$pid_a" != "$pid_b" ]] || { err "Both loan nodes report the same PID $pid_a"; return 1; }
+    log "Node A (short decision-timeout, to be killed) pid=$pid_a; node B (admin events, survivor) pid=$pid_b"
+
+    local loan_log="$LOG_DIR/loan-application-service.log"
+    local loan_log_b="$LOG_DIR/$LOAN_NODE_B.log"
+
+    # ── Retry-target: create on node A, never decide -> FAILED (no comp) ──
+    local id_retry="e2e-${RUN_ID}-s10-retry" wfid_retry
+    wfid_retry="loan-$id_retry"
+    create_app "$id_retry" '["s10r"]' 400000 100000 650000 '["pay-stub"]' || return 1
+    upload_doc "$id_retry" "pay-stub" "s10r" || return 1
+    wait_for_pending_review "$id_retry" 1 "$WAIT_PENDING_SECS" || return 1
+    wait_for_log_line "$loan_log" "Requested underwriting round 1 for loan $id_retry" 30 || return 1
+    log "OWNERSHIP PROOF (log): node A's log shows 'Requested underwriting round 1 for loan $id_retry' - node A owns $wfid_retry"
+
+    # Deliberately never post the decision - node A's short decision-timeout
+    # ($RETRY_DECISION_TIMEOUT) fires an uncaught SignalTimeoutException.
+    log "Withholding the underwriting decision for $id_retry - waiting up to ${WAIT_FAILURE_SECS}s for node A's short decision-timeout to FAIL it"
+    local deadline=$((SECONDS + WAIT_FAILURE_SECS)) retry_status=""
+    while (( SECONDS < deadline )); do
+        retry_status="$(psql_loan "SELECT status FROM maestro_workflow_instance WHERE workflow_id = '$wfid_retry';" | tr -d '[:space:]')"
+        [[ "$retry_status" == "FAILED" ]] && break
+        sleep 1
+    done
+    assert_eq "SQL status ($wfid_retry) after decision-timeout" "FAILED" "$retry_status" || return 1
+
+    # ── SQL proof (Issue 16 precondition): no COMPENSATION_STARTED event ──
+    local retry_instance_id comp_count
+    retry_instance_id="$(psql_loan "SELECT id FROM maestro_workflow_instance WHERE workflow_id = '$wfid_retry';" | tr -d '[:space:]')"
+    comp_count="$(psql_loan "SELECT COUNT(*) FROM maestro_workflow_event WHERE workflow_instance_id = '$retry_instance_id' AND event_type = 'COMPENSATION_STARTED';" | tr -d '[:space:]')"
+    log "SQL: $wfid_retry COMPENSATION_STARTED count = $comp_count (must be 0 - Issue 16 precondition for a retryable FAILED)"
+    assert_eq "COMPENSATION_STARTED events for $wfid_retry" "0" "$comp_count" || return 1
+
+    # ── Terminate-target: create LAST, right before the kill, so it never
+    # gets close to node A's short decision-timeout ─────────────────────
+    local id_term="e2e-${RUN_ID}-s10-term" wfid_term
+    wfid_term="loan-$id_term"
+    create_app "$id_term" '["s10t"]' 400000 100000 650000 '["pay-stub"]' || return 1
+    upload_doc "$id_term" "pay-stub" "s10t" || return 1
+    wait_for_pending_review "$id_term" 1 "$WAIT_PENDING_SECS" || return 1
+    wait_for_log_line "$loan_log" "Requested underwriting round 1 for loan $id_term" 30 || return 1
+    log "OWNERSHIP PROOF (log): node A's log shows 'Requested underwriting round 1 for loan $id_term' - node A owns $wfid_term"
+    local body_term; body_term="$(app_status_json "$id_term")"
+    assert_eq "pre-kill engine status ($id_term)" "WAITING_SIGNAL" "$(json_get "$body_term" status)" || return 1
+
+    # ── kill -9 node A; only node B is alive for both admin commands ────
+    local kill_epoch
+    kill_epoch=$(date +%s)
+    log "kill -9 loan-application-service (pid $pid_a, OWNER of $wfid_retry and $wfid_term) - will NOT be restarted until after assertions pass"
+    kill -KILL "$pid_a"
+    sleep 1
+    if kill -0 "$pid_a" 2>/dev/null; then err "Process $pid_a survived kill -9"; return 1; fi
+    rm -f "$PID_DIR/loan-application-service.pid"
+
+    # ── $maestro:retry, published raw (see scenario header) ─────────────
+    kafka_produce_signal "maestro.signals.loan-application" "$wfid_retry" \
+        "{\"workflowId\":\"$wfid_retry\",\"signalName\":\"\$maestro:retry\",\"payload\":null}" || return 1
+    log "Published \$maestro:retry for $wfid_retry to maestro.signals.loan-application (node A dead, only node B can consume it)"
+
+    wait_for_log_line "$loan_log_b" "Retried workflow '$wfid_retry'" "$WAIT_ADMIN_COMMAND_SECS" || return 1
+    log "Node B's log confirms it executed the retry for $wfid_retry"
+
+    # Deliver the decision promptly - the retried run resumes node B's
+    # default (10m) decision-timeout, but there is no reason to wait.
+    post_decision "$id_retry" 1 "APPROVED" '[]' || return 1
+    sign_app_via "$LOAN_URL_B" "$id_retry" "s10r" || return 1
+
+    wait_for_engine_status_via "$LOAN_URL_B" "$id_retry" COMPLETED "$WAIT_RECOVERY_SECS" || return 1
+    local body_retry; body_retry="$(api_get "$LOAN_URL_B/applications/$id_retry")"
+    assert_eq "engine status (via node B, post-retry)" "COMPLETED" "$(json_get "$body_retry" status)" || return 1
+    assert_eq "loan result (via node B, post-retry)"   "FUNDED"    "$(json_get "$body_retry" output.status)" || return 1
+    log "$wfid_retry retried by node B alone and completed FUNDED"
+
+    # ── $maestro:terminate, published raw ────────────────────────────────
+    kafka_produce_signal "maestro.signals.loan-application" "$wfid_term" \
+        "{\"workflowId\":\"$wfid_term\",\"signalName\":\"\$maestro:terminate\",\"payload\":{\"reason\":\"e2e admin terminate test\"}}" || return 1
+    log "Published \$maestro:terminate for $wfid_term to maestro.signals.loan-application (node A dead, only node B can consume it)"
+
+    wait_for_log_line "$loan_log_b" "Terminated workflow '$wfid_term'" "$WAIT_ADMIN_COMMAND_SECS" || return 1
+    wait_for_engine_status_via "$LOAN_URL_B" "$id_term" TERMINATED "30" || return 1
+    local body_term_after; body_term_after="$(api_get "$LOAN_URL_B/applications/$id_term")"
+    assert_eq "engine status (via node B, post-terminate)" "TERMINATED" "$(json_get "$body_term_after" status)" || return 1
+    log "$wfid_term terminated by node B alone"
+
+    if kill -0 "$pid_a" 2>/dev/null; then
+        err "Node A ($pid_a) is alive - this scenario requires it stay dead until after assertions pass"
+        return 1
+    fi
+    log "Node A confirmed dead throughout (never restarted before this line)"
+
+    # ── Admin-events topic: WORKFLOW_RETRIED / WORKFLOW_TERMINATED ──────
+    local admin_events
+    admin_events="$(kafka_read_admin_events 15000)"
+    if ! grep -qF "\"workflowId\":\"$wfid_retry\"" <<<"$admin_events" || ! grep -qF '"eventType":"WORKFLOW_RETRIED"' <<<"$(grep -F "\"workflowId\":\"$wfid_retry\"" <<<"$admin_events")"; then
+        err "admin.events topic does not contain a WORKFLOW_RETRIED event for $wfid_retry"
+        printf '%s\n' "$admin_events" | grep -F "$wfid_retry" || true
+        return 1
+    fi
+    log "ADMIN-EVENTS PROOF: WORKFLOW_RETRIED for $wfid_retry found on maestro.admin.events"
+
+    if ! grep -qF "\"workflowId\":\"$wfid_term\"" <<<"$admin_events" || ! grep -qF '"eventType":"WORKFLOW_TERMINATED"' <<<"$(grep -F "\"workflowId\":\"$wfid_term\"" <<<"$admin_events")"; then
+        err "admin.events topic does not contain a WORKFLOW_TERMINATED event for $wfid_term"
+        printf '%s\n' "$admin_events" | grep -F "$wfid_term" || true
+        return 1
+    fi
+    log "ADMIN-EVENTS PROOF: WORKFLOW_TERMINATED for $wfid_term found on maestro.admin.events"
+
+    # ── Event-log integrity ──────────────────────────────────────────────
+    # $wfid_retry: retried past the decision timeout and completed
+    # normally - retry deletes the FAILING timeout memo (Issue 19), so the
+    # re-driven await runs live at the SAME deterministic sequence number
+    # and memoizes the consumed decision; the final shape matches the
+    # scenario 1/5/7/8 baseline exactly (fully contiguous, the two
+    # withdrawal gates memoized as SIGNAL_TIMEOUT events).
+    assert_event_log_integrity "$wfid_retry" "" || return 1
+    # $wfid_term: terminated mid-flight, WAITING_SIGNAL on the underwriting
+    # decision (never resolved) - terminateWorkflow appends NO event of its
+    # own (see its Javadoc), so there is no WORKFLOW_COMPLETED to check for;
+    # gate 1's timeout is memoized as SIGNAL_TIMEOUT (Issue 19), so the log
+    # below its max event is fully contiguous.
+    assert_event_log_integrity "$wfid_term" "" "" || return 1
+
+    # ── Cleanup: restart node A with default config, node B with default
+    # config, matching pre-scenario topology ────────────────────────────
+    log "Assertions passed - restarting node A (default config) and node B (default config)"
+    start_service "loan-application-service" || return 1
+    wait_for_http "loan-application-service" "$LOAN_URL/applications/__probe__" 120 || return 1
+
+    stop_service "$LOAN_NODE_B"
+    if [[ "$started_node_b" == 1 ]]; then
+        log "$LOAN_NODE_B was started by this scenario - left stopped."
+    else
+        start_loan_node_b || return 1
+        log "$LOAN_NODE_B was started by cluster mode - restarted with default config for the rest of the run."
+    fi
 }
 
 main() {
-    log "Loan-origination E2E run $RUN_ID (logs: $LOG_DIR)"
+    log "Loan-origination E2E run $RUN_ID (logs: $LOG_DIR) - E2E_LOCK_BACKEND=$E2E_LOCK_BACKEND"
+    if [[ "$E2E_CLUSTER" == 1 ]]; then
+        log "E2E_CLUSTER=1 - cluster mode: 6 processes (2 per service)."
+    fi
 
     if [[ "$E2E_REUSE" == 1 ]]; then
         log "E2E_REUSE=1 - assuming infra and services are already running."
@@ -627,10 +2033,27 @@ main() {
     run_scenario "4. Withdrawal after rate lock (saga)"       scenario_withdrawal_after_rate_lock
     run_scenario "5. Crash recovery (kill -9 + replay)"       scenario_crash_recovery
     run_scenario "6. Two-node loan-application (multi-node)"  scenario_two_node
+    # Scenarios 7 and 8 both take node A (the primary loan-application-service
+    # used by every scenario above via $LOAN_URL) down mid-run. They MUST run
+    # last: any earlier position would leave node A dead (or racing its own
+    # restart) while scenarios 1-6 still expect it to be the live, addressable
+    # primary at $LOAN_URL. Scenario 8 runs after 7 for the same reason.
+    run_scenario "7. Owner-kill -> peer adoption (multi-node)" scenario_owner_kill_adoption
+    run_scenario "8. Rolling restart (graceful SIGTERM mid-flight)" scenario_rolling_restart
+    # Scenarios 9 and 10 restart the verification-gateway and loan-application
+    # nodes (respectively) with per-node config overrides. They run last, same
+    # reasoning as 7/8: they leave node A / vg node A briefly reconfigured or
+    # dead mid-scenario, which earlier scenarios must not observe.
+    run_scenario "9. Timer-poller leader failover (verification-gateway)" scenario_timer_leader_failover
+    run_scenario "10. Cross-node admin retry/terminate" scenario_cross_node_admin
 
     sweep_logs
 
     printf '\n%s=== RESULTS ===%s\n' "$BOLD" "$NC"
+    if [[ "${#RESULT_NAMES[@]}" == 0 ]]; then
+        err "No scenarios ran (E2E_ONLY='$E2E_ONLY' matched nothing)."
+        exit 1
+    fi
     local i
     for i in "${!RESULT_NAMES[@]}"; do
         local color=$GREEN; [[ "${RESULT_STATUS[$i]}" == FAIL ]] && color=$RED

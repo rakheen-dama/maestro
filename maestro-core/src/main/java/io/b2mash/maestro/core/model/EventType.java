@@ -54,5 +54,13 @@ public enum EventType {
     WORKFLOW_FAILED,
 
     /** A deterministic side-effect was memoized (e.g., currentTime, randomUUID). */
-    SIDE_EFFECT
+    SIDE_EFFECT,
+
+    /**
+     * An {@code awaitSignal} timed out; the timeout is memoized at the await's
+     * sequence slot so replay re-raises it deterministically instead of
+     * consuming a signal that arrived after the fact (Issue 19 — the signal
+     * analogue of {@link #TIMER_CANCELLED}'s Issue 13 memoization).
+     */
+    SIGNAL_TIMEOUT
 }

@@ -26,6 +26,15 @@ server:
 maestro:
   service-name: verification-gateway
 
+  # Multi-instance responsiveness: how often a parked workflow re-reads the
+  # store for a wake that happened on another node (a signal ingested
+  # elsewhere, or this service's simulated-latency sleep() timers fired by a
+  # remote timer-poller leader). The engine default (30s) is tuned for large
+  # fleets; this sample's timers are 2-8s demo latencies, so a 5s recheck
+  # keeps multi-instance runs near single-node timing at negligible load.
+  signal:
+    wake-recheck-interval: 5s
+
   store:
     type: postgres
 

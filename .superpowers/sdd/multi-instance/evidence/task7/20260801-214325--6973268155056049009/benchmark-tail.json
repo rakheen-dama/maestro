@@ -1,0 +1,22 @@
+{
+  "_identity" : {
+    "pwd" : "/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/multi-instance-verification/maestro-integration-tests",
+    "gitHead" : "7113e069eca5f3ba3bdaa8d519f878cef542de22",
+    "branch" : "worktree-multi-instance-verification",
+    "timestampUtc" : "2026-08-01T21:43:25.642467Z",
+    "seed" : -6973268155056049009,
+    "mode" : "SOAK",
+    "runId" : "20260801-214325--6973268155056049009"
+  },
+  "payload" : {
+    "phaseSeconds" : 300,
+    "ratePerMinute" : 6,
+    "phase6NodesStartUtc" : "2026-08-01T23:47:15.066150Z",
+    "phase6NodesEndUtc" : "2026-08-01T23:52:18.593226Z",
+    "phase6NodesWorkflows" : 23,
+    "stoppedNodes" : [ "LOAN_B", "VERIFY_B", "UW_B" ],
+    "phase3NodesStartUtc" : "2026-08-01T23:52:22.018256Z",
+    "phase3NodesEndUtc" : "2026-08-01T23:57:26.253386Z",
+    "phase3NodesWorkflows" : 27
+  }
+}

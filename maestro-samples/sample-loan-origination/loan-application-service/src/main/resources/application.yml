@@ -33,6 +33,12 @@ maestro:
     decision-timeout: PT10M
     gate-timeout: PT1S
 
+  # Multi-instance responsiveness: how often a parked workflow re-reads the
+  # store for a wake that happened on another node. Sample default (engine
+  # default is 30s) — see verification-gateway-service/application.yml.
+  signal:
+    wake-recheck-interval: 5s
+
   store:
     type: postgres
 

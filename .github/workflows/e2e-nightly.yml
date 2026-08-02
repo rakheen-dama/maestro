@@ -9,16 +9,38 @@ name: E2E (loan-origination)
 
 on:
   schedule:
-    # 02:30 UTC nightly.
+    # 02:30 UTC nightly — loan E2E jobs + chaos-pr-gate.
     - cron: '30 2 * * *'
+    # 01:00 UTC Sunday — chaos-soak only (see the job's `if`). Weekly, not
+    # nightly, by coordinator ruling Q5: a nightly 2h soak costs ~60 CI-hours
+    # per month, which the repo does not commit to without the user asking;
+    # the spec's soak requirement ("at least one multi-hour clean run") is
+    # satisfied by dispatched/local runs recorded as evidence, and the weekly
+    # cron keeps a standing regression signal.
+    - cron: '0 1 * * 0'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  # Lock-backend CI shape (Task 5 decision): the default full run below already
+  # covers the multi-node scenario set (7-10) on the DEFAULT lock backend -
+  # run-e2e.sh with no env runs scenarios 1-10 on Valkey - so the Valkey side
+  # needs no extra job. The postgres side runs as a SECOND, parallel job
+  # scoped to just the multi-node set (E2E_LOCK_BACKEND=postgres
+  # E2E_ONLY="7 8 9 10"): those are the only scenarios whose semantics ride on
+  # lock TTL/adoption behaviour, so re-running 1-6 on postgres would roughly
+  # double runtime for no additional lock-backend signal. Both jobs run on
+  # separate runners concurrently, so nightly wall-clock stays at the slower
+  # of the two (the full Valkey suite) instead of their sum. Every service
+  # start in BOTH jobs runtime-verifies the effective DistributedLock
+  # implementation from the service's own boot log (assert_lock_backend) -
+  # a postgres job silently running Valkey locks fails at service start.
   e2e:
-    name: Loan-origination E2E
+    name: Loan-origination E2E (valkey, full suite)
+    # Skipped on the weekly soak cron tick — that tick is chaos-soak only.
+    if: github.event_name != 'schedule' || github.event.schedule == '30 2 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -51,4 +73,121 @@ jobs:
         with:
           name: e2e-logs
           path: maestro-samples/sample-loan-origination/e2e/logs/
+          retention-days: 14
+
+  e2e-postgres-lock:
+    name: Loan-origination E2E (postgres lock, multi-node set)
+    # Skipped on the weekly soak cron tick — that tick is chaos-soak only.
+    if: github.event_name != 'schedule' || github.event.schedule == '30 2 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Run the multi-node scenarios on the postgres lock backend
+        run: E2E_LOCK_BACKEND=postgres E2E_ONLY="7 8 9 10" ./e2e/run-e2e.sh
+        working-directory: maestro-samples/sample-loan-origination
+
+      - name: Upload E2E logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-logs-postgres-lock
+          path: maestro-samples/sample-loan-origination/e2e/logs/
+          retention-days: 14
+
+  # Chaos harness (maestro-integration-tests e2e/chaos, chaos-harness-design.md
+  # §8): a Testcontainers-orchestrated 6-node loan cluster is killed, paused,
+  # partitioned and rolled while store-level invariants are asserted. The
+  # PR-gate mode runs 3x consecutively (the spec's "green 3 consecutive times
+  # in CI"); each run picks a fresh seed and prints it, and every evidence file
+  # embeds it. Skipped on the weekly soak cron tick.
+  chaos-pr-gate:
+    name: Chaos PR-gate (3x consecutive)
+    if: github.event_name != 'schedule' || github.event.schedule == '30 2 * * *'
+    runs-on: ubuntu-latest
+    # Worst case is three ~25-min inner @Timeout runs, and --rerun-tasks forces
+    # a full recompile + boot-jar rebuild on every iteration — realistic totals
+    # run 55-70 min, so 75 left no headroom for one slow run.
+    timeout-minutes: 110
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Run the chaos PR-gate three times consecutively
+        run: |
+          for i in 1 2 3; do
+            echo "=== chaos PR-gate run $i of 3 ==="
+            ./gradlew :maestro-integration-tests:e2eTest --rerun-tasks
+          done
+
+      # Uploaded unconditionally: a failed run's dumps (instance row + full
+      # event log + chaos action log per offending workflow) are how the
+      # failure reaches the developer; the JUnit message names the seed, the
+      # violated invariants and the dump paths inside this artifact.
+      - name: Upload chaos evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chaos-pr-gate-evidence
+          path: maestro-integration-tests/build/chaos-evidence/
+          retention-days: 14
+
+  # Weekly + on-demand soak (ruling Q5 — see the cron comment at the top).
+  # Same code path as the PR-gate; only the window/rate differ. Produces the
+  # Issue 12 vs-parked-count curve data and the benchmark tail.
+  chaos-soak:
+    name: Chaos soak (2h window)
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 1 * * 0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 200
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Run the chaos soak
+        run: >
+          ./gradlew :maestro-integration-tests:e2eTest --rerun-tasks
+          -Dmaestro.chaos.soak=true -Dmaestro.chaos.durationMinutes=120
+
+      - name: Upload chaos evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chaos-soak-evidence
+          path: maestro-integration-tests/build/chaos-evidence/
           retention-days: 14

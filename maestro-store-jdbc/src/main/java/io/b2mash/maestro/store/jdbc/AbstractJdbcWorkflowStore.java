@@ -313,13 +313,40 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     public int deleteFailureEvents(UUID instanceId) {
         Objects.requireNonNull(instanceId, "instanceId");
 
+        // The FAILING timeout memo (Issue 19): when the workflow FAILED
+        // *because* of a signal timeout — the WORKFLOW_FAILED payload's
+        // exceptionType says so — retry must also delete the timeout memo the
+        // failing await wrote (the highest-sequenced SIGNAL_TIMEOUT; NOT
+        // necessarily the last memo before the terminal — an uncaught timeout
+        // in a saga appends COMPENSATION_* events in between), so the
+        // re-driven await runs live and consumes the now-delivered signal
+        // instead of deterministically re-timing-out forever. When the failure
+        // was anything else, every SIGNAL_TIMEOUT memo is a CAUGHT gate that
+        // must survive — deleting one would let the retry's replay consume a
+        // late-arrived signal at that gate and diverge from the pre-failure
+        // execution.
+        int deleted = 0;
+        if (failedBySignalTimeout(instanceId)) {
+            String timeoutSql = "DELETE FROM " + tableName("workflow_event")
+                    + " WHERE workflow_instance_id = ? AND event_type = ?"
+                    + " AND sequence_number = (SELECT MAX(sequence_number) FROM "
+                    + tableName("workflow_event")
+                    + "   WHERE workflow_instance_id = ? AND event_type = ?)";
+            deleted = update(timeoutSql, ps -> {
+                ps.setObject(1, instanceId);
+                ps.setString(2, EventType.SIGNAL_TIMEOUT.name());
+                ps.setObject(3, instanceId);
+                ps.setString(4, EventType.SIGNAL_TIMEOUT.name());
+            });
+        }
+
         // Scoped to the instance AND to the two failure types — deliberately
         // not a sequence range, which would take the success and compensation
         // memos with it. See the SPI Javadoc for why those must survive.
         String sql = "DELETE FROM " + tableName("workflow_event")
                 + " WHERE workflow_instance_id = ? AND event_type IN (?, ?)";
 
-        int deleted = update(sql, ps -> {
+        deleted += update(sql, ps -> {
             ps.setObject(1, instanceId);
             ps.setString(2, EventType.ACTIVITY_FAILED.name());
             ps.setString(3, EventType.WORKFLOW_FAILED.name());
@@ -327,6 +354,42 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
         log.debug("Deleted {} failure event(s) for workflow instance {}", deleted, instanceId);
         return deleted;
+    }
+
+    /**
+     * True when the instance's {@code WORKFLOW_FAILED} event records a
+     * {@link io.b2mash.maestro.core.exception.SignalTimeoutException} as the
+     * failure cause (the discriminator for the Issue 19 failing-timeout-memo
+     * delete above).
+     *
+     * <p>Anchored to the payload's {@code exceptionType} field — never a
+     * whole-payload substring match, which would also fire on a failure whose
+     * {@code message} merely embeds the FQCN (idiomatic {@code "... " + e}
+     * wrapping of a CAUGHT gate timeout) and wrongly delete a caught-gate
+     * memo, reintroducing the very replay divergence Issue 19 fixed.
+     */
+    private boolean failedBySignalTimeout(UUID instanceId) {
+        String sql = "SELECT payload FROM " + tableName("workflow_event")
+                + " WHERE workflow_instance_id = ? AND event_type = ?"
+                + " ORDER BY sequence_number DESC";
+        var payloads = queryList(sql, ps -> {
+            ps.setObject(1, instanceId);
+            ps.setString(2, EventType.WORKFLOW_FAILED.name());
+        }, rs -> rs.getString("payload"));
+        if (payloads.isEmpty() || payloads.getFirst() == null) {
+            return false;
+        }
+        JsonNode payload;
+        try {
+            payload = parseJsonNode(payloads.getFirst());
+        } catch (SerializationException e) {
+            // Not ErrorDetail-shaped — cannot be a signal-timeout failure.
+            return false;
+        }
+        var exceptionType = payload.path("exceptionType");
+        return exceptionType.isString()
+                && "io.b2mash.maestro.core.exception.SignalTimeoutException"
+                        .equals(exceptionType.stringValue());
     }
 
     // ── Signal operations ─────────────────────────────────────────────────

@@ -22,6 +22,22 @@ best-effort; RabbitMQ/Postgres-messaging are secondary).
 > pass above — are also now fixed, including item 17 below (admin
 > retry/terminate). See `docs/open-issues.md` and `docs/release-notes.md`
 > (0.4.0) for details.
+>
+> **Further update (multi-instance verification cycle, 2026-08-01):** the
+> "multi-node" gap this document originally flagged as untested (§2 item 3,
+> §5 item 20) is closed. The loan-origination E2E grew from 5 to 10 scenarios
+> (owner-kill peer adoption, rolling restart, timer-poller leader failover,
+> cross-node admin retry/terminate — each proven on both the Valkey and
+> Postgres lock backends) and now runs nightly in CI, not manually; a new
+> Testcontainers-orchestrated chaos/soak harness
+> (`maestro-integration-tests`' `e2eTest` task, `@Tag("e2e")`) drives a real
+> six-node cluster under scripted failure injection and runs nightly
+> (10-minute PR-gate mode, 3× consecutive) plus weekly (multi-hour soak). See
+> `docs/operations.md` for measured multi-instance guarantees and
+> `docs/open-issues.md` Issues 17-20 for the four engine defects this work
+> found and fixed. §1's matrix and §5's gap list below are updated in place
+> where this closes something; both are otherwise kept as the historical
+> record of how earlier gaps were found.
 
 ## Why this document exists
 
@@ -37,7 +53,7 @@ entire integration seams unverified. This plan makes those seams explicit.
 |---|---|
 | U | Unit / in-memory (fast, in `./gradlew build`) |
 | I | Integration against a real backend (Testcontainers, in CI) |
-| E | Live E2E (loan-origination `run-e2e.sh` — currently **manual, not CI**) |
+| E | Live E2E (loan-origination `run-e2e.sh`, 10 scenarios incl. multi-node — **nightly + on-demand in CI**, both lock backends; plus the `e2eTest` chaos/soak harness for scripted multi-instance failure injection, also CI-scheduled — see `docs/operations.md`) |
 | — | **Not verified anywhere** |
 
 ---
@@ -53,8 +69,9 @@ entire integration seams unverified. This plan makes those seams explicit.
 | Startup recovery + periodic RecoveryPoller | ✅ | ✅ | ✅ | `EnginePostgresRecoveryIT` — second executor over the same store |
 | Signals: deliver / await / pre-arrived / orphan adoption / timeout / late race | ✅ | ✅ | ✅ | `EnginePostgresSignalIT` (6) — full matrix on real PG |
 | Signal consume CAS; append-before-consume ordering | ✅ | ✅ | ✅ | `EnginePostgresSignalIT` — CAS loss exercised through the engine |
-| Cross-instance wake (SignalNotifier subscribe/publish) | ✅ | ✅ | — | `MultiNodeSignalRoutingIT` (integrated wake) + `PostgresSignalNotifierTest` (LISTEN/NOTIFY). **Found BUG9** — see §5 |
-| Periodic 30s store re-check while parked; spurious-wake re-park | ✅ | — | ✅¹ | ¹ E2E exercises it implicitly (single node); no I test |
+| Cross-instance wake (SignalNotifier subscribe/publish) | ✅ | ✅ | ✅ | `MultiNodeSignalRoutingIT` (integrated wake) + `PostgresSignalNotifierTest` (LISTEN/NOTIFY). **Found BUG9** — see §5. E now covered by loan-E2E scenarios 6-10 (multi-node, both lock backends) and the chaos harness |
+| Cross-node timer wake (sleep() fired/cancelled by a remote timer-poller leader) | ✅ | ✅ | ✅ | `WorkflowExecutorCrossNodeTimerWakeTest`, `multinode.MultiNodeTimerWakeIT`. **Found Issue 17** (routine-operation stall, not a failure scenario) — see `docs/open-issues.md`. E via loan-E2E scenario 9 + the chaos harness |
+| Periodic 30s store re-check while parked; spurious-wake re-park | ✅ | ✅ | ✅¹ | ¹ Now also I/E: `multinode.MultiNodeTimerWakeIT` (I) and loan-E2E scenarios 6-10 + the chaos harness (E) exercise it across real nodes, not just implicitly on one |
 | collectSignals (N-of-M, FIFO by received_at) | ✅ | ✅ | ✅ | `EnginePostgresSignalIT`, `MultiNodeSignalRoutingIT` (cross-node FIFO) |
 | Timers: sleep, TimerPoller, SKIP LOCKED, CAS fire, leader election | ✅ | ✅ | ✅ | `EnginePostgresTimerIT` — poller fires from PG; timer scheduled by one executor fired by another |
 | Saga compensation (LIFO, parallel, partial failure, COMPENSATING) | ✅ | ✅ | ✅ | `EnginePostgresSagaIT` — LIFO by execution AND persisted sequence; version march pinned |
@@ -105,7 +122,8 @@ entire integration seams unverified. This plan makes those seams explicit.
 | maestro-lock-valkey | ✅ I (lock + notifier mechanics) |
 | maestro-messaging-rabbitmq | ✅ real suite (`RabbitMqWorkflowMessagingTest`); the shared ack-on-failure defect it carried is fixed alongside Kafka and Postgres |
 | maestro-admin / admin-client | ✅ real suites (`DashboardSmokeMockMvcTest`, `EventIngestionRoundTripTest`, `AdminEventPublisherTest`, `AdminCommandDispatcherTest`, `AdminCommandKafkaIT`, others). `$maestro:retry`/`terminate` commands are now consumed end-to-end by a starter-side `AdminCommandDispatcher` — dashboard buttons are functional; see `docs/open-issues.md` Issue 15 (**Resolved**) |
-| Loan-origination E2E (5 scenarios) | ✅ E — but **manual**, single-node, and Valkey-profile only |
+| Loan-origination E2E (10 scenarios, incl. 5 multi-node) | ✅ E — nightly + on-demand in CI, both Valkey and Postgres lock backends (`.github/workflows/e2e-nightly.yml`) |
+| Multi-instance chaos/soak harness (`maestro-integration-tests` `e2eTest`, `@Tag("e2e")`) | ✅ E — 6-node Testcontainers cluster, scripted failure injection; nightly PR-gate mode (3× consecutive) + weekly soak mode in CI. Found and fixed Issues 17-20. See `docs/operations.md` |
 
 ---
 
@@ -117,10 +135,13 @@ entire integration seams unverified. This plan makes those seams explicit.
 2. **Kafka signal round-trip in CI** — `@MaestroSignalListener` → persist →
    wake on a real broker is only verified manually; the engine-level
    `maestro.signals.{service}` channel consumer is never fed at all.
-3. **Multi-node behaviour** — never tested anywhere: consumer-group signal
-   routing to a non-owning node, cross-instance notifier wake, two-node
-   instance-lock contention, recovery-poller adoption after owner death,
-   duplicate-adoption behaviour with no lock backend.
+3. **Multi-node behaviour.** *Closed by the 2026-08-01 multi-instance
+   verification cycle* — see the update banner at the top of this document
+   and `docs/operations.md`. At the time this list was written: never tested
+   anywhere — consumer-group signal routing to a non-owning node,
+   cross-instance notifier wake, two-node instance-lock contention,
+   recovery-poller adoption after owner death, duplicate-adoption behaviour
+   with no lock backend.
 4. **maestro-lock-postgres has zero tests** — the default lock backend for
    the Postgres-only profile is entirely unverified at module level.
 5. **Transport ack-on-failure** (deferred defect) — no test pins the desired
@@ -373,8 +394,12 @@ recollection. "Unverified" below means no test asserts the behaviour either way.
     they can drift from real backend semantics — which is precisely how the
     original gap arose.
 
-20. **The loan E2E runs nightly, not per PR**, on one machine, and is the only
-    place a real `kill -9` is exercised.
+20. **The loan E2E runs nightly, not per PR**, on one machine. *Partially
+    superseded:* it is no longer the only place a real `kill -9` is
+    exercised — the multi-instance chaos harness (`docs/operations.md`) also
+    kills, pauses, and partitions real containers, and runs on the same
+    nightly/weekly CI cadence as a Testcontainers suite rather than a
+    single-machine script.
 
 #### D. Scale deferrals
 
@@ -400,5 +425,10 @@ resurfaces, start there.
 ## 4. Explicitly out of scope (for now)
 
 Valkey beyond existing coverage (best-effort), RabbitMQ parity suite,
-admin dashboard UI tests, chaos testing of >TTL JVM pauses (split-brain is
-accepted-by-design until fencing tokens land), performance/load testing.
+admin dashboard UI tests, performance/load testing. **No longer out of
+scope, closed 2026-08-01:** chaos testing of >TTL pauses — the multi-instance
+chaos harness's `PAUSE_RESUME` action freezes a real container past the 30s
+instance-lock TTL on every run (mandated ≥2 loan-node occurrences per run);
+split-brain is still accepted-by-design (fencing tokens have not landed —
+`docs/open-issues.md` Issue 11), but its measured consequences are no longer
+unmeasured — see `docs/operations.md` and Issue 11's evidence section.

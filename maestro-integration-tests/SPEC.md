@@ -38,8 +38,19 @@ io.b2mash.maestro.integration
 ├── engine/      — P0: engine × Postgres
 ├── kafka/       — P1: Kafka in CI
 ├── multinode/   — P2: two-node topology
-└── shutdown/    — P5: graceful-shutdown contract
+├── shutdown/    — P5: graceful-shutdown contract
+└── e2e/chaos/   — Phase 2: chaos/soak harness (coordinator-owned)
 ```
+
+The `e2e/chaos/` package holds the multi-instance chaos/soak harness
+(`chaos-harness-design.md`, Task 7): a Testcontainers-orchestrated 6-node
+loan-origination cluster driven by a `@Tag("e2e")` JUnit suite that kills,
+pauses, partitions and rolls nodes while asserting store-level invariants and
+capturing the Issue 11 (duplicate side-effect) and Issue 12 (recovery-polling
+scale) evidence. Its fixtures are coordinator-owned — ask before editing.
+Boot jars for the three loan services are supplied to `e2eTest` via
+`dependsOn` on their `bootJar` tasks plus system-property jar paths (never in
+`build`/`check`).
 
 Two phases deliberately live outside this module: **P3** (lock-postgres and
 messaging-postgres) belongs in those modules' own `src/test`, because a backend
@@ -152,11 +163,13 @@ parallel branches, saga with compensation, failing activity with retry.
   time. Use short durations (≤ 1s) and a fast `TimerPoller` (`Duration.ofMillis(200)`).
 - Awaitility bounds: **generous** (5–15s), poll interval short. A generous bound
   on a fast condition is not slow; it is what makes CI stable.
-- `SignalManager`'s parked-workflow re-check interval is a hardcoded **30s** and
-  is **not reachable** from `WorkflowExecutor`'s public API (only a
-  package-private `SignalManager` constructor takes it). Any test that depends
-  on the no-notifier re-check path must therefore either supply a
-  `SignalNotifier` or get a library seam added first — see *Open items*.
+- The parked-workflow re-check interval (signals **and**, since Issue 17,
+  timers) defaults to **30s** and is configurable through `WorkflowExecutor`'s
+  full constructor (`maestro.signal.wake-recheck-interval`). The harness
+  exposes it as `MaestroEngineHarness.Builder.wakeRecheckInterval(Duration)` —
+  use a short interval (≈200–500ms) for any test that depends on the
+  store-re-check wake path (no-notifier signal delivery, cross-node timer
+  fire/cancel; see `multinode.MultiNodeTimerWakeIT`).
 - A phase is done only when its suites pass **3 consecutive** `--rerun-tasks` runs.
 
 ## Library-bug protocol
