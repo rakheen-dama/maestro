@@ -13,6 +13,7 @@ import tools.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
@@ -214,6 +215,63 @@ class ConcurrentBranchParkingTest {
             assertEquals("a,b", wf.result,
                     "iteration " + i + ": both branches must resume with their own payload");
         }
+    }
+
+    // ── The retry loop's own boundaries ────────────────────────────────
+
+    @Test
+    @DisplayName("a transient conflict is retried against a fresh read and the status still lands")
+    void statusWrite_retriesTransientConflict_andSucceeds() {
+        var store = new VersionedInMemoryStore();
+        store.createInstance(seedInstance("retry-transient"));
+
+        // Two conflicts, then success — inside the bounded budget.
+        store.failNextUpdates(2);
+        InstanceStatusWriter.write(store, "retry-transient", WorkflowStatus.WAITING_SIGNAL);
+
+        assertEquals(WorkflowStatus.WAITING_SIGNAL,
+                store.getInstance("retry-transient").orElseThrow().status(),
+                "the status must land once a retry wins the CAS");
+        assertEquals(3, store.updateAttempts(),
+                "two conflicts plus the winning write");
+    }
+
+    @Test
+    @DisplayName("an unrelenting conflict stands down — it must never become a workflow outcome")
+    void statusWrite_exhaustsBudget_standsDownWithoutThrowing() {
+        var store = new VersionedInMemoryStore();
+        store.createInstance(seedInstance("retry-exhausted"));
+
+        store.failNextUpdates(1_000);
+        // No throw: propagating here would escape the park call into workflow
+        // code and land in executeWorkflow's catch (Exception) — FAILED plus
+        // compensations for a workflow that never failed.
+        InstanceStatusWriter.write(store, "retry-exhausted", WorkflowStatus.WAITING_SIGNAL);
+
+        assertEquals(InstanceStatusWriter.STATUS_WRITE_ATTEMPTS, store.updateAttempts(),
+                "the retry budget must be bounded, not unbounded");
+        var inst = store.getInstance("retry-exhausted").orElseThrow();
+        assertEquals(WorkflowStatus.RUNNING, inst.status(),
+                "the row keeps its previous status");
+        assertTrue(inst.status().isActive(),
+                "and that status is active — the workflow stays recoverable, which is why "
+                        + "standing down on a lost status write is safe");
+    }
+
+    private static WorkflowInstance seedInstance(String workflowId) {
+        var now = Instant.now();
+        return WorkflowInstance.builder()
+                .id(UUID.randomUUID())
+                .workflowId(workflowId)
+                .runId(UUID.randomUUID())
+                .workflowType("TwoAwaitingBranches")
+                .taskQueue("default")
+                .status(WorkflowStatus.RUNNING)
+                .serviceName("test-service")
+                .startedAt(now)
+                .updatedAt(now)
+                .version(0)
+                .build();
     }
 
     // ── Fixtures ───────────────────────────────────────────────────────

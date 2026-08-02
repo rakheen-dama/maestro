@@ -169,15 +169,22 @@ class TracingParallelBranchIT extends PostgresIntegrationSupport {
          */
         @WorkflowMethod
         public String run(String input) {
-            // Exactly two branches, of which only ONE touches the store.
+            // Exactly two branches, of which only ONE parks.
             //
             // Two is the minimum that actually forks: parallel() runs a
             // single-task list inline on the calling thread, so a one-branch
-            // fixture would not exercise a branch thread at all. And only one
-            // branch may park, because two branches parking at once race each
-            // other on the instance status row and the run dies with an
-            // OptimisticLockException — an engine-level limitation of concurrent
-            // parking branches, entirely separate from tracing.
+            // fixture would not exercise a branch thread at all. One parking
+            // branch is all this fixture needs — the segment lifecycle under
+            // test is per-branch-thread, so a second parking branch would add
+            // nothing but noise.
+            //
+            // (This fixture once carried a note claiming two branches could not
+            // park at once, because the instance-row CAS killed the loser with
+            // an OptimisticLockException. That was a real engine defect, not a
+            // limitation: InstanceStatusWriter now retries the status write
+            // against a fresh read. EnginePostgresParallelIT's
+            // "two branches parking at once do not collide on the instance
+            // status row" pins it.)
             List<Callable<String>> branches = List.of(
                     () -> {
                         activities.stepOne(input);
