@@ -1,0 +1,18 @@
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening
+branch: worktree-release-hardening
+HEAD: 1a0dedf1d385b7e0e4389ba1c93606313ab1a150
+timestamp: 2026-08-02T16:45:32Z
+command: ./gradlew :maestro-spring-boot-starter:test --rerun-tasks
+JUnit XML totals: tests=79 failures=0 errors=0 skipped=0
+> Task :maestro-test:jar
+> Task :maestro-spring-boot-starter:compileJava
+> Task :maestro-spring-boot-starter:classes
+> Task :maestro-spring-boot-starter:compileTestJava
+> Task :maestro-spring-boot-starter:testClasses
+> Task :maestro-spring-boot-starter:test
+
+[Incubating] Problems report is available at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/build/reports/problems/problems-report.html
+
+BUILD SUCCESSFUL in 10s
+17 actionable tasks: 17 executed
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.2.0/userguide/configuration_cache_enabling.html

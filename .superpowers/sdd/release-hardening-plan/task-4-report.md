@@ -232,7 +232,7 @@ against (proving no double-count, not just absence).
 
 ```
 $ ./gradlew :maestro-spring-boot-starter:test --rerun-tasks
-BUILD SUCCESSFUL in 10s
+BUILD SUCCESSFUL in 11s
 17 actionable tasks: 17 executed
 ```
 
@@ -252,16 +252,21 @@ fresh, with an archived log, in Fix round 1.
 $ ./gradlew build
 ```
 
-**Correction (Fix round 1):** this section originally quoted `BUILD
-SUCCESSFUL in 1m 41s` / `134 actionable tasks: 52 executed, 82 up-to-date`
-here as if it were this run's output. It was not — that exact line belongs
-to `evidence/task-3-fix2-build.log` (Task 3's fix round 2), quoted from
-memory instead of from this task's own archived log. This task's actual
-`./gradlew build` output for the original round is archived verbatim in
-`evidence/task-4-build.log` (`BUILD SUCCESSFUL in 1s`, `134 actionable
-tasks: 1 executed, 133 up-to-date` — a fully cached re-run, since nothing
-had changed since the green run moments earlier in the same session). A
-fresh, uncached full build is re-run and archived in Fix round 1 below.
+**Correction (Fix round 1, itself corrected in Fix round 2):** this
+section originally quoted `BUILD SUCCESSFUL in 1m 41s` / `134 actionable
+tasks: 52 executed, 82 up-to-date` here as if it were this run's output.
+It was not — the `1m 41s` timing belongs to `evidence/task-3-fix2-build.log`
+(Task 3's fix round 2), but even that attribution was wrong on the task
+counts: that log actually says `134 actionable tasks: 35 executed, 99
+up-to-date` (`grep -n "BUILD SUCCESSFUL\|actionable tasks"
+evidence/task-3-fix2-build.log`), not `52 executed, 82 up-to-date` — a
+second fabrication stacked on the first, caught in Fix round 2. This
+task's actual `./gradlew build` output for the original round is archived
+verbatim in `evidence/task-4-build.log` (`BUILD SUCCESSFUL in 1s`, `134
+actionable tasks: 1 executed, 133 up-to-date` — a fully cached re-run,
+since nothing had changed since the green run moments earlier in the same
+session). A fresh, uncached full build is re-run and archived in Fix
+round 1 below.
 
 ---
 
@@ -354,23 +359,31 @@ conflict on one meter name doesn't disable others).
 
 ## Test counts
 
-**Correction (Fix round 1):** this section originally said
-`MicrometerEngineObserverTest` has 15 tests. It has **14**
-(`grep -c "@Test"` on the file, re-verified again while fixing this
-paragraph) — 13 meter-catalog rows + 1 null-`workflowType` edge case. The
-defensive-registration case is counted separately below since it was
-added after the file's other 14, not folded into that count.
+**Correction (Fix round 2):** Fix round 1's own correction here was
+itself wrong — it said "13 meter-catalog rows" then computed "14 tests"
+then separately claimed "15 tests in the file as it now stands," three
+mutually inconsistent numbers in one paragraph. Recounted directly from
+the file (`grep -n "void " MicrometerEngineObserverTest.java`, 14 matches,
+listed once here and not restated elsewhere in this report):
+`workflowStarted`, `workflowCompleted`, `workflowFailed`,
+`workflowCompensated`, `workflowTerminated`, `activityDurationCompleted`,
+`activityDurationFailed`, `signalConsumed`, `timerFired`, `recoveryPass`,
+`lockRenewFailures`, `standDown` (12 meter-catalog-row tests — one design
+§2.2 row each, `activity.duration` split across two tests for its two
+`outcome` tag values), `meterTypeConflictIsContainedDefensively` (the
+defensive-registration case), `signalConsumedToleratesNullWorkflowType`
+(the null-`workflowType` edge case). 12 + 1 + 1 = **14**, matching
+`grep -c "@Test"`'s own output exactly — the file was never wrong, only
+this report's arithmetic about it.
 
-- `MicrometerEngineObserverTest`: 14 tests (13 meter-catalog rows +
-  1 null-`workflowType` edge case), **+1** more
-  (`meterTypeConflictIsContainedDefensively`) added after the RED/GREEN
-  cycle above — 15 tests in the file as it now stands.
-- `MaestroObservabilityAutoConfigurationTest`: 6 tests (real-engine-run
-  counter increment, disabled-flag absence, no-`MeterRegistry`-bean
-  absence, no-`MeterRegistry`-on-classpath absence, gauges wired to the
-  executor, cross-context replay no-double-count) — **+1** more
-  (`wiresThroughRealBootMetricsAutoConfigurationChain`) added in Fix
-  round 1, 7 tests in the file as it now stands.
+- `MicrometerEngineObserverTest`: **14 tests** (12 meter-catalog-row +
+  1 defensive-registration + 1 null-`workflowType` edge case).
+- `MaestroObservabilityAutoConfigurationTest`: **7 tests** (the original
+  6 — real-engine-run counter increment, disabled-flag absence,
+  no-`MeterRegistry`-bean absence, no-`MeterRegistry`-on-classpath
+  absence, gauges wired to the executor, cross-context replay
+  no-double-count — plus `wiresThroughRealBootMetricsAutoConfigurationChain`
+  added in Fix round 1).
 - `MaestroPropertiesBindingTest`: +1 new test
   (`observabilityBlockBinds`), +2 assertions in the existing
   defaults test.
@@ -531,8 +544,11 @@ BUILD SUCCESSFUL in 10s
 17 actionable tasks: 17 executed
 ```
 
-JUnit XML totals: **tests=79 failures=0 errors=0 skipped=0** (78 before
-this round's new test, +1).
+JUnit XML totals: **tests=79 failures=0 errors=0 skipped=0**
+(`evidence/task-4-fix1-green.log`) — one more than the prior round's
+archived 78 (this round added exactly one test,
+`wiresThroughRealBootMetricsAutoConfigurationChain`; 79 − 1 = 78 is
+arithmetic, not a separately archived figure).
 
 ## F2 (Important) — `ObserverReplayNoDoubleCountIT` (design §8.2)
 
@@ -591,41 +607,46 @@ belt-and-braces correctness check independent of the metrics adapter).
 already-correct behavior (Task 3's engine + this task's adapter already
 implement the replay-skip correctly, per the unit-level pin in
 `MicrometerEngineObserverTest`), not a bug fix. It passed on its first real
-run against real Postgres:
+run against real Postgres.
+
+**Correction (Fix round 2):** the targeted-run block originally quoted
+here (`BUILD SUCCESSFUL in 7s`, `36 actionable tasks: 36 executed`, and a
+`PASSED` line with the pre-fix `@DisplayName` text) was never archived —
+asserted from an unsaved terminal scrollback, the exact failure mode this
+whole section exists to close out. Re-run (after the F5/nit fixes below
+also touched this file) and archived verbatim in
+`evidence/task-4-fix2-it-targeted.log`:
 
 ```
-$ ./gradlew :maestro-integration-tests:test --tests '*ObserverReplayNoDoubleCountIT*' --rerun-tasks
-
-> Task :maestro-integration-tests:test
-
-A recovered workflow's replayed activity does not double-count maestro.activity.duration > crash after the pre-park activity, recover, complete: activity.duration count == 2, workflow.started == 1, workflow.completed == 1 — the replayed step is never re-counted PASSED
-
-BUILD SUCCESSFUL in 7s
-36 actionable tasks: 36 executed
+$ grep -n "PASSED\|BUILD SUCCESSFUL\|actionable tasks" evidence/task-4-fix2-it-targeted.log
+7:A recovered workflow's replayed activity does not double-count maestro.activity.duration > crash after the pre-park activity, recover, complete: activity.duration is 1 per step (stepOne == 1, stepTwo == 1), workflow.started == 1, workflow.completed == 1 — the replayed step is never re-counted PASSED
+11:BUILD SUCCESSFUL in 8s
+12:36 actionable tasks: 36 executed
 ```
 
-Full module run:
+Full module run, archived verbatim in
+`evidence/task-4-fix2-integration-full.log`:
 
 ```
-$ ./gradlew :maestro-integration-tests:test
-BUILD SUCCESSFUL in 1m 36s
-36 actionable tasks: 1 executed, 35 up-to-date
+$ grep -n "BUILD SUCCESSFUL\|actionable tasks\|JUnit XML" evidence/task-4-fix2-integration-full.log
+6:JUnit XML totals: files=30 tests=93 failures=0 errors=0 skipped=0
+14:BUILD SUCCESSFUL in 1m 38s
+15:36 actionable tasks: 36 executed
 ```
-
-JUnit XML totals across the whole module: **files=30 tests=93 failures=0
-errors=0 skipped=0**.
 
 ## F3 (Important) — report/evidence integrity
 
-Two fabrications from memory, now fixed (see the corrections inline in
-the original sections above, above the `---` separator before this Fix
-round section):
+Two fabrications from memory, addressed here — **but this section's own
+first pass at fixing them was itself still wrong on the specifics; see
+Fix round 2 below for the actually-correct numbers, which supersede
+everything in this subsection**:
 
 1. The "Full multi-module build" section quoted `BUILD SUCCESSFUL in 1m
    41s` / `134 actionable tasks: 52 executed, 82 up-to-date` as if it were
-   this task's own output. It was not — that line belongs to
-   `evidence/task-3-fix2-build.log` (a different task's fix round). This
-   task's actual archived build log
+   this task's own output. It was not — that line belongs to a different
+   task's fix round (Fix round 2 below identifies exactly which archived
+   log and corrects the task-count figures too, which this round also got
+   wrong). This task's actual archived build log
    (`evidence/task-4-build.log`) says `BUILD SUCCESSFUL in 1s` / `134
    actionable tasks: 1 executed, 133 up-to-date` (a fully cached run,
    moments after the green test run in the same session).
@@ -634,10 +655,9 @@ round section):
    actually contains `tests=77` (the defensive-registration test was added
    after that archived run and verified via an unarchived targeted run —
    a real 78, but never backed by an archived log at the time it was
-   written into the report). `MicrometerEngineObserverTest` was claimed to
-   have 15 tests; it has 14 (`grep -c "@Test"`), with the
-   defensive-registration test correctly counted separately as a 15th
-   addition, not folded into "the file has 15."
+   written into the report). `MicrometerEngineObserverTest`'s test count
+   is corrected in Fix round 2 below (this round's own attempt at that
+   correction was itself inconsistent).
 
 A third item, not from a review finding but caught while fixing the above:
 the "Defensive registration" section claimed `safely(...)` "silently
@@ -661,9 +681,14 @@ running and parked), then the test drives the signal to completion and
 waits for both gauges to return to `0`. This can only pass if the gauge
 genuinely reads `WorkflowExecutor`'s live state at scrape time.
 
+**Correction (Fix round 2):** the block originally here quoted `BUILD
+SUCCESSFUL in 4s` from an unsaved run — re-run and archived verbatim in
+`evidence/task-4-fix2-f4-targeted.log`:
+
 ```
-$ ./gradlew :maestro-spring-boot-starter:test --tests '*gaugesRegisteredAgainstExecutor*' --rerun-tasks
-BUILD SUCCESSFUL in 4s
+$ grep -n "BUILD SUCCESSFUL\|actionable tasks" evidence/task-4-fix2-f4-targeted.log
+9:BUILD SUCCESSFUL in 4s
+10:17 actionable tasks: 17 executed
 ```
 
 ## F5 (Minor) — `MaestroEngineGauges` held no strong reference to the executor
@@ -736,3 +761,107 @@ amendment rather than an open flag; the missing integration pin exists and
 passes against real Postgres; the report's evidence citations are
 corrected and every quote above is drawn from a freshly generated,
 archived log from this exact round.
+
+---
+
+# Fix round 2 — report integrity only, no code changes to the meters feature
+
+**Status: COMPLETE**
+pwd: `/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening`
+branch: `worktree-release-hardening`
+HEAD before this round: `1a0dedf1d385b7e0e4389ba1c93606313ab1a150`
+
+Evidence (force-added):
+`.superpowers/sdd/release-hardening/evidence/task-4-fix2-it-targeted.log`,
+`.../task-4-fix2-f4-targeted.log`, `.../task-4-fix2-starter-full.log`,
+`.../task-4-fix2-integration-full.log`, `.../task-4-fix2-build.log`.
+
+Independent re-review PROVED F1 (reverted the `afterName` pair in a
+scratch copy, same failure at the same line; restored, green) and
+confirmed F2/F4/F5 and the design amendment. F3 — report integrity — was
+only partially closed, the third instance of the same failure mode this
+cycle, so this round applies one mechanical rule: **every number, timing,
+or status line quoted in the report must be `grep`-able from an archived
+file under `evidence/`.** Every correction below is inline in the sections
+above (marked "Correction (Fix round 2)"); this section is the index plus
+the two code nits.
+
+## Report-integrity items (all inline corrections, indexed here)
+
+1. **Un-archived targeted-run quotes (the IT block and the F4 block).**
+   Both re-run (after the code nits below, so the IT's quote reflects its
+   final text) and archived:
+   - `evidence/task-4-fix2-it-targeted.log` —
+     `grep -n "PASSED\|BUILD SUCCESSFUL\|actionable tasks"` →
+     `7:...PASSED`, `11:BUILD SUCCESSFUL in 8s`, `12:36 actionable tasks: 36 executed`.
+   - `evidence/task-4-fix2-f4-targeted.log` —
+     `grep -n "BUILD SUCCESSFUL\|actionable tasks"` →
+     `9:BUILD SUCCESSFUL in 4s`, `10:17 actionable tasks: 17 executed`.
+2. **Misattributed fabrication.** The "1m 41s" full-build quote was
+   attributed to `task-3-fix2-build.log`, which does contain `BUILD
+   SUCCESSFUL in 1m 41s` but says `134 actionable tasks: 35 executed, 99
+   up-to-date` — not `52 executed, 82 up-to-date`, which this report had
+   also fabricated. Confirmed: `grep -n "BUILD SUCCESSFUL\|actionable
+   tasks" evidence/task-3-fix2-build.log` → `674:BUILD SUCCESSFUL in 1m
+   41s`, `675:134 actionable tasks: 35 executed, 99 up-to-date`.
+3. **Wrong timing on the original GREEN block.** `BUILD SUCCESSFUL in 10s`
+   corrected to `11s` — `grep -n "BUILD SUCCESSFUL" evidence/task-4-green.log`
+   → `50:BUILD SUCCESSFUL in 11s`.
+4. **Self-contradictory test-count correction.** Fix round 1's own
+   correction said "13 meter-catalog rows" while also saying "14 tests"
+   and, two lines later, "15 tests in the file as it now stands" — three
+   different numbers for the same file in one paragraph. Recounted once,
+   consistently: `grep -c "@Test"
+   MicrometerEngineObserverTest.java` → `14`; the 14 are 12
+   meter-catalog-row tests + `meterTypeConflictIsContainedDefensively`
+   (defensive-registration) + `signalConsumedToleratesNullWorkflowType`
+   (null-`workflowType` edge case). `MaestroObservabilityAutoConfigurationTest`
+   is `grep -c "@Test"` → `7`.
+
+## Code nits (both in `ObserverReplayNoDoubleCountIT.java`)
+
+5. **`@DisplayName` didn't match its own assertions.** It said "activity.duration
+   count == 2" — the test asserts `1.0` per `activity` tag (`chain.stepOne`
+   and `chain.stepTwo` separately), never a bare `2` against any single
+   meter/tag combination. Reworded to "activity.duration is 1 per step
+   (stepOne == 1, stepTwo == 1)".
+6. **Dead `{@link MicrometerEngineObserverTest}`.** That class lives in
+   `maestro-spring-boot-starter`'s test sources, not on
+   `maestro-integration-tests`' classpath — an unresolvable Javadoc link.
+   Changed to `{@code MicrometerEngineObserverTest}` with a parenthetical
+   noting why it isn't a link.
+
+## Verification (fresh, archived this round)
+
+```
+$ grep -n "BUILD SUCCESSFUL\|actionable tasks\|JUnit XML" evidence/task-4-fix2-starter-full.log
+6:JUnit XML totals: tests=79 failures=0 errors=0 skipped=0
+16:BUILD SUCCESSFUL in 10s
+17:17 actionable tasks: 17 executed
+```
+
+```
+$ grep -n "BUILD SUCCESSFUL\|actionable tasks\|JUnit XML" evidence/task-4-fix2-integration-full.log
+6:JUnit XML totals: files=30 tests=93 failures=0 errors=0 skipped=0
+14:BUILD SUCCESSFUL in 1m 38s
+15:36 actionable tasks: 36 executed
+```
+
+```
+$ grep -n "BUILD SUCCESSFUL\|actionable tasks" evidence/task-4-fix2-build.log
+9:BUILD SUCCESSFUL in 1s
+10:134 actionable tasks: 1 executed, 133 up-to-date
+```
+
+(The full build is a fully cached re-run — nothing changed since the
+fresh module runs moments earlier in the same session; the module-level
+runs above are the ones that actually re-executed every test.)
+
+## Files touched this round
+
+- `maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/ObserverReplayNoDoubleCountIT.java` (nits 5, 6)
+- `.superpowers/sdd/release-hardening-plan/task-4-report.md` (this section + inline corrections)
+
+## Concerns after this round
+
+None outstanding.

@@ -1,0 +1,16 @@
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening
+branch: worktree-release-hardening
+HEAD: 1a0dedf1d385b7e0e4389ba1c93606313ab1a150
+timestamp: 2026-08-02T16:45:32Z
+command: ./gradlew :maestro-integration-tests:test --rerun-tasks
+JUnit XML totals: files=30 tests=93 failures=0 errors=0 skipped=0
+2026-08-02T18:45:05.419+02:00  INFO 87887 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.telemetry.internals.ClientTelemetryReporter
+2026-08-02T18:45:05.419+02:00  INFO 87887 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics reporters closed
+2026-08-02T18:45:05.422+02:00  INFO 87887 --- [anNameSet-0-C-1] o.a.kafka.common.utils.AppInfoParser     : App info kafka.consumer for consumer-maestro-kafka-roundtrip-17 unregistered
+2026-08-02T18:45:05.422+02:00  INFO 87887 --- [anNameSet-0-C-1] o.s.k.l.KafkaMessageListenerContainer    : maestro-kafka-roundtrip: Consumer stopped
+
+[Incubating] Problems report is available at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/build/reports/problems/problems-report.html
+
+BUILD SUCCESSFUL in 1m 38s
+36 actionable tasks: 36 executed
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.2.0/userguide/configuration_cache_enabling.html
