@@ -1613,3 +1613,15 @@ wording the review identified: a rising
 homogeneous means "an incompatible payload change needs `workflow.version()`",
 NOT "wait for the deploy to finish" — otherwise the new stand-down
 behaviour turns a visible failure into a silent zombie.
+
+### RULING 10 — mechanism corrected (Task 7 fix round 1)
+
+Task 7's implementer verified the ruling's stated mechanism and found it
+wrong; the coordinator accepts the correction. `getRecoverableInstances`
+filters `status IN (<this build's active statuses>)`, so an unknown status
+never reaches the mapper from that query. The real door is the unfiltered
+`getInstance`, combined with `recoverWorkflows` having no per-instance
+try/catch — so a single unmappable instance still aborts the whole pass,
+which is what the ruling intended to prevent. The fix stands as ruled
+(total status mapping, skip-with-WARN, pass continues); only this
+paragraph's causal account is amended. Correction pinned by test.
