@@ -1,0 +1,831 @@
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening
+branch: worktree-release-hardening
+HEAD: 249904c1f667d56950cc0c86304c6064ea95cd95
+timestamp: 2026-08-02T19:05:46Z
+command: ./gradlew build --rerun-tasks (Fix round 3 — full multi-module build, every task re-executed)
+> Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :build-logic:generateExternalPluginSpecBuilders
+> Task :build-logic:extractPrecompiledScriptPluginPlugins
+> Task :build-logic:generateScriptPluginAdapters
+> Task :build-logic:pluginDescriptors
+> Task :build-logic:processResources
+> Task :build-logic:compilePluginsBlocks
+> Task :build-logic:generatePrecompiledScriptPluginAccessors
+
+> Task :build-logic:compileKotlin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+w: [33m[1m⚠️ Inconsistent JVM Target Compatibility Between Java and Kotlin Tasks[0m[0m
+Inconsistent JVM-target compatibility detected for tasks 'compileJava' (25) and 'compileKotlin' (24).
+This will become an error in Gradle 8.0.
+[32m[1mSolution:[0m[0m
+[32m[3mConsider using JVM Toolchain: https://kotl.in/gradle/jvm/toolchain[0m[0m
+[36mLearn more about JVM-target validation: [0m[34mhttps://kotl.in/gradle/jvm/target-validation[0m[36m[0m
+
+
+> Task :build-logic:compileJava NO-SOURCE
+> Task :build-logic:classes
+
+> Configure project :maestro-admin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :build-logic:jar
+> Task :assemble UP-TO-DATE
+
+> Task :verifyModuleTestCoverage
+Test-coverage gate: 11 modules with production code, 0 accepted without tests.
+
+> Task :check
+> Task :maestro-integration-tests:compileJava NO-SOURCE
+> Task :build
+> Task :maestro-integration-tests:processResources NO-SOURCE
+> Task :maestro-integration-tests:classes UP-TO-DATE
+> Task :maestro-store-jdbc:processResources NO-SOURCE
+> Task :maestro-integration-tests:jar
+> Task :maestro-integration-tests:assemble
+> Task :maestro-lock-valkey:processResources
+> Task :maestro-test:processResources NO-SOURCE
+> Task :maestro-messaging-kafka:processResources
+> Task :maestro-spring-boot-starter:processResources
+> Task :maestro-admin-client:processResources
+> Task :maestro-integration-tests:processTestResources
+> Task :maestro-lock-postgres:processResources
+> Task :maestro-messaging-postgres:processResources
+> Task :maestro-lock-valkey:sourcesJar
+> Task :maestro-lock-valkey:processTestResources NO-SOURCE
+> Task :maestro-admin-client:sourcesJar
+> Task :maestro-admin-client:processTestResources NO-SOURCE
+> Task :maestro-store-postgres:processResources
+> Task :maestro-store-jdbc:sourcesJar
+> Task :maestro-store-jdbc:processTestResources NO-SOURCE
+> Task :maestro-lock-postgres:sourcesJar
+> Task :maestro-lock-postgres:processTestResources NO-SOURCE
+> Task :maestro-messaging-kafka:sourcesJar
+> Task :maestro-messaging-kafka:processTestResources NO-SOURCE
+> Task :maestro-samples:sample-order-service:processResources
+> Task :maestro-samples:sample-order-service:processTestResources NO-SOURCE
+> Task :maestro-samples:sample-payment-gateway:processResources
+> Task :maestro-samples:sample-payment-gateway:processTestResources NO-SOURCE
+> Task :maestro-samples:sample-postgres-only:processResources
+> Task :maestro-samples:sample-postgres-only:processTestResources NO-SOURCE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:processResources
+> Task :maestro-samples:sample-loan-origination:loan-application-service:processTestResources NO-SOURCE
+> Task :maestro-samples:sample-loan-origination:underwriting-service:processResources
+> Task :maestro-samples:sample-loan-origination:underwriting-service:processTestResources NO-SOURCE
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:processResources
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:processTestResources NO-SOURCE
+> Task :maestro-store-postgres:sourcesJar
+> Task :maestro-store-postgres:processTestResources NO-SOURCE
+> Task :maestro-messaging-postgres:sourcesJar
+> Task :maestro-messaging-postgres:processTestResources NO-SOURCE
+> Task :maestro-test:sourcesJar
+> Task :maestro-test:processTestResources NO-SOURCE
+> Task :maestro-spring-boot-starter:sourcesJar
+> Task :maestro-spring-boot-starter:processTestResources NO-SOURCE
+> Task :maestro-admin:processResources
+> Task :maestro-admin:processTestResources NO-SOURCE
+> Task :maestro-core:compileJava
+> Task :maestro-core:processResources NO-SOURCE
+> Task :maestro-core:classes
+> Task :maestro-core:jar
+> Task :maestro-store-jdbc:compileJava
+> Task :maestro-store-jdbc:classes
+> Task :maestro-store-jdbc:jar
+> Task :maestro-test:compileJava
+> Task :maestro-test:classes
+> Task :maestro-test:jar
+> Task :maestro-admin-client:compileJava
+> Task :maestro-admin-client:classes
+> Task :maestro-admin-client:jar
+> Task :maestro-admin:compileJava
+> Task :maestro-spring-boot-starter:compileJava
+> Task :maestro-admin:classes
+> Task :maestro-admin:resolveMainClassName
+> Task :maestro-store-postgres:compileJava
+> Task :maestro-spring-boot-starter:classes
+> Task :maestro-spring-boot-starter:jar
+> Task :maestro-store-postgres:classes
+> Task :maestro-store-postgres:jar
+> Task :maestro-lock-postgres:compileJava
+> Task :maestro-lock-postgres:classes
+> Task :maestro-lock-postgres:jar
+> Task :maestro-messaging-postgres:compileJava
+> Task :maestro-messaging-postgres:classes
+> Task :maestro-messaging-postgres:jar
+> Task :maestro-lock-valkey:compileJava
+> Task :maestro-lock-valkey:classes
+
+> Task :maestro-messaging-kafka:compileJava
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-messaging-kafka/src/main/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagation.java:156: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = tracer.withSpan(span)) {
+                 ^
+1 warning
+
+> Task :maestro-lock-valkey:jar
+> Task :maestro-messaging-kafka:classes
+> Task :maestro-messaging-kafka:jar
+> Task :maestro-admin:bootJar
+> Task :maestro-admin:jar
+> Task :maestro-admin:assemble
+
+> Task :maestro-admin:compileTestJava
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-admin/src/test/java/io/b2mash/maestro/admin/AdminAppTestSupport.java:61: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+    protected static final PostgreSQLContainer<?> POSTGRES =
+                           ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-admin/src/test/java/io/b2mash/maestro/admin/AdminAppTestSupport.java:62: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+            new PostgreSQLContainer<>("postgres:16-alpine")
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-admin/src/test/java/io/b2mash/maestro/admin/AdminAppTestSupport.java:68: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+    protected static final KafkaContainer KAFKA =
+                           ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-admin/src/test/java/io/b2mash/maestro/admin/AdminAppTestSupport.java:69: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+            new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1"))
+                ^
+4 warnings
+
+> Task :maestro-admin:testClasses
+
+> Task :maestro-integration-tests:compileTestJava
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/support/PostgresIntegrationSupport.java:46: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+    static final PostgreSQLContainer<?> postgres =
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/support/PostgresIntegrationSupport.java:47: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+            new PostgreSQLContainer<>("postgres:16-alpine")
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/KafkaTraceLinkageIT.java:73: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+    private static final KafkaContainer KAFKA =
+                         ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/KafkaTraceLinkageIT.java:74: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+            new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1")).withKraft();
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/KafkaTraceLinkageIT.java:135: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+            try (var ignored = otelA.tracer().withSpan(publishSpan)) {
+                     ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/schema/MaestroMigrationsCoexistIT.java:39: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+    static final PostgreSQLContainer<?> postgres =
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/schema/MaestroMigrationsCoexistIT.java:40: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+            new PostgreSQLContainer<>("postgres:16-alpine")
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/kafka/KafkaLifecycleEventLatencyIT.java:64: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+    private static final KafkaContainer KAFKA =
+                         ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/kafka/KafkaLifecycleEventLatencyIT.java:65: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+            new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1"))
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/kafka/KafkaSpringIntegrationSupport.java:89: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+    private static final KafkaContainer KAFKA =
+                         ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/kafka/KafkaSpringIntegrationSupport.java:90: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+            new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1"))
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/ChaosCluster.java:81: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+    private PostgreSQLContainer<?> postgres;
+            ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/ChaosCluster.java:133: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+        postgres = new PostgreSQLContainer<>(DockerImageName.parse(POSTGRES_IMAGE))
+                       ^
+13 warnings
+
+> Task :maestro-integration-tests:testClasses
+> Task :maestro-store-jdbc:javadoc
+> Task :maestro-lock-postgres:javadoc
+> Task :maestro-admin-client:javadoc
+> Task :maestro-test:javadoc
+> Task :maestro-lock-postgres:javadocJar
+> Task :maestro-lock-postgres:assemble
+> Task :maestro-admin-client:javadocJar
+> Task :maestro-admin-client:assemble
+> Task :maestro-store-jdbc:javadocJar
+> Task :maestro-store-jdbc:assemble
+> Task :maestro-lock-valkey:javadoc
+
+> Task :maestro-lock-postgres:compileTestJava
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-lock-postgres/src/test/java/io/b2mash/maestro/lock/postgres/PostgresLockTestSupport.java:31: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+    static final PostgreSQLContainer<?> postgres =
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-lock-postgres/src/test/java/io/b2mash/maestro/lock/postgres/PostgresLockTestSupport.java:32: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+            new PostgreSQLContainer<>("postgres:16-alpine")
+                ^
+2 warnings
+
+> Task :maestro-lock-postgres:testClasses
+> Task :maestro-admin-client:compileTestJava
+> Task :maestro-admin-client:testClasses
+> Task :maestro-store-jdbc:compileTestJava
+> Task :maestro-store-jdbc:testClasses
+> Task :maestro-messaging-postgres:javadoc
+> Task :maestro-messaging-postgres:javadocJar
+> Task :maestro-messaging-postgres:assemble
+> Task :maestro-lock-valkey:javadocJar
+> Task :maestro-lock-valkey:assemble
+
+> Task :maestro-messaging-postgres:compileTestJava
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-messaging-postgres/src/test/java/io/b2mash/maestro/messaging/postgres/PostgresMessagingTestSupport.java:33: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+    static final PostgreSQLContainer<?> postgres =
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-messaging-postgres/src/test/java/io/b2mash/maestro/messaging/postgres/PostgresMessagingTestSupport.java:34: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+            new PostgreSQLContainer<>("postgres:16-alpine")
+                ^
+2 warnings
+
+> Task :maestro-messaging-postgres:testClasses
+> Task :maestro-lock-valkey:compileTestJava
+> Task :maestro-lock-valkey:testClasses
+> Task :maestro-spring-boot-starter:javadoc
+> Task :maestro-spring-boot-starter:javadocJar
+> Task :maestro-spring-boot-starter:assemble
+> Task :maestro-core:javadoc
+
+> Task :maestro-integration-tests:test
+
+ChaosControllerInterruptTest > an interrupted controller aborts the schedule loudly before dispatching any action PASSED
+
+ChaosSuiteSelectionTest > a soak invocation must not select the PR gate (25-min @Timeout vs 120-min window) PASSED
+
+ChaosSuiteSelectionTest > the dedicated suites stay opt-in via their system-property flags PASSED
+
+ChaosSuiteSelectionTest > golden / boot-smoke / explicit-mode invocations must not select the PR gate either PASSED
+
+> Task :maestro-core:javadocJar
+> Task :maestro-core:sourcesJar
+> Task :maestro-core:assemble
+OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes because bootstrap classpath has been appended
+> Task :maestro-store-jdbc:test
+> Task :maestro-store-jdbc:check
+> Task :maestro-store-jdbc:build
+> Task :maestro-spring-boot-starter:compileTestJava
+> Task :maestro-spring-boot-starter:testClasses
+> Task :maestro-messaging-kafka:javadoc
+> Task :maestro-messaging-kafka:javadocJar
+> Task :maestro-messaging-kafka:assemble
+> Task :maestro-core:compileTestJava
+> Task :maestro-core:processTestResources NO-SOURCE
+> Task :maestro-core:testClasses
+
+> Task :maestro-messaging-kafka:compileTestJava
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTestSupport.java:41: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+    static final KafkaContainer kafka =
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTestSupport.java:42: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+            new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1"))
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagationContractTest.java:104: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = otel.tracer().withSpan(span)) {
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagationContractTest.java:134: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = otel.tracer().withSpan(span)) {
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagationContractTest.java:174: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = otel.tracer().withSpan(span)) {
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagationContractTest.java:208: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = otel.tracer().withSpan(span)) {
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagationContractTest.java:242: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = otel.tracer().withSpan(span)) {
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagationContractTest.java:297: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = otel.tracer().withSpan(span)) {
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagationContractTest.java:401: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = otel.tracer().withSpan(span)) {
+                 ^
+9 warnings
+
+> Task :maestro-messaging-kafka:testClasses
+
+> Task :maestro-integration-tests:test
+
+InvariantCheckerBlindnessTest > authoritativeVerifyAgainstUnreachableStoreIsAHardFailureNotAPass() PASSED
+
+InvariantCheckerBlindnessTest > periodicChecksStaySoftWhenStoreUnreachable() PASSED
+
+LogTailScannerTest > boundary-checked id match still works on whole lines across polls PASSED
+
+LogTailScannerTest > effect line split across two polls is still matched once complete PASSED
+
+> Task :maestro-admin-client:test
+> Task :maestro-admin-client:check
+> Task :maestro-admin-client:build
+> Task :maestro-test:javadocJar
+> Task :maestro-test:assemble
+> Task :maestro-test:compileTestJava
+> Task :maestro-test:testClasses
+> Task :maestro-store-postgres:javadoc
+> Task :maestro-store-postgres:javadocJar
+> Task :maestro-store-postgres:assemble
+
+> Task :maestro-store-postgres:compileTestJava
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-store-postgres/src/test/java/io/b2mash/maestro/store/postgres/PostgresTestSupport.java:25: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+    static final PostgreSQLContainer<?> postgres =
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-store-postgres/src/test/java/io/b2mash/maestro/store/postgres/PostgresTestSupport.java:26: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+            new PostgreSQLContainer<>("postgres:16-alpine")
+                ^
+2 warnings
+
+> Task :maestro-store-postgres:testClasses
+
+> Task :maestro-integration-tests:test
+
+WorkloadDriverBackPressureTest > normal load never touches the back-pressure accounting PASSED
+
+> Task :maestro-test:test
+> Task :maestro-test:check
+> Task :maestro-test:build
+> Task :maestro-samples:sample-order-service:compileJava
+> Task :maestro-samples:sample-order-service:classes
+> Task :maestro-samples:sample-order-service:resolveMainClassName
+> Task :maestro-samples:sample-order-service:bootJar
+> Task :maestro-samples:sample-order-service:jar
+> Task :maestro-samples:sample-order-service:assemble
+> Task :maestro-samples:sample-order-service:compileTestJava NO-SOURCE
+> Task :maestro-samples:sample-order-service:testClasses UP-TO-DATE
+> Task :maestro-samples:sample-order-service:test NO-SOURCE
+> Task :maestro-samples:sample-order-service:check UP-TO-DATE
+> Task :maestro-samples:sample-order-service:build
+> Task :maestro-samples:sample-payment-gateway:compileJava
+> Task :maestro-samples:sample-payment-gateway:classes
+> Task :maestro-samples:sample-payment-gateway:resolveMainClassName
+> Task :maestro-samples:sample-payment-gateway:bootJar
+> Task :maestro-samples:sample-payment-gateway:jar
+> Task :maestro-samples:sample-payment-gateway:assemble
+> Task :maestro-samples:sample-payment-gateway:compileTestJava NO-SOURCE
+> Task :maestro-samples:sample-payment-gateway:testClasses UP-TO-DATE
+> Task :maestro-samples:sample-payment-gateway:test NO-SOURCE
+> Task :maestro-samples:sample-payment-gateway:check UP-TO-DATE
+> Task :maestro-samples:sample-payment-gateway:build
+> Task :maestro-samples:sample-postgres-only:compileJava
+> Task :maestro-samples:sample-postgres-only:classes
+> Task :maestro-samples:sample-postgres-only:resolveMainClassName
+
+> Task :maestro-integration-tests:test
+
+WorkloadDriverBackPressureTest > a fully back-pressured window is accounted: waits, max wait, blocked time, zero submissions PASSED
+
+> Task :maestro-samples:sample-postgres-only:bootJar
+> Task :maestro-samples:sample-postgres-only:jar
+> Task :maestro-samples:sample-postgres-only:assemble
+> Task :maestro-samples:sample-postgres-only:compileTestJava NO-SOURCE
+> Task :maestro-samples:sample-postgres-only:testClasses UP-TO-DATE
+> Task :maestro-samples:sample-postgres-only:test NO-SOURCE
+> Task :maestro-samples:sample-postgres-only:check UP-TO-DATE
+> Task :maestro-samples:sample-postgres-only:build
+> Task :maestro-samples:sample-loan-origination:loan-application-service:compileJava
+> Task :maestro-samples:sample-loan-origination:loan-application-service:classes
+> Task :maestro-samples:sample-loan-origination:loan-application-service:resolveMainClassName
+> Task :maestro-samples:sample-loan-origination:loan-application-service:bootJar
+> Task :maestro-samples:sample-loan-origination:loan-application-service:jar
+> Task :maestro-samples:sample-loan-origination:loan-application-service:assemble
+> Task :maestro-samples:sample-loan-origination:loan-application-service:compileTestJava
+> Task :maestro-samples:sample-loan-origination:loan-application-service:testClasses
+
+> Task :maestro-integration-tests:test
+
+WorkloadDriverBackPressureTest > a throttled benchmark-tail phase is attributed to THAT window, not diluted into totals (R1-2) PASSED
+
+> Task :maestro-lock-postgres:test
+> Task :maestro-lock-postgres:check
+> Task :maestro-lock-postgres:build
+> Task :maestro-samples:sample-loan-origination:underwriting-service:compileJava
+> Task :maestro-samples:sample-loan-origination:underwriting-service:classes
+> Task :maestro-samples:sample-loan-origination:underwriting-service:resolveMainClassName
+> Task :maestro-samples:sample-loan-origination:underwriting-service:bootJar
+> Task :maestro-samples:sample-loan-origination:underwriting-service:jar
+> Task :maestro-samples:sample-loan-origination:underwriting-service:assemble
+> Task :maestro-samples:sample-loan-origination:underwriting-service:compileTestJava
+> Task :maestro-samples:sample-loan-origination:underwriting-service:testClasses
+> Task :maestro-samples:sample-loan-origination:loan-application-service:test
+> Task :maestro-samples:sample-loan-origination:loan-application-service:check
+> Task :maestro-samples:sample-loan-origination:loan-application-service:build
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:compileJava
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:classes
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:resolveMainClassName
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:bootJar
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:jar
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:assemble
+
+> Task :maestro-integration-tests:test
+
+WorkloadDriverPacingTest > interrupt at T+2s of a 10s/600-per-min window: generated count stays <= 3x budget, abort is prompt PASSED
+
+WorkloadDriverPacingTest > interrupt pending before the first park: generation aborts at seq 0/1 immediately PASSED
+
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:compileTestJava
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:testClasses
+> Task :maestro-lock-valkey:test
+> Task :maestro-lock-valkey:check
+> Task :maestro-lock-valkey:build
+> Task :maestro-samples:sample-loan-origination:underwriting-service:test
+> Task :maestro-samples:sample-loan-origination:underwriting-service:check
+> Task :maestro-samples:sample-loan-origination:underwriting-service:build
+> Task :maestro-spring-boot-starter:test
+> Task :maestro-spring-boot-starter:check
+> Task :maestro-spring-boot-starter:build
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:test
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:check
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:build
+OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes because bootstrap classpath has been appended
+> Task :maestro-store-postgres:test
+> Task :maestro-store-postgres:check
+> Task :maestro-store-postgres:build
+OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes because bootstrap classpath has been appended
+
+> Task :maestro-integration-tests:test
+
+The engine runs a workflow lifecycle end to end against Postgres > a workflow whose activity exhausts its retries is persisted as FAILED with an error payload PASSED
+
+The engine runs a workflow lifecycle end to end against Postgres > the instance row's event sequence and version march with the run PASSED
+
+The engine runs a workflow lifecycle end to end against Postgres > a completed run leaves no instance lock behind PASSED
+
+The engine runs a workflow lifecycle end to end against Postgres > starting a second workflow with an existing ID is rejected by the store constraint PASSED
+
+2026-08-02T21:06:14.439+02:00  INFO 8465 --- [maestro-admin] [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Shutdown initiated...
+2026-08-02T21:06:14.442+02:00  INFO 8465 --- [maestro-admin] [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Shutdown completed.
+2026-08-02T21:06:14.444+02:00  INFO 8465 --- [maestro-admin] [ionShutdownHook] i.b.m.admin.kafka.AdminEventConsumer     : Stopping admin event consumer
+2026-08-02T21:06:14.445+02:00  INFO 8465 --- [maestro-admin] [anNameSet-0-C-1] k.c.c.i.ConsumerRebalanceListenerInvoker : [Consumer clientId=consumer-admin-ingestion-group-2, groupId=admin-ingestion-group] Revoke previously assigned partitions [admin-ingestion.events-0]
+2026-08-02T21:06:14.445+02:00  INFO 8465 --- [maestro-admin] [anNameSet-0-C-1] s.k.l.ConcurrentMessageListenerContainer : admin-ingestion-group: partitions revoked: [admin-ingestion.events-0]
+2026-08-02T21:06:14.445+02:00  INFO 8465 --- [maestro-admin] [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-admin-ingestion-group-2, groupId=admin-ingestion-group] Member consumer-admin-ingestion-group-2-270ee7b6-842c-4994-bc6e-f01aa2d049f5 sending LeaveGroup request to coordinator localhost:52128 (id: 2147483646 rack: null isFenced: false) due to the consumer unsubscribed from all topics
+2026-08-02T21:06:14.445+02:00  INFO 8465 --- [maestro-admin] [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-admin-ingestion-group-2, groupId=admin-ingestion-group] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-08-02T21:06:14.445+02:00  INFO 8465 --- [maestro-admin] [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-admin-ingestion-group-2, groupId=admin-ingestion-group] Request joining group due to: consumer pro-actively leaving the group
+2026-08-02T21:06:14.445+02:00  INFO 8465 --- [maestro-admin] [anNameSet-0-C-1] o.a.k.c.c.i.ClassicKafkaConsumer         : [Consumer clientId=consumer-admin-ingestion-group-2, groupId=admin-ingestion-group] Unsubscribed all topics or patterns and assigned partitions
+2026-08-02T21:06:14.445+02:00  INFO 8465 --- [maestro-admin] [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-admin-ingestion-group-2, groupId=admin-ingestion-group] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-08-02T21:06:14.445+02:00  INFO 8465 --- [maestro-admin] [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-admin-ingestion-group-2, groupId=admin-ingestion-group] Request joining group due to: consumer pro-actively leaving the group
+2026-08-02T21:06:14.829+02:00  INFO 8465 --- [maestro-admin] [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics scheduler closed
+2026-08-02T21:06:14.829+02:00  INFO 8465 --- [maestro-admin] [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.metrics.JmxReporter
+2026-08-02T21:06:14.829+02:00  INFO 8465 --- [maestro-admin] [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.telemetry.internals.ClientTelemetryReporter
+2026-08-02T21:06:14.829+02:00  INFO 8465 --- [maestro-admin] [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics reporters closed
+2026-08-02T21:06:14.832+02:00  INFO 8465 --- [maestro-admin] [anNameSet-0-C-1] o.a.kafka.common.utils.AppInfoParser     : App info kafka.consumer for consumer-admin-ingestion-group-2 unregistered
+2026-08-02T21:06:14.832+02:00  INFO 8465 --- [maestro-admin] [anNameSet-0-C-1] o.s.k.l.KafkaMessageListenerContainer    : admin-ingestion-group: Consumer stopped
+2026-08-02T21:06:14.832+02:00  INFO 8465 --- [maestro-admin] [ionShutdownHook] i.b.m.admin.kafka.AdminEventConsumer     : Admin event consumer stopped
+2026-08-02T21:06:14.833+02:00  INFO 8465 --- [maestro-admin] [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-2 - Shutdown initiated...
+2026-08-02T21:06:14.834+02:00  INFO 8465 --- [maestro-admin] [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-2 - Shutdown completed.
+
+> Task :maestro-admin:test
+> Task :maestro-admin:check
+> Task :maestro-admin:build
+
+> Task :maestro-integration-tests:test
+
+The engine runs a workflow lifecycle end to end against Postgres > a completed chain persists one event per activity plus a completion event PASSED
+
+Memoization replays stored activity results from Postgres > a completed activity with a stored result is not re-executed on replay PASSED
+
+Memoization replays stored activity results from Postgres > a stored activity failure is replayed as a failure rather than retried PASSED
+
+Memoization replays stored activity results from Postgres > replaying a run twice is stable — the second replay changes nothing PASSED
+
+The optimistic-lock version convention holds against real Postgres > the loser of a concurrent update sees an OptimisticLockException and writes nothing PASSED
+
+The optimistic-lock version convention holds against real Postgres > updating an instance that does not exist is a not-found error, not a version conflict PASSED
+
+The optimistic-lock version convention holds against real Postgres > an update whose version is the stored version plus one is persisted PASSED
+
+The optimistic-lock version convention holds against real Postgres > a full engine run against Postgres completes, so every engine write obeys the convention PASSED
+
+The optimistic-lock version convention holds against real Postgres > an update that forgets to pre-increment the version is rejected — the BUG1 shape PASSED
+
+Parallel branches partition the sequence space in Postgres > the fork point records how many branches were forked PASSED
+
+Parallel branches partition the sequence space in Postgres > replay after a crash re-runs only the branch that never finished PASSED
+
+Parallel branches partition the sequence space in Postgres > each branch persists its events in its own sequence block PASSED
+
+A second engine process recovers a workflow abandoned mid-flight > recover() replays completed steps and resumes at the first uncompleted step PASSED
+
+A second engine process recovers a workflow abandoned mid-flight > the recovery poller adopts an abandoned workflow without an explicit recover() call PASSED
+
+A second engine process recovers a workflow abandoned mid-flight > recovery is a no-op when no workflow was left in an active state PASSED
+
+A second engine process recovers a workflow abandoned mid-flight > recovery does not launch a second copy of a workflow already running on this node PASSED
+
+Saga compensation against a real Postgres store > a saga whose third step fails compensates the first two in LIFO order and lands in FAILED PASSED
+
+Saga compensation against a real Postgres store > a saga that never fails completes and runs no compensation at all PASSED
+
+Engine signal handling against a real Postgres store > a workflow parked on awaitSignal wakes and completes when a signal is delivered PASSED
+
+Engine signal handling against a real Postgres store > an await that times out fails the workflow with SignalTimeoutException PASSED
+
+Engine signal handling against a real Postgres store > collectSignals takes the first N signals in received-at order and leaves the rest unconsumed PASSED
+
+> Task :maestro-messaging-postgres:test
+> Task :maestro-core:test
+> Task :maestro-messaging-kafka:test
+> Task :maestro-messaging-postgres:check
+> Task :maestro-messaging-postgres:build
+
+> Task :maestro-integration-tests:test
+
+Engine signal handling against a real Postgres store > losing the consume CAS to a concurrent consumer still completes the workflow from the memoized event PASSED
+
+Engine signal handling against a real Postgres store > a signal that arrives before the await point is consumed without parking PASSED
+
+Engine signal handling against a real Postgres store > a signal delivered before the workflow exists is adopted when the instance is created PASSED
+
+Durable timers against a real Postgres store > a timer cancelled before its TIMER_CANCELLED event was appended is healed by recovery (Issue 13) PASSED
+
+Durable timers against a real Postgres store > a timer scheduled by one executor is fired and completed by a second executor over the same store PASSED
+
+Durable timers against a real Postgres store > sleep persists a pending timer row and parks the workflow in WAITING_TIMER PASSED
+
+Durable timers against a real Postgres store > cancelTimer on an already-fired timer is a false no-op (R1) and does not disturb completion PASSED
+
+Durable timers against a real Postgres store > the timer poller fires a due timer read from Postgres and resumes the workflow PASSED
+
+Durable timers against a real Postgres store > cancelling a timer a workflow is parked on unparks it; uncaught it fails the workflow (Issue 13) PASSED
+
+Durable timers against a real Postgres store > markTimerFired is a compare-and-set: only the first caller wins PASSED
+
+Durable timers against a real Postgres store > a caught TimerCancelledException lets the workflow complete via a fallback branch (Issue 13) PASSED
+
+Durable timers against a real Postgres store > a timer marked FIRED before its TIMER_FIRED event was appended is healed by recovery PASSED
+
+> Task :maestro-messaging-kafka:check
+> Task :maestro-messaging-kafka:build
+
+> Task :maestro-integration-tests:test
+
+$maestro:retry / $maestro:terminate over real Kafka > $maestro:bogus is dead-lettered after the attempt budget, and a subsequent valid command still processes PASSED
+
+$maestro:retry / $maestro:terminate over real Kafka > a workflow parked on awaitSignal is TERMINATED by $maestro:terminate, and WORKFLOW_TERMINATED is observed on the admin events topic PASSED
+
+$maestro:retry / $maestro:terminate over real Kafka > a FAILED workflow reaches COMPLETED after $maestro:retry, once the fault is fixed PASSED
+
+$maestro:retry / $maestro:terminate over real Kafka > after retry and terminate commands flow, no $maestro:* row was ever persisted as a WorkflowSignal, and getUnconsumedSignals stays empty PASSED
+
+A failing signal handler must not lose the signal > a transient handler failure is redelivered until it succeeds, and the workflow completes PASSED
+
+> Task :maestro-core:check
+> Task :maestro-core:build
+
+> Task :maestro-integration-tests:test
+
+A failing signal handler must not lose the signal > a persistently failing @MaestroSignalListener record is dead-lettered, not dropped PASSED
+
+A failing signal handler must not lose the signal > the engine signal channel dead-letters a record it can never process PASSED
+
+A failing signal handler must not lose the signal > the engine signal channel redelivers when the handler throws PASSED
+
+A duplicated Kafka event runs the workflow exactly once > the same event delivered twice is consumed once and leaves one surplus row PASSED
+
+A duplicated Kafka event runs the workflow exactly once > duplicates that arrive before the workflow exists are both adopted and one is consumed PASSED
+
+A missing admin-events topic costs no meaningful workflow-thread time > startWorkflow returns promptly even though the admin-events topic does not exist PASSED
+
+The engine publishes workflow lifecycle events to the admin topic > a failing workflow emits WORKFLOW_FAILED after its start event PASSED
+
+The engine publishes workflow lifecycle events to the admin topic > maestro.messaging.topics.admin-events names the topic the adapter publishes to PASSED
+
+The engine publishes workflow lifecycle events to the admin topic > a completed workflow emits WORKFLOW_STARTED then WORKFLOW_COMPLETED, keyed by workflow ID PASSED
+
+The maestro.signals.{service} channel delivers signals into running workflows > an admin command on the channel actually terminates the workflow, and is never persisted as a signal row PASSED
+
+The maestro.signals.{service} channel delivers signals into running workflows > a SignalMessage published to the channel wakes a parked workflow and completes it PASSED
+
+A Kafka event routed by @MaestroSignalListener wakes a parked workflow > an event published while the workflow is parked wakes it and completes it PASSED
+
+A Kafka event routed by @MaestroSignalListener wakes a parked workflow > an event routed before the workflow exists is persisted as an orphan and adopted on start PASSED
+
+The per-instance lock stops a second node from running a workflow that is already live > a second node's recovery pass does not launch a workflow the first node is running PASSED
+
+The per-instance lock stops a second node from running a workflow that is already live > when both nodes recover an ownerless workflow at once, exactly one of them adopts it PASSED
+
+The per-instance lock stops a second node from running a workflow that is already live > the instance lock is held for the whole run and released when the workflow completes PASSED
+
+The per-instance lock stops a second node from running a workflow that is already live > a second node starting the same workflow ID is rejected by the store, not silently duplicated PASSED
+
+With no lock backend two nodes both run the workflow, and only the store's unique index keeps them consistent > node B adopts a workflow node A is still running: the in-flight step runs twice, and node A's result is discarded in favour of node B's PASSED
+
+With no lock backend two nodes both run the workflow, and only the store's unique index keeps them consistent > both nodes adopt the same ownerless workflow, and the store still yields one event per sequence and one output PASSED
+
+A node that dies holding the instance lock hands its workflow over when the TTL expires > the dead owner's lock row is left behind un-released and is freed only by TTL expiry PASSED
+
+A node that dies holding the instance lock hands its workflow over when the TTL expires > no node adopts the workflow while the dead owner's lock has not yet expired PASSED
+
+A node that dies holding the instance lock hands its workflow over when the TTL expires > node B adopts the abandoned workflow after the TTL and resumes at the first uncompleted step PASSED
+
+A signal ingested on one node reaches a workflow parked on another > a signal delivered on node B wakes the workflow parked on node A, which resumes it PASSED
+
+A signal ingested on one node reaches a workflow parked on another > a signal delivered on node B before the workflow exists is adopted when node A starts it PASSED
+
+A signal ingested on one node reaches a workflow parked on another > a run of signals delivered on node B is collected on node A in receipt order PASSED
+
+A timer fired or cancelled on one node wakes a workflow sleeping on another > a timer cancelled on node B wakes the workflow sleeping on node A with the cancelled outcome PASSED
+
+A timer fired or cancelled on one node wakes a workflow sleeping on another > a timer fired by node B's poller wakes the workflow sleeping on node A PASSED
+
+A signal published by service A and consumed by service B yields one connected trace > B's resumed run segment carries A's trace ID, parented to A's publish span, and the durable signal row is what carried it PASSED
+
+A signal published by service A and consumed by service B yields one connected trace > a signal carrying an over-long traceparent is still delivered and consumed — the workflow completes and the resumed segment is simply a fresh root PASSED
+
+A signal published by service A and consumed by service B yields one connected trace > an over-long trace context set directly through the holder still persists the signal and completes the workflow PASSED
+
+A recovered workflow's replayed activity does not double-count maestro.activity.duration > crash after the pre-park activity, recover, complete: activity.duration is 1 per step (stepOne == 1, stepTwo == 1), workflow.started == 1, workflow.completed == 1 — the replayed step is never re-counted PASSED
+
+A parallel fan-out leaves no unclosed segment and no orphan parent > every exported span's local parent was itself exported — no branch span references a segment that was never closed PASSED
+
+A parallel fan-out leaves no unclosed segment and no orphan parent > a fork-first workflow whose branches park still leaves no unclosed segment and no orphan parent PASSED
+
+A recovered workflow's replayed activity produces no spans on the recovering node > node B replays stepOne to reach the park and emits exactly one activity span — for the genuinely live stepTwo PASSED
+
+Maestro Flyway migrations coexist on one database > no two migrations declare the same version PASSED
+
+Maestro Flyway migrations coexist on one database > store + lock + messaging migrations apply cleanly to one schema PASSED
+
+Maestro Flyway migrations coexist on one database > V4 adds a nullable maestro_workflow_signal.trace_context on top of V1–V3 PASSED
+
+Graceful shutdown leaves parked workflows recoverable, never failed > a workflow parked on sleep stays WAITING_TIMER with its timer still pending PASSED
+
+Graceful shutdown leaves parked workflows recoverable, never failed > shutdown releases the instance lock of a parked workflow instead of leaving it to the TTL PASSED
+
+Graceful shutdown leaves parked workflows recoverable, never failed > a workflow parked on awaitSignal stays WAITING_SIGNAL and stays recoverable PASSED
+
+Graceful shutdown leaves parked workflows recoverable, never failed > shutdown mid-compensation leaves the workflow recoverable with no step recorded failed, and a fresh node completes the compensation PASSED
+
+Graceful shutdown leaves parked workflows recoverable, never failed > a saga parked after committing compensable work is not compensated by shutdown PASSED
+
+Graceful shutdown leaves parked workflows recoverable, never failed > shutdown blocks until an in-flight activity drains, then records its result PASSED
+
+Graceful shutdown leaves parked workflows recoverable, never failed > a node started after the shutdown recovers the parked workflow and completes it PASSED
+
+Engine harness drives the real engine against Postgres > an activity chain completes and persists its events to Postgres PASSED
+
+2026-08-02T21:07:39.903+02:00  INFO 8466 --- [ionShutdownHook] i.b.m.core.engine.WorkflowExecutor       : Shutdown already in progress
+2026-08-02T21:07:39.903+02:00  INFO 8466 --- [ionShutdownHook] i.b.m.m.kafka.KafkaWorkflowMessaging     : Stopping 1 Kafka listener container(s)
+2026-08-02T21:07:39.903+02:00  INFO 8466 --- [anNameSet-0-C-1] k.c.c.i.ConsumerRebalanceListenerInvoker : [Consumer clientId=consumer-maestro-kafka-admin-cmd-1, groupId=maestro-kafka-admin-cmd] Revoke previously assigned partitions [maestro.signals.kafka-admin-cmd-0]
+2026-08-02T21:07:39.903+02:00  INFO 8466 --- [anNameSet-0-C-1] s.k.l.ConcurrentMessageListenerContainer : maestro-kafka-admin-cmd: partitions revoked: [maestro.signals.kafka-admin-cmd-0]
+2026-08-02T21:07:39.903+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-admin-cmd-1, groupId=maestro-kafka-admin-cmd] Member consumer-maestro-kafka-admin-cmd-1-43ae4f84-7ef2-48fe-9bd8-20232c074293 sending LeaveGroup request to coordinator localhost:53980 (id: 2147483646 rack: null isFenced: false) due to the consumer unsubscribed from all topics
+2026-08-02T21:07:39.904+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-admin-cmd-1, groupId=maestro-kafka-admin-cmd] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-08-02T21:07:39.904+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-admin-cmd-1, groupId=maestro-kafka-admin-cmd] Request joining group due to: consumer pro-actively leaving the group
+2026-08-02T21:07:39.904+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.i.ClassicKafkaConsumer         : [Consumer clientId=consumer-maestro-kafka-admin-cmd-1, groupId=maestro-kafka-admin-cmd] Unsubscribed all topics or patterns and assigned partitions
+2026-08-02T21:07:39.904+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-admin-cmd-1, groupId=maestro-kafka-admin-cmd] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-08-02T21:07:39.904+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-admin-cmd-1, groupId=maestro-kafka-admin-cmd] Request joining group due to: consumer pro-actively leaving the group
+2026-08-02T21:07:40.042+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics scheduler closed
+2026-08-02T21:07:40.042+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.metrics.JmxReporter
+2026-08-02T21:07:40.043+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.telemetry.internals.ClientTelemetryReporter
+2026-08-02T21:07:40.043+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics reporters closed
+2026-08-02T21:07:40.044+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.kafka.common.utils.AppInfoParser     : App info kafka.consumer for consumer-maestro-kafka-admin-cmd-1 unregistered
+2026-08-02T21:07:40.044+02:00  INFO 8466 --- [anNameSet-0-C-1] o.s.k.l.KafkaMessageListenerContainer    : maestro-kafka-admin-cmd: Consumer stopped
+2026-08-02T21:07:40.044+02:00  INFO 8466 --- [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Shutdown initiated...
+2026-08-02T21:07:40.045+02:00  INFO 8466 --- [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Shutdown completed.
+2026-08-02T21:07:40.045+02:00  INFO 8466 --- [ionShutdownHook] l.MaestroSignalListenerBeanPostProcessor : Stopping 0 @MaestroSignalListener container(s)
+2026-08-02T21:07:40.046+02:00  INFO 8466 --- [ionShutdownHook] i.b.m.core.engine.WorkflowExecutor       : Shutdown already in progress
+2026-08-02T21:07:40.047+02:00  INFO 8466 --- [ionShutdownHook] i.b.m.m.kafka.KafkaWorkflowMessaging     : Stopping 1 Kafka listener container(s)
+2026-08-02T21:07:40.047+02:00  INFO 8466 --- [anNameSet-0-C-1] k.c.c.i.ConsumerRebalanceListenerInvoker : [Consumer clientId=consumer-maestro-kafka-ack-5, groupId=maestro-kafka-ack] Revoke previously assigned partitions [maestro.signals.kafka-ack-0]
+2026-08-02T21:07:40.047+02:00  INFO 8466 --- [anNameSet-0-C-1] s.k.l.ConcurrentMessageListenerContainer : maestro-kafka-ack: partitions revoked: [maestro.signals.kafka-ack-0]
+2026-08-02T21:07:40.047+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-ack-5, groupId=maestro-kafka-ack] Member consumer-maestro-kafka-ack-5-00cc06e9-6055-4b5c-9d92-d664452fe91f sending LeaveGroup request to coordinator localhost:53980 (id: 2147483646 rack: null isFenced: false) due to the consumer unsubscribed from all topics
+2026-08-02T21:07:40.047+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-ack-5, groupId=maestro-kafka-ack] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-08-02T21:07:40.047+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-ack-5, groupId=maestro-kafka-ack] Request joining group due to: consumer pro-actively leaving the group
+2026-08-02T21:07:40.047+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.i.ClassicKafkaConsumer         : [Consumer clientId=consumer-maestro-kafka-ack-5, groupId=maestro-kafka-ack] Unsubscribed all topics or patterns and assigned partitions
+2026-08-02T21:07:40.047+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-ack-5, groupId=maestro-kafka-ack] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-08-02T21:07:40.047+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-ack-5, groupId=maestro-kafka-ack] Request joining group due to: consumer pro-actively leaving the group
+2026-08-02T21:07:40.193+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics scheduler closed
+2026-08-02T21:07:40.193+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.metrics.JmxReporter
+2026-08-02T21:07:40.193+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.telemetry.internals.ClientTelemetryReporter
+2026-08-02T21:07:40.193+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics reporters closed
+2026-08-02T21:07:40.195+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.kafka.common.utils.AppInfoParser     : App info kafka.consumer for consumer-maestro-kafka-ack-5 unregistered
+2026-08-02T21:07:40.196+02:00  INFO 8466 --- [anNameSet-0-C-1] o.s.k.l.KafkaMessageListenerContainer    : maestro-kafka-ack: Consumer stopped
+2026-08-02T21:07:40.196+02:00  INFO 8466 --- [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-2 - Shutdown initiated...
+2026-08-02T21:07:40.197+02:00  INFO 8466 --- [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-2 - Shutdown completed.
+2026-08-02T21:07:40.197+02:00  INFO 8466 --- [ionShutdownHook] l.MaestroSignalListenerBeanPostProcessor : Stopping 1 @MaestroSignalListener container(s)
+2026-08-02T21:07:40.198+02:00  INFO 8466 --- [anNameSet-0-C-1] k.c.c.i.ConsumerRebalanceListenerInvoker : [Consumer clientId=consumer-maestro-kafka-ack-4, groupId=maestro-kafka-ack] Revoke previously assigned partitions [it.ack.approvals-0]
+2026-08-02T21:07:40.198+02:00  INFO 8466 --- [anNameSet-0-C-1] s.k.l.ConcurrentMessageListenerContainer : maestro-kafka-ack: partitions revoked: [it.ack.approvals-0]
+2026-08-02T21:07:40.198+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-ack-4, groupId=maestro-kafka-ack] Member consumer-maestro-kafka-ack-4-7abe8b44-fd6e-4a98-b4ac-33a32a03db3c sending LeaveGroup request to coordinator localhost:53980 (id: 2147483646 rack: null isFenced: false) due to the consumer unsubscribed from all topics
+2026-08-02T21:07:40.198+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-ack-4, groupId=maestro-kafka-ack] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-08-02T21:07:40.198+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-ack-4, groupId=maestro-kafka-ack] Request joining group due to: consumer pro-actively leaving the group
+2026-08-02T21:07:40.198+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.i.ClassicKafkaConsumer         : [Consumer clientId=consumer-maestro-kafka-ack-4, groupId=maestro-kafka-ack] Unsubscribed all topics or patterns and assigned partitions
+2026-08-02T21:07:40.198+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-ack-4, groupId=maestro-kafka-ack] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-08-02T21:07:40.198+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-ack-4, groupId=maestro-kafka-ack] Request joining group due to: consumer pro-actively leaving the group
+2026-08-02T21:07:40.699+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics scheduler closed
+2026-08-02T21:07:40.699+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.metrics.JmxReporter
+2026-08-02T21:07:40.699+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.telemetry.internals.ClientTelemetryReporter
+2026-08-02T21:07:40.699+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics reporters closed
+2026-08-02T21:07:40.702+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.kafka.common.utils.AppInfoParser     : App info kafka.consumer for consumer-maestro-kafka-ack-4 unregistered
+2026-08-02T21:07:40.702+02:00  INFO 8466 --- [anNameSet-0-C-1] o.s.k.l.KafkaMessageListenerContainer    : maestro-kafka-ack: Consumer stopped
+2026-08-02T21:07:40.703+02:00  INFO 8466 --- [ionShutdownHook] i.b.m.core.engine.WorkflowExecutor       : Shutdown already in progress
+2026-08-02T21:07:40.703+02:00  INFO 8466 --- [ionShutdownHook] i.b.m.m.kafka.KafkaWorkflowMessaging     : Stopping 1 Kafka listener container(s)
+2026-08-02T21:07:40.703+02:00  INFO 8466 --- [anNameSet-0-C-1] k.c.c.i.ConsumerRebalanceListenerInvoker : [Consumer clientId=consumer-maestro-kafka-duplicate-11, groupId=maestro-kafka-duplicate] Revoke previously assigned partitions [maestro.signals.kafka-duplicate-0]
+2026-08-02T21:07:40.703+02:00  INFO 8466 --- [anNameSet-0-C-1] s.k.l.ConcurrentMessageListenerContainer : maestro-kafka-duplicate: partitions revoked: [maestro.signals.kafka-duplicate-0]
+2026-08-02T21:07:40.703+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-duplicate-11, groupId=maestro-kafka-duplicate] Member consumer-maestro-kafka-duplicate-11-45facbc6-e21d-4d4c-9675-7e97f8d1f541 sending LeaveGroup request to coordinator localhost:53980 (id: 2147483646 rack: null isFenced: false) due to the consumer unsubscribed from all topics
+2026-08-02T21:07:40.704+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-duplicate-11, groupId=maestro-kafka-duplicate] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-08-02T21:07:40.704+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-duplicate-11, groupId=maestro-kafka-duplicate] Request joining group due to: consumer pro-actively leaving the group
+2026-08-02T21:07:40.704+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.i.ClassicKafkaConsumer         : [Consumer clientId=consumer-maestro-kafka-duplicate-11, groupId=maestro-kafka-duplicate] Unsubscribed all topics or patterns and assigned partitions
+2026-08-02T21:07:40.704+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-duplicate-11, groupId=maestro-kafka-duplicate] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-08-02T21:07:40.704+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-duplicate-11, groupId=maestro-kafka-duplicate] Request joining group due to: consumer pro-actively leaving the group
+2026-08-02T21:07:41.058+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics scheduler closed
+2026-08-02T21:07:41.059+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.metrics.JmxReporter
+2026-08-02T21:07:41.059+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.telemetry.internals.ClientTelemetryReporter
+2026-08-02T21:07:41.059+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics reporters closed
+2026-08-02T21:07:41.061+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.kafka.common.utils.AppInfoParser     : App info kafka.consumer for consumer-maestro-kafka-duplicate-11 unregistered
+2026-08-02T21:07:41.061+02:00  INFO 8466 --- [anNameSet-0-C-1] o.s.k.l.KafkaMessageListenerContainer    : maestro-kafka-duplicate: Consumer stopped
+2026-08-02T21:07:41.062+02:00  INFO 8466 --- [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-3 - Shutdown initiated...
+2026-08-02T21:07:41.063+02:00  INFO 8466 --- [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-3 - Shutdown completed.
+2026-08-02T21:07:41.063+02:00  INFO 8466 --- [ionShutdownHook] l.MaestroSignalListenerBeanPostProcessor : Stopping 1 @MaestroSignalListener container(s)
+2026-08-02T21:07:41.064+02:00  INFO 8466 --- [anNameSet-0-C-1] k.c.c.i.ConsumerRebalanceListenerInvoker : [Consumer clientId=consumer-maestro-kafka-duplicate-10, groupId=maestro-kafka-duplicate] Revoke previously assigned partitions [it.duplicate.approvals-0]
+2026-08-02T21:07:41.064+02:00  INFO 8466 --- [anNameSet-0-C-1] s.k.l.ConcurrentMessageListenerContainer : maestro-kafka-duplicate: partitions revoked: [it.duplicate.approvals-0]
+2026-08-02T21:07:41.064+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-duplicate-10, groupId=maestro-kafka-duplicate] Member consumer-maestro-kafka-duplicate-10-184eda35-6edd-4541-a5bc-7ffd285ee449 sending LeaveGroup request to coordinator localhost:53980 (id: 2147483646 rack: null isFenced: false) due to the consumer unsubscribed from all topics
+2026-08-02T21:07:41.064+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-duplicate-10, groupId=maestro-kafka-duplicate] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-08-02T21:07:41.064+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-duplicate-10, groupId=maestro-kafka-duplicate] Request joining group due to: consumer pro-actively leaving the group
+2026-08-02T21:07:41.064+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.i.ClassicKafkaConsumer         : [Consumer clientId=consumer-maestro-kafka-duplicate-10, groupId=maestro-kafka-duplicate] Unsubscribed all topics or patterns and assigned partitions
+2026-08-02T21:07:41.065+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-duplicate-10, groupId=maestro-kafka-duplicate] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-08-02T21:07:41.065+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-duplicate-10, groupId=maestro-kafka-duplicate] Request joining group due to: consumer pro-actively leaving the group
+2026-08-02T21:07:41.564+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics scheduler closed
+2026-08-02T21:07:41.564+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.metrics.JmxReporter
+2026-08-02T21:07:41.564+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.telemetry.internals.ClientTelemetryReporter
+2026-08-02T21:07:41.564+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics reporters closed
+2026-08-02T21:07:41.565+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.kafka.common.utils.AppInfoParser     : App info kafka.consumer for consumer-maestro-kafka-duplicate-10 unregistered
+2026-08-02T21:07:41.565+02:00  INFO 8466 --- [anNameSet-0-C-1] o.s.k.l.KafkaMessageListenerContainer    : maestro-kafka-duplicate: Consumer stopped
+2026-08-02T21:07:41.566+02:00  INFO 8466 --- [ionShutdownHook] i.b.m.core.engine.WorkflowExecutor       : Shutdown already in progress
+2026-08-02T21:07:41.566+02:00  INFO 8466 --- [ionShutdownHook] i.b.m.m.kafka.KafkaWorkflowMessaging     : Stopping 1 Kafka listener container(s)
+2026-08-02T21:07:41.566+02:00  INFO 8466 --- [anNameSet-0-C-1] k.c.c.i.ConsumerRebalanceListenerInvoker : [Consumer clientId=consumer-maestro-kafka-lifecycle-13, groupId=maestro-kafka-lifecycle] Revoke previously assigned partitions [maestro.signals.kafka-lifecycle-0]
+2026-08-02T21:07:41.566+02:00  INFO 8466 --- [anNameSet-0-C-1] s.k.l.ConcurrentMessageListenerContainer : maestro-kafka-lifecycle: partitions revoked: [maestro.signals.kafka-lifecycle-0]
+2026-08-02T21:07:41.566+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-lifecycle-13, groupId=maestro-kafka-lifecycle] Member consumer-maestro-kafka-lifecycle-13-978599d3-06a5-4c62-95bc-cf24ebfe8159 sending LeaveGroup request to coordinator localhost:53980 (id: 2147483646 rack: null isFenced: false) due to the consumer unsubscribed from all topics
+2026-08-02T21:07:41.566+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-lifecycle-13, groupId=maestro-kafka-lifecycle] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-08-02T21:07:41.566+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-lifecycle-13, groupId=maestro-kafka-lifecycle] Request joining group due to: consumer pro-actively leaving the group
+2026-08-02T21:07:41.566+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.i.ClassicKafkaConsumer         : [Consumer clientId=consumer-maestro-kafka-lifecycle-13, groupId=maestro-kafka-lifecycle] Unsubscribed all topics or patterns and assigned partitions
+2026-08-02T21:07:41.566+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-lifecycle-13, groupId=maestro-kafka-lifecycle] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-08-02T21:07:41.566+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-lifecycle-13, groupId=maestro-kafka-lifecycle] Request joining group due to: consumer pro-actively leaving the group
+2026-08-02T21:07:41.713+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics scheduler closed
+2026-08-02T21:07:41.713+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.metrics.JmxReporter
+2026-08-02T21:07:41.713+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.telemetry.internals.ClientTelemetryReporter
+2026-08-02T21:07:41.713+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics reporters closed
+2026-08-02T21:07:41.714+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.kafka.common.utils.AppInfoParser     : App info kafka.consumer for consumer-maestro-kafka-lifecycle-13 unregistered
+2026-08-02T21:07:41.714+02:00  INFO 8466 --- [anNameSet-0-C-1] o.s.k.l.KafkaMessageListenerContainer    : maestro-kafka-lifecycle: Consumer stopped
+2026-08-02T21:07:41.714+02:00  INFO 8466 --- [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-4 - Shutdown initiated...
+2026-08-02T21:07:41.715+02:00  INFO 8466 --- [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-4 - Shutdown completed.
+2026-08-02T21:07:41.715+02:00  INFO 8466 --- [ionShutdownHook] l.MaestroSignalListenerBeanPostProcessor : Stopping 0 @MaestroSignalListener container(s)
+2026-08-02T21:07:41.715+02:00  INFO 8466 --- [ionShutdownHook] i.b.m.core.engine.WorkflowExecutor       : Shutdown already in progress
+2026-08-02T21:07:41.715+02:00  INFO 8466 --- [ionShutdownHook] i.b.m.m.kafka.KafkaWorkflowMessaging     : Stopping 1 Kafka listener container(s)
+2026-08-02T21:07:41.718+02:00  INFO 8466 --- [anNameSet-0-C-1] k.c.c.i.ConsumerRebalanceListenerInvoker : [Consumer clientId=consumer-maestro-kafka-channel-16, groupId=maestro-kafka-channel] Revoke previously assigned partitions [maestro.signals.kafka-channel-0]
+2026-08-02T21:07:41.718+02:00  INFO 8466 --- [anNameSet-0-C-1] s.k.l.ConcurrentMessageListenerContainer : maestro-kafka-channel: partitions revoked: [maestro.signals.kafka-channel-0]
+2026-08-02T21:07:41.718+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-channel-16, groupId=maestro-kafka-channel] Member consumer-maestro-kafka-channel-16-8a6cb3b4-302e-44fd-9d54-167ab45f6077 sending LeaveGroup request to coordinator localhost:53980 (id: 2147483646 rack: null isFenced: false) due to the consumer unsubscribed from all topics
+2026-08-02T21:07:41.718+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-channel-16, groupId=maestro-kafka-channel] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-08-02T21:07:41.718+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-channel-16, groupId=maestro-kafka-channel] Request joining group due to: consumer pro-actively leaving the group
+2026-08-02T21:07:41.718+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.i.ClassicKafkaConsumer         : [Consumer clientId=consumer-maestro-kafka-channel-16, groupId=maestro-kafka-channel] Unsubscribed all topics or patterns and assigned partitions
+2026-08-02T21:07:41.718+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-channel-16, groupId=maestro-kafka-channel] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-08-02T21:07:41.718+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-channel-16, groupId=maestro-kafka-channel] Request joining group due to: consumer pro-actively leaving the group
+2026-08-02T21:07:41.783+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics scheduler closed
+2026-08-02T21:07:41.783+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.metrics.JmxReporter
+2026-08-02T21:07:41.783+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.telemetry.internals.ClientTelemetryReporter
+2026-08-02T21:07:41.783+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics reporters closed
+2026-08-02T21:07:41.784+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.kafka.common.utils.AppInfoParser     : App info kafka.consumer for consumer-maestro-kafka-channel-16 unregistered
+2026-08-02T21:07:41.784+02:00  INFO 8466 --- [anNameSet-0-C-1] o.s.k.l.KafkaMessageListenerContainer    : maestro-kafka-channel: Consumer stopped
+2026-08-02T21:07:41.784+02:00  INFO 8466 --- [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-5 - Shutdown initiated...
+2026-08-02T21:07:41.784+02:00  INFO 8466 --- [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-5 - Shutdown completed.
+2026-08-02T21:07:41.785+02:00  INFO 8466 --- [ionShutdownHook] l.MaestroSignalListenerBeanPostProcessor : Stopping 0 @MaestroSignalListener container(s)
+2026-08-02T21:07:41.785+02:00  INFO 8466 --- [ionShutdownHook] i.b.m.s.config.GracefulShutdownHandler   : Maestro graceful shutdown initiated
+2026-08-02T21:07:41.786+02:00  INFO 8466 --- [ionShutdownHook] i.b.maestro.core.engine.TimerPoller      : Timer poller stopped
+2026-08-02T21:07:41.786+02:00  INFO 8466 --- [ionShutdownHook] i.b.m.core.engine.WorkflowExecutor       : Shutting down WorkflowExecutor, 0 workflow(s) in-flight
+2026-08-02T21:07:41.787+02:00  INFO 8466 --- [ionShutdownHook] i.b.m.core.engine.WorkflowExecutor       : WorkflowExecutor shutdown complete — all workflows finished
+2026-08-02T21:07:41.788+02:00  INFO 8466 --- [ionShutdownHook] i.b.m.s.config.GracefulShutdownHandler   : Maestro graceful shutdown complete
+2026-08-02T21:07:41.788+02:00  INFO 8466 --- [ionShutdownHook] o.a.k.clients.producer.KafkaProducer     : [Producer clientId=producer-8] Closing the Kafka producer with timeoutMillis = 30000 ms.
+2026-08-02T21:07:41.789+02:00  INFO 8466 --- [ionShutdownHook] o.apache.kafka.common.metrics.Metrics    : Metrics scheduler closed
+2026-08-02T21:07:41.789+02:00  INFO 8466 --- [ionShutdownHook] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.metrics.JmxReporter
+2026-08-02T21:07:41.789+02:00  INFO 8466 --- [ionShutdownHook] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.telemetry.internals.ClientTelemetryReporter
+2026-08-02T21:07:41.789+02:00  INFO 8466 --- [ionShutdownHook] o.apache.kafka.common.metrics.Metrics    : Metrics reporters closed
+2026-08-02T21:07:41.789+02:00  INFO 8466 --- [ionShutdownHook] o.a.kafka.common.utils.AppInfoParser     : App info kafka.producer for producer-8 unregistered
+2026-08-02T21:07:41.789+02:00  INFO 8466 --- [ionShutdownHook] i.b.m.core.engine.WorkflowExecutor       : Shutdown already in progress
+2026-08-02T21:07:41.789+02:00  INFO 8466 --- [ionShutdownHook] i.b.m.m.kafka.KafkaWorkflowMessaging     : Stopping 1 Kafka listener container(s)
+2026-08-02T21:07:41.789+02:00  INFO 8466 --- [anNameSet-0-C-1] k.c.c.i.ConsumerRebalanceListenerInvoker : [Consumer clientId=consumer-maestro-kafka-roundtrip-18, groupId=maestro-kafka-roundtrip] Revoke previously assigned partitions [maestro.signals.kafka-roundtrip-0]
+2026-08-02T21:07:41.789+02:00  INFO 8466 --- [anNameSet-0-C-1] s.k.l.ConcurrentMessageListenerContainer : maestro-kafka-roundtrip: partitions revoked: [maestro.signals.kafka-roundtrip-0]
+2026-08-02T21:07:41.789+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-roundtrip-18, groupId=maestro-kafka-roundtrip] Member consumer-maestro-kafka-roundtrip-18-8098ccce-6b39-4006-878d-bd63363510bf sending LeaveGroup request to coordinator localhost:53980 (id: 2147483646 rack: null isFenced: false) due to the consumer unsubscribed from all topics
+2026-08-02T21:07:41.789+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-roundtrip-18, groupId=maestro-kafka-roundtrip] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-08-02T21:07:41.789+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-roundtrip-18, groupId=maestro-kafka-roundtrip] Request joining group due to: consumer pro-actively leaving the group
+2026-08-02T21:07:41.789+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.i.ClassicKafkaConsumer         : [Consumer clientId=consumer-maestro-kafka-roundtrip-18, groupId=maestro-kafka-roundtrip] Unsubscribed all topics or patterns and assigned partitions
+2026-08-02T21:07:41.790+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-roundtrip-18, groupId=maestro-kafka-roundtrip] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-08-02T21:07:41.790+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-roundtrip-18, groupId=maestro-kafka-roundtrip] Request joining group due to: consumer pro-actively leaving the group
+2026-08-02T21:07:41.905+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics scheduler closed
+2026-08-02T21:07:41.905+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.metrics.JmxReporter
+2026-08-02T21:07:41.905+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.telemetry.internals.ClientTelemetryReporter
+2026-08-02T21:07:41.905+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics reporters closed
+2026-08-02T21:07:41.906+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.kafka.common.utils.AppInfoParser     : App info kafka.consumer for consumer-maestro-kafka-roundtrip-18 unregistered
+2026-08-02T21:07:41.906+02:00  INFO 8466 --- [anNameSet-0-C-1] o.s.k.l.KafkaMessageListenerContainer    : maestro-kafka-roundtrip: Consumer stopped
+2026-08-02T21:07:41.906+02:00  INFO 8466 --- [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-6 - Shutdown initiated...
+2026-08-02T21:07:41.906+02:00  INFO 8466 --- [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-6 - Shutdown completed.
+2026-08-02T21:07:41.906+02:00  INFO 8466 --- [ionShutdownHook] l.MaestroSignalListenerBeanPostProcessor : Stopping 1 @MaestroSignalListener container(s)
+2026-08-02T21:07:41.907+02:00  INFO 8466 --- [anNameSet-0-C-1] k.c.c.i.ConsumerRebalanceListenerInvoker : [Consumer clientId=consumer-maestro-kafka-roundtrip-17, groupId=maestro-kafka-roundtrip] Revoke previously assigned partitions [it.roundtrip.approvals-0]
+2026-08-02T21:07:41.907+02:00  INFO 8466 --- [anNameSet-0-C-1] s.k.l.ConcurrentMessageListenerContainer : maestro-kafka-roundtrip: partitions revoked: [it.roundtrip.approvals-0]
+2026-08-02T21:07:41.907+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-roundtrip-17, groupId=maestro-kafka-roundtrip] Member consumer-maestro-kafka-roundtrip-17-128cdd55-b5e7-4df9-8bc4-4e9674ad73b6 sending LeaveGroup request to coordinator localhost:53980 (id: 2147483646 rack: null isFenced: false) due to the consumer unsubscribed from all topics
+2026-08-02T21:07:41.907+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-roundtrip-17, groupId=maestro-kafka-roundtrip] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-08-02T21:07:41.907+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-roundtrip-17, groupId=maestro-kafka-roundtrip] Request joining group due to: consumer pro-actively leaving the group
+2026-08-02T21:07:41.907+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.i.ClassicKafkaConsumer         : [Consumer clientId=consumer-maestro-kafka-roundtrip-17, groupId=maestro-kafka-roundtrip] Unsubscribed all topics or patterns and assigned partitions
+2026-08-02T21:07:41.907+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-roundtrip-17, groupId=maestro-kafka-roundtrip] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-08-02T21:07:41.907+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-roundtrip-17, groupId=maestro-kafka-roundtrip] Request joining group due to: consumer pro-actively leaving the group
+2026-08-02T21:07:42.412+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics scheduler closed
+2026-08-02T21:07:42.412+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.metrics.JmxReporter
+2026-08-02T21:07:42.412+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.telemetry.internals.ClientTelemetryReporter
+2026-08-02T21:07:42.412+02:00  INFO 8466 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics reporters closed
+2026-08-02T21:07:42.413+02:00  INFO 8466 --- [anNameSet-0-C-1] o.a.kafka.common.utils.AppInfoParser     : App info kafka.consumer for consumer-maestro-kafka-roundtrip-17 unregistered
+2026-08-02T21:07:42.413+02:00  INFO 8466 --- [anNameSet-0-C-1] o.s.k.l.KafkaMessageListenerContainer    : maestro-kafka-roundtrip: Consumer stopped
+
+> Task :maestro-integration-tests:check
+> Task :maestro-integration-tests:build
+
+[Incubating] Problems report is available at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/build/reports/problems/problems-report.html
+
+BUILD SUCCESSFUL in 1m 56s
+134 actionable tasks: 134 executed
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.2.0/userguide/configuration_cache_enabling.html
+exit-code: 0

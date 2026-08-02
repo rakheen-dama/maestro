@@ -1027,21 +1027,20 @@ A parallel fan-out leaves no unclosed segment and no orphan parent > a fork-firs
 org.opentest4j.AssertionFailedError: a parking branch opened a segment nothing closed; orphaned spans: [maestro.activity(parent=43137248a0659e20)] ==> expected: <true> but was: <false>
 ```
 
-### Corrected blast radius (replacing fix round 1's wrong description)
+### Corrected blast radius — **this paragraph was wrong twice; see Fix round 3**
 
-Fix round 1 got this wrong in both directions.
+Fix round 1 described the trade-off wrongly, and this round's replacement was
+*also* wrong: it claimed the latch bites only when the first live
+`activityStarted` on a thread sits at seq ≥ 1000 (recovery replaying 1000+
+steps). That is not true. After a join the engine advances the main sequence past
+the branch spaces, so **every** main line following any `parallel()` runs at
+seq ≥ 2000 and latched as a branch — the sequence latch broke every
+fork-then-park workflow, not a rare recovery case. Fix round 3 removes the
+sequence number from the classification decision entirely; the accurate statement
+lives there.
 
-- **Narrower than stated:** the long-main-line cost does *not* apply to any run
-  exceeding 999 steps. `activityStarted` only latches the thread when it sees
-  `sequenceNumber >= 1000`; a segment already open keeps adopting activities as
-  their parent regardless. It bites only when the first live `activityStarted` on
-  a thread is already at seq ≥ 1000 — in practice, recovery replaying 1000+
-  memoized steps and then running live. For such a run the thread latches as a
-  branch: the open segment (if any) keeps adopting until the next park closes it,
-  after which no further segment opens on that thread, its activity spans become
-  roots and its span events are dropped.
-- **Wider than stated:** the fork-first *parking* branch was not a residual at
-  all — it was the unfixed defect, and is what this round closes.
+The one part of this paragraph that was right: the fork-first *parking* branch
+was not a residual but the unfixed defect, and this round closed it.
 
 ## 2. F1 residual — a guard at the persistence layer
 
@@ -1155,3 +1154,141 @@ returns `0` for `TracingEngineObserver.java` and `SignalManager.java`.
    fixture; it is an engine limitation entirely separate from tracing, is not
    something this task introduced, and is recorded here only so it is not
    rediscovered as a tracing bug.
+
+---
+
+# Fix round 3
+
+**Status: COMPLETE**
+
+pwd: `/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening`
+branch: `worktree-release-hardening`
+HEAD before this round: `249904c`
+Implementation commit: `008d8eb`; this report + evidence commit follows.
+
+One item: fix round 2's branch latch was a regression. Evidence archived:
+`task-5-fix3-red.log`, `task-5-fix3-green-starter.log`,
+`task-5-fix3-green-integration.log`, `task-5-fix3-verify.log`,
+`task-5-fix3-build.log`.
+
+## The regression, reproduced independently
+
+`DefaultWorkflowOperations:618` advances the main thread's sequence past the
+branch spaces after a join:
+
+```java
+var nextParentSeq = parentSeq * BRANCH_MULTIPLIER + (branchCount + 1) * BRANCH_MULTIPLIER;
+ctx.setSequence(nextParentSeq);
+```
+
+So every main line following *any* `parallel()` runs at seq ≥ 2000. Fix round 2
+latched `branchThread = true` on any `activityStarted` at seq ≥ 1000 — which
+meant the **main workflow thread** of every fork-then-park workflow was
+permanently misclassified as a branch and stopped opening segments, dropping the
+rest of the run into a separate trace.
+
+I reproduced it before fixing, with the reviewer's probe shape as a unit pin
+(`evidence/task-5-fix3-red.log`, 1 of 20 failing):
+
+```
+TracingEngineObserver builds the design §3.2 span topology > a main thread that forks keeps its segments across the join and later parks — post-join sequence numbers must not classify it as a branch FAILED
+...
+org.opentest4j.AssertionFailedError: the whole run must stay in one trace; a main thread misclassified as a branch stops opening segments and its later work starts a new trace. Trace ids were [29f5f21ef3bfdc26f62c76d6529fcc4d, 4cbbb74c24300c50a1a93a18b4c5a8b1] ==> expected: <1> but was: <2>
+```
+
+Two trace IDs where there must be one — the reviewer's finding, confirmed
+independently rather than taken on trust.
+
+## The fix — classification keyed off fork-point ownership
+
+The invariant to hold was: *a thread that owns the fork must keep its segment
+across joins and subsequent parks; only genuine branch threads are gated.* The
+sequence number cannot express that, because the main line reaches the same
+range. `isBranchThread` now decides in strict order of confidence:
+
+1. **Inherited fork point** (`ownerThreadId != this thread`) — the thread was
+   created by a thread that had an open segment. Definitively a branch.
+2. **Own fork point** — the thread has opened a segment itself. Definitively the
+   main run thread, and it *stays* main across joins and every later park however
+   high its sequence numbers climb. Any latch a post-join sequence set is cleared
+   here. This is the case round 2 destroyed.
+3. **Neither** — nothing observable has happened on any thread yet, i.e. a
+   workflow whose very first statement is `parallel()`. Only here does the
+   sequence-derived latch get a vote.
+
+The latch is additionally never *set* on a thread that already owns its fork
+point, so the ambiguous case is the only one it can ever influence.
+
+Why the fork-first pin from round 2 still passes: such a branch never opens a
+segment, so it owns no fork point and falls to case 3, where the latch still
+gates it. Both behaviours now coexist, which the sequence-only rule could not
+achieve.
+
+Chose this over the reviewer's other suggested shape (reset the latch on
+park/unpark for a fork-point owner) because it removes the ambiguity at the
+source rather than papering over it at two more call sites: ownership is a fact
+the adapter already records, whereas "reset on park" would still leave a
+mis-latched thread wrong until its next park.
+
+## Residual, stated accurately this time
+
+One shape remains ambiguous and is documented rather than guessed at: a workflow
+whose **first** statement is `parallel()` *and* which then does main-line work
+after the join. That main thread owns no fork point (it never opened a segment
+before forking) and its post-join activities sit at seq ≥ 2000, so case 3 latches
+it as a branch and it opens no segments — its activity spans become roots and its
+span events are dropped. Nothing is orphaned and no span leaks; the run is simply
+flatter. Closing this needs the fork/join observation boundary already listed as
+post-1.0 work (known limitation 4), because no fact available to the adapter
+distinguishes that thread from a branch.
+
+This is the third time this paragraph has been restated. The two earlier versions
+are marked **CORRECTED** in place above rather than deleted, so the record shows
+what was believed when.
+
+## Verification
+
+Required command (`evidence/task-5-fix3-verify.log`):
+
+```
+$ ./gradlew :maestro-core:test :maestro-spring-boot-starter:test :maestro-messaging-kafka:test :maestro-store-postgres:test :maestro-integration-tests:test --rerun-tasks
+
+BUILD SUCCESSFUL in 1m 50s
+44 actionable tasks: 44 executed
+```
+
+Per-module totals appended to that log:
+
+```
+maestro-core: tests=334 failures=0 errors=0 skipped=0
+maestro-spring-boot-starter: tests=104 failures=0 errors=0 skipped=0
+maestro-messaging-kafka: tests=39 failures=0 errors=0 skipped=0
+maestro-store-postgres: tests=57 failures=0 errors=0 skipped=0
+maestro-integration-tests: tests=100 failures=0 errors=0 skipped=0
+```
+
+Full build (`evidence/task-5-fix3-build.log`):
+
+```
+BUILD SUCCESSFUL in 1m 56s
+134 actionable tasks: 134 executed
+```
+
+Net new tests this round: **1** (starter 103 → 104). Task 5 total: **65**.
+No temporary patches were used this round — the RED ran against the unfixed HEAD
+directly, so there was nothing to revert; `grep -c "TEMPORARY RED"` on
+`TracingEngineObserver.java` returns `0`.
+
+## Concerns after this round
+
+1. **Three of this task's pins first passed against broken code** (two in round
+   2, and round 2's F2 gate itself shipped a regression a pin did not catch).
+   The pattern in all three: I asserted the *absence* of a symptom without first
+   confirming the assertion could observe it. Running every new pin against the
+   unfixed code before fixing — done from round 3's start — is what caught this
+   one, and is the discipline I should have applied from the beginning.
+2. The residual above is the only known classification gap, and it degrades to a
+   flatter trace rather than to leaked or orphaned spans.
+3. Unchanged from round 2: `docs/observability.md` still owes RULING 8's note,
+   the `maestro.observability.*` properties, and the four known limitations —
+   all Task 8's.
