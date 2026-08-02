@@ -385,6 +385,60 @@ class TracingEngineObserverTest {
                         + "which both pin version 00");
     }
 
+    /**
+     * Fix round 3. The branch latch was keyed off a sequence number the MAIN
+     * line legitimately reaches: after a join,
+     * {@code DefaultWorkflowOperations} sets the parent sequence to
+     * {@code parentSeq * 1000 + (branchCount + 1) * 1000}, so every main line
+     * that follows any {@code parallel()} runs at seq ≥ 2000. The main workflow
+     * thread therefore latched as a branch and stopped opening segments for the
+     * rest of the run — its later work fell out of the trace entirely.
+     *
+     * <p>This is the reviewer's probe shape: a workflow that forks, then keeps
+     * parking on the main thread with post-join sequence numbers.
+     */
+    @Test
+    @DisplayName("a main thread that forks keeps its segments across the join and later parks — "
+            + "post-join sequence numbers must not classify it as a branch")
+    void mainThreadKeepsSegmentsAcrossJoinAndLaterParks() {
+        // Pre-fork main-line work.
+        observer.activityStarted(CHARGE);
+        observer.activityCompleted(CHARGE, Duration.ofMillis(1), false);
+        observer.workflowParked(WORKFLOW, ParkKind.TIMER);
+        observer.workflowUnparked(WORKFLOW, ParkKind.TIMER);
+
+        // Post-join main-line work: parallel() advanced the main sequence past
+        // the branch spaces, so these are ordinary main-thread activities that
+        // merely happen to sit at a high sequence number.
+        var postJoin = new ActivityInfo("order-1", "OrderWorkflow", "payment.settle", 4001);
+        observer.activityStarted(postJoin);
+        observer.activityCompleted(postJoin, Duration.ofMillis(1), false);
+        observer.workflowParked(WORKFLOW, ParkKind.TIMER);
+        observer.workflowUnparked(WORKFLOW, ParkKind.TIMER);
+
+        var last = new ActivityInfo("order-1", "OrderWorkflow", "payment.confirm", 4002);
+        observer.activityStarted(last);
+        observer.activityCompleted(last, Duration.ofMillis(1), false);
+        observer.workflowCompleted(WORKFLOW);
+
+        var traceIds = otel.finishedSpans().stream().map(sp -> sp.getTraceId()).distinct().toList();
+        assertEquals(1, traceIds.size(),
+                () -> "the whole run must stay in one trace; a main thread misclassified as a "
+                        + "branch stops opening segments and its later work starts a new trace. "
+                        + "Trace ids were " + traceIds);
+
+        var detachedActivities = otel.spansNamed(ACTIVITY).stream()
+                .filter(sp -> !sp.getParentSpanContext().isValid())
+                .toList();
+        assertTrue(detachedActivities.isEmpty(),
+                () -> "no main-line activity may export as a detached root; detached: "
+                        + detachedActivities.stream()
+                        .map(sp -> OtelTracingFixture.attribute(sp, "maestro.activity.name")).toList());
+
+        assertEquals(3, otel.spansNamed(SEGMENT).size(),
+                "one run segment per live stretch between parks");
+    }
+
     // ── Run abandonment (design §11, RULING 5) ────────────────────────
 
     @Test

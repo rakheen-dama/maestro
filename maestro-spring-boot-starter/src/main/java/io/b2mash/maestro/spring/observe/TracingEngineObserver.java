@@ -292,12 +292,21 @@ public final class TracingEngineObserver implements EngineObserver {
     public void activityStarted(ActivityInfo a) {
         safely("activityStarted", () -> {
             var s = state.get();
-            if (a.sequenceNumber() >= BRANCH_SEQUENCE_BASE) {
-                // Sticky: this is the only callback that carries a sequence
-                // number, so once it has identified the thread as a branch the
-                // verdict must outlive it — a branch that later sleeps or awaits
-                // a signal reaches ensureSegment through callbacks that carry no
-                // sequence at all.
+            if (a.sequenceNumber() >= BRANCH_SEQUENCE_BASE && !ownsForkPoint()) {
+                // Sticky, because this is the only callback carrying a sequence
+                // number: a branch that later sleeps or awaits a signal reaches
+                // ensureSegment through callbacks that carry none.
+                //
+                // Guarded by !ownsForkPoint(), and that guard is load-bearing.
+                // A high sequence number does NOT mean "branch": after a join
+                // DefaultWorkflowOperations advances the parent sequence to
+                // parentSeq*1000 + (branchCount+1)*1000, so every main line
+                // following any parallel() runs at seq >= 2000. Latching on the
+                // sequence alone therefore misclassified the main workflow
+                // thread of every fork-then-park workflow, which then stopped
+                // opening segments and dropped the rest of its run into a
+                // separate trace. A thread that has opened a segment owns its
+                // fork point and is main, whatever its sequence numbers say.
                 s.branchThread = true;
             }
             ensureSegment(a.workflowId(), a.workflowType(), serviceName, null);
@@ -484,19 +493,43 @@ public final class TracingEngineObserver implements EngineObserver {
     }
 
     /**
+     * Classifies the calling thread, in strict order of confidence.
+     *
+     * <ol>
+     *   <li><b>Inherited fork point</b> — this thread was created by a thread
+     *       that had an open segment. Definitively a branch.</li>
+     *   <li><b>Own fork point</b> — this thread has opened a segment itself.
+     *       Definitively the main run thread, and it stays that way across joins
+     *       and every subsequent park, no matter how high its sequence numbers
+     *       climb. This is the case the sequence latch used to destroy.</li>
+     *   <li><b>Neither</b> — nothing observable has happened on this thread yet
+     *       (a workflow whose very first statement is {@code parallel()}). Only
+     *       here does the sequence-derived latch get a vote.</li>
+     * </ol>
+     *
      * @param s this thread's span state
-     * @return whether this thread is a parallel branch, latching the verdict once
-     *         either detector has fired
+     * @return whether this thread is a parallel branch
      */
     private boolean isBranchThread(RunState s) {
-        if (s.branchThread) {
-            return true;
-        }
         if (inheritedForkParent() != null) {
             s.branchThread = true;
             return true;
         }
-        return false;
+        if (ownsForkPoint()) {
+            // Definitively main: clear any latch a post-join sequence set.
+            s.branchThread = false;
+            return false;
+        }
+        return s.branchThread;
+    }
+
+    /**
+     * @return whether this thread has published its own fork point, i.e. has
+     *         opened a run segment and is therefore the run's main thread
+     */
+    private boolean ownsForkPoint() {
+        var fp = forkPoint.get();
+        return fp != null && fp.ownerThreadId() == Thread.currentThread().threadId();
     }
 
     /**
