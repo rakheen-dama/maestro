@@ -1565,3 +1565,51 @@ are segment tags with last-write-wins semantics, not per-event attributes.
 Test-scope-only catalog additions (`spring-boot-micrometer-tracing`,
 `spring-boot-micrometer-tracing-opentelemetry`) are approved; no new
 production dependency, `maestro-core` unchanged.
+
+## 12. Coordinator ruling — Task 7 (widening the payload guard)
+
+**RULING 9 (amends §6.3's scope) — APPROVED.** §6.3 scoped the payload
+guard to the replay caller. The Task 7 review established that this is too
+narrow, and that the gap is reachable with NO author error, purely from the
+engine's own normal tolerated state (best-effort locks, TTL expiry):
+
+> an old node reads sequence N empty, executes live, and loses the append
+> race to a newer node whose event at N is a type this build does not
+> define; the old node then deserializes a foreign payload as the
+> activity's return type — yielding either a `SerializationException`
+> caught as a workflow failure (**FAILED + full compensation**) or a
+> silently wrong memoized value.
+
+That is exactly the catastrophe stand-down exists to prevent, arriving
+through a different door. The guard therefore applies to **every path that
+deserializes a persisted payload it did not itself just write**, not only
+the replay caller:
+
+1. `ActivityInvocationHandler` — the duplicate-adopt branch must check the
+   winner's type AND payload before adopting (`appendEventSafe` /
+   `executeLive`).
+2. `WorkflowExecutor` — the persisted workflow input, deserialized on every
+   recovery run.
+3. `SignalManager` — the persisted signal payload.
+
+Rationale for including 2 and 3, which the review rated Minor on
+reachability grounds: this release's headline claim is that mixed-version
+deploys are safe. Leaving known paths where a newer node's payload makes an
+older node record FAILED and run compensations would make that claim false
+in exactly the scenario it advertises. The guard is the same two lines at
+each site.
+
+**RULING 10 — APPROVED.** `AbstractJdbcWorkflowStore`'s
+`WorkflowStatus.valueOf` in the recoverable-instances query must not throw:
+an unknown status written by a newer node currently aborts the **entire
+recovery pass** for every workflow on the older node — a strictly wider
+blast radius than the per-workflow event case §6 addresses. Make the status
+mapping total: an unrecognised status causes that ONE instance to be
+skipped with a WARN carrying the raw string, and the pass continues.
+
+Both rulings are Task 7's work. Task 8 additionally owes the operator
+wording the review identified: a rising
+`maestro.standdown{reason=unknown_event_payload}` on a fleet known to be
+homogeneous means "an incompatible payload change needs `workflow.version()`",
+NOT "wait for the deploy to finish" — otherwise the new stand-down
+behaviour turns a visible failure into a silent zombie.
