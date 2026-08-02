@@ -10,6 +10,8 @@ import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.EngineObserver;
+import io.b2mash.maestro.core.observe.WorkflowInfo;
 import io.b2mash.maestro.core.spi.LifecycleEventType;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
@@ -79,9 +81,10 @@ public final class SagaManager {
     private final @Nullable WorkflowMessaging messaging;
     private final PayloadSerializer serializer;
     private final String serviceName;
+    private final EngineObserver observer;
 
     /**
-     * Creates a new SagaManager.
+     * Creates a new SagaManager with no observation.
      *
      * @param store       workflow store for persistence
      * @param messaging   optional messaging for lifecycle events
@@ -94,10 +97,33 @@ public final class SagaManager {
             PayloadSerializer serializer,
             String serviceName
     ) {
+        this(store, messaging, serializer, serviceName, EngineObserver.NOOP);
+    }
+
+    /**
+     * Creates a new SagaManager with an {@link EngineObserver}.
+     *
+     * @param store       workflow store for persistence
+     * @param messaging   optional messaging for lifecycle events
+     * @param serializer  Jackson serializer for event payloads
+     * @param serviceName the owning service name
+     * @param observer    engine observation seam — fires
+     *                    {@code workflowCompensating} when a live (non-replay)
+     *                    compensation phase starts; never {@code null} (pass
+     *                    {@link EngineObserver#NOOP})
+     */
+    public SagaManager(
+            WorkflowStore store,
+            @Nullable WorkflowMessaging messaging,
+            PayloadSerializer serializer,
+            String serviceName,
+            EngineObserver observer
+    ) {
         this.store = store;
         this.messaging = messaging;
         this.serializer = serializer;
         this.serviceName = serviceName;
+        this.observer = observer;
     }
 
     /**

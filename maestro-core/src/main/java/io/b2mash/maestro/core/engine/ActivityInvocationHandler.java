@@ -7,6 +7,8 @@ import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.SerializationException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
+import io.b2mash.maestro.core.observe.ActivityInfo;
+import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.retry.RetryExecutor;
 import io.b2mash.maestro.core.retry.RetryPolicy;
 import io.b2mash.maestro.core.spi.DistributedLock;
@@ -76,6 +78,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     private final PayloadSerializer serializer;
     private final RetryExecutor retryExecutor;
     private final String lockKeyPrefix;
+    private final EngineObserver observer;
 
     /**
      * Creates a new handler with the default lock key prefix
@@ -136,6 +139,46 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             RetryExecutor retryExecutor,
             String lockKeyPrefix
     ) {
+        this(activityImpl, activityName, store, distributedLock, messaging, retryPolicy,
+                startToCloseTimeout, serializer, retryExecutor, lockKeyPrefix,
+                EngineObserver.NOOP);
+    }
+
+    /**
+     * Creates a new handler with an explicit lock key prefix and an
+     * {@link EngineObserver}.
+     *
+     * @param activityImpl        the real activity implementation to delegate to
+     * @param activityName        the activity group name (for step name prefix)
+     * @param store               the workflow store for memoization lookups and event persistence
+     * @param distributedLock     optional distributed lock for dedup optimization
+     * @param messaging           optional messaging for lifecycle event publishing
+     * @param retryPolicy         retry policy for failed activity invocations
+     * @param startToCloseTimeout timeout used as lock TTL hint
+     * @param serializer          Jackson serializer for payloads
+     * @param retryExecutor       retry executor for live activity invocations
+     * @param lockKeyPrefix       prefix for the per-activity distributed lock key
+     *                            (e.g. {@code maestro:lock:})
+     * @param observer            engine observation seam — fires
+     *                            {@code activityStarted} (live only) and
+     *                            {@code activityCompleted}/{@code activityFailed}
+     *                            (live and replay, with the {@code replayed}
+     *                            flag); never {@code null} (pass
+     *                            {@link EngineObserver#NOOP})
+     */
+    public ActivityInvocationHandler(
+            Object activityImpl,
+            String activityName,
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            @Nullable WorkflowMessaging messaging,
+            RetryPolicy retryPolicy,
+            Duration startToCloseTimeout,
+            PayloadSerializer serializer,
+            RetryExecutor retryExecutor,
+            String lockKeyPrefix,
+            EngineObserver observer
+    ) {
         this.activityImpl = activityImpl;
         this.activityName = activityName;
         this.store = store;
@@ -146,6 +189,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         this.serializer = serializer;
         this.retryExecutor = retryExecutor;
         this.lockKeyPrefix = lockKeyPrefix;
+        this.observer = observer;
     }
 
     @Override

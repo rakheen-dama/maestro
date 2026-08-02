@@ -17,6 +17,9 @@ import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.EngineObserver;
+import io.b2mash.maestro.core.observe.StandDownReason;
+import io.b2mash.maestro.core.observe.WorkflowInfo;
 import io.b2mash.maestro.core.saga.CompensationStack;
 import io.b2mash.maestro.core.saga.SagaManager;
 import io.b2mash.maestro.core.spi.DistributedLock;
@@ -112,6 +115,7 @@ public final class WorkflowExecutor {
     private final boolean lifecycleEventsEnabled;
     private final Duration shutdownTimeout;
     private final Duration wakeRecheckInterval;
+    private final EngineObserver observer;
     private final LifecycleEventPublisher lifecycleEventPublisher;
     private final ConcurrentHashMap<String, RunningWorkflow> runningWorkflows;
     private final AtomicBoolean shuttingDown;
@@ -261,6 +265,64 @@ public final class WorkflowExecutor {
             Duration shutdownTimeout,
             Duration wakeRecheckInterval
     ) {
+        this(store, distributedLock, messaging, signalNotifier, serializer, serviceName,
+                lockKeyPrefix, instanceLockTtl, lifecycleEventsEnabled,
+                shutdownTimeout, wakeRecheckInterval, EngineObserver.NOOP);
+    }
+
+    /**
+     * Creates a new workflow executor with explicit lock configuration,
+     * explicit control over lifecycle event publishing, explicit
+     * shutdown/signal timing, and an {@link EngineObserver}.
+     *
+     * @param store                  workflow store for persistence
+     * @param distributedLock        optional distributed lock backend
+     * @param messaging              optional messaging for lifecycle events
+     * @param signalNotifier         optional cross-instance signal notification
+     * @param serializer             Jackson serializer for payloads
+     * @param serviceName            the name of the owning service
+     * @param lockKeyPrefix          prefix for distributed lock keys (e.g. {@code maestro:lock:})
+     * @param instanceLockTtl        TTL for the per-workflow instance lock; renewed
+     *                               at one third of this interval — must be strictly
+     *                               positive
+     * @param lifecycleEventsEnabled whether {@code WORKFLOW_STARTED}/{@code _COMPLETED}/
+     *                               {@code _FAILED} lifecycle events are published at all
+     *                               (independent of whether {@code messaging} is configured).
+     *                               Corresponds to {@code maestro.admin.events.enabled} in the
+     *                               Spring Boot starter.
+     * @param shutdownTimeout        how long {@link #shutdown()} waits for in-flight
+     *                               workflows to drain before returning — must be strictly
+     *                               positive. Corresponds to {@code maestro.shutdown.timeout}.
+     * @param wakeRecheckInterval    how often a parked {@code awaitSignal()} or
+     *                               {@code sleep()} re-checks the store for a wake that
+     *                               happened without a local unpark — must be strictly
+     *                               positive. Corresponds to
+     *                               {@code maestro.signal.wake-recheck-interval}.
+     * @param observer               engine observation seam invoked synchronously at
+     *                               execution boundaries and handed to every component
+     *                               this executor builds; pass
+     *                               {@link EngineObserver#NOOP} (never {@code null})
+     *                               when no observation is wanted — see
+     *                               {@link EngineObserver} for the callback and
+     *                               thread-safety contract
+     * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
+     *                                  or {@code wakeRecheckInterval} is {@code null}, zero,
+     *                                  or negative
+     */
+    public WorkflowExecutor(
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            @Nullable WorkflowMessaging messaging,
+            @Nullable SignalNotifier signalNotifier,
+            PayloadSerializer serializer,
+            String serviceName,
+            String lockKeyPrefix,
+            Duration instanceLockTtl,
+            boolean lifecycleEventsEnabled,
+            Duration shutdownTimeout,
+            Duration wakeRecheckInterval,
+            EngineObserver observer
+    ) {
         if (instanceLockTtl == null || instanceLockTtl.isNegative() || instanceLockTtl.isZero()) {
             throw new IllegalArgumentException(
                     "instanceLockTtl must be positive, got " + instanceLockTtl);
@@ -275,6 +337,7 @@ public final class WorkflowExecutor {
         }
         this.store = store;
         this.distributedLock = distributedLock;
+        this.observer = observer;
         // Wrapped once, here, and handed to every component this executor builds
         // (SignalManager, SagaManager, DefaultWorkflowOperations below) so the
         // enabled flag is honoured by every lifecycle-event publisher this
@@ -287,11 +350,12 @@ public final class WorkflowExecutor {
         this.serviceName = serviceName;
         this.parkingLot = new ParkingLot();
         this.signalManager = new SignalManager(
-                store, this.messaging, signalNotifier, serializer, parkingLot, wakeRecheckInterval);
-        this.sagaManager = new SagaManager(store, this.messaging, serializer, serviceName);
+                store, this.messaging, signalNotifier, serializer, parkingLot, wakeRecheckInterval,
+                observer);
+        this.sagaManager = new SagaManager(store, this.messaging, serializer, serviceName, observer);
         this.instanceLockManager = new WorkflowInstanceLockManager(
                 distributedLock, serviceName, lockKeyPrefix, instanceLockTtl,
-                instanceLockTtl.dividedBy(3));
+                instanceLockTtl.dividedBy(3), observer);
         this.queryRegistry = new QueryRegistry();
         this.lifecycleEventsEnabled = lifecycleEventsEnabled;
         this.shutdownTimeout = shutdownTimeout;
@@ -1262,7 +1326,7 @@ public final class WorkflowExecutor {
         var compensationStack = new CompensationStack();
         var operations = new DefaultWorkflowOperations(
                 store, distributedLock, messaging, serializer, parkingLot, compensationStack,
-                signalManager, wakeRecheckInterval);
+                signalManager, wakeRecheckInterval, observer);
 
         var ctx = new WorkflowContext(
                 instance.id(),

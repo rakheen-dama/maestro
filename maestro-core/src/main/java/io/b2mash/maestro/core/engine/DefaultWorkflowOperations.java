@@ -11,6 +11,10 @@ import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.model.TimerStatus;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.EngineObserver;
+import io.b2mash.maestro.core.observe.ParkKind;
+import io.b2mash.maestro.core.observe.TimerInfo;
+import io.b2mash.maestro.core.observe.WorkflowInfo;
 import io.b2mash.maestro.core.retry.RetryUntilOptions;
 import io.b2mash.maestro.core.saga.CompensationStack;
 import io.b2mash.maestro.core.spi.DistributedLock;
@@ -74,6 +78,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
     private final CompensationStack compensationStack;
     private final SignalManager signalManager;
     private final Duration wakeRecheckInterval;
+    private final EngineObserver observer;
 
     /**
      * Creates workflow operations with the default wake re-check interval
@@ -127,6 +132,40 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             SignalManager signalManager,
             Duration wakeRecheckInterval
     ) {
+        this(store, distributedLock, messaging, serializer, parkingLot, compensationStack,
+                signalManager, wakeRecheckInterval, EngineObserver.NOOP);
+    }
+
+    /**
+     * Creates workflow operations with an explicit wake re-check interval and
+     * an {@link EngineObserver}.
+     *
+     * @param store               workflow store for event persistence and signal management
+     * @param distributedLock     optional distributed lock backend
+     * @param messaging           optional messaging for lifecycle event publishing
+     * @param serializer          Jackson serializer for payloads
+     * @param parkingLot          virtual thread parking mechanism
+     * @param compensationStack   LIFO compensation stack (shared with WorkflowExecutor)
+     * @param signalManager       signal lifecycle manager for await/consume operations
+     * @param wakeRecheckInterval how often a live {@link #sleep(Duration)} park
+     *                            re-reads the durable timer row for a fire or
+     *                            cancel that happened on another node
+     * @param observer            engine observation seam — fires
+     *                            {@code timerScheduled}/{@code Fired}/{@code Cancelled}
+     *                            and {@code workflowParked}/{@code workflowUnparked(TIMER)};
+     *                            never {@code null} (pass {@link EngineObserver#NOOP})
+     */
+    public DefaultWorkflowOperations(
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            @Nullable WorkflowMessaging messaging,
+            PayloadSerializer serializer,
+            ParkingLot parkingLot,
+            CompensationStack compensationStack,
+            SignalManager signalManager,
+            Duration wakeRecheckInterval,
+            EngineObserver observer
+    ) {
         this.store = store;
         this.distributedLock = distributedLock;
         this.messaging = messaging;
@@ -135,6 +174,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         this.compensationStack = compensationStack;
         this.signalManager = signalManager;
         this.wakeRecheckInterval = wakeRecheckInterval;
+        this.observer = observer;
     }
 
     // ── sleep ──────────────────────────────────────────────────────────

@@ -7,6 +7,10 @@ import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.EngineObserver;
+import io.b2mash.maestro.core.observe.ParkKind;
+import io.b2mash.maestro.core.observe.SignalInfo;
+import io.b2mash.maestro.core.observe.WorkflowInfo;
 import io.b2mash.maestro.core.spi.LifecycleEventType;
 import io.b2mash.maestro.core.spi.SignalNotifier;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
@@ -87,6 +91,7 @@ final class SignalManager {
     private final PayloadSerializer serializer;
     private final ParkingLot parkingLot;
     private final Duration wakeRecheckInterval;
+    private final EngineObserver observer;
 
     /**
      * Ref-counted cross-instance wake subscriptions, keyed by workflow ID.
@@ -137,12 +142,35 @@ final class SignalManager {
             ParkingLot parkingLot,
             Duration wakeRecheckInterval
     ) {
+        this(store, messaging, signalNotifier, serializer, parkingLot, wakeRecheckInterval,
+                EngineObserver.NOOP);
+    }
+
+    /**
+     * Creates a new signal manager with a custom wake re-check interval and
+     * an {@link EngineObserver}.
+     *
+     * @param observer engine observation seam — fires {@code signalPersisted},
+     *                 {@code signalConsumed} and {@code workflowParked}/
+     *                 {@code workflowUnparked(SIGNAL)}; never {@code null}
+     *                 (pass {@link EngineObserver#NOOP})
+     */
+    SignalManager(
+            WorkflowStore store,
+            @Nullable WorkflowMessaging messaging,
+            @Nullable SignalNotifier signalNotifier,
+            PayloadSerializer serializer,
+            ParkingLot parkingLot,
+            Duration wakeRecheckInterval,
+            EngineObserver observer
+    ) {
         this.store = store;
         this.messaging = messaging;
         this.signalNotifier = signalNotifier;
         this.serializer = serializer;
         this.parkingLot = parkingLot;
         this.wakeRecheckInterval = wakeRecheckInterval;
+        this.observer = observer;
     }
 
     // ── Delivery ────────────────────────────────────────────────────────

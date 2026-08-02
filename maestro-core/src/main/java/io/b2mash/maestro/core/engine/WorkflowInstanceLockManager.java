@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
 import org.jspecify.annotations.Nullable;
@@ -58,6 +59,7 @@ final class WorkflowInstanceLockManager {
     private final String keyPrefix;
     private final Duration ttl;
     private final Duration renewInterval;
+    private final EngineObserver observer;
     private final ConcurrentHashMap<String, LockHandle> heldLocks = new ConcurrentHashMap<>();
     private final AtomicBoolean renewerStarted = new AtomicBoolean(false);
     private final AtomicBoolean closed = new AtomicBoolean(false);
@@ -83,6 +85,25 @@ final class WorkflowInstanceLockManager {
             Duration ttl,
             Duration renewInterval
     ) {
+        this(distributedLock, serviceName, keyPrefix, ttl, renewInterval, EngineObserver.NOOP);
+    }
+
+    /**
+     * Creates a lock manager with an {@link EngineObserver}.
+     *
+     * @param observer engine observation seam — fires
+     *                 {@code instanceLockAcquired}, {@code instanceLockRenewFailed}
+     *                 and {@code instanceLockLost}; never {@code null} (pass
+     *                 {@link EngineObserver#NOOP})
+     */
+    WorkflowInstanceLockManager(
+            @Nullable DistributedLock distributedLock,
+            String serviceName,
+            String keyPrefix,
+            Duration ttl,
+            Duration renewInterval,
+            EngineObserver observer
+    ) {
         if (ttl == null || ttl.isNegative() || ttl.isZero()) {
             throw new IllegalArgumentException("instance lock ttl must be positive, got " + ttl);
         }
@@ -95,6 +116,7 @@ final class WorkflowInstanceLockManager {
         this.keyPrefix = keyPrefix;
         this.ttl = ttl;
         this.renewInterval = renewInterval;
+        this.observer = observer;
     }
 
     /**
