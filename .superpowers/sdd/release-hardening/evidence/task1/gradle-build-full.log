@@ -1,0 +1,299 @@
+# Task 1 (RabbitMQ removal) — full ./gradlew build, clean checkpoint
+# pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening
+# gitHead: 722c96e8db715938fbf742de3eb0f3d979725bb4
+# branch: worktree-release-hardening
+# timestampUtc: 2026-08-02T13:35:24Z
+# command: ./gradlew clean build
+
+> Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :build-logic:generateExternalPluginSpecBuilders UP-TO-DATE
+> Task :build-logic:extractPrecompiledScriptPluginPlugins UP-TO-DATE
+> Task :build-logic:compilePluginsBlocks UP-TO-DATE
+> Task :build-logic:generatePrecompiledScriptPluginAccessors UP-TO-DATE
+> Task :build-logic:generateScriptPluginAdapters UP-TO-DATE
+
+> Task :build-logic:compileKotlin UP-TO-DATE
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :build-logic:compileJava NO-SOURCE
+> Task :build-logic:pluginDescriptors UP-TO-DATE
+> Task :build-logic:processResources UP-TO-DATE
+> Task :build-logic:classes UP-TO-DATE
+> Task :build-logic:jar UP-TO-DATE
+
+> Configure project :maestro-admin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :clean
+> Task :maestro-admin:clean
+> Task :maestro-lock-postgres:clean
+> Task :maestro-admin-client:clean
+> Task :maestro-store-jdbc:clean
+> Task :maestro-messaging-postgres:clean
+> Task :maestro-lock-valkey:clean
+> Task :maestro-messaging-kafka:clean
+> Task :maestro-samples:sample-order-service:clean
+> Task :maestro-samples:sample-payment-gateway:clean
+> Task :assemble UP-TO-DATE
+
+> Task :verifyModuleTestCoverage
+Test-coverage gate: 11 modules with production code, 0 accepted without tests.
+
+> Task :check
+> Task :build
+> Task :maestro-samples:sample-postgres-only:clean
+> Task :maestro-admin-client:processResources
+> Task :maestro-integration-tests:clean
+> Task :maestro-integration-tests:compileJava NO-SOURCE
+> Task :maestro-admin-client:sourcesJar
+> Task :maestro-integration-tests:processResources NO-SOURCE
+> Task :maestro-admin-client:processTestResources NO-SOURCE
+> Task :maestro-integration-tests:classes UP-TO-DATE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:clean
+> Task :maestro-store-postgres:clean
+> Task :maestro-lock-valkey:processResources
+> Task :maestro-integration-tests:jar
+> Task :maestro-integration-tests:assemble
+> Task :maestro-messaging-kafka:processResources
+> Task :maestro-store-jdbc:processResources NO-SOURCE
+> Task :maestro-samples:sample-loan-origination:underwriting-service:clean
+> Task :maestro-integration-tests:processTestResources
+> Task :maestro-admin:processResources
+> Task :maestro-admin:processTestResources NO-SOURCE
+> Task :maestro-spring-boot-starter:clean
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:clean
+> Task :maestro-test:clean
+> Task :maestro-test:processResources NO-SOURCE
+> Task :maestro-spring-boot-starter:processResources
+> Task :maestro-samples:sample-order-service:processResources
+> Task :maestro-samples:sample-order-service:processTestResources NO-SOURCE
+> Task :maestro-lock-valkey:sourcesJar
+> Task :maestro-lock-valkey:processTestResources NO-SOURCE
+> Task :maestro-store-jdbc:sourcesJar
+> Task :maestro-lock-postgres:processResources
+> Task :maestro-messaging-postgres:processResources
+> Task :maestro-messaging-kafka:sourcesJar
+> Task :maestro-messaging-kafka:processTestResources NO-SOURCE
+> Task :maestro-store-postgres:processResources
+> Task :maestro-store-jdbc:processTestResources NO-SOURCE
+> Task :maestro-test:sourcesJar
+> Task :maestro-test:processTestResources NO-SOURCE
+> Task :maestro-samples:sample-postgres-only:processResources
+> Task :maestro-samples:sample-postgres-only:processTestResources NO-SOURCE
+> Task :maestro-samples:sample-payment-gateway:processResources
+> Task :maestro-lock-postgres:sourcesJar
+> Task :maestro-samples:sample-loan-origination:loan-application-service:processResources
+> Task :maestro-lock-postgres:processTestResources NO-SOURCE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:processTestResources NO-SOURCE
+> Task :maestro-samples:sample-payment-gateway:processTestResources NO-SOURCE
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:processResources
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:processTestResources NO-SOURCE
+> Task :maestro-samples:sample-loan-origination:underwriting-service:processResources
+> Task :maestro-spring-boot-starter:sourcesJar
+> Task :maestro-samples:sample-loan-origination:underwriting-service:processTestResources NO-SOURCE
+> Task :maestro-spring-boot-starter:processTestResources NO-SOURCE
+> Task :maestro-store-postgres:sourcesJar
+> Task :maestro-store-postgres:processTestResources NO-SOURCE
+> Task :maestro-messaging-postgres:sourcesJar
+> Task :maestro-messaging-postgres:processTestResources NO-SOURCE
+> Task :maestro-core:clean
+> Task :maestro-core:compileJava FROM-CACHE
+> Task :maestro-core:processResources NO-SOURCE
+> Task :maestro-core:classes UP-TO-DATE
+> Task :maestro-store-jdbc:compileJava FROM-CACHE
+> Task :maestro-store-jdbc:classes UP-TO-DATE
+> Task :maestro-store-jdbc:jar
+> Task :maestro-admin-client:compileJava FROM-CACHE
+> Task :maestro-admin-client:classes
+> Task :maestro-test:compileJava FROM-CACHE
+> Task :maestro-test:classes UP-TO-DATE
+> Task :maestro-core:jar
+> Task :maestro-admin-client:jar
+> Task :maestro-test:jar
+> Task :maestro-spring-boot-starter:compileJava FROM-CACHE
+> Task :maestro-lock-postgres:compileJava FROM-CACHE
+> Task :maestro-store-postgres:compileJava FROM-CACHE
+> Task :maestro-lock-postgres:classes
+> Task :maestro-spring-boot-starter:classes
+> Task :maestro-admin:compileJava FROM-CACHE
+> Task :maestro-admin:classes
+> Task :maestro-messaging-kafka:compileJava FROM-CACHE
+> Task :maestro-messaging-postgres:compileJava FROM-CACHE
+> Task :maestro-lock-valkey:compileJava FROM-CACHE
+> Task :maestro-messaging-postgres:classes
+> Task :maestro-messaging-kafka:classes
+> Task :maestro-lock-valkey:classes
+> Task :maestro-lock-postgres:jar
+> Task :maestro-admin:resolveMainClassName
+> Task :maestro-lock-valkey:jar
+> Task :maestro-store-postgres:classes
+> Task :maestro-spring-boot-starter:jar
+> Task :maestro-messaging-postgres:jar
+> Task :maestro-messaging-kafka:jar
+> Task :maestro-store-postgres:jar
+> Task :maestro-integration-tests:compileTestJava FROM-CACHE
+> Task :maestro-integration-tests:testClasses
+> Task :maestro-store-jdbc:javadoc FROM-CACHE
+> Task :maestro-admin-client:javadoc FROM-CACHE
+> Task :maestro-integration-tests:test FROM-CACHE
+> Task :maestro-integration-tests:check UP-TO-DATE
+> Task :maestro-integration-tests:build
+> Task :maestro-test:javadoc FROM-CACHE
+> Task :maestro-lock-postgres:javadoc FROM-CACHE
+> Task :maestro-messaging-kafka:javadoc FROM-CACHE
+> Task :maestro-lock-valkey:javadoc FROM-CACHE
+> Task :maestro-messaging-postgres:javadoc FROM-CACHE
+> Task :maestro-core:javadoc FROM-CACHE
+> Task :maestro-store-postgres:javadoc FROM-CACHE
+> Task :maestro-store-jdbc:javadocJar
+> Task :maestro-store-jdbc:assemble
+> Task :maestro-spring-boot-starter:javadoc FROM-CACHE
+> Task :maestro-admin-client:javadocJar
+> Task :maestro-admin-client:assemble
+> Task :maestro-store-jdbc:compileTestJava FROM-CACHE
+> Task :maestro-store-jdbc:testClasses UP-TO-DATE
+> Task :maestro-admin-client:compileTestJava FROM-CACHE
+> Task :maestro-lock-postgres:javadocJar
+> Task :maestro-admin-client:testClasses UP-TO-DATE
+> Task :maestro-lock-postgres:assemble
+> Task :maestro-messaging-kafka:javadocJar
+> Task :maestro-messaging-kafka:assemble
+> Task :maestro-store-jdbc:test FROM-CACHE
+> Task :maestro-store-jdbc:check UP-TO-DATE
+> Task :maestro-store-jdbc:build
+> Task :maestro-lock-valkey:javadocJar
+> Task :maestro-lock-valkey:assemble
+> Task :maestro-admin-client:test FROM-CACHE
+> Task :maestro-admin-client:check UP-TO-DATE
+> Task :maestro-admin-client:build
+> Task :maestro-lock-postgres:compileTestJava FROM-CACHE
+> Task :maestro-lock-postgres:testClasses UP-TO-DATE
+> Task :maestro-messaging-postgres:javadocJar
+> Task :maestro-messaging-postgres:assemble
+> Task :maestro-lock-valkey:compileTestJava FROM-CACHE
+> Task :maestro-lock-valkey:testClasses UP-TO-DATE
+> Task :maestro-lock-postgres:test FROM-CACHE
+> Task :maestro-lock-postgres:check UP-TO-DATE
+> Task :maestro-lock-postgres:build
+> Task :maestro-messaging-kafka:compileTestJava FROM-CACHE
+> Task :maestro-messaging-kafka:testClasses UP-TO-DATE
+> Task :maestro-samples:sample-order-service:compileJava FROM-CACHE
+> Task :maestro-samples:sample-order-service:classes
+> Task :maestro-lock-valkey:test FROM-CACHE
+> Task :maestro-lock-valkey:check UP-TO-DATE
+> Task :maestro-lock-valkey:build
+> Task :maestro-messaging-postgres:compileTestJava FROM-CACHE
+> Task :maestro-messaging-postgres:testClasses UP-TO-DATE
+> Task :maestro-samples:sample-order-service:resolveMainClassName
+> Task :maestro-samples:sample-payment-gateway:compileJava FROM-CACHE
+> Task :maestro-samples:sample-payment-gateway:classes
+> Task :maestro-samples:sample-postgres-only:compileJava FROM-CACHE
+> Task :maestro-samples:sample-postgres-only:classes
+> Task :maestro-samples:sample-payment-gateway:resolveMainClassName
+> Task :maestro-messaging-postgres:test FROM-CACHE
+> Task :maestro-messaging-postgres:check UP-TO-DATE
+> Task :maestro-messaging-postgres:build
+> Task :maestro-core:javadocJar
+> Task :maestro-samples:sample-loan-origination:loan-application-service:compileJava FROM-CACHE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:classes
+> Task :maestro-core:sourcesJar
+> Task :maestro-core:assemble
+> Task :maestro-admin:bootJar
+> Task :maestro-store-postgres:javadocJar
+> Task :maestro-store-postgres:assemble
+> Task :maestro-samples:sample-loan-origination:loan-application-service:resolveMainClassName
+> Task :maestro-admin:jar
+> Task :maestro-admin:assemble
+> Task :maestro-samples:sample-postgres-only:resolveMainClassName
+> Task :maestro-messaging-kafka:test FROM-CACHE
+> Task :maestro-messaging-kafka:check UP-TO-DATE
+> Task :maestro-messaging-kafka:build
+> Task :maestro-admin:compileTestJava FROM-CACHE
+> Task :maestro-admin:testClasses UP-TO-DATE
+> Task :maestro-store-postgres:compileTestJava FROM-CACHE
+> Task :maestro-store-postgres:testClasses UP-TO-DATE
+> Task :maestro-spring-boot-starter:javadocJar
+> Task :maestro-spring-boot-starter:assemble
+> Task :maestro-samples:sample-loan-origination:underwriting-service:compileJava FROM-CACHE
+> Task :maestro-samples:sample-loan-origination:underwriting-service:classes
+> Task :maestro-admin:test FROM-CACHE
+> Task :maestro-admin:check UP-TO-DATE
+> Task :maestro-admin:build
+> Task :maestro-samples:sample-loan-origination:underwriting-service:resolveMainClassName
+> Task :maestro-test:javadocJar
+> Task :maestro-test:assemble
+> Task :maestro-store-postgres:test FROM-CACHE
+> Task :maestro-store-postgres:check UP-TO-DATE
+> Task :maestro-store-postgres:build
+> Task :maestro-core:compileTestJava FROM-CACHE
+> Task :maestro-core:processTestResources NO-SOURCE
+> Task :maestro-core:testClasses UP-TO-DATE
+> Task :maestro-test:compileTestJava FROM-CACHE
+> Task :maestro-test:testClasses UP-TO-DATE
+> Task :maestro-spring-boot-starter:compileTestJava FROM-CACHE
+> Task :maestro-spring-boot-starter:testClasses UP-TO-DATE
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:compileJava FROM-CACHE
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:classes
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:resolveMainClassName
+> Task :maestro-test:test FROM-CACHE
+> Task :maestro-test:check UP-TO-DATE
+> Task :maestro-test:build
+> Task :maestro-core:test FROM-CACHE
+> Task :maestro-core:check UP-TO-DATE
+> Task :maestro-core:build
+> Task :maestro-spring-boot-starter:test FROM-CACHE
+> Task :maestro-spring-boot-starter:check UP-TO-DATE
+> Task :maestro-spring-boot-starter:build
+> Task :maestro-samples:sample-postgres-only:bootJar
+> Task :maestro-samples:sample-postgres-only:jar
+> Task :maestro-samples:sample-postgres-only:assemble
+> Task :maestro-samples:sample-postgres-only:compileTestJava NO-SOURCE
+> Task :maestro-samples:sample-postgres-only:testClasses UP-TO-DATE
+> Task :maestro-samples:sample-postgres-only:test NO-SOURCE
+> Task :maestro-samples:sample-postgres-only:check UP-TO-DATE
+> Task :maestro-samples:sample-postgres-only:build
+> Task :maestro-samples:sample-order-service:bootJar
+> Task :maestro-samples:sample-payment-gateway:bootJar
+> Task :maestro-samples:sample-order-service:jar
+> Task :maestro-samples:sample-order-service:assemble
+> Task :maestro-samples:sample-order-service:compileTestJava NO-SOURCE
+> Task :maestro-samples:sample-order-service:testClasses UP-TO-DATE
+> Task :maestro-samples:sample-order-service:test NO-SOURCE
+> Task :maestro-samples:sample-order-service:check UP-TO-DATE
+> Task :maestro-samples:sample-order-service:build
+> Task :maestro-samples:sample-payment-gateway:jar
+> Task :maestro-samples:sample-payment-gateway:assemble
+> Task :maestro-samples:sample-payment-gateway:compileTestJava NO-SOURCE
+> Task :maestro-samples:sample-payment-gateway:testClasses UP-TO-DATE
+> Task :maestro-samples:sample-payment-gateway:test NO-SOURCE
+> Task :maestro-samples:sample-payment-gateway:check UP-TO-DATE
+> Task :maestro-samples:sample-payment-gateway:build
+> Task :maestro-samples:sample-loan-origination:loan-application-service:bootJar
+> Task :maestro-samples:sample-loan-origination:loan-application-service:jar
+> Task :maestro-samples:sample-loan-origination:loan-application-service:assemble
+> Task :maestro-samples:sample-loan-origination:loan-application-service:compileTestJava FROM-CACHE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:testClasses UP-TO-DATE
+> Task :maestro-samples:sample-loan-origination:underwriting-service:bootJar
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:bootJar
+> Task :maestro-samples:sample-loan-origination:underwriting-service:jar
+> Task :maestro-samples:sample-loan-origination:underwriting-service:assemble
+> Task :maestro-samples:sample-loan-origination:loan-application-service:test FROM-CACHE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:check UP-TO-DATE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:build
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:jar
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:assemble
+> Task :maestro-samples:sample-loan-origination:underwriting-service:compileTestJava FROM-CACHE
+> Task :maestro-samples:sample-loan-origination:underwriting-service:testClasses UP-TO-DATE
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:compileTestJava FROM-CACHE
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:testClasses UP-TO-DATE
+> Task :maestro-samples:sample-loan-origination:underwriting-service:test FROM-CACHE
+> Task :maestro-samples:sample-loan-origination:underwriting-service:check UP-TO-DATE
+> Task :maestro-samples:sample-loan-origination:underwriting-service:build
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:test FROM-CACHE
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:check UP-TO-DATE
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:build
+
+BUILD SUCCESSFUL in 3s
+153 actionable tasks: 87 executed, 57 from cache, 9 up-to-date
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.2.0/userguide/configuration_cache_enabling.html
+EXIT_CODE:0

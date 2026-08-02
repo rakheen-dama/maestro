@@ -1,0 +1,94 @@
+# Task 1 (RabbitMQ removal) — module graph proof
+# pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening
+# gitHead: 722c96e8db715938fbf742de3eb0f3d979725bb4
+# branch: worktree-release-hardening
+# timestampUtc: 2026-08-02T13:35:09Z
+# command: ./gradlew projects
+
+> Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :build-logic:generateExternalPluginSpecBuilders UP-TO-DATE
+> Task :build-logic:extractPrecompiledScriptPluginPlugins UP-TO-DATE
+> Task :build-logic:compilePluginsBlocks UP-TO-DATE
+> Task :build-logic:generatePrecompiledScriptPluginAccessors UP-TO-DATE
+> Task :build-logic:generateScriptPluginAdapters UP-TO-DATE
+
+> Task :build-logic:compileKotlin UP-TO-DATE
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :build-logic:compileJava NO-SOURCE
+> Task :build-logic:pluginDescriptors UP-TO-DATE
+> Task :build-logic:processResources UP-TO-DATE
+> Task :build-logic:classes UP-TO-DATE
+> Task :build-logic:jar UP-TO-DATE
+
+> Configure project :maestro-admin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :projects
+
+Projects:
+
+------------------------------------------------------------
+Root project 'maestro'
+------------------------------------------------------------
+
+Location: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening
+Description: Maestro — Embeddable Durable Workflow Engine for Spring Boot
+
+Project hierarchy:
+
+Root project 'maestro'
++--- Project ':maestro-admin' - Maestro Admin — Standalone workflow dashboard
++--- Project ':maestro-admin-client' - Maestro Admin Client — Lightweight lifecycle event publisher
++--- Project ':maestro-core' - Maestro Core — Workflow engine, SPIs, domain model (pure Java, no Spring)
++--- Project ':maestro-integration-tests' - Maestro Integration Tests — engine against real Postgres, Kafka and lock backends (not published)
++--- Project ':maestro-lock-postgres' - PostgreSQL-based DistributedLock SPI implementation
++--- Project ':maestro-lock-valkey' - Maestro Lock Valkey — Lettuce-based DistributedLock and SignalNotifier implementation
++--- Project ':maestro-messaging-kafka' - Maestro Messaging Kafka — Spring Kafka WorkflowMessaging implementation
++--- Project ':maestro-messaging-postgres' - PostgreSQL-based WorkflowMessaging SPI implementation using LISTEN/NOTIFY
++--- Project ':maestro-samples'
+|    +--- Project ':maestro-samples:sample-loan-origination'
+|    |    +--- Project ':maestro-samples:sample-loan-origination:loan-application-service' - Sample — Loan origination: application orchestrator with funding saga (port 8091)
+|    |    +--- Project ':maestro-samples:sample-loan-origination:underwriting-service' - Sample — Loan origination: auto-rules and human decision queue (port 8093)
+|    |    \--- Project ':maestro-samples:sample-loan-origination:verification-gateway-service' - Sample — Loan origination: simulated credit/employment/appraisal verifiers (port 8092)
+|    +--- Project ':maestro-samples:sample-order-service' - Sample — Order fulfilment workflow with cross-service signals and saga compensation
+|    +--- Project ':maestro-samples:sample-payment-gateway' - Sample — Payment gateway proxy with durable retries and cross-service signalling
+|    \--- Project ':maestro-samples:sample-postgres-only' - Sample — Document approval workflow using Postgres only (no Kafka, no Valkey)
++--- Project ':maestro-spring-boot-starter' - Maestro Spring Boot Starter — Auto-configuration and Spring integration
++--- Project ':maestro-store-jdbc' - Maestro Store JDBC — Abstract JDBC WorkflowStore implementation
++--- Project ':maestro-store-postgres' - Maestro Store Postgres — PostgreSQL WorkflowStore with Flyway migrations
+\--- Project ':maestro-test' - Maestro Test — In-memory SPIs, controllable clock, TestWorkflowEnvironment
+
+Project locations:
+
+project ':maestro-admin' - /maestro-admin
+project ':maestro-admin-client' - /maestro-admin-client
+project ':maestro-core' - /maestro-core
+project ':maestro-integration-tests' - /maestro-integration-tests
+project ':maestro-lock-postgres' - /maestro-lock-postgres
+project ':maestro-lock-valkey' - /maestro-lock-valkey
+project ':maestro-messaging-kafka' - /maestro-messaging-kafka
+project ':maestro-messaging-postgres' - /maestro-messaging-postgres
+project ':maestro-samples' - /maestro-samples
+project ':maestro-samples:sample-loan-origination' - /maestro-samples/sample-loan-origination
+project ':maestro-samples:sample-loan-origination:loan-application-service' - /maestro-samples/sample-loan-origination/loan-application-service
+project ':maestro-samples:sample-loan-origination:underwriting-service' - /maestro-samples/sample-loan-origination/underwriting-service
+project ':maestro-samples:sample-loan-origination:verification-gateway-service' - /maestro-samples/sample-loan-origination/verification-gateway-service
+project ':maestro-samples:sample-order-service' - /maestro-samples/sample-order-service
+project ':maestro-samples:sample-payment-gateway' - /maestro-samples/sample-payment-gateway
+project ':maestro-samples:sample-postgres-only' - /maestro-samples/sample-postgres-only
+project ':maestro-spring-boot-starter' - /maestro-spring-boot-starter
+project ':maestro-store-jdbc' - /maestro-store-jdbc
+project ':maestro-store-postgres' - /maestro-store-postgres
+project ':maestro-test' - /maestro-test
+
+Included builds:
+
+\--- Included build ':build-logic'
+
+To see a list of the tasks of a project, run gradlew <project-path>:tasks
+For example, try running gradlew :maestro-admin:tasks
+
+BUILD SUCCESSFUL in 713ms
+10 actionable tasks: 1 executed, 9 up-to-date
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.2.0/userguide/configuration_cache_enabling.html

@@ -1,0 +1,19 @@
+# Task 1 (RabbitMQ removal) — rg -i rabbitmq sweep, final state
+# pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening
+# gitHead: 722c96e8db715938fbf742de3eb0f3d979725bb4
+# branch: worktree-release-hardening
+# timestampUtc: 2026-08-02T13:35:18Z
+# command: rg -il rabbitmq --hidden -g '!.git'
+
+docs/open-issues.md
+docs/release-hardening-spec.md
+docs/release-notes.md
+docs/test-plan.md
+maestro-integration-tests/SPEC.md
+tasks/release-hardening-plan.md
+tasks/release-readiness-plan.md
+tasks/todo.md
+
+# classification: all 8 hits above are historical/planning documents,
+# not live claims of RabbitMQ support. See task-1-report.md for the
+# per-file rationale.
