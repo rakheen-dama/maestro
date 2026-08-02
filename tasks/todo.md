@@ -1,3 +1,21 @@
+# Milestone: Release Hardening (RabbitMQ removal, Observability, Versioning)
+
+Spec: `docs/release-hardening-spec.md`. Plan: `tasks/release-hardening-plan.md`. Branch: `worktree-release-hardening` off main @ 7bfedbe. 68 commits, 238 files.
+
+- [x] Task 1 — RabbitMQ removal (2 modules deleted, five-class reference invariant, release note with rationale)
+- [x] Task 2 — Architect design doc (8 sections, decisions not options); 10 coordinator rulings issued across the cycle
+- [x] Task 3 — Core `EngineObserver` SPI, Spring-free, replay-aware; RULING 4 made exception containment structural
+- [x] Task 4 — Micrometer meters; review caught the auto-config shipping **inert in every real app**
+- [x] Task 5 — OTel tracing + Kafka W3C propagation + durable restoration; review caught a **signal-discard** path (4 fix rounds, 65 tests)
+- [x] Task 5b — **Release-blocking engine defect found mid-cycle**: two `parallel()` branches parking concurrently → FAILED + saga compensation → durable damage. Fixed with a bounded retry, mutation-proven
+- [x] Task 6 — `workflow.version()` memoized change-branching (17 pins, RED against two distinct broken stubs)
+- [x] Task 7 — Unknown-event stand-down + sealed `MaestroControlFlowError`; RULING 9 widened the payload guard to every path deserializing history it did not write
+- [x] Task 8 — Docs: new `observability.md`, operations playbook, release notes, Issues 21 (fixed) + 22 (open)
+- [x] Task 9 — QA gate PASS: 899 tests, all 9 DoD items, full build + integration + chaos PR-gate green
+- [x] Final whole-branch review: APPROVED, 0 Critical, documentation-only fix wave (V4 migration upgrade note + Issue 22 caveats at 8 sites)
+
+**Deferred with rulings:** Issue 22 (compensations can continue on an operator-terminated workflow) — code fix deferred, documented at 8 sites; the final review upheld the deferral because a rushed fix there would silently skip compensations that *should* run.
+
 # Milestone: Multi-Instance Verification (Issues 11/12 evidence)
 
 Binding spec: `docs/multi-instance-test-plan.md`. Plan: `tasks/multi-instance-plan.md`. Branch: `worktree-multi-instance-verification` off main @ 883197f (70+ commits). SDD ledger: `.superpowers/sdd/progress.md` (worktree).
