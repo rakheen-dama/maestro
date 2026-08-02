@@ -67,9 +67,10 @@ site.
 
 ## Meter catalog
 
-Registered by `MicrometerEngineObserver` (counters and timers) and
-`MaestroEngineGauges` (gauges), both in the `io.b2mash.maestro.spring.observe`
-package of `maestro-spring-boot-starter`.
+Fourteen meters: **11 counters and 1 timer**, registered by
+`MicrometerEngineObserver`, plus **2 gauges**, registered by
+`MaestroEngineGauges` — both in the `io.b2mash.maestro.spring.observe` package
+of `maestro-spring-boot-starter`.
 
 **Cardinality rule:** no meter is ever tagged with `workflowId`, `runId`, or a
 timer ID. `workflowFailed`'s exception type is deliberately *not* a tag either
