@@ -4,9 +4,14 @@ import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.ActivityInfo;
+import io.b2mash.maestro.core.observe.CompositeEngineObserver;
+import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.ParkKind;
 import io.b2mash.maestro.core.observe.RecordingEngineObserver;
+import io.b2mash.maestro.core.observe.SignalInfo;
 import io.b2mash.maestro.core.observe.StandDownReason;
+import io.b2mash.maestro.core.observe.WorkflowInfo;
 import io.b2mash.maestro.core.retry.RetryExecutor;
 import io.b2mash.maestro.core.retry.RetryPolicy;
 import org.junit.jupiter.api.AfterEach;
@@ -16,8 +21,10 @@ import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -58,14 +65,14 @@ class WorkflowExecutorObserverTest {
         executor.shutdown();
     }
 
-    private WorkflowExecutor newExecutor(RecordingEngineObserver obs) {
+    private WorkflowExecutor newExecutor(EngineObserver obs) {
         return new WorkflowExecutor(store, null, null, null, serializer, SERVICE,
                 WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
                 WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
                 false, WorkflowExecutor.DEFAULT_SHUTDOWN_TIMEOUT, Duration.ofMillis(200), obs);
     }
 
-    private StepActivities proxy(RecordingEngineObserver obs) {
+    private StepActivities proxy(EngineObserver obs) {
         return proxyFactory.createProxy(StepActivities.class, new StepActivitiesImpl(),
                 store, null, null, RetryPolicy.noRetry(), Duration.ofSeconds(30),
                 serializer, retryExecutor,
@@ -251,6 +258,41 @@ class WorkflowExecutorObserverTest {
                         + "COMPENSATION_STARTED append loses to a concurrent runner");
         assertEquals(0, observer.failed().size(),
                 "a stand-down is not a workflow failure");
+    }
+
+    // ── Ruling 4: structural containment at un-hardened emission sites ──
+
+    @Test
+    @DisplayName("one registered throwing observer cannot corrupt engine control flow at un-hardened sites")
+    void loneThrowingObserverIsContainedAtActivityAndSignalSites() throws Exception {
+        var throwing = new AlwaysThrowingObserver();
+        // EXACTLY ONE registered observer — the common deployment (a lone
+        // Micrometer adapter in Task 4, a lone tracing adapter in Task 5), and
+        // the case CompositeEngineObserver.of used to collapse to the bare
+        // delegate, leaving zero containment.
+        var registered = CompositeEngineObserver.of(List.of(throwing));
+
+        executor.shutdown();
+        executor = newExecutor(registered);
+        var workflow = new ActivityThenSignalWorkflow(proxy(registered));
+        var method = ActivityThenSignalWorkflow.class.getMethod("run", String.class);
+
+        executor.startWorkflow("obs-hostile", "ActivityThenSignalWorkflow", "default", "in",
+                workflow, method);
+        await().atMost(Duration.ofSeconds(5)).until(() -> throwing.calls.contains("workflowParked"));
+        executor.deliverSignal("obs-hostile", "go", "payload");
+
+        // ActivityInvocationHandler and SignalManager emit RAW — they were not
+        // hand-hardened. Containment here is structural, from the wrapper.
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertEquals(WorkflowStatus.COMPLETED,
+                        store.getInstance("obs-hostile").orElseThrow().status(),
+                        "a throwing observer must not be able to fail a workflow"));
+        assertTrue(throwing.calls.containsAll(List.of(
+                        "activityStarted", "activityCompleted", "signalPersisted",
+                        "signalConsumed", "workflowParked", "workflowUnparked")),
+                "every un-hardened site must still have been reached (and contained); got "
+                        + throwing.calls);
     }
 
     // ── Signals ───────────────────────────────────────────────────────
@@ -440,6 +482,52 @@ class WorkflowExecutorObserverTest {
         public String run(String input) {
             throw new DuplicateEventException(UUID.randomUUID(), 7);
         }
+    }
+
+    /** Exercises the activity proxy and the signal park in one run. */
+    public static class ActivityThenSignalWorkflow {
+        private final StepActivities activities;
+
+        public ActivityThenSignalWorkflow(StepActivities activities) {
+            this.activities = activities;
+        }
+
+        public String run(String input) {
+            var a = activities.step1();
+            var signal = WorkflowContext.current().awaitSignal("go", String.class, Duration.ofSeconds(30));
+            return a + signal + activities.step2();
+        }
+    }
+
+    /** An adapter that throws from every callback the engine reaches. */
+    private static final class AlwaysThrowingObserver implements EngineObserver {
+
+        final List<String> calls = new CopyOnWriteArrayList<>();
+
+        private void blowUp(String callback) {
+            calls.add(callback);
+            throw new IllegalStateException("adapter blew up in " + callback);
+        }
+
+        @Override public void workflowStarted(WorkflowInfo w) { blowUp("workflowStarted"); }
+
+        @Override public void workflowCompleted(WorkflowInfo w) { blowUp("workflowCompleted"); }
+
+        @Override public void workflowParked(WorkflowInfo w, ParkKind k) { blowUp("workflowParked"); }
+
+        @Override public void workflowUnparked(WorkflowInfo w, ParkKind k) { blowUp("workflowUnparked"); }
+
+        @Override public void activityStarted(ActivityInfo a) { blowUp("activityStarted"); }
+
+        @Override public void activityCompleted(ActivityInfo a, Duration d, boolean replayed) {
+            blowUp("activityCompleted");
+        }
+
+        @Override public void signalPersisted(SignalInfo s) { blowUp("signalPersisted"); }
+
+        @Override public void signalConsumed(SignalInfo s, boolean replayed) { blowUp("signalConsumed"); }
+
+        @Override public void instanceLockAcquired(String workflowId) { blowUp("instanceLockAcquired"); }
     }
 
     public static class CompensatingWorkflow {

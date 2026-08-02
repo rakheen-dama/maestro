@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.observe;
 
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
+import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -8,13 +9,17 @@ import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Pins {@link CompositeEngineObserver}: collapsing rules of {@code of(List)},
+ * Pins {@link CompositeEngineObserver}: the wrapping rules of {@code of(List)}
+ * (Ruling 4 — a lone delegate is wrapped, never returned bare),
  * ordered fan-out across every callback, per-delegate
  * {@link RuntimeException} containment, and {@link Error} propagation (the
  * engine's control-flow signals must never be swallowed).
@@ -27,7 +32,7 @@ class CompositeEngineObserverTest {
     private static final SignalInfo SIG = new SignalInfo("wf-1", "TestWorkflow", "go", null);
     private static final TimerInfo TIMER = new TimerInfo("wf-1", "TestWorkflow", "sleep-1");
 
-    // ── of(List) collapsing ───────────────────────────────────────────
+    // ── of(List) wrapping (Ruling 4) ──────────────────────────────────
 
     @Test
     @DisplayName("of(empty) collapses to NOOP")
@@ -36,10 +41,31 @@ class CompositeEngineObserverTest {
     }
 
     @Test
-    @DisplayName("of(single) returns the sole delegate itself")
-    void ofSingleReturnsDelegate() {
+    @DisplayName("of(single) still wraps — containment must not depend on how many observers are registered")
+    void ofSingleStillWraps() {
         var only = new RecordingEngineObserver();
-        assertSame(only, CompositeEngineObserver.of(List.of(only)));
+        var wrapped = CompositeEngineObserver.of(List.of(only));
+
+        // Ruling 4: the pre-ruling collapse (`case 1 -> observers.getFirst()`)
+        // left the common deployment — one adapter — with no containment at all.
+        assertNotSame(only, wrapped, "a single delegate must not be returned bare");
+        assertInstanceOf(CompositeEngineObserver.class, wrapped);
+
+        wrapped.workflowStarted(WF);
+        assertEquals(1, only.started().size(), "the wrapper must still fan out to the sole delegate");
+    }
+
+    @Test
+    @DisplayName("a lone delegate throwing RuntimeException is contained by the wrapper")
+    void singleDelegateRuntimeExceptionContained() {
+        EngineObserver misbehaving = new EngineObserver() {
+            @Override public void workflowStarted(WorkflowInfo w) {
+                throw new IllegalStateException("observer bug");
+            }
+        };
+
+        assertDoesNotThrow(() -> CompositeEngineObserver.of(List.of(misbehaving)).workflowStarted(WF),
+                "one registered observer must be contained exactly like one of many");
     }
 
     @Test
@@ -141,6 +167,31 @@ class CompositeEngineObserverTest {
         assertThrows(ExecutorShutdownException.class, () -> composite.workflowStarted(WF),
                 "Errors — including the engine's control-flow signals — must propagate "
                         + "through the composite, never be contained");
+    }
+
+    @Test
+    @DisplayName("an Error from a LONE delegate propagates too — Ruling 4's wrapper must not widen containment")
+    void errorPropagatesThroughTheSingleDelegateWrapper() {
+        EngineObserver hostile = new EngineObserver() {
+            @Override public void workflowStarted(WorkflowInfo w) {
+                throw new ExecutorShutdownException("must not be swallowed");
+            }
+            @Override public void activityCompleted(ActivityInfo a, Duration d, boolean r) {
+                throw new WorkflowTerminatedException("wf-1", "operator");
+            }
+        };
+        var wrapped = CompositeEngineObserver.of(List.of(hostile));
+
+        // Ruling 4 added a wrapper where there was none. It contains
+        // RuntimeException ONLY: ExecutorShutdownException and
+        // WorkflowTerminatedException are Errors precisely so no "log and
+        // continue" layer can swallow them, and the new wrapper is such a
+        // layer. If it ever caught Throwable, a routine deploy would be
+        // recorded as a workflow failure and a terminated workflow would keep
+        // executing activities.
+        assertThrows(ExecutorShutdownException.class, () -> wrapped.workflowStarted(WF));
+        assertThrows(WorkflowTerminatedException.class,
+                () -> wrapped.activityCompleted(ACT, Duration.ofMillis(1), false));
     }
 
     // ── No-op default ─────────────────────────────────────────────────

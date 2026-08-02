@@ -35,19 +35,28 @@ public final class CompositeEngineObserver implements EngineObserver {
     }
 
     /**
-     * Builds the cheapest observer for a delegate list: {@link EngineObserver#NOOP}
-     * for an empty list, the sole delegate itself for a singleton list, and a
-     * composite otherwise.
+     * Wraps a delegate list in a composite, or returns
+     * {@link EngineObserver#NOOP} when the list is empty.
+     *
+     * <p><b>A single delegate is still wrapped</b> (coordinator Ruling 4,
+     * amending design §1.2, which originally collapsed to the delegate
+     * itself). One observer is the common deployment — a lone metrics adapter,
+     * a lone tracing adapter — and it is exactly the case the collapse left
+     * with zero containment: a third-party adapter throwing a
+     * {@link RuntimeException} then propagated straight into engine control
+     * flow, where it could be read as a workflow failure, a lock-backend
+     * failure, or an aborted recovery pass. Wrapping always makes containment
+     * structural at every emission site, present and future, instead of
+     * depending on which call sites someone remembered to harden. The cost is
+     * one virtual call per emission on paths that already do database I/O.
+     *
+     * <p>{@link Error} still propagates uncontained — see the class Javadoc.
      *
      * @param observers the delegates, in invocation order
-     * @return the collapsed observer
+     * @return {@code NOOP} for an empty list, otherwise a containing composite
      */
     public static EngineObserver of(List<EngineObserver> observers) {
-        return switch (observers.size()) {
-            case 0 -> EngineObserver.NOOP;
-            case 1 -> observers.getFirst();
-            default -> new CompositeEngineObserver(observers);
-        };
+        return observers.isEmpty() ? EngineObserver.NOOP : new CompositeEngineObserver(observers);
     }
 
     /**
