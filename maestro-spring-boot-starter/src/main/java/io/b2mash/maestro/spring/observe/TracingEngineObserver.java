@@ -1,6 +1,7 @@
 package io.b2mash.maestro.spring.observe;
 
 import io.b2mash.maestro.core.context.WorkflowMDC;
+import io.b2mash.maestro.core.observe.AbandonReason;
 import io.b2mash.maestro.core.observe.ActivityInfo;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.ParkKind;
@@ -125,8 +126,28 @@ public final class TracingEngineObserver implements EngineObserver {
     private static final String ATTR_TIMER_ID = "maestro.timer.id";
     private static final String ATTR_ERROR_TYPE = "maestro.error.type";
     private static final String ATTR_STANDDOWN_REASON = "maestro.standdown.reason";
+    private static final String ATTR_ABANDON_REASON = "maestro.abandon.reason";
 
     private static final String TRACEPARENT = "traceparent";
+
+    /**
+     * First sequence number that can only belong to a parallel branch.
+     *
+     * <p>The engine partitions the sequence space so that branch <i>i</i> of a
+     * fork at parent sequence <i>p</i> allocates from
+     * {@code p * 1000 + (i + 1) * 1000}, with at most 999 steps per branch. A
+     * step at or above 1000 is therefore inside a branch.
+     *
+     * <p>A second, belt-and-braces branch detector alongside the inherited
+     * {@link #forkPoint}: the fork point is semantically exact but only exists
+     * once the forking thread has opened a segment, and a workflow whose
+     * <em>first</em> statement is {@code parallel(...)} forks before any callback
+     * has reached this adapter. Misclassifying a main line longer than 999 steps
+     * costs that run only its segment span (its activity spans become roots) —
+     * strictly better than what this guards against: a segment opened on a
+     * branch thread that nothing can ever close.
+     */
+    private static final int BRANCH_SEQUENCE_BASE = 1000;
 
     /**
      * W3C Trace Context {@code traceparent} grammar. A value that does not match
@@ -135,7 +156,7 @@ public final class TracingEngineObserver implements EngineObserver {
      * the engine treat it as opaque bytes (RULING 2).
      */
     private static final Pattern TRACEPARENT_GRAMMAR =
-            Pattern.compile("^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$");
+            Pattern.compile("^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$");
 
     private static final String ZERO_TRACE_ID = "0".repeat(32);
     private static final String ZERO_SPAN_ID = "0".repeat(16);
@@ -147,6 +168,18 @@ public final class TracingEngineObserver implements EngineObserver {
 
     /** The node's service name — a per-engine constant; see rememberServiceName. */
     private volatile @Nullable String serviceName;
+
+    /**
+     * The open segment of the thread that created the current thread (F2).
+     *
+     * <p>{@code DefaultWorkflowOperations.parallel} runs each branch on its own
+     * virtual thread, and virtual threads created with {@code Thread.ofVirtual()}
+     * inherit inheritable thread-locals — including from another virtual thread,
+     * which is exactly the shape here. A branch therefore starts life knowing its
+     * parent run's segment, which lets it parent its activity spans into the same
+     * trace <em>and</em> lets it decline to open a segment of its own.
+     */
+    private final InheritableThreadLocal<ForkPoint> forkPoint = new InheritableThreadLocal<>();
 
     /**
      * @param tracer     the Micrometer tracer, supplied by Boot's tracing
@@ -203,6 +236,26 @@ public final class TracingEngineObserver implements EngineObserver {
         });
     }
 
+    /**
+     * Design §11, RULING 5. The only callback that reaches this adapter on the
+     * workflow's own thread when a run unwinds through shutdown, an operator
+     * terminate, a lost terminal transition or a failed terminal write —
+     * {@link #workflowTerminated} fires on the operator's thread and so cannot
+     * release anything held here. Without it, the segment span opened on the
+     * workflow thread is never {@code end()}ed and therefore never exported.
+     */
+    @Override
+    public void runAbandoned(WorkflowInfo w, AbandonReason reason) {
+        rememberServiceName(w);
+        safely("runAbandoned", () -> {
+            var s = state.get();
+            if (s.segment != null) {
+                s.segment.tag(ATTR_ABANDON_REASON, reason.name());
+            }
+            closeRun(null);
+        });
+    }
+
     // ── Run-segment boundaries ────────────────────────────────────────
 
     @Override
@@ -239,13 +292,26 @@ public final class TracingEngineObserver implements EngineObserver {
     public void activityStarted(ActivityInfo a) {
         safely("activityStarted", () -> {
             var s = state.get();
-            ensureSegment(a.workflowId(), a.workflowType(), serviceName, null);
+            // F2: never open a run segment on a parallel-branch thread. No
+            // callback ever tells this adapter a branch finished, so such a
+            // segment could never be closed or exported, and its activity
+            // children would name a parent the backend never receives.
+            if (!isParallelBranch(a)) {
+                ensureSegment(a.workflowId(), a.workflowType(), serviceName, null);
+            }
             // Defensive: an unclosed previous activity would nest wrongly.
             endActivity(s, null);
             var segment = s.segment;
             var builder = tracer.spanBuilder().name(ACTIVITY_SPAN);
             if (segment != null) {
                 builder.setParent(segment.context());
+            } else {
+                // A branch: hang its activity spans off the parent run's segment
+                // so they land in the same trace instead of exporting detached.
+                var forkParent = inheritedForkParent();
+                if (forkParent != null) {
+                    builder.setParent(forkParent);
+                }
             }
             var span = builder.start();
             span.tag(ATTR_WORKFLOW_ID, a.workflowId());
@@ -336,23 +402,39 @@ public final class TracingEngineObserver implements EngineObserver {
     // ── Internals ─────────────────────────────────────────────────────
 
     /**
-     * Opens the run segment for this thread if none is open, or re-parents a
-     * still-rootless segment when a remote context finally arrives (design
-     * §4.3 step 2). Idempotent, which is what makes the adapter tolerant of the
+     * Opens the run segment for this thread if none is open, or re-parents the
+     * open one when a usable remote context arrives (design §4.3 step 2,
+     * RULING 7). Idempotent, which is what makes the adapter tolerant of the
      * engine's two different consume/unpark orderings.
+     *
+     * <p>Never opens a segment on a forked (parallel-branch) thread — see
+     * {@link #forkPoint}.
      */
     private void ensureSegment(String workflowId, @Nullable String workflowType,
                                @Nullable String serviceName, @Nullable String traceContext) {
         var s = state.get();
         var remote = remoteParent(traceContext);
 
+        if (s.segment == null && inheritedForkParent() != null) {
+            return;
+        }
+
         if (s.segment != null) {
-            if (remote == null || !s.segmentIsRoot) {
+            if (remote == null) {
                 return;
             }
-            // A recovered run opened a rootless segment before its awaited
-            // signal (and its remote parent) was known. Close it and continue
-            // the run under the publisher's trace.
+            if (traceContext != null && traceContext.equals(s.segmentRemoteContext)) {
+                // Already running under exactly this remote parent; re-parenting
+                // again would emit an empty segment per repeated signal.
+                return;
+            }
+            // RULING 7: a live signalConsumed carrying a usable context re-parents
+            // UNCONDITIONALLY, not only when the open segment happens to be
+            // rootless. Restricting it to rootless segments dropped the remote
+            // context entirely — neither re-parented nor linked — for the common
+            // case of a workflow that had already parked and resumed once (so its
+            // segment is non-root) and then consumed a second, already-delivered
+            // signal on awaitSignal's no-park fast path.
             closeSegment();
         }
 
@@ -386,6 +468,29 @@ public final class TracingEngineObserver implements EngineObserver {
         s.segment = span;
         s.segmentScope = tracer.withSpan(span);
         s.segmentIsRoot = root;
+        s.segmentRemoteContext = remote != null ? traceContext : null;
+        // Publish for any branch thread this one forks (F2).
+        forkPoint.set(new ForkPoint(span.context(), Thread.currentThread().threadId()));
+    }
+
+    /**
+     * @param a the activity being started
+     * @return whether this activity is running inside a parallel branch
+     */
+    private boolean isParallelBranch(ActivityInfo a) {
+        return inheritedForkParent() != null || a.sequenceNumber() >= BRANCH_SEQUENCE_BASE;
+    }
+
+    /**
+     * @return the parent run's segment context when this thread was forked from a
+     *         thread that had one — i.e. this is a parallel branch — else
+     *         {@code null}
+     */
+    private @Nullable TraceContext inheritedForkParent() {
+        var inherited = forkPoint.get();
+        return inherited != null && inherited.ownerThreadId() != Thread.currentThread().threadId()
+                ? inherited.parent()
+                : null;
     }
 
     /**
@@ -438,6 +543,7 @@ public final class TracingEngineObserver implements EngineObserver {
         s.segment = null;
         s.segmentScope = null;
         s.segmentIsRoot = false;
+        s.segmentRemoteContext = null;
         if (scope != null) {
             scope.close();
         }
@@ -456,6 +562,7 @@ public final class TracingEngineObserver implements EngineObserver {
         closeSegment();
         s.previousSegment = null;
         state.remove();
+        forkPoint.remove();
     }
 
     private void tagRunId(Span span) {
@@ -486,12 +593,24 @@ public final class TracingEngineObserver implements EngineObserver {
         }
     }
 
+    /**
+     * The forking thread's open segment, plus which thread owns it — the owner
+     * id is how an inheriting branch tells "my parent's segment" from "my own".
+     *
+     * @param parent        the forking thread's open segment context
+     * @param ownerThreadId the thread that published it
+     */
+    private record ForkPoint(TraceContext parent, long ownerThreadId) {
+    }
+
     /** Per-thread span state for one workflow run segment. */
     private static final class RunState {
         private @Nullable Span segment;
         private Tracer.@Nullable SpanInScope segmentScope;
         private @Nullable TraceContext previousSegment;
         private boolean segmentIsRoot;
+        /** The raw traceparent the open segment was parented to, if any. */
+        private @Nullable String segmentRemoteContext;
         private @Nullable Span activity;
         private Tracer.@Nullable SpanInScope activityScope;
     }

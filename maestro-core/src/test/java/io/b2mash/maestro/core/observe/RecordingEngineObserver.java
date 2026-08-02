@@ -26,6 +26,7 @@ public final class RecordingEngineObserver implements EngineObserver {
     public record ParkEvent(WorkflowInfo info, ParkKind kind) {}
     public record RecoveryPassCall(int scanned, int adopted) {}
     public record StandDownCall(StandDownReason reason, String workflowId, @Nullable String detail) {}
+    public record AbandonCall(WorkflowInfo info, AbandonReason reason) {}
     public record WorkflowFailure(WorkflowInfo info, String exceptionType) {}
 
     private final List<Invocation> invocations = new CopyOnWriteArrayList<>();
@@ -51,6 +52,7 @@ public final class RecordingEngineObserver implements EngineObserver {
     private final List<String> lockLost = new CopyOnWriteArrayList<>();
     private final List<RecoveryPassCall> recoveryPasses = new CopyOnWriteArrayList<>();
     private final List<StandDownCall> standDowns = new CopyOnWriteArrayList<>();
+    private final List<AbandonCall> abandoned = new CopyOnWriteArrayList<>();
 
     // ── EngineObserver callbacks ──────────────────────────────────────
 
@@ -181,6 +183,12 @@ public final class RecordingEngineObserver implements EngineObserver {
         standDowns.add(new StandDownCall(reason, workflowId, detail));
     }
 
+    @Override
+    public void runAbandoned(WorkflowInfo w, AbandonReason reason) {
+        record("runAbandoned", w, reason);
+        abandoned.add(new AbandonCall(w, reason));
+    }
+
     // ── Typed views ───────────────────────────────────────────────────
 
     public List<Invocation> invocations() { return List.copyOf(invocations); }
@@ -207,6 +215,7 @@ public final class RecordingEngineObserver implements EngineObserver {
     public List<String> lockLost() { return List.copyOf(lockLost); }
     public List<RecoveryPassCall> recoveryPasses() { return List.copyOf(recoveryPasses); }
     public List<StandDownCall> standDowns() { return List.copyOf(standDowns); }
+    public List<AbandonCall> abandoned() { return List.copyOf(abandoned); }
 
     /** Completions of one named activity filtered by the replayed flag. */
     public List<ActivityCompletion> completionsOf(String activityName, boolean replayed) {

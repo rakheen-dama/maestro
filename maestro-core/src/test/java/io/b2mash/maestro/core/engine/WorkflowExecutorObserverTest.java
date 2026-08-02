@@ -5,6 +5,7 @@ import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.observe.ActivityInfo;
+import io.b2mash.maestro.core.observe.AbandonReason;
 import io.b2mash.maestro.core.observe.CompositeEngineObserver;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.ParkKind;
@@ -191,6 +192,61 @@ class WorkflowExecutorObserverTest {
         assertNotNull(standDown.detail(), "the colliding sequence should be carried as detail");
         assertEquals(0, observer.failed().size(),
                 "a stand-down is not a workflow failure and must not be counted as one");
+    }
+
+    // ── Run abandonment (design §11, RULING 5 + fix-round F4) ─────────
+
+    @Test
+    @DisplayName("terminate: the workflow thread emits runAbandoned(TERMINATED) — the only closing "
+            + "callback a stateful observer gets on that thread")
+    void terminateEmitsRunAbandonedOnTheWorkflowThread() throws Exception {
+        var waiting = new CountDownLatch(1);
+        var workflow = new AwaitingWorkflow(waiting);
+        var method = AwaitingWorkflow.class.getMethod("run", String.class);
+
+        executor.startWorkflow("obs-abandon-term", "AwaitingWorkflow", "default", "in",
+                workflow, method);
+        assertTrue(waiting.await(5, TimeUnit.SECONDS));
+        await().atMost(Duration.ofSeconds(2)).until(() ->
+                store.getInstance("obs-abandon-term")
+                        .map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL).orElse(false));
+
+        executor.terminateWorkflow("obs-abandon-term", "test");
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertEquals(1, observer.abandoned().size(),
+                        "the abandoned local run must be reported exactly once"));
+        assertEquals(AbandonReason.TERMINATED, observer.abandoned().getFirst().reason());
+        assertEquals("obs-abandon-term", observer.abandoned().getFirst().info().workflowId());
+        assertEquals(0, observer.standDowns().size(),
+                "an operator terminate is not a stand-down — routing it through the stand-down "
+                        + "counter is exactly what RULING 5 forbids");
+        assertEquals(0, observer.failed().size(), "nor is it a failure");
+    }
+
+    @Test
+    @DisplayName("shutdown while parked: the workflow thread emits runAbandoned(SHUTDOWN), "
+            + "never a failure and never a stand-down")
+    void shutdownEmitsRunAbandonedOnTheWorkflowThread() throws Exception {
+        var waiting = new CountDownLatch(1);
+        var workflow = new AwaitingWorkflow(waiting);
+        var method = AwaitingWorkflow.class.getMethod("run", String.class);
+
+        executor.startWorkflow("obs-abandon-shut", "AwaitingWorkflow", "default", "in",
+                workflow, method);
+        assertTrue(waiting.await(5, TimeUnit.SECONDS));
+        await().atMost(Duration.ofSeconds(2)).until(() ->
+                store.getInstance("obs-abandon-shut")
+                        .map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL).orElse(false));
+
+        executor.shutdown();
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertEquals(1, observer.abandoned().size()));
+        assertEquals(AbandonReason.SHUTDOWN, observer.abandoned().getFirst().reason());
+        assertEquals(0, observer.failed().size(),
+                "a routine deploy must never be recorded as a workflow failure");
+        assertEquals(0, observer.standDowns().size());
     }
 
     // ── Terminal-outcome emission vs. the event append ────────────────

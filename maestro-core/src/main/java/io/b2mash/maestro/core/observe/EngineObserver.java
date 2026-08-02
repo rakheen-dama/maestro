@@ -134,4 +134,37 @@ public interface EngineObserver {
     /** A local run stood down without recording a workflow outcome. */
     default void standDown(StandDownReason reason, String workflowId,
                            @Nullable String detail) {}
+
+    // ── Run abandonment (design §11, RULING 5) ────────────────────────
+
+    /**
+     * A workflow's local run ended <b>on the workflow's own thread</b> without
+     * this node recording a terminal outcome, for a routine reason.
+     *
+     * <p>Deliberately distinct from {@link #standDown}. A stand-down means
+     * another runner's durable state governs this workflow; abandonment means
+     * this thread stopped running it because the node is shutting down, an
+     * operator terminated it, or another writer finalised the row first.
+     * Routing these through {@code standDown} would make an ordinary deploy
+     * increment a failure-shaped counter — the confusion the engine's
+     * control-flow-signal design exists to prevent.
+     *
+     * <p><b>Why a stateful observer needs this:</b> it is the only callback
+     * guaranteed to reach the observer <em>on the workflow thread</em> when the
+     * run unwinds through {@link
+     * io.b2mash.maestro.core.exception.ExecutorShutdownException} /
+     * {@link io.b2mash.maestro.core.exception.WorkflowTerminatedException} or
+     * loses the terminal transition. {@link #workflowTerminated} fires on the
+     * operator's thread, not the workflow's, so it cannot release per-thread
+     * state. Without this callback a span opened on the workflow thread is
+     * never closed and therefore never exported.
+     *
+     * <p>Counting observers should <b>not</b> implement this: {@link
+     * #workflowTerminated} already fires exactly once for a terminate, so a
+     * second emission here would double-count.
+     *
+     * @param w      identity of the workflow whose local run ended
+     * @param reason why the run was abandoned
+     */
+    default void runAbandoned(WorkflowInfo w, AbandonReason reason) {}
 }

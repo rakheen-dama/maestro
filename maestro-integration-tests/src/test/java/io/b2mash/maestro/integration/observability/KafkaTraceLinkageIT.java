@@ -16,6 +16,7 @@ import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
@@ -31,6 +32,7 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.testcontainers.containers.KafkaContainer;
 import org.testcontainers.utility.DockerImageName;
 
+import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.Arrays;
@@ -43,6 +45,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -170,6 +173,79 @@ class KafkaTraceLinkageIT extends PostgresIntegrationSupport {
         }
     }
 
+    /**
+     * Fix round 1, F1 — the invariant that outranks tracing: <b>never discard a
+     * signal</b>.
+     *
+     * <p>The inbound {@code traceparent} is persisted verbatim on the signal
+     * row's {@code VARCHAR(128)} column. Before validation was moved to
+     * extraction, an over-long header made {@code saveSignal} throw, and because
+     * {@code deliverSignal} runs inside the Kafka listener that failure meant the
+     * record was never acked — bounded redelivery, then the dead-letter topic.
+     * A workflow would wait forever for a signal that was thrown away because its
+     * decorative metadata was too long. This test drives the real column.
+     */
+    @Test
+    @DisplayName("a signal carrying an over-long traceparent is still delivered and consumed — "
+            + "the workflow completes and the resumed segment is simply a fresh root")
+    void oversizedTraceparentNeverDiscardsTheSignal() throws Exception {
+        var suffix = UUID.randomUUID().toString().substring(0, 8);
+        var serviceB = "svc-b-bad-" + suffix;
+        var signalTopic = "maestro.signals." + serviceB;
+        createTopics(signalTopic, "maestro.admin.events." + suffix);
+
+        var recorder = new CountingActivities.Recorder();
+        var parked = new CountDownLatch(1);
+
+        try (var otelB = new OtelTracingFixture("service-b")) {
+            var messagingB = messaging(suffix + "-b",
+                    new KafkaTracePropagation(otelB.tracer(), otelB.propagator()));
+
+            var nodeB = MaestroEngineHarness.builder(store, objectMapper)
+                    .serviceName(serviceB)
+                    .lock(newLock())
+                    .instanceLockTtl(LOCK_TTL)
+                    .observer(new TracingEngineObserver(otelB.tracer(), otelB.propagator()))
+                    .build();
+            nodeB.registerActivities(ChainActivities.class,
+                    new CountingActivities.RecordingChainActivities(recorder));
+            nodeB.registerWorkflow(new TestWorkflows.SignalWorkflow(parked));
+
+            messagingB.subscribeSignals(serviceB, message ->
+                    nodeB.deliverSignal(message.workflowId(), message.signalName(),
+                            message.payload() == null ? null
+                                    : serializer.deserialize(message.payload(), String.class)));
+            Thread.sleep(1000);
+
+            var workflowId = MaestroEngineHarness.uniqueWorkflowId("trace-oversize");
+            var handle = nodeB.start(workflowId, TestWorkflows.SignalWorkflow.class, "seed");
+            assertTrue(parked.await(30, TimeUnit.SECONDS));
+            handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
+
+            // 512 characters — four times the trace_context column width.
+            publishRawSignal(signalTopic, workflowId,
+                    new SignalMessage(workflowId, TestWorkflows.SignalWorkflow.SIGNAL,
+                            objectMapper.valueToTree("approved")),
+                    "00-" + "a".repeat(509));
+
+            assertEquals(WorkflowStatus.COMPLETED, handle.awaitTerminal(BOUND),
+                    "the signal must still wake the workflow — a bad trace header may never "
+                            + "cost a signal its delivery");
+
+            var traceContexts = signalTraceContexts(workflowId);
+            assertEquals(1, traceContexts.size(), "the signal row was written");
+            assertNull(traceContexts.getFirst(),
+                    "the over-long value must have been dropped at extraction, never persisted");
+
+            assertTrue(otelB.spansNamed(SEGMENT_SPAN).stream()
+                            .noneMatch(sp -> sp.getParentSpanContext().isRemote()),
+                    "with no usable remote context the resumed segment degrades to a fresh root");
+
+            messagingB.destroy();
+            nodeB.close();
+        }
+    }
+
     // ── Fixtures ──────────────────────────────────────────────────────
 
     private KafkaWorkflowMessaging messaging(String group, KafkaTracePropagation propagation) {
@@ -187,6 +263,21 @@ class KafkaTraceLinkageIT extends PostgresIntegrationSupport {
                 null, null, "maestro.admin.events." + group, "trace-linkage-" + group,
                 2, Duration.ofMillis(50), 2.0, Duration.ofMillis(200), ".DLT");
         return new KafkaWorkflowMessaging(template, consumers, objectMapper, config, propagation);
+    }
+
+    /** Publishes with an arbitrary, deliberately unvalidated traceparent header. */
+    private void publishRawSignal(String topic, String key, SignalMessage message,
+                                  String traceparent) throws Exception {
+        var template = new KafkaTemplate<>(new DefaultKafkaProducerFactory<String, byte[]>(Map.of(
+                ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers(),
+                ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class,
+                ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class,
+                ProducerConfig.ACKS_CONFIG, "all")));
+        var record = new ProducerRecord<String, byte[]>(
+                topic, key, objectMapper.writeValueAsBytes(message));
+        record.headers().add("traceparent", traceparent.getBytes(StandardCharsets.UTF_8));
+        template.send(record).get();
+        template.destroy();
     }
 
     private static void createTopics(String... topics) throws ExecutionException, InterruptedException {

@@ -17,6 +17,7 @@ import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.AbandonReason;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.StandDownReason;
 import io.b2mash.maestro.core.observe.WorkflowInfo;
@@ -1428,6 +1429,12 @@ public final class WorkflowExecutor {
                 publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_COMPLETED, null);
 
                 logger.info("Workflow '{}' completed successfully", ctx.workflowId());
+            } else {
+                // F4: the converged LOSER. Another writer finalised the row
+                // first, so this run deliberately records nothing — but it did
+                // run, on this thread, and a stateful observer still holds
+                // per-thread state that only this emission will release.
+                emitRunAbandoned(ctx, AbandonReason.CONVERGED);
             }
 
         } catch (ExecutorShutdownException e) {
@@ -1549,6 +1556,9 @@ public final class WorkflowExecutor {
                 .orElse(null);
         logger.info("Workflow '{}' suspended by shutdown while {} — left recoverable",
                 ctx.workflowId(), status);
+        // RULING 5: the only callback a stateful observer gets on this thread
+        // for this path. workflowTerminated/Completed/Failed never fire here.
+        emitRunAbandoned(ctx, AbandonReason.SHUTDOWN);
     }
 
     // ── Internal: termination ──────────────────────────────────────────
@@ -1563,6 +1573,10 @@ public final class WorkflowExecutor {
     private void handleTermination(WorkflowContext ctx, WorkflowTerminatedException e) {
         logger.info("Workflow '{}' abandoned its local run — terminated{}",
                 ctx.workflowId(), e.reason() != null ? " (" + e.reason() + ")" : "");
+        // RULING 5. Note workflowTerminated already fired — on the OPERATOR's
+        // thread, inside terminateWorkflow — so it cannot release anything this
+        // workflow thread holds. This emission is what closes that gap.
+        emitRunAbandoned(ctx, AbandonReason.TERMINATED);
     }
 
     // ── Internal: stale-run stand-down (Issue 18) ──────────────────────
@@ -1635,10 +1649,19 @@ public final class WorkflowExecutor {
 
                 appendEvent(ctx, EventType.WORKFLOW_FAILED, null, errorPayload);
                 publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_FAILED, null);
+            } else {
+                // F4: converged loser on the failure path — same shape as the
+                // COMPLETED case above.
+                emitRunAbandoned(ctx, AbandonReason.CONVERGED);
             }
         } catch (Exception updateError) {
             logger.error("Failed to update workflow '{}' status to FAILED",
                     ctx.workflowId(), updateError);
+            // F4: the terminal write itself failed, so no terminal callback
+            // fired and the run is over on this thread regardless. Emitted
+            // inside the catch so it cannot be skipped by the failure it
+            // reports on.
+            emitRunAbandoned(ctx, AbandonReason.TERMINAL_WRITE_FAILED);
         }
     }
 
@@ -1726,6 +1749,28 @@ public final class WorkflowExecutor {
     /** Builds the identity-only observation record for an instance. */
     private WorkflowInfo observed(WorkflowInstance instance) {
         return new WorkflowInfo(instance.workflowId(), instance.workflowType(), serviceName);
+    }
+
+    /**
+     * Builds the identity-only observation record for the run currently
+     * executing on this thread. Used by the abandonment emissions, which run
+     * after the instance row may already have been rewritten by another node —
+     * the context is the reliable identity there.
+     */
+    private WorkflowInfo observed(WorkflowContext ctx) {
+        return new WorkflowInfo(ctx.workflowId(), ctx.workflowType(), serviceName);
+    }
+
+    /**
+     * Emits {@link EngineObserver#runAbandoned} for a local run that ended on
+     * the workflow thread without recording an outcome (design §11, RULING 5).
+     *
+     * <p>Contained like every other emission here: a throwing observer must not
+     * turn a routine shutdown into an escaping exception on the unwind path.
+     */
+    private void emitRunAbandoned(WorkflowContext ctx, AbandonReason reason) {
+        emit("runAbandoned", ctx.workflowId(),
+                () -> observer.runAbandoned(observed(ctx), reason));
     }
 
     /**

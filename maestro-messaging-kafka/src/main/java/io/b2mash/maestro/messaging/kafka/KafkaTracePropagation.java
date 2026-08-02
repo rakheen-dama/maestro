@@ -6,9 +6,12 @@ import io.micrometer.tracing.Tracer;
 import io.micrometer.tracing.propagation.Propagator;
 import org.apache.kafka.common.header.Headers;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 /**
  * The Kafka side of Maestro's W3C trace-context contract (observability design
@@ -50,10 +53,37 @@ import java.util.Objects;
  */
 public final class KafkaTracePropagation {
 
+    private static final Logger logger = LoggerFactory.getLogger(KafkaTracePropagation.class);
+
     /** Design §4.1: the header whose value is stored on the signal row. */
     static final String TRACEPARENT_HEADER = "traceparent";
 
     private static final String RECEIVE_SPAN = "maestro.signal.receive";
+
+    /**
+     * The W3C {@code traceparent} grammar, pinned to version {@code 00} exactly
+     * as design §4.1 specifies.
+     *
+     * <p><b>Why validation lives here, at extraction.</b> The extracted value
+     * does not stay in memory: it goes into {@code TraceContextHolder}, and from
+     * there {@code SignalManager.deliverSignal} persists it verbatim on the
+     * signal row (a {@code VARCHAR(128)} column). A hostile or merely buggy
+     * producer on {@code maestro.signals.&#123;service&#125;} could therefore send an
+     * over-long or malformed header and make {@code saveSignal} fail — and
+     * because {@code deliverSignal} runs inside the listener, that failure
+     * propagates, the record is never acked, redelivery exhausts its budget and
+     * the record is dead-lettered. A signal would be <em>discarded</em>, breaking
+     * the engine's "never discard a signal" invariant, and a trace header —
+     * decorative metadata — would have caused it.
+     *
+     * <p>So an inbound value that is not exactly grammar-valid is treated as
+     * <b>absent</b>: no span, no holder, nothing persisted, signal delivered
+     * normally. That also satisfies RULING 2's requirement that a bad or missing
+     * trace context degrade rather than error. Grammar-valid implies 55
+     * characters, so this subsumes any length cap on the column.
+     */
+    private static final Pattern TRACEPARENT_GRAMMAR =
+            Pattern.compile("^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$");
 
     private final Tracer tracer;
     private final Propagator propagator;
@@ -85,10 +115,21 @@ public final class KafkaTracePropagation {
     /**
      * @param headers the inbound record's headers
      * @return the raw {@code traceparent} header value, or {@code null} when the
-     *         record carries none
+     *         record carries none <em>or carries one that is not grammar-valid</em>
+     *         — see {@link #TRACEPARENT_GRAMMAR} for why an invalid value must
+     *         never be allowed to travel further
      */
     public @Nullable String extractTraceparent(Headers headers) {
-        return getHeader(headers, TRACEPARENT_HEADER);
+        var raw = getHeader(headers, TRACEPARENT_HEADER);
+        if (raw == null) {
+            return null;
+        }
+        if (!TRACEPARENT_GRAMMAR.matcher(raw).matches()) {
+            logger.debug("Ignoring malformed inbound traceparent header ({} chars) — "
+                    + "the signal is delivered untraced rather than rejected", raw.length());
+            return null;
+        }
+        return raw;
     }
 
     /**

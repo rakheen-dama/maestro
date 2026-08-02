@@ -1,6 +1,7 @@
 package io.b2mash.maestro.spring.observe;
 
 import io.b2mash.maestro.core.context.WorkflowMDC;
+import io.b2mash.maestro.core.observe.AbandonReason;
 import io.b2mash.maestro.core.observe.ActivityInfo;
 import io.b2mash.maestro.core.observe.ParkKind;
 import io.b2mash.maestro.core.observe.SignalInfo;
@@ -334,6 +335,85 @@ class TracingEngineObserverTest {
         assertTrue(resumed.getLinks().stream()
                         .anyMatch(l -> l.getSpanContext().getSpanId().equals(first.getSpanId())),
                 "the local park chain must survive as a link, not be silently dropped");
+    }
+
+    @Test
+    @DisplayName("RULING 7: a non-root segment is re-parented too — a workflow that already parked "
+            + "once, then consumes an already-delivered signal on the no-park fast path")
+    void nonRootSegmentIsReparentedOnRemoteContext() {
+        // 1. live work, then a park — segment 1 (root) closes.
+        observer.activityStarted(CHARGE);
+        observer.activityCompleted(CHARGE, Duration.ofMillis(1), false);
+        observer.workflowParked(WORKFLOW, ParkKind.SIGNAL);
+        // 2. resume on signal S1, which carried no trace context. Segment 2 is
+        //    chained to segment 1 and is therefore NOT root.
+        observer.signalConsumed(new SignalInfo("order-1", "OrderWorkflow", "s1", null), false);
+        observer.workflowUnparked(WORKFLOW, ParkKind.SIGNAL);
+        var chained = otel.spansNamed(SEGMENT);
+        assertEquals(1, chained.size(), "only segment 1 has closed so far");
+
+        // 3. awaitSignal finds S2 already delivered and consumes it WITHOUT
+        //    parking (SignalManager's fast path) — so the open segment is
+        //    non-root when the remote context arrives.
+        observer.signalConsumed(
+                new SignalInfo("order-1", "OrderWorkflow", "s2", TRACEPARENT), false);
+        observer.workflowCompleted(WORKFLOW);
+
+        var segments = otel.spansNamed(SEGMENT);
+        assertEquals(3, segments.size());
+        var resumed = segments.get(2);
+        assertEquals(REMOTE_TRACE_ID, resumed.getTraceId(),
+                "a non-root open segment must still join the publisher's trace — restricting "
+                        + "re-parenting to rootless segments dropped the remote context entirely");
+        assertEquals(REMOTE_SPAN_ID, resumed.getParentSpanId());
+        assertTrue(resumed.getLinks().stream()
+                        .anyMatch(l -> l.getSpanContext().getSpanId().equals(segments.get(1).getSpanId())),
+                "the local chain must survive as a link");
+    }
+
+    @Test
+    @DisplayName("a non-00 traceparent version is treated as absent, matching the pinned wire grammar")
+    void nonZeroVersionTraceparentIsTreatedAsAbsent() {
+        observer.signalConsumed(new SignalInfo("order-1", "OrderWorkflow", "approval",
+                "01-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"), false);
+        observer.workflowCompleted(WORKFLOW);
+
+        var segments = otel.spansNamed(SEGMENT);
+        assertEquals(1, segments.size());
+        assertFalse(segments.getFirst().getParentSpanContext().isValid(),
+                "the adapter's grammar must agree with design §4.1 and the Kafka contract test, "
+                        + "which both pin version 00");
+    }
+
+    // ── Run abandonment (design §11, RULING 5) ────────────────────────
+
+    @Test
+    @DisplayName("runAbandoned closes the open segment and clears the thread, for every reason")
+    void runAbandonedClosesTheSegment() {
+        for (var reason : AbandonReason.values()) {
+            otel.reset();
+            observer.activityStarted(CHARGE);
+            observer.activityCompleted(CHARGE, Duration.ofMillis(1), false);
+
+            observer.runAbandoned(WORKFLOW, reason);
+
+            assertNull(otel.tracer().currentSpan(),
+                    () -> "no scope may survive runAbandoned(" + reason + ")");
+            assertEquals(1, otel.spansNamed(SEGMENT).size(),
+                    () -> "the segment must be exported after runAbandoned(" + reason + ") — "
+                            + "before RULING 5 nothing closed it and it was never exported at all");
+            assertEquals(reason.name(),
+                    OtelTracingFixture.attribute(otel.spansNamed(SEGMENT).getFirst(),
+                            "maestro.abandon.reason"));
+
+            // The thread must be clean: the next run starts its own trace.
+            observer.activityStarted(CHARGE);
+            observer.activityCompleted(CHARGE, Duration.ofMillis(1), false);
+            observer.workflowCompleted(WORKFLOW);
+            var segments = otel.spansNamed(SEGMENT);
+            assertEquals(2, segments.size());
+            assertNotEquals(segments.get(0).getTraceId(), segments.get(1).getTraceId());
+        }
     }
 
     // ── Terminal callbacks clear the thread's state ───────────────────

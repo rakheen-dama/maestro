@@ -180,4 +180,9 @@ public final class CompositeEngineObserver implements EngineObserver {
     public void standDown(StandDownReason reason, String workflowId, @Nullable String detail) {
         fanOut("standDown", d -> d.standDown(reason, workflowId, detail));
     }
+
+    @Override
+    public void runAbandoned(WorkflowInfo w, AbandonReason reason) {
+        fanOut("runAbandoned", d -> d.runAbandoned(w, reason));
+    }
 }

@@ -322,8 +322,14 @@ final class SignalManager {
             logger.debug("Workflow '{}' waiting for signal '{}' (timeout={})", ctx.workflowId(), signalName, timeout);
             // Live park boundary (never replay — the replay branches returned
             // above). Unparked fires only on the paths where the workflow
-            // thread actually resumes: signal consumed or await timeout; a
-            // shutdown or terminate abandons the run and emits neither.
+            // thread actually resumes: signal consumed or await timeout. A
+            // shutdown or terminate emits neither — it emits
+            // EngineObserver.runAbandoned instead (design §11, RULING 5), from
+            // WorkflowExecutor's handleShutdownSuspension/handleTermination, so
+            // a stateful observer still gets exactly one closing callback on
+            // this thread. Note the status write a few lines above can itself
+            // raise WorkflowTerminatedException before this park emission ever
+            // runs, which is precisely why that closing callback is needed.
             observer.workflowParked(observed(ctx), ParkKind.SIGNAL);
 
             // Park in re-check-interval chunks. Every wake OR chunk expiry

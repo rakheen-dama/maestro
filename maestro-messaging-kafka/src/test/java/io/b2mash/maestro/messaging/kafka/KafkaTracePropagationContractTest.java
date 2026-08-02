@@ -6,6 +6,7 @@ import io.b2mash.maestro.core.spi.SignalMessage;
 import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -305,6 +306,88 @@ class KafkaTracePropagationContractTest extends KafkaTestSupport {
         assertEquals(publishedTraceId, seenTraceId.get());
     }
 
+    // ── Hostile / malformed inbound headers (fix round 1, F1) ─────────
+
+    /**
+     * The extracted value does not stay in memory: it is persisted verbatim on
+     * the signal row's {@code VARCHAR(128)} {@code trace_context} column. An
+     * over-long header would make {@code saveSignal} fail, {@code deliverSignal}
+     * would propagate that failure, the record would never be acked, redelivery
+     * would exhaust its budget and the signal would be <b>dead-lettered</b> —
+     * discarded, breaking the engine's "never discard a signal" invariant
+     * because of decorative metadata.
+     */
+    @Test
+    @DisplayName("an over-long traceparent is treated as absent — the signal is still delivered, "
+            + "and nothing over-long can reach the signal row")
+    void oversizedTraceparentIsTreatedAsAbsent() throws Exception {
+        var service = "svc-oversize-" + testSuffix;
+        var topic = "maestro.signals." + service;
+        createTopics(topic);
+
+        var received = new CopyOnWriteArrayList<SignalMessage>();
+        var holder = new AtomicReference<>("sentinel");
+        traced.subscribeSignals(service, message -> {
+            holder.set(TraceContextHolder.current());
+            received.add(message);
+        });
+        Thread.sleep(500);
+
+        // 512 characters — four times the column width.
+        var oversized = "00-" + "a".repeat(509);
+        publishRaw(topic, "order-1", new SignalMessage("order-1", "approval", null), oversized);
+
+        await().atMost(Duration.ofSeconds(20)).until(() -> !received.isEmpty());
+        assertEquals("approval", received.getFirst().signalName(),
+                "the signal must be delivered, not rejected");
+        assertNull(holder.get(),
+                "an over-long traceparent must never reach the holder, and so can never reach "
+                        + "the trace_context column");
+    }
+
+    @Test
+    @DisplayName("a malformed or wrong-version traceparent is treated as absent, and the signal "
+            + "is still delivered")
+    void malformedTraceparentIsTreatedAsAbsent() throws Exception {
+        var service = "svc-malformed-" + testSuffix;
+        var topic = "maestro.signals." + service;
+        createTopics(topic);
+
+        var seen = new CopyOnWriteArrayList<String>();
+        traced.subscribeSignals(service, message ->
+                seen.add(String.valueOf(TraceContextHolder.current())));
+        Thread.sleep(500);
+
+        for (var bogus : List.of(
+                "not-a-traceparent",
+                "",
+                "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331",          // truncated
+                "00-0AF7651916CD43DD8448EB211C80319C-B7AD6B7169203331-01",       // upper case
+                "01-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01")) {    // version != 00
+            publishRaw(topic, "order-1", new SignalMessage("order-1", "approval", null), bogus);
+        }
+
+        await().atMost(Duration.ofSeconds(20)).until(() -> seen.size() == 5);
+        assertTrue(seen.stream().allMatch("null"::equals),
+                () -> "every malformed traceparent must degrade to absent; holder values were " + seen);
+    }
+
+    @Test
+    @DisplayName("extractTraceparent rejects a malformed header rather than returning it")
+    void extractTraceparentRejectsMalformed() throws Exception {
+        var service = "svc-extract-bad-" + testSuffix;
+        var topic = "maestro.signals." + service;
+        createTopics(topic);
+
+        publishRaw(topic, "order-1", new SignalMessage("order-1", "approval", null),
+                "00-" + "a".repeat(509));
+
+        var record = readOne(topic);
+        assertNotNull(header(record, TRACEPARENT), "the bogus header really is on the wire");
+        assertNull(propagation.extractTraceparent(record.headers()),
+                "extraction is the choke point — nothing invalid may travel further");
+    }
+
     // ── extractTraceparent (the value the signal row stores) ──────────
 
     @Test
@@ -340,6 +423,15 @@ class KafkaTracePropagationContractTest extends KafkaTestSupport {
     }
 
     // ── Helpers ───────────────────────────────────────────────────────
+
+    /** Publishes with an arbitrary, deliberately unvalidated traceparent header. */
+    private void publishRaw(String topic, String key, Object message, String traceparent)
+            throws Exception {
+        var record = new ProducerRecord<String, byte[]>(
+                topic, key, objectMapper.writeValueAsBytes(message));
+        record.headers().add(TRACEPARENT, traceparent.getBytes(StandardCharsets.UTF_8));
+        kafkaTemplate.send(record).get();
+    }
 
     private ConsumerRecord<String, byte[]> readOne(String topic) {
         try (var consumer = consumerFactory.createConsumer("raw-" + UUID.randomUUID(), null)) {
