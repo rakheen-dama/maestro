@@ -3,18 +3,19 @@
 **Status: COMPLETE as of 2026-08-01** (soak run pending — see below). All
 three phases below shipped: Phase 1 (Tasks A-E, real multi-process E2E
 scenarios on both lock backends), Phase 2 (the chaos/soak harness, which
-found and fixed two further engine defects, Issues 18 and 19), and Phase 3
-(the docs this plan asked for). Results:
+found and fixed three further engine defects, Issues 18, 19, and 20), and
+Phase 3 (the docs this plan asked for). Results:
 
 - `docs/operations.md` — the measured deployment guarantees this plan's
   Phase 3 asked for, with every number traceable to an evidence file.
 - `docs/open-issues.md` Issues 11 and 12 — the measured evidence base and
-  benchmark this plan's Phase 3 asked for (PR-gate data now; the coordinator's
-  multi-hour soak run will add a longer-window data point, marked
-  PENDING-SOAK in both sections).
-- `docs/open-issues.md` Issues 17, 18, 19 — three real `maestro-core` defects
-  found and fixed along the way, all via the library-bug protocol this plan's
-  §6 mandated.
+  benchmark this plan's Phase 3 asked for: PR-gate data plus the 120-minute
+  soak run of record (`20260801-214325--6973268155056049009`: 2,376
+  workflows, 0 duplicate side effects, and the vs-node-count benchmark
+  tail), filled into both sections.
+- `docs/open-issues.md` Issues 17, 18, 19, 20 — four real `maestro-core`
+  defects found and fixed along the way, all via the library-bug protocol
+  this plan's §6 mandated.
 - The stale "`e2eTest` matches nothing" note this plan's §4 flagged for
   removal is gone — `e2eTest` now runs the chaos/soak harness.
 

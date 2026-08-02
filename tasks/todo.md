@@ -246,10 +246,14 @@ FUNDED loan misses seq {9,16}; FAILED saga has compensation events ~seq 19000.
   5->10 scenarios, "never tested"->closed with pointer to
   docs/operations.md), its out-of-scope list (>TTL chaos no longer
   out-of-scope), docs/multi-instance-test-plan.md completion banner
-- [ ] PENDING-SOAK: coordinator to fill both open-issues.md placeholders
-  (Issue 11 longer-window duplicate count; Issue 12 vs-node-count table)
-  once the in-flight 2-hour soak run (`benchmark-tail.json` + `metrics.csv`)
-  completes — do not run gradle/docker in this worktree while it's live
+- [x] PENDING-SOAK placeholders filled (2026-08-02): Issue 11 soak data
+  point (2,376 wf, 0 dups, 476 compensations = SAGA_WITHDRAWAL count,
+  76s drain) and Issue 12 vs-node-count benchmark of record (tail6/tail3
+  calm averages from `metrics.csv`), from soak run
+  `20260801-214325--6973268155056049009` — provenance caveats (PR-gate
+  `@Timeout` collision, leaked-checker noise, b2b5c65-vs-7113e06 stamp)
+  stated in Issue 11; operations.md §6/§8/§9 updated to match, incl. the
+  `d4720ca` suite-selection fix note
 - Report: `.superpowers/sdd/task-8-report.md`
 - [x] Evidence mirrored + INDEX updated
 

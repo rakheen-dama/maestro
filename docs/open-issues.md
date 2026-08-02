@@ -886,9 +886,65 @@ happens."
   and `PARTITION`/`BACKEND_OUTAGE(valkey)` are exercised (design §4); a GC
   pause or a partition of a different duration is not separately measured.
 
-PENDING-SOAK: the coordinator's multi-hour soak run (wider chaos-action
-surface, much longer duration than the 10-minute PR-gate window) will add a
-longer-window duplicate-count data point here once it completes.
+**Soak-window data point (run `20260801-214325--6973268155056049009`,
+2026-08-01/02).** The multi-hour soak run the earlier placeholder promised
+has landed: SOAK mode, seed `-6973268155056049009`, a 120-minute chaos
+window at 20 workflows/min — **2,376 workflows** (974 HAPPY /
+454 CONDITIONS_LOOP / 472 SIGNAL_TIMEOUT / 476 SAGA_WITHDRAWAL),
+`VERDICT: PASS`, `violations: []` (`run-summary.json` in the run dir under
+`.superpowers/sdd/multi-instance/evidence/task7/`). The side-effect census
+(`side-effects.json`, same dir):
+
+- **0 duplicate side effects** (0 explained / 0 unexplained), no missing
+  saga compensations.
+- Per-effect totals: 1,904 rate-lock reservations, 1,428 disbursements, and
+  **476 compensation releases — exactly the SAGA_WITHDRAWAL count**: every
+  saga path compensated exactly once, and nothing else compensated at all.
+- 13 redelivered-but-unconsumed signal groups, every one `consumedTwin=true`
+  — the known, informational Kafka at-least-once shape (Ruling 3), not a
+  correctness finding.
+- Checker integrity: the run's own periodic checker completed 245 cycles
+  with 1 unreachable cycle (max streak 1) — the invariants were being
+  watched for essentially the entire window.
+- Drain: after the end-of-window heal-all, every in-flight workflow across
+  all three services reached a terminal state in **76s** (console
+  01:45:57 → 01:47:13 SAST) against the harness's 240s drain SLA — the
+  backlog a 2-hour chaos window builds clears in about a minute once chaos
+  stops.
+
+Combined with the PR-gate streaks above, the measured duplicate-side-effect
+rate is now **0 across 2,587 workflows** (211 PR-gate + 2,376 soak). The
+soak window blunts the "short windows" caveat's sharpest edge (a 12×-longer
+chaos window than the PR gate); the "one workload" and "one trigger shape"
+caveats still stand — as does the issue itself: fencing tokens would make
+the guarantee unconditional, whereas this makes it well-measured.
+
+**Soak-run provenance and caveats — stated honestly** (they matter for
+anyone re-reading the raw console, `evidence/task7/soak-console.log`):
+
+1. The same JVM first ran the PR-gate class: the soak invocation predates
+   the `d4720ca` suite-selection fix (which makes dedicated
+   soak/golden/smoke invocations select only their dedicated class), and
+   that PR-gate run aborted at its own 25-minute `@Timeout` — the root
+   cause, finally attributed, of every earlier failed soak attempt. The
+   console therefore ends `BUILD FAILED` / `SOAK_EXIT=1`. **The soak test
+   itself PASSED**; this evidence is evaluated from the soak run's own
+   verdict and run directory, not the JVM's exit code.
+2. The aborted PR-gate leaked its checker/sampler threads (the run's binary
+   predates the `eac200e` failure-path-teardown fix), which spammed
+   `CHECKER BLIND … Mapped port can only be obtained after the container is
+   started` and `execInContainer` WARNs into the console from 23:43 SAST
+   onward — a single monotonic streak, fully attributable to the leaked
+   threads probing the torn-down PR-gate cluster. The soak's own checker was
+   clean: the 245-cycles / 1-unreachable / max-streak-1 numbers above come
+   from `run-summary.json`, not from grepping the polluted console.
+3. Binary provenance: the test binary compiled at `b2b5c65` (the console's
+   identity header, started 23:14 SAST); the run dir's identity stamps
+   `gitHead 7113e06` because the stamp reads git at run start (23:43), after
+   two later commits had landed. The workload-semantics fixes under test
+   (interrupt-safe pacer, runaway cap, in-flight bound) **are** in
+   `b2b5c65`; the later fix-loop commits touch failure paths, teardown, and
+   reporting only — none of them alter what this run measured.
 
 ---
 
@@ -967,23 +1023,48 @@ chaos windows (more contention/adoption activity, consistent with Issue 12's
 theory), but a real per-node-scaling number needs the dedicated benchmark
 tail below, not PR-gate noise.
 
-**vs-node-count benchmark of record — PENDING-SOAK.** The benchmark tail
-(chaos off, steady low rate, ~5 min at 6 nodes, graceful stop of one node per
-service, ~5 min at 3 nodes) runs only in soak mode and only after a passing
-verify; it has been smoke-verified at compressed durations
-(`.superpowers/sdd/multi-instance/evidence/task7/20260731-221641-204/`) but
-the coordinator's real multi-hour soak run produces the numbers below. Do not
-fill these in from the smoke run — they are compressed-duration and not
-representative.
+**vs-node-count benchmark of record (soak run
+`20260801-214325--6973268155056049009`, 2026-08-01/02).** The benchmark tail
+(chaos off, steady 6/min workload, one 300s measurement phase at 6 nodes, a
+graceful stop of one node per service — `LOAN_B`, `VERIFY_B`, `UW_B` — then
+a second 300s phase at 3 nodes) ran after the 120-minute soak window's
+passing verify. Sources: `benchmark-tail.json` (phase boundaries, stopped
+nodes, workflow counts) and `metrics.csv` (524 15s samples across the whole
+run, 312 of them calm) in the run dir under
+`.superpowers/sdd/multi-instance/evidence/task7/`. Every sample inside both
+tail phases was calm (`chaosActive=false`), 20 samples per phase; the
+per-15s columns below are averages over those 20 samples.
 
 | Phase | Duration | liveNodes | Workflows | recoveryRatePerSec (calm) | lockProbeCalls/15s (calm) | lockRenewCalls/15s (calm) | parkedCount (avg) |
 |---|---|---|---|---|---|---|---|
-| 6 nodes (`tail6-*`) | PENDING-SOAK | 6 | PENDING-SOAK | PENDING-SOAK | PENDING-SOAK | PENDING-SOAK | PENDING-SOAK |
-| 3 nodes (`tail3-*`) | PENDING-SOAK | 3 | PENDING-SOAK | PENDING-SOAK | PENDING-SOAK | PENDING-SOAK | PENDING-SOAK |
+| 6 nodes (`tail6`, 23:47:15–23:52:18Z) | 300s | 6 | 23 | 0.100 | 23.9 | 49.6 | 5.7 |
+| 3 nodes (`tail3`, 23:52:22–23:57:26Z) | 300s | 3 | 27 | 0.050 | 24.0 | 45.2 | 8.1 |
 
-Source once available: `benchmark-tail.json` (phase boundaries, stopped
-nodes, workflow counts) + the `metrics.csv` rows with `chaosActive=false` in
-each phase's time range, from the coordinator's soak run evidence directory.
+Read of the numbers:
+
+- **The recovery-query rate is linear in node count — exactly.** The
+  cluster-wide rate halves with the cluster (0.100 → 0.050 calls/s), i.e. a
+  constant ≈0.0167 calls/s per node (one `getRecoverableInstances` poll per
+  node per ~60s) in both phases. That is this issue's core theory confirmed
+  by a clean measurement: every node polls the full recoverable set on its
+  own interval regardless of ownership, so store-side recovery-query load
+  scales with node count (and each poll's cost scales with the active
+  workflow set — the quadratic-ish combination this issue describes).
+- **Lock probe/renew traffic tracks the parked-workflow backlog, not node
+  count.** Halving the nodes left probes flat (23.9 → 24.0 per 15s) and
+  renewals near-flat (49.6 → 45.2 per 15s) while the average parked count
+  rose 5.7 → 8.1 (the 3-node phase inherits the 6-node phase's in-flight
+  workflows on fewer nodes). Renewal round-trips are per held lock, not per
+  node — the serial-renewal concern above is a backlog-scaling cost.
+- The absolute numbers are modest: at this workload (6/min, ≤~10 parked)
+  nothing here is a bottleneck. The issue is about the trend, and the trend
+  is now measured, not hypothesised.
+
+*Run provenance caveats:* same run as Issue 11's soak data point — see
+"Soak-run provenance and caveats" there (PR-gate `@Timeout` collision in the
+same JVM, leaked-checker console noise, `b2b5c65` binary vs `7113e06`
+stamp). None of the three affect the tail phases, which ran chaos-free at
+the end of the soak's own passing run.
 
 ---
 

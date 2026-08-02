@@ -230,13 +230,17 @@ duplicate side effects across 211 workflows** (74 + 75 + 62). Full detail,
 the "why zero" explanation, and the honest caveats (short windows, one
 workload) live in `docs/open-issues.md` Issue 11's "Measured evidence"
 subsection — this section is a pointer, not a duplicate, so the numbers stay
-in one place. **PENDING-SOAK**: the coordinator's multi-hour soak run will
-add a longer-window data point to that same section.
+in one place. The multi-hour soak data point has since landed: **0 duplicate
+side effects across a further 2,376 workflows** in a 120-minute soak chaos
+window (run `20260801-214325--6973268155056049009`), taking the measured
+total to 0/2,587. Full numbers and the run's provenance caveats (a pre-fix
+PR-gate `@Timeout` collision in the same JVM, leaked-checker console noise,
+binary-vs-stamp commit skew) live in that same Issue 11 subsection.
 
 **Practical guidance, unchanged:** activities must still be idempotent. This
 cycle's evidence says duplicate side effects are *rare* under the measured
 conditions, not that they are impossible — do not remove idempotency
-handling on the strength of a 0/211 sample.
+handling on the strength of a 0/2,587 sample.
 
 ---
 
@@ -299,12 +303,15 @@ metrics are sampled for the Issue 12 benchmark (`docs/open-issues.md` Issue
 12).
 
 **What it found and fixed, this cycle:** Issue 18 (split-brain duplicate
-append misrecorded as workflow failure) and Issue 19 (timed-out `awaitSignal`
-replaying nondeterministically after a routine rolling restart) — both real
-`maestro-core` defects, both fixed RED-first via the library-bug protocol.
-Neither required deliberate failure injection beyond the harness's normal
-operation; Issue 19 in particular was triggered by a routine graceful
-rolling restart racing a late signal.
+append misrecorded as workflow failure), Issue 19 (timed-out `awaitSignal`
+replaying nondeterministically after a routine rolling restart), and Issue
+20 (a transient store outage during a parked workflow's wake-recheck probe
+durably failing a healthy workflow — surfaced by the PR-gate re-proof run
+for Issue 19's own fix, when a 39s partition outlived the connection pool's
+30s timeout) — all real `maestro-core` defects, all fixed RED-first via the
+library-bug protocol. None required deliberate failure injection beyond the
+harness's normal operation; Issue 19 in particular was triggered by a
+routine graceful rolling restart racing a late signal.
 
 **How to run it:**
 
@@ -319,6 +326,16 @@ rolling restart racing a late signal.
 ./gradlew :maestro-integration-tests:e2eTest --rerun-tasks \
     -Dmaestro.chaos.soak=true -Dmaestro.chaos.durationMinutes=120
 ```
+
+**Suite-selection note (`d4720ca`):** each dedicated invocation selects
+*only* its dedicated test class — `ChaosPrGateE2EIT` runs on the default
+invocation only, and is guard-disabled under the soak/golden/smoke/mode
+flags. Before this fix, `-Dmaestro.chaos.soak=true` also selected the
+PR-gate class, which picked up the soak duration and aborted at its own
+25-minute `@Timeout` — the single root cause of every failed soak attempt in
+this cycle. The CI weekly `chaos-soak` job uses the identical invocation and
+self-heals through the same class-level guards; no workflow change was
+needed.
 
 Needs Docker; `e2eTest` pulls in the three sample services' boot jars via
 `dependsOn`, so it is never wired into `build`/`check`. CI runs PR-gate mode
@@ -351,23 +368,28 @@ measured:
 - **Every §1-4 latency number is one workload** (`sample-loan-origination`)
   **on one set of machines.** They show which term dominates a bound (poll
   interval vs. lock TTL vs. Kafka session timeout), not a portable SLA.
-- **The chaos harness's split-brain evidence (§6) is a 10-minute PR-gate
-  window, three runs, one workload** — see `docs/open-issues.md` Issue 11
-  for the full caveats and the PENDING-SOAK marker for the coming multi-hour
-  data point.
+- **The chaos harness's split-brain evidence (§6) is three 10-minute
+  PR-gate runs plus one 120-minute soak run, one workload** — see
+  `docs/open-issues.md` Issue 11 for the full caveats, including the soak
+  run's provenance caveats (pre-fix PR-gate collision in the same JVM,
+  leaked-checker console noise, binary-vs-stamp commit skew).
 - **No lock fencing exists** (`docs/open-issues.md` Issue 11, open by
   design). Everything in §6 describes measured behaviour *given* that
   design decision, not a claim that split-brain is prevented.
-- **Recovery-polling scale (`docs/open-issues.md` Issue 12)** has PR-gate
-  sample metrics in this cycle's evidence but its vs-node-count
-  benchmark-of-record is PENDING-SOAK — see Issue 12's section.
+- **Recovery-polling scale (`docs/open-issues.md` Issue 12)** now has its
+  vs-node-count benchmark of record from the soak run's chaos-free tail:
+  cluster recovery-query rate is exactly linear in node count (a constant
+  ≈0.0167 calls/s per node at 6 and at 3 nodes), while lock probe/renew
+  traffic tracks the parked-workflow backlog rather than node count. One
+  workload, modest absolute load (6/min tail rate) — the *trend* is the
+  result, not an SLA. See Issue 12's section for the table.
 
 ---
 
 ## See also
 
-- `docs/open-issues.md` — Issues 11, 12, 17, 18, 19 in full: what was wrong
-  (or measured), where, and every pinning test.
+- `docs/open-issues.md` — Issues 11, 12, 17, 18, 19, 20 in full: what was
+  wrong (or measured), where, and every pinning test.
 - `docs/maestro-architecture.md` §14 "Failure Modes" — the design-level
   guarantee table this document adds measured numbers to.
 - `docs/configuration.md` — `maestro.recovery.poll-interval`,
