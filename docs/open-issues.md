@@ -1806,8 +1806,8 @@ The read and the compare-and-set are not atomic. Sequence:
 
 **Why it matters.** This contradicts the engine's own documented contract.
 `InstanceStatusWriter`'s Javadoc — and the `WorkflowTerminatedException`
-throw three lines above the swallow — state that `TERMINATED` means "the run
-must stop now, **without compensation**". Here an operator terminates a
+throw fifteen lines above the swallow (`:545` vs `:560`) — state that
+`TERMINATED` means "the run must stop now, **without compensation**". Here an operator terminates a
 workflow and the engine unwinds it anyway: refunds issued, reservations
 released, for a workflow an operator explicitly asked to stop. The guard was
 written to prevent exactly this and prevents it only when the terminate lands
