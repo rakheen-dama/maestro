@@ -31,7 +31,12 @@ import java.time.Instant;
  * <p>So a freshly-read terminal status is never overwritten:
  * <ul>
  *   <li>{@code TERMINATED} throws {@link WorkflowTerminatedException} — the run
- *       must stop now, without compensation, and the {@code Error} type keeps a
+ *       must stop now, without compensation — terminate never <em>starts</em> a
+ *       compensation, though one open race in the sibling writer can let an
+ *       already-starting one continue (a terminate landing between
+ *       {@code SagaManager.transitionToCompensating}'s terminal-status check
+ *       and its own status write; {@code docs/open-issues.md} Issue 22) — and
+ *       the {@code Error} type keeps a
  *       workflow's own {@code catch (Exception)} from swallowing it.</li>
  *   <li>{@code COMPLETED} / {@code FAILED} log and stand down, preserving the
  *       existing "another runner finalised it first" convergence: that outcome

@@ -688,7 +688,13 @@ public final class WorkflowExecutor {
      *   <li><b>No compensation.</b> Terminate marks and stops; it does not
      *       unwind a saga. Compensation steps that already ran stay memoized,
      *       pending ones never run. ("Cancel", which compensates, is a
-     *       different and larger feature.)</li>
+     *       different and larger feature.) <b>One open exception:</b> terminate
+     *       never <em>starts</em> a compensation, but a narrow documented race
+     *       — this method's write landing between
+     *       {@code SagaManager.transitionToCompensating}'s terminal-status
+     *       check and its own status write — can let a compensation that was
+     *       already starting run to completion on the terminated workflow. See
+     *       {@code docs/open-issues.md} Issue 22.</li>
      *   <li><b>No interruption of an in-flight activity.</b> Consistent with
      *       {@link #shutdown()}: the activity finishes and memoizes its result
      *       (harmless), and the run stands down at its next park or at its
