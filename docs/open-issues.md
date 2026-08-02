@@ -215,7 +215,12 @@ harness's first live run (the mandated Issue 11 split-brain trigger), is
 harness's PR-gate streak (a routine graceful rolling restart racing a late
 signal), is **now resolved** — see its section. An eighth (20), found by a
 PR-gate re-proof run after Issue 19's fix (a transient store outage during a
-parked wake-recheck probe), is **now resolved** — see its section.
+parked wake-recheck probe), is **now resolved** — see its section. A ninth
+(21), found while building a tracing fixture during the release-hardening
+cycle and triaged as release-blocking, is **now resolved** — see its section.
+A tenth (22), found by the review of 21's fix in the same class of
+read-modify-write race, is **open**: narrow, pre-existing, and behavioural
+rather than cosmetic.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -253,6 +258,8 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [18](#issue-18) | A stale run's duplicate append is recorded as workflow failure | Library defect | High | **Resolved** |
 | [19](#issue-19) | Timed-out awaits replay nondeterministically (late signal consumed at the gap) | Library defect | High | **Resolved** |
 | [20](#issue-20) | A transient store outage during a parked wake-recheck fails a healthy workflow | Library defect | High | **Resolved** |
+| [21](#issue-21) | Two `parallel()` branches parking at once fail the workflow and run compensations | Library defect | High | **Resolved** |
+| [22](#issue-22) | Compensations can run on an operator-terminated workflow | Library defect | Medium | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -1679,6 +1686,160 @@ passes, and the three pinning tests hold — parked `awaitSignal` and `sleep()`
 both ride out several failed probes and complete normally once the store
 heals, and a terminate arriving mid-outage is honoured on the first
 successful probe after recovery.
+
+---
+
+### Issue 21 — Two `parallel()` branches parking at once fail the workflow and run compensations {#issue-21}
+
+> **Resolved** (release-hardening cycle, 2026-08-02). `InstanceStatusWriter.write`
+> — the sole writer of a running workflow's non-terminal status, and therefore
+> of *both* park paths (`awaitSignal` → `WAITING_SIGNAL`, `sleep()` →
+> `WAITING_TIMER`) — was an unguarded, un-retried read-modify-write. It is now
+> a **bounded retry against a fresh read** (`STATUS_WRITE_ATTEMPTS = 5`,
+> immediate, no backoff), the same idiom `WorkflowExecutor.transitionToTerminal`
+> already used for the same conflict on the same row, with the terminal guard
+> re-evaluated on every attempt because the row may have gone `TERMINATED` or
+> been finalised by another runner in the meantime. On exhaustion it **stands
+> down** rather than propagating. Commits `a0905f6` (RED), `158aa6e` (fix +
+> boundary pins + Postgres pin), `108cd73` (mechanism pins). The rest of this
+> section is the record of the defect.
+
+**What was wrong.** Every branch thread of a `parallel()` fork writes its own
+park status into the **one** instance row. `InstanceStatusWriter.write` read
+the instance, built a bumped-version copy, and wrote it — with nothing between
+the read and the write. Two branches that park together interleave
+read/read/write/write, and the loser's compare-and-set finds a bumped version
+and throws `OptimisticLockException`.
+
+**Why it mattered.** The exception escaped `parallel()` into workflow author
+code, into `WorkflowExecutor.executeWorkflow`'s generic `catch (Exception)`,
+and so into a workflow durably recorded `FAILED` **with saga compensations
+run** — real refunds and inventory releases for work that never failed. The
+damage was durable, not transient: `FAILED` is not `isActive()`, so recovery
+never healed it, and `retryWorkflow` returns `COMPENSATED_NOT_RETRYABLE` for a
+compensated saga (Issue 16). A new instance of the Issue 4/5/18/20 family — a
+graceful condition misrecorded as a workflow failure.
+
+The shape that triggers it is the one `docs/cross-service.md` sells: fan out
+and await both replies. The suite was green only because every existing fork
+fixture parked at most one branch. It was found while building a tracing
+fixture that happened to park two, and reproduced deterministically — with a
+write-side barrier, and on the *natural* race within one to two iterations on
+the fastest store in the repo, where the read→write window is nanoseconds.
+Both branches were observed writing version 1 from a version-0 read.
+
+**Why stand-down on exhaustion is safe.** Every status this method writes is
+non-terminal. The status column is an advisory hint for the recovery poller's
+`isActive()` filter; the event log is the durable truth. A lost write leaves
+the instance active and recoverable, and nothing in any main source set keys
+on `WAITING_*` — a stale `RUNNING` where `WAITING_SIGNAL` belonged is
+indistinguishable from `WAITING_SIGNAL` to every consumer. A stale active
+status costs nothing; a workflow wrongly recorded `FAILED` costs a saga.
+
+**A caveat, stated deliberately rather than overlooked.** The retries are
+immediate — no backoff, no jitter — matching the budget
+`transitionToTerminal` already shares. Two branches need one retry between
+them, but a wide fan-out whose branches park in lockstep gives every writer
+O(N) chances to lose, so exhaustion is likelier there than the two-branch case
+suggests. The consequence of exhaustion stays bounded to a stale *active*
+status on an otherwise unaffected workflow, which is not worth paying for with
+a second retry policy alongside the engine's existing one.
+
+**Where.** `maestro-core/src/main/java/.../engine/InstanceStatusWriter.java`.
+
+**Pinned by.** `ConcurrentBranchParkingTest` (`maestro-core`) — the natural
+race over 15 consecutive forks, both-branches-sleep, both-branches-await, the
+retry boundary, exhaustion stand-down, and two *mechanism* pins that watch the
+store write ledger rather than the workflow's fate: that the loser's status
+actually lands (read freshness), and that a `TERMINATED` written mid-retry
+still propagates `WorkflowTerminatedException` (per-attempt guard
+re-evaluation). Both mechanism pins were added after a reviewer empirically
+disproved the claim that the earlier pins proved the loop executed — hoisting
+the read above the loop left all five green. Plus `EnginePostgresParallelIT`
+against a real Postgres. The fix is mutation-proven: hoisting the read fails
+exactly the read-freshness pin; disabling the per-attempt guard fails exactly
+the terminate pin.
+
+**Incidental.** The fix also corrected a comment in `TracingParallelBranchIT`
+that had **enshrined this defect as "an engine-level limitation"**.
+
+---
+
+### Issue 22 — Compensations can run on an operator-terminated workflow {#issue-22}
+
+> **Open.** Narrow and pre-existing; found by the review of Issue 21's fix,
+> which closed the same read-modify-write race in the sibling writer. Not
+> fixed in the release-hardening cycle because it is out of that cycle's
+> scope, and it is filed here so it is a known behaviour rather than a
+> surprise.
+
+**Kind:** Library defect. **Severity:** Medium (narrow window, but the
+outcome contradicts a documented guarantee).
+
+**What's wrong.** `SagaManager.transitionToCompensating`
+(`maestro-core/src/main/java/.../saga/SagaManager.java`, the guard at line 542
+and the swallow at line 560) has the right guard and the wrong failure mode:
+
+```java
+var latest = store.getInstance(ctx.workflowId()).orElse(instance);
+if (latest.status() == WorkflowStatus.TERMINATED) {
+    throw new WorkflowTerminatedException(ctx.workflowId(), null);   // correct
+}
+...
+try {
+    store.updateInstance(compensating);
+} catch (OptimisticLockException e) {
+    logger.debug("Optimistic lock conflict updating workflow '{}' to COMPENSATING, continuing",
+            ctx.workflowId());                                        // <-- here
+}
+```
+
+The read and the compare-and-set are not atomic. Sequence:
+
+1. The guard reads a **non-terminal** status and passes.
+2. A cross-node `WorkflowExecutor.terminateWorkflow` writes `TERMINATED`,
+   bumping the row version.
+3. The compare-and-set loses.
+4. The conflict is **swallowed** (`debug`, "continuing") and the method
+   returns normally.
+5. `compensate()` carries on and **the compensations run**.
+
+**Why it matters.** This contradicts the engine's own documented contract.
+`InstanceStatusWriter`'s Javadoc — and the `WorkflowTerminatedException`
+throw three lines above the swallow — state that `TERMINATED` means "the run
+must stop now, **without compensation**". Here an operator terminates a
+workflow and the engine unwinds it anyway: refunds issued, reservations
+released, for a workflow an operator explicitly asked to stop. The guard was
+written to prevent exactly this and prevents it only when the terminate lands
+*before* the read.
+
+The window is narrow — the terminate has to land between the guard's read and
+the compare-and-set, on a workflow that is entering its compensation phase —
+and it is pre-existing, not introduced by this cycle. But it is a behavioural
+defect, not a cosmetic one: the observable outcome is wrong.
+
+**Where.** `maestro-core/src/main/java/.../saga/SagaManager.java`
+`transitionToCompensating` — the guard at `:542`, the `OptimisticLockException`
+catch at `:560`.
+
+**How to tackle it.** The fix is the one Issue 21 already shipped for the
+sibling writer, and the idiom is now proven twice in the codebase
+(`WorkflowExecutor.transitionToTerminal`, `InstanceStatusWriter.write`):
+replace the swallow with a **bounded retry against a fresh read**, with the
+terminal guard **re-evaluated inside the loop** — so a `TERMINATED` that
+appears between attempts throws `WorkflowTerminatedException` rather than
+being lost. Note that the exhaustion policy differs from Issue 21's: this
+write is a transition *into* an active phase, so on exhaustion the safe answer
+is still to stand down (leaving the instance in its existing recoverable
+state) rather than to compensate against an unread row.
+
+**Done when.** A RED pin proves the current behaviour — a `TERMINATED` written
+between the guard's read and the compare-and-set produces at least one
+`COMPENSATION_STARTED` / compensation invocation — and the same pin shows zero
+compensations after the fix, with `WorkflowTerminatedException` propagating.
+Pin the mechanism the way Issue 21's fix was pinned: assert the store write
+ledger and the compensation invocations, not merely that the workflow ended up
+`TERMINATED`.
 
 ---
 
