@@ -12,10 +12,11 @@ import org.springframework.context.annotation.Configuration;
 
 /**
  * Auto-configuration for Maestro's observability adapters (observability
- * design doc §7.2). Task 4 (this class) wires the Micrometer meter adapter;
- * a later task adds a sibling {@code TracingConfiguration} nested class for
- * span creation, sharing this same outer class and its {@code
- * maestro.observability.*} property gate.
+ * design doc §7.2, amended per coordinator ruling — see below). Task 4
+ * (this class) wires the Micrometer meter adapter; a later task adds a
+ * sibling {@code TracingConfiguration} nested class for span creation,
+ * sharing this same outer class and its {@code maestro.observability.*}
+ * property gate.
  *
  * <p>Activates when {@code maestro.enabled} is {@code true} (default,
  * matching {@link MaestroAutoConfiguration}'s own gate). Each nested
@@ -28,35 +29,55 @@ import org.springframework.context.annotation.Configuration;
  *       the context.</li>
  * </ul>
  *
- * <h2>Ordering — deviation from the design doc, recorded for a coordinator
- * ruling</h2>
- * The design doc's §7.2 paste-ready block declares this class {@code
- * @AutoConfiguration(before = MaestroAutoConfiguration.class)}. That is
- * incompatible with {@code MetricsConfiguration.maestroEngineGauges}'s own
- * {@code @ConditionalOnBean(WorkflowExecutor.class)}: Spring Boot evaluates
- * auto-configuration {@code @ConditionalOnBean} conditions in {@code
- * before}/{@code after} processing order, so a class ordered {@code before}
- * {@link MaestroAutoConfiguration} has its conditions evaluated <em>before</em>
- * {@code WorkflowExecutor}'s bean definition exists — the gauges bean would
- * never register, in every deployment, unconditionally. This was verified
- * empirically (see the task report) with a minimal two-auto-configuration
- * reproduction: a nested {@code @ConditionalOnBean(name = "aBean")} bean
- * registered {@code false} when its outer class was {@code before} the
- * class defining {@code aBean}, and {@code true} when {@code after}.
- * <p>
- * This class is therefore ordered {@code after = MaestroAutoConfiguration.class}
- * instead. The design's own rationale for {@code before} — visibility of the
- * {@code MicrometerEngineObserver} bean to {@code
- * MaestroAutoConfiguration.maestroWorkflowExecutor}'s {@code
- * ObjectProvider<EngineObserver>} — is unaffected by this change: {@code
- * ObjectProvider} resolution happens lazily at actual bean instantiation,
- * which occurs only after every auto-configuration class's bean
- * <em>definitions</em> (from every class, regardless of processing order)
- * have already been registered. The design doc itself calls the {@code
- * before} ordering "belt-and-braces, not load-bearing" for exactly this
- * reason.
+ * <h2>Ordering — {@code after}, not {@code before} (coordinator-approved
+ * amendment to design §7.2)</h2>
+ * The design doc's §7.2 paste-ready block originally declared this class
+ * {@code @AutoConfiguration(before = MaestroAutoConfiguration.class)}. That
+ * is incompatible with {@code MetricsConfiguration.maestroEngineGauges}'s
+ * own {@code @ConditionalOnBean(WorkflowExecutor.class)}: Spring Boot
+ * evaluates auto-configuration {@code @ConditionalOnBean} conditions in
+ * {@code before}/{@code after} processing order, so a class ordered
+ * {@code before} {@link MaestroAutoConfiguration} has its conditions
+ * evaluated <em>before</em> {@code WorkflowExecutor}'s bean definition
+ * exists — the gauges bean would never register, in every deployment,
+ * unconditionally. Verified empirically (task report) and approved by the
+ * coordinator, who also noted the shipped in-repo precedent: {@code
+ * MaestroHealthAutoConfiguration} already orders itself {@code after
+ * MaestroAutoConfiguration.class} for the identical reason (its indicator
+ * bean method needs {@code WorkflowExecutor} to already exist).
+ *
+ * <h2>Ordering — {@code afterName} for Boot's own metrics auto-configuration
+ * (fix round 1, F1)</h2>
+ * {@code after = MaestroAutoConfiguration.class} alone still left {@code
+ * @ConditionalOnBean(MeterRegistry.class)} evaluated <em>before</em> Boot
+ * registers any {@code MeterRegistry} bean definition: Spring Boot's {@code
+ * AutoConfigurationSorter} falls back to alphabetical order between classes
+ * with no explicit relative ordering, and {@code
+ * io.b2mash.maestro.spring.observe} sorts before {@code
+ * org.springframework.boot.micrometer.metrics.autoconfigure} — so in a real
+ * application (actuator + Micrometer on the classpath), this class's
+ * conditions were evaluated first, every time, and the feature shipped
+ * inert: no {@code MicrometerEngineObserver}, no gauges, zero {@code
+ * maestro.*} meters, silently. This class now also declares {@code
+ * afterName} for {@code
+ * org.springframework.boot.micrometer.metrics.autoconfigure.MetricsAutoConfiguration}
+ * and {@code
+ * org.springframework.boot.micrometer.metrics.autoconfigure.CompositeMeterRegistryAutoConfiguration}
+ * — the exact ordering Boot's own {@code JvmMetricsAutoConfiguration} and
+ * {@code SystemMetricsAutoConfiguration} use for their identical {@code
+ * @ConditionalOnBean(MeterRegistry.class)} gate. {@code afterName} (string
+ * class names), not {@code after} (class literals), because this module
+ * depends on {@code micrometer-core} only as {@code compileOnly} — it does
+ * not depend on {@code spring-boot-micrometer-metrics} at all, so a direct
+ * class reference to {@code MetricsAutoConfiguration} would require adding
+ * that as a further compile-time dependency; the string form needs no such
+ * dependency and matches Boot's own precedent for optional peers.
  */
-@AutoConfiguration(after = MaestroAutoConfiguration.class)
+@AutoConfiguration(after = MaestroAutoConfiguration.class,
+        afterName = {
+                "org.springframework.boot.micrometer.metrics.autoconfigure.MetricsAutoConfiguration",
+                "org.springframework.boot.micrometer.metrics.autoconfigure.CompositeMeterRegistryAutoConfiguration"
+        })
 @ConditionalOnProperty(prefix = "maestro", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class MaestroObservabilityAutoConfiguration {
 

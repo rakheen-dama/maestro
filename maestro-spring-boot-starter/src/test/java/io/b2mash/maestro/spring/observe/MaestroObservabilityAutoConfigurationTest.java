@@ -18,6 +18,9 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.micrometer.metrics.autoconfigure.CompositeMeterRegistryAutoConfiguration;
+import org.springframework.boot.micrometer.metrics.autoconfigure.MetricsAutoConfiguration;
+import org.springframework.boot.micrometer.metrics.autoconfigure.export.simple.SimpleMetricsExportAutoConfiguration;
 import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
@@ -52,6 +55,55 @@ class MaestroObservabilityAutoConfigurationTest {
             .withBean(ObjectMapper.class, ObjectMapper::new)
             .withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
             .withPropertyValues("maestro.service-name=observability-test");
+
+    /**
+     * F1 fix round 1: the {@code withBean(MeterRegistry.class, ...)} tests
+     * below register a <em>user</em> bean definition, which Spring always
+     * processes before auto-configuration — so every one of them passed even
+     * when {@link MaestroObservabilityAutoConfiguration}'s {@code
+     * @ConditionalOnBean(MeterRegistry.class)} was evaluated before Boot's
+     * own metrics auto-configuration had registered a real
+     * {@code MeterRegistry} bean (alphabetical default ordering puts {@code
+     * io.b2mash.maestro.spring.observe.*} before {@code
+     * org.springframework.boot.micrometer.metrics.autoconfigure.*}). This
+     * test drives the actual Boot auto-configuration chain that a real
+     * application depending on {@code spring-boot-starter-actuator} gets, so
+     * it fails exactly the way production would if the ordering were wrong.
+     */
+    @Test
+    @DisplayName("registers through the real Boot metrics auto-configuration chain, not a withBean MeterRegistry stub")
+    void wiresThroughRealBootMetricsAutoConfigurationChain() {
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        MetricsAutoConfiguration.class,
+                        CompositeMeterRegistryAutoConfiguration.class,
+                        SimpleMetricsExportAutoConfiguration.class,
+                        MaestroAutoConfiguration.class,
+                        MaestroObservabilityAutoConfiguration.class))
+                .withUserConfiguration(TestWorkflowConfiguration.class)
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .withPropertyValues("maestro.service-name=observability-real-chain-test")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context)
+                            .as("Boot's own metrics auto-configuration chain must have produced a "
+                                    + "real MeterRegistry bean for this context to be a valid test")
+                            .hasSingleBean(MeterRegistry.class);
+                    assertThat(context).hasSingleBean(MicrometerEngineObserver.class);
+                    assertThat(context).hasSingleBean(MaestroEngineGauges.class);
+
+                    var client = context.getBean(MaestroClient.class);
+                    var registry = context.getBean(MeterRegistry.class);
+
+                    client.newWorkflow(EchoWorkflow.class, options("real-chain-1"))
+                            .startAndWait("hi", Duration.ofSeconds(10), String.class);
+
+                    assertThat(registry.get("maestro.workflow.started")
+                            .tag("workflow", "ObservabilityEchoWorkflow")
+                            .counter().count()).isEqualTo(1.0);
+                });
+    }
 
     @Test
     @DisplayName("maestro.workflow.started increments when a workflow actually runs through the starter's engine")
@@ -117,8 +169,16 @@ class MaestroObservabilityAutoConfigurationTest {
                 });
     }
 
+    /**
+     * F4 fix round 1: the original version of this test compared the gauge
+     * value against {@code executor.runningCount()}/{@code parkedCount()}
+     * while both were 0 — a gauge hardcoded to return {@code 0.0} would have
+     * passed identically. This version parks a real workflow first so the
+     * assertion can only pass if the gauge is actually reading the
+     * executor's live state.
+     */
     @Test
-    @DisplayName("maestro.workflows.running / maestro.workflows.parked gauges are registered against the executor")
+    @DisplayName("maestro.workflows.running / maestro.workflows.parked gauges reflect real (non-zero) executor state")
     void gaugesRegisteredAgainstExecutor() {
         runner.withBean(MeterRegistry.class, SimpleMeterRegistry::new)
                 .run(context -> {
@@ -126,11 +186,36 @@ class MaestroObservabilityAutoConfigurationTest {
                     assertThat(context).hasSingleBean(MaestroEngineGauges.class);
                     var registry = context.getBean(MeterRegistry.class);
                     var executor = context.getBean(WorkflowExecutor.class);
+                    var store = context.getBean(WorkflowStore.class);
+                    var client = context.getBean(MaestroClient.class);
+                    var workflow = context.getBean(ParkingActivityWorkflow.class);
+
+                    assertThat(registry.get("maestro.workflows.running").gauge().value()).isZero();
+                    assertThat(registry.get("maestro.workflows.parked").gauge().value()).isZero();
+
+                    client.newWorkflow(ParkingActivityWorkflow.class, options("gauges-parked-1"))
+                            .startAsync(null);
+                    assertThat(workflow.reachedGate.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+                    await().atMost(Duration.ofSeconds(2)).until(() ->
+                            store.getInstance("gauges-parked-1")
+                                    .map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL).orElse(false));
 
                     assertThat(registry.get("maestro.workflows.running").gauge().value())
-                            .isEqualTo(executor.runningCount());
+                            .as("must track the executor's real state, not a hardcoded value")
+                            .isEqualTo(executor.runningCount())
+                            .isEqualTo(1.0);
                     assertThat(registry.get("maestro.workflows.parked").gauge().value())
-                            .isEqualTo(executor.parkedCount());
+                            .as("must track the executor's real state, not a hardcoded value")
+                            .isEqualTo(executor.parkedCount())
+                            .isEqualTo(1.0);
+
+                    executor.deliverSignal("gauges-parked-1", "resume", "go");
+                    await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                            assertThat(store.getInstance("gauges-parked-1").orElseThrow().status())
+                                    .isEqualTo(WorkflowStatus.COMPLETED));
+                    await().atMost(Duration.ofSeconds(2)).until(() ->
+                            registry.get("maestro.workflows.running").gauge().value() == 0.0
+                                    && registry.get("maestro.workflows.parked").gauge().value() == 0.0);
                 });
     }
 

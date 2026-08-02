@@ -28,8 +28,26 @@ import io.micrometer.core.instrument.MeterRegistry;
  * <h2>Thread safety</h2>
  * Immutable after construction; the registered gauges read {@link
  * WorkflowExecutor}'s own thread-safe counters on every scrape.
+ *
+ * <h2>Why {@code executor} is a field (fix round 1, F5)</h2>
+ * {@link Gauge.Builder} holds its state object behind a {@code WeakReference}
+ * by default — the gauge silently starts reporting {@code NaN} the moment
+ * nothing else keeps that object reachable. Without a field here, the only
+ * thing keeping {@code executor} alive was the Spring context's own
+ * singleton reference, which happens to be true today but is an incidental
+ * fact about the container, not an invariant of this class — a future
+ * refactor (e.g. a factory that hands out short-lived executor views) could
+ * silently turn both gauges into {@code NaN} with no test able to tell the
+ * difference from a correctly-wired one, since the constructor would still
+ * run and {@code .register(...)} would still succeed. Keeping a {@code
+ * final} field makes {@code MaestroEngineGauges} itself a strong root for
+ * as long as it exists (which, as a Spring-managed singleton, is the
+ * application's lifetime), independent of whatever else the container is
+ * doing with the executor.
  */
 public final class MaestroEngineGauges {
+
+    private final WorkflowExecutor executor;
 
     /**
      * Registers {@code maestro.workflows.running} and {@code
@@ -40,9 +58,12 @@ public final class MaestroEngineGauges {
      *                 and {@link WorkflowExecutor#parkedCount()} back the gauges
      */
     public MaestroEngineGauges(MeterRegistry registry, WorkflowExecutor executor) {
-        Gauge.builder("maestro.workflows.running", executor, WorkflowExecutor::runningCount)
+        this.executor = executor;
+        Gauge.builder("maestro.workflows.running", this.executor, WorkflowExecutor::runningCount)
+                .strongReference(true)
                 .register(registry);
-        Gauge.builder("maestro.workflows.parked", executor, WorkflowExecutor::parkedCount)
+        Gauge.builder("maestro.workflows.parked", this.executor, WorkflowExecutor::parkedCount)
+                .strongReference(true)
                 .register(registry);
     }
 }

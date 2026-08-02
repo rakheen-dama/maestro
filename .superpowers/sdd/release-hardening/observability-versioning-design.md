@@ -1128,7 +1128,14 @@ registered in
 `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`:
 
 ```java
-@AutoConfiguration(before = MaestroAutoConfiguration.class)
+// AMENDED BY TASK 4 FIX ROUND 1 (coordinator-approved): `before` is REMOVED.
+// `after = MaestroAutoConfiguration.class` plus `afterName` for Boot's own
+// metrics auto-configuration — see the ordering note below the block.
+@AutoConfiguration(after = MaestroAutoConfiguration.class,
+        afterName = {
+                "org.springframework.boot.micrometer.metrics.autoconfigure.MetricsAutoConfiguration",
+                "org.springframework.boot.micrometer.metrics.autoconfigure.CompositeMeterRegistryAutoConfiguration"
+        })
 @ConditionalOnProperty(prefix = "maestro", name = "enabled",
         havingValue = "true", matchIfMissing = true)
 public class MaestroObservabilityAutoConfiguration {
@@ -1166,10 +1173,42 @@ public class MaestroObservabilityAutoConfiguration {
 }
 ```
 
-- `before = MaestroAutoConfiguration.class` + `ObjectProvider` collection in
-  `maestroWorkflowExecutor` guarantees observer beans are definable when the
-  executor is created (ObjectProvider resolves lazily at bean creation, so
-  strict ordering is belt-and-braces, not load-bearing).
+- **Ordering — amended by Task 4's fix round 1, coordinator-approved.**
+  This section originally specified `@AutoConfiguration(before =
+  MaestroAutoConfiguration.class)`. That is incompatible with
+  `MetricsConfiguration.maestroEngineGauges`'s own
+  `@ConditionalOnBean(WorkflowExecutor.class)`: Spring Boot evaluates
+  auto-configuration `@ConditionalOnBean` conditions in `before`/`after`
+  processing order, so a class ordered `before` `MaestroAutoConfiguration`
+  has that condition evaluated before `WorkflowExecutor`'s bean definition
+  exists — the gauges bean would never register, in every deployment. Task
+  4's implementer verified this empirically and used `after` instead; the
+  coordinator approved it, noting the matching shipped in-repo precedent:
+  `MaestroHealthAutoConfiguration` (`io.b2mash.maestro.spring.health`)
+  already orders itself `@AutoConfiguration(after =
+  MaestroAutoConfiguration.class)` for the identical reason (its indicator
+  bean needs `WorkflowExecutor` to already exist). `ObjectProvider`
+  collection in `maestroWorkflowExecutor` is unaffected either way:
+  `ObjectProvider` resolves lazily at actual bean *instantiation*, which
+  happens only after every auto-configuration class's bean *definitions* —
+  regardless of relative processing order — have already been registered;
+  this is what "belt-and-braces, not load-bearing" (the original text
+  below) was getting at, and remains true under `after`.
+- **A second ordering gap, also found and fixed in Task 4's fix round 1:**
+  `after = MaestroAutoConfiguration.class` alone still left
+  `@ConditionalOnBean(MeterRegistry.class)` evaluated *before* Boot
+  registers any `MeterRegistry` bean definition in a real application —
+  `AutoConfigurationSorter` falls back to alphabetical order between
+  classes with no explicit relative ordering, and
+  `io.b2mash.maestro.spring.observe` sorts before
+  `org.springframework.boot.micrometer.metrics.autoconfigure`. The
+  `afterName` entries in the code block above (matching Boot's own
+  `JvmMetricsAutoConfiguration`/`SystemMetricsAutoConfiguration`, which
+  order themselves identically for their own identical
+  `@ConditionalOnBean(MeterRegistry.class)` gate) close this gap.
+  `afterName` (string class names) rather than `after` (class literals)
+  because the starter depends on `micrometer-core` only as `compileOnly`
+  and does not depend on `spring-boot-micrometer-metrics` at all.
 - Spec rule "`maestro.observability.tracing.enabled` default `true` when a
   tracer is present" falls out structurally:
   `matchIfMissing = true` ∧ `@ConditionalOnBean(Tracer)` — no tracer, no
