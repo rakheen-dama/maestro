@@ -1232,19 +1232,26 @@ mis-latched thread wrong until its next park.
 
 ## Residual, stated accurately this time
 
-One shape remains ambiguous and is documented rather than guessed at: a workflow
-whose **first** statement is `parallel()` *and* which then does main-line work
-after the join. That main thread owns no fork point (it never opened a segment
-before forking) and its post-join activities sit at seq ≥ 2000, so case 3 latches
-it as a branch and it opens no segments — its activity spans become roots and its
-span events are dropped. Nothing is orphaned and no span leaks; the run is simply
-flatter. Closing this needs the fork/join observation boundary already listed as
-post-1.0 work (known limitation 4), because no fact available to the adapter
-distinguishes that thread from a branch.
+One shape remains ambiguous and is documented rather than guessed at, and it is
+wider than "a workflow whose first statement is `parallel()`": any recovered run
+whose first live step after replay sits past a join hits the identical case,
+because `DefaultWorkflowOperations:205` returns silently for a replayed completed
+sleep, so a thread resuming past a join opens no fork point either — the same
+structural gap a fork-first branch has. In both shapes the thread owns no fork
+point (it never opened a segment before forking, or replay never opened one for
+it) and its post-join activities sit at seq ≥ 2000, so case 3 latches it as a
+branch and it opens no segments — its activity spans become roots and its span
+events are dropped. Nothing is orphaned and no span leaks; spans still export —
+but each such activity exports as its own root span, so the run fragments into
+one trace per activity instead of staying in one: the reviewer's probe showed 2
+post-join activities producing 2 separate traces, not one flat trace. Closing
+this needs the fork/join observation boundary already listed as post-1.0 work
+(known limitation 4), because no fact available to the adapter distinguishes that
+thread from a branch.
 
-This is the third time this paragraph has been restated. The two earlier versions
-are marked **CORRECTED** in place above rather than deleted, so the record shows
-what was believed when.
+This is the fourth time this paragraph has been restated. The two earlier
+versions are marked **CORRECTED** in place above rather than deleted, so the
+record shows what was believed when.
 
 ## Verification
 
@@ -1287,8 +1294,10 @@ directly, so there was nothing to revert; `grep -c "TEMPORARY RED"` on
    confirming the assertion could observe it. Running every new pin against the
    unfixed code before fixing — done from round 3's start — is what caught this
    one, and is the discipline I should have applied from the beginning.
-2. The residual above is the only known classification gap, and it degrades to a
-   flatter trace rather than to leaked or orphaned spans.
+2. The residual above is the only known classification gap — wider than
+   fork-first workflows alone, since any recovered run whose first live step
+   after replay sits past a join hits it too — and it fragments the run into
+   one trace per post-join activity rather than leaking or orphaning spans.
 3. Unchanged from round 2: `docs/observability.md` still owes RULING 8's note,
    the `maestro.observability.*` properties, and the four known limitations —
    all Task 8's.
