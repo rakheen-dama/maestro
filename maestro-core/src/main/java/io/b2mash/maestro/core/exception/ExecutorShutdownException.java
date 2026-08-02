@@ -21,7 +21,8 @@ package io.b2mash.maestro.core.exception;
  * <p>Every other exception in this package extends {@link MaestroException}
  * (an unchecked {@link RuntimeException}) so workflow authors can catch the
  * engine's failure types uniformly. This one deliberately breaks that
- * convention: it extends {@link Error} instead.
+ * convention: it extends {@link MaestroControlFlowError} — the sealed base for
+ * the engine's control-flow signals, itself an {@link Error} — instead.
  *
  * <p>The reason is that a workflow author's ordinary
  * {@code try { workflow.awaitSignal(...) } catch (Exception e) { ... }} around
@@ -44,9 +45,13 @@ package io.b2mash.maestro.core.exception;
  * exception. Doing either tells the engine your workflow failed during a
  * routine deploy — which will run your compensations. If you must catch
  * broadly (for example {@code catch (Throwable t)} to log and continue),
- * check for this type first and rethrow it.
+ * check for this type first and rethrow it — or, better, check for
+ * {@link MaestroControlFlowError}, which covers this signal and its siblings
+ * in one test.
+ *
+ * @see MaestroControlFlowError
  */
-public final class ExecutorShutdownException extends Error {
+public final class ExecutorShutdownException extends MaestroControlFlowError {
 
     /**
      * Creates a new shutdown signal.

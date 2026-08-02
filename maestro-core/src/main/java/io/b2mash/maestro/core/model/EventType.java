@@ -74,5 +74,51 @@ public enum EventType {
      * <p>Introduced in 0.4.0 — nodes older than 0.4.0 cannot interpret this
      * type, so upgrade all nodes of a service together.
      */
-    VERSION_MARKER
+    VERSION_MARKER,
+
+    /**
+     * Row-mapper sentinel for a persisted {@code event_type} string this build
+     * does not define — written by a <em>newer</em> node during a
+     * mixed-version deploy window.
+     *
+     * <p><b>Never persisted.</b> Every {@code WorkflowStore.appendEvent}
+     * implementation rejects it with an {@link IllegalArgumentException}, so
+     * the sentinel can never round-trip into history. It exists only so a row
+     * mapper can return something instead of throwing: an enum-parse failure
+     * deep inside a store read surfaces as an ordinary exception, which the
+     * engine would record as a workflow failure <em>and compensate</em> — for
+     * work that never failed.
+     *
+     * <p>The engine detects this constant at every replay read and
+     * {@linkplain io.b2mash.maestro.core.exception.UnknownWorkflowHistoryException
+     * stands the run down}: nothing is written, no compensation runs, the
+     * instance keeps its recoverable status and an upgraded node adopts it.
+     *
+     * @see #fromStoredName(String)
+     */
+    UNKNOWN;
+
+    /**
+     * Total parse of a persisted {@code event_type} string: the matching
+     * constant, or {@link #UNKNOWN} when this build does not define one.
+     *
+     * <p>Row mappers MUST use this instead of {@link #valueOf(String)} —
+     * {@code valueOf} throws {@link IllegalArgumentException} for a type
+     * written by a newer node, and that throw is indistinguishable from a
+     * workflow failure by the time it reaches the executor.
+     *
+     * @param name the stored type string; may be {@code null}, which also
+     *             yields {@link #UNKNOWN}
+     * @return the matching constant, or {@link #UNKNOWN}
+     */
+    public static EventType fromStoredName(String name) {
+        if (name == null) {
+            return UNKNOWN;
+        }
+        try {
+            return valueOf(name);
+        } catch (IllegalArgumentException e) {
+            return UNKNOWN;
+        }
+    }
 }
