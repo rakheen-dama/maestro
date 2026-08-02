@@ -374,3 +374,136 @@ round and were not audited. If Task 4's adapter can throw at all, the durable
 fix is one place — either drop the size-1 collapse, or have the engine wrap
 whatever observer it is handed — rather than a guard per call site. Flagging
 rather than deciding: it changes a design-doc-binding shape.
+
+---
+
+# Fix round 2 — Coordinator Ruling 4
+
+**Status: COMPLETE**
+Commits: `248faab` (Ruling 4 + pins), `f8fb5cc` (design doc + rationale
+corrections), evidence/report commit follows.
+Evidence: `.superpowers/sdd/release-hardening/evidence/task-3-fix2-red.log`,
+`.../task-3-fix2-green.log`, `.../task-3-fix2-build.log`.
+
+## What changed
+
+`CompositeEngineObserver.of(List)` no longer collapses at size 1:
+
+```java
+public static EngineObserver of(List<EngineObserver> observers) {
+    return observers.isEmpty() ? EngineObserver.NOOP : new CompositeEngineObserver(observers);
+}
+```
+
+Nothing in production code depended on the collapse (Task 4's wiring does not
+exist yet), so this is the only behavioural change. `Error` handling is
+untouched: `fanOut` still catches `RuntimeException` only.
+
+The three `emit(...)` helpers from fix round 1 stay, but their Javadoc no
+longer claims containment is missing at the seam — it is structural now. Their
+justification is narrower and still true: the engine constructors accept *any*
+`EngineObserver`, so nothing forces an embedder or a hand-wired test through
+`of(...)`, and each guarded site is one where an escape is read as something
+else entirely.
+
+## Design doc updates (`observability-versioning-design.md`)
+
+- §10: **RULING 4 (amends §1.2)** appended verbatim, with the rationale as
+  given and a note on where it was raised.
+- §1.1: decision summary now leads with the amendment.
+- §1.2: the paste-ready block is rewritten —
+  `case 1 -> observers.getFirst();` is **removed** and replaced with an
+  `AMENDED BY RULING 4` comment, so no later task re-implements the collapse.
+- §8.1: "`of(List)` collapsing rules" → the wrapping rules.
+- `EngineObserver` Javadoc: states that `of` wraps any non-empty list,
+  including a single observer.
+
+## Covering tests (4 new, 1 rewritten; 3 fail without Ruling 4)
+
+`observe/CompositeEngineObserverTest`
+- `of(single) still wraps — containment must not depend on how many observers are registered` (rewritten from `of(single) returns the sole delegate itself`) — asserts not-same, is a `CompositeEngineObserver`, and still fans out. **RED before.**
+- `a lone delegate throwing RuntimeException is contained by the wrapper`. **RED before.**
+- `an Error from a LONE delegate propagates too — Ruling 4's wrapper must not widen containment` — `ExecutorShutdownException` and `WorkflowTerminatedException` through the new single-delegate wrapper. This is the carve-out pin: Ruling 4 *added* a log-and-continue layer, and those two types are `Error`s precisely to escape such layers.
+
+`engine/WorkflowExecutorObserverTest`
+- `one registered throwing observer cannot corrupt engine control flow at un-hardened sites` — **the requested pin.** Exactly ONE registered observer (`CompositeEngineObserver.of(List.of(throwing))`), an adapter that throws from every callback, driving a workflow that runs an activity, parks on a signal, wakes and runs a second activity. `ActivityInvocationHandler` and `SignalManager` emit **raw** — neither was hand-hardened in round 1 — so containment there can only come from the wrapper. Asserts the instance reaches `COMPLETED` and that `activityStarted`, `activityCompleted`, `signalPersisted`, `signalConsumed`, `workflowParked`, `workflowUnparked` were all still reached. **RED before** (the throw from `activityStarted` propagates into workflow code and the run is recorded FAILED).
+
+## Commands run
+
+### 1. RED — `CompositeEngineObserver.java` reverted to the pre-ruling collapse via `git stash`, new tests applied
+
+```
+$ ./gradlew :maestro-core:test --tests '*CompositeEngineObserverTest' --tests '*WorkflowExecutorObserverTest' --rerun-tasks
+
+> Task :maestro-core:test
+
+WorkflowExecutor wires EngineObserver emissions at every design §1 site > one registered throwing observer cannot corrupt engine control flow at un-hardened sites FAILED
+    org.awaitility.core.ConditionTimeoutException at WorkflowExecutorObserverTest.java:282
+
+CompositeEngineObserver semantics > of(single) still wraps — containment must not depend on how many observers are registered FAILED
+    org.opentest4j.AssertionFailedError at CompositeEngineObserverTest.java:50
+
+CompositeEngineObserver semantics > a lone delegate throwing RuntimeException is contained by the wrapper FAILED
+    org.opentest4j.AssertionFailedError at CompositeEngineObserverTest.java:66
+        Caused by: java.lang.IllegalStateException at CompositeEngineObserverTest.java:62
+
+23 tests completed, 3 failed
+
+> Task :maestro-core:test FAILED
+```
+
+### 2. GREEN — full core suite
+
+```
+$ ./gradlew :maestro-core:test --rerun-tasks
+> Task :maestro-core:test
+
+BUILD SUCCESSFUL in 49s
+12 actionable tasks: 12 executed
+```
+
+JUnit XML totals: **tests=320 failures=0 errors=0 skipped=0** (317 after round
+1 + 4 new − 1 rewritten in place).
+
+### 3. Full multi-module build
+
+```
+$ ./gradlew build
+> Task :maestro-integration-tests:build
+
+BUILD SUCCESSFUL in 1m 41s
+134 actionable tasks: 35 executed, 99 up-to-date
+```
+
+## One-off flake observed (NOT in the observer surface) — for the coordinator
+
+The first full-suite run of this tree failed one **pre-existing, unrelated**
+test:
+
+```
+Terminating a workflow marks it TERMINATED and stops it without compensating > terminate during compensation stops the compensations that have not run FAILED
+    org.opentest4j.AssertionFailedError at WorkflowExecutorTerminateTest.java:209
+
+org.opentest4j.AssertionFailedError: the compensation that had not run yet must never run ==> expected: <false> but was: <true>
+
+320 tests completed, 1 failed
+```
+
+Not reproduced since: 3 further full-suite runs on this tree (green), 5
+targeted runs on this tree, 3 targeted runs on the round-1 tree. The test
+races `terminateWorkflow` against a compensation action that counts its latch
+down *before* it parks (`ParkingCompensationWorkflow`, line 457-458), so the
+sticky terminate poison and the park registration interleave under load.
+Nothing in the observer diff touches that path except a `NOOP` emit reorder in
+`SagaManager.compensate` (timing, not semantics — the executor in that test is
+built with the narrow constructor, so its observer is `EngineObserver.NOOP`).
+`SagaManager.executeSequential`'s Error discipline is intact and was re-read.
+Flagging rather than chasing: if it recurs it deserves its own issue, and it is
+a genuine product-level race, not a test-only one.
+
+## Concerns after round 2
+
+None on the observer seam. `SignalManager`, `DefaultWorkflowOperations` and
+`ActivityInvocationHandler` still emit raw — that is now correct by
+construction rather than an audit gap, and the pin above proves it at two of
+those three sites.
