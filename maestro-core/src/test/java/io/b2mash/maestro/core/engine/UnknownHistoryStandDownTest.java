@@ -174,6 +174,36 @@ class UnknownHistoryStandDownTest {
     }
 
     @Test
+    @DisplayName("an unreadable PAYLOAD on a known type stands down with UNKNOWN_EVENT_PAYLOAD")
+    void unreadablePayload_standsDownWithThePayloadReason() {
+        var compensations = new AtomicInteger();
+        var workflowId = "standdown-unreadable-payload";
+        // A SIDE_EFFECT whose payload this build cannot read back as an Instant
+        // — the shape a newer node that reshaped a memoized side effect leaves.
+        var run = startAndPlant(workflowId, compensations, instanceId ->
+                new WorkflowEvent(UUID.randomUUID(), instanceId, 2, EventType.SIDE_EFFECT,
+                        "$maestro:currentTime",
+                        JsonMapper.builder().build().readTree("{\"reshaped\":\"by a newer node\"}"),
+                        Instant.now()));
+
+        awaitRunEnded(workflowId);
+        await().atMost(BOUND).until(() -> !observer.standDowns().isEmpty());
+
+        var call = observer.standDowns().getFirst();
+        assertAll(
+                () -> assertEquals(StandDownReason.UNKNOWN_EVENT_PAYLOAD, call.reason(),
+                        "an operator reading maestro.standdown{reason} must be able to tell a "
+                                + "type this build lacks from a payload it cannot parse — they "
+                                + "point at different things to look at in the newer build"),
+                () -> assertEquals("seq=2", call.detail()),
+                () -> assertEquals(WorkflowStatus.RUNNING,
+                        store.getInstance(workflowId).orElseThrow().status(),
+                        "the payload flavour writes no status either"),
+                () -> assertEquals(0, compensations.get(), "and runs no compensation"),
+                () -> assertEquals(0, countOfType(run.instanceId(), EventType.WORKFLOW_FAILED)));
+    }
+
+    @Test
     @DisplayName("once the unreadable row is normalized the SAME instance is adopted and completes")
     void afterNormalizingTheRow_theSameInstanceCompletes() {
         var compensations = new AtomicInteger();
@@ -217,14 +247,20 @@ class UnknownHistoryStandDownTest {
      * newer node wrote this row while this one was elsewhere".
      */
     private Run startAndPlantFutureEvent(String workflowId, AtomicInteger compensations) {
+        return startAndPlant(workflowId, compensations, instanceId ->
+                new WorkflowEvent(UUID.randomUUID(), instanceId, 2,
+                        EventType.fromStoredName(FUTURE_TYPE), "$maestro:from-the-future", null,
+                        Instant.now()));
+    }
+
+    private Run startAndPlant(String workflowId, AtomicInteger compensations,
+                              java.util.function.Function<UUID, WorkflowEvent> plant) {
         var gate = new CountDownLatch(1);
         var instanceId = executor.startWorkflow(workflowId, "StandDownWorkflow", "default", null,
                 new StandDownWorkflow(compensations, gate), workflowMethod());
         await().atMost(BOUND)
                 .until(() -> store.getEventBySequence(instanceId, 1).isPresent());
-        store.injectRawEvent(new WorkflowEvent(UUID.randomUUID(), instanceId, 2,
-                EventType.fromStoredName(FUTURE_TYPE), "$maestro:from-the-future", null,
-                Instant.now()));
+        store.injectRawEvent(plant.apply(instanceId));
         gate.countDown();
         return new Run(instanceId, gate);
     }
