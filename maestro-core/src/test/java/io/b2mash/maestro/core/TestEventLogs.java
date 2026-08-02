@@ -35,6 +35,11 @@ public final class TestEventLogs {
      * gate that must survive, preserving pre-failure replay determinism. All
      * other events stay intact.
      *
+     * <p>The signal-timeout discriminator is anchored to the payload's
+     * {@code exceptionType} field (matching the shipped stores) — never a
+     * whole-payload substring match, which would also fire on a failure whose
+     * {@code message} merely embeds the FQCN.
+     *
      * @param events     the fake's event collection, mutated in place
      * @param instanceId the workflow instance whose failure memos to drop
      * @return the number of events removed
@@ -45,8 +50,12 @@ public final class TestEventLogs {
                 .filter(e -> e.workflowInstanceId().equals(instanceId)
                         && e.eventType() == EventType.WORKFLOW_FAILED
                         && e.payload() != null)
-                .anyMatch(e -> e.payload().toString()
-                        .contains("io.b2mash.maestro.core.exception.SignalTimeoutException"));
+                .anyMatch(e -> {
+                    var exceptionType = e.payload().path("exceptionType");
+                    return exceptionType.isString()
+                            && "io.b2mash.maestro.core.exception.SignalTimeoutException"
+                                    .equals(exceptionType.stringValue());
+                });
         var failingTimeoutSeq = events.stream()
                 .filter(e -> e.workflowInstanceId().equals(instanceId)
                         && e.eventType() == EventType.SIGNAL_TIMEOUT)

@@ -360,6 +360,12 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * {@link io.b2mash.maestro.core.exception.SignalTimeoutException} as the
      * failure cause (the discriminator for the Issue 19 failing-timeout-memo
      * delete above).
+     *
+     * <p>Anchored to the payload's {@code exceptionType} field — never a
+     * whole-payload substring match, which would also fire on a failure whose
+     * {@code message} merely embeds the FQCN (idiomatic {@code "... " + e}
+     * wrapping of a CAUGHT gate timeout) and wrongly delete a caught-gate
+     * memo, reintroducing the very replay divergence Issue 19 fixed.
      */
     private boolean failedBySignalTimeout(UUID instanceId) {
         String sql = "SELECT payload FROM " + tableName("workflow_event")
@@ -372,8 +378,17 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         if (payloads.isEmpty() || payloads.getFirst() == null) {
             return false;
         }
-        return payloads.getFirst().contains(
-                "io.b2mash.maestro.core.exception.SignalTimeoutException");
+        JsonNode payload;
+        try {
+            payload = parseJsonNode(payloads.getFirst());
+        } catch (SerializationException e) {
+            // Not ErrorDetail-shaped — cannot be a signal-timeout failure.
+            return false;
+        }
+        var exceptionType = payload.path("exceptionType");
+        return exceptionType.isString()
+                && "io.b2mash.maestro.core.exception.SignalTimeoutException"
+                        .equals(exceptionType.stringValue());
     }
 
     // ── Signal operations ─────────────────────────────────────────────────

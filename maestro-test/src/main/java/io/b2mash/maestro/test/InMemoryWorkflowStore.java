@@ -152,11 +152,19 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
         // SIGNAL_TIMEOUT memo is a CAUGHT gate that must survive, preserving
         // pre-failure replay determinism. Success and compensation memos must
         // survive a retry, or its replay re-runs real side effects.
+        // The discriminator is anchored to the payload's exceptionType field —
+        // never a whole-payload substring match, which would also fire on a
+        // failure whose message merely embeds the FQCN ("... " + e wrapping of
+        // a CAUGHT gate timeout) and wrongly delete a caught-gate memo.
         var before = instanceEvents.size();
         var failedByTimeout = instanceEvents.values().stream()
                 .filter(e -> e.eventType() == EventType.WORKFLOW_FAILED && e.payload() != null)
-                .anyMatch(e -> e.payload().toString()
-                        .contains("io.b2mash.maestro.core.exception.SignalTimeoutException"));
+                .anyMatch(e -> {
+                    var exceptionType = e.payload().path("exceptionType");
+                    return exceptionType.isString()
+                            && "io.b2mash.maestro.core.exception.SignalTimeoutException"
+                                    .equals(exceptionType.stringValue());
+                });
         var failingTimeoutSeq = instanceEvents.values().stream()
                 .filter(e -> e.eventType() == EventType.SIGNAL_TIMEOUT)
                 .mapToInt(io.b2mash.maestro.core.model.WorkflowEvent::sequenceNumber)

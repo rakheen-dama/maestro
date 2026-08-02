@@ -13,6 +13,8 @@ import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -21,7 +23,13 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class InMemoryWorkflowStoreTest {
 
+    private static final JsonMapper MAPPER = JsonMapper.builder().build();
+
     private InMemoryWorkflowStore store;
+
+    private static JsonNode json(String json) {
+        return MAPPER.readTree(json);
+    }
 
     @BeforeEach
     void setUp() {
@@ -163,6 +171,68 @@ class InMemoryWorkflowStoreTest {
     @Test
     void getEventsForUnknownInstanceReturnsEmpty() {
         assertTrue(store.getEvents(UUID.randomUUID()).isEmpty());
+    }
+
+    @Test
+    void deleteFailureEventsKeepsCaughtGateTimeoutMemoWhenFqcnOnlyAppearsInMessage() {
+        // FB-I1 pin: the signal-timeout discriminator must anchor on the
+        // WORKFLOW_FAILED payload's exceptionType field, not a whole-payload
+        // substring match. Idiomatic user code that CATCHES a gate timeout and
+        // later fails with a wrapper ("... " + e) embeds the FQCN in the
+        // message field — that failure is NOT a signal-timeout failure, and
+        // the caught-gate SIGNAL_TIMEOUT memo must survive retry, or replay
+        // consumes a late-arrived signal at the gate and diverges (Issue 19).
+        var instanceId = UUID.randomUUID();
+        store.appendEvent(new WorkflowEvent(
+                UUID.randomUUID(), instanceId, 1, EventType.ACTIVITY_COMPLETED,
+                "step1", null, Instant.now()));
+        store.appendEvent(new WorkflowEvent(
+                UUID.randomUUID(), instanceId, 2, EventType.SIGNAL_TIMEOUT,
+                "approval", null, Instant.now()));
+        store.appendEvent(new WorkflowEvent(
+                UUID.randomUUID(), instanceId, 3, EventType.WORKFLOW_FAILED, null,
+                json("{\"exceptionType\":\"java.lang.IllegalStateException\","
+                        + "\"message\":\"escalation failed: "
+                        + "io.b2mash.maestro.core.exception.SignalTimeoutException:"
+                        + " signal 'approval' timed out\"}"),
+                Instant.now()));
+
+        assertEquals(1, store.deleteFailureEvents(instanceId),
+                "only the WORKFLOW_FAILED terminal may be deleted");
+        assertTrue(store.getEventBySequence(instanceId, 2).isPresent(),
+                "the caught-gate SIGNAL_TIMEOUT memo must survive — the failure "
+                        + "cause (exceptionType) was not a SignalTimeoutException");
+    }
+
+    @Test
+    void deleteFailureEventsDeletesFailingTimeoutMemoWhenExceptionTypeIsSignalTimeout() {
+        // The positive case: the workflow FAILED because of the signal timeout
+        // (exceptionType records SignalTimeoutException), so the FAILING memo
+        // (highest-sequenced SIGNAL_TIMEOUT) goes too — an earlier caught gate
+        // still survives.
+        var instanceId = UUID.randomUUID();
+        store.appendEvent(new WorkflowEvent(
+                UUID.randomUUID(), instanceId, 1, EventType.SIGNAL_TIMEOUT,
+                "caught-gate", null, Instant.now()));
+        store.appendEvent(new WorkflowEvent(
+                UUID.randomUUID(), instanceId, 2, EventType.ACTIVITY_COMPLETED,
+                "step2", null, Instant.now()));
+        store.appendEvent(new WorkflowEvent(
+                UUID.randomUUID(), instanceId, 3, EventType.SIGNAL_TIMEOUT,
+                "failing-await", null, Instant.now()));
+        store.appendEvent(new WorkflowEvent(
+                UUID.randomUUID(), instanceId, 4, EventType.WORKFLOW_FAILED, null,
+                json("{\"exceptionType\":"
+                        + "\"io.b2mash.maestro.core.exception.SignalTimeoutException\","
+                        + "\"message\":\"signal 'failing-await' timed out\"}"),
+                Instant.now()));
+
+        assertEquals(2, store.deleteFailureEvents(instanceId),
+                "WORKFLOW_FAILED plus the failing SIGNAL_TIMEOUT memo");
+        assertTrue(store.getEventBySequence(instanceId, 1).isPresent(),
+                "the earlier caught-gate SIGNAL_TIMEOUT memo must survive");
+        assertTrue(store.getEventBySequence(instanceId, 3).isEmpty(),
+                "the failing await's memo must be gone so retry runs it live");
     }
 
     // ── Signal operations ────────────────────────────────────────────────
