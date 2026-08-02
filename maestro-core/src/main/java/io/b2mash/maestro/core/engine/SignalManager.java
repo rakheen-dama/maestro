@@ -205,7 +205,23 @@ final class SignalManager {
         // Capture the calling thread's trace context, if a traced transport
         // put one there (design §4.3(a)). Opaque to the engine: stored and
         // returned verbatim, never parsed. Absence is normal, not an error.
+        //
+        // The one thing checked is LENGTH, and only to protect the insert. The
+        // holder is public API, so a transport or an embedder can put anything
+        // there; a value wider than the column would make saveSignal throw,
+        // and since delivery runs inside the transport listener that failure
+        // means the record is never acked and the signal is eventually
+        // dead-lettered — discarded. Decorative metadata must never cost a
+        // signal its delivery, so an over-long value degrades to no trace
+        // context (RULING 2: absence, never an error). This is a bound on size,
+        // not an interpretation of contents.
         var traceContext = TraceContextHolder.current();
+        if (traceContext != null && traceContext.length() > TraceContextHolder.MAX_LENGTH) {
+            logger.warn("Discarding a {}-character trace context for signal '{}' on workflow "
+                            + "'{}' — the limit is {}. The signal is delivered untraced.",
+                    traceContext.length(), signalName, workflowId, TraceContextHolder.MAX_LENGTH);
+            traceContext = null;
+        }
 
         // Persist the signal — always before in-memory delivery
         var signalPayload = payload != null ? serializer.serialize(payload) : null;

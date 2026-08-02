@@ -35,6 +35,20 @@ import org.jspecify.annotations.Nullable;
  */
 public final class TraceContextHolder {
 
+    /**
+     * The longest trace context that can be persisted on a signal row.
+     *
+     * <p>The store column is {@code VARCHAR(128)}. A longer value would make the
+     * signal insert fail — and because signal delivery runs inside the transport
+     * listener, that failure means the record is never acknowledged, redelivery
+     * exhausts its budget and the signal is dead-lettered. A trace header is
+     * decorative metadata; it must never be able to cost a signal its delivery,
+     * so an over-long value is dropped at persistence rather than allowed to
+     * fail the write. A W3C {@code traceparent} is 55 characters, so this bound
+     * only ever bites on a malformed or hostile value.
+     */
+    public static final int MAX_LENGTH = 128;
+
     private static final ThreadLocal<@Nullable String> CURRENT = new ThreadLocal<>();
 
     private TraceContextHolder() {
@@ -43,6 +57,15 @@ public final class TraceContextHolder {
 
     /**
      * Sets (or, with {@code null}, clears) the calling thread's trace context.
+     *
+     * <p><b>Constraint:</b> callers should set only a valid W3C
+     * {@code traceparent} (55 characters). A value longer than
+     * {@link #MAX_LENGTH} is <em>not persisted</em> — the engine drops it and the
+     * signal is stored with no trace context rather than failing the write (see
+     * {@code MAX_LENGTH} for why that trade is the only safe one). Nothing here
+     * validates the value's grammar: transports are expected to validate at
+     * extraction, where an invalid value can be discarded before it travels any
+     * further.
      *
      * @param traceparent the raw W3C {@code traceparent}, or {@code null} to clear
      */

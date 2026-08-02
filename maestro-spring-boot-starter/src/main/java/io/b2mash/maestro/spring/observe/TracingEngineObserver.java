@@ -292,13 +292,15 @@ public final class TracingEngineObserver implements EngineObserver {
     public void activityStarted(ActivityInfo a) {
         safely("activityStarted", () -> {
             var s = state.get();
-            // F2: never open a run segment on a parallel-branch thread. No
-            // callback ever tells this adapter a branch finished, so such a
-            // segment could never be closed or exported, and its activity
-            // children would name a parent the backend never receives.
-            if (!isParallelBranch(a)) {
-                ensureSegment(a.workflowId(), a.workflowType(), serviceName, null);
+            if (a.sequenceNumber() >= BRANCH_SEQUENCE_BASE) {
+                // Sticky: this is the only callback that carries a sequence
+                // number, so once it has identified the thread as a branch the
+                // verdict must outlive it — a branch that later sleeps or awaits
+                // a signal reaches ensureSegment through callbacks that carry no
+                // sequence at all.
+                s.branchThread = true;
             }
+            ensureSegment(a.workflowId(), a.workflowType(), serviceName, null);
             // Defensive: an unclosed previous activity would nest wrongly.
             endActivity(s, null);
             var segment = s.segment;
@@ -415,7 +417,15 @@ public final class TracingEngineObserver implements EngineObserver {
         var s = state.get();
         var remote = remoteParent(traceContext);
 
-        if (s.segment == null && inheritedForkParent() != null) {
+        if (isBranchThread(s)) {
+            // F2: never open a run segment on a parallel-branch thread. No
+            // callback ever tells this adapter a branch finished, so such a
+            // segment could never be closed or exported, and its activity
+            // children would name a parent the backend never receives. The gate
+            // lives here, not in the callers, so that every entry point —
+            // activityStarted, workflowUnparked, signalConsumed and timerEvent —
+            // is covered: a branch is explicitly allowed to sleep() and
+            // awaitSignal(), and those wake through the latter three.
             return;
         }
 
@@ -474,11 +484,19 @@ public final class TracingEngineObserver implements EngineObserver {
     }
 
     /**
-     * @param a the activity being started
-     * @return whether this activity is running inside a parallel branch
+     * @param s this thread's span state
+     * @return whether this thread is a parallel branch, latching the verdict once
+     *         either detector has fired
      */
-    private boolean isParallelBranch(ActivityInfo a) {
-        return inheritedForkParent() != null || a.sequenceNumber() >= BRANCH_SEQUENCE_BASE;
+    private boolean isBranchThread(RunState s) {
+        if (s.branchThread) {
+            return true;
+        }
+        if (inheritedForkParent() != null) {
+            s.branchThread = true;
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -609,6 +627,8 @@ public final class TracingEngineObserver implements EngineObserver {
         private Tracer.@Nullable SpanInScope segmentScope;
         private @Nullable TraceContext previousSegment;
         private boolean segmentIsRoot;
+        /** Latched once this thread is known to be a parallel branch. */
+        private boolean branchThread;
         /** The raw traceparent the open segment was parented to, if any. */
         private @Nullable String segmentRemoteContext;
         private @Nullable Span activity;

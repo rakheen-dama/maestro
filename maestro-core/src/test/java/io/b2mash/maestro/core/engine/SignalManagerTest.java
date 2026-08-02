@@ -747,6 +747,46 @@ class SignalManagerTest {
         assertNull(observer.signalConsumed().getFirst().info().traceContext());
     }
 
+    @Test
+    @DisplayName("an over-long trace context set directly via the holder is dropped, not persisted "
+            + "— the signal is still stored and consumable")
+    void oversizedTraceContextIsDroppedNotPersisted() {
+        var instanceId = UUID.randomUUID();
+        createInstance("order-1", instanceId);
+
+        // TraceContextHolder.set is public API: a future traced transport, or an
+        // embedder, can put anything here. A value wider than the column must
+        // never be able to fail the insert — that would strand the signal.
+        var oversized = "00-" + "a".repeat(TraceContextHolder.MAX_LENGTH * 4);
+        TraceContextHolder.runWith(oversized, () ->
+                signalManager.deliverSignal("order-1", "payment.result", "paid"));
+
+        var rows = store.getUnconsumedSignals("order-1", "payment.result");
+        assertEquals(1, rows.size(), "the signal must still be persisted");
+        assertNull(rows.getFirst().traceContext(),
+                "the over-long value degrades to no trace context, never to a failed write");
+
+        // And it is still consumable — the signal was not damaged by the drop.
+        var ctx = createContext(instanceId, "order-1", 0, false);
+        ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() ->
+                assertEquals("paid", signalManager.awaitSignal(
+                        ctx, "payment.result", String.class, Duration.ofSeconds(10))));
+    }
+
+    @Test
+    @DisplayName("a trace context exactly at the limit is still persisted — the guard bounds, "
+            + "it does not truncate the legitimate range")
+    void traceContextAtTheLimitIsPersisted() {
+        createInstance("order-1", UUID.randomUUID());
+        var atLimit = "0".repeat(TraceContextHolder.MAX_LENGTH);
+
+        TraceContextHolder.runWith(atLimit, () ->
+                signalManager.deliverSignal("order-1", "payment.result", "paid"));
+
+        assertEquals(atLimit,
+                store.getUnconsumedSignals("order-1", "payment.result").getFirst().traceContext());
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────
 
     private void createInstance(String workflowId, UUID instanceId) {

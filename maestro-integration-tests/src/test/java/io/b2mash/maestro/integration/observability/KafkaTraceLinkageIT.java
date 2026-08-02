@@ -1,6 +1,7 @@
 package io.b2mash.maestro.integration.observability;
 
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.TraceContextHolder;
 import io.b2mash.maestro.core.spi.SignalMessage;
 import io.b2mash.maestro.integration.support.MaestroEngineHarness;
 import io.b2mash.maestro.integration.support.OtelTracingFixture;
@@ -243,6 +244,53 @@ class KafkaTraceLinkageIT extends PostgresIntegrationSupport {
 
             messagingB.destroy();
             nodeB.close();
+        }
+    }
+
+    /**
+     * Fix round 2, F1 residual. {@code TraceContextHolder.set} is public core
+     * API with no grammar enforcement, so the Kafka-side validation added in fix
+     * round 1 is not the only way a value can reach the column: an embedder, or
+     * a future traced transport, can set one directly. This drives that path
+     * against the <b>real</b> {@code VARCHAR(128)} column — the in-memory store
+     * used by the unit pins has no width at all and so cannot prove this.
+     */
+    @Test
+    @DisplayName("an over-long trace context set directly through the holder still persists the "
+            + "signal and completes the workflow")
+    void oversizedTraceContextViaHolderNeverDiscardsTheSignal() throws Exception {
+        var recorder = new CountingActivities.Recorder();
+        var parked = new CountDownLatch(1);
+
+        try (var otel = new OtelTracingFixture("holder-guard")) {
+            var node = MaestroEngineHarness.builder(store, objectMapper)
+                    .serviceName("holder-guard")
+                    .lock(newLock())
+                    .instanceLockTtl(LOCK_TTL)
+                    .observer(new TracingEngineObserver(otel.tracer(), otel.propagator()))
+                    .build();
+            node.registerActivities(ChainActivities.class,
+                    new CountingActivities.RecordingChainActivities(recorder));
+            node.registerWorkflow(new TestWorkflows.SignalWorkflow(parked));
+
+            var workflowId = MaestroEngineHarness.uniqueWorkflowId("holder-guard");
+            var handle = node.start(workflowId, TestWorkflows.SignalWorkflow.class, "seed");
+            assertTrue(parked.await(30, TimeUnit.SECONDS));
+            handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
+
+            // Straight past every transport-side check, four times the column width.
+            var oversized = "00-" + "a".repeat(509);
+            TraceContextHolder.runWith(oversized, () ->
+                    node.deliverSignal(workflowId, TestWorkflows.SignalWorkflow.SIGNAL, "approved"));
+
+            assertEquals(WorkflowStatus.COMPLETED, handle.awaitTerminal(BOUND),
+                    "the insert must not fail — an over-long trace context may never cost a "
+                            + "signal its delivery");
+            var traceContexts = signalTraceContexts(workflowId);
+            assertEquals(1, traceContexts.size());
+            assertNull(traceContexts.getFirst(),
+                    "the over-long value degrades to no trace context, never to a failed write");
+            node.close();
         }
     }
 
