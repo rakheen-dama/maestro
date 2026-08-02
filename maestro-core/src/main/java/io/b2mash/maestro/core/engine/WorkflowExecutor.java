@@ -63,7 +63,10 @@ import java.util.concurrent.atomic.AtomicReference;
  *       {@link io.b2mash.maestro.core.exception.TimerCancelledException}.</li>
  *   <li><b>Terminate:</b> Marks a workflow {@code TERMINATED} from any node and
  *       stops it — without compensation — evicting its virtual thread if this
- *       node happens to own it.</li>
+ *       node happens to own it. ("Without compensation" means terminate never
+ *       starts one; one open race can still let a compensation that was
+ *       already starting run to completion — {@code docs/open-issues.md}
+ *       Issue 22.)</li>
  *   <li><b>Shutdown:</b> Stops accepting new work, waits for in-flight
  *       workflows to drain, and leaves parked workflows in their
  *       {@code WAITING_*} status for another node to recover — a graceful

@@ -78,7 +78,11 @@ public class AdminCommandService {
     /**
      * Sends a terminate command to the service that owns the given workflow.
      *
-     * <p>The workflow will be terminated immediately without compensation.
+     * <p>The workflow will be terminated immediately, and the terminate itself
+     * never starts a compensation. One known exception, open and narrow: a
+     * terminate landing between the saga's terminal-status check and its own
+     * status write lets an already-starting compensation run to completion on
+     * the terminated workflow — see {@code docs/open-issues.md} Issue 22.
      *
      * @param workflowId the business workflow ID to terminate
      * @throws IllegalArgumentException if the workflow is not found in the admin database

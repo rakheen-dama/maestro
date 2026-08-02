@@ -205,7 +205,7 @@ Operators can take the following actions from the workflow detail page. Each act
 | Action | Endpoint | Description | Use Case |
 |---|---|---|---|
 | **Retry** | `POST /admin/workflows/{id}/retry` | Sends a `$maestro:retry` signal. The workflow resumes from its last failed step — unless its saga already compensated, in which case retry is refused as a safe no-op (see below). | Transient failures resolved, external API outage ended. |
-| **Terminate** | `POST /admin/workflows/{id}/terminate` | Sends a `$maestro:terminate` signal. The workflow stops immediately without compensation. | Stuck workflows, bad data, manual intervention needed. |
+| **Terminate** | `POST /admin/workflows/{id}/terminate` | Sends a `$maestro:terminate` signal. The workflow stops immediately, and terminate itself never starts a compensation — but a narrow open race can let an *already-starting* compensation continue on the terminated workflow ([Issue 22](open-issues.md#issue-22)). | Stuck workflows, bad data, manual intervention needed. |
 | **Send Signal** | `POST /admin/workflows/{id}/signal` | Sends an application-level signal with a name and optional JSON payload. | Missing Kafka events, manual approval flows, testing. |
 
 All actions produce a flash message confirming success or reporting failure, then redirect back to the workflow detail page.
@@ -260,12 +260,20 @@ remainder or stands down as a no-op:
 | Retry | `RUNNING` / `WAITING_*` / `COMPENSATING` | No-op (not failed) |
 | Retry | `COMPLETED` / `TERMINATED` | No-op (not failed) |
 | Retry | unknown workflow ID | No-op (not found) |
-| Terminate | any active state (incl. `COMPENSATING`) | `TERMINATED`, no compensation, local eviction if this node owns it |
+| Terminate | any active state (incl. `COMPENSATING`) | `TERMINATED`, no compensation started by the terminate itself, local eviction if this node owns it — except in the race of [Issue 22](open-issues.md#issue-22) |
 | Terminate | `COMPLETED` / `FAILED` / `TERMINATED` | No-op (already terminal) |
 | Terminate | unknown workflow ID | No-op (not found) |
 
 No-op outcomes are logged and the command is acknowledged — they are
 deterministic non-actions, so retrying delivery of them can never help.
+
+**One caveat on "no compensation".** Terminate marks and stops; it never
+unwinds a saga itself. There is one known exception, open and narrow: if a
+terminate issued from another node lands between the saga's terminal-status
+check and its own status write, the resulting conflict is swallowed and a
+compensation that was just starting runs to completion on a workflow now
+marked `TERMINATED`. See [`docs/open-issues.md` Issue 22](open-issues.md#issue-22)
+for the mechanism and the planned fix.
 
 **Security posture:** there is no authentication, authorization, or
 provenance check on the admin-command path — anyone who can publish to
