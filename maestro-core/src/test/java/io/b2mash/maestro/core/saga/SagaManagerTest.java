@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.exception.CompensationException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
+import io.b2mash.maestro.core.exception.UnknownWorkflowHistoryException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.EventType;
@@ -365,6 +366,139 @@ class SagaManagerTest {
                 "exactly one COMPENSATION_STEP_COMPLETED per branch — no duplicate for 'completed-branch'");
         assertEquals(1, countEvents(EventType.COMPENSATION_STARTED));
         assertEquals(1, countEvents(EventType.COMPENSATION_COMPLETED));
+    }
+
+    // ── Unknown-history stand-down during compensation (design §§6.3–6.4) ──
+    //
+    // Compensation is the single most dangerous place for an unreadable event.
+    // Every read here decides whether a compensation action is re-invoked, and
+    // every catch here decides whether a step is recorded COMPENSATION_STEP_FAILED
+    // — a durable claim that a reversal was attempted and failed. If a
+    // stand-down were recorded as a step failure, an operator investigating a
+    // mixed-version window would see a saga that half-unwound when in fact
+    // nothing ran at all; and if it were swallowed, the compensations would run
+    // twice once an upgraded node adopts the workflow.
+    //
+    // The stand-down signal is an Error, so `catch (Exception e)` inside
+    // SagaManager cannot reach it; what these pins protect is the two places
+    // that catch broadly on purpose — executeSequential's DuplicateEventException
+    // arm and executeParallel's `catch (Throwable t)` outcome collector.
+
+    /** A type string no build of this repo will ever define (design §8.5, RULING 1). */
+    private static final String FUTURE_TYPE = "EVT_FROM_A_NEWER_MAESTRO";
+
+    private static UnknownWorkflowHistoryException standDown() {
+        return new UnknownWorkflowHistoryException("test-workflow", 7000,
+                UnknownWorkflowHistoryException.Kind.UNKNOWN_EVENT_TYPE,
+                "written by a newer node");
+    }
+
+    private void plantFutureEvent(int sequenceNumber) {
+        store.appendEvent(new WorkflowEvent(UUID.randomUUID(), instance.id(), sequenceNumber,
+                EventType.fromStoredName(FUTURE_TYPE), "$maestro:from-the-future", null,
+                Instant.now()));
+    }
+
+    @Test
+    @DisplayName("Stand-down: the COMPENSATION_STARTED replay read is guarded — nothing is written, "
+            + "no action runs")
+    void compensationStartedReadStandsDown() {
+        var invocations = new AtomicInteger();
+        var stack = new CompensationStack();
+        stack.push("step-A", invocations::incrementAndGet);
+        // ctx is seeded at sequence 5, so compensate() consumes 6 for its
+        // COMPENSATION_STARTED replay-skip read.
+        plantFutureEvent(6);
+
+        org.junit.jupiter.api.Assertions.assertThrows(UnknownWorkflowHistoryException.class,
+                () -> sagaManager.compensate(ctx, instance, stack, false),
+                "an unreadable event at the compensation anchor must stand the attempt down");
+
+        assertEquals(0, invocations.get(), "no compensation action may run");
+        assertEquals(0, countEvents(EventType.COMPENSATION_STARTED));
+        assertEquals(0, countEvents(EventType.COMPENSATION_STEP_FAILED),
+                "a stand-down is never a failed compensation step");
+        assertEquals(0, countEvents(EventType.COMPENSATION_COMPLETED));
+    }
+
+    @Test
+    @DisplayName("Stand-down: a sequential entry's replay-skip read is guarded — the entry is "
+            + "neither re-invoked nor recorded failed")
+    void sequentialEntryReadStandsDown() {
+        var invocations = new AtomicInteger();
+        var stack = new CompensationStack();
+        stack.push("step-A", invocations::incrementAndGet);
+        // anchorSeq 6 → first entry's block base is 6*1000 + 1*1000.
+        plantFutureEvent(7000);
+
+        org.junit.jupiter.api.Assertions.assertThrows(UnknownWorkflowHistoryException.class,
+                () -> sagaManager.compensate(ctx, instance, stack, false));
+
+        assertEquals(0, invocations.get());
+        assertEquals(0, countEvents(EventType.COMPENSATION_STEP_FAILED),
+                "recording a step failure here would durably contradict whatever the "
+                        + "upgraded node's history actually says");
+        assertEquals(0, countEvents(EventType.COMPENSATION_COMPLETED));
+    }
+
+    @Test
+    @DisplayName("Stand-down: a parallel branch's replay-skip read is guarded")
+    void parallelBranchReadStandsDown() {
+        var invocations = new AtomicInteger();
+        var stack = new CompensationStack();
+        stack.push("branch-A", invocations::incrementAndGet);
+        // compensate() consumes 6, executeParallel's fork point consumes 7,
+        // so the first branch's base is 7*1000 + 1*1000.
+        plantFutureEvent(8000);
+
+        org.junit.jupiter.api.Assertions.assertThrows(UnknownWorkflowHistoryException.class,
+                () -> sagaManager.compensate(ctx, instance, stack, true));
+
+        assertEquals(0, invocations.get());
+        assertEquals(0, countEvents(EventType.COMPENSATION_STEP_FAILED));
+        assertEquals(0, countEvents(EventType.COMPENSATION_COMPLETED));
+    }
+
+    @Test
+    @DisplayName("Catch ordering: a stand-down raised INSIDE a sequential compensation action is "
+            + "rethrown, never recorded as COMPENSATION_STEP_FAILED")
+    void sequentialActionStandDownIsRethrown() {
+        var stack = new CompensationStack();
+        stack.push("nested-replay-read", () -> {
+            throw standDown();
+        });
+
+        org.junit.jupiter.api.Assertions.assertThrows(UnknownWorkflowHistoryException.class,
+                () -> sagaManager.compensate(ctx, instance, stack, false),
+                "a compensation action's nested replay read can stand down — the loop must "
+                        + "let it out, exactly as it does for a shutdown");
+
+        assertEquals(0, countEvents(EventType.COMPENSATION_STEP_FAILED),
+                "the step did not fail; this node simply cannot read the history");
+        assertEquals(0, countEvents(EventType.COMPENSATION_COMPLETED),
+                "a stand-down must not finalise the compensation phase");
+    }
+
+    @Test
+    @DisplayName("Catch ordering: a stand-down raised INSIDE a parallel compensation branch is "
+            + "rethrown from the outcome loop, never recorded as COMPENSATION_STEP_FAILED")
+    void parallelBranchStandDownIsRethrown() {
+        var completed = new AtomicInteger();
+        var stack = new CompensationStack();
+        // Pushed first → unwinds second; the branch that meets unreadable history.
+        stack.push("standing-down-branch", () -> {
+            throw standDown();
+        });
+        stack.push("healthy-branch", completed::incrementAndGet);
+
+        org.junit.jupiter.api.Assertions.assertThrows(UnknownWorkflowHistoryException.class,
+                () -> sagaManager.compensate(ctx, instance, stack, true),
+                "the outcome loop collects branch throwables with catch (Throwable) — it "
+                        + "must recognise a control-flow signal before recording failures");
+
+        assertEquals(0, countEvents(EventType.COMPENSATION_STEP_FAILED),
+                "no branch failed; one of them could not read the history");
+        assertEquals(0, countEvents(EventType.COMPENSATION_COMPLETED));
     }
 
     private long countEvents(EventType type) {

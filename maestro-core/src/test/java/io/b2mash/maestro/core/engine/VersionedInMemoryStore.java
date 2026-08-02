@@ -56,6 +56,7 @@ class VersionedInMemoryStore implements WorkflowStore {
     private final CopyOnWriteArrayList<WorkflowSignal> signals = new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<WorkflowTimer> timers = new CopyOnWriteArrayList<>();
     private final AtomicInteger updateAttempts = new AtomicInteger();
+    private final AtomicInteger appendAttempts = new AtomicInteger();
     private final AtomicInteger updatesToFail = new AtomicInteger();
     private final AtomicReference<@Nullable EventType> collideOnType = new AtomicReference<>();
 
@@ -141,8 +142,20 @@ class VersionedInMemoryStore implements WorkflowStore {
         collideOnType.set(type);
     }
 
+    /**
+     * @return how many times {@code appendEvent} has been <em>attempted</em>,
+     *         including attempts the uniqueness guard rejected — the
+     *         difference between "the run stood down before touching the
+     *         store" and "the run tried to re-execute a memoized step and was
+     *         only stopped by the unique index"
+     */
+    int appendAttempts() {
+        return appendAttempts.get();
+    }
+
     @Override
     public void appendEvent(WorkflowEvent event) {
+        appendAttempts.incrementAndGet();
         var collide = collideOnType.get();
         if (collide != null && event.eventType() == collide) {
             throw new DuplicateEventException(event.workflowInstanceId(), event.sequenceNumber());
@@ -156,6 +169,37 @@ class VersionedInMemoryStore implements WorkflowStore {
                         event.workflowInstanceId(), event.sequenceNumber());
             }
             events.add(event);
+        }
+    }
+
+    /**
+     * Plants an event without going through {@link #appendEvent} — the
+     * in-memory counterpart of the integration suite's raw SQL {@code INSERT}
+     * of a type string only a <em>newer</em> node could have written.
+     *
+     * <p>{@code appendEvent} rejects {@link EventType#UNKNOWN} precisely so the
+     * sentinel can never round-trip; this seam is how a test plants the history
+     * that guard's consequence is defined against.
+     *
+     * @param event the raw event, sentinel type permitted
+     */
+    void injectRawEvent(WorkflowEvent event) {
+        synchronized (events) {
+            events.add(event);
+        }
+    }
+
+    /**
+     * Removes the event at a sequence — the upgraded node's world, where the
+     * row this build could not read is no longer in the way.
+     *
+     * @param instanceId     the instance whose log to edit
+     * @param sequenceNumber the sequence to clear
+     */
+    void removeEvent(UUID instanceId, int sequenceNumber) {
+        synchronized (events) {
+            events.removeIf(e -> e.workflowInstanceId().equals(instanceId)
+                    && e.sequenceNumber() == sequenceNumber);
         }
     }
 
