@@ -1,6 +1,8 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.exception.OptimisticLockException;
+import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
@@ -12,17 +14,21 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -53,6 +59,26 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *       serialised after the first write. The barrier must sit <b>between</b>
  *       the read and the write, i.e. inside an overridden {@code updateInstance}
  *       before delegating to {@code super}.</li>
+ * </ul>
+ *
+ * <h2>What the workflow-level pins do NOT establish</h2>
+ * <p>They pin the <em>outcome</em>: no run may be recorded {@code FAILED} and no
+ * compensation may fire because two branches parked at once. They do not pin
+ * <em>how</em> the writer achieves it, and they cannot: standing down on every
+ * conflict also lets the workflow complete normally, so a writer whose retry
+ * re-read is stale — one whose status write therefore never lands under
+ * contention — keeps all four of them green. Verified, not assumed: hoisting
+ * {@code store.getInstance} out of the retry loop leaves them all passing.
+ *
+ * <p>So the two properties {@code InstanceStatusWriter}'s shape actually rests
+ * on get their own pins, both of which watch the store rather than the workflow:
+ * <ul>
+ *   <li>{@link #statusWrite_loserOfACollision_landsOnAFreshVersion()} — the
+ *       loser's status must <em>land</em>, on the winner's version + 1. Dies if
+ *       the read is hoisted.</li>
+ *   <li>{@link #statusWrite_terminatedBetweenAttempts_propagatesWithoutOverwriting()}
+ *       — a {@code TERMINATED} arriving between attempts must abort the loop.
+ *       Dies if the terminal guard's verdict is re-used across attempts.</li>
  * </ul>
  */
 @DisplayName("Concurrent branch parking must not collide on the instance row")
@@ -258,6 +284,68 @@ class ConcurrentBranchParkingTest {
                         + "standing down on a lost status write is safe");
     }
 
+    @Test
+    @DisplayName("the loser of a collision re-reads and lands its status on the winner's fresh version")
+    void statusWrite_loserOfACollision_landsOnAFreshVersion() throws Exception {
+        var store = new BarrierStore();
+        store.createInstance(seedInstance("collide-fresh"));
+
+        // Two writers, barriered between their read and their CAS — exactly the
+        // branch-thread collision, with the workflow machinery stripped away so
+        // the ledger below is the only thing that can move.
+        var writers = new ArrayList<Thread>();
+        for (var i = 0; i < 2; i++) {
+            writers.add(Thread.ofVirtual()
+                    .name("maestro-workflow-Collide-collide-fresh-branch-" + i)
+                    .start(() -> InstanceStatusWriter.write(
+                            store, "collide-fresh", WorkflowStatus.WAITING_SIGNAL)));
+        }
+        for (var writer : writers) {
+            writer.join(Duration.ofSeconds(15));
+        }
+
+        // THE point of the retry, and the one thing the workflow-level pins
+        // cannot see: standing down also lets a workflow complete, so "it
+        // completed" is consistent with the loser's status never landing. Only
+        // the second committed write proves the retry re-read the winner's
+        // version 1 and wrote 2. Hoist the read out of the loop and the loser
+        // re-issues a stale version 1 on every attempt, conflicts five times,
+        // stands down, and this ledger holds one entry instead of two.
+        assertEquals(List.of("WAITING_SIGNAL@1", "WAITING_SIGNAL@2"), store.committedWrites(),
+                "both writers' status must land — the loser must re-read the winner's "
+                        + "version and write the next one, not re-issue its stale version");
+        assertEquals(3, store.updateAttempts(),
+                "two commits plus exactly one conflict — the retry must not re-conflict");
+
+        var inst = store.getInstance("collide-fresh").orElseThrow();
+        assertEquals(WorkflowStatus.WAITING_SIGNAL, inst.status());
+        assertEquals(2, inst.version(),
+                "the row must carry the retried write's version, not the winner's");
+    }
+
+    @Test
+    @DisplayName("a TERMINATED landing between attempts aborts the retry — the guard is re-read each time")
+    void statusWrite_terminatedBetweenAttempts_propagatesWithoutOverwriting() {
+        var store = new TerminateOnFirstConflictStore();
+        store.createInstance(seedInstance("terminated-mid-retry"));
+
+        // The guard passed on attempt 1 (the row was RUNNING). The terminate
+        // lands in the retry window. If the loop re-used that first read's
+        // verdict, attempt 2 would happily CAS WAITING_SIGNAL over an operator's
+        // TERMINATED — resurrecting a workflow someone asked to stop.
+        assertThrows(WorkflowTerminatedException.class,
+                () -> InstanceStatusWriter.write(
+                        store, "terminated-mid-retry", WorkflowStatus.WAITING_SIGNAL),
+                "the re-read must see TERMINATED and abandon the run; WorkflowTerminatedException "
+                        + "is an Error so a workflow's own catch (Exception) cannot swallow it");
+
+        assertEquals(WorkflowStatus.TERMINATED,
+                store.getInstance("terminated-mid-retry").orElseThrow().status(),
+                "the operator's terminate must not be overwritten by the retry");
+        assertEquals(1, store.casAttempts(),
+                "the re-evaluated guard must abort before a second CAS is ever issued");
+    }
+
     private static WorkflowInstance seedInstance(String workflowId) {
         var now = Instant.now();
         return WorkflowInstance.builder()
@@ -341,6 +429,40 @@ class ConcurrentBranchParkingTest {
     }
 
     /**
+     * Flips the row to {@code TERMINATED} in the window between the writer's
+     * first CAS and its retry — a cross-node {@code terminateWorkflow} landing
+     * mid-retry, which is the whole reason the terminal guard sits inside the
+     * loop rather than in front of it.
+     *
+     * <p>The forced write bumps the version, so a retry that re-used the first
+     * read would either conflict forever or, worse, match and overwrite the
+     * terminate.
+     */
+    static class TerminateOnFirstConflictStore extends VersionedInMemoryStore {
+        private final AtomicInteger casAttempts = new AtomicInteger();
+
+        /**
+         * Counted here rather than read from {@code updateAttempts()}, because
+         * the injected conflict throws before {@code super} ever runs.
+         *
+         * @return how many compare-and-sets the writer issued
+         */
+        int casAttempts() {
+            return casAttempts.get();
+        }
+
+        @Override
+        public synchronized void updateInstance(WorkflowInstance instance) {
+            if (casAttempts.incrementAndGet() == 1) {
+                forceStatus(instance.workflowId(), WorkflowStatus.TERMINATED);
+                throw new OptimisticLockException(
+                        instance.workflowId(), instance.version() - 1, -1);
+            }
+            super.updateInstance(instance);
+        }
+    }
+
+    /**
      * Forces the interleaving instead of hoping for it: the first
      * {@code updateInstance} on each of the two branch threads rendezvouses
      * BEFORE the CAS, so both branches have already read the same version and
@@ -354,10 +476,23 @@ class ConcurrentBranchParkingTest {
         private final CyclicBarrier barrier = new CyclicBarrier(2);
         private final ThreadLocal<Boolean> used = ThreadLocal.withInitial(() -> false);
         private final CountDownLatch atBarrier = new CountDownLatch(2);
+        private final List<String> committed = new CopyOnWriteArrayList<>();
 
         /** @return {@code true} once both branch threads have reached the pre-CAS barrier */
         boolean bothBranchesAtBarrier() {
             return atBarrier.getCount() == 0;
+        }
+
+        /**
+         * Every write that actually reached the row, as {@code STATUS@version},
+         * sorted. A conflicting write is never recorded — {@code super} throws
+         * before this ledger is touched — so the ledger is what distinguishes
+         * "the loser retried and landed" from "the loser stood down".
+         *
+         * @return the committed writes, sorted
+         */
+        List<String> committedWrites() {
+            return committed.stream().sorted().toList();
         }
 
         @Override
@@ -372,6 +507,7 @@ class ConcurrentBranchParkingTest {
                 }
             }
             super.updateInstance(instance);
+            committed.add(instance.status() + "@" + instance.version());
         }
     }
 }

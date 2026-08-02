@@ -67,6 +67,15 @@ import java.time.Instant;
  * {@code WAITING_SIGNAL} belonged costs nothing; a workflow wrongly recorded
  * {@code FAILED} costs a saga.
  *
+ * <p>The retries are immediate — no backoff, no jitter — matching
+ * {@code transitionToTerminal}, whose budget this shares. Two branches need one
+ * retry between them, but a wide fan-out whose branches park in lockstep gives
+ * every writer O(N) chances to lose, so exhaustion is likelier there than the
+ * two-branch case suggests. That is deliberate rather than overlooked: the
+ * consequence of exhaustion stays bounded to a stale <em>active</em> status on
+ * a workflow that is otherwise unaffected, which is not worth paying for with a
+ * second retry policy alongside the engine's existing one.
+ *
  * <p><b>Thread safety:</b> stateless; safe for concurrent use, including from
  * several branch threads of one {@code parallel()} fork writing the same
  * instance row at once — which is exactly what the retry loop exists for.
