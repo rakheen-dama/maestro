@@ -166,14 +166,18 @@ public interface WorkflowStore {
      * <p><b>The failing timeout memo (Issue 19).</b> A timed-out await
      * memoizes a {@code SIGNAL_TIMEOUT} event so replay re-raises the timeout
      * deterministically. When the workflow FAILED <em>because</em> of that
-     * timeout, the memo is itself a failure record: implementations must also
-     * delete the {@code SIGNAL_TIMEOUT} event at the highest sequence below
-     * the terminal (i.e. the last memo before {@code WORKFLOW_FAILED}), so the
-     * retried await runs live and can consume the now-delivered signal.
-     * Earlier <em>caught</em> gate timeouts have later events above them, are
-     * never that maximum, and must survive — deleting them would let a retry
-     * replay consume a late-arrived signal at the gate and diverge from the
-     * pre-failure execution.
+     * timeout (the {@code WORKFLOW_FAILED} payload's {@code exceptionType}
+     * records a {@code SignalTimeoutException}), the memo is itself a failure
+     * record: implementations must also delete the instance's
+     * highest-sequenced {@code SIGNAL_TIMEOUT} event. That memo is <em>not</em>
+     * necessarily the last memo before {@code WORKFLOW_FAILED} — an uncaught
+     * timeout in a saga appends {@code COMPENSATION_*} events between the
+     * failing memo and the terminal, and the memo must be deleted regardless.
+     * Deleting it frees the retried await to run live and consume the
+     * now-delivered signal. Earlier <em>caught</em> gate timeouts sit at lower
+     * sequences, are never that maximum, and must survive — deleting them
+     * would let a retry replay consume a late-arrived signal at the gate and
+     * diverge from the pre-failure execution.
      *
      * <p><b>Idempotent.</b> Called on an instance with no failure memos it
      * deletes nothing and returns {@code 0}.

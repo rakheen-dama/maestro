@@ -235,6 +235,52 @@ class InMemoryWorkflowStoreTest {
                 "the failing await's memo must be gone so retry runs it live");
     }
 
+    @Test
+    void deleteFailureEventsDeletesFailingTimeoutMemoWhenCompensationEventsFollowIt() {
+        // Regression pin (CodeRabbit wave, PR #30): an UNCAUGHT
+        // SignalTimeoutException in a saga appends COMPENSATION_* events
+        // between the failing SIGNAL_TIMEOUT memo and WORKFLOW_FAILED. The
+        // failing memo is the highest-sequenced SIGNAL_TIMEOUT — NOT
+        // necessarily the last memo before the terminal — and must still be
+        // deleted, or a retried await deterministically re-times-out forever.
+        // The compensation memos themselves must survive.
+        var instanceId = UUID.randomUUID();
+        store.appendEvent(new WorkflowEvent(
+                UUID.randomUUID(), instanceId, 1, EventType.ACTIVITY_COMPLETED,
+                "reserveFunds", null, Instant.now()));
+        store.appendEvent(new WorkflowEvent(
+                UUID.randomUUID(), instanceId, 2, EventType.SIGNAL_TIMEOUT,
+                "failing-await", null, Instant.now()));
+        store.appendEvent(new WorkflowEvent(
+                UUID.randomUUID(), instanceId, 3, EventType.COMPENSATION_STARTED,
+                null, null, Instant.now()));
+        store.appendEvent(new WorkflowEvent(
+                UUID.randomUUID(), instanceId, 4, EventType.COMPENSATION_STEP_COMPLETED,
+                "releaseFunds", null, Instant.now()));
+        store.appendEvent(new WorkflowEvent(
+                UUID.randomUUID(), instanceId, 5, EventType.COMPENSATION_COMPLETED,
+                null, null, Instant.now()));
+        store.appendEvent(new WorkflowEvent(
+                UUID.randomUUID(), instanceId, 6, EventType.WORKFLOW_FAILED, null,
+                json("{\"exceptionType\":"
+                        + "\"io.b2mash.maestro.core.exception.SignalTimeoutException\","
+                        + "\"message\":\"signal 'failing-await' timed out\"}"),
+                Instant.now()));
+
+        assertEquals(2, store.deleteFailureEvents(instanceId),
+                "WORKFLOW_FAILED plus the failing SIGNAL_TIMEOUT memo — even with "
+                        + "compensation events between them");
+        assertTrue(store.getEventBySequence(instanceId, 2).isEmpty(),
+                "the failing SIGNAL_TIMEOUT memo must be deleted even though "
+                        + "compensation events sit between it and the terminal");
+        assertTrue(store.getEventBySequence(instanceId, 3).isPresent(),
+                "COMPENSATION_STARTED must survive");
+        assertTrue(store.getEventBySequence(instanceId, 4).isPresent(),
+                "COMPENSATION_STEP_COMPLETED must survive");
+        assertTrue(store.getEventBySequence(instanceId, 5).isPresent(),
+                "COMPENSATION_COMPLETED must survive");
+    }
+
     // ── Signal operations ────────────────────────────────────────────────
 
     @Test

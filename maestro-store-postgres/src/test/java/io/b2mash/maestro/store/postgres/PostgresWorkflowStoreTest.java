@@ -495,6 +495,47 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
             assertTrue(store.getEventBySequence(instance.id(), 3).isEmpty(),
                     "the failing await's memo must be gone so retry runs it live");
         }
+
+        @Test
+        @DisplayName("deleteFailureEvents deletes the failing SIGNAL_TIMEOUT memo even when "
+                + "compensation events sit between it and WORKFLOW_FAILED")
+        void deleteFailureEvents_deletesFailingTimeoutMemoWhenCompensationEventsFollowIt() {
+            // Regression pin (CodeRabbit wave, PR #30): an UNCAUGHT
+            // SignalTimeoutException in a saga appends COMPENSATION_* events
+            // between the failing SIGNAL_TIMEOUT memo and the terminal. The
+            // failing memo is the highest-sequenced SIGNAL_TIMEOUT — NOT
+            // necessarily the last memo before WORKFLOW_FAILED — and must
+            // still be deleted; the compensation memos must survive.
+            var instance = newInstance("order-del-timeout-compensated");
+            store.createInstance(instance);
+
+            store.appendEvent(newEvent(instance.id(), 1, EventType.ACTIVITY_COMPLETED));
+            store.appendEvent(newEvent(instance.id(), 2, EventType.SIGNAL_TIMEOUT));
+            store.appendEvent(newEvent(instance.id(), 3, EventType.COMPENSATION_STARTED));
+            store.appendEvent(newEvent(instance.id(), 4, EventType.COMPENSATION_STEP_COMPLETED));
+            store.appendEvent(newEvent(instance.id(), 5, EventType.COMPENSATION_COMPLETED));
+            store.appendEvent(new WorkflowEvent(
+                    UUID.randomUUID(), instance.id(), 6, EventType.WORKFLOW_FAILED, null,
+                    jsonNode("{\"exceptionType\":"
+                            + "\"io.b2mash.maestro.core.exception.SignalTimeoutException\","
+                            + "\"message\":\"signal 'failing-await' timed out\"}"),
+                    Instant.now().truncatedTo(ChronoUnit.MILLIS)));
+
+            assertEquals(2, store.deleteFailureEvents(instance.id()),
+                    "WORKFLOW_FAILED plus the failing SIGNAL_TIMEOUT memo — even with "
+                            + "compensation events between them");
+            assertTrue(store.getEventBySequence(instance.id(), 2).isEmpty(),
+                    "the failing SIGNAL_TIMEOUT memo must be deleted even though "
+                            + "compensation events sit between it and the terminal");
+            var remaining = store.getEvents(instance.id()).stream()
+                    .map(WorkflowEvent::eventType).toList();
+            assertEquals(List.of(
+                            EventType.ACTIVITY_COMPLETED,
+                            EventType.COMPENSATION_STARTED,
+                            EventType.COMPENSATION_STEP_COMPLETED,
+                            EventType.COMPENSATION_COMPLETED),
+                    remaining, "compensation memos must survive the delete");
+        }
     }
 
     // ── Signal Tests ──────────────────────────────────────────────────────

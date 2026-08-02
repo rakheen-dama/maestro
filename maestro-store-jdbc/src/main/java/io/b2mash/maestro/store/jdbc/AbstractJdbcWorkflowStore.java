@@ -316,8 +316,9 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         // The FAILING timeout memo (Issue 19): when the workflow FAILED
         // *because* of a signal timeout — the WORKFLOW_FAILED payload's
         // exceptionType says so — retry must also delete the timeout memo the
-        // failing await wrote (the highest-sequenced SIGNAL_TIMEOUT, which for
-        // a timeout failure is the last memo before the terminal), so the
+        // failing await wrote (the highest-sequenced SIGNAL_TIMEOUT; NOT
+        // necessarily the last memo before the terminal — an uncaught timeout
+        // in a saga appends COMPENSATION_* events in between), so the
         // re-driven await runs live and consumes the now-delivered signal
         // instead of deterministically re-timing-out forever. When the failure
         // was anything else, every SIGNAL_TIMEOUT memo is a CAUGHT gate that
