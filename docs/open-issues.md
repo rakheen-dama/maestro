@@ -941,7 +941,8 @@ anyone re-reading the raw console, `evidence/task7/soak-console.log`):
 3. Binary provenance: the test binary compiled at `b2b5c65` (the console's
    identity header, started 23:14 SAST); the run dir's identity stamps
    `gitHead 7113e06` because the stamp reads git at run start (23:43), after
-   two later commits had landed. The workload-semantics fixes under test
+   four later commits had landed (`2ac7a57`/`eac200e` harness source,
+   `617a735`/`7113e06` docs). The workload-semantics fixes under test
    (interrupt-safe pacer, runaway cap, in-flight bound) **are** in
    `b2b5c65`; the later fix-loop commits touch failure paths, teardown, and
    reporting only — none of them alter what this run measured.

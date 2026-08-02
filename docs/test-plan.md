@@ -34,7 +34,7 @@ best-effort; RabbitMQ/Postgres-messaging are secondary).
 > six-node cluster under scripted failure injection and runs nightly
 > (10-minute PR-gate mode, 3× consecutive) plus weekly (multi-hour soak). See
 > `docs/operations.md` for measured multi-instance guarantees and
-> `docs/open-issues.md` Issues 17-19 for the three engine defects this work
+> `docs/open-issues.md` Issues 17-20 for the four engine defects this work
 > found and fixed. §1's matrix and §5's gap list below are updated in place
 > where this closes something; both are otherwise kept as the historical
 > record of how earlier gaps were found.
@@ -123,7 +123,7 @@ entire integration seams unverified. This plan makes those seams explicit.
 | maestro-messaging-rabbitmq | ✅ real suite (`RabbitMqWorkflowMessagingTest`); the shared ack-on-failure defect it carried is fixed alongside Kafka and Postgres |
 | maestro-admin / admin-client | ✅ real suites (`DashboardSmokeMockMvcTest`, `EventIngestionRoundTripTest`, `AdminEventPublisherTest`, `AdminCommandDispatcherTest`, `AdminCommandKafkaIT`, others). `$maestro:retry`/`terminate` commands are now consumed end-to-end by a starter-side `AdminCommandDispatcher` — dashboard buttons are functional; see `docs/open-issues.md` Issue 15 (**Resolved**) |
 | Loan-origination E2E (10 scenarios, incl. 5 multi-node) | ✅ E — nightly + on-demand in CI, both Valkey and Postgres lock backends (`.github/workflows/e2e-nightly.yml`) |
-| Multi-instance chaos/soak harness (`maestro-integration-tests` `e2eTest`, `@Tag("e2e")`) | ✅ E — 6-node Testcontainers cluster, scripted failure injection; nightly PR-gate mode (3× consecutive) + weekly soak mode in CI. Found and fixed Issues 17-19. See `docs/operations.md` |
+| Multi-instance chaos/soak harness (`maestro-integration-tests` `e2eTest`, `@Tag("e2e")`) | ✅ E — 6-node Testcontainers cluster, scripted failure injection; nightly PR-gate mode (3× consecutive) + weekly soak mode in CI. Found and fixed Issues 17-20. See `docs/operations.md` |
 
 ---
 

@@ -15,7 +15,7 @@ seed, mode, runId) as line 1 (JSONL), `#`-line (CSV) or `_identity` (JSON).
 | 20260731-222409--3853687087028584946 | PR_GATE full, fresh seed | FAIL | Drain 120s missed a tail-end child's double-timeout by 2s → drain calibrated 240s (§14.7) |
 | 20260731-223448-7919582353711659295 | PR_GATE full, fresh seed | **PASS** | Streak run A (1/3): census clean, 1 redelivery finding, 16m33s |
 | 20260731-225143--825499340287642346 | PR_GATE full, fresh seed | FAIL | **NEW DEFECT (proposed Issue 19)**: divergent replay of a timed-out-gate gap after a graceful rolling restart — dumps for loan-chaos-…-37 |
-| 20260731-232429--4025274072392725999 | GOLDEN re-calibration (post-Issue-19) | **PASS** | All four paths: gaps=[] — SIGNAL_TIMEOUT memoization confirmed end-to-end (§14.8) |
+| 20260731-232429--4025274072392725999 | GOLDEN re-calibration (post-Issue-19) | **PASS** | All four paths: gaps=[] — SIGNAL_TIMEOUT memoization confirmed end-to-end (§14.8). Not mirrored into this tree — run dir lives only in transient `maestro-integration-tests/build/chaos-evidence/` (findings recorded in task-7-report.md §14.8) |
 | e2e-scenario7-issue19/ | Loan E2E `E2E_ONLY=7` | **PASS** | Re-derived empty missing-set green (18 contiguous events); adoption probe log; first-attempt flake kept for the record |
 | 20260731-234107-3430218812008443518 | PR_GATE full, fresh seed | **PASS** | **Streak 1/3**: 74 wf, census 0 dups, 0 redeliveries, 9m10s |
 | 20260731-235041--200961534721746905 | PR_GATE full, fresh seed | **PASS** | **Streak 2/3**: 75 wf, census 0 dups, 2 redelivered findings (Ruling 3), 9m18s |
