@@ -1,0 +1,77 @@
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening
+branch: worktree-release-hardening
+HEAD: 0962c206bc550d0e97bb3616535c14390df3ea09
+timestamp: 2026-08-02T17:21:45Z
+command: ./gradlew :maestro-spring-boot-starter:test --tests *MaestroObservabilityAutoConfigurationTest --rerun-tasks (TracingConfiguration ADDED but WITHOUT the tracing afterName entries — proves the ordering annotation is load-bearing)
+> Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :build-logic:generateExternalPluginSpecBuilders
+> Task :build-logic:extractPrecompiledScriptPluginPlugins
+> Task :build-logic:generateScriptPluginAdapters
+> Task :build-logic:pluginDescriptors
+> Task :build-logic:processResources
+> Task :build-logic:compilePluginsBlocks
+> Task :build-logic:generatePrecompiledScriptPluginAccessors
+
+> Configure project :maestro-admin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :build-logic:compileKotlin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+w: [33m[1m⚠️ Inconsistent JVM Target Compatibility Between Java and Kotlin Tasks[0m[0m
+Inconsistent JVM-target compatibility detected for tasks 'compileJava' (25) and 'compileKotlin' (24).
+This will become an error in Gradle 8.0.
+[32m[1mSolution:[0m[0m
+[32m[3mConsider using JVM Toolchain: https://kotl.in/gradle/jvm/toolchain[0m[0m
+[36mLearn more about JVM-target validation: [0m[34mhttps://kotl.in/gradle/jvm/target-validation[0m[36m[0m
+
+
+> Task :build-logic:compileJava NO-SOURCE
+> Task :build-logic:classes
+> Task :build-logic:jar
+> Task :maestro-test:processResources NO-SOURCE
+> Task :maestro-spring-boot-starter:processResources
+> Task :maestro-spring-boot-starter:processTestResources NO-SOURCE
+> Task :maestro-core:compileJava
+> Task :maestro-core:processResources NO-SOURCE
+> Task :maestro-core:classes
+> Task :maestro-core:jar
+> Task :maestro-test:compileJava
+> Task :maestro-test:classes
+> Task :maestro-test:jar
+> Task :maestro-spring-boot-starter:compileJava
+> Task :maestro-spring-boot-starter:classes
+> Task :maestro-spring-boot-starter:compileTestJava
+> Task :maestro-spring-boot-starter:testClasses
+
+> Task :maestro-spring-boot-starter:test FAILED
+
+MaestroObservabilityAutoConfiguration > registers through the real Boot tracing auto-configuration chain, not a withBean Tracer stub FAILED
+    java.lang.AssertionError at MaestroObservabilityAutoConfigurationTest.java:329
+
+12 tests completed, 1 failed
+
+[Incubating] Problems report is available at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/build/reports/problems/problems-report.html
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':maestro-spring-boot-starter:test'.
+> There were failing tests. See the report at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-spring-boot-starter/build/reports/tests/test/index.html
+
+* Try:
+> Run with --scan to generate a Build Scan (powered by Develocity).
+
+BUILD FAILED in 6s
+17 actionable tasks: 17 executed
+exit-code: 1
+---- assertion detail from JUnit XML ----
+### registers through the real Boot tracing auto-configuration chain, not a withBean Tracer stub
+java.lang.AssertionError: 
+Expecting:
+ <Started application [AnnotationConfigApplicationContext@5f8d9767 id = 'org.springframework.context.annotation.AnnotationConfigApplicationContext@5f8d9767', applicationName = '', beanDefinitionCount = 61]>
+to have a single bean of type:
+ <io.b2mash.maestro.spring.observe.TracingEngineObserver>
+but found no beans of that type
+	at io.b2mash.maestro.spring.observe.MaestroObservabilityAutoConfigurationTest.lambda$wiresThroughRealBootTracingAutoConfigurationChain$0(MaestroObservabilityAutoConfigurationTest.java:329)
+	at org.springframework.boot.test.context.runner.AbstractApplicationContextRunner.accept(AbstractApplicationContextRunner.java:457)
+	at org.spri
