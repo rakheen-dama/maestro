@@ -1,0 +1,89 @@
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening
+branch: worktree-release-hardening
+HEAD: 7af16a4d8c6cf69c538f05a84ec1e26dfc0a8fa1
+timestamp: 2026-08-02T18:14:52Z
+command: ./gradlew :maestro-messaging-kafka:test --rerun-tasks (F1 — malformed/oversized inbound traceparent pins, full messaging-kafka suite)
+> Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :build-logic:generateExternalPluginSpecBuilders
+> Task :build-logic:extractPrecompiledScriptPluginPlugins
+> Task :build-logic:generateScriptPluginAdapters
+> Task :build-logic:pluginDescriptors
+> Task :build-logic:processResources
+> Task :build-logic:compilePluginsBlocks
+> Task :build-logic:generatePrecompiledScriptPluginAccessors
+
+> Task :build-logic:compileKotlin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+w: [33m[1m⚠️ Inconsistent JVM Target Compatibility Between Java and Kotlin Tasks[0m[0m
+Inconsistent JVM-target compatibility detected for tasks 'compileJava' (25) and 'compileKotlin' (24).
+This will become an error in Gradle 8.0.
+[32m[1mSolution:[0m[0m
+[32m[3mConsider using JVM Toolchain: https://kotl.in/gradle/jvm/toolchain[0m[0m
+[36mLearn more about JVM-target validation: [0m[34mhttps://kotl.in/gradle/jvm/target-validation[0m[36m[0m
+
+
+> Task :build-logic:compileJava NO-SOURCE
+> Task :build-logic:classes
+> Task :build-logic:jar
+
+> Configure project :maestro-admin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :maestro-spring-boot-starter:processResources
+> Task :maestro-messaging-kafka:processResources
+> Task :maestro-messaging-kafka:processTestResources NO-SOURCE
+> Task :maestro-core:compileJava
+> Task :maestro-core:processResources NO-SOURCE
+> Task :maestro-core:classes
+> Task :maestro-core:jar
+> Task :maestro-spring-boot-starter:compileJava
+> Task :maestro-spring-boot-starter:classes
+> Task :maestro-spring-boot-starter:jar
+
+> Task :maestro-messaging-kafka:compileJava
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-messaging-kafka/src/main/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagation.java:156: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = tracer.withSpan(span)) {
+                 ^
+1 warning
+
+> Task :maestro-messaging-kafka:classes
+
+> Task :maestro-messaging-kafka:compileTestJava
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTestSupport.java:41: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+    static final KafkaContainer kafka =
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTestSupport.java:42: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+            new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1"))
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagationContractTest.java:104: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = otel.tracer().withSpan(span)) {
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagationContractTest.java:134: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = otel.tracer().withSpan(span)) {
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagationContractTest.java:174: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = otel.tracer().withSpan(span)) {
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagationContractTest.java:208: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = otel.tracer().withSpan(span)) {
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagationContractTest.java:242: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = otel.tracer().withSpan(span)) {
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagationContractTest.java:297: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = otel.tracer().withSpan(span)) {
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagationContractTest.java:401: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = otel.tracer().withSpan(span)) {
+                 ^
+9 warnings
+
+> Task :maestro-messaging-kafka:testClasses
+> Task :maestro-messaging-kafka:test
+
+[Incubating] Problems report is available at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/build/reports/problems/problems-report.html
+
+BUILD SUCCESSFUL in 38s
+18 actionable tasks: 18 executed
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.2.0/userguide/configuration_cache_enabling.html
+exit-code: 0

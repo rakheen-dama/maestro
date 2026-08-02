@@ -717,3 +717,246 @@ terminates a workflow between its last live step and its next park.*
 5. **Crash/cross-node continuity for timer- and recovery-driven resumes** is
    unchanged from design §3.2's documented limitation: only signal-driven wakes
    carry a durable trace context.
+
+---
+
+# Fix round 1
+
+**Status: COMPLETE**
+
+pwd: `/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening`
+branch: `worktree-release-hardening`
+HEAD before this round: `7af16a4` (design §11, RULINGs 5–8)
+Implementation commit: `5dc9926`; this report + evidence commit follows.
+
+Design §11 was read first. RULINGs 6/7/8 confirm the three deviations, RULING 5
+approves the `runAbandoned` recommendation. Five items fixed (F1, F2, F3, F5,
+RULING 5 + F4); F6 deferred by the coordinator and untouched.
+
+Evidence archived this round (identity headers on all):
+`task-5-fix1-red-starter.log`, `task-5-fix1-green-starter.log`,
+`task-5-fix1-red-kafka.log`, `task-5-fix1-green-kafka.log`,
+`task-5-fix1-red-fanout.log`, `task-5-fix1-green-fanout.log`,
+`task-5-fix1-red-linkage.log`, `task-5-fix1-green-linkage.log`,
+`task-5-fix1-green-core.log`, `task-5-fix1-verify.log`, `task-5-fix1-build.log`.
+
+---
+
+## F1 (CRITICAL) — an inbound trace header could discard a signal
+
+**Fixed at extraction, before the holder and therefore before the database.**
+`KafkaTracePropagation.extractTraceparent` now validates the W3C grammar and
+returns `null` for anything that fails, so a malformed or over-long header is
+treated as *absent*: no span, no `TraceContextHolder` value, nothing persisted,
+signal delivered normally. Grammar-valid implies exactly 55 characters, so this
+subsumes any length cap on the `VARCHAR(128)` column. Validation deliberately
+did **not** go into `maestro-core` — RULING 2 forbids the store or engine
+interpreting the value.
+
+The RED is the most important evidence in this round, because it shows the
+consequence rather than the mechanism. With validation reverted, driving the
+real Postgres column end to end
+(`evidence/task-5-fix1-red-linkage.log`):
+
+```
+A signal published by service A and consumed by service B yields one connected trace > a signal carrying an over-long traceparent is still delivered and consumed — the workflow completes and the resumed segment is simply a fresh root FAILED
+...
+org.opentest4j.AssertionFailedError: the signal must still wake the workflow — a bad trace header may never cost a signal its delivery ==> expected: <COMPLETED> but was: <FAILED>
+```
+
+The workflow reached **FAILED**, not merely "stuck": the signal was
+dead-lettered, so its `awaitSignal` timed out. A decorative header cost the
+workflow its signal *and* its run.
+
+**Honest limit on this evidence:** the archived log does not contain the
+Postgres `22001` / "value too long" string — the integration suite's test
+logging is filtered to test events, so the underlying SQLException text is not
+in it (`grep -c "value too long\|22001"` over that log returns `0`). The
+diagnosis of the mechanism is inference from the code path plus the fact that
+capping the value at extraction makes the test pass; only the assertion above is
+quoted as fact.
+
+Unit-level RED at the wire (`evidence/task-5-fix1-red-kafka.log`), 3 of 13
+failing:
+
+```
+org.opentest4j.AssertionFailedError: an over-long traceparent must never reach the holder, and so can never reach the trace_context column ==> expected: <null> but was: <00-aaaaaaaa…
+org.opentest4j.AssertionFailedError: every malformed traceparent must degrade to absent; holder values were [not-a-traceparent, , 00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331, 00-0AF7651916CD43DD8448EB211C80319C-B7AD6B7169203331-01, 01-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01] ==> expected: <true> but was: <false>
+org.opentest4j.AssertionFailedError: extraction is the choke point — nothing invalid may travel further ==> expected: <null> but was: <00-aaaaaaaa…
+```
+
+Pins added: `KafkaTracePropagationContractTest` +3 (over-long, five malformed
+shapes incl. truncated / upper-case / version ≠ 00, and `extractTraceparent`
+itself), plus `KafkaTraceLinkageIT.oversizedTraceparentNeverDiscardsTheSignal`
+which drives the real column and asserts the workflow completes, the row's
+`trace_context` is null, and the resumed segment degrades to a fresh root.
+
+## F2 — parallel-branch segments could never be closed
+
+Each branch of `WorkflowContext.parallel` runs on its own virtual thread
+(`DefaultWorkflowOperations`), and nothing ever tells the adapter a branch
+finished. A segment opened there died un-`end()`ed and unexported, so the
+branch's activity spans exported naming a parent the backend never receives.
+My original report called these "detached", which understated it — they were
+*orphaned*.
+
+**Fix: branch threads never open a segment.** They parent their activity spans
+to the forking thread's segment, inherited through an `InheritableThreadLocal`
+(`ForkPoint`, carrying the parent context plus the owning thread id so a branch
+can tell "my parent's segment" from "my own"). I verified empirically that
+virtual threads created with `Thread.ofVirtual().start()` inherit inheritable
+thread-locals, **including virtual → virtual**, which is the actual shape here —
+this was measured, not assumed.
+
+A second detector covers the harder shape: a workflow whose *first* statement is
+`parallel(...)` forks before any callback has reached the adapter, so no fork
+point exists. There, `ActivityInfo.sequenceNumber() >= 1000` identifies a branch
+via the engine's documented sequence-space partition (CLAUDE.md: branch *i* of a
+fork at parent seq *p* allocates from `p*1000 + (i+1)*1000`, ≤999 steps per
+branch). The trade-off is stated in the code: misclassifying a main line longer
+than 999 steps costs that run only its segment span (activity spans become
+roots) — strictly better than a segment nothing can close.
+
+Pinned by `TracingParallelBranchIT` on `TestWorkflows.ParallelWorkflow`
+(deliberately the fork-first shape). RED with the guards reverted
+(`evidence/task-5-fix1-red-fanout.log`):
+
+```
+org.opentest4j.AssertionFailedError: these spans name a local parent that was never exported — the parent segment was opened on a branch thread and never closed: [maestro.activity(parent=4bcab7eca4f85cbc), maestro.activity(parent=a4baf60cda7f3473), maestro.activity(parent=6215f2bb2db4c47e)] ==> expected: <true> but was: <false>
+```
+
+Three branches, three orphaned parents — exactly the finding.
+
+## F3 — RULING 7 was only half-implemented
+
+Re-parenting was gated on `s.segmentIsRoot`, so a **non-root** open segment
+early-returned and the remote context was dropped entirely: neither re-parented
+nor linked. Reachable with no crash at all, exactly as the review described — a
+workflow parks on S1 and resumes (its segment is now chained, hence non-root),
+then awaits S2 which was already delivered, so `SignalManager.awaitSignal`
+consumes on the no-park fast path. Now unconditional, with one guard: a repeated
+*identical* remote context is a no-op, so a workflow consuming several signals
+from the same publisher does not mint an empty segment each time.
+
+## F5 — grammar agreement
+
+`TracingEngineObserver`'s pattern is now `^00-…`, matching design §4.1 and
+`KafkaTracePropagationContractTest`. A `01-` traceparent is treated as absent
+rather than handed to the propagator.
+
+RED for F3 and F5 together with RULING 5 (`evidence/task-5-fix1-red-starter.log`,
+3 of 19 failing):
+
+```
+org.opentest4j.AssertionFailedError: expected: <3> but was: <2>
+org.opentest4j.AssertionFailedError: the adapter's grammar must agree with design §4.1 and the Kafka contract test, which both pin version 00 ==> expected: <false> but was: <true>
+org.opentest4j.AssertionFailedError: no scope may survive runAbandoned(SHUTDOWN) ==> expected: <null> but was: <SdkSpan{… name=maestro.workflow.run … endEpochNanos=0}>
+```
+
+`endEpochNanos=0` in that third failure is the FINDING-1 defect stated in the
+SDK's own terms: the span was started and never ended.
+
+## RULING 5 + F4 — `runAbandoned`
+
+Added `EngineObserver.runAbandoned(WorkflowInfo, AbandonReason)`, a `default`
+no-op like every other callback, so Tasks 3 and 4 need no change and
+`MicrometerEngineObserver` deliberately does not implement it (no new meter, no
+double-count — `workflowTerminated` already fires once on the operator thread).
+`CompositeEngineObserver` fans it out with the same containment as every other
+callback.
+
+**F4 — the judgment call the coordinator left open.** `runAbandoned` as ruled
+covers shutdown and terminate. The converged-loser branches
+(`transitionToTerminal` returning false, on both the COMPLETED and FAILED paths)
+and `handleWorkflowFailure`'s `catch (Exception updateError)` leave the segment
+unclosed in exactly the same shape. I extended `AbandonReason` rather than
+adding a separate emission, because all four cases are one fact —
+*this local run ended on the workflow thread without this node recording an
+outcome* — and one callback with a precise reason keeps that fact in one place.
+The reasons are kept individually meaningful rather than lumped, because they
+are operationally different things:
+
+| Reason | Emitted from | Means |
+|---|---|---|
+| `SHUTDOWN` | `handleShutdownSuspension` | node stopping; instance stays recoverable |
+| `TERMINATED` | `handleTermination` | operator terminated; the `TERMINATED` row stands |
+| `CONVERGED` | both `transitionToTerminal(...) == false` branches | another writer finalised first; this run deliberately did not double-record |
+| `TERMINAL_WRITE_FAILED` | `handleWorkflowFailure`'s `catch` | the terminal write itself failed; recovery decides |
+
+Every emission goes through `WorkflowExecutor`'s contained `emit(...)`, so a
+throwing observer cannot turn a routine shutdown into an escaping exception on
+the unwind path. Task 3's now-stale in-line comment at `SignalManager:317-319`
+is updated, and states the reachable case that motivates the callback: the
+status write immediately above it can itself raise
+`WorkflowTerminatedException` before the park emission ever runs.
+
+Core pins: `WorkflowExecutorObserverTest` +2 — terminate and shutdown each emit
+exactly one `runAbandoned` with the right reason, **zero** `standDown` and
+**zero** `workflowFailed` (the ruling's central point: a routine deploy must not
+land in a failure-shaped counter). Adapter pin: `runAbandonedClosesTheSegment`
+loops all four reasons, asserting the segment is exported, tagged with the
+reason, and the thread left clean.
+
+## A process note — a self-inflicted error worth recording
+
+The first attempt at the F3/F5/RULING 5 RED reverted the patch with
+`git checkout -- TracingEngineObserver.java`, which restored the file to `HEAD`
+and silently wiped every fix-round change in it, not just the temporary patch.
+The compiler caught it immediately (`cannot find symbol`), and the changes were
+reapplied. Every later RED demonstration copied the file to the scratchpad first
+and restored from that copy. All temporary patches are verified gone:
+`grep -c "TEMPORARY RED"` returns `0` for both `TracingEngineObserver.java` and
+`KafkaTracePropagation.java`.
+
+## Verification
+
+Required command (`evidence/task-5-fix1-verify.log`):
+
+```
+$ ./gradlew :maestro-core:test :maestro-spring-boot-starter:test :maestro-messaging-kafka:test :maestro-store-postgres:test :maestro-integration-tests:test --rerun-tasks
+
+BUILD SUCCESSFUL in 1m 49s
+44 actionable tasks: 44 executed
+```
+
+Per-module totals appended to that log:
+
+```
+maestro-core: tests=332 failures=0 errors=0 skipped=0
+maestro-spring-boot-starter: tests=103 failures=0 errors=0 skipped=0
+maestro-messaging-kafka: tests=39 failures=0 errors=0 skipped=0
+maestro-store-postgres: tests=57 failures=0 errors=0 skipped=0
+maestro-integration-tests: tests=98 failures=0 errors=0 skipped=0
+```
+
+Full build (`evidence/task-5-fix1-build.log`):
+
+```
+BUILD SUCCESSFUL in 1m 55s
+134 actionable tasks: 134 executed
+```
+
+Net new tests this round: **11** (core +2, starter +3, kafka +3, integration +3
+— `TracingParallelBranchIT` 1, `KafkaTraceLinkageIT` +1, and the fan-out suite's
+own file). Module deltas vs. the original round: core 330→332, starter 100→103,
+kafka 36→39, integration 96→98.
+
+## Concerns after this round
+
+1. **F6 remains deferred as instructed** — `serviceName` is a node-wide volatile
+   set by `workflowStarted`/`workflowResumed`, so the first recovered run's first
+   segment on startup can lack `maestro.service.name`. Untouched.
+2. **F2's residual, now narrow but real:** a workflow that forks as its first
+   statement relies on the sequence-space heuristic rather than the exact fork
+   point. A main line exceeding 999 steps would lose its segment span (activity
+   spans become roots). Closing this properly needs a fork/join observation
+   boundary in `DefaultWorkflowOperations` — a new design surface, so it is
+   raised rather than taken.
+3. **Branch-level span events are dropped.** A branch that awaits a signal or
+   sleeps has no segment to record `maestro.signal.consumed` /
+   `maestro.timer.fired` on, so those events are skipped on branch threads. The
+   activity spans and their parenting are unaffected. Flagged as a known,
+   documented limit of the no-segment-on-branches rule.
+4. **`docs/observability.md` still owes RULING 8's note** (event attributes are
+   segment tags with last-write-wins) and the `maestro.observability.*`
+   properties — Task 8's, unchanged from the original report.
