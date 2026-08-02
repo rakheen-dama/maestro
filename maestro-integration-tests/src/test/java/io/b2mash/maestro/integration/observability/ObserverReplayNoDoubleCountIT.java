@@ -46,8 +46,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * copy of the first activity, which the recovering node's replay pass must
  * walk to reach the park, must not touch the timer at all — the assertion
  * that would fail if the {@code replayed} flag were ignored, and is exactly
- * the case {@link MicrometerEngineObserverTest} in the starter module pins
- * at the unit level; this is the same contract proven through a real
+ * the case {@code MicrometerEngineObserverTest} (in the starter module's
+ * test sources, not on this module's classpath, hence no {@code @link})
+ * pins at the unit level; this is the same contract proven through a real
  * crash/recovery over Postgres.
  */
 @Tag("integration")
@@ -58,8 +59,9 @@ class ObserverReplayNoDoubleCountIT extends PostgresIntegrationSupport {
     private static final Duration LOCK_TTL = Duration.ofSeconds(60);
 
     @Test
-    @DisplayName("crash after the pre-park activity, recover, complete: activity.duration count == 2, "
-            + "workflow.started == 1, workflow.completed == 1 — the replayed step is never re-counted")
+    @DisplayName("crash after the pre-park activity, recover, complete: activity.duration is 1 per step "
+            + "(stepOne == 1, stepTwo == 1), workflow.started == 1, workflow.completed == 1 — "
+            + "the replayed step is never re-counted")
     void replayedActivityIsNotDoubleCounted() throws Exception {
         var registry = new SimpleMeterRegistry();
         var observer = new MicrometerEngineObserver(registry);
