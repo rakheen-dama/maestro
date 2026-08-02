@@ -348,6 +348,43 @@ eliminate the publishing overhead.
 
 ---
 
+## Observability Configuration
+
+Properties under `maestro.observability.*` control Micrometer meters and
+OpenTelemetry tracing. Full reference: [`docs/observability.md`](observability.md).
+
+| Property                                 | Type      | Default | Description                                                                                                    |
+|------------------------------------------|-----------|---------|------------------------------------------------------------------------------------------------------------------|
+| `maestro.observability.metrics.enabled`  | `boolean` | `true`  | Whether Maestro registers and emits Micrometer meters under `maestro.*`. Requires a `MeterRegistry` on the classpath **and** in the context; silently inert otherwise. |
+| `maestro.observability.tracing.enabled`  | `boolean` | `true`  | Whether Maestro creates spans **and** propagates W3C trace context through Kafka headers. Requires a Micrometer `Tracer` and a `Propagator` in the context; silently inert otherwise. |
+
+Both default to `true` and neither has to be set: an application with no
+`MeterRegistry` and no `Tracer` gets no meters and no spans regardless. Setting
+`maestro.observability.tracing.enabled: false` disables both the engine spans
+and the Kafka header injection — the same property gates both — and the Kafka
+wire format reverts to byte-identical to a pre-tracing build.
+
+The whole block is additionally gated by `maestro.enabled`.
+
+```yaml
+maestro:
+  observability:
+    metrics:
+      enabled: true
+    tracing:
+      enabled: true
+```
+
+Meters registered: counters `maestro.workflow.started|completed|failed|compensated|terminated`,
+`maestro.signal.consumed`, `maestro.timer.fired`, `maestro.recovery.scanned`,
+`maestro.recovery.adopted`, `maestro.lock.renew.failures`, `maestro.standdown`;
+timer `maestro.activity.duration`; gauges `maestro.workflows.running` and
+`maestro.workflows.parked` (node-local — sum across pods for a cluster total).
+See [`docs/observability.md`](observability.md) for tags, tag values, span
+topology, and the Kafka propagation header contract.
+
+---
+
 ## Complete Example
 
 A full `application.yml` for an order service:
@@ -511,3 +548,5 @@ if the current leader goes down.
 - [Getting Started](getting-started.md) -- Set up Maestro in a new Spring Boot project
 - [Concepts](concepts.md) -- Workflows, activities, signals, timers, and the memoization model
 - [Cross-Service Patterns](cross-service.md) -- Orchestration within, choreography between services
+- [Observability](observability.md) -- The meter catalog, span topology, and the Kafka trace-propagation contract
+- [Operations](operations.md) -- Multi-instance behaviour, and the versioning / mixed-version playbook
