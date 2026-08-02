@@ -1,0 +1,24 @@
+# Task 3 GREEN evidence — EngineObserver SPI + engine wiring
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening
+HEAD: 382cf4dce50c0418ef74316a8a032fb97509a25e
+branch: worktree-release-hardening
+timestamp: 2026-08-02T14:35:26Z
+
+## :maestro-core:test (all, incl. 23 new observer tests)
+
+[Incubating] Problems report is available at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/build/reports/problems/problems-report.html
+
+BUILD SUCCESSFUL in 51s
+12 actionable tasks: 12 executed
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.2.0/userguide/configuration_cache_enabling.html
+maestro-core totals: tests=312 failures/errors=0 skipped=0
+  CompositeEngineObserverTest: tests=8 failures=0 errors=0
+  WorkflowExecutorObserverTest: tests=9 failures=0 errors=0
+  ObserverReplayNoDoubleCountTest: tests=3 failures=0 errors=0
+  WorkflowInstanceLockManagerObserverTest: tests=3 failures=0 errors=0
+
+## ./gradlew build (full multi-module)
+
+BUILD SUCCESSFUL in 1s
+134 actionable tasks: 1 executed, 133 up-to-date
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.2.0/userguide/configuration_cache_enabling.html
