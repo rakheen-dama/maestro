@@ -70,6 +70,11 @@ micrometer-core = { module = "io.micrometer:micrometer-core" }
 micrometer-tracing = { module = "io.micrometer:micrometer-tracing" }
 micrometer-tracing-test = { module = "io.micrometer:micrometer-tracing-test" }
 micrometer-tracing-bridge-otel = { module = "io.micrometer:micrometer-tracing-bridge-otel" }
+# Boot's own tracing auto-configuration — test-only, so the starter's
+# auto-configuration ordering can be proven against the real chain rather than
+# a `withBean` stub (task-4 fix round 1's lesson, applied to tracing).
+spring-boot-micrometer-tracing = { module = "org.springframework.boot:spring-boot-micrometer-tracing" }
+spring-boot-micrometer-tracing-opentelemetry = { module = "org.springframework.boot:spring-boot-micrometer-tracing-opentelemetry" }
 
 [plugins]
 spring-boot = { id = "org.springframework.boot", version.ref = "spring-boot" }

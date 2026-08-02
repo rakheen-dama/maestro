@@ -15,12 +15,17 @@ import io.b2mash.maestro.spring.config.StartupRecoveryRunner;
 import io.b2mash.maestro.test.InMemoryWorkflowStore;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.micrometer.tracing.Tracer;
+import io.micrometer.tracing.propagation.Propagator;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.micrometer.metrics.autoconfigure.CompositeMeterRegistryAutoConfiguration;
 import org.springframework.boot.micrometer.metrics.autoconfigure.MetricsAutoConfiguration;
 import org.springframework.boot.micrometer.metrics.autoconfigure.export.simple.SimpleMetricsExportAutoConfiguration;
+import org.springframework.boot.micrometer.tracing.autoconfigure.MicrometerTracingAutoConfiguration;
+import org.springframework.boot.micrometer.tracing.opentelemetry.autoconfigure.OpenTelemetryTracingAutoConfiguration;
+import org.springframework.boot.opentelemetry.autoconfigure.OpenTelemetrySdkAutoConfiguration;
 import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
@@ -286,6 +291,141 @@ class MaestroObservabilityAutoConfigurationTest {
                             .tag("activity", "ObservabilityCountingActivities.step")
                             .tag("outcome", "completed").timer().count()).isEqualTo(1);
                 });
+    }
+
+    // ── Tracing (Task 5) ──────────────────────────────────────────────
+
+    /**
+     * The tracing counterpart of {@link #wiresThroughRealBootMetricsAutoConfigurationChain}
+     * — and for the identical reason. {@code io.b2mash.maestro.spring.observe}
+     * sorts before {@code org.springframework.boot.micrometer.tracing.*}, so
+     * without an explicit {@code afterName} this class's {@code
+     * @ConditionalOnBean(Tracer.class)} is evaluated before Boot has registered
+     * any {@code Tracer} bean definition and the tracing adapter ships inert in
+     * every real application. A {@code withBean(Tracer.class, ...)} test cannot
+     * reproduce that: a user bean definition is always processed first.
+     */
+    @Test
+    @DisplayName("registers through the real Boot tracing auto-configuration chain, not a withBean Tracer stub")
+    void wiresThroughRealBootTracingAutoConfigurationChain() {
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        OpenTelemetrySdkAutoConfiguration.class,
+                        MicrometerTracingAutoConfiguration.class,
+                        OpenTelemetryTracingAutoConfiguration.class,
+                        MaestroAutoConfiguration.class,
+                        MaestroObservabilityAutoConfiguration.class))
+                .withUserConfiguration(TestWorkflowConfiguration.class)
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .withPropertyValues("maestro.service-name=tracing-real-chain-test")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context)
+                            .as("Boot's own tracing auto-configuration chain must have produced a "
+                                    + "Tracer and a Propagator bean for this context to be a valid test")
+                            .hasSingleBean(Tracer.class);
+                    assertThat(context).hasSingleBean(Propagator.class);
+                    assertThat(context).hasSingleBean(TracingEngineObserver.class);
+                });
+    }
+
+    @Test
+    @DisplayName("maestro.observability.tracing.enabled=false — no TracingEngineObserver bean")
+    void tracingDisabledFlagRegistersNoObserver() {
+        runner.withBean(Tracer.class, () -> tracingFixture().tracer())
+                .withBean(Propagator.class, () -> tracingFixture().propagator())
+                .withPropertyValues("maestro.observability.tracing.enabled=false")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).doesNotHaveBean(TracingEngineObserver.class);
+                });
+    }
+
+    @Test
+    @DisplayName("no TracingEngineObserver bean when no Tracer bean is present")
+    void tracingAbsentWithoutTracerBean() {
+        runner.run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context).doesNotHaveBean(TracingEngineObserver.class);
+        });
+    }
+
+    @Test
+    @DisplayName("no TracingEngineObserver bean when Micrometer Tracing is not on the classpath")
+    void tracingAbsentWithoutTracerOnClasspath() {
+        runner.withClassLoader(new FilteredClassLoader(Tracer.class))
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).doesNotHaveBean(TracingEngineObserver.class);
+                });
+    }
+
+    /**
+     * The spec's no-phantom-spans evidence at engine level: a workflow runs one
+     * activity, parks, "crashes", and is recovered on a second context whose own
+     * tracer sees the replay. The replayed activity must produce <b>zero</b>
+     * spans on the recovering node — only the genuinely live second call does.
+     */
+    @Test
+    @DisplayName("a recovered workflow's replayed activity produces zero spans on the recovering node")
+    void replayedActivitiesProduceNoSpans() {
+        try (var otelA = new OtelTracingFixture()) {
+            runner.withBean(Tracer.class, otelA::tracer)
+                    .withBean(Propagator.class, otelA::propagator)
+                    .run(contextA -> {
+                        assertThat(contextA).hasNotFailed();
+                        var store = contextA.getBean(WorkflowStore.class);
+                        var client = contextA.getBean(MaestroClient.class);
+                        var workflow = contextA.getBean(ParkingActivityWorkflow.class);
+
+                        client.newWorkflow(ParkingActivityWorkflow.class, options("tracing-replay-1"))
+                                .startAsync(null);
+                        assertThat(workflow.reachedGate.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+                        await().atMost(Duration.ofSeconds(2)).until(() ->
+                                store.getInstance("tracing-replay-1")
+                                        .map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL).orElse(false));
+
+                        await().atMost(Duration.ofSeconds(2)).until(() ->
+                                otelA.spansNamed("maestro.activity").size() == 1);
+
+                        contextA.getBean(WorkflowExecutor.class).shutdown();
+
+                        try (var otelB = new OtelTracingFixture()) {
+                            new ApplicationContextRunner()
+                                    .withConfiguration(AutoConfigurations.of(
+                                            MaestroAutoConfiguration.class,
+                                            MaestroObservabilityAutoConfiguration.class))
+                                    .withUserConfiguration(TestWorkflowConfiguration.class)
+                                    .withBean(ObjectMapper.class, ObjectMapper::new)
+                                    .withBean(WorkflowStore.class, () -> store)
+                                    .withBean(Tracer.class, otelB::tracer)
+                                    .withBean(Propagator.class, otelB::propagator)
+                                    .withPropertyValues("maestro.service-name=observability-test")
+                                    .run(contextB -> {
+                                        assertThat(contextB).hasNotFailed();
+                                        assertThat(contextB).hasSingleBean(TracingEngineObserver.class);
+                                        contextB.getBean(WorkflowExecutor.class)
+                                                .deliverSignal("tracing-replay-1", "resume", "go");
+                                        contextB.getBean(StartupRecoveryRunner.class).run(null);
+
+                                        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                                                assertThat(store.getInstance("tracing-replay-1").orElseThrow().status())
+                                                        .isEqualTo(WorkflowStatus.COMPLETED));
+
+                                        assertThat(otelB.spansNamed("maestro.activity"))
+                                                .as("the replayed first activity must produce no span; only the "
+                                                        + "genuinely live second call may")
+                                                .hasSize(1);
+                                    });
+                        }
+                    });
+        }
+    }
+
+    /** Lazily built per call — used only where the beans' identity does not matter. */
+    private static OtelTracingFixture tracingFixture() {
+        return new OtelTracingFixture();
     }
 
     private static WorkflowOptions options(String workflowId) {

@@ -3,6 +3,8 @@ package io.b2mash.maestro.spring.observe;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.spring.config.MaestroAutoConfiguration;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.tracing.Tracer;
+import io.micrometer.tracing.propagation.Propagator;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -12,11 +14,11 @@ import org.springframework.context.annotation.Configuration;
 
 /**
  * Auto-configuration for Maestro's observability adapters (observability
- * design doc §7.2, amended per coordinator ruling — see below). Task 4
- * (this class) wires the Micrometer meter adapter; a later task adds a
- * sibling {@code TracingConfiguration} nested class for span creation,
- * sharing this same outer class and its {@code maestro.observability.*}
- * property gate.
+ * design doc §7.2, amended per coordinator ruling — see below). Task 4 wired
+ * the Micrometer meter adapter ({@code MetricsConfiguration}); Task 5 added the
+ * tracing adapter ({@code TracingConfiguration}). Both share this outer class
+ * and its {@code maestro.observability.*} property gate, and each is
+ * independently switchable.
  *
  * <p>Activates when {@code maestro.enabled} is {@code true} (default,
  * matching {@link MaestroAutoConfiguration}'s own gate). Each nested
@@ -27,6 +29,11 @@ import org.springframework.context.annotation.Configuration;
  *       maestro.observability.metrics.enabled} not {@code false} (default
  *       {@code true}), and a {@code MeterRegistry} bean actually present in
  *       the context.</li>
+ *   <li>{@code TracingConfiguration} — Micrometer Tracing's {@link
+ *       io.micrometer.tracing.Tracer} on the classpath, {@code
+ *       maestro.observability.tracing.enabled} not {@code false} (default
+ *       {@code true}), and a {@code Tracer} <em>and</em> {@code Propagator}
+ *       bean actually present in the context.</li>
  * </ul>
  *
  * <h2>Ordering — {@code after}, not {@code before} (coordinator-approved
@@ -72,11 +79,37 @@ import org.springframework.context.annotation.Configuration;
  * class reference to {@code MetricsAutoConfiguration} would require adding
  * that as a further compile-time dependency; the string form needs no such
  * dependency and matches Boot's own precedent for optional peers.
+ *
+ * <h2>Ordering — the same gap again for tracing (Task 5)</h2>
+ * {@code TracingConfiguration}'s {@code @ConditionalOnBean({Tracer.class,
+ * Propagator.class})} has the identical exposure: {@code
+ * io.b2mash.maestro.spring.observe} sorts before {@code
+ * org.springframework.boot.micrometer.tracing.*} too, so without an explicit
+ * {@code afterName} the tracing adapter would ship inert in every application
+ * that gets its {@code Tracer} from Boot. The {@code afterName} list above
+ * therefore also names Boot's tracing auto-configurations — the bridge-neutral
+ * ones ({@code MicrometerTracingAutoConfiguration}, {@code
+ * NoopTracerAutoConfiguration}) and both bridges ({@code
+ * OpenTelemetryTracingAutoConfiguration}, {@code BraveAutoConfiguration}), so
+ * the ordering holds whichever the application ships. Class names absent from
+ * the classpath are ignored by {@code AutoConfigurationSorter}, which is why
+ * naming all four is safe. Pinned by {@code
+ * MaestroObservabilityAutoConfigurationTest.wiresThroughRealBootTracingAutoConfigurationChain},
+ * which fails without these entries.
  */
 @AutoConfiguration(after = MaestroAutoConfiguration.class,
         afterName = {
                 "org.springframework.boot.micrometer.metrics.autoconfigure.MetricsAutoConfiguration",
-                "org.springframework.boot.micrometer.metrics.autoconfigure.CompositeMeterRegistryAutoConfiguration"
+                "org.springframework.boot.micrometer.metrics.autoconfigure.CompositeMeterRegistryAutoConfiguration",
+                // Tracing (Task 5) — the identical gap, for Tracer/Propagator.
+                // Boot 4 splits the tracing auto-configurations across three
+                // optional modules; naming all of them means the ordering holds
+                // whichever bridge the application ships, and naming a class
+                // that is absent from the classpath is simply ignored.
+                "org.springframework.boot.micrometer.tracing.autoconfigure.MicrometerTracingAutoConfiguration",
+                "org.springframework.boot.micrometer.tracing.autoconfigure.NoopTracerAutoConfiguration",
+                "org.springframework.boot.micrometer.tracing.opentelemetry.autoconfigure.OpenTelemetryTracingAutoConfiguration",
+                "org.springframework.boot.micrometer.tracing.brave.autoconfigure.BraveAutoConfiguration"
         })
 @ConditionalOnProperty(prefix = "maestro", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class MaestroObservabilityAutoConfiguration {
@@ -111,6 +144,36 @@ public class MaestroObservabilityAutoConfiguration {
         @ConditionalOnBean({MeterRegistry.class, WorkflowExecutor.class})
         MaestroEngineGauges maestroEngineGauges(MeterRegistry registry, WorkflowExecutor executor) {
             return new MaestroEngineGauges(registry, executor);
+        }
+    }
+
+    /**
+     * Span creation (design §3, Task 5). Gated on Micrometer Tracing being on
+     * the classpath, on {@code maestro.observability.tracing.enabled} not being
+     * {@code false}, and on Boot (or the application) having actually supplied
+     * a {@code Tracer} <em>and</em> a {@code Propagator} bean — no tracer, no
+     * spans, no property needed.
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(Tracer.class)
+    @ConditionalOnProperty(prefix = "maestro.observability.tracing",
+            name = "enabled", havingValue = "true", matchIfMissing = true)
+    static class TracingConfiguration {
+
+        /**
+         * @param tracer     the Micrometer tracer supplied by whichever bridge
+         *                   the application ships
+         * @param propagator the Micrometer propagator, used to restore a remote
+         *                   parent from a signal's durable trace context
+         * @return a {@link TracingEngineObserver}, discovered by {@link
+         *         MaestroAutoConfiguration#maestroWorkflowExecutor} through its
+         *         {@code ObjectProvider<EngineObserver>} and by {@code
+         *         ActivityStubBeanPostProcessor} the same way
+         */
+        @Bean
+        @ConditionalOnBean({Tracer.class, Propagator.class})
+        TracingEngineObserver maestroTracingEngineObserver(Tracer tracer, Propagator propagator) {
+            return new TracingEngineObserver(tracer, propagator);
         }
     }
 }
