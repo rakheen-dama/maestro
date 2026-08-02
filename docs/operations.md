@@ -378,7 +378,8 @@ measured:
   design decision, not a claim that split-brain is prevented.
 - **Recovery-polling scale (`docs/open-issues.md` Issue 12)** now has its
   vs-node-count benchmark of record from the soak run's chaos-free tail:
-  cluster recovery-query rate is exactly linear in node count (a constant
+  cluster recovery-query rate is proportional to node count — consistent
+  with linear at both measured node counts (a constant
   ≈0.0167 calls/s per node at 6 and at 3 nodes), while lock probe/renew
   traffic tracks the parked-workflow backlog rather than node count. One
   workload, modest absolute load (6/min tail rate) — the *trend* is the

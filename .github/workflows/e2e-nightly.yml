@@ -39,6 +39,8 @@ jobs:
   # a postgres job silently running Valkey locks fails at service start.
   e2e:
     name: Loan-origination E2E (valkey, full suite)
+    # Skipped on the weekly soak cron tick — that tick is chaos-soak only.
+    if: github.event_name != 'schedule' || github.event.schedule == '30 2 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -75,6 +77,8 @@ jobs:
 
   e2e-postgres-lock:
     name: Loan-origination E2E (postgres lock, multi-node set)
+    # Skipped on the weekly soak cron tick — that tick is chaos-soak only.
+    if: github.event_name != 'schedule' || github.event.schedule == '30 2 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -116,7 +120,10 @@ jobs:
     name: Chaos PR-gate (3x consecutive)
     if: github.event_name != 'schedule' || github.event.schedule == '30 2 * * *'
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    # Worst case is three ~25-min inner @Timeout runs, and --rerun-tasks forces
+    # a full recompile + boot-jar rebuild on every iteration — realistic totals
+    # run 55-70 min, so 75 left no headroom for one slow run.
+    timeout-minutes: 110
 
     steps:
       - name: Checkout

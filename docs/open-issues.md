@@ -1043,10 +1043,11 @@ per-15s columns below are averages over those 20 samples.
 
 Read of the numbers:
 
-- **The recovery-query rate is linear in node count — exactly.** The
-  cluster-wide rate halves with the cluster (0.100 → 0.050 calls/s), i.e. a
-  constant ≈0.0167 calls/s per node (one `getRecoverableInstances` poll per
-  node per ~60s) in both phases. That is this issue's core theory confirmed
+- **The recovery-query rate is proportional to node count — consistent with
+  linear at both measured node counts (6 and 3).** The cluster-wide rate
+  halves with the cluster (0.100 → 0.050 calls/s), i.e. a constant ≈0.0167
+  calls/s per node (one `getRecoverableInstances` poll per node per ~60s) in
+  both phases. That is this issue's core theory confirmed
   by a clean measurement: every node polls the full recoverable set on its
   own interval regardless of ownership, so store-side recovery-query load
   scales with node count (and each poll's cost scales with the active
@@ -1556,6 +1557,14 @@ and pinned at unit level by `WorkflowExecutorDuplicateEventStandDownTest`.
 > harness's I3(d) bounds were re-derived to empty/zero, superseding the
 > earlier "designed gap" ratification. The rest of this section is the
 > record of the defect.
+
+**Mixed-version caveat.** `SIGNAL_TIMEOUT` is a new `EventType` constant: a
+node still running the previous version fails `EventType.valueOf` when it
+adopts a workflow whose log an upgraded node has written to, so all nodes of
+a service must be upgraded together (or the service drained first) — see the
+"Upgrade notes" section in `docs/release-notes.md`. And an await that timed
+out *pre*-upgrade left no memo, so it replays live once post-upgrade; the
+determinism guarantee covers events written by upgraded nodes.
 
 **What's wrong.** `SignalManager.awaitSignal` allocated its sequence number
 at entry and, on timeout, threw without appending any event — the sequence

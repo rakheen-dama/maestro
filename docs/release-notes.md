@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### Upgrade notes — mixed-version deployments
+
+- **Upgrade every node of a service together (or drain it first) — the new
+  `SIGNAL_TIMEOUT` event type is not readable by the previous version.** This
+  release's Issue 19 fix (below) makes upgraded nodes write `SIGNAL_TIMEOUT`
+  events into the shared event log. A node still running the previous version
+  that adopts such a workflow — the normal cross-node recovery path in a
+  multi-instance service — fails `EventType.valueOf("SIGNAL_TIMEOUT")` while
+  reading the log and cannot replay the workflow until an upgraded node picks
+  it up. In a rolling deploy that window is live traffic, so either upgrade
+  all nodes of a service in one step, or drain the service (stop starting and
+  recovering workflows) before mixing versions. Single-node deployments are
+  unaffected.
+- **Awaits that timed out *before* the upgrade replay live once *after*
+  it.** The determinism guarantee below applies to `SIGNAL_TIMEOUT` events
+  written by upgraded nodes; a pre-upgrade timed-out await left no memo, so
+  its first post-upgrade replay re-executes at that slot exactly as the old
+  version would have (and may consume a late-arrived signal there, the old
+  behaviour). From that replay's own memo onward the new guarantee applies.
+
+### Observability
+
+- The Spring Boot starter now logs one INFO line at startup naming the
+  effective distributed-lock backend (`Maestro distributed-lock backend: ...`,
+  or `none (single-node mode)` when no backend is configured) — so a
+  multi-instance deployment silently running without a lock backend is
+  visible in the boot log.
+
 ### For third-party `WorkflowStore` implementers
 
 - **`WorkflowStore.deleteFailureEvents`'s contract changed** (`docs/open-issues.md`
