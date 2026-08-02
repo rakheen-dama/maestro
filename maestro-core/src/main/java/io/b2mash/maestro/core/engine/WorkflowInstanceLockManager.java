@@ -142,6 +142,7 @@ final class WorkflowInstanceLockManager {
             }
             heldLocks.put(workflowId, handle.get());
             startRenewerIfNeeded();
+            observer.instanceLockAcquired(workflowId);
             return Acquisition.ACQUIRED;
         } catch (Exception e) {
             logger.warn("Instance lock backend unavailable for workflow '{}' — proceeding unlocked: {}",
@@ -230,12 +231,14 @@ final class WorkflowInstanceLockManager {
                                 + "duplicate-execution guard",
                         workflowId);
                 heldLocks.remove(workflowId, handle);
+                observer.instanceLockLost(workflowId);
             }
         } catch (Exception e) {
             // Transient backend error — keep the handle, retry next cycle
             // (TTL tolerates roughly two missed cycles)
             logger.warn("Failed to renew instance lock for workflow '{}' — will retry: {}",
                     workflowId, e.getMessage());
+            observer.instanceLockRenewFailed(workflowId);
         }
     }
 }

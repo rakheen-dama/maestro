@@ -43,7 +43,132 @@ public final class CompositeEngineObserver implements EngineObserver {
      * @return the collapsed observer
      */
     public static EngineObserver of(List<EngineObserver> observers) {
-        // RED skeleton — collapsing rules and fan-out not yet implemented
-        return new CompositeEngineObserver(observers);
+        return switch (observers.size()) {
+            case 0 -> EngineObserver.NOOP;
+            case 1 -> observers.getFirst();
+            default -> new CompositeEngineObserver(observers);
+        };
+    }
+
+    /**
+     * Runs one callback against every delegate in order, containing
+     * {@link RuntimeException} per delegate. {@link Error}s deliberately
+     * propagate — see the class Javadoc.
+     */
+    private void fanOut(String callback, java.util.function.Consumer<EngineObserver> invocation) {
+        for (var delegate : delegates) {
+            try {
+                invocation.accept(delegate);
+            } catch (RuntimeException e) {
+                logger.warn("EngineObserver delegate {} threw from {} — contained",
+                        delegate.getClass().getName(), callback, e);
+            }
+        }
+    }
+
+    @Override
+    public void workflowStarted(WorkflowInfo w) {
+        fanOut("workflowStarted", d -> d.workflowStarted(w));
+    }
+
+    @Override
+    public void workflowResumed(WorkflowInfo w) {
+        fanOut("workflowResumed", d -> d.workflowResumed(w));
+    }
+
+    @Override
+    public void workflowCompleted(WorkflowInfo w) {
+        fanOut("workflowCompleted", d -> d.workflowCompleted(w));
+    }
+
+    @Override
+    public void workflowFailed(WorkflowInfo w, String exceptionType) {
+        fanOut("workflowFailed", d -> d.workflowFailed(w, exceptionType));
+    }
+
+    @Override
+    public void workflowCompensating(WorkflowInfo w) {
+        fanOut("workflowCompensating", d -> d.workflowCompensating(w));
+    }
+
+    @Override
+    public void workflowTerminated(WorkflowInfo w) {
+        fanOut("workflowTerminated", d -> d.workflowTerminated(w));
+    }
+
+    @Override
+    public void workflowParked(WorkflowInfo w, ParkKind kind) {
+        fanOut("workflowParked", d -> d.workflowParked(w, kind));
+    }
+
+    @Override
+    public void workflowUnparked(WorkflowInfo w, ParkKind kind) {
+        fanOut("workflowUnparked", d -> d.workflowUnparked(w, kind));
+    }
+
+    @Override
+    public void activityStarted(ActivityInfo a) {
+        fanOut("activityStarted", d -> d.activityStarted(a));
+    }
+
+    @Override
+    public void activityCompleted(ActivityInfo a, Duration duration, boolean replayed) {
+        fanOut("activityCompleted", d -> d.activityCompleted(a, duration, replayed));
+    }
+
+    @Override
+    public void activityFailed(ActivityInfo a, Duration duration,
+                               String exceptionType, boolean replayed) {
+        fanOut("activityFailed", d -> d.activityFailed(a, duration, exceptionType, replayed));
+    }
+
+    @Override
+    public void signalPersisted(SignalInfo s) {
+        fanOut("signalPersisted", d -> d.signalPersisted(s));
+    }
+
+    @Override
+    public void signalConsumed(SignalInfo s, boolean replayed) {
+        fanOut("signalConsumed", d -> d.signalConsumed(s, replayed));
+    }
+
+    @Override
+    public void timerScheduled(TimerInfo t, boolean replayed) {
+        fanOut("timerScheduled", d -> d.timerScheduled(t, replayed));
+    }
+
+    @Override
+    public void timerFired(TimerInfo t, boolean replayed) {
+        fanOut("timerFired", d -> d.timerFired(t, replayed));
+    }
+
+    @Override
+    public void timerCancelled(TimerInfo t, boolean replayed) {
+        fanOut("timerCancelled", d -> d.timerCancelled(t, replayed));
+    }
+
+    @Override
+    public void instanceLockAcquired(String workflowId) {
+        fanOut("instanceLockAcquired", d -> d.instanceLockAcquired(workflowId));
+    }
+
+    @Override
+    public void instanceLockRenewFailed(String workflowId) {
+        fanOut("instanceLockRenewFailed", d -> d.instanceLockRenewFailed(workflowId));
+    }
+
+    @Override
+    public void instanceLockLost(String workflowId) {
+        fanOut("instanceLockLost", d -> d.instanceLockLost(workflowId));
+    }
+
+    @Override
+    public void recoveryPass(int scanned, int adopted) {
+        fanOut("recoveryPass", d -> d.recoveryPass(scanned, adopted));
+    }
+
+    @Override
+    public void standDown(StandDownReason reason, String workflowId, @Nullable String detail) {
+        fanOut("standDown", d -> d.standDown(reason, workflowId, detail));
     }
 }

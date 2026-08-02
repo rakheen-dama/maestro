@@ -169,6 +169,10 @@ public final class SagaManager {
         if (store.getEventBySequence(ctx.workflowInstanceId(), startedSeq).isEmpty()) {
             appendEvent(ctx, startedSeq, EventType.COMPENSATION_STARTED, "$maestro:compensation", null);
             publishLifecycleEvent(ctx, "$maestro:compensation", LifecycleEventType.COMPENSATION_STARTED);
+            // Live only — guarded by the COMPENSATION_STARTED replay-skip
+            // above, so a recovery re-run does not double-count the phase.
+            observer.workflowCompensating(
+                    new WorkflowInfo(ctx.workflowId(), ctx.workflowType(), serviceName));
         } else {
             logger.debug("Replaying COMPENSATION_STARTED at seq {} for workflow '{}' — already recorded",
                     startedSeq, ctx.workflowId());

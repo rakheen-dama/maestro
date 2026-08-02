@@ -189,6 +189,10 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         var storedEvent = store.getEventBySequence(ctx.workflowInstanceId(), seq);
         if (storedEvent.isPresent()) {
             if (storedEvent.get().eventType() == EventType.TIMER_SCHEDULED) {
+                var timerId = extractTimerId(storedEvent.get().payload());
+                // The scheduling is memoized history — re-observed with
+                // replayed=true so counting adapters can skip it.
+                observer.timerScheduled(observedTimer(ctx, timerId), true);
                 // Check whether the outcome at the next sequence is already
                 // memoized. Pure deterministic re-derivation from the event
                 // log — no writes, no timer-row read — for both terminal outcomes.
@@ -197,12 +201,13 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                 if (nextEvent.isPresent() && nextEvent.get().eventType() == EventType.TIMER_FIRED) {
                     // Both events exist — skip the sleep entirely
                     ctx.nextSequence(); // advance past TIMER_FIRED
+                    observer.timerFired(observedTimer(ctx, timerId), true);
                     logger.debug("Replaying completed sleep at seq {} (skipped)", seq);
                     return;
                 }
                 if (nextEvent.isPresent() && nextEvent.get().eventType() == EventType.TIMER_CANCELLED) {
                     ctx.nextSequence(); // advance past TIMER_CANCELLED
-                    var timerId = extractTimerId(storedEvent.get().payload());
+                    observer.timerCancelled(observedTimer(ctx, timerId), true);
                     logger.debug("Replaying cancelled sleep at seq {} (skipped)", seq);
                     throw new TimerCancelledException(ctx.workflowId(), timerId);
                 }
@@ -213,7 +218,6 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                 // The durable row is what tells the two apart: only a PENDING
                 // timer will ever be handed to a poller again, so re-parking
                 // on a FIRED or CANCELLED one would wait forever.
-                var timerId = extractTimerId(storedEvent.get().payload());
                 var rowStatus = store.findTimer(ctx.workflowInstanceId(), timerId)
                         .map(WorkflowTimer::status)
                         .orElse(null);
@@ -222,7 +226,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                     logger.debug("Replaying sleep at seq {} whose timer '{}' was cancelled — "
                             + "healing the missing TIMER_CANCELLED event instead of re-parking",
                             seq, timerId);
-                    recordTimerCancelled(ctx);
+                    recordTimerCancelled(ctx, timerId);
                     updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
                     publishLifecycleEvent(ctx, stepName, LifecycleEventType.TIMER_CANCELLED);
                     throw new TimerCancelledException(ctx.workflowId(), timerId);
@@ -234,7 +238,9 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                             seq, timerId);
                 } else {
                     logger.debug("Replaying pending sleep at seq {} — re-parking", seq);
+                    observer.workflowParked(observed(ctx), ParkKind.TIMER);
                     parkForTimer(ctx, timerId);
+                    observer.workflowUnparked(observed(ctx), ParkKind.TIMER);
                     // The wake that ends the re-park can be a fire or a
                     // cancel racing in after this node came back up — the row
                     // decides, exactly as it does on the live path below.
@@ -242,7 +248,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                     return;
                 }
                 // Timer fired — record the TIMER_FIRED event
-                recordTimerFired(ctx);
+                recordTimerFired(ctx, timerId);
                 // Restore RUNNING status (matches the live path)
                 updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
                 publishLifecycleEvent(ctx, stepName, LifecycleEventType.TIMER_FIRED);
@@ -267,6 +273,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         // Append TIMER_SCHEDULED event
         var timerPayload = serializer.serialize(new TimerDetail(timerId, duration.toString()));
         appendEvent(ctx, seq, EventType.TIMER_SCHEDULED, stepName, timerPayload);
+        observer.timerScheduled(observedTimer(ctx, timerId), false);
 
         // Update instance status
         updateInstanceStatus(ctx, WorkflowStatus.WAITING_TIMER);
@@ -274,9 +281,13 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         // Publish lifecycle event (best-effort)
         publishLifecycleEvent(ctx, stepName, LifecycleEventType.TIMER_SCHEDULED);
 
-        // Park the virtual thread
+        // Park the virtual thread. Unparked fires only when the thread
+        // actually resumes — a shutdown or terminate propagating out of the
+        // park abandons the run and emits neither boundary.
         logger.debug("Workflow '{}' sleeping for {} (timerId={})", ctx.workflowId(), duration, timerId);
+        observer.workflowParked(observed(ctx), ParkKind.TIMER);
         parkForTimer(ctx, timerId);
+        observer.workflowUnparked(observed(ctx), ParkKind.TIMER);
 
         // Timer fired or cancelled — the row decides which (§3.1)
         recordWakeOutcome(ctx, stepName, timerId);
@@ -389,7 +400,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
      */
     private void recordWakeOutcome(WorkflowContext ctx, String stepName, String timerId) {
         if (isCancelled(ctx, timerId)) {
-            recordTimerCancelled(ctx);
+            recordTimerCancelled(ctx, timerId);
             updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
             publishLifecycleEvent(ctx, stepName, LifecycleEventType.TIMER_CANCELLED);
             logger.debug("Workflow '{}' woke from sleep — timer '{}' was cancelled",
@@ -398,7 +409,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         }
         // FIRED, or defensively absent — preserves today's behaviour
         // bit-for-bit for every workflow whose timers are never cancelled.
-        recordTimerFired(ctx);
+        recordTimerFired(ctx, timerId);
         updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
         publishLifecycleEvent(ctx, stepName, LifecycleEventType.TIMER_FIRED);
         logger.debug("Workflow '{}' woke from sleep (timerId={})", ctx.workflowId(), timerId);
@@ -424,14 +435,33 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                 .orElse(false);
     }
 
-    private void recordTimerFired(WorkflowContext ctx) {
+    /**
+     * Appends the {@code TIMER_FIRED} event and observes the fire live.
+     * This workflow-side record is the single place a fire is observed
+     * exactly once, regardless of which node's poller fired the row — the
+     * poller itself is deliberately not instrumented.
+     */
+    private void recordTimerFired(WorkflowContext ctx, String timerId) {
         var firedSeq = ctx.nextSequence();
         appendEvent(ctx, firedSeq, EventType.TIMER_FIRED, "$maestro:timer-fired", null);
+        observer.timerFired(observedTimer(ctx, timerId), false);
     }
 
-    private void recordTimerCancelled(WorkflowContext ctx) {
+    /** Appends the {@code TIMER_CANCELLED} event and observes the cancel live. */
+    private void recordTimerCancelled(WorkflowContext ctx, String timerId) {
         var cancelledSeq = ctx.nextSequence();
         appendEvent(ctx, cancelledSeq, EventType.TIMER_CANCELLED, "$maestro:timer-cancelled", null);
+        observer.timerCancelled(observedTimer(ctx, timerId), false);
+    }
+
+    /** Builds the identity-only timer observation record. */
+    private static TimerInfo observedTimer(WorkflowContext ctx, String timerId) {
+        return new TimerInfo(ctx.workflowId(), ctx.workflowType(), timerId);
+    }
+
+    /** Builds the identity-only workflow observation record. */
+    private static WorkflowInfo observed(WorkflowContext ctx) {
+        return new WorkflowInfo(ctx.workflowId(), ctx.workflowType(), ctx.serviceName());
     }
 
     private String extractTimerId(@Nullable JsonNode payload) {

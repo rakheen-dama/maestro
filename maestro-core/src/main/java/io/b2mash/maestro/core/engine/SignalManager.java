@@ -194,9 +194,11 @@ final class SignalManager {
     void deliverSignal(String workflowId, String signalName, @Nullable Object payload) {
         // Determine workflow instance ID (may be null for pre-delivery)
         UUID workflowInstanceId = null;
+        String workflowType = null;
         var instance = store.getInstance(workflowId);
         if (instance.isPresent()) {
             workflowInstanceId = instance.get().id();
+            workflowType = instance.get().workflowType();
         }
 
         // Persist the signal — always before in-memory delivery
@@ -211,6 +213,7 @@ final class SignalManager {
                 Instant.now()
         );
         store.saveSignal(signal);
+        observer.signalPersisted(new SignalInfo(workflowId, workflowType, signalName, null));
 
         // Unpark if waiting locally
         var parkKey = workflowId + ":signal:" + signalName;
@@ -261,6 +264,8 @@ final class SignalManager {
         var storedEvent = store.getEventBySequence(ctx.workflowInstanceId(), seq);
         if (storedEvent.isPresent() && storedEvent.get().eventType() == EventType.SIGNAL_RECEIVED) {
             logger.debug("Replaying signal '{}' at seq {}", signalName, seq);
+            observer.signalConsumed(
+                    new SignalInfo(ctx.workflowId(), ctx.workflowType(), signalName, null), true);
             return serializer.deserialize(storedEvent.get().payload(), type);
         }
         // Replay check: a memoized timeout re-raises deterministically — from
@@ -308,6 +313,11 @@ final class SignalManager {
 
             var parkKey = ctx.workflowId() + ":signal:" + signalName;
             logger.debug("Workflow '{}' waiting for signal '{}' (timeout={})", ctx.workflowId(), signalName, timeout);
+            // Live park boundary (never replay — the replay branches returned
+            // above). Unparked fires only on the paths where the workflow
+            // thread actually resumes: signal consumed or await timeout; a
+            // shutdown or terminate abandons the run and emits neither.
+            observer.workflowParked(observed(ctx), ParkKind.SIGNAL);
 
             // Park in re-check-interval chunks. Every wake OR chunk expiry
             // re-reads the store, so a signal persisted without a notification
@@ -332,6 +342,7 @@ final class SignalManager {
                             new SignalTimeoutDetail(signalName, timeout.toString()));
                     appendEvent(ctx, seq, EventType.SIGNAL_TIMEOUT, stepName, timeoutDetail);
                     updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
+                    observer.workflowUnparked(observed(ctx), ParkKind.SIGNAL);
                     throw new SignalTimeoutException(ctx.workflowId(), signalName, timeout);
                 }
                 var chunk = remaining.compareTo(wakeRecheckInterval) < 0 ? remaining : wakeRecheckInterval;
@@ -358,6 +369,7 @@ final class SignalManager {
                 if (!signals.isEmpty()) {
                     var result = consumeSignal(ctx, seq, stepName, signalName, signals.getFirst(), type);
                     updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
+                    observer.workflowUnparked(observed(ctx), ParkKind.SIGNAL);
                     return result;
                 }
                 if (woken) {
@@ -487,6 +499,8 @@ final class SignalManager {
                     signalName, signal.id(), ctx.workflowId(), seq);
         }
         publishLifecycleEvent(ctx, stepName, LifecycleEventType.SIGNAL_RECEIVED);
+        observer.signalConsumed(
+                new SignalInfo(ctx.workflowId(), ctx.workflowType(), signalName, null), false);
         logger.debug("Consumed signal '{}' for workflow '{}'", signalName, ctx.workflowId());
         return serializer.deserialize(signal.payload(), type);
     }
@@ -514,6 +528,11 @@ final class SignalManager {
 
     private void updateInstanceStatus(WorkflowContext ctx, WorkflowStatus newStatus) {
         InstanceStatusWriter.write(store, ctx.workflowId(), newStatus);
+    }
+
+    /** Builds the identity-only observation record for the current context. */
+    private static WorkflowInfo observed(WorkflowContext ctx) {
+        return new WorkflowInfo(ctx.workflowId(), ctx.workflowType(), ctx.serviceName());
     }
 
     /**

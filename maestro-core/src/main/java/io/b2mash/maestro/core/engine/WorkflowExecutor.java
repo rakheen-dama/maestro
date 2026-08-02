@@ -436,6 +436,7 @@ public final class WorkflowExecutor {
 
         // Publish WORKFLOW_STARTED lifecycle event
         publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_STARTED, null);
+        observer.workflowStarted(observed(instance));
 
         // Launch on virtual thread
         launchWorkflow(instance, workflowImpl, workflowMethod, inputPayload, false, acquisition);
@@ -518,6 +519,7 @@ public final class WorkflowExecutor {
             logger.debug("Recovered 0 workflow(s) from {} recoverable instance(s)",
                     recoverable.size());
         }
+        observer.recoveryPass(recoverable.size(), count);
         return count;
     }
 
@@ -752,6 +754,7 @@ public final class WorkflowExecutor {
             }
 
             publishLifecycleEvent(terminated, LifecycleEventType.WORKFLOW_TERMINATED, null);
+            observer.workflowTerminated(observed(terminated));
 
             // Best-effort local eviction. Only this node's threads can be
             // abandoned; a remote owner converges via the terminal-status guard.
@@ -1223,6 +1226,20 @@ public final class WorkflowExecutor {
     }
 
     /**
+     * Returns the number of workflow virtual threads currently parked on this
+     * node (sleeping on a durable timer or awaiting a signal).
+     *
+     * <p>A node-local gauge source: together with {@link #runningCount()} it
+     * answers "what is this JVM doing right now" — the starter's
+     * observability auto-configuration registers both as gauges.
+     *
+     * @return the number of parked waiters in this executor's parking lot
+     */
+    public int parkedCount() {
+        return parkingLot.parkedCount();
+    }
+
+    /**
      * Returns whether the background timer poller is currently running on
      * this executor.
      *
@@ -1368,6 +1385,9 @@ public final class WorkflowExecutor {
             instanceLockManager.release(instance.workflowId());
             throw e;
         }
+        if (replaying) {
+            observer.workflowResumed(observed(instance));
+        }
         return true;
     }
 
@@ -1392,6 +1412,9 @@ public final class WorkflowExecutor {
                 // Append WORKFLOW_COMPLETED event
                 appendEvent(ctx, EventType.WORKFLOW_COMPLETED, null, outputPayload);
                 publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_COMPLETED, null);
+                // Only the winner of the terminal transition counts the
+                // outcome — a converged loser must not double-fire.
+                observer.workflowCompleted(observed(instance));
 
                 logger.info("Workflow '{}' completed successfully", ctx.workflowId());
             }
@@ -1556,6 +1579,8 @@ public final class WorkflowExecutor {
                         + "concurrent runner (instance status now {}) — no failure recorded, "
                         + "no compensation run; the concurrent runner's durable state governs",
                 ctx.workflowId(), e.sequenceNumber(), status);
+        observer.standDown(StandDownReason.STALE_RUN, ctx.workflowId(),
+                "append collision at sequence " + e.sequenceNumber());
     }
 
     // ── Internal: failure handling ─────────────────────────────────────
@@ -1591,6 +1616,8 @@ public final class WorkflowExecutor {
             if (transitionToTerminal(ctx, instance, WorkflowStatus.FAILED, errorPayload)) {
                 appendEvent(ctx, EventType.WORKFLOW_FAILED, null, errorPayload);
                 publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_FAILED, null);
+                // Winner-only, mirroring the COMPLETED transition above.
+                observer.workflowFailed(observed(instance), exception.getClass().getName());
             }
         } catch (Exception updateError) {
             logger.error("Failed to update workflow '{}' status to FAILED",
@@ -1678,6 +1705,11 @@ public final class WorkflowExecutor {
     }
 
     // ── Internal: event and lifecycle helpers ──────────────────────────
+
+    /** Builds the identity-only observation record for an instance. */
+    private WorkflowInfo observed(WorkflowInstance instance) {
+        return new WorkflowInfo(instance.workflowId(), instance.workflowType(), serviceName);
+    }
 
     private void appendEvent(WorkflowContext ctx, EventType type,
                              @Nullable String stepName, @Nullable JsonNode payload) {
