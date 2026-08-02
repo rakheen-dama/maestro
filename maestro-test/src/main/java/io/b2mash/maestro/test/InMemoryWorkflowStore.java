@@ -213,7 +213,9 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
                             signal.signalName(),
                             signal.payload(),
                             true,
-                            signal.receivedAt()
+                            signal.receivedAt(),
+                            // Opaque metadata: a status transition never drops it.
+                            signal.traceContext()
                     ));
                     return true;
                 }
@@ -235,7 +237,9 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
                             signal.signalName(),
                             signal.payload(),
                             signal.consumed(),
-                            signal.receivedAt()
+                            signal.receivedAt(),
+                            // Opaque metadata: adoption never drops it.
+                            signal.traceContext()
                     ));
                 }
             }

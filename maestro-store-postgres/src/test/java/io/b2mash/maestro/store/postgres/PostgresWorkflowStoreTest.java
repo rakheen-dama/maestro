@@ -655,6 +655,77 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
             assertEquals(1, notAdopted.size());
             assertNull(notAdopted.getFirst().workflowInstanceId());
         }
+
+        // ── trace_context (migration V4, design §4.3(b), RULING 2) ────────
+
+        /** The W3C recommendation's own example traceparent. */
+        private static final String TRACEPARENT =
+                "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+
+        @Test
+        @DisplayName("saveSignal round-trips trace_context through the V4 column")
+        void saveSignal_roundTripsTraceContext() {
+            var instance = newInstance("order-trace");
+            store.createInstance(instance);
+
+            store.saveSignal(new WorkflowSignal(
+                    UUID.randomUUID(), instance.id(), "order-trace", "payment.result",
+                    jsonNode("{\"ok\":true}"), false,
+                    Instant.now().truncatedTo(ChronoUnit.MILLIS), TRACEPARENT));
+
+            var signals = store.getUnconsumedSignals("order-trace", "payment.result");
+            assertEquals(1, signals.size());
+            assertEquals(TRACEPARENT, signals.getFirst().traceContext());
+        }
+
+        @Test
+        @DisplayName("a signal saved without trace_context reads back null — absence degrades, never errors")
+        void saveSignal_nullTraceContextReadsBackNull() {
+            var instance = newInstance("order-trace-null");
+            store.createInstance(instance);
+
+            store.saveSignal(new WorkflowSignal(
+                    UUID.randomUUID(), instance.id(), "order-trace-null", "payment.result",
+                    null, false, Instant.now().truncatedTo(ChronoUnit.MILLIS), null));
+
+            var signals = store.getUnconsumedSignals("order-trace-null", "payment.result");
+            assertEquals(1, signals.size());
+            assertNull(signals.getFirst().traceContext());
+        }
+
+        @Test
+        @DisplayName("adoptOrphanedSignals preserves trace_context — the column is opaque metadata")
+        void adoptOrphanedSignals_preservesTraceContext() {
+            store.saveSignal(new WorkflowSignal(
+                    UUID.randomUUID(), null, "order-trace-adopt", "payment.result",
+                    null, false, Instant.now().truncatedTo(ChronoUnit.MILLIS), TRACEPARENT));
+
+            var instance = newInstance("order-trace-adopt");
+            store.createInstance(instance); // adopts the orphan
+
+            var signals = store.getUnconsumedSignals("order-trace-adopt", "payment.result");
+            assertEquals(1, signals.size());
+            assertEquals(instance.id(), signals.getFirst().workflowInstanceId());
+            assertEquals(TRACEPARENT, signals.getFirst().traceContext(),
+                    "adoption must not drop the trace context");
+        }
+
+        @Test
+        @DisplayName("the V4 column is wide enough for a traceparent plus a tracestate-sized suffix")
+        void traceContextColumnAcceptsLongValues() {
+            var instance = newInstance("order-trace-long");
+            store.createInstance(instance);
+
+            // 128 chars — the declared column width; a traceparent is 55.
+            var wide = "0".repeat(128);
+            store.saveSignal(new WorkflowSignal(
+                    UUID.randomUUID(), instance.id(), "order-trace-long", "payment.result",
+                    null, false, Instant.now().truncatedTo(ChronoUnit.MILLIS), wide));
+
+            var signals = store.getUnconsumedSignals("order-trace-long", "payment.result");
+            assertEquals(1, signals.size());
+            assertEquals(wide, signals.getFirst().traceContext());
+        }
     }
 
     // ── Timer Tests ───────────────────────────────────────────────────────

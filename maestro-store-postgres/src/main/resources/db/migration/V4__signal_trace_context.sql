@@ -1,0 +1,23 @@
+-- Durable W3C trace context for cross-service tracing.
+--
+-- A signal published by service A under an active span carries a `traceparent`
+-- Kafka header. Service B's listener extracts it and persists it here, so that
+-- when the parked workflow resumes — possibly hours later, possibly on a
+-- different node after a crash — its run-segment span can adopt A's span as a
+-- remote parent and the whole cross-service flow reads as one trace.
+-- In-process propagation alone cannot do this: consume and resume are routinely
+-- different threads on different nodes.
+--
+-- The column is OPAQUE metadata. No store or engine logic parses it, branches on
+-- it, indexes it or joins on it; it is written once and read back verbatim.
+-- Nullable by design: signals that did not arrive over a traced transport (or
+-- arrived from a build with tracing disabled) store NULL, and a NULL degrades to
+-- a fresh root span — never to an error.
+--
+-- VARCHAR(128) — a W3C traceparent is exactly 55 characters
+-- ("00-" + 32 hex + "-" + 16 hex + "-" + 2 hex); the headroom covers a future
+-- longer version field without another migration. No DEFAULT and no NOT NULL, so
+-- this is a metadata-only ALTER on Postgres 11+ (instant, no table rewrite) and
+-- safe to apply to a live table.
+ALTER TABLE maestro_workflow_signal
+    ADD COLUMN trace_context VARCHAR(128);

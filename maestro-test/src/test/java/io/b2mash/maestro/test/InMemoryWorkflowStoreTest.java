@@ -326,6 +326,53 @@ class InMemoryWorkflowStoreTest {
         assertFalse(store.markSignalConsumed(UUID.randomUUID()));
     }
 
+    // ── trace_context (design §4.3(b), RULING 2) ─────────────────────────
+
+    /** The W3C recommendation's own example traceparent. */
+    private static final String TRACEPARENT =
+            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+
+    @Test
+    void saveSignalRoundTripsTraceContext() {
+        store.saveSignal(new WorkflowSignal(
+                UUID.randomUUID(), UUID.randomUUID(), "wf-trace",
+                "payment.result", null, false, Instant.now(), TRACEPARENT));
+
+        var unconsumed = store.getUnconsumedSignals("wf-trace", "payment.result");
+        assertEquals(1, unconsumed.size());
+        assertEquals(TRACEPARENT, unconsumed.getFirst().traceContext());
+    }
+
+    @Test
+    void markSignalConsumedPreservesTraceContext() {
+        var signalId = UUID.randomUUID();
+        store.saveSignal(new WorkflowSignal(
+                signalId, UUID.randomUUID(), "wf-trace-consume",
+                "approved", null, false, Instant.now(), TRACEPARENT));
+
+        assertTrue(store.markSignalConsumed(signalId));
+
+        var all = store.getAllSignals();
+        assertEquals(1, all.size());
+        assertTrue(all.getFirst().consumed());
+        assertEquals(TRACEPARENT, all.getFirst().traceContext(),
+                "consuming must not drop the opaque trace context");
+    }
+
+    @Test
+    void adoptOrphanedSignalsPreservesTraceContext() {
+        store.saveSignal(new WorkflowSignal(
+                UUID.randomUUID(), null, "wf-trace-orphan",
+                "early.signal", null, false, Instant.now(), TRACEPARENT));
+
+        store.adoptOrphanedSignals("wf-trace-orphan", UUID.randomUUID());
+
+        var all = store.getAllSignals();
+        assertEquals(1, all.size());
+        assertEquals(TRACEPARENT, all.getFirst().traceContext(),
+                "adoption must not drop the opaque trace context");
+    }
+
     @Test
     void adoptOrphanedSignals() {
         // Signal arrives before workflow starts (instanceId = null)

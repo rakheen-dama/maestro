@@ -10,6 +10,7 @@ import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.ParkKind;
 import io.b2mash.maestro.core.observe.SignalInfo;
+import io.b2mash.maestro.core.observe.TraceContextHolder;
 import io.b2mash.maestro.core.observe.WorkflowInfo;
 import io.b2mash.maestro.core.spi.LifecycleEventType;
 import io.b2mash.maestro.core.spi.SignalNotifier;
@@ -201,6 +202,11 @@ final class SignalManager {
             workflowType = instance.get().workflowType();
         }
 
+        // Capture the calling thread's trace context, if a traced transport
+        // put one there (design §4.3(a)). Opaque to the engine: stored and
+        // returned verbatim, never parsed. Absence is normal, not an error.
+        var traceContext = TraceContextHolder.current();
+
         // Persist the signal — always before in-memory delivery
         var signalPayload = payload != null ? serializer.serialize(payload) : null;
         var signal = new WorkflowSignal(
@@ -210,10 +216,11 @@ final class SignalManager {
                 signalName,
                 signalPayload,
                 false,
-                Instant.now()
+                Instant.now(),
+                traceContext
         );
         store.saveSignal(signal);
-        observer.signalPersisted(new SignalInfo(workflowId, workflowType, signalName, null));
+        observer.signalPersisted(new SignalInfo(workflowId, workflowType, signalName, traceContext));
 
         // Unpark if waiting locally
         var parkKey = workflowId + ":signal:" + signalName;
@@ -499,8 +506,13 @@ final class SignalManager {
                     signalName, signal.id(), ctx.workflowId(), seq);
         }
         publishLifecycleEvent(ctx, stepName, LifecycleEventType.SIGNAL_RECEIVED);
+        // The durable hop (design §4.3(b)): the row's trace context reaches the
+        // observer on the workflow thread — possibly a different thread on a
+        // different node from the one that persisted it, which is exactly why
+        // the column exists rather than an in-process handoff.
         observer.signalConsumed(
-                new SignalInfo(ctx.workflowId(), ctx.workflowType(), signalName, null), false);
+                new SignalInfo(ctx.workflowId(), ctx.workflowType(), signalName,
+                        signal.traceContext()), false);
         logger.debug("Consumed signal '{}' for workflow '{}'", signalName, ctx.workflowId());
         return serializer.deserialize(signal.payload(), type);
     }

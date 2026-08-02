@@ -400,7 +400,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
         String sql = "INSERT INTO " + tableName("workflow_signal")
                 + " (id, workflow_instance_id, workflow_id, signal_name, payload,"
-                + " consumed, received_at) VALUES (?, ?, ?, ?, ?, ?, ?)";
+                + " consumed, received_at, trace_context) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
 
         update(sql, ps -> {
             ps.setObject(1, signal.id());
@@ -410,6 +410,8 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             setJsonParameter(ps, 5, signal.payload());
             ps.setBoolean(6, signal.consumed());
             ps.setTimestamp(7, Timestamp.from(signal.receivedAt()));
+            // Opaque metadata (migration V4): written verbatim, never parsed.
+            ps.setString(8, signal.traceContext());
         });
     }
 
@@ -419,7 +421,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         Objects.requireNonNull(signalName, "signalName");
 
         String sql = "SELECT id, workflow_instance_id, workflow_id, signal_name, "
-                + "payload, consumed, received_at FROM " + tableName("workflow_signal")
+                + "payload, consumed, received_at, trace_context FROM " + tableName("workflow_signal")
                 + " WHERE workflow_id = ? AND signal_name = ? AND consumed = false"
                 + " ORDER BY received_at ASC";
 
@@ -639,7 +641,9 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                 rs.getString("signal_name"),
                 getJsonValue(rs, "payload"),
                 rs.getBoolean("consumed"),
-                rs.getTimestamp("received_at").toInstant()
+                rs.getTimestamp("received_at").toInstant(),
+                // Opaque metadata (migration V4): returned verbatim, never parsed.
+                rs.getString("trace_context")
         );
     }
 
