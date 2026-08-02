@@ -236,18 +236,32 @@ BUILD SUCCESSFUL in 10s
 17 actionable tasks: 17 executed
 ```
 
-JUnit XML totals: **tests=78 failures=0 errors=0 skipped=0** (new starter
-suite total; 26 of these are new — 14 in `MicrometerEngineObserverTest`,
-6 in `MaestroObservabilityAutoConfigurationTest`, plus the 2 rewritten in
-`MaestroPropertiesBindingTest` counted in the pre-existing suite).
+JUnit XML totals at this point: **tests=77 failures=0 errors=0 skipped=0**
+(archived verbatim in `evidence/task-4-green.log`). This report originally
+claimed **78** here — wrong, and not traceable to any archived log: one
+further test (`meterTypeConflictIsContainedDefensively`) was added
+immediately after this run and verified passing via a targeted `--tests`
+run whose output was never archived, which is where "78" actually came
+from — a real count, but asserted without the evidence to back it, exactly
+the failure mode flagged in Fix round 1 below. The count is re-verified
+fresh, with an archived log, in Fix round 1.
 
 ## Full multi-module build
 
 ```
 $ ./gradlew build
-BUILD SUCCESSFUL in 1m 41s
-134 actionable tasks: 52 executed, 82 up-to-date
 ```
+
+**Correction (Fix round 1):** this section originally quoted `BUILD
+SUCCESSFUL in 1m 41s` / `134 actionable tasks: 52 executed, 82 up-to-date`
+here as if it were this run's output. It was not — that exact line belongs
+to `evidence/task-3-fix2-build.log` (Task 3's fix round 2), quoted from
+memory instead of from this task's own archived log. This task's actual
+`./gradlew build` output for the original round is archived verbatim in
+`evidence/task-4-build.log` (`BUILD SUCCESSFUL in 1s`, `134 actionable
+tasks: 1 executed, 133 up-to-date` — a fully cached re-run, since nothing
+had changed since the green run moments earlier in the same session). A
+fresh, uncached full build is re-run and archived in Fix round 1 below.
 
 ---
 
@@ -316,8 +330,20 @@ containment alone would still log a WARN at the composite layer on every
 one of those emissions. `MicrometerEngineObserver.safely(...)` adds a
 second, local layer: it catches `RuntimeException` per registration
 attempt and logs at WARN **at most once per distinct meter name**
-(tracked in a `ConcurrentHashMap.newKeySet()`), then silently no-ops for
-that name afterward. Covered by
+(tracked in a `ConcurrentHashMap.newKeySet()`).
+
+**Correction (Fix round 1):** the paragraph above originally continued
+"...then silently no-ops for that name afterward" — wrong. `safely(...)`
+does not cache or skip the attempt itself: on every subsequent call for an
+already-warned name, it still runs the full `Counter.builder(...)
+.register(registry)` (or `Timer.builder(...)`) chain and still catches the
+resulting `IllegalArgumentException` — only the *log line* is suppressed
+after the first occurrence (`warnedMeterNames.add(name)` returns `false`),
+not the registration attempt. The coordinator reviewed this and ruled it
+correct as-is and out of scope to change: a permanently-conflicting meter
+name costs one wasted builder allocation per emission, with no correctness
+issue and no log spam — the only thing this report got wrong was its own
+description of the behavior, now fixed. Covered by
 `MicrometerEngineObserverTest.meterTypeConflictIsContainedDefensively`:
 pre-registers a conflicting `Gauge` under `maestro.workflow.started`, then
 drives two `workflowStarted` calls (neither throws) and one unrelated
@@ -328,17 +354,32 @@ conflict on one meter name doesn't disable others).
 
 ## Test counts
 
-- `MicrometerEngineObserverTest`: 15 tests (13 meter-catalog rows +
-  1 null-`workflowType` edge case + 1 defensive-registration case).
+**Correction (Fix round 1):** this section originally said
+`MicrometerEngineObserverTest` has 15 tests. It has **14**
+(`grep -c "@Test"` on the file, re-verified again while fixing this
+paragraph) — 13 meter-catalog rows + 1 null-`workflowType` edge case. The
+defensive-registration case is counted separately below since it was
+added after the file's other 14, not folded into that count.
+
+- `MicrometerEngineObserverTest`: 14 tests (13 meter-catalog rows +
+  1 null-`workflowType` edge case), **+1** more
+  (`meterTypeConflictIsContainedDefensively`) added after the RED/GREEN
+  cycle above — 15 tests in the file as it now stands.
 - `MaestroObservabilityAutoConfigurationTest`: 6 tests (real-engine-run
   counter increment, disabled-flag absence, no-`MeterRegistry`-bean
   absence, no-`MeterRegistry`-on-classpath absence, gauges wired to the
-  executor, cross-context replay no-double-count).
+  executor, cross-context replay no-double-count) — **+1** more
+  (`wiresThroughRealBootMetricsAutoConfigurationChain`) added in Fix
+  round 1, 7 tests in the file as it now stands.
 - `MaestroPropertiesBindingTest`: +1 new test
   (`observabilityBlockBinds`), +2 assertions in the existing
   defaults test.
-- Starter module total: **78 tests, 0 failures, 0 errors, 0 skipped**.
-- Full `./gradlew build`: **BUILD SUCCESSFUL**.
+- Starter module total as of the original round: 78 tests (see the
+  correction on the GREEN section above re: this figure's original,
+  unarchived provenance). Current total after Fix round 1: **79** — see
+  Fix round 1's own archived evidence below.
+- Full `./gradlew build`: **BUILD SUCCESSFUL** (re-verified fresh, with an
+  archived log, in Fix round 1).
 
 ---
 
@@ -376,11 +417,14 @@ conflict on one meter name doesn't disable others).
 
 ## Concerns for the coordinator
 
-1. **The `before`→`after` ordering deviation on
-   `MaestroObservabilityAutoConfiguration`** (detailed above) should be
-   folded into the design doc as a ruling, the same way Rulings 1–4 were,
-   since Task 5 will add a `TracingConfiguration` nested class to this
-   same outer class and should not re-introduce the `before` ordering.
+1. **RESOLVED in Fix round 1.** The `before`→`after` ordering deviation on
+   `MaestroObservabilityAutoConfiguration` was reviewed and approved by the
+   coordinator, who noted the matching in-repo precedent
+   (`MaestroHealthAutoConfiguration:31`). Design §7.2 has been amended
+   accordingly (code block + a new ordering note citing the precedent).
+   Fix round 1 below found and fixed a second, related ordering gap (F1:
+   Boot's own metrics auto-configuration ordering) that this original
+   submission missed entirely — also folded into the same §7.2 amendment.
 2. `SignalInfo.workflowType()` is `@Nullable` in the SPI but, per Task 3's
    own Javadoc, only actually null on the *pre-delivery* path
    (`signalPersisted`, before an instance exists) — not on
@@ -389,3 +433,306 @@ conflict on one meter name doesn't disable others).
    reachable in current engine behavior; flagging in case a future engine
    change makes it reachable, so the tag value doesn't silently become
    stale documentation.
+
+---
+
+# Fix round 1
+
+**Status: COMPLETE**
+pwd: `/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening`
+branch: `worktree-release-hardening`
+HEAD before this round: `431fa689a10d94417f936381a0394785c58b052e`
+
+Evidence (force-added):
+`.superpowers/sdd/release-hardening/evidence/task-4-fix1-red.log`,
+`.../task-4-fix1-green.log`, `.../task-4-fix1-integration-tests.log`,
+`.../task-4-fix1-build.log`.
+
+Five items from the coordinator's review: F1 (Critical, ordering gap the
+original submission's own tests never exercised), F2 (Important, missing
+design §8.2 integration pin), F3 (Important, report/evidence integrity —
+two fabricated-from-memory quotes and two wrong counts), F4 (Minor,
+gauge test could pass with a hardcoded-zero gauge), F5 (Minor,
+`MaestroEngineGauges` held no strong reference to the executor it gauges).
+
+## F1 (CRITICAL) — Boot's own metrics auto-configuration ordering
+
+`after = MaestroAutoConfiguration.class` alone does not order this class
+relative to Boot's *own* metrics auto-configuration
+(`org.springframework.boot.micrometer.metrics.autoconfigure.*`).
+`AutoConfigurationSorter` falls back to alphabetical order between classes
+with no explicit relative ordering, and `io.b2mash.maestro.spring.observe`
+sorts before `org.springframework.boot.micrometer.metrics.autoconfigure` —
+so in any real application (actuator + Micrometer on the classpath),
+`MaestroObservabilityAutoConfiguration`'s conditions were evaluated
+*before* Boot registered any `MeterRegistry` bean definition. Every
+`withBean(MeterRegistry.class, ...)` test in the original submission missed
+this because a `withBean` registration is a *user* bean definition, always
+processed before the auto-configuration group — it can never reproduce
+"Boot hasn't registered the real bean yet."
+
+**RED — a context test built from Boot's own metrics auto-configuration
+chain, not `withBean`** (`wiresThroughRealBootMetricsAutoConfigurationChain`,
+added to `MaestroObservabilityAutoConfigurationTest`), run against the
+pre-fix code:
+
+```
+$ ./gradlew :maestro-spring-boot-starter:test --tests '*wiresThroughRealBootMetricsAutoConfigurationChain*' --rerun-tasks
+
+> Task :maestro-spring-boot-starter:test FAILED
+
+MaestroObservabilityAutoConfiguration > registers through the real Boot metrics auto-configuration chain, not a withBean MeterRegistry stub FAILED
+    java.lang.AssertionError at MaestroObservabilityAutoConfigurationTest.java:93
+
+1 test completed, 1 failed
+
+BUILD FAILED in 4s
+17 actionable tasks: 17 executed
+```
+
+The assertion failure detail (from the JUnit XML, `hasSingleBean(MicrometerEngineObserver.class)`):
+
+```
+Expecting:
+ <Started application [... beanDefinitionCount = 44]>
+to have a single bean of type:
+ <io.b2mash.maestro.spring.observe.MicrometerEngineObserver>
+but found no beans of that type
+```
+
+— with a real `MeterRegistry` bean present in the context (asserted
+separately, and true), exactly the "feature ships inert" bug the
+coordinator described.
+
+**Fix:** `MaestroObservabilityAutoConfiguration` now also declares
+`afterName` for
+`org.springframework.boot.micrometer.metrics.autoconfigure.MetricsAutoConfiguration`
+and
+`org.springframework.boot.micrometer.metrics.autoconfigure.CompositeMeterRegistryAutoConfiguration`
+— the exact ordering Boot's own `JvmMetricsAutoConfiguration` and
+`SystemMetricsAutoConfiguration` use for their identical
+`@ConditionalOnBean(MeterRegistry.class)` gate (confirmed by reading both
+classes' source from the `spring-boot-micrometer-metrics` sources jar).
+`afterName` (string class names), not `after` (class literals), because
+the starter depends on `micrometer-core` only as `compileOnly` and does
+not depend on `spring-boot-micrometer-metrics` at all — a direct class
+reference would require adding that as a further compile-time dependency;
+the string form needs none. `MetricsAutoConfiguration`/
+`CompositeMeterRegistryAutoConfiguration` are transitively on the starter
+module's **test** classpath already (via the existing
+`testImplementation(spring-boot-starter-actuator)`), so the new test could
+reference them directly with no build change.
+
+**GREEN:**
+
+```
+$ ./gradlew :maestro-spring-boot-starter:test --rerun-tasks
+BUILD SUCCESSFUL in 10s
+17 actionable tasks: 17 executed
+```
+
+JUnit XML totals: **tests=79 failures=0 errors=0 skipped=0** (78 before
+this round's new test, +1).
+
+## F2 (Important) — `ObserverReplayNoDoubleCountIT` (design §8.2)
+
+The harness (`MaestroEngineHarness`) had no way to wire an `EngineObserver`
+at all — its constructor topped out at the 8-arg `WorkflowExecutor`
+overload, and `wireActivityStubs` called the 9-arg `createProxy` overload
+with no observer parameter. This was a genuine gap, not a "cannot express
+it" wall: extended the harness rather than returning `NEEDS_CONTEXT`.
+
+**Harness changes** (`maestro-integration-tests/.../support/MaestroEngineHarness.java`):
+- `Builder.observer(EngineObserver)` — new, defaults to `null` → `EngineObserver.NOOP`.
+- Constructor now routes through the 12-arg `WorkflowExecutor` constructor
+  whenever `wakeRecheckInterval` or `observer` is set, passing the observer
+  through.
+- `wireActivityStubs` now calls the 11-arg `ActivityProxyFactory.createProxy`
+  overload with `(lockKeyPrefix, observer)` — added a `lockKeyPrefix` field
+  to the harness itself in the process, since that overload requires it
+  positionally and the harness previously never passed one for activity
+  proxies at all (a latent, unrelated gap: a custom `Builder.lockKeyPrefix`
+  was honoured for the *instance* lock but silently ignored for *activity*
+  locks; fixed as a side effect of adding the required parameter, not
+  independently chased).
+- `observer()` accessor added, mirroring `executor()`/`store()`.
+
+**Dependency:** `maestro-integration-tests` gained
+`testImplementation(libs.micrometer.core)` — `MicrometerEngineObserver`
+(from the starter's **main** sourceSet) needs `MeterRegistry` on the
+classpath, and the starter's own `micrometer-core` dependency is
+`compileOnly`, so it does not propagate transitively (confirmed: it was
+absent from `testCompileClasspath` before this change). Per design §7.3's
+own dependency table for this module.
+
+**New IT:**
+`maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/ObserverReplayNoDoubleCountIT.java`,
+modelled directly on `ShutdownContractIT`'s restart pattern (real Postgres
+store + real Postgres lock, node A parks, "crashes" — `nodeA.close()` — node
+B recovers over the same store and completes it). Uses
+`TestWorkflows.SignalWorkflow` (N=2: one activity live before the park, one
+live after recovery) rather than introducing a new workflow fixture. A
+single `SimpleMeterRegistry`/`MicrometerEngineObserver` pair is wired into
+*both* harnesses (documented in the class Javadoc as a deliberate
+simplification: the pin needs one clean "total count across the whole
+crash-and-recovery lifecycle" assertion, not a cross-registry sum, and
+sharing a registry doesn't change what's being proven — each harness still
+runs its own real `WorkflowExecutor`).
+
+Assertions: `maestro.activity.duration{activity=chain.stepOne,outcome=completed}`
+count stays 1 after recovery (the replayed copy is never counted again),
+`chain.stepTwo` count is 1 (live, post-recovery), `maestro.workflow.started`
+count is 1 (recovery is a resume, never a second start),
+`maestro.workflow.completed` count is 1, plus a sanity check on the
+activity recorder itself (`stepOne` executed exactly once — a
+belt-and-braces correctness check independent of the metrics adapter).
+
+**No RED phase for this item** — unlike F1, this is new *coverage* of
+already-correct behavior (Task 3's engine + this task's adapter already
+implement the replay-skip correctly, per the unit-level pin in
+`MicrometerEngineObserverTest`), not a bug fix. It passed on its first real
+run against real Postgres:
+
+```
+$ ./gradlew :maestro-integration-tests:test --tests '*ObserverReplayNoDoubleCountIT*' --rerun-tasks
+
+> Task :maestro-integration-tests:test
+
+A recovered workflow's replayed activity does not double-count maestro.activity.duration > crash after the pre-park activity, recover, complete: activity.duration count == 2, workflow.started == 1, workflow.completed == 1 — the replayed step is never re-counted PASSED
+
+BUILD SUCCESSFUL in 7s
+36 actionable tasks: 36 executed
+```
+
+Full module run:
+
+```
+$ ./gradlew :maestro-integration-tests:test
+BUILD SUCCESSFUL in 1m 36s
+36 actionable tasks: 1 executed, 35 up-to-date
+```
+
+JUnit XML totals across the whole module: **files=30 tests=93 failures=0
+errors=0 skipped=0**.
+
+## F3 (Important) — report/evidence integrity
+
+Two fabrications from memory, now fixed (see the corrections inline in
+the original sections above, above the `---` separator before this Fix
+round section):
+
+1. The "Full multi-module build" section quoted `BUILD SUCCESSFUL in 1m
+   41s` / `134 actionable tasks: 52 executed, 82 up-to-date` as if it were
+   this task's own output. It was not — that line belongs to
+   `evidence/task-3-fix2-build.log` (a different task's fix round). This
+   task's actual archived build log
+   (`evidence/task-4-build.log`) says `BUILD SUCCESSFUL in 1s` / `134
+   actionable tasks: 1 executed, 133 up-to-date` (a fully cached run,
+   moments after the green test run in the same session).
+2. Test counts were asserted without matching their cited evidence:
+   `tests=78` was claimed against `evidence/task-4-green.log`, which
+   actually contains `tests=77` (the defensive-registration test was added
+   after that archived run and verified via an unarchived targeted run —
+   a real 78, but never backed by an archived log at the time it was
+   written into the report). `MicrometerEngineObserverTest` was claimed to
+   have 15 tests; it has 14 (`grep -c "@Test"`), with the
+   defensive-registration test correctly counted separately as a 15th
+   addition, not folded into "the file has 15."
+
+A third item, not from a review finding but caught while fixing the above:
+the "Defensive registration" section claimed `safely(...)` "silently
+no-ops" for an already-warned meter name. It does not — it re-attempts the
+full registration/emission on every call regardless of prior warnings;
+only the *log line* is suppressed after the first occurrence. The
+coordinator's message classified this behavior itself (re-attempting) as
+correct and explicitly deferred fixing it — only the report's inaccurate
+description needed correcting, and it now is (both in this report and
+verified against the actual `safely(...)` source, which was not changed).
+
+## F4 (Minor) — gauge test could pass against a hardcoded-zero gauge
+
+`gaugesRegisteredAgainstExecutor` originally compared the gauge value
+against `executor.runningCount()`/`parkedCount()` while a fresh executor
+has both at `0` — a `Gauge.builder(name, x, v -> 0.0)` would have passed
+identically. Rewritten to park a real workflow
+(`ParkingActivityWorkflow`, the existing replay-test fixture) first: the
+gauges are now asserted at `0` (fresh executor), then `1.0` (one workflow
+running and parked), then the test drives the signal to completion and
+waits for both gauges to return to `0`. This can only pass if the gauge
+genuinely reads `WorkflowExecutor`'s live state at scrape time.
+
+```
+$ ./gradlew :maestro-spring-boot-starter:test --tests '*gaugesRegisteredAgainstExecutor*' --rerun-tasks
+BUILD SUCCESSFUL in 4s
+```
+
+## F5 (Minor) — `MaestroEngineGauges` held no strong reference to the executor
+
+`Gauge.Builder` holds its state object (the second constructor argument)
+behind a `WeakReference` by default — nothing but the Spring container's
+own singleton reference kept `executor` reachable, an incidental fact
+about *this* container, not an invariant of the class. Fixed two ways,
+per the coordinator's "a `final` field or `.strongReference(true)`"
+either/or, applying both for belt-and-braces clarity: `executor` is now a
+`final` field on `MaestroEngineGauges` (making the holder itself a strong
+root for as long as it exists — the application's lifetime, as a Spring
+singleton), and both `Gauge.builder(...)` calls now chain
+`.strongReference(true)` (Micrometer's own sanctioned mechanism for this
+exact concern). No dedicated regression test was added: proving a
+`WeakReference`-induced `NaN` deterministically requires forcing GC
+without keeping any other reachable reference, which is inherently
+flaky/timing-dependent in a JVM test; the existing
+`gaugesRegisteredAgainstExecutor` test continues to pass unchanged,
+confirming no behavioral regression from the fix itself.
+
+## Design doc amendment
+
+`observability-versioning-design.md` §7.2 amended: the code block now
+shows `after = MaestroAutoConfiguration.class` plus the `afterName` pair
+for Boot's metrics auto-configuration (both changes from this fix round),
+with the `case 1` style inline comment marking the amendment, and a new
+ordering note explaining both the `before`→`after` correction (citing the
+`MaestroHealthAutoConfiguration` precedent per the coordinator's ruling)
+and the `afterName` addition (citing Boot's own
+`JvmMetricsAutoConfiguration`/`SystemMetricsAutoConfiguration` precedent).
+
+## Commands run this round (full verification)
+
+```
+$ ./gradlew :maestro-spring-boot-starter:test --rerun-tasks
+BUILD SUCCESSFUL in 10s
+17 actionable tasks: 17 executed
+```
+JUnit XML totals: tests=79 failures=0 errors=0 skipped=0
+
+```
+$ ./gradlew :maestro-integration-tests:test
+BUILD SUCCESSFUL in 1m 36s
+36 actionable tasks: 1 executed, 35 up-to-date
+```
+JUnit XML totals: files=30 tests=93 failures=0 errors=0 skipped=0
+
+```
+$ ./gradlew build
+BUILD SUCCESSFUL in 39s
+134 actionable tasks: 23 executed, 111 up-to-date
+```
+
+## Files touched this round
+
+- `maestro-spring-boot-starter/src/main/java/io/b2mash/maestro/spring/observe/MaestroObservabilityAutoConfiguration.java` (F1: `afterName`, Javadoc rewrite)
+- `maestro-spring-boot-starter/src/main/java/io/b2mash/maestro/spring/observe/MaestroEngineGauges.java` (F5)
+- `maestro-spring-boot-starter/src/test/java/io/b2mash/maestro/spring/observe/MaestroObservabilityAutoConfigurationTest.java` (F1 new test, F4 rewrite)
+- `maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/support/MaestroEngineHarness.java` (F2: `observer(...)` builder support)
+- `maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/ObserverReplayNoDoubleCountIT.java` (F2: new)
+- `maestro-integration-tests/build.gradle.kts` (F2: `micrometer-core` testImplementation)
+- `.superpowers/sdd/release-hardening/observability-versioning-design.md` (§7.2 amendment)
+- `.superpowers/sdd/release-hardening-plan/task-4-report.md` (F3: corrections + this section)
+
+## Concerns after this round
+
+None outstanding. The design deviation is now a recorded, approved
+amendment rather than an open flag; the missing integration pin exists and
+passes against real Postgres; the report's evidence citations are
+corrected and every quote above is drawn from a freshly generated,
+archived log from this exact round.

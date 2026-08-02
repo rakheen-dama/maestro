@@ -1,0 +1,15 @@
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening
+branch: worktree-release-hardening
+HEAD: 431fa689a10d94417f936381a0394785c58b052e
+timestamp: 2026-08-02T16:28:16Z
+command: ./gradlew build
+> Task :maestro-messaging-kafka:test
+> Task :maestro-messaging-kafka:check
+> Task :maestro-messaging-kafka:build
+> Task :maestro-messaging-postgres:test
+> Task :maestro-messaging-postgres:check
+> Task :maestro-messaging-postgres:build
+
+BUILD SUCCESSFUL in 39s
+134 actionable tasks: 23 executed, 111 up-to-date
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.2.0/userguide/configuration_cache_enabling.html
