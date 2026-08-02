@@ -1,0 +1,36 @@
+{
+  "_identity" : {
+    "pwd" : "/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/multi-instance-verification/maestro-integration-tests",
+    "gitHead" : "7113e069eca5f3ba3bdaa8d519f878cef542de22",
+    "branch" : "worktree-multi-instance-verification",
+    "timestampUtc" : "2026-08-01T21:43:25.642467Z",
+    "seed" : -6973268155056049009,
+    "mode" : "SOAK",
+    "runId" : "20260801-214325--6973268155056049009"
+  },
+  "payload" : {
+    "seed" : -6973268155056049009,
+    "mode" : "SOAK",
+    "durationMinutes" : 120,
+    "ratePerMinute" : 20,
+    "workflowsSubmitted" : 2376,
+    "workflowsByPath" : {
+      "HAPPY" : 974,
+      "CONDITIONS_LOOP" : 454,
+      "SIGNAL_TIMEOUT" : 472,
+      "SAGA_WITHDRAWAL" : 476
+    },
+    "verdict" : "PASS",
+    "violations" : [ ],
+    "redeliveredUnconsumedSignals" : [ "loan-chaos-11473475918653502607-1103:verification.result x1 consumedTwin=true", "loan-chaos-11473475918653502607-1104:verification.result x1 consumedTwin=true", "loan-chaos-11473475918653502607-1107:verification.result x1 consumedTwin=true", "loan-chaos-11473475918653502607-1275:underwriting.decision x1 consumedTwin=true", "loan-chaos-11473475918653502607-1277:verification.result x1 consumedTwin=true", "loan-chaos-11473475918653502607-1401:verification.result x1 consumedTwin=true", "loan-chaos-11473475918653502607-1464:verification.result x1 consumedTwin=true", "loan-chaos-11473475918653502607-153:verification.result x1 consumedTwin=true", "loan-chaos-11473475918653502607-159:underwriting.decision x1 consumedTwin=true", "loan-chaos-11473475918653502607-21:verification.result x1 consumedTwin=true", "loan-chaos-11473475918653502607-33:underwriting.decision x1 consumedTwin=true", "loan-chaos-11473475918653502607-569:verification.result x1 consumedTwin=true", "loan-chaos-11473475918653502607-576:underwriting.decision x1 consumedTwin=true" ],
+    "redeliveredUnconsumedSignalGroups" : 13,
+    "sideEffectDuplicates" : 0,
+    "explainedDuplicates" : 0,
+    "unexplainedDuplicates" : 0,
+    "unexplainedWorkflows" : [ ],
+    "missingSagaCompensation" : [ ],
+    "periodicCheckerCycles" : 245,
+    "periodicCheckerUnreachableCycles" : 1,
+    "periodicCheckerMaxUnreachableStreak" : 1
+  }
+}
