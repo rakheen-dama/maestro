@@ -1,0 +1,96 @@
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening
+branch: worktree-release-hardening
+HEAD: 4c0b8528554bcdb8ab0d9c5816e4c06c5431b1fc
+timestamp: 2026-08-02T17:02:47Z
+command: ./gradlew :maestro-core:test --tests *SignalManagerTest --tests *TraceContextHolderTest :maestro-test:test --tests *InMemoryWorkflowStoreTest --rerun-tasks (BEFORE the trace-context wiring — record component + TraceContextHolder present, no persistence)
+> Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :build-logic:generateExternalPluginSpecBuilders
+> Task :build-logic:extractPrecompiledScriptPluginPlugins
+> Task :build-logic:generateScriptPluginAdapters
+> Task :build-logic:pluginDescriptors
+> Task :build-logic:processResources
+> Task :build-logic:compilePluginsBlocks
+> Task :build-logic:generatePrecompiledScriptPluginAccessors
+
+> Configure project :maestro-admin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :build-logic:compileKotlin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+w: [33m[1m⚠️ Inconsistent JVM Target Compatibility Between Java and Kotlin Tasks[0m[0m
+Inconsistent JVM-target compatibility detected for tasks 'compileJava' (25) and 'compileKotlin' (24).
+This will become an error in Gradle 8.0.
+[32m[1mSolution:[0m[0m
+[32m[3mConsider using JVM Toolchain: https://kotl.in/gradle/jvm/toolchain[0m[0m
+[36mLearn more about JVM-target validation: [0m[34mhttps://kotl.in/gradle/jvm/target-validation[0m[36m[0m
+
+
+> Task :build-logic:compileJava NO-SOURCE
+> Task :build-logic:classes
+> Task :build-logic:jar
+> Task :maestro-test:processResources NO-SOURCE
+> Task :maestro-test:processTestResources NO-SOURCE
+> Task :maestro-core:compileJava
+> Task :maestro-core:processResources NO-SOURCE
+> Task :maestro-core:classes
+> Task :maestro-core:jar
+> Task :maestro-test:compileJava
+> Task :maestro-test:classes
+> Task :maestro-test:compileTestJava
+> Task :maestro-test:testClasses
+> Task :maestro-core:compileTestJava
+> Task :maestro-core:processTestResources NO-SOURCE
+> Task :maestro-core:testClasses
+
+> Task :maestro-test:test FAILED
+
+InMemoryWorkflowStoreTest > markSignalConsumedPreservesTraceContext() FAILED
+    org.opentest4j.AssertionFailedError at InMemoryWorkflowStoreTest.java:358
+
+InMemoryWorkflowStoreTest > adoptOrphanedSignalsPreservesTraceContext() FAILED
+    org.opentest4j.AssertionFailedError at InMemoryWorkflowStoreTest.java:372
+
+34 tests completed, 2 failed
+
+> Task :maestro-core:test
+
+SignalManagerTest > signalPersisted carries the captured traceparent on SignalInfo FAILED
+    org.opentest4j.AssertionFailedError at SignalManagerTest.java:698
+
+SignalManagerTest > deliverSignal persists TraceContextHolder.current() on the signal row FAILED
+    org.opentest4j.AssertionFailedError at SignalManagerTest.java:669
+
+SignalManagerTest > consumeSignal surfaces the row's traceContext on SignalInfo — the durable hop FAILED
+    org.opentest4j.AssertionFailedError at SignalManagerTest.java:722
+
+31 tests completed, 3 failed
+
+> Task :maestro-core:test FAILED
+
+[Incubating] Problems report is available at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/build/reports/problems/problems-report.html
+
+FAILURE: Build completed with 2 failures.
+
+1: Task failed with an exception.
+-----------
+* What went wrong:
+Execution failed for task ':maestro-test:test'.
+> There were failing tests. See the report at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-test/build/reports/tests/test/index.html
+
+* Try:
+> Run with --scan to generate a Build Scan (powered by Develocity).
+==============================================================================
+
+2: Task failed with an exception.
+-----------
+* What went wrong:
+Execution failed for task ':maestro-core:test'.
+> There were failing tests. See the report at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/build/reports/tests/test/index.html
+
+* Try:
+> Run with --scan to generate a Build Scan (powered by Develocity).
+==============================================================================
+
+BUILD FAILED in 6s
+16 actionable tasks: 16 executed
+exit-code: 1

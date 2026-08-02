@@ -1,0 +1,78 @@
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening
+branch: worktree-release-hardening
+HEAD: 4c0b8528554bcdb8ab0d9c5816e4c06c5431b1fc
+timestamp: 2026-08-02T17:05:01Z
+command: ./gradlew :maestro-core:test :maestro-test:test :maestro-store-postgres:test --rerun-tasks (AFTER the trace-context wiring — core + in-memory store + Postgres store)
+> Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :build-logic:generateExternalPluginSpecBuilders
+> Task :build-logic:extractPrecompiledScriptPluginPlugins
+> Task :build-logic:generateScriptPluginAdapters
+> Task :build-logic:pluginDescriptors
+> Task :build-logic:processResources
+> Task :build-logic:compilePluginsBlocks
+> Task :build-logic:generatePrecompiledScriptPluginAccessors
+
+> Task :build-logic:compileKotlin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+w: [33m[1m⚠️ Inconsistent JVM Target Compatibility Between Java and Kotlin Tasks[0m[0m
+Inconsistent JVM-target compatibility detected for tasks 'compileJava' (25) and 'compileKotlin' (24).
+This will become an error in Gradle 8.0.
+[32m[1mSolution:[0m[0m
+[32m[3mConsider using JVM Toolchain: https://kotl.in/gradle/jvm/toolchain[0m[0m
+[36mLearn more about JVM-target validation: [0m[34mhttps://kotl.in/gradle/jvm/target-validation[0m[36m[0m
+
+
+> Task :build-logic:compileJava NO-SOURCE
+> Task :build-logic:classes
+> Task :build-logic:jar
+
+> Configure project :maestro-admin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :maestro-test:processResources NO-SOURCE
+> Task :maestro-store-jdbc:processResources NO-SOURCE
+> Task :maestro-test:processTestResources NO-SOURCE
+> Task :maestro-spring-boot-starter:processResources
+> Task :maestro-store-postgres:processResources
+> Task :maestro-store-postgres:processTestResources NO-SOURCE
+> Task :maestro-core:compileJava
+> Task :maestro-core:processResources NO-SOURCE
+> Task :maestro-core:classes
+> Task :maestro-core:jar
+> Task :maestro-store-jdbc:compileJava
+> Task :maestro-store-jdbc:classes
+> Task :maestro-store-jdbc:jar
+> Task :maestro-test:compileJava
+> Task :maestro-test:classes
+> Task :maestro-test:compileTestJava
+> Task :maestro-test:testClasses
+> Task :maestro-spring-boot-starter:compileJava
+> Task :maestro-spring-boot-starter:classes
+> Task :maestro-spring-boot-starter:jar
+> Task :maestro-store-postgres:compileJava
+> Task :maestro-store-postgres:classes
+
+> Task :maestro-store-postgres:compileTestJava
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-store-postgres/src/test/java/io/b2mash/maestro/store/postgres/PostgresTestSupport.java:25: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+    static final PostgreSQLContainer<?> postgres =
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-store-postgres/src/test/java/io/b2mash/maestro/store/postgres/PostgresTestSupport.java:26: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+            new PostgreSQLContainer<>("postgres:16-alpine")
+                ^
+2 warnings
+
+> Task :maestro-store-postgres:testClasses
+> Task :maestro-core:compileTestJava
+> Task :maestro-core:processTestResources NO-SOURCE
+> Task :maestro-core:testClasses
+> Task :maestro-test:test
+OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes because bootstrap classpath has been appended
+> Task :maestro-store-postgres:test
+> Task :maestro-core:test
+
+[Incubating] Problems report is available at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/build/reports/problems/problems-report.html
+
+BUILD SUCCESSFUL in 49s
+25 actionable tasks: 25 executed
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.2.0/userguide/configuration_cache_enabling.html
+exit-code: 0
