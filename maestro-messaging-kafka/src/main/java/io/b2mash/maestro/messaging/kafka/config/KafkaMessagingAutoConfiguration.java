@@ -2,10 +2,13 @@ package io.b2mash.maestro.messaging.kafka.config;
 
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.messaging.kafka.KafkaMessagingConfig;
+import io.b2mash.maestro.messaging.kafka.KafkaTracePropagation;
 import io.b2mash.maestro.messaging.kafka.KafkaWorkflowMessaging;
 import io.b2mash.maestro.messaging.kafka.listener.MaestroSignalListenerBeanPostProcessor;
 import io.b2mash.maestro.spring.config.MaestroAutoConfiguration;
 import io.b2mash.maestro.spring.config.MaestroProperties;
+import io.micrometer.tracing.Tracer;
+import io.micrometer.tracing.propagation.Propagator;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
@@ -14,11 +17,14 @@ import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
@@ -46,6 +52,8 @@ import java.util.Map;
  *   <li>{@link KafkaMessagingConfig} resolved from {@link MaestroProperties}</li>
  *   <li>{@link KafkaWorkflowMessaging} — the {@link WorkflowMessaging} SPI implementation</li>
  *   <li>{@link MaestroSignalListenerBeanPostProcessor} — annotation scanning and processing</li>
+ *   <li>{@link KafkaTracePropagation} — W3C trace-context injection/extraction,
+ *       only when Micrometer Tracing is present and enabled</li>
  * </ul>
  *
  * <p>Kafka bootstrap servers are resolved from {@code spring.kafka.bootstrap-servers}
@@ -57,7 +65,23 @@ import java.util.Map;
  * @see KafkaWorkflowMessaging
  * @see MaestroSignalListenerBeanPostProcessor
  */
-@AutoConfiguration(after = MaestroAutoConfiguration.class)
+@AutoConfiguration(after = MaestroAutoConfiguration.class,
+        // Spring Boot's AutoConfigurationSorter falls back to alphabetical order
+        // between classes with no declared relative ordering, and
+        // `io.b2mash.maestro.messaging.kafka.config` sorts before
+        // `org.springframework.boot.micrometer.tracing.*`. Without these entries
+        // TracePropagationConfiguration's @ConditionalOnBean({Tracer, Propagator})
+        // is evaluated before Boot registers either bean, the collaborator is
+        // never created, and every published record silently loses its trace
+        // context — the exact shape of the meters bug found in Task 4's fix round
+        // 1. Class names absent from the classpath are ignored by the sorter, so
+        // naming both bridges is safe.
+        afterName = {
+                "org.springframework.boot.micrometer.tracing.autoconfigure.MicrometerTracingAutoConfiguration",
+                "org.springframework.boot.micrometer.tracing.autoconfigure.NoopTracerAutoConfiguration",
+                "org.springframework.boot.micrometer.tracing.opentelemetry.autoconfigure.OpenTelemetryTracingAutoConfiguration",
+                "org.springframework.boot.micrometer.tracing.brave.autoconfigure.BraveAutoConfiguration"
+        })
 @ConditionalOnClass(KafkaTemplate.class)
 @ConditionalOnProperty(prefix = "maestro.messaging", name = "type", havingValue = "kafka", matchIfMissing = true)
 public class KafkaMessagingAutoConfiguration {
@@ -178,14 +202,47 @@ public class KafkaMessagingAutoConfiguration {
             KafkaTemplate<String, byte[]> maestroKafkaTemplate,
             ConsumerFactory<String, byte[]> maestroKafkaConsumerFactory,
             ObjectMapper objectMapper,
-            KafkaMessagingConfig maestroKafkaMessagingConfig
+            KafkaMessagingConfig maestroKafkaMessagingConfig,
+            ObjectProvider<KafkaTracePropagation> tracePropagation
     ) {
         return new KafkaWorkflowMessaging(
                 maestroKafkaTemplate,
                 maestroKafkaConsumerFactory,
                 objectMapper,
-                maestroKafkaMessagingConfig
+                maestroKafkaMessagingConfig,
+                tracePropagation.getIfAvailable()
         );
+    }
+
+    /**
+     * W3C trace-context propagation over Kafka (observability design doc §4,
+     * §7.2). Registered only when Micrometer Tracing is on the classpath, a
+     * {@code Tracer} <em>and</em> a {@code Propagator} bean exist, and
+     * {@code maestro.observability.tracing.enabled} is not {@code false}.
+     * Without the bean, {@link KafkaWorkflowMessaging} produces exactly the
+     * pre-tracing wire format.
+     *
+     * <p>Nested in its own {@code @Configuration} so that {@code
+     * @ConditionalOnClass} guards the bean method's Micrometer parameter types
+     * — the enclosing class must stay loadable with no tracing on the classpath.
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(Tracer.class)
+    @ConditionalOnProperty(prefix = "maestro.observability.tracing",
+            name = "enabled", havingValue = "true", matchIfMissing = true)
+    static class TracePropagationConfiguration {
+
+        /**
+         * @param tracer     the Micrometer tracer whose current span is injected
+         * @param propagator the Micrometer propagator that owns the wire format
+         * @return the Kafka trace-propagation collaborator
+         */
+        @Bean
+        @ConditionalOnBean({Tracer.class, Propagator.class})
+        @ConditionalOnMissingBean
+        public KafkaTracePropagation maestroKafkaTracePropagation(Tracer tracer, Propagator propagator) {
+            return new KafkaTracePropagation(tracer, propagator);
+        }
     }
 
     @Bean
