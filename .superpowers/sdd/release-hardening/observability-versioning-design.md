@@ -1503,3 +1503,65 @@ Those per-site guards remain as depth (the engine constructors accept any
 but the seam is now correct by construction. §1.2's code block above is
 amended accordingly: `case 1 -> observers.getFirst();` is REMOVED — no later
 task may implement the collapse.
+
+## 11. Coordinator rulings — Task 5 (tracing + Kafka propagation)
+
+Reviewed 2026-08-02 against the Task 5 report's three flagged deviations and
+its post-implementation FINDING-1. All four are ruled below and BIND the
+remaining tasks.
+
+**RULING 5 (FINDING-1) — APPROVED as the implementer recommended.** A
+terminate landing between a run's last live step and its next park leaves the
+`maestro.workflow.run` segment span unclosed and unexported. Fix: add
+`EngineObserver.runAbandoned(WorkflowInfo w, AbandonReason reason)` —
+`AbandonReason` = `{SHUTDOWN, TERMINATED}` — emitted from BOTH
+`WorkflowExecutor.handleShutdownSuspension` and
+`WorkflowExecutor.handleTermination`. It is deliberately DISTINCT from
+`standDown`: routing an operator terminate through the stand-down counter
+would recreate exactly the "routine operation recorded as a failure-shaped
+event" confusion that the engine's control-flow-signal design exists to
+prevent, and would corrupt Task 4's `maestro.standdown{reason}` meter.
+`TracingEngineObserver` closes its segment there; `MicrometerEngineObserver`
+does NOT implement it (no new meter, no double-count — `workflowTerminated`
+already fires exactly once, on the operator thread at
+`WorkflowExecutor:759`). The addition is purely additive: every
+`EngineObserver` method is a `default` no-op, so Tasks 3 and 4 need no
+change. Task 5 implements this; Task 3's in-line comment at
+`SignalManager:317-319` ("a shutdown or terminate abandons the run and emits
+neither") must be updated to match.
+
+**RULING 6 (DEVIATION-1, lazy segment opening) — APPROVED.** Design §3.2
+assumed `workflowStarted`/`workflowResumed` run on the workflow's virtual
+thread; they factually run on the launching/caller thread
+(`WorkflowExecutor:439` and `:1391`, thread created at `:1366`). Implementing
+§3.2 literally would open an unclosed scope on an unrelated caller thread
+(corrupting that thread's tracing) and leave every activity span a detached
+root. Segments therefore open lazily on the first callback that genuinely
+runs on the workflow thread. §3.2's table is amended accordingly. The
+rejected follow-up (capturing the caller's context to parent a locally
+started workflow's first segment) is recorded as a POST-1.0 idea, not this
+cycle's work — it is unbounded state for a link §3.2 never required.
+
+**RULING 7 (DEVIATION-2, remote parent outranks the local park chain) —
+APPROVED, and this is the product-correct reading.** §3.2's literal priority
+(local previous segment, else remote) makes the cycle's headline requirement
+— one connected trace across services — unreachable in the common case,
+because the normal cross-service flow parks and resumes live on the same
+thread and would never join the publisher's trace. §4.3 already contemplated
+remote re-parenting with a local segment present; the tension is resolved
+toward §4.3 and toward the spec's evidence requirement. A live
+`signalConsumed` carrying a usable trace context re-parents to the remote
+context and attaches the previous local segment as a link, so no local
+chaining is lost. §3.2's parent-priority text is amended.
+
+**RULING 8 (DEVIATION-3, span-event attributes become span tags) —
+APPROVED (API-forced).** Micrometer Tracing's `Span` exposes only
+`event(String)` / `event(String, long, TimeUnit)`; there is no attributed-event
+API. Event names are recorded exactly as designed; the intended event
+attributes (`maestro.timer.id`, `maestro.signal.name`) become span tags,
+last-write-wins within a segment. **Task 8 MUST document this in
+`docs/observability.md`** — an operator reading a trace needs to know these
+are segment tags with last-write-wins semantics, not per-event attributes.
+Test-scope-only catalog additions (`spring-boot-micrometer-tracing`,
+`spring-boot-micrometer-tracing-opentelemetry`) are approved; no new
+production dependency, `maestro-core` unchanged.
