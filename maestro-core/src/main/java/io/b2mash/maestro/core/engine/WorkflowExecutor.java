@@ -1409,7 +1409,7 @@ public final class WorkflowExecutor {
     ) {
         try {
             // Deserialize input and invoke the workflow method
-            Object result = invokeWorkflowMethod(workflowImpl, workflowMethod, inputPayload);
+            Object result = invokeWorkflowMethod(ctx, workflowImpl, workflowMethod, inputPayload);
 
             // Success — finalise, converging with any other writer
             var outputPayload = result != null ? serializer.serialize(result) : null;
@@ -1535,15 +1535,29 @@ public final class WorkflowExecutor {
     }
 
     private @Nullable Object invokeWorkflowMethod(
-            Object workflowImpl, Method workflowMethod, @Nullable JsonNode inputPayload
+            WorkflowContext ctx, Object workflowImpl, Method workflowMethod,
+            @Nullable JsonNode inputPayload
     ) throws Exception {
         try {
             if (workflowMethod.getParameterCount() == 0) {
                 return workflowMethod.invoke(workflowImpl);
             } else {
-                // Deserialize input to the method's parameter type
+                // Deserialize input to the method's parameter type.
+                //
+                // RULING 9: the input is persisted state, re-read on EVERY
+                // recovery run — including runs on a node older than whichever
+                // one wrote it. A shape this build cannot read must stand the
+                // run down, not be recorded as a workflow failure: this throw
+                // happens before the workflow body executes, so a FAILED here
+                // is a workflow that never ran a single step being marked
+                // failed. Sequence 0 names the instance's own input rather than
+                // any event.
                 var paramType = workflowMethod.getParameterTypes()[0];
-                var input = inputPayload != null ? serializer.deserialize(inputPayload, paramType) : null;
+                var input = inputPayload != null
+                        ? UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), 0,
+                                "persisted workflow input",
+                                () -> serializer.deserialize(inputPayload, paramType))
+                        : null;
                 return workflowMethod.invoke(workflowImpl, input);
             }
         } catch (InvocationTargetException e) {

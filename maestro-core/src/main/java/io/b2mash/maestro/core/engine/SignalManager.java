@@ -539,7 +539,16 @@ final class SignalManager {
                 new SignalInfo(ctx.workflowId(), ctx.workflowType(), signalName,
                         signal.traceContext()), false);
         logger.debug("Consumed signal '{}' for workflow '{}'", signalName, ctx.workflowId());
-        return serializer.deserialize(signal.payload(), type);
+        // RULING 9: the signal row is persisted state this run did not write —
+        // a newer node's producer may have reshaped the payload. Unreadable
+        // means stand down, not fail: the SIGNAL_RECEIVED event above is
+        // already durable, so an upgraded node replays it (that read is guarded
+        // in awaitSignal) and carries on. Recording FAILED here would compensate
+        // a workflow whose signal simply arrived in a shape this build is too
+        // old to read.
+        return UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), seq,
+                "payload of consumed signal '%s'".formatted(signalName),
+                () -> serializer.deserialize(signal.payload(), type));
     }
 
     /**

@@ -409,7 +409,15 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             if (persisted != null && persisted != payload) {
                 logger.debug("Using previously stored result for '{}' at seq {} (idempotent)", stepName, seq);
                 observer.activityCompleted(info, elapsed, false);
-                return deserializeResult(persisted, method);
+                // RULING 9: this is a payload this run did NOT write — a
+                // concurrent runner did, possibly on a newer build. Reading it
+                // is a replay read in everything but name, so a payload this
+                // build cannot interpret stands the run down instead of being
+                // recorded as a workflow failure with compensation.
+                return UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), seq,
+                        "result of activity '%s' adopted from a concurrent runner"
+                                .formatted(stepName),
+                        () -> deserializeResult(persisted, method));
             }
 
             publishLifecycleEvent(ctx, stepName, LifecycleEventType.ACTIVITY_COMPLETED);
@@ -474,8 +482,20 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             return payload;
         } catch (DuplicateEventException e) {
             logger.debug("Event at seq {} already exists (idempotent), re-reading stored result", seq);
-            // Re-read the stored event and return its payload
-            var stored = store.getEventBySequence(ctx.workflowInstanceId(), seq);
+            // Re-read the stored event and return its payload — but only after
+            // checking this build can interpret the winner's TYPE (RULING 9).
+            //
+            // This branch is reached with NO author error, from the engine's own
+            // normal tolerated state: locks are best-effort, so an old node can
+            // read sequence N empty, execute live, and lose the append race to a
+            // newer node whose event at N is a type this build does not define.
+            // Adopting that winner blindly then either deserializes a foreign
+            // payload as this activity's return type — a SerializationException
+            // that executeWorkflow's catch (Exception) records as FAILED *with
+            // compensation* — or, worse, succeeds and memoizes a silently wrong
+            // value. Standing down instead costs one re-adoption.
+            var stored = UnknownHistoryGuard.requireKnown(
+                    store.getEventBySequence(ctx.workflowInstanceId(), seq), ctx.workflowId());
             return stored.map(WorkflowEvent::payload).orElse(payload);
         }
     }

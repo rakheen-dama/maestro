@@ -142,7 +142,16 @@ class UnknownHistoryStandDownTest {
                 () -> assertTrue(lock.tryAcquire(lockKey, BOUND).isPresent(),
                         "an upgraded node must be able to acquire the lock right now"),
                 () -> assertFalse(executor.isRunning(workflowId),
-                        "the local run must be over"));
+                        "the local run must be over"),
+                // Lock release alone does not discriminate: the pre-guard tree
+                // released it too, because the unguarded read fell through to a
+                // duplicate append and stood down as STALE_RUN — which also
+                // unwinds through the same finally. Pinning release AND the
+                // reason together is what makes this a pin on the
+                // unknown-history path rather than on any stand-down at all.
+                () -> assertEquals(StandDownReason.UNKNOWN_EVENT_TYPE,
+                        observer.standDowns().getFirst().reason(),
+                        "…and it must be THIS path that released it"));
     }
 
     @Test

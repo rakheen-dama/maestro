@@ -12,6 +12,7 @@ import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
+import tools.jackson.databind.JsonNode;
 
 import java.time.Instant;
 import java.util.List;
@@ -59,6 +60,7 @@ class VersionedInMemoryStore implements WorkflowStore {
     private final AtomicInteger appendAttempts = new AtomicInteger();
     private final AtomicInteger updatesToFail = new AtomicInteger();
     private final AtomicReference<@Nullable EventType> collideOnType = new AtomicReference<>();
+    private final AtomicReference<@Nullable PendingWinner> pendingWinner = new AtomicReference<>();
 
     // ── Instances ───────────────────────────────────────────────────────
 
@@ -153,9 +155,40 @@ class VersionedInMemoryStore implements WorkflowStore {
         return appendAttempts.get();
     }
 
+    /**
+     * Models the engine's normal tolerated append race (RULING 9): the next
+     * {@code appendEvent} at {@code winner}'s sequence finds that a concurrent
+     * runner — on a newer build — got there first. The winner is installed
+     * raw (so its type may be the {@link EventType#UNKNOWN} sentinel) and the
+     * append is rejected, which is exactly what a losing node sees.
+     *
+     * <p>The winner must appear <em>between</em> the memoization lookup and the
+     * append, or the run would simply replay it; that window is what this hook
+     * reproduces and what no pre-planted event can.
+     *
+     * @param sequenceNumber the sequence the race happens at
+     * @param type           the winner's event type — may be the sentinel
+     * @param payload        the winner's payload
+     */
+    void winnerAppearsOnNextAppend(int sequenceNumber, EventType type, @Nullable JsonNode payload) {
+        pendingWinner.set(new PendingWinner(sequenceNumber, type, payload));
+    }
+
+    private record PendingWinner(int sequenceNumber, EventType type, @Nullable JsonNode payload) {}
+
     @Override
     public void appendEvent(WorkflowEvent event) {
         appendAttempts.incrementAndGet();
+        var winner = pendingWinner.get();
+        if (winner != null && winner.sequenceNumber() == event.sequenceNumber()
+                && pendingWinner.compareAndSet(winner, null)) {
+            synchronized (events) {
+                events.add(new WorkflowEvent(UUID.randomUUID(), event.workflowInstanceId(),
+                        winner.sequenceNumber(), winner.type(), event.stepName(),
+                        winner.payload(), Instant.now()));
+            }
+            throw new DuplicateEventException(event.workflowInstanceId(), event.sequenceNumber());
+        }
         var collide = collideOnType.get();
         if (collide != null && event.eventType() == collide) {
             throw new DuplicateEventException(event.workflowInstanceId(), event.sequenceNumber());

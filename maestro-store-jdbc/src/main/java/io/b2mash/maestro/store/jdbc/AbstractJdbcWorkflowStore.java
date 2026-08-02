@@ -612,14 +612,53 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
     // ── Row mappers ───────────────────────────────────────────────────────
 
-    private WorkflowInstance mapInstance(ResultSet rs) throws SQLException {
+    /**
+     * Maps an instance row, <b>skipping</b> (returning {@code null}) a row whose
+     * {@code status} string this build does not define — written by a node
+     * running a newer build (RULING 10).
+     *
+     * <p>{@link WorkflowStatus#valueOf} — what this used to call — throws
+     * {@link IllegalArgumentException}, and an instance status has a strictly
+     * wider blast radius than a single event does. The throw escapes
+     * {@code getInstance}, which is read on the recovery path
+     * ({@code WorkflowExecutor.launchWorkflow}'s pre-resume re-check), on the
+     * workflow thread ({@code InstanceStatusWriter.write},
+     * {@code transitionToTerminal}, {@code SagaManager.transitionToCompensating})
+     * and on the signal-delivery path ({@code SignalManager.deliverSignal}).
+     * {@code WorkflowExecutor.recoverWorkflows} has no per-instance
+     * {@code try}/{@code catch}, so one such row aborts the remainder of the
+     * <em>whole</em> recovery pass — every other workflow on this node with it.
+     *
+     * <p>Skipping instead means this node simply cannot see that one instance:
+     * {@code getInstance} returns empty and every caller already has a defined,
+     * non-destructive answer for an absent instance (log and return; treat a
+     * signal as pre-delivery so it is stored and adopted later, never
+     * discarded; report the workflow as not found to an operator API). The
+     * recovery pass continues, and an upgraded node — which can read the status
+     * — owns the instance.
+     *
+     * @param rs the row
+     * @return the mapped instance, or {@code null} to skip the row
+     */
+    private @Nullable WorkflowInstance mapInstance(ResultSet rs) throws SQLException {
+        var rawStatus = rs.getString("status");
+        WorkflowStatus status;
+        try {
+            status = WorkflowStatus.valueOf(rawStatus);
+        } catch (IllegalArgumentException | NullPointerException e) {
+            log.warn("Unknown workflow status '{}' on instance (workflowId={}, id={}) — written "
+                            + "by a newer node; skipping this instance so the rest of this "
+                            + "query, and any recovery pass it feeds, still completes",
+                    rawStatus, rs.getString("workflow_id"), rs.getObject("id", UUID.class));
+            return null;
+        }
         return WorkflowInstance.builder()
                 .id(rs.getObject("id", UUID.class))
                 .workflowId(rs.getString("workflow_id"))
                 .runId(rs.getObject("run_id", UUID.class))
                 .workflowType(rs.getString("workflow_type"))
                 .taskQueue(rs.getString("task_queue"))
-                .status(WorkflowStatus.valueOf(rs.getString("status")))
+                .status(status)
                 .input(getJsonValue(rs, "input"))
                 .output(getJsonValue(rs, "output"))
                 .serviceName(rs.getString("service_name"))
@@ -704,7 +743,9 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             setter.set(ps);
             try (var rs = ps.executeQuery()) {
                 if (rs.next()) {
-                    return Optional.of(mapper.map(rs));
+                    // ofNullable, not of: a row mapper may return null to mean
+                    // "this build cannot interpret this row, skip it" (RULING 10).
+                    return Optional.ofNullable(mapper.map(rs));
                 }
                 return Optional.empty();
             }
@@ -721,7 +762,12 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             try (var rs = ps.executeQuery()) {
                 var results = new ArrayList<T>();
                 while (rs.next()) {
-                    results.add(mapper.map(rs));
+                    // A null mapping means "skip this row" (RULING 10) — the
+                    // scan continues rather than aborting on one bad row.
+                    var mapped = mapper.map(rs);
+                    if (mapped != null) {
+                        results.add(mapped);
+                    }
                 }
                 return results;
             }
@@ -807,7 +853,14 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
     @FunctionalInterface
     interface RowMapper<T> {
-        T map(ResultSet rs) throws SQLException;
+        /**
+         * @param rs the current row
+         * @return the mapped value, or {@code null} to <b>skip</b> this row —
+         *         how a mapper says "this build cannot interpret this row"
+         *         without aborting the query (RULING 10)
+         * @throws SQLException if the row cannot be read
+         */
+        @Nullable T map(ResultSet rs) throws SQLException;
     }
 
     // ── Exception wrapper ─────────────────────────────────────────────────
