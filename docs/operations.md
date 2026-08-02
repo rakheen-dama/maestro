@@ -387,8 +387,158 @@ measured:
 
 ---
 
+## 10. Versioning and mixed-version deploys
+
+*Added in the release-hardening cycle. Unlike §§1–8, this section carries no
+measured numbers — it is a behaviour playbook, and every statement in it is
+traceable to engine code and its pinning tests rather than to a timing run.*
+
+### 10.1 The deploy rule has not changed: upgrade all nodes together
+
+**Upgrade every node of a service together, or drain the service first.** The
+engine now stands down rather than failing when it meets history it cannot read
+(§10.3), but that is a **safety net for the rolling window**, not a licence to
+run a mixed fleet. A workflow whose next step only an upgraded node can read
+makes no progress on the old nodes; it simply waits, safely, to be adopted by a
+new one. Leave a fleet half-upgraded and those workflows wait indefinitely.
+
+New event types are rare, so this is insurance, not a hot path.
+
+### 10.2 `workflow.version()` — changing workflow code with instances in flight
+
+Recovery re-runs the workflow method against the **current** code. If you edit a
+workflow while long-lived instances are in flight, a replaying instance takes
+the new path from wherever it resumed — half its work done the old way, the rest
+the new way.
+
+`workflow.version(changeId, minSupported, maxSupported)` makes the choice of
+path a durable, memoized decision: the first live evaluation records
+`maxSupported` as a `VERSION_MARKER` event and returns it; every replay returns
+the **recorded** value forever, regardless of what the code's `maxSupported` has
+moved on to. See [`docs/concepts.md` → Versioning Workflow Code](concepts.md#versioning-workflow-code)
+for the two-step ship-then-raise-the-floor pattern and the rules.
+
+Operationally, what matters:
+
+- **`VERSION_MARKER` is a new event type in this release.** A node from the
+  previous version that adopts a workflow whose history contains one cannot
+  interpret it, and stands down (§10.3). This is exactly the case §10.1's rule
+  covers.
+- Raising `minSupported` before every pre-change instance has drained fails
+  those instances with `UnsupportedWorkflowVersionException` — a genuine,
+  deterministic workflow failure: it ends `FAILED` and saga compensation runs.
+  Recovery: restore code carrying the old branch, then use the admin **Retry**
+  action. Retry clears the failure memos but never the version marker, so the
+  retried run replays the same recorded version against the restored branch.
+- `maxSupported` must be a **code constant** — see the rules in
+  `docs/concepts.md`.
+
+### 10.3 Stand-down: what it is, and what it is not
+
+When a node reads persisted history it cannot interpret, the run **stands down**
+instead of failing:
+
+- Nothing is written. **No compensation runs.**
+- The instance keeps whatever recoverable status it already had.
+- The instance lock is released as the thread unwinds.
+- `EngineObserver.standDown(reason, workflowId, detail)` fires, incrementing
+  `maestro.standdown{reason=...}`.
+- A `WARN` is logged, of the form:
+
+  ```
+  Workflow '<id>' stood down at sequence <n>: <why> (instance status still
+  <status>) — no failure recorded, no compensation run; an upgraded node will
+  adopt it via recovery
+  ```
+
+An upgraded node then adopts and finishes the workflow through the ordinary
+lock-TTL / recovery-poller machinery, unchanged. Nothing special is needed.
+
+There are two unknown-history reasons and **they mean different things**:
+
+| `reason` tag | What it means |
+|---|---|
+| `unknown_event_type` | An `event_type` string this build's enum does not define. Only a **newer** build can have written it. |
+| `unknown_event_payload` | A stored payload this build could not deserialize while replaying. A newer build *or* an incompatible payload change. |
+
+(A third value, `stale_run`, is unrelated to versioning — it is Issue 18's
+duplicate-append convergence.)
+
+### 10.4 The alarm that matters: `unknown_event_payload` on a homogeneous fleet
+
+**A replay `SerializationException` is now a permanent re-adopt/stand-down loop
+with no `FAILED` status.** On a genuinely mixed fleet that is correct and
+self-healing — the workflow waits for an upgraded node. On a **homogeneous**
+fleet it is not a version skew at all: it is an author's incompatible payload
+change, and the new behaviour converts what used to be a visible failure into a
+**silent zombie** — the workflow never completes, never fails, and re-adopts
+forever.
+
+So, on a fleet you know to be homogeneous (deploy finished, one version
+running), a rising
+
+```
+maestro.standdown{reason="unknown_event_payload"}
+```
+
+means **"an incompatible payload change needs `workflow.version()`"** — not
+"wait for the deploy to finish". Find the changed activity return type,
+parameter type, or workflow input shape; gate the change behind
+`workflow.version()` so in-flight instances keep the old shape; redeploy.
+
+`unknown_event_type` keeps the "wait for the deploy" reading, because a type
+this build does not define really can only come from a newer build. That is
+precisely why the two are distinct enum constants and distinct tag values rather
+than one.
+
+**Suggested alerts:**
+
+| Signal | Reading |
+|---|---|
+| `rate(maestro.standdown{reason="unknown_event_type"})` > 0 **during** a rolling deploy | Expected. Should return to zero once every node is upgraded. |
+| the same, **after** the deploy completes | Not expected — a node was missed, or a stale replica is still running. |
+| `rate(maestro.standdown{reason="unknown_event_payload"})` > 0 on a homogeneous fleet | **An incompatible payload change. Use `workflow.version()`.** |
+| `maestro.workflows.running` / `maestro.workflows.parked` flat at zero on a node with traffic | That node is adopting nothing — check the lock backend and the recovery poller. |
+
+Remember that both gauges are **node-local, in-JVM** values: dashboard them per
+pod and sum for a cluster total (see `docs/observability.md`).
+
+### 10.5 A skipped instance row reports "not found"
+
+An instance row whose `status` column this build cannot map — again, written by
+a newer node — is **skipped** by the store's row mapper rather than throwing.
+`WorkflowStatus.valueOf` used to throw an `IllegalArgumentException`, and
+because `WorkflowExecutor.recoverWorkflows` has no per-instance try/catch, one
+such row aborted the **entire recovery pass** for every workflow on that node.
+Skipping keeps the pass running, and an upgraded node — which can read the
+status — owns the instance.
+
+**The deliberate trade:** while that node cannot map the row, `getInstance`
+returns empty, so an operator API asking this node about an existing workflow
+reports it **"not found"**. Every caller already has a defined, non-destructive
+answer for an absent instance — log and return; treat a signal as pre-delivery
+so it is stored and adopted later, never discarded. The trade is documented in
+the mapper's Javadoc (`AbstractJdbcWorkflowStore.mapInstance`) and it is chosen
+deliberately: a misleading "not found" on one node during a deploy window is
+cheaper than a recovery pass that stops for every other workflow on that node.
+
+If an operator reports "the dashboard says the workflow doesn't exist" during a
+rolling deploy, check for the WARN:
+
+```
+Unknown workflow status '<raw>' on instance (workflowId=..., id=...) — written
+by a newer node; skipping this instance so the rest of this query, and any
+recovery pass it feeds, still completes
+```
+
+---
+
 ## See also
 
+- `docs/observability.md` — the full meter catalog (including
+  `maestro.standdown`), span topology, and the Kafka trace-propagation
+  contract.
+- `docs/concepts.md` — `workflow.version()` and the determinism rules.
 - `docs/open-issues.md` — Issues 11, 12, 17, 18, 19, 20 in full: what was
   wrong (or measured), where, and every pinning test.
 - `docs/maestro-architecture.md` §14 "Failure Modes" — the design-level
