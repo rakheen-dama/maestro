@@ -7,7 +7,7 @@ transactions or a central orchestrator.
 
 ---
 
-> **Note:** This guide focuses on Kafka-based cross-service coordination. For RabbitMQ or Postgres messaging alternatives, see [Configuration](configuration.md). The patterns are the same -- only the transport differs.
+> **Note:** This guide focuses on Kafka-based cross-service coordination. For the Postgres messaging alternative, see [Configuration](configuration.md). The patterns are the same -- only the transport differs.
 
 ## The Pattern: Orchestration Within, Choreography Between
 

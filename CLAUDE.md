@@ -14,7 +14,7 @@ Read these before making architectural decisions:
 
 ## Core Design: Hybrid Memoization
 
-1. Workflow method runs on a **Java 21 virtual thread**.
+1. Workflow method runs on a **Java 25 virtual thread**.
 2. Activity calls intercepted by a **proxy**. Proxy checks Postgres for stored result at current **sequence number**.
 3. **Replay (found):** Return stored result instantly — no execution.
 4. **Live (not found):** Execute activity, persist result, return it.
@@ -28,7 +28,7 @@ Read these before making architectural decisions:
 
 | Component | Technology | Version |
 |---|---|---|
-| Language | Java | 21+ (virtual threads required) |
+| Language | Java | 25+ (virtual threads required) |
 | Framework | Spring Boot | 4.x (Spring Framework 7, Jakarta EE 11) |
 | Build | Gradle | Kotlin DSL, Gradle 9 |
 | Database | PostgreSQL | 14+ |
@@ -60,7 +60,6 @@ maestro/
 ├── maestro-store-postgres          ← Postgres implementation + Flyway 11 migrations.
 ├── maestro-messaging-kafka         ← Spring Kafka 4.x WorkflowMessaging SPI.
 ├── maestro-messaging-postgres      ← PostgreSQL WorkflowMessaging + SignalNotifier (LISTEN/NOTIFY).
-├── maestro-messaging-rabbitmq      ← RabbitMQ WorkflowMessaging via Spring AMQP.
 ├── maestro-lock-valkey             ← Lettuce DistributedLock SPI.
 ├── maestro-lock-postgres           ← PostgreSQL DistributedLock SPI.
 ├── maestro-admin-client            ← Lightweight lifecycle event publisher.
@@ -70,7 +69,6 @@ maestro/
 │   ├── sample-order-service        ← Order fulfilment workflow (e-commerce demo)
 │   ├── sample-payment-gateway      ← Payment processing with durable retries & saga
 │   ├── sample-postgres-only        ← Document approval (Postgres-only, zero external deps)
-│   ├── sample-rabbitmq-order-service ← Order fulfilment using RabbitMQ + Postgres
 │   └── sample-loan-origination     ← Multi-service loan E2E (application/underwriting/verification), nightly CI
 └── docs/
 ```
@@ -145,7 +143,6 @@ io.b2mash.maestro.messaging.kafka            — Kafka WorkflowMessaging
 io.b2mash.maestro.messaging.kafka.listener   — @MaestroSignalListener processing
 
 io.b2mash.maestro.messaging.postgres         — Postgres WorkflowMessaging + SignalNotifier
-io.b2mash.maestro.messaging.rabbitmq         — RabbitMQ WorkflowMessaging
 
 io.b2mash.maestro.lock.valkey                — Valkey DistributedLock
 io.b2mash.maestro.lock.postgres              — Postgres DistributedLock
@@ -214,7 +211,7 @@ policy, all transports), `maestro.admin.events.enabled` (now actually wired;
 
 ## Coding Standards
 
-- **Java 21 features:** Records, sealed interfaces, virtual threads, `var` for obvious types.
+- **Java 25 features:** Records, sealed interfaces, virtual threads, `var` for obvious types.
 - **JSpecify null safety:** `@Nullable` from `org.jspecify.annotations`. All public APIs annotated.
 - **Jackson 3:** Use `tools.jackson` packages everywhere. Never `com.fasterxml.jackson`.
 - **Immutability:** Records for DTOs. Final fields + builders for mutable domain objects.

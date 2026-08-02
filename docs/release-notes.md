@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Removed
+
+- **RabbitMQ messaging support has been removed** — the `maestro-messaging-rabbitmq`
+  module and the `sample-rabbitmq-order-service` sample are deleted. Nothing has
+  been published under this artifact yet, so this is a deletion, not a
+  deprecation: there is no migration path because there is no installed base to
+  migrate. **Rationale:** each additional transport carries its own real-backend
+  verification cost — a dedicated Testcontainers suite, its own redelivery/
+  dead-letter design, its own multi-instance and chaos coverage — and the
+  multi-instance verification cycle (PR #30) is the evidence for how much that
+  costs per transport. Shrinking the matrix to Kafka and Postgres before the
+  first public release keeps that cost bounded to backends the project can
+  actually keep verified. The `WorkflowMessaging` SPI itself is untouched and
+  remains transport-agnostic — a community `maestro-messaging-rabbitmq` (or any
+  other broker) adapter implementing the three-method SPI remains possible; it
+  is simply no longer shipped or verified in this repository.
+
 ### Upgrade notes — mixed-version deployments
 
 - **Upgrade every node of a service together (or drain it first) — the new

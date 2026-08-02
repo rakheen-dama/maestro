@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-28 · **Scope:** every feature Maestro provides ·
 **Must-work integrations:** **Kafka** and **Postgres** (Valkey is
-best-effort; RabbitMQ/Postgres-messaging are secondary).
+best-effort; Postgres-messaging is secondary).
 
 > **Status (updated after P0–P3, P5):** the integration module
 > `maestro-integration-tests` now runs **65 tests** against real Postgres and

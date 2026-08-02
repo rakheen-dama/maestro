@@ -69,8 +69,8 @@ final class SignalManager {
     /**
      * How often a parked await re-checks the store for a signal persisted
      * without a notification reaching this instance — e.g. ingested on
-     * another node in a deployment with no {@link SignalNotifier} (Kafka or
-     * RabbitMQ messaging without Valkey), or delivered in the narrow window
+     * another node in a deployment with no {@link SignalNotifier} (Kafka
+     * messaging without Valkey), or delivered in the narrow window
      * before the park registered. Bounds cross-node signal latency in those
      * cases; with a working notifier the wake is instant and this never fires.
      *

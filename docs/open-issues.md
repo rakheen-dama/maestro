@@ -62,7 +62,7 @@ Only active workflows are recoverable.
 | SPI | Job | Implementations |
 |---|---|---|
 | `WorkflowStore` | Durable state — instances, events, signals, timers | Postgres (via `maestro-store-jdbc`) |
-| `WorkflowMessaging` | Task dispatch, signal transport, lifecycle events | Kafka, Postgres, RabbitMQ |
+| `WorkflowMessaging` | Task dispatch, signal transport, lifecycle events | Kafka, Postgres |
 | `DistributedLock` | Instance locking, leader election | Valkey, Postgres |
 
 **Locks are an optimisation, not the correctness backstop.** The SPI explicitly
@@ -79,7 +79,6 @@ maestro-store-jdbc            Abstract JDBC store.
 maestro-store-postgres        Postgres store + Flyway migrations (version band 1-99).
 maestro-messaging-kafka       Kafka transport.        [primary]
 maestro-messaging-postgres    Postgres transport.     (band 200-299)
-maestro-messaging-rabbitmq    RabbitMQ transport.
 maestro-lock-valkey           Valkey lock.
 maestro-lock-postgres         Postgres lock.          (band 100-199)
 maestro-test                  In-memory SPIs, TestWorkflowEnvironment, DeterminismChecker.

@@ -103,7 +103,6 @@ graph TB
     SPI_STORE --> STORE_JDBC --> STORE_PG
     SPI_MSG --> MSG_KAFKA
     SPI_MSG --> MSG_PG["maestro-messaging-postgres"]
-    SPI_MSG --> MSG_RMQ["maestro-messaging-rabbitmq"]
     SPI_LOCK --> LOCK_VALKEY
     SPI_LOCK --> LOCK_PG["maestro-lock-postgres"]
 
@@ -122,7 +121,6 @@ graph TB
 | `maestro-store-postgres` | Postgres implementation + Flyway 11 migrations. | No |
 | `maestro-messaging-kafka` | Spring Kafka 4.x `WorkflowMessaging` implementation. `@MaestroSignalListener` processing. | Yes |
 | `maestro-messaging-postgres` | PostgreSQL-based `WorkflowMessaging` + `SignalNotifier`. No external broker required. | No |
-| `maestro-messaging-rabbitmq` | RabbitMQ `WorkflowMessaging` via Spring AMQP. | Yes |
 | `maestro-lock-valkey` | Lettuce-based `DistributedLock`. | No |
 | `maestro-lock-postgres` | PostgreSQL-based `DistributedLock` using TTL-based lock tables. | No |
 | `maestro-admin` | Standalone dashboard app (Thymeleaf + HTMX, own Postgres schema). | Yes |
@@ -356,8 +354,8 @@ threw**: it redelivers with exponential backoff
 (`maestro.messaging.redelivery.*`, ~2.5 minutes by default) and, only once the
 attempt budget is spent, parks the message where it stays inspectable and
 replayable — a `.DLT` topic on Kafka, `DEAD_LETTER` status on the Postgres
-queue tables, a `<queue>.dlq` on RabbitMQ. A signal is never discarded; the
-worst case is that it needs an operator to replay it.
+queue tables. A signal is never discarded; the worst case is that it needs
+an operator to replay it.
 
 ### 5.1 Signal Arrives Before Workflow Reaches Await
 
@@ -468,9 +466,8 @@ topics, the signal topics, and each `@MaestroSignalListener` topic — and is
 declared by the operator like every other topic; Maestro auto-creates none. If
 one is missing, the exhausted record cannot be published, the offset is not
 committed and consumption stalls noisily rather than dropping the message. The
-Postgres transport needs no destination (rows move to `DEAD_LETTER` status);
-the RabbitMQ module declares `<queue>.dlq` itself, consistent with the rest of
-its self-declared topology. See `docs/configuration.md` for the
+Postgres transport needs no destination (rows move to `DEAD_LETTER` status).
+See `docs/configuration.md` for the
 `maestro.messaging.redelivery.*` properties and the inspect/replay recipes.
 
 ---

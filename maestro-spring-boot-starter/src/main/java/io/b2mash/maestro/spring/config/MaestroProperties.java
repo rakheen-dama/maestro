@@ -257,20 +257,18 @@ public class MaestroProperties {
      * @param multiplier         factor applied to the backoff after each failure
      * @param maxInterval        ceiling for the computed backoff
      * @param deadLetterSuffix   Kafka only — suffix appended to the source topic
-     * @param deadLetterExchange RabbitMQ only — exchange exhausted messages are republished to
      */
     public record RedeliveryProperties(
             @DefaultValue("10") int maxAttempts,
             @DefaultValue("1s") Duration initialInterval,
             @DefaultValue("2.0") double multiplier,
             @DefaultValue("30s") Duration maxInterval,
-            @DefaultValue(".DLT") String deadLetterSuffix,
-            @DefaultValue("maestro.dead-letter") String deadLetterExchange
+            @DefaultValue(".DLT") String deadLetterSuffix
     ) {
         /** @return the defaults documented above */
         public static RedeliveryProperties defaults() {
             return new RedeliveryProperties(10, Duration.ofSeconds(1), 2.0,
-                    Duration.ofSeconds(30), ".DLT", "maestro.dead-letter");
+                    Duration.ofSeconds(30), ".DLT");
         }
     }
 
@@ -457,8 +455,8 @@ public class MaestroProperties {
      *                            a signal persisted without a notification
      *                            reaching this instance — e.g. ingested on
      *                            another node in a deployment with no
-     *                            {@code SignalNotifier} (Kafka or RabbitMQ
-     *                            messaging without Valkey). Bounds cross-node
+     *                            {@code SignalNotifier} (Kafka messaging
+     *                            without Valkey). Bounds cross-node
      *                            signal latency in those cases.
      */
     public record SignalProperties(

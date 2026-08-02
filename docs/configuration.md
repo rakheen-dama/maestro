@@ -52,7 +52,7 @@ and lifecycle event publishing.
 
 | Property                        | Type     | Default    | Description                                                                                     |
 |---------------------------------|----------|------------|-------------------------------------------------------------------------------------------------|
-| `maestro.messaging.type`        | `String` | `"kafka"`  | Messaging implementation. Supported values: `kafka` (default), `postgres`, `rabbitmq`.          |
+| `maestro.messaging.type`        | `String` | `"kafka"`  | Messaging implementation. Supported values: `kafka` (default), `postgres`.          |
 | `maestro.messaging.consumer-group`| `String`| `null`   | Kafka consumer group ID. If not set, defaults to `maestro-{serviceName}` at runtime.            |
 
 ### Topic Properties
@@ -77,18 +77,19 @@ dead-letter destination rather than dropping it or looping on it forever.
 
 | Property                                          | Type       | Default                 | Description                                                                 |
 |---------------------------------------------------|------------|-------------------------|-----------------------------------------------------------------------------|
-| `maestro.messaging.redelivery.max-attempts`       | `int`      | `10`                    | Total delivery attempts, including the first. All transports.               |
-| `maestro.messaging.redelivery.initial-interval`   | `Duration` | `1s`                    | Backoff before the second attempt. All transports.                          |
-| `maestro.messaging.redelivery.multiplier`         | `double`   | `2.0`                   | Factor applied to the backoff after each failure. All transports.           |
-| `maestro.messaging.redelivery.max-interval`       | `Duration` | `30s`                   | Ceiling for the computed backoff. All transports.                           |
+| `maestro.messaging.redelivery.max-attempts`       | `int`      | `10`                    | Total delivery attempts, including the first. Both transports.               |
+| `maestro.messaging.redelivery.initial-interval`   | `Duration` | `1s`                    | Backoff before the second attempt. Both transports.                          |
+| `maestro.messaging.redelivery.multiplier`         | `double`   | `2.0`                   | Factor applied to the backoff after each failure. Both transports.           |
+| `maestro.messaging.redelivery.max-interval`       | `Duration` | `30s`                   | Ceiling for the computed backoff. Both transports.                           |
 | `maestro.messaging.redelivery.dead-letter-suffix` | `String`   | `".DLT"`                | Appended to a topic to name its dead-letter topic. **Kafka only.**          |
-| `maestro.messaging.redelivery.dead-letter-exchange`| `String`  | `"maestro.dead-letter"` | Exchange exhausted messages are republished to. **RabbitMQ only.**          |
 
 The delay before the attempt following the *n*-th failure is
 `min(initial-interval × multiplier^(n-1), max-interval)`. The defaults give
 1s, 2s, 4s, 8s, 16s, 30s, 30s, 30s, 30s between 10 attempts — roughly 2.5
 minutes of tolerance, long enough to ride out a store blip and short enough
 that a poison message does not stall a service's signal channel for long.
+This section covers Kafka and Postgres — the only two transports Maestro
+ships today.
 
 **Tuning.** Raise `max-attempts` if your store outages routinely run longer
 than the budget (an outage longer than the budget dead-letters signals, which
@@ -97,7 +98,7 @@ contain a poison message sooner. There is no unbounded mode: a poison message
 would stall redelivery forever behind it — on Kafka this stalls the whole
 *topic* on that node (the default listener concurrency is one consumer
 thread per topic, which owns every partition assigned to it, not just the
-failed record's partition); on Postgres/RabbitMQ it stalls that queue.
+failed record's partition); on Postgres it stalls that queue.
 
 **Fatal exceptions bypass retries.** On Kafka, `DefaultErrorHandler` treats a
 handful of exception types as unrecoverable regardless of the configured
@@ -113,7 +114,6 @@ above only governs exceptions it doesn't consider fatal.
 |---|---|---|
 | Kafka | `<topic>` + `dead-letter-suffix`, e.g. `maestro.signals.order-service.DLT` | **The operator** — Maestro never creates topics |
 | Postgres | The same queue row, in `DEAD_LETTER` status | Nothing to create |
-| RabbitMQ | `<queue>.dlq`, bound to `dead-letter-exchange` | The module declares it idempotently, like its other topology |
 
 If a Kafka dead-letter topic is missing, the publish fails, the offset is not
 committed and the record is attempted again: consumption stalls noisily instead
@@ -152,32 +152,13 @@ UPDATE maestro_task_queue   SET status = 'PENDING', next_attempt_at = now() WHER
 
 ### Postgres Messaging
 
-When `maestro.messaging.type: postgres`, Maestro uses PostgreSQL queue tables with `LISTEN/NOTIFY` for immediate notification and polling as a fallback. No Kafka or RabbitMQ infrastructure is needed.
+When `maestro.messaging.type: postgres`, Maestro uses PostgreSQL queue tables with `LISTEN/NOTIFY` for immediate notification and polling as a fallback. No Kafka infrastructure is needed.
 
 The Postgres messaging module shares the same `DataSource` as the workflow store. Additional Flyway migrations create the queue tables (`maestro_task_queue`, `maestro_signal_queue`, `maestro_lifecycle_event_queue`).
 
 **Dependencies:**
 ```kotlin
 implementation("io.b2mash.maestro:maestro-messaging-postgres")
-```
-
-### RabbitMQ Messaging
-
-When `maestro.messaging.type: rabbitmq`, Maestro uses Spring AMQP with direct exchanges for task dispatch and signal delivery, and a fanout exchange for lifecycle events. All queues are quorum queues for durability.
-
-**Required Spring properties:**
-```yaml
-spring:
-  rabbitmq:
-    host: ${RABBITMQ_HOST:localhost}
-    port: ${RABBITMQ_PORT:5672}
-    username: ${RABBITMQ_USER:guest}
-    password: ${RABBITMQ_PASSWORD:guest}
-```
-
-**Dependencies:**
-```kotlin
-implementation("io.b2mash.maestro:maestro-messaging-rabbitmq")
 ```
 
 ---
@@ -212,13 +193,13 @@ implementation("io.b2mash.maestro:maestro-lock-postgres")
 
 ### Backend Comparison
 
-| | Kafka + Valkey | Postgres-only | RabbitMQ + Postgres |
-|---|---|---|---|
-| **External deps** | Postgres, Kafka, Valkey | Postgres only | Postgres, RabbitMQ |
-| **Throughput** | Highest | Moderate (~5-10k msg/s) | High |
-| **Latency** | Sub-ms locks | 1-5ms per lock/message | Low |
-| **Ordering** | Partition-keyed | FOR UPDATE SKIP LOCKED | Engine-level dedup |
-| **Best for** | High-scale production | Getting started, simple deployments | Spring/enterprise teams |
+| | Kafka + Valkey | Postgres-only |
+|---|---|---|
+| **External deps** | Postgres, Kafka, Valkey | Postgres only |
+| **Throughput** | Highest | Moderate (~5-10k msg/s) |
+| **Latency** | Sub-ms locks | 1-5ms per lock/message |
+| **Ordering** | Partition-keyed | FOR UPDATE SKIP LOCKED |
+| **Best for** | High-scale production | Getting started, simple deployments |
 
 ---
 
