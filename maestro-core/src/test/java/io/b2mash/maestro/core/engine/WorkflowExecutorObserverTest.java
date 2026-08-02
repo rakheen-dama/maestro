@@ -2,6 +2,7 @@ package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
+import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.observe.ParkKind;
 import io.b2mash.maestro.core.observe.RecordingEngineObserver;
@@ -183,6 +184,73 @@ class WorkflowExecutorObserverTest {
         assertNotNull(standDown.detail(), "the colliding sequence should be carried as detail");
         assertEquals(0, observer.failed().size(),
                 "a stand-down is not a workflow failure and must not be counted as one");
+    }
+
+    // ── Terminal-outcome emission vs. the event append ────────────────
+
+    @Test
+    @DisplayName("terminal append collision: a run that durably completed still reports completion, never a stand-down")
+    void completedIsReportedEvenWhenTheTerminalAppendCollides() throws Exception {
+        var done = new CountDownLatch(1);
+        var workflow = new TwoStepWorkflow(proxy(observer), done);
+        var method = TwoStepWorkflow.class.getMethod("run", String.class);
+        // A concurrent runner already owns the sequence this run's
+        // WORKFLOW_COMPLETED would take
+        store.collideOnEventType(EventType.WORKFLOW_COMPLETED);
+
+        executor.startWorkflow("obs-collide-done", "TwoStepWorkflow", "default", "in", workflow, method);
+        assertTrue(done.await(5, TimeUnit.SECONDS));
+        await().atMost(Duration.ofSeconds(5)).until(() -> !executor.isRunning("obs-collide-done"));
+
+        // The instance row is durably COMPLETED — this run won
+        // transitionToTerminal — so nothing after that win may decide whether
+        // the completion is observed.
+        assertEquals(WorkflowStatus.COMPLETED,
+                store.getInstance("obs-collide-done").orElseThrow().status());
+        await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
+                assertEquals(1, observer.completed().size(),
+                        "a durably completed run must report workflowCompleted"));
+        assertEquals(0, observer.standDowns().size(),
+                "a completion must never be counted as a stand-down");
+    }
+
+    @Test
+    @DisplayName("terminal append collision: a run that durably failed still reports the failure")
+    void failedIsReportedEvenWhenTheTerminalAppendCollides() throws Exception {
+        var workflow = new ThrowingWorkflow();
+        var method = ThrowingWorkflow.class.getMethod("run", String.class);
+        store.collideOnEventType(EventType.WORKFLOW_FAILED);
+
+        executor.startWorkflow("obs-collide-fail", "ThrowingWorkflow", "default", "in", workflow, method);
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertEquals(1, observer.failed().size(),
+                        "a durably failed run must report workflowFailed"));
+        assertEquals(WorkflowStatus.FAILED,
+                store.getInstance("obs-collide-fail").orElseThrow().status());
+        assertEquals(0, observer.completed().size());
+    }
+
+    @Test
+    @DisplayName("compensation-start append collision: the compensation phase is still reported, not only the stand-down")
+    void compensatingIsReportedEvenWhenTheCompensationStartAppendCollides() throws Exception {
+        var workflow = new CompensatingWorkflow();
+        var method = CompensatingWorkflow.class.getMethod("run", String.class);
+        // SagaManager.appendEvent deliberately RETHROWS DuplicateEventException
+        // (unlike the executor's), so this collision stands the run down — the
+        // phase still started on this node and must still be observed.
+        store.collideOnEventType(EventType.COMPENSATION_STARTED);
+
+        executor.startWorkflow("obs-collide-comp", "CompensatingWorkflow", "default", "in", workflow, method);
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertEquals(1, observer.standDowns().size(),
+                        "the colliding append must stand the run down"));
+        assertEquals(1, observer.compensating().size(),
+                "a compensation phase that started must be observed even when its "
+                        + "COMPENSATION_STARTED append loses to a concurrent runner");
+        assertEquals(0, observer.failed().size(),
+                "a stand-down is not a workflow failure");
     }
 
     // ── Signals ───────────────────────────────────────────────────────

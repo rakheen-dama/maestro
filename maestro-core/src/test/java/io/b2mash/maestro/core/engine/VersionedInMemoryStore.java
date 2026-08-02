@@ -3,6 +3,7 @@ package io.b2mash.maestro.core.engine;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
+import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.TimerStatus;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
@@ -10,6 +11,7 @@ import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.spi.WorkflowStore;
+import org.jspecify.annotations.Nullable;
 
 import java.time.Instant;
 import java.util.List;
@@ -18,6 +20,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static io.b2mash.maestro.core.TestEventLogs.removeFailureEvents;
 
@@ -54,6 +57,7 @@ class VersionedInMemoryStore implements WorkflowStore {
     private final CopyOnWriteArrayList<WorkflowTimer> timers = new CopyOnWriteArrayList<>();
     private final AtomicInteger updateAttempts = new AtomicInteger();
     private final AtomicInteger updatesToFail = new AtomicInteger();
+    private final AtomicReference<@Nullable EventType> collideOnType = new AtomicReference<>();
 
     // ── Instances ───────────────────────────────────────────────────────
 
@@ -126,8 +130,23 @@ class VersionedInMemoryStore implements WorkflowStore {
 
     // ── Events ──────────────────────────────────────────────────────────
 
+    /**
+     * Forces every append of one event type to collide, modelling a concurrent
+     * runner that already persisted its own event at that sequence.
+     *
+     * @param type the event type whose appends must collide, or {@code null}
+     *             to stop colliding
+     */
+    void collideOnEventType(@Nullable EventType type) {
+        collideOnType.set(type);
+    }
+
     @Override
     public void appendEvent(WorkflowEvent event) {
+        var collide = collideOnType.get();
+        if (collide != null && event.eventType() == collide) {
+            throw new DuplicateEventException(event.workflowInstanceId(), event.sequenceNumber());
+        }
         synchronized (events) {
             var duplicate = events.stream().anyMatch(
                     e -> e.workflowInstanceId().equals(event.workflowInstanceId())

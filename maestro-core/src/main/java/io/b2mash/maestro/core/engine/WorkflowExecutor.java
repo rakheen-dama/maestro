@@ -436,7 +436,7 @@ public final class WorkflowExecutor {
 
         // Publish WORKFLOW_STARTED lifecycle event
         publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_STARTED, null);
-        observer.workflowStarted(observed(instance));
+        emit("workflowStarted", workflowId, () -> observer.workflowStarted(observed(instance)));
 
         // Launch on virtual thread
         launchWorkflow(instance, workflowImpl, workflowMethod, inputPayload, false, acquisition);
@@ -519,7 +519,9 @@ public final class WorkflowExecutor {
             logger.debug("Recovered 0 workflow(s) from {} recoverable instance(s)",
                     recoverable.size());
         }
-        observer.recoveryPass(recoverable.size(), count);
+        var scanned = recoverable.size();
+        var adopted = count;
+        emit("recoveryPass", null, () -> observer.recoveryPass(scanned, adopted));
         return count;
     }
 
@@ -754,7 +756,7 @@ public final class WorkflowExecutor {
             }
 
             publishLifecycleEvent(terminated, LifecycleEventType.WORKFLOW_TERMINATED, null);
-            observer.workflowTerminated(observed(terminated));
+            emit("workflowTerminated", workflowId, () -> observer.workflowTerminated(observed(terminated)));
 
             // Best-effort local eviction. Only this node's threads can be
             // abandoned; a remote owner converges via the terminal-status guard.
@@ -1386,7 +1388,8 @@ public final class WorkflowExecutor {
             throw e;
         }
         if (replaying) {
-            observer.workflowResumed(observed(instance));
+            emit("workflowResumed", instance.workflowId(),
+                    () -> observer.workflowResumed(observed(instance)));
         }
         return true;
     }
@@ -1409,12 +1412,20 @@ public final class WorkflowExecutor {
             // Success — finalise, converging with any other writer
             var outputPayload = result != null ? serializer.serialize(result) : null;
             if (transitionToTerminal(ctx, instance, WorkflowStatus.COMPLETED, outputPayload)) {
+                // Only the winner of the terminal transition counts the
+                // outcome — a converged loser must not double-fire. Emitted
+                // BEFORE the event append and the lifecycle publish: winning
+                // the transition is what durably makes this run the completer,
+                // so nothing after it may decide whether the completion is
+                // observed. Contained, so a throwing observer cannot skip the
+                // append below or land in catch (Exception) — which would
+                // compensate a workflow that just succeeded.
+                emit("workflowCompleted", ctx.workflowId(),
+                        () -> observer.workflowCompleted(observed(instance)));
+
                 // Append WORKFLOW_COMPLETED event
                 appendEvent(ctx, EventType.WORKFLOW_COMPLETED, null, outputPayload);
                 publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_COMPLETED, null);
-                // Only the winner of the terminal transition counts the
-                // outcome — a converged loser must not double-fire.
-                observer.workflowCompleted(observed(instance));
 
                 logger.info("Workflow '{}' completed successfully", ctx.workflowId());
             }
@@ -1579,8 +1590,9 @@ public final class WorkflowExecutor {
                         + "concurrent runner (instance status now {}) — no failure recorded, "
                         + "no compensation run; the concurrent runner's durable state governs",
                 ctx.workflowId(), e.sequenceNumber(), status);
-        observer.standDown(StandDownReason.STALE_RUN, ctx.workflowId(),
-                "append collision at sequence " + e.sequenceNumber());
+        emit("standDown", ctx.workflowId(), () ->
+                observer.standDown(StandDownReason.STALE_RUN, ctx.workflowId(),
+                        "append collision at sequence " + e.sequenceNumber()));
     }
 
     // ── Internal: failure handling ─────────────────────────────────────
@@ -1614,10 +1626,15 @@ public final class WorkflowExecutor {
                     exception.getMessage()
             ));
             if (transitionToTerminal(ctx, instance, WorkflowStatus.FAILED, errorPayload)) {
+                // Winner-only, and emitted before the append for the same
+                // reason as the COMPLETED transition above: the durable
+                // outcome is already written, so nothing that follows may
+                // decide whether it is observed.
+                emit("workflowFailed", ctx.workflowId(), () ->
+                        observer.workflowFailed(observed(instance), exception.getClass().getName()));
+
                 appendEvent(ctx, EventType.WORKFLOW_FAILED, null, errorPayload);
                 publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_FAILED, null);
-                // Winner-only, mirroring the COMPLETED transition above.
-                observer.workflowFailed(observed(instance), exception.getClass().getName());
             }
         } catch (Exception updateError) {
             logger.error("Failed to update workflow '{}' status to FAILED",
@@ -1709,6 +1726,38 @@ public final class WorkflowExecutor {
     /** Builds the identity-only observation record for an instance. */
     private WorkflowInfo observed(WorkflowInstance instance) {
         return new WorkflowInfo(instance.workflowId(), instance.workflowType(), serviceName);
+    }
+
+    /**
+     * Invokes one observer callback, containing a misbehaving observer.
+     *
+     * <p>{@link io.b2mash.maestro.core.observe.CompositeEngineObserver}
+     * contains a throwing delegate, but {@code CompositeEngineObserver.of}
+     * collapses to the bare delegate when a single observer is registered —
+     * the common deployment — so containment cannot be assumed at the call
+     * site. Every emission in this class sits on a durable path where an
+     * escaping {@code RuntimeException} would be read as something else
+     * entirely: a workflow failure (and its compensations), an aborted
+     * recovery pass, a leaked instance lock, or a terminated workflow whose
+     * local thread never gets abandoned.
+     *
+     * <p>{@code RuntimeException} only: {@code Error}s — the engine's
+     * control-flow signals {@code ExecutorShutdownException} and
+     * {@code WorkflowTerminatedException} — always propagate, exactly as the
+     * composite does it.
+     *
+     * @param callback   the callback name, for the containment log line
+     * @param workflowId the workflow the callback described, or {@code null}
+     *                   for node-scoped callbacks such as {@code recoveryPass}
+     * @param emission   the observer invocation
+     */
+    private void emit(String callback, @Nullable String workflowId, Runnable emission) {
+        try {
+            emission.run();
+        } catch (RuntimeException e) {
+            logger.warn("EngineObserver.{} threw for workflow '{}' — ignoring: {}",
+                    callback, workflowId, e.toString());
+        }
     }
 
     private void appendEvent(WorkflowContext ctx, EventType type,

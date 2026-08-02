@@ -167,12 +167,20 @@ public final class SagaManager {
         // loop's per-entry sequence blocks (see executeSequential).
         var startedSeq = ctx.nextSequence();
         if (store.getEventBySequence(ctx.workflowInstanceId(), startedSeq).isEmpty()) {
-            appendEvent(ctx, startedSeq, EventType.COMPENSATION_STARTED, "$maestro:compensation", null);
-            publishLifecycleEvent(ctx, "$maestro:compensation", LifecycleEventType.COMPENSATION_STARTED);
             // Live only — guarded by the COMPENSATION_STARTED replay-skip
             // above, so a recovery re-run does not double-count the phase.
-            observer.workflowCompensating(
-                    new WorkflowInfo(ctx.workflowId(), ctx.workflowType(), serviceName));
+            // Emitted BEFORE the append: unlike the executor's appendEvent,
+            // this one rethrows DuplicateEventException so the run stands
+            // down, and emitting after it would report a compensation phase
+            // that started as a STALE_RUN stand-down instead. Contained, so a
+            // throwing observer cannot abort a compensation phase that must
+            // run (it would escape compensate(), skip the FAILED transition,
+            // and leave the instance stuck in COMPENSATING).
+            emit("workflowCompensating", ctx.workflowId(), () -> observer.workflowCompensating(
+                    new WorkflowInfo(ctx.workflowId(), ctx.workflowType(), serviceName)));
+
+            appendEvent(ctx, startedSeq, EventType.COMPENSATION_STARTED, "$maestro:compensation", null);
+            publishLifecycleEvent(ctx, "$maestro:compensation", LifecycleEventType.COMPENSATION_STARTED);
         } else {
             logger.debug("Replaying COMPENSATION_STARTED at seq {} for workflow '{}' — already recorded",
                     startedSeq, ctx.workflowId());
@@ -574,6 +582,26 @@ public final class SagaManager {
         } catch (Exception e) {
             logger.warn("Failed to record compensation step failure for '{}' in workflow '{}'",
                     stepName, ctx.workflowId(), e);
+        }
+    }
+
+    /**
+     * Invokes one observer callback, containing a misbehaving observer.
+     *
+     * <p>{@link io.b2mash.maestro.core.observe.CompositeEngineObserver}
+     * contains a throwing delegate, but {@code CompositeEngineObserver.of}
+     * collapses to the bare delegate when a single observer is registered —
+     * the common deployment — so containment cannot be assumed at the call
+     * site. {@code RuntimeException} only: {@code Error}s (the engine's
+     * control-flow signals) always propagate, so a shutdown or terminate
+     * landing mid-compensation still unwinds this thread.
+     */
+    private void emit(String callback, String workflowId, Runnable emission) {
+        try {
+            emission.run();
+        } catch (RuntimeException e) {
+            logger.warn("EngineObserver.{} threw for workflow '{}' — ignoring: {}",
+                    callback, workflowId, e.toString());
         }
     }
 
