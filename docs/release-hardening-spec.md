@@ -47,9 +47,25 @@ areas, one platform declaration:
   implementations remain possible.
 
 ### Invariants
-- `rg -i rabbitmq` over the repo returns only: release notes (the removal
-  entry), git history, and the multi-instance cycle's archived evidence files
-  (which are historical records and must not be edited).
+- `rg -i rabbitmq` over the repo returns hits only in one of these classes
+  (coordinator ruling, fix round 1 — the literal "returns only release
+  notes/git history/archived evidence" wording above could never pass, since
+  this spec itself must keep naming RabbitMQ):
+  (a) the release-notes removal entry;
+  (b) git history;
+  (c) archived evidence under `.superpowers/` (historical records, must not
+      be edited);
+  (d) dated historical-record documents — `docs/open-issues.md`,
+      `docs/test-plan.md`, `docs/multi-instance-test-plan.md`,
+      `maestro-integration-tests/SPEC.md`'s dated resolved-in-place notes,
+      and `tasks/*.md` history — **provided no hit in them is a present-tense
+      claim that Maestro currently ships RabbitMQ support** (a dated "as of
+      this update, module X shipped" or "Issue N: RabbitMQ — Resolved"
+      narrative is fine; a live "Maestro supports Kafka, Postgres, or
+      RabbitMQ" statement is not, regardless of which of these files it's
+      in);
+  (e) this spec document and its dispatch plan, which necessarily describe
+      the removal itself.
 - Full `./gradlew build` green after removal.
 
 ## 4. Area B — Observability
