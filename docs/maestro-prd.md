@@ -47,7 +47,7 @@ This results in fragile, hard-to-debug systems where the "happy path" is 20% of 
 
 2. **Write workflows as code.** Workflows are plain Java methods. Activities are Spring beans. No XML, no BPMN, no visual designers — just annotated Java with a clean API.
 
-3. **Opinionated stack, swappable components.** First-class support for Postgres + Kafka + Valkey on Spring Boot 4 / Java 21+. Storage and messaging backends are behind SPIs for future extensibility.
+3. **Opinionated stack, swappable components.** First-class support for Postgres + Kafka + Valkey on Spring Boot 4 / Java 25+. Storage and messaging backends are behind SPIs for future extensibility.
 
 4. **Orchestration within, choreography between.** Each service owns its workflows. Cross-service coordination happens via Kafka events and signals — not distributed transactions.
 
@@ -103,7 +103,7 @@ A workflow can execute multiple activities or awaits concurrently and wait for a
 
 ### 5.1 Hybrid Memoization Execution Model
 
-1. A workflow method runs on a Java 21 virtual thread.
+1. A workflow method runs on a Java virtual thread.
 2. Activity calls are intercepted by a proxy which checks Postgres for a stored result at the current sequence number.
 3. **Replay path (found):** Return stored result instantly.
 4. **Live path (not found):** Execute the activity, persist the result, return it.
@@ -113,7 +113,7 @@ A workflow can execute multiple activities or awaits concurrently and wait for a
 
 ### 5.2 Virtual Thread Execution
 
-Workflows execute on Java 21 virtual threads. `workflow.sleep(Duration.ofDays(30))` blocks the virtual thread cheaply.
+Workflows execute on Java virtual threads. `workflow.sleep(Duration.ofDays(30))` blocks the virtual thread cheaply.
 
 ### 5.3 Cross-Service Model
 
@@ -488,7 +488,7 @@ class OrderFulfilmentWorkflowTest {
 
 | Component | Technology | Version |
 |---|---|---|
-| Language | Java | 21+ |
+| Language | Java | 25+ |
 | Framework | Spring Boot | 4.x (Spring Framework 7) |
 | Build | Gradle | Kotlin DSL, Gradle 9 |
 | Database | PostgreSQL | 14+ |

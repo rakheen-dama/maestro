@@ -678,7 +678,7 @@ evidence file.
 
 | Component | Technology |
 |---|---|
-| Language | Java 21+ |
+| Language | Java 25+ |
 | Framework | Spring Boot 4.x / Spring Framework 7 |
 | Build | Gradle Kotlin DSL (Gradle 9) |
 | Database | PostgreSQL 14+ |

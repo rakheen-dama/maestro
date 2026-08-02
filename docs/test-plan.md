@@ -18,6 +18,14 @@ best-effort; Postgres-messaging is secondary).
 > work; treat the rest of this document as the historical record of how the
 > gaps were found.
 >
+> **Further update (release-hardening cycle, 2026-08-02):** **RabbitMQ
+> messaging support has been removed** — `maestro-messaging-rabbitmq` and
+> `sample-rabbitmq-order-service` are deleted, and the supported transports are
+> now Kafka and Postgres only (see `docs/release-notes.md` for the rationale).
+> Every mention of RabbitMQ below is part of this document's historical record
+> of the release-readiness pass and does **not** describe a shipped backend.
+>
+
 > **Further update (2026-07-30):** Issues 13, 14, and 15 — found during the
 > pass above — are also now fixed, including item 17 below (admin
 > retry/terminate). See `docs/open-issues.md` and `docs/release-notes.md`

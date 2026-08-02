@@ -46,7 +46,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Central orchestrator that runs workflow methods on Java 21 virtual threads.
+ * Central orchestrator that runs workflow methods on Java virtual threads.
  *
  * <p>The WorkflowExecutor manages the full lifecycle of durable workflows:
  * <ul>
