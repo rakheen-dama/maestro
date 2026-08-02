@@ -51,3 +51,11 @@ Edit, `git -C <worktree> status` AND `git -C <main> status` to prove which
 tree is about to change; (3) after each commit checkpoint, re-check the main
 checkout is still clean. Also: one bounded FOREGROUND Bash call per e2e step -
 a backgrounded run dies silently when the agent turn ends.
+
+## From the multi-instance verification cycle (2026-08-02 close-out)
+
+- **Subagent background shells die when the agent idles.** Any command longer than a few minutes must be launched by the coordinator as a detached `nohup` wrapper script writing to a log with an identity header, then watched with bounded foreground poll loops (~25 min chunks). Two smokes and one report build died silently before this was systematic.
+- **Dedicated test invocations must select only their dedicated class.** A system property that *adds* a test class (`soak=true`) while a shared property (`durationMinutes`) reconfigures *all* classes let the 25-min-@Timeout PR-gate test run a 120-min window. Three 2h soak attempts died to this one collision — masked first by a swallowed interrupt (pacer runaway), then misdiagnosed twice (Docker degradation, checker reconnects). Guard the non-dedicated classes with `@DisabledIfSystemProperty` and RED-pin the suite selection.
+- **Swallowed interrupts turn one bug into four wrong theories.** `parkNanos` + re-set interrupt flag = every later sleep no-ops; the loud-abort fix identified the true interrupter (JUnit TimeoutExtension) in a single run, stack trace included. Interrupt handling in pacing/sleep loops must abort loudly, always.
+- **Run-dir identity stamps record repo state, not binary provenance.** The stamp shells out to git at run start; commits landing between compile and run-start skew it (b2b5c65 binary stamped 7113e06). Log the compile-time HEAD at launch separately and reconcile when citing evidence.
+- **One red test in a big parallel build is a datum, not a verdict.** Before reopening anything: check the failing test's blast-radius overlap with the delta, rerun targeted, then module x3, then the full build. (WorkflowExecutorTerminateTest 5s-latch race under full-build load: 1 red, then 4 consecutive greens.)

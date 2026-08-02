@@ -1,3 +1,18 @@
+# Milestone: Multi-Instance Verification (Issues 11/12 evidence)
+
+Binding spec: `docs/multi-instance-test-plan.md`. Plan: `tasks/multi-instance-plan.md`. Branch: `worktree-multi-instance-verification` off main @ 883197f (70+ commits). SDD ledger: `.superpowers/sdd/progress.md` (worktree).
+
+- [x] Phase 1 (Tasks 1-5, 10): E2E scenarios 7-10 + postgres-lock parity + cross-node timer wake fix (Issue 17); all 3x green both lock backends
+- [x] Task 6: chaos-harness design doc + coordinator rulings Q1-Q10
+- [x] Task 7: chaos harness (6-node Testcontainers cluster, seeded schedule, invariant checker I1-I5, Issue 11/12 pipeline); FOUR engine defects found+fixed RED-first: Issue 17 (timer wake), 18 (DuplicateEventException stand-down), 19 (SIGNAL_TIMEOUT memoization), 20 (advisory park-probes); PR-gate 3x green x2 waves; driver-fix wave (interrupt-safe pacer, runaway cap, PR-gate/soak selection fix d4720ca) after 3 soak attempts traced to ONE root cause (PR-gate @Timeout(25m) vs soak durationMinutes collision, interrupt swallowed into runaway)
+- [x] Soak-of-record: 2h chaos window VERDICT PASS — 2376 workflows, 0 invariant violations, 0 duplicate side effects, checker 245/1/1, benchmark tail captured (run 20260801-214325--6973268155056049009)
+- [x] Task 8: docs (operations.md new; Issue 11/12 evidence with caveats; Issue 20 enumerations; release notes incl. mixed-version upgrade note)
+- [x] Task 9 QA gate: PASS (full build + e2eTest 3x at final HEAD, identity-verified)
+- [x] Final whole-branch review (fable): Approved with one fix wave (FB-I1 exceptionType-anchored deleteFailureEvents + CI guards/timeout + docs truth); fix-wave re-review Approved; 26+ parked minors ruled record-and-merge
+- [x] Final verification: core x3 + full build green at 0bbf1e6 (one terminate-test timing flake under load, 4x green after)
+
+**Branch ready to integrate — awaiting integration choice.**
+
 # Milestone: Close the Test Gaps (multi-agent, P0–P6)
 
 Binding plan: `docs/test-plan.md`. Coordinator prompt: `tasks/test-gap-closure-prompt.md`.
