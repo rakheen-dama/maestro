@@ -448,11 +448,26 @@ public final class WorkflowContext {
      * but never the version marker, so the retried run replays the same recorded
      * version.
      *
+     * <h2>{@code maxSupported} must be a code constant</h2>
+     * <p>Never compute it — no config lookup, no feature flag, no environment
+     * read. {@code DeterminismChecker} fingerprints
+     * {@code sequence:eventType:stepName} and deliberately excludes the payload
+     * (a different recorded version is a different history, not a divergent
+     * path), so a workflow whose {@code maxSupported} varies between runs
+     * passes the determinism check while recording a different version on every
+     * new instance, with nothing to warn you.
+     *
      * <h2>Parallel branches</h2>
      * <p>Resolve a changeId <em>before</em> forking branches that depend on it
-     * and pass the value in. Branches share one per-run cache, so two branches
-     * racing to be the first resolver would place the marker in whichever
-     * branch's sequence space won — nondeterministic across runs. A
+     * and pass the value in. Branches share one per-run cache whose
+     * {@code get} and {@code put} are not atomic, so two branches racing to be
+     * the first resolver both miss the cache and <em>each writes its own
+     * marker</em>, in its own branch's partitioned sequence space — there is no
+     * single winner and no collision, and each slot replays deterministically.
+     * What is nondeterministic is <em>how many</em> markers a run writes: on a
+     * run where one branch populates the cache before the other peeks, only one
+     * is recorded, so the event log differs between runs and
+     * {@code DeterminismChecker} reports a fingerprint mismatch. A
      * {@code version()} call made inside a single branch is fine: it allocates
      * from that branch's own sequence block.
      *

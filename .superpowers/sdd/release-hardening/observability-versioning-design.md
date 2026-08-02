@@ -701,9 +701,21 @@ sequence number and without writing** — replay-stable, because the original
 run did the same.
 
 **Parallel-branch rule (documented, and enforced by the checker):** branches
-share the operations instance, hence the cache. Two branches racing to be
-the *first* resolver of the same changeId would place the marker in
-whichever branch's sequence space won — nondeterministic across runs. The
+share the operations instance, hence the cache.
+
+> **CORRECTED (Task 8, from Task 6's deferred minor).** The original sentence
+> here — "would place the marker in whichever branch's sequence space won" —
+> was wrong. The cache's `get` and `put` are not atomic, so two branches
+> racing to be the *first* resolver of the same changeId both miss the cache
+> and **each writes its own marker**, in its own branch's partitioned
+> sequence space. There is no single winner and no collision: each slot
+> replays deterministically. What is nondeterministic is *how many* markers a
+> run writes — on a run where one branch populates the cache before the other
+> peeks, only one marker is recorded — so the event log differs between runs
+> and `DeterminismChecker` reports a fingerprint mismatch. No code change;
+> the rule below is unaffected, only its stated mechanism.
+
+The
 documented rule is: resolve a changeId **before** forking branches that
 depend on it (call `workflow.version(...)` in the parent, pass the value
 in). `DeterminismChecker` surfaces violations (the marker's
