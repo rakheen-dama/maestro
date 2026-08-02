@@ -61,6 +61,16 @@ public final class WorkflowContext {
     private static final Logger logger = LoggerFactory.getLogger(WorkflowContext.class);
     private static final ScopedValue<WorkflowContext> CURRENT = ScopedValue.newInstance();
 
+    /**
+     * The version {@link #version(String, int, int)} returns for a change-id
+     * that the workflow's history predates — no marker was ever recorded for it.
+     *
+     * <p>Guard the pre-change branch with {@code if (version == DEFAULT_VERSION)}
+     * (or, equivalently, {@code version < 1}) for as long as instances started
+     * before the change may still be running.
+     */
+    public static final int DEFAULT_VERSION = -1;
+
     private final UUID workflowInstanceId;
     private final String workflowId;
     private final UUID runId;
@@ -382,6 +392,88 @@ public final class WorkflowContext {
      */
     public <T> T retryUntil(Supplier<T> supplier, Predicate<T> predicate, RetryUntilOptions options) {
         return requireOperations().retryUntil(supplier, predicate, options);
+    }
+
+    /**
+     * Branches on a memoized version decision, so that changing this workflow's
+     * code does not change the path of instances already running.
+     *
+     * <h2>Why this exists</h2>
+     * <p>Recovery re-runs the workflow method against the <em>current</em>
+     * code. Edit the code while long-lived instances are in flight and a
+     * replaying instance takes the new path from wherever it resumed — half its
+     * work done the old way, the rest done the new way. {@code version()} makes
+     * the choice of path a durable decision like any other memoized step.
+     *
+     * <h2>How it behaves</h2>
+     * <ul>
+     *   <li><b>Live (first evaluation):</b> records {@code maxSupported} as a
+     *       {@code VERSION_MARKER} event at the current sequence slot and
+     *       returns it.</li>
+     *   <li><b>Replay:</b> returns the <em>recorded</em> version forever, even
+     *       after the code's {@code maxSupported} moves on. That asymmetry is
+     *       the whole point.</li>
+     *   <li><b>Histories that predate the change:</b> resolve to
+     *       {@link #DEFAULT_VERSION} ({@value #DEFAULT_VERSION}) without
+     *       consuming a sequence slot, so introducing a {@code version()} call
+     *       into existing code leaves old instances' event logs unshifted.</li>
+     *   <li><b>Repeated calls</b> with the same {@code changeId} in one run
+     *       return the same value and record nothing further.</li>
+     * </ul>
+     *
+     * <h2>The pattern</h2>
+     * <pre>{@code
+     * // Step 1 — ship the change behind a version gate:
+     * var v = workflow.version("shipping-v2", WorkflowContext.DEFAULT_VERSION, 1);
+     * if (v == WorkflowContext.DEFAULT_VERSION) {
+     *     shipping.dispatch(order);          // what in-flight instances recorded
+     * } else {
+     *     shipping.dispatchWithCarrier(order, carrier);  // the new branch
+     * }
+     *
+     * // Step 2 — once no pre-change instance can still be running, drop the old
+     * // branch and raise the floor:
+     * workflow.version("shipping-v2", 1, 1);
+     * shipping.dispatchWithCarrier(order, carrier);
+     * }</pre>
+     *
+     * <h2>Raising {@code minSupported} too early</h2>
+     * <p>If an instance's recorded version is below {@code minSupported}, the
+     * running code no longer carries the branch that instance needs and the call
+     * throws {@link io.b2mash.maestro.core.exception.UnsupportedWorkflowVersionException}
+     * naming the changeId, the recorded version and the supported range. That is
+     * an ordinary (deterministic) workflow failure: saga compensation runs if
+     * registered, and the instance ends {@code FAILED}. Restore code carrying the
+     * old branch and use the admin Retry action — retry clears the failure memos
+     * but never the version marker, so the retried run replays the same recorded
+     * version.
+     *
+     * <h2>Parallel branches</h2>
+     * <p>Resolve a changeId <em>before</em> forking branches that depend on it
+     * and pass the value in. Branches share one per-run cache, so two branches
+     * racing to be the first resolver would place the marker in whichever
+     * branch's sequence space won — nondeterministic across runs. A
+     * {@code version()} call made inside a single branch is fine: it allocates
+     * from that branch's own sequence block.
+     *
+     * @param changeId     a stable identifier for this change, unique within the
+     *                     workflow definition (e.g. {@code "shipping-v2"})
+     * @param minSupported the lowest version the running code still carries;
+     *                     pass {@link #DEFAULT_VERSION} while pre-change
+     *                     instances may still be running
+     * @param maxSupported the highest version the running code carries
+     * @return the version this instance is bound to — {@link #DEFAULT_VERSION}
+     *         for a history that predates the change
+     * @throws io.b2mash.maestro.core.exception.UnsupportedWorkflowVersionException
+     *         if the resolved version is below {@code minSupported}
+     * @throws IllegalArgumentException if {@code changeId} is blank,
+     *         {@code maxSupported} is negative, or
+     *         {@code minSupported > maxSupported}
+     * @throws IllegalStateException if operations are not configured
+     * @see WorkflowOperations#version(String, int, int)
+     */
+    public int version(String changeId, int minSupported, int maxSupported) {
+        return requireOperations().version(changeId, minSupported, maxSupported);
     }
 
     /**

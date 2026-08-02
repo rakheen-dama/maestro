@@ -382,6 +382,41 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
         }
 
         @Test
+        @DisplayName("VERSION_MARKER round-trips with its changeId/version payload")
+        void versionMarker_roundTrips() {
+            var instance = newInstance("order-version-marker");
+            store.createInstance(instance);
+
+            var marker = new WorkflowEvent(
+                    UUID.randomUUID(), instance.id(), 7,
+                    EventType.VERSION_MARKER, "$maestro:version:shipping-v2",
+                    jsonNode("{\"changeId\":\"shipping-v2\",\"version\":3}"),
+                    Instant.now().truncatedTo(ChronoUnit.MILLIS));
+            store.appendEvent(marker);
+
+            var found = store.getEventBySequence(instance.id(), 7).orElseThrow();
+            assertAll(
+                    () -> assertEquals(EventType.VERSION_MARKER, found.eventType(),
+                            "the new type must map back out of the VARCHAR column"),
+                    () -> assertEquals("$maestro:version:shipping-v2", found.stepName()),
+                    () -> assertEquals("shipping-v2",
+                            found.payload().get("changeId").stringValue()),
+                    () -> assertEquals(3, found.payload().get("version").intValue()));
+
+            // And through the bulk read the engine uses for admin/history views.
+            var viaGetEvents = store.getEvents(instance.id());
+            assertEquals(1, viaGetEvents.size());
+            assertEquals(EventType.VERSION_MARKER, viaGetEvents.getFirst().eventType());
+
+            // A marker is not a failure memo: admin Retry must leave it alone, so
+            // the retried run replays the same recorded version.
+            store.appendEvent(newEvent(instance.id(), 8, EventType.WORKFLOW_FAILED));
+            assertEquals(1, store.deleteFailureEvents(instance.id()));
+            assertEquals(List.of(EventType.VERSION_MARKER),
+                    store.getEvents(instance.id()).stream().map(WorkflowEvent::eventType).toList());
+        }
+
+        @Test
         @DisplayName("deleteFailureEvents deletes only ACTIVITY_FAILED and WORKFLOW_FAILED")
         void deleteFailureEvents_deletesOnlyFailures() {
             var instance = newInstance("order-del-failures");

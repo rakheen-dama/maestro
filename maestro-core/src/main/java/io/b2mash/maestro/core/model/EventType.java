@@ -62,5 +62,17 @@ public enum EventType {
      * consuming a signal that arrived after the fact (Issue 19 — the signal
      * analogue of {@link #TIMER_CANCELLED}'s Issue 13 memoization).
      */
-    SIGNAL_TIMEOUT
+    SIGNAL_TIMEOUT,
+
+    /**
+     * A memoized versioning decision recorded by
+     * {@code WorkflowContext.version(String, int, int)}.
+     *
+     * <p>Payload: <code>{"changeId": "...", "version": N}</code>; step name:
+     * {@code $maestro:version:{changeId}}.
+     *
+     * <p>Introduced in 0.4.0 — nodes older than 0.4.0 cannot interpret this
+     * type, so upgrade all nodes of a service together.
+     */
+    VERSION_MARKER
 }

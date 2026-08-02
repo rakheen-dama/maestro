@@ -5,6 +5,7 @@ import io.b2mash.maestro.core.context.WorkflowMDC;
 import io.b2mash.maestro.core.exception.RetryExhaustedException;
 import io.b2mash.maestro.core.exception.SignalTimeoutException;
 import io.b2mash.maestro.core.exception.TimerCancelledException;
+import io.b2mash.maestro.core.exception.UnsupportedWorkflowVersionException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowTimer;
@@ -33,6 +34,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -70,6 +72,9 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
      */
     static final int BRANCH_MULTIPLIER = 1000;
 
+    /** Step-name prefix recorded on {@link EventType#VERSION_MARKER} events. */
+    private static final String VERSION_STEP_PREFIX = "$maestro:version:";
+
     private final WorkflowStore store;
     private final @Nullable DistributedLock distributedLock;
     private final @Nullable WorkflowMessaging messaging;
@@ -79,6 +84,16 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
     private final SignalManager signalManager;
     private final Duration wakeRecheckInterval;
     private final EngineObserver observer;
+
+    /**
+     * Version decisions already resolved in this run, {@code changeId → version}.
+     *
+     * <p>Lifetime is exactly one local run — the executor builds a fresh
+     * operations instance per launch — so recovery re-resolves from the durable
+     * marker rather than from memory. Concurrent because parallel branches share
+     * the instance.
+     */
+    private final ConcurrentHashMap<String, Integer> versionCache = new ConcurrentHashMap<>();
 
     /**
      * Creates workflow operations with the default wake re-check interval
@@ -666,6 +681,106 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         return uuid;
     }
 
+    // ── version ────────────────────────────────────────────────────────
+
+    @Override
+    public int version(String changeId, int minSupported, int maxSupported) {
+        if (changeId == null || changeId.isBlank()) {
+            throw new IllegalArgumentException("changeId must not be blank");
+        }
+        if (maxSupported < 0) {
+            throw new IllegalArgumentException(
+                    "maxSupported must not be negative for change '%s', got %d"
+                            .formatted(changeId, maxSupported));
+        }
+        if (minSupported > maxSupported) {
+            throw new IllegalArgumentException(
+                    "minSupported (%d) must not exceed maxSupported (%d) for change '%s'"
+                            .formatted(minSupported, maxSupported, changeId));
+        }
+
+        var ctx = WorkflowContext.current();
+
+        // Repeated calls with the same changeId in one run resolve once: the
+        // original run wrote a single marker, so later call sites must neither
+        // consume a sequence slot nor write. Branches share this cache because
+        // they share the operations instance — see version()'s Javadoc for the
+        // "resolve before forking" rule that follows from it.
+        var cached = versionCache.get(changeId);
+        if (cached != null) {
+            return guardVersion(ctx, changeId, cached, minSupported, maxSupported);
+        }
+
+        // PEEK — read the slot without consuming it. A non-matching event there
+        // means this history predates the change, and consuming the slot would
+        // shift every later replay lookup by one and corrupt the run.
+        var peekSeq = ctx.currentSequence() + 1;
+        var stored = store.getEventBySequence(ctx.workflowInstanceId(), peekSeq);
+
+        int resolved;
+        if (stored.isPresent()) {
+            var recorded = recordedVersion(stored.get(), changeId);
+            if (recorded != null) {
+                ctx.nextSequence(); // the marker is ours — consume the slot
+                resolved = recorded;
+                logger.debug("Replaying version {} for change '{}' at seq {}",
+                        resolved, changeId, peekSeq);
+            } else {
+                resolved = WorkflowContext.DEFAULT_VERSION;
+                logger.debug("No version marker at seq {} for change '{}' — history "
+                        + "predates the change, resolving to DEFAULT_VERSION", peekSeq, changeId);
+            }
+        } else {
+            // Live frontier: record the decision durably, then return it.
+            var seq = ctx.nextSequence();
+            ctx.setReplaying(false);
+            appendEvent(ctx, seq, EventType.VERSION_MARKER, VERSION_STEP_PREFIX + changeId,
+                    serializer.serialize(new VersionDetail(changeId, maxSupported)));
+            resolved = maxSupported;
+            logger.debug("Recorded version {} for change '{}' at seq {}", resolved, changeId, seq);
+        }
+
+        var checked = guardVersion(ctx, changeId, resolved, minSupported, maxSupported);
+        versionCache.put(changeId, checked);
+        return checked;
+    }
+
+    /**
+     * Returns the version recorded by {@code event} for {@code changeId}, or
+     * {@code null} if the event is not this change's marker — any other event
+     * type, another change's marker, or a marker whose payload cannot be read.
+     * A {@code null} means "this history predates the change": the caller must
+     * resolve to {@code DEFAULT_VERSION} <em>without</em> consuming the slot,
+     * because the event found there belongs to the workflow's next step.
+     */
+    private static @Nullable Integer recordedVersion(WorkflowEvent event, String changeId) {
+        if (event.eventType() != EventType.VERSION_MARKER) {
+            return null;
+        }
+        var payload = event.payload();
+        if (payload == null) {
+            return null;
+        }
+        if (!changeId.equals(payload.path("changeId").asString(null))) {
+            return null;
+        }
+        var version = payload.path("version");
+        return version.isNumber() ? version.intValue() : null;
+    }
+
+    /**
+     * Enforces the floor: a recorded version below {@code minSupported} means
+     * the running code no longer carries the branch this instance needs.
+     */
+    private static int guardVersion(WorkflowContext ctx, String changeId, int resolved,
+                                    int minSupported, int maxSupported) {
+        if (resolved < minSupported) {
+            throw new UnsupportedWorkflowVersionException(
+                    ctx.workflowId(), changeId, resolved, minSupported, maxSupported);
+        }
+        return resolved;
+    }
+
     // ── retryUntil ──────────────────────────────────────────────────────
 
     @Override
@@ -770,4 +885,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
 
     private record TimerDetail(String timerId, String duration) {}
     private record ParallelDetail(int branchCount) {}
+
+    /** Payload of a {@link EventType#VERSION_MARKER} event. */
+    private record VersionDetail(String changeId, int version) {}
 }

@@ -41,7 +41,8 @@ public sealed class MaestroException extends RuntimeException
                 SerializationException,
                 CompensationException,
                 QueryException,
-                AdminCommandException {
+                AdminCommandException,
+                UnsupportedWorkflowVersionException {
 
     /**
      * Creates a new exception with the given message.
