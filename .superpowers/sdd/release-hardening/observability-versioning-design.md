@@ -1396,3 +1396,39 @@ Core unit tests (`maestro-core/src/test/.../engine/`):
   enumeration at §6.4 sites 7–8) applies.
 
 Everything else in this document is decided.
+
+---
+
+## 10. Coordinator review — APPROVED (with rulings)
+
+Reviewed 2026-08-02 against spec §§4–6 and the plan's Global Constraints.
+All eight required sections land on implementable decisions; grounding
+(§ "Files read" in the task report) is genuine. The following rulings
+resolve §9's open questions and BIND Tasks 3–7:
+
+**RULING 1 (OPEN-Q-1) — APPROVED as proposed.** The permanent stand-down
+integration fixture uses the dedicated unknown string
+`EVT_FROM_A_NEWER_MAESTRO` (a type no build of this repo will ever define).
+The spec §C2's SHOULD-clause about using `VERSION_MARKER` is satisfied by
+transient RED-phase evidence only if Task 7's implementer finds it cheap
+(inject VERSION_MARKER against a pre-Task-6 commit's binary); if not, skip
+it — the SHOULD is discharged by the ruling, and the permanent fixture is
+the contract.
+
+**RULING 2 (OPEN-Q-2) — APPROVED.** The signal-row `trace_context` column
+(nullable, opaque W3C traceparent string; Flyway V4; `WorkflowSignal`
+record component; both stores + in-memory) is in scope for Task 5. Durable
+remote-parent restoration is what distinguishes "tracing that survives
+durability" from a demo, which is the product's identity. Constraint: the
+column is opaque metadata — no store logic may parse or branch on it, and
+absence degrades to a fresh root span, never an error.
+
+**RULING 3 (OPEN-Q-3) — APPROVED.** Re-parent `ExecutorShutdownException`
+and `WorkflowTerminatedException` under sealed `MaestroControlFlowError`
+(extends `Error`) in Task 7, behavior-preserving; broad-catch sites may
+then catch the base. Task 8 MUST update the CLAUDE.md exceptions section
+and any doc that enumerates the two types to describe the sealed base and
+its three permitted subtypes.
+
+No other section requires amendment. Tasks 3–7 implement this document
+exactly; deviations require a new coordinator ruling recorded here.
