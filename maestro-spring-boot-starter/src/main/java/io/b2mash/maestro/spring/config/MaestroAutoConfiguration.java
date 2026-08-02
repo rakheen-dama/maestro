@@ -3,6 +3,8 @@ package io.b2mash.maestro.spring.config;
 import io.b2mash.maestro.core.engine.ActivityProxyFactory;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
+import io.b2mash.maestro.core.observe.CompositeEngineObserver;
+import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.retry.RetryExecutor;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.SignalNotifier;
@@ -13,6 +15,7 @@ import io.b2mash.maestro.spring.proxy.ActivityStubBeanPostProcessor;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -72,7 +75,8 @@ public class MaestroAutoConfiguration {
             @Nullable WorkflowMessaging messaging,
             @Nullable SignalNotifier signalNotifier,
             PayloadSerializer serializer,
-            MaestroProperties properties
+            MaestroProperties properties,
+            ObjectProvider<EngineObserver> observers
     ) {
         var serviceName = properties.getServiceName();
         if (serviceName == null || serviceName.isBlank()) {
@@ -91,10 +95,16 @@ public class MaestroAutoConfiguration {
         var lifecycleEventsEnabled = properties.getAdmin().events().enabled();
         var shutdownTimeout = properties.getShutdown().timeout();
         var wakeRecheckInterval = properties.getSignal().wakeRecheckInterval();
+        // Every EngineObserver bean in the context (MicrometerEngineObserver,
+        // TracingEngineObserver, or any user-supplied observer) is collected
+        // here and wrapped once — CompositeEngineObserver.of always wraps,
+        // even a single delegate, so a throwing adapter can never corrupt
+        // engine control flow (coordinator Ruling 4).
+        var observer = CompositeEngineObserver.of(observers.orderedStream().toList());
         return new WorkflowExecutor(
                 store, distributedLock, messaging, signalNotifier, serializer, serviceName,
                 lock.keyPrefix(), lock.ttl(), lifecycleEventsEnabled,
-                shutdownTimeout, wakeRecheckInterval
+                shutdownTimeout, wakeRecheckInterval, observer
         );
     }
 

@@ -5,6 +5,8 @@ import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.engine.ActivityProxyFactory;
 import io.b2mash.maestro.core.engine.GatedWorkflowMessaging;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
+import io.b2mash.maestro.core.observe.CompositeEngineObserver;
+import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.retry.RetryExecutor;
 import io.b2mash.maestro.core.retry.RetryPolicy;
 import io.b2mash.maestro.core.spi.DistributedLock;
@@ -64,6 +66,7 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
     private @Nullable PayloadSerializer serializer;
     private @Nullable RetryExecutor retryExecutor;
     private @Nullable String lockKeyPrefix;
+    private EngineObserver observer = EngineObserver.NOOP;
 
     @Override
     public void setApplicationContext(ApplicationContext applicationContext) {
@@ -107,6 +110,11 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
         // GatedWorkflowMessaging is the shared seam both paths use; see its Javadoc.
         var rawMessaging = ctx.getBeanProvider(WorkflowMessaging.class).getIfAvailable();
         messaging = GatedWorkflowMessaging.wrap(rawMessaging, properties.getAdmin().events().enabled());
+
+        // Same composite the executor is handed (design §1.3): every
+        // EngineObserver bean in the context, wrapped so a throwing adapter
+        // can never corrupt activity execution (coordinator Ruling 4).
+        observer = CompositeEngineObserver.of(ctx.getBeanProvider(EngineObserver.class).orderedStream().toList());
 
         dependenciesResolved = true;
     }
@@ -158,7 +166,8 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
                     timeout,
                     serializer,
                     retryExecutor,
-                    lockKeyPrefix
+                    lockKeyPrefix,
+                    observer
             );
 
             // Inject the proxy into the field

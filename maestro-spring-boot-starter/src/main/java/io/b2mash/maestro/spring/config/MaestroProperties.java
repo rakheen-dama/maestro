@@ -70,6 +70,8 @@ public class MaestroProperties {
 
     private SignalProperties signal = SignalProperties.defaults();
 
+    private ObservabilityProperties observability = ObservabilityProperties.defaults();
+
     // ── Getters and setters ─────────────────────────────────────────
 
     public boolean isEnabled() {
@@ -174,6 +176,14 @@ public class MaestroProperties {
 
     public void setSignal(SignalProperties signal) {
         this.signal = signal;
+    }
+
+    public ObservabilityProperties getObservability() {
+        return observability;
+    }
+
+    public void setObservability(ObservabilityProperties observability) {
+        this.observability = observability;
     }
 
     // ── Nested configuration records ────────────────────────────────
@@ -465,6 +475,47 @@ public class MaestroProperties {
         /** @return the defaults documented above */
         public static SignalProperties defaults() {
             return new SignalProperties(Duration.ofSeconds(30));
+        }
+    }
+
+    /**
+     * Observability configuration: Micrometer meters and tracing.
+     *
+     * @param metrics meter registration and emission
+     * @param tracing span creation and Kafka trace propagation
+     */
+    public record ObservabilityProperties(
+            @DefaultValue MetricsProperties metrics,
+            @DefaultValue TracingProperties tracing
+    ) {
+        /** @return the defaults documented above */
+        public static ObservabilityProperties defaults() {
+            return new ObservabilityProperties(
+                    MetricsProperties.defaults(), TracingProperties.defaults());
+        }
+    }
+
+    /**
+     * @param enabled whether Maestro registers and emits Micrometer meters
+     *                (requires a {@code MeterRegistry} on the classpath and in
+     *                the context; silently inert otherwise)
+     */
+    public record MetricsProperties(@DefaultValue("true") boolean enabled) {
+        /** @return the defaults documented above */
+        public static MetricsProperties defaults() {
+            return new MetricsProperties(true);
+        }
+    }
+
+    /**
+     * @param enabled whether Maestro creates spans and propagates W3C trace
+     *                context through Kafka headers (requires a Micrometer
+     *                {@code Tracer} in the context; silently inert otherwise)
+     */
+    public record TracingProperties(@DefaultValue("true") boolean enabled) {
+        /** @return the defaults documented above */
+        public static TracingProperties defaults() {
+            return new TracingProperties(true);
         }
     }
 }

@@ -65,6 +65,12 @@ spring-kafka-test = { module = "org.springframework.kafka:spring-kafka-test" }
 # Spring Boot BOM — used by Spring convention plugins only
 spring-boot-dependencies = { module = "org.springframework.boot:spring-boot-dependencies", version.ref = "spring-boot" }
 
+# Micrometer (versions managed by Spring Boot BOM)
+micrometer-core = { module = "io.micrometer:micrometer-core" }
+micrometer-tracing = { module = "io.micrometer:micrometer-tracing" }
+micrometer-tracing-test = { module = "io.micrometer:micrometer-tracing-test" }
+micrometer-tracing-bridge-otel = { module = "io.micrometer:micrometer-tracing-bridge-otel" }
+
 [plugins]
 spring-boot = { id = "org.springframework.boot", version.ref = "spring-boot" }
 spring-dependency-management = { id = "io.spring.dependency-management", version.ref = "spring-dependency-management" }

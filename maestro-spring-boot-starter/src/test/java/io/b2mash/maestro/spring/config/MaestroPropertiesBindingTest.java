@@ -110,6 +110,20 @@ class MaestroPropertiesBindingTest {
     }
 
     @Test
+    @DisplayName("the observability block binds from configuration")
+    void observabilityBlockBinds() {
+        runner.withPropertyValues(
+                        "maestro.service-name=binding-test",
+                        "maestro.observability.metrics.enabled=false",
+                        "maestro.observability.tracing.enabled=false")
+                .run(context -> {
+                    var observability = context.getBean(MaestroProperties.class).getObservability();
+                    assertThat(observability.metrics().enabled()).isFalse();
+                    assertThat(observability.tracing().enabled()).isFalse();
+                });
+    }
+
+    @Test
     @DisplayName("unset nested properties keep their documented defaults")
     void defaultsSurviveWhenNothingIsConfigured() {
         runner.withPropertyValues("maestro.service-name=binding-test").run(context -> {
@@ -136,6 +150,8 @@ class MaestroPropertiesBindingTest {
             assertThat(properties.getAdmin().events().topic()).isEqualTo("maestro.admin.events");
             assertThat(properties.getShutdown().timeout()).isEqualTo(Duration.ofSeconds(30));
             assertThat(properties.getSignal().wakeRecheckInterval()).isEqualTo(Duration.ofSeconds(30));
+            assertThat(properties.getObservability().metrics().enabled()).isTrue();
+            assertThat(properties.getObservability().tracing().enabled()).isTrue();
         });
     }
 
