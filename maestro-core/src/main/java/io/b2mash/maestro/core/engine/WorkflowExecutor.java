@@ -1731,15 +1731,17 @@ public final class WorkflowExecutor {
     /**
      * Invokes one observer callback, containing a misbehaving observer.
      *
-     * <p>{@link io.b2mash.maestro.core.observe.CompositeEngineObserver}
-     * contains a throwing delegate, but {@code CompositeEngineObserver.of}
-     * collapses to the bare delegate when a single observer is registered —
-     * the common deployment — so containment cannot be assumed at the call
-     * site. Every emission in this class sits on a durable path where an
-     * escaping {@code RuntimeException} would be read as something else
-     * entirely: a workflow failure (and its compensations), an aborted
-     * recovery pass, a leaked instance lock, or a terminated workflow whose
-     * local thread never gets abandoned.
+     * <p>Since coordinator Ruling 4, containment is structural at the seam:
+     * {@link io.b2mash.maestro.core.observe.CompositeEngineObserver#of} always
+     * wraps, so a registered adapter's {@code RuntimeException} is contained
+     * before it ever reaches here. This guard stays as depth — the
+     * constructors accept <em>any</em> {@code EngineObserver}, so nothing
+     * forces an embedder or a test wiring the engine by hand through
+     * {@code of(...)} — and because every emission in this class sits on a
+     * durable path where an escaping {@code RuntimeException} would be read as
+     * something else entirely: a workflow failure (and its compensations), an
+     * aborted recovery pass, a leaked instance lock, or a terminated workflow
+     * whose local thread never gets abandoned.
      *
      * <p>{@code RuntimeException} only: {@code Error}s — the engine's
      * control-flow signals {@code ExecutorShutdownException} and

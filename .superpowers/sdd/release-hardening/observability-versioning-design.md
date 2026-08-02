@@ -16,6 +16,10 @@ design time), member names are the stable anchors.
 
 ### 1.1 Decision summary
 
+- **Amended by RULING 4 (§10):** `CompositeEngineObserver.of()` never
+  collapses to the bare delegate at size 1 — it always wraps, so
+  `RuntimeException` containment is structural at every emission site. The
+  code block below reflects the amendment.
 - New package `io.b2mash.maestro.core.observe` in `maestro-core`. Zero new
   dependencies — the package contains only the interface, its argument
   records/enums, the no-op constant, the composite, and a `TraceContextHolder`
@@ -158,12 +162,13 @@ public enum StandDownReason {
 public final class CompositeEngineObserver implements EngineObserver {
     private final List<EngineObserver> delegates; // List.copyOf in ctor
 
+    // AMENDED BY RULING 4 (§10): a single delegate is WRAPPED, never
+    // returned bare — containment must not depend on how many observers
+    // happen to be registered. `case 1 -> observers.getFirst();` is REMOVED.
     public static EngineObserver of(List<EngineObserver> observers) {
-        return switch (observers.size()) {
-            case 0 -> EngineObserver.NOOP;
-            case 1 -> observers.getFirst();
-            default -> new CompositeEngineObserver(observers);
-        };
+        return observers.isEmpty()
+                ? EngineObserver.NOOP
+                : new CompositeEngineObserver(observers);
     }
     // every override: for (var d : delegates) { try { d.callback(...); }
     //   catch (RuntimeException e) { log.warn(...); } }
@@ -1226,7 +1231,8 @@ first in its task, failing output captured in the task report.
 - `observe/CompositeEngineObserverTest` — fan-out order; a delegate throwing
   `RuntimeException` does not stop later delegates and is logged; a delegate
   throwing `ExecutorShutdownException` (an `Error`) propagates; `of(List)`
-  collapsing rules.
+  wrapping rules per RULING 4 (a lone delegate is wrapped, is contained like
+  any other, and still lets an `Error` through).
 - `engine/WorkflowExecutorObserverTest` — a `RecordingEngineObserver` test
   fixture (in-memory list of callback invocations; lives in
   `maestro-core/src/test`) wired through the new executor constructor with
@@ -1432,3 +1438,29 @@ its three permitted subtypes.
 
 No other section requires amendment. Tasks 3–7 implement this document
 exactly; deviations require a new coordinator ruling recorded here.
+
+---
+
+**RULING 4 (amends §1.2) — BINDING.** `CompositeEngineObserver.of()` must NOT
+collapse to the bare delegate at size 1. It always returns a containing
+wrapper, so per-delegate `RuntimeException` containment is structural at every
+emission site — present and future — instead of depending on which call sites
+someone remembered to harden. Rationale: one observer is the common deployment
+(a lone Micrometer adapter in Task 4, a lone tracing adapter in Task 5), which
+is exactly the case that currently has zero containment; and a third-party
+adapter throwing must never be able to corrupt engine control flow. The cost is
+one virtual call per emission on paths that already do database I/O —
+irrelevant. `Error` still propagates uncontained (deliberate, unchanged: the
+engine's control-flow signals are Errors and swallowing them would reinstate
+the bug they exist to prevent).
+
+Raised by Task 3's fix round 1, where three separate emission sites
+(`WorkflowInstanceLockManager.tryAcquire`/`renewOne`, `WorkflowExecutor`'s
+lifecycle emissions, `SagaManager.compensate`) each had to be hand-hardened
+against a throwing adapter — a leaked instance lock reported as `NO_BACKEND`, a
+dead lock-renewer thread, compensations run for a workflow that succeeded.
+Those per-site guards remain as depth (the engine constructors accept any
+`EngineObserver`, so nothing forces a hand-wiring embedder through `of(...)`),
+but the seam is now correct by construction. §1.2's code block above is
+amended accordingly: `case 1 -> observers.getFirst();` is REMOVED — no later
+task may implement the collapse.

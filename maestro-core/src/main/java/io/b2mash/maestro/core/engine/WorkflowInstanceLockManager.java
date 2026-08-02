@@ -259,12 +259,14 @@ final class WorkflowInstanceLockManager {
     /**
      * Invokes one observer callback, containing a misbehaving observer.
      *
-     * <p>{@link io.b2mash.maestro.core.observe.CompositeEngineObserver}
-     * contains a throwing delegate, but
-     * {@code CompositeEngineObserver.of} collapses to the bare delegate when a
-     * single observer is registered — the common deployment — so containment
-     * cannot be assumed at the call site. {@code RuntimeException} only:
-     * {@code Error}s (the engine's control-flow signals) always propagate.
+     * <p>Since coordinator Ruling 4, containment is structural at the seam:
+     * {@link io.b2mash.maestro.core.observe.CompositeEngineObserver#of} always
+     * wraps. This guard stays as depth — the constructors accept <em>any</em>
+     * {@code EngineObserver}, so nothing forces an embedder or a test wiring
+     * the engine by hand through {@code of(...)}, and an escape here would
+     * either report a held lock as {@code NO_BACKEND} or kill the single
+     * renewer thread. {@code RuntimeException} only: {@code Error}s (the
+     * engine's control-flow signals) always propagate.
      */
     private void emit(String callback, String workflowId, Runnable emission) {
         try {
