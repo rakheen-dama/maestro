@@ -284,12 +284,15 @@ final class SignalManager {
         var stepName = "$maestro:awaitSignal:" + signalName;
 
         // Replay check: look for SIGNAL_RECEIVED at this sequence
-        var storedEvent = store.getEventBySequence(ctx.workflowInstanceId(), seq);
+        var storedEvent = UnknownHistoryGuard.requireKnown(
+                store.getEventBySequence(ctx.workflowInstanceId(), seq), ctx.workflowId());
         if (storedEvent.isPresent() && storedEvent.get().eventType() == EventType.SIGNAL_RECEIVED) {
             logger.debug("Replaying signal '{}' at seq {}", signalName, seq);
             observer.signalConsumed(
                     new SignalInfo(ctx.workflowId(), ctx.workflowType(), signalName, null), true);
-            return serializer.deserialize(storedEvent.get().payload(), type);
+            return UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), seq,
+                    "payload of signal '%s'".formatted(signalName),
+                    () -> serializer.deserialize(storedEvent.get().payload(), type));
         }
         // Replay check: a memoized timeout re-raises deterministically — from
         // the log alone, with no store read and no signal consumption. Without

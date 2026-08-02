@@ -109,6 +109,16 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
 
     @Override
     public void appendEvent(WorkflowEvent event) {
+        if (event.eventType() == EventType.UNKNOWN) {
+            // Mirrors AbstractJdbcWorkflowStore: the sentinel is how the READ
+            // path represents a type this build does not know. Persisting it
+            // would durably record "unreadable", which every node — upgraded or
+            // not — would then stand down on forever.
+            throw new IllegalArgumentException(
+                    "EventType.UNKNOWN is a read-side sentinel and must never be persisted "
+                            + "(workflowInstanceId=%s, sequenceNumber=%d)"
+                                    .formatted(event.workflowInstanceId(), event.sequenceNumber()));
+        }
         put(event);
     }
 

@@ -201,7 +201,8 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         var stepName = "$maestro:sleep";
 
         // Replay check: look for TIMER_SCHEDULED at this sequence
-        var storedEvent = store.getEventBySequence(ctx.workflowInstanceId(), seq);
+        var storedEvent = UnknownHistoryGuard.requireKnown(
+                store.getEventBySequence(ctx.workflowInstanceId(), seq), ctx.workflowId());
         if (storedEvent.isPresent()) {
             if (storedEvent.get().eventType() == EventType.TIMER_SCHEDULED) {
                 var timerId = extractTimerId(storedEvent.get().payload());
@@ -212,7 +213,9 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                 // memoized. Pure deterministic re-derivation from the event
                 // log — no writes, no timer-row read — for both terminal outcomes.
                 var nextSeq = seq + 1;
-                var nextEvent = store.getEventBySequence(ctx.workflowInstanceId(), nextSeq);
+                var nextEvent = UnknownHistoryGuard.requireKnown(
+                        store.getEventBySequence(ctx.workflowInstanceId(), nextSeq),
+                        ctx.workflowId());
                 if (nextEvent.isPresent() && nextEvent.get().eventType() == EventType.TIMER_FIRED) {
                     // Both events exist — skip the sleep entirely
                     ctx.nextSequence(); // advance past TIMER_FIRED
@@ -548,8 +551,13 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         var parentSeq = ctx.nextSequence();
         var branchCount = tasks.size();
 
-        // Replay check: look for existing parallel fork event at this sequence
-        var storedEvent = store.getEventBySequence(ctx.workflowInstanceId(), parentSeq);
+        // Replay check: look for existing parallel fork event at this sequence.
+        // Guarded first: an unknown type here would otherwise fail the SIDE_EFFECT
+        // comparison, fall through to the live path, re-fork every branch and
+        // stand down only on the duplicate append — as STALE_RUN, after the
+        // branches have already touched the outside world.
+        var storedEvent = UnknownHistoryGuard.requireKnown(
+                store.getEventBySequence(ctx.workflowInstanceId(), parentSeq), ctx.workflowId());
         if (storedEvent.isEmpty() || storedEvent.get().eventType() != EventType.SIDE_EFFECT) {
             // Live path: record the parallel fork point
             ctx.setReplaying(false);
@@ -615,11 +623,14 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             throw new RuntimeException("Parallel execution interrupted", e);
         }
 
-        // Check for errors — fail fast with first error. ExecutorShutdownException
-        // (an Error, not a RuntimeException — see its Javadoc) is rethrown as-is:
-        // wrapping it here would hide a graceful shutdown inside a plain
-        // RuntimeException that executeWorkflow's catch (ExecutorShutdownException e)
-        // no longer recognises, turning a routine deploy into a recorded failure.
+        // Check for errors — fail fast with first error. Every engine
+        // control-flow signal (MaestroControlFlowError: shutdown, terminate,
+        // unknown-history stand-down) is an Error, not a RuntimeException, and
+        // is rethrown as-is by the `instanceof Error` arm below: wrapping one
+        // here would hide it inside a plain RuntimeException that
+        // executeWorkflow's dedicated catch arms no longer recognise, turning a
+        // routine deploy — or a mixed-version window — into a recorded failure
+        // with compensations.
         for (int i = 0; i < branchCount; i++) {
             var error = errors.get(i).get();
             if (error != null) {
@@ -649,9 +660,12 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         var seq = ctx.nextSequence();
 
         // Replay check
-        var storedEvent = store.getEventBySequence(ctx.workflowInstanceId(), seq);
+        var storedEvent = UnknownHistoryGuard.requireKnown(
+                store.getEventBySequence(ctx.workflowInstanceId(), seq), ctx.workflowId());
         if (storedEvent.isPresent() && storedEvent.get().eventType() == EventType.SIDE_EFFECT) {
-            return serializer.deserialize(storedEvent.get().payload(), Instant.class);
+            return UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), seq,
+                    "memoized currentTime()",
+                    () -> serializer.deserialize(storedEvent.get().payload(), Instant.class));
         }
 
         // Live path
@@ -669,9 +683,12 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         var seq = ctx.nextSequence();
 
         // Replay check
-        var storedEvent = store.getEventBySequence(ctx.workflowInstanceId(), seq);
+        var storedEvent = UnknownHistoryGuard.requireKnown(
+                store.getEventBySequence(ctx.workflowInstanceId(), seq), ctx.workflowId());
         if (storedEvent.isPresent() && storedEvent.get().eventType() == EventType.SIDE_EFFECT) {
-            return serializer.deserialize(storedEvent.get().payload(), String.class);
+            return UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), seq,
+                    "memoized randomUUID()",
+                    () -> serializer.deserialize(storedEvent.get().payload(), String.class));
         }
 
         // Live path
@@ -715,11 +732,17 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         // means this history predates the change, and consuming the slot would
         // shift every later replay lookup by one and corrupt the run.
         var peekSeq = ctx.currentSequence() + 1;
-        var stored = store.getEventBySequence(ctx.workflowInstanceId(), peekSeq);
+        // Guarded BEFORE the predates-the-change classification below: an event
+        // of a type this build does not know is not evidence that the history
+        // predates the change, it is evidence that this node cannot read the
+        // history at all. Classifying it as "predates" would silently take the
+        // pre-change branch.
+        var stored = UnknownHistoryGuard.requireKnown(
+                store.getEventBySequence(ctx.workflowInstanceId(), peekSeq), ctx.workflowId());
 
         int resolved;
         if (stored.isPresent()) {
-            var recorded = recordedVersion(stored.get(), changeId);
+            var recorded = recordedVersion(stored.get(), changeId, ctx.workflowId(), peekSeq);
             if (recorded != null) {
                 ctx.nextSequence(); // the marker is ours — consume the slot
                 resolved = recorded;
@@ -747,25 +770,70 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
 
     /**
      * Returns the version recorded by {@code event} for {@code changeId}, or
-     * {@code null} if the event is not this change's marker — any other event
-     * type, another change's marker, or a marker whose payload cannot be read.
-     * A {@code null} means "this history predates the change": the caller must
-     * resolve to {@code DEFAULT_VERSION} <em>without</em> consuming the slot,
-     * because the event found there belongs to the workflow's next step.
+     * {@code null} if the event is genuine evidence that <em>this history
+     * predates the change</em>. A {@code null} means the caller must resolve to
+     * {@code DEFAULT_VERSION} <em>without</em> consuming the slot, because the
+     * event found there belongs to the workflow's next step.
+     *
+     * <p>Three outcomes, deliberately kept apart:
+     * <ul>
+     *   <li><b>Not a marker at all</b> → {@code null}. The workflow's next step
+     *       is sitting in that slot, which is exactly what a history written
+     *       before the change looks like.</li>
+     *   <li><b>Another change's marker</b> (readable, different {@code changeId})
+     *       → {@code null}, for the same reason: a marker that demonstrably
+     *       belongs to a different change is evidence that <em>this</em> change
+     *       had not been introduced when the history was written.</li>
+     *   <li><b>A marker this build cannot interpret</b> — no payload, no
+     *       readable {@code changeId}, or this change's {@code changeId} with a
+     *       {@code version} that is missing or not a number → <b>stand down</b>
+     *       ({@link UnknownWorkflowHistoryException.Kind#UNKNOWN_EVENT_PAYLOAD}).</li>
+     * </ul>
+     *
+     * <p>The third case used to return {@code null} along with the first two,
+     * and that collapse was a silent-wrong-branch bug: a marker a newer node
+     * reshaped ({@code "version":"3"} as a string) resolved to
+     * {@code DEFAULT_VERSION}, so the instance took the <em>pre</em>-change
+     * branch of a workflow whose durable history says it took the post-change
+     * one — and, because the slot was not consumed, the stranded marker shifted
+     * every later replay lookup by one. That surfaced (if at all) as an
+     * unrelated {@code IllegalStateException} at the next activity slot, or
+     * never, when the marker was the last event. A marker whose payload cannot
+     * be read is not a decision this node is entitled to guess at.
+     *
+     * @param event      the peeked event
+     * @param changeId   the change being resolved
+     * @param workflowId the workflow, for the stand-down message
+     * @param peekSeq    the peeked sequence, for the stand-down message
+     * @return the recorded version, or {@code null} if the history predates the change
+     * @throws UnknownWorkflowHistoryException if the event is a marker this
+     *                                         build cannot interpret
      */
-    private static @Nullable Integer recordedVersion(WorkflowEvent event, String changeId) {
+    private static @Nullable Integer recordedVersion(WorkflowEvent event, String changeId,
+                                                     String workflowId, int peekSeq) {
         if (event.eventType() != EventType.VERSION_MARKER) {
             return null;
         }
         var payload = event.payload();
         if (payload == null) {
-            return null;
+            throw UnknownHistoryGuard.payloadStandDown(workflowId, peekSeq,
+                    "a VERSION_MARKER with no payload, so it can be attributed to no change");
         }
-        if (!changeId.equals(payload.path("changeId").asString(null))) {
+        var recordedChangeId = payload.path("changeId").asString(null);
+        if (recordedChangeId == null) {
+            throw UnknownHistoryGuard.payloadStandDown(workflowId, peekSeq,
+                    "a VERSION_MARKER whose changeId is missing or not a string");
+        }
+        if (!changeId.equals(recordedChangeId)) {
             return null;
         }
         var version = payload.path("version");
-        return version.isNumber() ? version.intValue() : null;
+        if (!version.isNumber()) {
+            throw UnknownHistoryGuard.payloadStandDown(workflowId, peekSeq,
+                    ("the VERSION_MARKER for change '%s' records a version this build cannot "
+                            + "read (%s)").formatted(changeId, version));
+        }
+        return version.intValue();
     }
 
     /**

@@ -8,6 +8,7 @@ import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.QueryNotDefinedException;
+import io.b2mash.maestro.core.exception.UnknownWorkflowHistoryException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowExecutionException;
 import io.b2mash.maestro.core.exception.WorkflowNotQueryableException;
@@ -1456,6 +1457,16 @@ public final class WorkflowExecutor {
             // Ahead of catch (Exception e) for the same readability reason as
             // the shutdown case above.
             handleTermination(ctx, e);
+        } catch (UnknownWorkflowHistoryException unreadableHistory) {
+            // Also not a failure: this node is too old to read part of this
+            // workflow's persisted history — a newer node wrote it during a
+            // mixed-version deploy window. Writes nothing, runs no
+            // compensation, and leaves the instance in whatever recoverable
+            // status it already had, so an upgraded node adopts it through
+            // ordinary recovery. Placed with the other non-failure arms; like
+            // them the ordering is readability-only, since the exception is an
+            // Error and catch (Exception e) below could never reach it.
+            handleUnknownHistoryStandDown(ctx, unreadableHistory);
         } catch (DuplicateEventException staleRun) {
             // Issue 18: a DuplicateEventException that reaches this level means
             // "another run owns this workflow's progress — this node's view is
@@ -1491,6 +1502,14 @@ public final class WorkflowExecutor {
                 // compensations do not run — that is terminate's contract —
                 // and the TERMINATED row already stands, so nothing is written.
                 handleTermination(ctx, terminatedDuringCompensation);
+            } catch (UnknownWorkflowHistoryException unreadableDuringCompensation) {
+                // A compensation replay read met history this build cannot
+                // interpret. SagaManager rethrows instead of recording
+                // COMPENSATION_STEP_FAILED (a stand-down is not a failed
+                // reversal — nothing ran), the instance stays COMPENSATING —
+                // active and recoverable — and an upgraded node finishes the
+                // unwind. Nothing is written here.
+                handleUnknownHistoryStandDown(ctx, unreadableDuringCompensation);
             } catch (DuplicateEventException staleDuringCompensation) {
                 // The duplicate landed while compensating a genuine failure:
                 // another runner adopted the workflow and is compensating it
@@ -1607,6 +1626,53 @@ public final class WorkflowExecutor {
         emit("standDown", ctx.workflowId(), () ->
                 observer.standDown(StandDownReason.STALE_RUN, ctx.workflowId(),
                         "append collision at sequence " + e.sequenceNumber()));
+    }
+
+    // ── Internal: unknown-history stand-down (spec §C2) ────────────────
+
+    /**
+     * Records that a workflow's local run stood down because this node cannot
+     * interpret the workflow's persisted history — an event type this build
+     * does not define, or a stored payload it cannot read, written by a node
+     * running a newer build during a mixed-version deploy window.
+     *
+     * <p>Deliberately writes nothing. The instance keeps whatever recoverable
+     * status this run found it in and an upgraded node adopts it through the
+     * ordinary lock-TTL/recovery-poller machinery. This is <b>never</b>
+     * recorded as a workflow failure and <b>never</b> triggers compensation:
+     * doing either would mark a workflow that is perfectly healthy on the
+     * upgraded half of the fleet as {@code FAILED}, and unwind real work
+     * (refunds issued, reservations released) that never failed.
+     *
+     * <p>The instance lock is released by {@code executeWorkflow}'s
+     * {@code finally}, exactly as it is for a shutdown — this method
+     * deliberately adds no early return that could bypass it.
+     *
+     * <p><b>Re-adoption churn is intended.</b> This node's recovery poller will
+     * adopt and stand down the same instance once per poll until an upgraded
+     * node wins the lock race. Each pass logs one WARN and increments
+     * {@code maestro.standdown{reason}} — that steadily-rising counter <em>is</em>
+     * the operator signal that a mixed fleet is lingering, so it is not
+     * deduplicated away.
+     */
+    private void handleUnknownHistoryStandDown(WorkflowContext ctx,
+                                               UnknownWorkflowHistoryException e) {
+        var status = store.getInstance(ctx.workflowId())
+                .map(WorkflowInstance::status)
+                .orElse(null);
+        logger.warn("Workflow '{}' stood down at sequence {}: {} (instance status still {}) — no "
+                        + "failure recorded, no compensation run; an upgraded node will adopt it "
+                        + "via recovery",
+                ctx.workflowId(), e.sequenceNumber(), e.getMessage(), status);
+        emit("standDown", ctx.workflowId(), () ->
+                observer.standDown(standDownReason(e.kind()), ctx.workflowId(),
+                        "seq=" + e.sequenceNumber()));
+    }
+
+    private static StandDownReason standDownReason(UnknownWorkflowHistoryException.Kind kind) {
+        return kind == UnknownWorkflowHistoryException.Kind.UNKNOWN_EVENT_TYPE
+                ? StandDownReason.UNKNOWN_EVENT_TYPE
+                : StandDownReason.UNKNOWN_EVENT_PAYLOAD;
     }
 
     // ── Internal: failure handling ─────────────────────────────────────

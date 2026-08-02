@@ -257,6 +257,16 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     @Override
     public void appendEvent(WorkflowEvent event) {
         Objects.requireNonNull(event, "event");
+        if (event.eventType() == EventType.UNKNOWN) {
+            // The sentinel is how the READ path represents a type this build
+            // does not know. Persisting it would durably record "unreadable",
+            // which every node — upgraded or not — would then stand down on
+            // forever. It can never round-trip.
+            throw new IllegalArgumentException(
+                    "EventType.UNKNOWN is a read-side sentinel and must never be persisted "
+                            + "(workflowInstanceId=%s, sequenceNumber=%d)"
+                                    .formatted(event.workflowInstanceId(), event.sequenceNumber()));
+        }
 
         String sql = "INSERT INTO " + tableName("workflow_event")
                 + " (id, workflow_instance_id, sequence_number, event_type, step_name,"
@@ -621,12 +631,38 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                 .build();
     }
 
+    /**
+     * Maps an event row, degrading an unrecognised {@code event_type} string to
+     * {@link EventType#UNKNOWN} instead of throwing.
+     *
+     * <p>{@link EventType#valueOf} — what this used to call — throws
+     * {@link IllegalArgumentException} for a type written by a node running a
+     * newer build. Thrown from inside {@code getEventBySequence}/{@code
+     * getEvents}, that exception reaches {@code WorkflowExecutor} looking
+     * exactly like a workflow failure, so the workflow is durably marked
+     * {@code FAILED} <em>and its sagas compensate</em> — reversing real work
+     * for a workflow that never failed. The read path therefore never throws
+     * on the type column; the engine detects the sentinel at its replay reads
+     * and stands the run down instead.
+     *
+     * <p>The WARN here is the durable diagnostic that carries the raw string:
+     * this is the one place it exists, since {@link WorkflowEvent} models a
+     * type, not a name.
+     */
     private WorkflowEvent mapEvent(ResultSet rs) throws SQLException {
+        var rawType = rs.getString("event_type");
+        var eventType = EventType.fromStoredName(rawType);
+        if (eventType == EventType.UNKNOWN) {
+            log.warn("Unknown event type '{}' at (instance={}, seq={}) — written by a newer "
+                            + "node; this node will stand down when it reads this history",
+                    rawType, rs.getObject("workflow_instance_id", UUID.class),
+                    rs.getInt("sequence_number"));
+        }
         return new WorkflowEvent(
                 rs.getObject("id", UUID.class),
                 rs.getObject("workflow_instance_id", UUID.class),
                 rs.getInt("sequence_number"),
-                EventType.valueOf(rs.getString("event_type")),
+                eventType,
                 rs.getString("step_name"),
                 getJsonValue(rs, "payload"),
                 rs.getTimestamp("created_at").toInstant()

@@ -214,6 +214,11 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             var storedEvent = store.getEventBySequence(ctx.workflowInstanceId(), seq);
 
             if (storedEvent.isPresent()) {
+                // A type this build does not know means a newer node wrote this
+                // history: stand the run down BEFORE deciding replay-vs-live.
+                // (handleReplay's `default ->` guard stays — it still catches a
+                // known-but-wrong type, e.g. a TIMER_SCHEDULED at an activity slot.)
+                UnknownHistoryGuard.requireKnown(storedEvent.get(), ctx.workflowId());
                 var info = new ActivityInfo(ctx.workflowId(), ctx.workflowType(), stepName, seq);
                 if (storedEvent.get().eventType() == EventType.ACTIVITY_FAILED) {
                     // handleReplay throws for a memoized failure — observe it
@@ -255,7 +260,14 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         return switch (event.eventType()) {
             case ACTIVITY_COMPLETED -> {
                 logger.debug("Replaying completed activity '{}' at seq {}", stepName, seq);
-                yield deserializeResult(event.payload(), method);
+                // A stored payload this build cannot read is the payload-flavoured
+                // half of the same problem the type sentinel covers: a newer node
+                // shaped it. Stand down instead of failing the workflow. Only the
+                // REPLAY caller is wrapped — a live-path serialization failure is
+                // an ordinary workflow failure and must stay one.
+                yield UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), seq,
+                        "result of activity '%s'".formatted(stepName),
+                        () -> deserializeResult(event.payload(), method));
             }
             case ACTIVITY_FAILED -> {
                 logger.debug("Replaying failed activity '{}' at seq {}", stepName, seq);
