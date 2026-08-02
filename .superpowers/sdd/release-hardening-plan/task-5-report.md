@@ -813,9 +813,10 @@ A second detector covers the harder shape: a workflow whose *first* statement is
 point exists. There, `ActivityInfo.sequenceNumber() >= 1000` identifies a branch
 via the engine's documented sequence-space partition (CLAUDE.md: branch *i* of a
 fork at parent seq *p* allocates from `p*1000 + (i+1)*1000`, ≤999 steps per
-branch). The trade-off is stated in the code: misclassifying a main line longer
-than 999 steps costs that run only its segment span (activity spans become
-roots) — strictly better than a segment nothing can close.
+branch). **CORRECTED in fix round 2 — this trade-off was described wrongly in both
+directions.** See "Corrected blast radius" in the Fix round 2 section: the
+long-main-line cost is narrower than stated here, and the fork-first parking
+branch was wider (it was, in fact, still broken).
 
 Pinned by `TracingParallelBranchIT` on `TestWorkflows.ParallelWorkflow`
 (deliberately the fork-first shape). RED with the guards reverted
@@ -936,22 +937,18 @@ BUILD SUCCESSFUL in 1m 55s
 134 actionable tasks: 134 executed
 ```
 
-Net new tests this round: **11** (core +2, starter +3, kafka +3, integration +3
-— `TracingParallelBranchIT` 1, `KafkaTraceLinkageIT` +1, and the fan-out suite's
-own file). Module deltas vs. the original round: core 330→332, starter 100→103,
-kafka 36→39, integration 96→98.
+**CORRECTED in fix round 2 — this figure was wrong.** See the single
+authoritative count in the Fix round 2 section below; the "+3 integration /
+net 11" stated here contradicted its own 96→98 delta.
 
 ## Concerns after this round
 
 1. **F6 remains deferred as instructed** — `serviceName` is a node-wide volatile
    set by `workflowStarted`/`workflowResumed`, so the first recovered run's first
    segment on startup can lack `maestro.service.name`. Untouched.
-2. **F2's residual, now narrow but real:** a workflow that forks as its first
-   statement relies on the sequence-space heuristic rather than the exact fork
-   point. A main line exceeding 999 steps would lose its segment span (activity
-   spans become roots). Closing this properly needs a fork/join observation
-   boundary in `DefaultWorkflowOperations` — a new design surface, so it is
-   raised rather than taken.
+2. **F2's residual — CLOSED in fix round 2**, and it was larger than this
+   bullet claimed: the predicate was consulted only from `activityStarted`, so a
+   parking branch still leaked a segment. See Fix round 2.
 3. **Branch-level span events are dropped.** A branch that awaits a signal or
    sleeps has no segment to record `maestro.signal.consumed` /
    `maestro.timer.fired` on, so those events are skipped on branch threads. The
@@ -960,3 +957,201 @@ kafka 36→39, integration 96→98.
 4. **`docs/observability.md` still owes RULING 8's note** (event attributes are
    segment tags with last-write-wins) and the `maestro.observability.*`
    properties — Task 8's, unchanged from the original report.
+
+---
+
+# Fix round 2
+
+**Status: COMPLETE**
+
+pwd: `/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening`
+branch: `worktree-release-hardening`
+HEAD before this round: `8d47715`
+Implementation commit: `26cd8a9`; this report + evidence commit follows.
+
+Three items. Fix-round-1's own text has been corrected in place where it was
+wrong (marked **CORRECTED in fix round 2** at each site) rather than left to
+contradict this section.
+
+Evidence archived this round: `task-5-fix2-red-fanout.log`,
+`task-5-fix2-green-fanout.log`, `task-5-fix2-red-linkage.log`,
+`task-5-fix2-green-linkage.log`, `task-5-fix2-green-core.log`,
+`task-5-fix2-verify.log`, `task-5-fix2-build.log`.
+
+---
+
+## 1. F2 residual — the gate now lives in `ensureSegment`
+
+The branch predicate was consulted only from `activityStarted`. The other three
+`ensureSegment` callers — `workflowUnparked`, `signalConsumed`, `timerEvent` —
+did not consult it, so a branch that *parked* (explicitly supported: a branch may
+`sleep()` or `awaitSignal()`) opened a segment on the branch thread through the
+wake path, and nothing could ever close it. F2's exact defect, still live.
+
+**Fix:** the gate moved into `ensureSegment` itself, so all four entry points are
+covered by one check. The verdict now **latches per thread**
+(`RunState.branchThread`), because `activityStarted` is the only callback that
+carries a sequence number — a branch identified there must stay identified when
+it later wakes through callbacks that carry none.
+
+### Two corrections the pin needed before it discriminated
+
+Worth recording, because the first two versions of this test passed against the
+*broken* code and would have been false assurance:
+
+1. **`parallel()` runs a single-task list inline** (`DefaultWorkflowOperations:510`
+   — `if (tasks.size() == 1) { return List.of(tasks.getFirst().call()); }`). My
+   first fixture used one branch to dodge a race and therefore never forked a
+   thread at all; the "2 segments" it reported were an ordinary main-thread
+   park/resume chain. Diagnosed by dumping the exported spans and seeing the
+   activity at `maestro.sequence=1`, not ≥1000.
+2. **With only a pre-park activity, the leak is invisible.** A leaked segment is
+   never exported, and in that shape it has no exported children either — so
+   "leaked" and "never opened" produce byte-identical span output. The fixture
+   now runs a second activity **after** the park, which becomes the leaked
+   segment's child and is thus orphaned. That is what makes the defect
+   observable.
+
+A third constraint shaped the fixture: two branches parking concurrently race
+each other on the instance status row and the run dies with
+`OptimisticLockException` — an engine-level limitation of concurrent parking
+branches, unrelated to tracing. The fixture therefore forks two branches of which
+only one parks.
+
+RED, with the gate reverted to the fix-round-1 shape
+(`evidence/task-5-fix2-red-fanout.log`):
+
+```
+A parallel fan-out leaves no unclosed segment and no orphan parent > a fork-first workflow whose branches park still leaves no unclosed segment and no orphan parent FAILED
+...
+org.opentest4j.AssertionFailedError: a parking branch opened a segment nothing closed; orphaned spans: [maestro.activity(parent=43137248a0659e20)] ==> expected: <true> but was: <false>
+```
+
+### Corrected blast radius (replacing fix round 1's wrong description)
+
+Fix round 1 got this wrong in both directions.
+
+- **Narrower than stated:** the long-main-line cost does *not* apply to any run
+  exceeding 999 steps. `activityStarted` only latches the thread when it sees
+  `sequenceNumber >= 1000`; a segment already open keeps adopting activities as
+  their parent regardless. It bites only when the first live `activityStarted` on
+  a thread is already at seq ≥ 1000 — in practice, recovery replaying 1000+
+  memoized steps and then running live. For such a run the thread latches as a
+  branch: the open segment (if any) keeps adopting until the next park closes it,
+  after which no further segment opens on that thread, its activity spans become
+  roots and its span events are dropped.
+- **Wider than stated:** the fork-first *parking* branch was not a residual at
+  all — it was the unfixed defect, and is what this round closes.
+
+## 2. F1 residual — a guard at the persistence layer
+
+`TraceContextHolder.set` is public core API with no grammar enforcement, so fix
+round 1's Kafka-side validation was not the only route to the column: an embedder
+or a future traced transport can set a value directly and reintroduce the
+insert-fails → never-acked → dead-lettered → **signal discarded** path.
+
+**Fix:** `SignalManager.deliverSignal` drops a captured value longer than
+`TraceContextHolder.MAX_LENGTH` (128, the column width) and logs it, persisting
+the signal with no trace context. This is a bound on *size*, not an
+interpretation of *contents*, so RULING 2 holds — and degrading to absence rather
+than erroring is exactly what RULING 2 requires. `MAX_LENGTH` is documented,
+along with the constraint on `set(...)`'s Javadoc and the reason the trade is the
+only safe one.
+
+Pinned at three levels: two `SignalManagerTest` cases (over-long dropped but the
+signal still stored *and still consumable*; a value exactly at the limit still
+persisted, so the guard bounds rather than truncates the legitimate range), and
+`KafkaTraceLinkageIT.oversizedTraceContextViaHolderNeverDiscardsTheSignal`, which
+drives the **real** `VARCHAR(128)` column — the in-memory store used by the unit
+pins has no width and cannot prove this.
+
+**This round also produced the evidence fix round 1 could only infer.** With the
+guard reverted (`evidence/task-5-fix2-red-linkage.log`):
+
+```
+io.b2mash.maestro.store.jdbc.AbstractJdbcWorkflowStore$UncheckedSqlException: Update failed: INSERT INTO maestro_workflow_signal (id, workflow_instance_id, workflow_id, signal_name, payload, consumed, received_at, trace_context) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+```
+
+The failing insert is now directly greppable. The Postgres `22001` / "value too
+long" text is still **not** in the archived log — the cause chain is not printed
+— so, as in fix round 1, only the string above is quoted as fact.
+
+## 3. Test counts — recounted from the XML, stated once
+
+Authoritative per-module totals, from the JUnit XML appended to each round's
+verify log:
+
+| Module | Original round | Fix round 1 | Fix round 2 |
+|---|---|---|---|
+| `maestro-core` | 330 | 332 | **334** |
+| `maestro-spring-boot-starter` | 100 | 103 | **103** |
+| `maestro-messaging-kafka` | 36 | 39 | **39** |
+| `maestro-store-postgres` | 57 | 57 | **57** |
+| `maestro-integration-tests` | 96 | 98 | **100** |
+
+Net new tests: original round **50**; fix round 1 **10** (core +2, starter +3,
+kafka +3, integration +2 — the "11 / integration +3" in that section was wrong
+and is corrected there); fix round 2 **4** (core +2, integration +2). Task 5
+total: **64**.
+
+## Verification
+
+Required command (`evidence/task-5-fix2-verify.log`):
+
+```
+$ ./gradlew :maestro-core:test :maestro-spring-boot-starter:test :maestro-messaging-kafka:test :maestro-store-postgres:test :maestro-integration-tests:test --rerun-tasks
+
+BUILD SUCCESSFUL in 1m 53s
+44 actionable tasks: 44 executed
+```
+
+Full build (`evidence/task-5-fix2-build.log`):
+
+```
+BUILD SUCCESSFUL in 1m 56s
+134 actionable tasks: 134 executed
+```
+
+All temporary RED patches reverted from pristine copies; `grep -c "TEMPORARY RED"`
+returns `0` for `TracingEngineObserver.java` and `SignalManager.java`.
+
+---
+
+## Known limitations (deferred by coordinator ruling — for Task 8 to fold into `docs/observability.md`)
+
+1. **A workflow started from a workflow thread gets no segment of its own.**
+   `forkPoint` is an `InheritableThreadLocal`, so any thread created by a workflow
+   thread is treated as a parallel branch. An embedder child-workflow pattern —
+   starting a workflow from inside another workflow's thread — would therefore
+   give the child run no run segment, and its activity spans would be parented
+   under the *parent* workflow's segment. There is no in-tree caller that does
+   this; flagged so the behaviour is documented rather than discovered.
+2. **The first recovered segment on startup can lack `maestro.service.name`**
+   (F6, deferred). `serviceName` is a node-wide `volatile` set from
+   `workflowStarted`/`workflowResumed`, and `workflowResumed` is emitted after
+   `thread.start()`, so the first recovered run can open its segment before the
+   value is populated.
+3. **Branch-level span events are dropped.** Because a branch never holds a
+   segment, `maestro.signal.consumed` / `maestro.timer.fired` /
+   `maestro.timer.cancelled` raised inside a parallel branch have nowhere to be
+   recorded and are skipped. Branch activity spans and their parenting are
+   unaffected.
+4. **A real fork/join observation boundary is post-1.0 work.** Both the branch
+   detection above and limitation 1 exist only because the engine has no callback
+   marking the start and end of a parallel branch. Adding one would make branch
+   handling exact instead of inferred, and would let branch segments exist and be
+   closed properly — a design-surface change, deliberately not taken in this
+   cycle.
+
+## Concerns after this round
+
+1. All three items in this round's brief are closed, with a discriminating pin
+   for each (both REDs verified to fail against the pre-fix code).
+2. `docs/observability.md` still owes RULING 8's note (event attributes are
+   segment tags, last-write-wins), the `maestro.observability.*` properties, and
+   the four limitations above — all Task 8's.
+3. Concurrent parking branches die with `OptimisticLockException` (two branches
+   writing the instance status row at once). Found while building this round's
+   fixture; it is an engine limitation entirely separate from tracing, is not
+   something this task introduced, and is recorded here only so it is not
+   rediscovered as a tracing bug.
