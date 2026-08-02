@@ -946,6 +946,11 @@ anyone re-reading the raw console, `evidence/task7/soak-console.log`):
    (interrupt-safe pacer, runaway cap, in-flight bound) **are** in
    `b2b5c65`; the later fix-loop commits touch failure paths, teardown, and
    reporting only — none of them alter what this run measured.
+4. Schema provenance: the run's `run-summary.json` omits
+   `payload.generationBackPressure` because the `b2b5c65` binary predates
+   that field (added in `8cd2754`). Back-pressure values are therefore
+   unavailable for this run; the historical artifact is not regenerated,
+   and every future soak run records the field.
 
 ---
 

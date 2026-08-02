@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+#
+# ARCHIVAL RECORD — not reusable tooling (CodeRabbit PR #30 ruling: annotate,
+# don't engineer). This wrapper is the exact invocation used during the
+# multi-instance verification cycle, committed as a record of how the runs of
+# record were launched. The hardcoded worktree path is intentional: single-use,
+# session-scoped tooling pinned to the cycle's worktree. Consumers read the
+# *_EXIT= marker(s) from the log the wrapper writes; the wrapper process's own
+# exit status is deliberately not meaningful.
+#
 cd /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/multi-instance-verification
 LOG=.superpowers/sdd/multi-instance/evidence/task7/soak-after-smoke-postdriverfix.log
 {

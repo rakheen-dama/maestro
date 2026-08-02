@@ -28,10 +28,17 @@ instead of hot-spinning on a no-op sleep until their deadlines — the same bug 
 miniature, triggered at every `executor.shutdownNow()`.
 
 ### Scope 2 — runaway guard (belt and braces)
-`generateAt` computes `runawayCap = 3 x round(rate x window-minutes) + 100`
-(slack for tiny smoke/tail windows and Poisson variance). `seq >= cap` ERROR-logs
-and throws `IllegalStateException("Runaway workload generation ...")` — whatever
-the trigger, generation can never exceed 3x intended load without failing the run.
+`generateAt` computes `runawayCap = 3 x max(1, round(rate x window-minutes)) + 100`.
+The `+ 100` is a deliberate fixed floor, not rounding noise: tiny smoke/tail
+windows round to single-digit budgets, and Poisson arrivals legitimately
+overshoot small windows — a strict 3x would false-positive there. `seq >= cap`
+ERROR-logs and throws `IllegalStateException("Runaway workload generation ...")`
+— whatever the trigger, generation is hard-capped at 3x the intended load plus
+that fixed 100-arrival slack (e.g. cap 400 for 600/min over 10s, vs the RED
+run's unbounded 63,798). The pacing pin asserts the *stricter* plain-3x bound
+(300 in its failure message): a promptly-aborting pacer generates far below
+even that, so the test bound proves the abort; the runtime guard's `+ 100`
+slack exists for the tiny-window shapes the pin does not exercise.
 
 ### Scope 3 — in-flight bound
 `Semaphore inFlight = max(60, 15 x config.ratePerMinute)`, acquired
