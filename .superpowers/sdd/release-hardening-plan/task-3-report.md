@@ -197,3 +197,180 @@ Evidence: `.superpowers/sdd/release-hardening/evidence/task-3-red.log`,
   replay traffic flagged; Micrometer/tracing adapters skip
   `replayed == true`.
 - `SignalInfo.traceContext` is always `null` until Task 5 wires the holder.
+
+---
+
+# Fix round 1
+
+**Status: COMPLETE**
+Commits: `90e3432` (F1), `a0accac` (F2), evidence/report commit follows.
+Evidence: `.superpowers/sdd/release-hardening/evidence/task-3-fix1-red.log`,
+`.../task-3-fix1-green.log`, `.../task-3-fix1-build.log`.
+
+## F1 — a throwing observer read as a lock-backend failure
+
+`WorkflowInstanceLockManager.tryAcquire`: `observer.instanceLockAcquired(...)`
+moved **after** the backend `try` whose `catch (Exception)` returns
+`NO_BACKEND`, and contained locally (`RuntimeException` only — `Error`s
+propagate, per the composite's discipline).
+
+Containment is part of the fix, not extra: the handle is already in
+`heldLocks` by then, so letting the exception propagate instead would leak
+exactly the same lock (and break the method's documented *"never throws"*
+contract at line 126).
+
+**Also fixed, same class, same method family — `renewOne`.**
+`observer.instanceLockLost(...)` sat inside `renewOne`'s `try`. A throwing
+observer there was (a) mis-reported as a *transient renew failure* and (b) the
+`instanceLockRenewFailed` emission in that `catch` block then threw again,
+escaping `renewOne` → the `for` loop → `renewLoop()` — which has no try/catch
+of its own. The single renewer thread dies and **every** held lock silently
+stops being renewed, so live workflows get stolen by peers at TTL expiry. Both
+emissions now sit outside the backend `try` and go through the same contained
+`emit(...)`.
+
+### The two sites the reviewer flagged
+
+**`WorkflowExecutor` `workflowStarted` (was line 439) — NOT benign; fixed.**
+A throw there propagates out of `startWorkflow` *after* `createInstance` and
+*after* `tryAcquire` returned `ACQUIRED`. The instance row exists as `RUNNING`,
+`launchWorkflow` never runs, and nothing releases the lock — the renewer keeps
+it alive forever, `tryAcquire` returns `HELD_ELSEWHERE` for that `workflowId`
+on this node from then on, and peers see a renewed lock. Same permanent-stall
+shape as F1. Contained.
+
+**`SagaManager` `workflowCompensating` (was line 174) — NOT benign; fixed,
+and it also had F2's ordering bug (see below).** A throw escapes `compensate()`
+→ `handleWorkflowFailure`'s `try` catches only `CompensationException` → out of
+`executeWorkflow` entirely (its catches are `ExecutorShutdownException`,
+`WorkflowTerminatedException`, `DuplicateEventException`, `Exception` — and
+this throw originates *inside* the `catch (Exception)` block, so nothing
+catches it). The `FAILED` transition never happens and the instance is left
+stuck in `COMPENSATING`. Contained.
+
+### The remaining `WorkflowExecutor` emissions
+
+Every emission in the class now goes through one contained `emit(callback,
+workflowId, Runnable)` — a single uniform rule is cheaper to review than a
+per-site asymmetry, and it is a no-op unless an observer throws. Per-site
+judgement, for the record:
+
+| Site | Escape consequence |
+|---|---|
+| `workflowStarted` | lock leaked + `RUNNING` instance never launched (above) |
+| `workflowTerminated` | `parkingLot.abandonWorkflow` skipped — an operator-terminated workflow keeps executing activities on this node |
+| `workflowResumed` | escapes `resumeWorkflow` → aborts the `recoverWorkflows` loop mid-pass; deterministic if the adapter always throws |
+| `recoveryPass` | escapes to `StartupRecoveryRunner` → application startup fails (`RecoveryPoller` does contain it) |
+| `workflowCompleted` / `workflowFailed` | see F2 |
+| `standDown` | genuinely benign — last statement of `handleStaleRunStandDown`, all durable work done, `executeWorkflow`'s `finally` still runs. Contained only for uniformity. |
+
+## F2 — terminal emission ordered after the append
+
+`workflowCompleted` and `workflowFailed` now fire **immediately after the
+winning `transitionToTerminal`**, before `appendEvent` and the lifecycle
+publish. Winning that transition is what durably makes this run the completer;
+nothing after it may decide whether the outcome is observed.
+
+**Correction to the finding's stated mechanism, for the coordinator's record.**
+The cited path — terminal append collides → `workflowCompleted` skipped →
+`standDown(STALE_RUN)` counted instead — is **not reachable today at
+`WorkflowExecutor:1413/1617`**: the executor's own
+`appendEvent(ctx, type, stepName, payload)` swallows *every* exception
+including `DuplicateEventException` (`catch (Exception e) { logger.warn(...) }`),
+so the collision never escapes to `executeWorkflow`'s
+`catch (DuplicateEventException)`. `publishLifecycleEvent` cannot throw either
+(`LifecycleEventPublisher.submit` swallows `RejectedExecutionException`). The
+reorder is still applied — it is free, and it makes the emission unconditional
+on the durable fact rather than on a swallow that a future change could remove.
+
+**The same bug IS real in the compensation path, and that is the RED test.**
+`SagaManager.appendEvent` deliberately *rethrows* `DuplicateEventException`
+(Issue 18, so a stale run stops executing compensation actions). Its
+`COMPENSATION_STARTED` append therefore does escape → `handleStaleRunStandDown`
+→ `standDown(STALE_RUN)`, with `workflowCompensating` never emitted for a
+compensation phase that genuinely started on this node. Emission moved before
+the append.
+
+Containment is again load-bearing here: emitting *before* the append puts the
+callback inside `executeWorkflow`'s `try`, where an escaping
+`RuntimeException` would land in `catch (Exception e)` → `handleWorkflowFailure`
+→ **compensations run for a workflow that just succeeded**. The contained
+`emit(...)` closes that.
+
+## Covering tests (5 new; 3 fail without the fix)
+
+`maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowInstanceLockManagerObserverTest.java`
+- `a throwing instanceLockAcquired does not report NO_BACKEND and does not leak the lock` — asserts `ACQUIRED` (not `NO_BACKEND`), the callback was attempted, `isHeld` is true, and the caller's `release()` still drops the handle. **RED before the fix.**
+- `a throwing instanceLockLost does not kill the renewer — every held lock is still processed` — two held locks, both lost; asserts *both* handles get dropped, i.e. the renewer survived the first throwing callback. **RED before the fix** (the thread dies and the second lock stays held).
+
+`maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowExecutorObserverTest.java`
+- `compensation-start append collision: the compensation phase is still reported, not only the stand-down` — `COMPENSATION_STARTED` append collides; asserts `standDown` fires (correct) **and** `workflowCompensating` fires. **RED before the fix.**
+- `terminal append collision: a run that durably completed still reports completion, never a stand-down` — instance row durably `COMPLETED`, `workflowCompleted` once, zero stand-downs. **Passes before the fix too** (the swallow above); kept as the regression pin for the new ordering.
+- `terminal append collision: a run that durably failed still reports the failure` — same shape for `WORKFLOW_FAILED`. Also a pin, not a RED.
+
+New fault injection: `VersionedInMemoryStore.collideOnEventType(EventType)` —
+forces every append of one event type to raise `DuplicateEventException`,
+modelling a concurrent runner that already owns that sequence.
+
+## Commands run
+
+### 1. RED — new tests only, main sources reverted to HEAD `006b62e` via `git stash`
+
+```
+$ ./gradlew :maestro-core:test --tests '*WorkflowInstanceLockManagerObserverTest' --tests '*WorkflowExecutorObserverTest' --rerun-tasks
+
+> Task :maestro-core:test
+
+WorkflowExecutor wires EngineObserver emissions at every design §1 site > compensation-start append collision: the compensation phase is still reported, not only the stand-down FAILED
+    org.opentest4j.AssertionFailedError at WorkflowExecutorObserverTest.java:249
+
+WorkflowInstanceLockManager emits lock observer callbacks > a throwing instanceLockLost does not kill the renewer — every held lock is still processed FAILED
+    org.opentest4j.AssertionFailedError at WorkflowInstanceLockManagerObserverTest.java:140
+
+WorkflowInstanceLockManager emits lock observer callbacks > a throwing instanceLockAcquired does not report NO_BACKEND and does not leak the lock FAILED
+    org.opentest4j.AssertionFailedError at WorkflowInstanceLockManagerObserverTest.java:121
+
+17 tests completed, 3 failed
+
+> Task :maestro-core:test FAILED
+```
+
+(The two terminal-collision pins pass here — see the mechanism correction above.)
+
+### 2. GREEN — full core suite, fixes applied
+
+```
+$ ./gradlew :maestro-core:test --rerun-tasks
+> Task :maestro-core:testClasses
+> Task :maestro-core:test
+
+BUILD SUCCESSFUL in 48s
+12 actionable tasks: 12 executed
+```
+
+JUnit XML totals for that run: **tests=317 failures=0 errors=0 skipped=0**
+(312 before this round + 5 new).
+
+### 3. Full multi-module build
+
+```
+$ ./gradlew build
+> Task :maestro-integration-tests:check
+> Task :maestro-integration-tests:build
+
+BUILD SUCCESSFUL in 1m 42s
+134 actionable tasks: 34 executed, 100 up-to-date
+```
+
+## Residual risk for the coordinator
+
+Containment is now duplicated at three call sites (`WorkflowExecutor`,
+`WorkflowInstanceLockManager`, `SagaManager`) because
+`CompositeEngineObserver.of` collapses to the bare delegate at size 1 — design
+§1.2, pinned by `CompositeEngineObserverTest.of(single) returns the sole
+delegate itself`. `SignalManager`, `DefaultWorkflowOperations` and
+`ActivityInvocationHandler` still emit raw; their throws were not in scope this
+round and were not audited. If Task 4's adapter can throw at all, the durable
+fix is one place — either drop the size-1 collapse, or have the engine wrap
+whatever observer it is handed — rather than a guard per call site. Flagging
+rather than deciding: it changes a design-doc-binding shape.
