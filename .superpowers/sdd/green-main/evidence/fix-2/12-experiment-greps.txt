@@ -1,0 +1,9 @@
+146:    04:44:16.493 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PublishedPortReconnectExperimentIT -- [expB] BEFORE: ip=10.174.244.2 getMappedPort=59440 dockerNat=0.0.0.0:59440 :::59440 reachable=true
+147:    04:44:18.609 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PublishedPortReconnectExperimentIT -- [expB] PARTITIONED: ip=<none> getMappedPort=59440 dockerNat=0.0.0.0:59440 :::59440 reachable=false
+148:    04:44:18.649 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PublishedPortReconnectExperimentIT -- [expB] RECONNECTED: ipBefore=10.174.244.2 ipAfter=10.174.244.99 ipChanged=true getMappedPortBefore=59440 getMappedPortAfter=59440 portNumberChanged=false dockerNat=0.0.0.0:59440 :::59440
+149:    04:44:38.717 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PublishedPortReconnectExperimentIT -- [expB] VERDICT: publishedPortReachableAfterReconnect=false (host=localhost port=59440)
+157:    04:44:39.384 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PublishedPortReconnectExperimentIT -- [expA] BEFORE: ip=10.174.244.2 getMappedPort=59457 dockerNat=0.0.0.0:59457 :::59457 reachable=true
+158:    04:44:41.522 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PublishedPortReconnectExperimentIT -- [expA] PARTITIONED: ip=<none> getMappedPort=59457 dockerNat=0.0.0.0:59457 :::59457 reachable=false
+159:    04:44:41.569 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PublishedPortReconnectExperimentIT -- [expA] RECONNECTED: ipBefore=10.174.244.2 ipAfter=10.174.244.2 ipChanged=false getMappedPortBefore=59457 getMappedPortAfter=59457 portNumberChanged=false dockerNat=0.0.0.0:59457 :::59457
+160:    04:44:41.571 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PublishedPortReconnectExperimentIT -- [expA] VERDICT: publishedPortReachableAfterReconnect=true (host=localhost port=59457)
+166:BUILD SUCCESSFUL in 28s
