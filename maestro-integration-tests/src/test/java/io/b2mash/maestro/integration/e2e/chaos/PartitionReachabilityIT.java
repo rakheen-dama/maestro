@@ -165,6 +165,40 @@ class PartitionReachabilityIT {
         }
     }
 
+    @Test
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
+    @DisplayName("a genuinely dead node still fails the probe through the ambassador")
+    void aDeadNodeIsStillReportedDown() throws Exception {
+        try (Network network = subnettedNetwork();
+             NodeAmbassador ambassador = new NodeAmbassador(network, List.of(ALIAS), NODE_PORT)) {
+
+            ambassador.start();
+            var endpoint = Endpoint.of(ambassador.baseUrl(ALIAS));
+
+            // No node has ever existed behind the alias.
+            assertFalse(reachable(endpoint),
+                    "with nothing behind the alias the probe must fail — an ambassador that "
+                            + "reported healthy here would turn a real outage into a false green");
+
+            try (GenericContainer<?> node = echoNode(network)) {
+                node.start();
+                assertTrue(reachable(endpoint), "the node is up: the probe must succeed");
+
+                docker.killContainerCmd(node.getContainerId()).withSignal("SIGKILL").exec();
+                assertTrue(unreachableWithin(endpoint, 30_000),
+                        "after kill -9 the probe must fail again through the ambassador");
+            }
+
+            // Why the harness's probe must require a *response*, not merely a
+            // connect: socat's listener stays bound, so a bare TCP connect can
+            // be accepted and then immediately closed with the backend gone.
+            // ChaosCluster.isHttpUp sends a real HTTP request and requires a
+            // status line, which is the round-trip this probe models.
+            log.info("[repro] bare TCP connect with the backend dead: accepted={}",
+                    connectSucceeds(endpoint));
+        }
+    }
+
     /** A host-side {@code host:port} the test probes over raw TCP. */
     private record Endpoint(String host, int port) {
         static Endpoint of(String baseUrl) {
@@ -229,6 +263,33 @@ class PartitionReachabilityIT {
             }
         }
         return false;
+    }
+
+    /** @return true if {@code endpoint} stops answering within {@code millis}. */
+    private static boolean unreachableWithin(Endpoint endpoint, long millis) {
+        long deadline = System.nanoTime() + millis * 1_000_000L;
+        while (System.nanoTime() < deadline) {
+            if (!reachable(endpoint)) {
+                return true;
+            }
+            try {
+                Thread.sleep(500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /** A bare connect, with no round-trip — what the probe must NOT rely on. */
+    private static boolean connectSucceeds(Endpoint endpoint) {
+        try (Socket s = new Socket()) {
+            s.connect(new InetSocketAddress(endpoint.host(), endpoint.port()), 2000);
+            return true;
+        } catch (IOException e) {
+            return false;
+        }
     }
 
     private static boolean reachable(Endpoint endpoint) {
