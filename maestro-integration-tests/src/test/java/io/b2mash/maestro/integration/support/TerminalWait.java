@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.spi.WorkflowStore;
+import org.jspecify.annotations.Nullable;
 
 import java.time.Duration;
 import java.util.Optional;
@@ -60,6 +61,16 @@ public final class TerminalWait {
      * Reports whether a run is finished in the durable log, not merely flagged
      * as finished on the instance row.
      *
+     * <p>The expected event is derived from the observed status rather than
+     * accepting <em>either</em> terminal event. Accepting either would let a
+     * {@code COMPLETED} instance be satisfied by a leftover
+     * {@code WORKFLOW_FAILED} from an earlier attempt of a retried workflow, and
+     * the wait would return before the {@code WORKFLOW_COMPLETED} the caller
+     * actually asserts on had landed. That is unreachable today only because
+     * {@code AbstractJdbcWorkflowStore.deleteFailureEvents} strips
+     * {@code WORKFLOW_FAILED} before every retry — a dependency this predicate
+     * has no business relying on, so it does not.
+     *
      * @param store    the store to read through
      * @param instance the instance to judge
      * @return {@code true} once the status is terminal <em>and</em> the matching
@@ -67,15 +78,12 @@ public final class TerminalWait {
      *         {@link WorkflowStatus#TERMINATED}, which appends none)
      */
     public static boolean isFinalised(WorkflowStore store, WorkflowInstance instance) {
-        if (!instance.status().isTerminal()) {
-            return false;
+        var expected = terminalEventFor(instance.status());
+        if (expected == null) {
+            return instance.status() == WorkflowStatus.TERMINATED;
         }
-        if (instance.status() == WorkflowStatus.TERMINATED) {
-            return true;
-        }
-        return store.getEvents(instance.id()).stream().anyMatch(e ->
-                e.eventType() == EventType.WORKFLOW_COMPLETED
-                        || e.eventType() == EventType.WORKFLOW_FAILED);
+        return store.getEvents(instance.id()).stream()
+                .anyMatch(e -> e.eventType() == expected);
     }
 
     /**
@@ -126,5 +134,18 @@ public final class TerminalWait {
                 .map(i -> i.status() == expected
                         && (!expected.isTerminal() || isFinalised(store, i)))
                 .orElse(false);
+    }
+
+    /**
+     * @param status a workflow status
+     * @return the event that closes a run in that status, or {@code null} when
+     *         the status is non-terminal or is {@link WorkflowStatus#TERMINATED}
+     */
+    private static @Nullable EventType terminalEventFor(WorkflowStatus status) {
+        return switch (status) {
+            case COMPLETED -> EventType.WORKFLOW_COMPLETED;
+            case FAILED -> EventType.WORKFLOW_FAILED;
+            default -> null;
+        };
     }
 }

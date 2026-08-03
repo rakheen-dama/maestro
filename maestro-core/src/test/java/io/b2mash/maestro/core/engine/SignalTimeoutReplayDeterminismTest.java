@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.TestTerminalWait;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
@@ -108,10 +109,7 @@ class SignalTimeoutReplayDeterminismTest {
                         .orElse(false));
         nodeB.deliverSignal(workflowId, "second", "go");
 
-        await().atMost(Duration.ofSeconds(5)).until(() ->
-                store.getInstance(workflowId)
-                        .map(i -> i.status().isTerminal())
-                        .orElse(false));
+        TestTerminalWait.awaitTerminal(store, workflowId, Duration.ofSeconds(5));
 
         var instance = store.getInstance(workflowId).orElseThrow();
         assertEquals(WorkflowStatus.COMPLETED, instance.status());
@@ -155,10 +153,7 @@ class SignalTimeoutReplayDeterminismTest {
                 new SagaGateWorkflow(reserved, released), method);
         nodeB.recoverWorkflows(Map.of("SagaGateWorkflow", reg));
 
-        await().atMost(Duration.ofSeconds(5)).until(() ->
-                store.getInstance(workflowId)
-                        .map(i -> i.status().isTerminal())
-                        .orElse(false));
+        TestTerminalWait.awaitTerminal(store, workflowId, Duration.ofSeconds(5));
 
         var instance = store.getInstance(workflowId).orElseThrow();
         assertEquals(WorkflowStatus.FAILED, instance.status());
@@ -181,10 +176,7 @@ class SignalTimeoutReplayDeterminismTest {
         nodeA.startWorkflow(workflowId, "SingleAwaitWorkflow", "default", null, workflow, method);
 
         // The await times out uncaught → FAILED, with a SIGNAL_TIMEOUT memo.
-        await().atMost(Duration.ofSeconds(5)).until(() ->
-                store.getInstance(workflowId)
-                        .map(i -> i.status() == WorkflowStatus.FAILED)
-                        .orElse(false));
+        TestTerminalWait.awaitStatus(store, workflowId, WorkflowStatus.FAILED, Duration.ofSeconds(5));
 
         // Operator fixes the fault (delivers the signal) and retries.
         nodeA.deliverSignal(workflowId, "approval", "granted");
@@ -192,10 +184,7 @@ class SignalTimeoutReplayDeterminismTest {
                 new SingleAwaitWorkflow(), method);
         nodeA.retryWorkflow(workflowId, reg);
 
-        await().atMost(Duration.ofSeconds(5)).until(() ->
-                store.getInstance(workflowId)
-                        .map(i -> i.status().isTerminal())
-                        .orElse(false));
+        TestTerminalWait.awaitTerminal(store, workflowId, Duration.ofSeconds(5));
 
         var instance = store.getInstance(workflowId).orElseThrow();
         assertEquals(WorkflowStatus.COMPLETED, instance.status(),
@@ -217,10 +206,7 @@ class SignalTimeoutReplayDeterminismTest {
 
         // Gate times out (caught, memoized); the flaky step then fails → FAILED.
         assertTrue(proceeded.await(5, java.util.concurrent.TimeUnit.SECONDS));
-        await().atMost(Duration.ofSeconds(5)).until(() ->
-                store.getInstance(workflowId)
-                        .map(i -> i.status() == WorkflowStatus.FAILED)
-                        .orElse(false));
+        TestTerminalWait.awaitStatus(store, workflowId, WorkflowStatus.FAILED, Duration.ofSeconds(5));
 
         // A late gate signal arrives before the retry. The retry's replay must
         // STILL take the timed-out branch (the caught memo survives) — deleting
@@ -231,10 +217,7 @@ class SignalTimeoutReplayDeterminismTest {
                 method);
         nodeA.retryWorkflow(workflowId, reg);
 
-        await().atMost(Duration.ofSeconds(5)).until(() ->
-                store.getInstance(workflowId)
-                        .map(i -> i.status().isTerminal())
-                        .orElse(false));
+        TestTerminalWait.awaitTerminal(store, workflowId, Duration.ofSeconds(5));
 
         var instance = store.getInstance(workflowId).orElseThrow();
         assertEquals(WorkflowStatus.COMPLETED, instance.status());

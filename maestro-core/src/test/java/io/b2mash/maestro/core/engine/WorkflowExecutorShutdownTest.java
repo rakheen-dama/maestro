@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.TestTerminalWait;
 import io.b2mash.maestro.core.annotation.Compensate;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
@@ -33,7 +34,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static io.b2mash.maestro.core.TestEventLogs.removeFailureEvents;
-import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -583,12 +583,14 @@ class WorkflowExecutorShutdownTest {
 
     // ── Helpers ────────────────────────────────────────────────────────
 
+    /**
+     * Waits for a status and, when that status is terminal, for the terminal
+     * <em>event</em> too: the row is written before the event is appended, and
+     * four of the terminal callers here go on to assert
+     * {@code hasEvent(..., WORKFLOW_FAILED)}. See {@link TestTerminalWait}.
+     */
     private void awaitStatus(String workflowId, WorkflowStatus expected) {
-        await().atMost(Duration.ofSeconds(15))
-                .pollInterval(Duration.ofMillis(20))
-                .until(() -> store.getInstance(workflowId)
-                        .map(i -> i.status() == expected)
-                        .orElse(false));
+        TestTerminalWait.awaitStatus(store, workflowId, expected, Duration.ofSeconds(15));
     }
 
     private boolean hasEvent(String workflowId, EventType type) {

@@ -214,11 +214,19 @@ public final class TestWorkflowHandle {
      *         none
      */
     private boolean terminalEventLanded(WorkflowStatus status) {
-        if (status == WorkflowStatus.TERMINATED) {
+        // Derived from the observed status rather than accepting EITHER terminal
+        // event: a retried workflow that failed once and then completed would
+        // otherwise be "finished" the moment the stale WORKFLOW_FAILED was seen,
+        // before its WORKFLOW_COMPLETED landed. Stores strip failure memos on
+        // retry, but this predicate does not depend on their doing so.
+        var expected = switch (status) {
+            case COMPLETED -> EventType.WORKFLOW_COMPLETED;
+            case FAILED -> EventType.WORKFLOW_FAILED;
+            default -> null;    // TERMINATED appends no event
+        };
+        if (expected == null) {
             return true;
         }
-        return store.getEvents(instanceId).stream().anyMatch(e ->
-                e.eventType() == EventType.WORKFLOW_COMPLETED
-                        || e.eventType() == EventType.WORKFLOW_FAILED);
+        return store.getEvents(instanceId).stream().anyMatch(e -> e.eventType() == expected);
     }
 }

@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.TestTerminalWait;
 import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
@@ -461,9 +462,21 @@ class WorkflowExecutorRetryTest {
 
     // ── Helpers ────────────────────────────────────────────────────────
 
+    /**
+     * Waits for a status and, when that status is terminal, for the terminal
+     * <em>event</em> too.
+     *
+     * <p>The row is written before the event is appended, so a status-only gate
+     * hands the test a log the engine has not finished writing. Two callers care
+     * directly: {@code retryWorkflow_...} asserts {@code WORKFLOW_COMPLETED} is
+     * present, and {@code deletedMemosOnStillFailed_isHarmless} calls
+     * {@code deleteFailureEvents} and asserts it removed something — a delete
+     * racing a not-yet-appended {@code WORKFLOW_FAILED} would leave the memo
+     * behind and quietly invalidate the scenario it models. See
+     * {@link TestTerminalWait}.
+     */
     private void awaitStatus(String workflowId, WorkflowStatus expected) {
-        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
-                assertEquals(expected, store.getInstance(workflowId).orElseThrow().status()));
+        TestTerminalWait.awaitStatus(store, workflowId, expected, Duration.ofSeconds(5));
     }
 
     private boolean hasEvent(UUID instanceId, EventType type) {
