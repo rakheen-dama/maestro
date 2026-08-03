@@ -13,3 +13,11 @@ Fix 1 — intermittent Build&Test flake (run 30728290264, EnginePostgresParallel
 Fix 2 — nightly E2E chaos red (run 30731056376, healAll -> awaitAllNodesHealthy timeout at 181.9s on a PARTITIONed node):
 - Root cause: `docker network disconnect --force` + reconnect gives the container a NEW IP, stranding the published-port NAT that Testcontainers' baseUrl() uses. Node stays alive on Kafka/Postgres; only the harness HTTP probe is blinded. Seed-dependent (KILL9/ROLLING_RESTART heal via replace(), immune).
 - Implementer ae5107c09bdc1ab64 (opus) DIED on a transient API error after committing its repro f0219f1; resumed with a precise state summary. In-flight uncommitted: ChaosCluster.java, PartitionReachabilityIT.java, new NodeAmbassador.java. Asked to justify the ambassador approach vs simply re-resolving the mapped port.
+
+Fix 2 — DECISIVE EXPERIMENT (PublishedPortReconnectExperimentIT, archived then deleted; verdict in evidence/fix-2/):
+- expA: reconnect where the container got the SAME IP back (ipChanged=false) -> published port REACHABLE (true).
+- expB: reconnect where the IP changed (10.174.244.2 -> 10.174.244.99) -> published port UNREACHABLE (false), while getMappedPort() returned the SAME number (59440) and the Docker NAT still showed 0.0.0.0:59440.
+=> The NAT rule survives the reconnect but keeps pointing at the OLD container IP. Re-resolving getMappedPort() cannot help: same number, dead target. This also explains the intermittency of the nightly failure (Docker sometimes hands back the same IP). Ambassador approach JUSTIFIED BY EVIDENCE.
+- Agent deaths on this task: FOUR, all "connection closed mid-response", never a work defect. Coordinator WIP-committed be4d6ab to protect in-flight work after the 4th. Mitigation that worked: brief-on-disk (.superpowers/sdd/green-main/fix-2-brief.md) + a SHORT dispatch prompt + commit-every-15-minutes.
+- Commits: f0219f1 (repro), be4d6ab (coordinator WIP protect), 017204f (fix: never-partitioned ambassador), 51eb9bc (drop the experiment now its verdict is archived), 09e9fa1 (report: verdict, rationale, endpoint audit).
+- IN FLIGHT: seeded full e2e run, -Dmaestro.chaos.seed=17 (PARTITIONs predicted at controller iterations 2/3/6/7), to be confirmed against the run's own chaos-actions.jsonl.
