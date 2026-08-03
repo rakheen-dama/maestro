@@ -139,6 +139,26 @@ Full reference: [`docs/concepts.md` → Versioning Workflow Code](concepts.md#ve
   `workflow.version()`", **not** "wait for the deploy to finish" — otherwise the
   new stand-down behaviour turns a visible failure into a silent zombie.
 
+### Changed — `maestro-test` waits for the terminal *event*, not the terminal status
+
+- **`TestWorkflowHandle.awaitCompletion(...)` and `getResult(...)` now wait for
+  the workflow's `WORKFLOW_COMPLETED` / `WORKFLOW_FAILED` event to reach the
+  event log**, not merely for the instance row to read `COMPLETED`/`FAILED`.
+  The engine finalises a run with two separate, non-transactional writes and the
+  instance row goes first, so returning on the status alone handed you a log the
+  engine had not finished writing — a test doing
+  `handle.awaitCompletion(...); handle.getEvents()` could legitimately miss the
+  terminal event and fail intermittently on a loaded CI machine.
+  `WorkflowStatus.TERMINATED` is exempt: terminating appends no event, so there
+  is nothing to wait for.
+- **Behaviour change to be aware of:** both methods can now throw
+  `TimeoutException` in a case where they previously returned — specifically
+  when the row is terminal but the terminal event never lands within the
+  timeout. That is an engine defect rather than a timing artefact, and it now
+  fails loudly instead of handing you a truncated log. If a test starts timing
+  out here, the fix is not a longer timeout. No signature changed;
+  `TimeoutException` was already declared on both methods.
+
 ### Database Migrations
 
 One new Flyway migration:

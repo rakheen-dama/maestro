@@ -192,6 +192,8 @@ assertEquals(5, events.size());
 assertTrue(events.stream().anyMatch(e -> e.eventType() == EventType.ACTIVITY_COMPLETED));
 ```
 
+**Read the log only after `getResult` or `awaitCompletion` has returned** -- never after merely observing a terminal `getStatus()`. The engine finalises a run with two separate, non-transactional writes and the **instance row goes first**: there is a real interval in which the status reads `COMPLETED` while `WORKFLOW_COMPLETED` has not yet been appended. `getResult` and `awaitCompletion` wait for the event, so the log they hand you is complete; a status poll does not, so it can hand you a log one event short. That reads as a flaky test on a loaded CI machine and as data loss to anyone reading the snapshot.
+
 ### Querying a Running Workflow
 
 Invoke a `@QueryMethod` on a workflow that is still executing (e.g., parked on a signal or timer):
@@ -516,12 +518,13 @@ class OrderFulfilmentWorkflowTest {
 
 **One environment per test.** Each `TestWorkflowEnvironment` has its own store, clock, and executor. Sharing environments between tests leads to flaky ordering issues. Use `@BeforeEach` or `@MaestroTest` to get a fresh environment.
 
-**Avoid `Thread.sleep()` in test code.** If you need to wait for a workflow to reach a specific status before delivering a signal, poll the status with a short interval rather than sleeping for a fixed duration:
+**Avoid `Thread.sleep()` in test code.** If you need to wait for a workflow to reach a **non-terminal** status -- typically `WAITING_SIGNAL` or `WAITING_TIMER`, before delivering a signal -- poll the status with a short interval rather than sleeping for a fixed duration:
 
 ```java
-private static void waitForStatus(TestWorkflowHandle handle,
-                                   WorkflowStatus expected,
-                                   Duration timeout) {
+/** Only ever pass a NON-terminal status here -- see the warning below. */
+private static void waitForParkedStatus(TestWorkflowHandle handle,
+                                        WorkflowStatus expected,
+                                        Duration timeout) {
     var deadline = Instant.now().plus(timeout);
     while (Instant.now().isBefore(deadline)) {
         if (handle.getStatus() == expected) {
@@ -529,8 +532,23 @@ private static void waitForStatus(TestWorkflowHandle handle,
         }
         Thread.sleep(Duration.ofMillis(10));
     }
+    throw new AssertionError("workflow never reached " + expected + " within " + timeout);
 }
 ```
+
+**Never poll the status for a terminal one.** Parking is a single write, so the loop above is correct for `WAITING_SIGNAL` and `WAITING_TIMER`. Finishing is **two** writes -- the instance row first, then the `WORKFLOW_COMPLETED` / `WORKFLOW_FAILED` event -- so a loop that returns the moment the status reads `COMPLETED` returns while the event log is still one event short, and anything you assert on the log afterwards is a coin flip. Use `handle.awaitCompletion(timeout)` or `handle.getResult(type, timeout)`, which wait for the event itself:
+
+```java
+// Right: waits for the durable terminal event, so the log is complete.
+handle.awaitCompletion(Duration.ofSeconds(5));
+assertTrue(handle.getEvents().stream()
+        .anyMatch(e -> e.eventType() == EventType.WORKFLOW_COMPLETED));
+
+// Wrong: returns on the status alone; getEvents() may be missing the last event.
+waitForParkedStatus(handle, WorkflowStatus.COMPLETED, Duration.ofSeconds(5));
+```
+
+The same applies outside `maestro-test`: if you poll a `WorkflowStore` directly, gate on the terminal **event**, not the terminal status.
 
 ---
 
