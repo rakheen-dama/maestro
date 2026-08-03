@@ -193,7 +193,7 @@ kafka-topics.sh --bootstrap-server localhost:9092 --create --topic payments.resu
 
 - **Domain:** Submit → assign reviewer → await review signal → publish/reject → archive
 - **Backend:** `maestro-store-postgres` + `maestro-messaging-postgres` + `maestro-lock-postgres`
-- **No Kafka, no Valkey, no RabbitMQ**
+- **No Kafka, no Valkey**
 
 ```bash
 cd maestro-samples/sample-postgres-only
@@ -204,20 +204,4 @@ curl -X POST http://localhost:8083/documents -H 'Content-Type: application/json'
 # Approve it
 curl -X POST http://localhost:8083/documents/{id}/review -H 'Content-Type: application/json' \
   -d '{"approved": true, "reviewerId": "bob", "comments": "Looks good"}'
-```
-
-## sample-rabbitmq-order-service
-
-**E-commerce order fulfilment using RabbitMQ** — identical workflow to `sample-order-service` but with RabbitMQ for messaging and PostgreSQL for locking.
-
-- **Domain:** Same order fulfilment flow (reserve → pay → ship → notify)
-- **Backend:** `maestro-store-postgres` + `maestro-messaging-rabbitmq` + `maestro-lock-postgres`
-- **Proves workflow portability:** The `OrderFulfilmentWorkflow` class is identical — only infrastructure wiring changes.
-
-```bash
-cd maestro-samples/sample-rabbitmq-order-service
-docker-compose up -d
-# Place an order (same API as sample-order-service)
-curl -X POST http://localhost:8084/orders -H 'Content-Type: application/json' \
-  -d '{"customerId": "cust-1", "items": [{"sku": "WIDGET-1", "quantity": 2, "price": 29.99}], "paymentMethod": "card", "shippingAddress": "123 Main St"}'
 ```

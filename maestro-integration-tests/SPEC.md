@@ -233,11 +233,12 @@ Bugs found so far:
 2. **Ack-on-failure (P1).** ~~Transport adapters ack even when the handler
    throws. Write the contract test RED and `@Disabled("known defect —
    tasks/todo.md")` unless a redelivery design with bounded retries + DLT
-   lands.~~ — **done.** All three transports now apply bounded,
+   lands.~~ — **done.** All transports then in the matrix applied bounded,
    exponential-backoff redelivery and dead-letter on exhaustion
    (`maestro.messaging.redelivery.*`); the `@Disabled` specs described here
-   are enabled and green (`KafkaAckOnFailureIT`,
-   `PostgresWorkflowMessagingTest`, `RabbitMqWorkflowMessagingTest`). See
-   `docs/open-issues.md` Issue 1 and `docs/release-notes.md`.
+   were enabled and green (`KafkaAckOnFailureIT`,
+   `PostgresWorkflowMessagingTest`, and — before its removal — the RabbitMQ
+   module's own suite). See `docs/open-issues.md` Issue 1 and
+   `docs/release-notes.md`.
 3. **Ack-on-failure follow-through.** See item 2 — nothing further is open
    beyond that decision.

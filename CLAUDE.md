@@ -11,10 +11,12 @@ Maestro is an **open-source, embeddable durable workflow engine** delivered as a
 Read these before making architectural decisions:
 - `docs/maestro-prd.md` — Product requirements, API design, e-commerce example
 - `docs/maestro-architecture.md` — System architecture, diagrams, failure modes
+- `docs/observability.md` — Meter catalog, span topology, Kafka trace-propagation contract
+- `docs/operations.md` — Multi-instance behaviour; versioning + mixed-version deploy playbook
 
 ## Core Design: Hybrid Memoization
 
-1. Workflow method runs on a **Java 21 virtual thread**.
+1. Workflow method runs on a **Java 25 virtual thread**.
 2. Activity calls intercepted by a **proxy**. Proxy checks Postgres for stored result at current **sequence number**.
 3. **Replay (found):** Return stored result instantly — no execution.
 4. **Live (not found):** Execute activity, persist result, return it.
@@ -28,7 +30,7 @@ Read these before making architectural decisions:
 
 | Component | Technology | Version |
 |---|---|---|
-| Language | Java | 21+ (virtual threads required) |
+| Language | Java | 25+ (virtual threads required) |
 | Framework | Spring Boot | 4.x (Spring Framework 7, Jakarta EE 11) |
 | Build | Gradle | Kotlin DSL, Gradle 9 |
 | Database | PostgreSQL | 14+ |
@@ -60,7 +62,6 @@ maestro/
 ├── maestro-store-postgres          ← Postgres implementation + Flyway 11 migrations.
 ├── maestro-messaging-kafka         ← Spring Kafka 4.x WorkflowMessaging SPI.
 ├── maestro-messaging-postgres      ← PostgreSQL WorkflowMessaging + SignalNotifier (LISTEN/NOTIFY).
-├── maestro-messaging-rabbitmq      ← RabbitMQ WorkflowMessaging via Spring AMQP.
 ├── maestro-lock-valkey             ← Lettuce DistributedLock SPI.
 ├── maestro-lock-postgres           ← PostgreSQL DistributedLock SPI.
 ├── maestro-admin-client            ← Lightweight lifecycle event publisher.
@@ -70,7 +71,6 @@ maestro/
 │   ├── sample-order-service        ← Order fulfilment workflow (e-commerce demo)
 │   ├── sample-payment-gateway      ← Payment processing with durable retries & saga
 │   ├── sample-postgres-only        ← Document approval (Postgres-only, zero external deps)
-│   ├── sample-rabbitmq-order-service ← Order fulfilment using RabbitMQ + Postgres
 │   └── sample-loan-origination     ← Multi-service loan E2E (application/underwriting/verification), nightly CI
 └── docs/
 ```
@@ -129,13 +129,17 @@ io.b2mash.maestro.core.saga                 — SagaManager, CompensationStack
 io.b2mash.maestro.core.context              — WorkflowContext (sleep, awaitSignal, parallel, etc.)
 io.b2mash.maestro.core.spi                  — WorkflowStore, WorkflowMessaging, DistributedLock
 io.b2mash.maestro.core.retry                — RetryPolicy, RetryExecutor
-io.b2mash.maestro.core.exception            — MaestroException hierarchy
+io.b2mash.maestro.core.exception            — MaestroException hierarchy + sealed MaestroControlFlowError
+io.b2mash.maestro.core.observe              — EngineObserver SPI, *Info records, StandDownReason,
+                                              AbandonReason, ParkKind, TraceContextHolder (framework-free)
 
 io.b2mash.maestro.spring                    — Spring Boot auto-configuration
 io.b2mash.maestro.spring.annotation         — @MaestroSignalListener
 io.b2mash.maestro.spring.config              — MaestroAutoConfiguration, MaestroProperties
 io.b2mash.maestro.spring.proxy               — ActivityStubBeanPostProcessor
 io.b2mash.maestro.spring.health              — MaestroHealthIndicator
+io.b2mash.maestro.spring.observe             — MicrometerEngineObserver, MaestroEngineGauges,
+                                               TracingEngineObserver, MaestroObservabilityAutoConfiguration
 io.b2mash.maestro.spring.client              — MaestroClient
 
 io.b2mash.maestro.store.jdbc                — Abstract JDBC WorkflowStore
@@ -145,7 +149,6 @@ io.b2mash.maestro.messaging.kafka            — Kafka WorkflowMessaging
 io.b2mash.maestro.messaging.kafka.listener   — @MaestroSignalListener processing
 
 io.b2mash.maestro.messaging.postgres         — Postgres WorkflowMessaging + SignalNotifier
-io.b2mash.maestro.messaging.rabbitmq         — RabbitMQ WorkflowMessaging
 
 io.b2mash.maestro.lock.valkey                — Valkey DistributedLock
 io.b2mash.maestro.lock.postgres              — Postgres DistributedLock
@@ -209,27 +212,37 @@ All under `maestro.*`. Topics are pre-created, declared in config. Full
 reference: `docs/configuration.md`. Notable properties added post-0.3.0:
 `maestro.shutdown.timeout` (default 30s), `maestro.signal.wake-recheck-interval`
 (default 30s), `maestro.messaging.redelivery.*` (bounded retry + dead-letter
-policy, all transports), `maestro.admin.events.enabled` (now actually wired;
-`.topic` is a deprecated alias for `maestro.messaging.topics.admin-events`).
+policy, both transports), `maestro.admin.events.enabled` (now actually wired;
+`.topic` is a deprecated alias for `maestro.messaging.topics.admin-events`),
+`maestro.observability.metrics.enabled` / `maestro.observability.tracing.enabled`
+(both default `true`, both silently inert without a `MeterRegistry` / `Tracer`;
+the tracing flag gates the Kafka W3C header injection too — see
+`docs/observability.md`).
 
 ## Coding Standards
 
-- **Java 21 features:** Records, sealed interfaces, virtual threads, `var` for obvious types.
+- **Java 25 features:** Records, sealed interfaces, virtual threads, `var` for obvious types.
 - **JSpecify null safety:** `@Nullable` from `org.jspecify.annotations`. All public APIs annotated.
 - **Jackson 3:** Use `tools.jackson` packages everywhere. Never `com.fasterxml.jackson`.
 - **Immutability:** Records for DTOs. Final fields + builders for mutable domain objects.
 - **Exceptions:** All extend `MaestroException`. Specific subtypes for each failure mode.
-  **Two deliberate exceptions — the engine's control-flow signals:**
+  **Three deliberate exceptions — the engine's control-flow signals:**
+  they extend the sealed `MaestroControlFlowError extends Error`, not
+  `MaestroException`, and the `permits` clause lists exactly three:
   `ExecutorShutdownException` (this node is stopping while the workflow was
-  parked) and `WorkflowTerminatedException` (an operator terminated the
-  workflow) extend `Error`, not `MaestroException`. Neither means the workflow
-  failed; both mean a workflow's *local run* must stop now. If either were a
+  parked), `WorkflowTerminatedException` (an operator terminated the workflow)
+  and `UnknownWorkflowHistoryException` (this node cannot interpret the
+  workflow's persisted history — a newer node wrote it; see the stand-down
+  design). None means the workflow
+  failed; all mean a workflow's *local run* must stop now. If any were a
   `RuntimeException` like everything else, a workflow author's ordinary
   `try { ... } catch (Exception e) { ... }` around `awaitSignal()`/`sleep()`
   would silently swallow it and reinstate the exact bug it exists to prevent —
   a routine deploy recorded as a workflow failure and compensations run for
-  work that never failed, or a terminated workflow carrying on executing
-  activities an operator asked you to stop. Making them `Error`s means `catch
+  work that never failed, a terminated workflow carrying on executing
+  activities an operator asked you to stop, or an older node in a
+  mixed-version fleet marking a workflow FAILED because it could not read a
+  newer node's event. Making them `Error`s means `catch
   (Exception)` — and most `catch (Throwable)` "log and continue" blocks —
   cannot intercept them (Temporal takes the same approach for the same
   problem). Anywhere reflection is involved (`Method.invoke`,
@@ -237,8 +250,9 @@ policy, all transports), `maestro.admin.events.enabled` (now actually wired;
   Error` *before* checking `instanceof Exception`/`RuntimeException` —
   otherwise the unwrap silently re-wraps it into a catchable type. Anywhere a
   broad `catch (Throwable)` collects outcomes (e.g. parallel branches), check
-  for both types and rethrow before recording anything as a failure. See their
-  Javadoc for the full rationale.
+  `instanceof MaestroControlFlowError` and rethrow before recording anything
+  as a failure — the sealed base exists so that check is one line rather than
+  an enumeration that drifts. See their Javadoc for the full rationale.
 - **Logging:** SLF4J. MDC with `workflowId`, `runId`, `activityName`.
 - **No Lombok.** Records and IDE-generated code only.
 - **Javadoc:** All public APIs. SPIs especially.

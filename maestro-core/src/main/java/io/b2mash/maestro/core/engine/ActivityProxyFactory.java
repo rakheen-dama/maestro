@@ -2,6 +2,7 @@ package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.Compensate;
+import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.retry.RetryExecutor;
 import io.b2mash.maestro.core.retry.RetryPolicy;
 import io.b2mash.maestro.core.spi.DistributedLock;
@@ -110,6 +111,47 @@ public final class ActivityProxyFactory {
             RetryExecutor retryExecutor,
             String lockKeyPrefix
     ) {
+        return createProxy(activityInterface, activityImpl, store, distributedLock, messaging,
+                retryPolicy, startToCloseTimeout, serializer, retryExecutor, lockKeyPrefix,
+                EngineObserver.NOOP);
+    }
+
+    /**
+     * Creates a memoizing proxy for the given activity interface, with an
+     * explicit activity lock key prefix and an {@link EngineObserver}.
+     *
+     * @param <T>                 the activity interface type
+     * @param activityInterface   the activity interface class (must be an interface)
+     * @param activityImpl        the real implementation to delegate live calls to
+     * @param store               the workflow store for memoization
+     * @param distributedLock     optional distributed lock for dedup optimization
+     * @param messaging           optional messaging for lifecycle events
+     * @param retryPolicy         retry policy for failed invocations
+     * @param startToCloseTimeout timeout used as lock TTL hint
+     * @param serializer          Jackson serializer for payloads
+     * @param retryExecutor       retry executor for live invocations
+     * @param lockKeyPrefix       prefix for the per-activity distributed lock key
+     *                            (e.g. {@code maestro:lock:})
+     * @param observer            engine observation seam handed to the created
+     *                            handler — see
+     *                            {@link EngineObserver} for the callback contract;
+     *                            never {@code null} (pass {@link EngineObserver#NOOP})
+     * @return a proxy instance that implements {@code activityInterface}
+     * @throws IllegalArgumentException if {@code activityInterface} is not an interface
+     */
+    public <T> T createProxy(
+            Class<T> activityInterface,
+            T activityImpl,
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            @Nullable WorkflowMessaging messaging,
+            RetryPolicy retryPolicy,
+            Duration startToCloseTimeout,
+            PayloadSerializer serializer,
+            RetryExecutor retryExecutor,
+            String lockKeyPrefix,
+            EngineObserver observer
+    ) {
         if (!activityInterface.isInterface()) {
             throw new IllegalArgumentException(
                     "Activity type must be an interface, got: " + activityInterface.getName());
@@ -129,7 +171,8 @@ public final class ActivityProxyFactory {
                 startToCloseTimeout,
                 serializer,
                 retryExecutor,
-                lockKeyPrefix
+                lockKeyPrefix,
+                observer
         );
 
         var proxy = Proxy.newProxyInstance(

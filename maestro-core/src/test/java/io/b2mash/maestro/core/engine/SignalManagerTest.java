@@ -10,6 +10,8 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.observe.RecordingEngineObserver;
+import io.b2mash.maestro.core.observe.TraceContextHolder;
 import io.b2mash.maestro.core.spi.SignalMessage;
 import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
@@ -640,6 +642,149 @@ class SignalManagerTest {
         assertFalse(messaging.events.isEmpty(), "Lifecycle event should be published");
         assertTrue(messaging.events.stream()
                 .anyMatch(e -> e.stepName() != null && e.stepName().contains("awaitSignal")));
+    }
+
+    // ── Durable trace context (design §4.3) ────────────────────────────
+
+    /**
+     * The raw W3C {@code traceparent} used throughout the trace-context tests
+     * — the example value from the W3C Trace Context recommendation.
+     */
+    private static final String TRACEPARENT =
+            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+
+    @Test
+    @DisplayName("deliverSignal persists TraceContextHolder.current() on the signal row")
+    void deliverSignalPersistsTraceContext() {
+        var instanceId = UUID.randomUUID();
+        createInstance("order-1", instanceId);
+
+        // The transport listener thread sets the holder before calling in —
+        // deliverSignal runs synchronously on that same thread (design §4.3(a)).
+        TraceContextHolder.runWith(TRACEPARENT, () ->
+                signalManager.deliverSignal("order-1", "payment.result", "paid"));
+
+        var rows = store.getUnconsumedSignals("order-1", "payment.result");
+        assertEquals(1, rows.size());
+        assertEquals(TRACEPARENT, rows.getFirst().traceContext(),
+                "the signal row must carry the traceparent the listener thread was under");
+    }
+
+    @Test
+    @DisplayName("deliverSignal with no trace context persists null — absence is never an error")
+    void deliverSignalWithoutTraceContextPersistsNull() {
+        var instanceId = UUID.randomUUID();
+        createInstance("order-1", instanceId);
+
+        signalManager.deliverSignal("order-1", "payment.result", "paid");
+
+        var rows = store.getUnconsumedSignals("order-1", "payment.result");
+        assertEquals(1, rows.size());
+        assertNull(rows.getFirst().traceContext());
+    }
+
+    @Test
+    @DisplayName("signalPersisted carries the captured traceparent on SignalInfo")
+    void signalPersistedCarriesTraceContext() {
+        var observer = new RecordingEngineObserver();
+        var sm = new SignalManager(store, messaging, null, serializer, parkingLot,
+                Duration.ofSeconds(30), observer);
+        createInstance("order-1", UUID.randomUUID());
+
+        TraceContextHolder.runWith(TRACEPARENT, () ->
+                sm.deliverSignal("order-1", "payment.result", "paid"));
+
+        assertEquals(1, observer.signalPersisted().size());
+        assertEquals(TRACEPARENT, observer.signalPersisted().getFirst().traceContext());
+    }
+
+    @Test
+    @DisplayName("consumeSignal surfaces the row's traceContext on SignalInfo — the durable hop")
+    void consumeSignalSurfacesDurableTraceContext() {
+        var observer = new RecordingEngineObserver();
+        var sm = new SignalManager(store, messaging, null, serializer, parkingLot,
+                Duration.ofSeconds(30), observer);
+        var instanceId = UUID.randomUUID();
+        createInstance("order-1", instanceId);
+
+        // The row was written by a *different* thread (possibly a different
+        // node) — the holder is deliberately not set here.
+        store.saveSignal(new WorkflowSignal(
+                UUID.randomUUID(), instanceId, "order-1", "payment.result",
+                serializer.serialize("paid"), false, Instant.now(), TRACEPARENT));
+
+        var ctx = createContext(instanceId, "order-1", 0, false);
+        ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() ->
+                sm.awaitSignal(ctx, "payment.result", String.class, Duration.ofSeconds(10)));
+
+        var live = observer.signalConsumed().stream().filter(c -> !c.replayed()).toList();
+        assertEquals(1, live.size());
+        assertEquals(TRACEPARENT, live.getFirst().info().traceContext(),
+                "the durable row's trace context must reach the observer at consume time");
+        assertNull(TraceContextHolder.current(),
+                "consuming must not leave the workflow thread's holder set");
+    }
+
+    @Test
+    @DisplayName("a replayed SIGNAL_RECEIVED carries no trace context — no spans on replay")
+    void replayedSignalCarriesNoTraceContext() {
+        var observer = new RecordingEngineObserver();
+        var sm = new SignalManager(store, messaging, null, serializer, parkingLot,
+                Duration.ofSeconds(30), observer);
+        var instanceId = UUID.randomUUID();
+        createInstance("order-1", instanceId);
+
+        store.appendEvent(new WorkflowEvent(
+                UUID.randomUUID(), instanceId, 1, EventType.SIGNAL_RECEIVED,
+                "$maestro:awaitSignal:payment.result", serializer.serialize("paid"), Instant.now()));
+
+        var ctx = createContext(instanceId, "order-1", 0, true);
+        ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() ->
+                sm.awaitSignal(ctx, "payment.result", String.class, Duration.ofSeconds(10)));
+
+        assertEquals(1, observer.signalConsumed().size());
+        assertTrue(observer.signalConsumed().getFirst().replayed());
+        assertNull(observer.signalConsumed().getFirst().info().traceContext());
+    }
+
+    @Test
+    @DisplayName("an over-long trace context set directly via the holder is dropped, not persisted "
+            + "— the signal is still stored and consumable")
+    void oversizedTraceContextIsDroppedNotPersisted() {
+        var instanceId = UUID.randomUUID();
+        createInstance("order-1", instanceId);
+
+        // TraceContextHolder.set is public API: a future traced transport, or an
+        // embedder, can put anything here. A value wider than the column must
+        // never be able to fail the insert — that would strand the signal.
+        var oversized = "00-" + "a".repeat(TraceContextHolder.MAX_LENGTH * 4);
+        TraceContextHolder.runWith(oversized, () ->
+                signalManager.deliverSignal("order-1", "payment.result", "paid"));
+
+        var rows = store.getUnconsumedSignals("order-1", "payment.result");
+        assertEquals(1, rows.size(), "the signal must still be persisted");
+        assertNull(rows.getFirst().traceContext(),
+                "the over-long value degrades to no trace context, never to a failed write");
+
+        // And it is still consumable — the signal was not damaged by the drop.
+        var ctx = createContext(instanceId, "order-1", 0, false);
+        ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() ->
+                assertEquals("paid", signalManager.awaitSignal(
+                        ctx, "payment.result", String.class, Duration.ofSeconds(10))));
+    }
+
+    @Test
+    @DisplayName("a trace context exactly at the limit is still persisted — the guard bounds, "
+            + "it does not truncate the legitimate range")
+    void traceContextAtTheLimitIsPersisted() {
+        createInstance("order-1", UUID.randomUUID());
+        var atLimit = "0".repeat(TraceContextHolder.MAX_LENGTH);
+
+        TraceContextHolder.runWith(atLimit, () ->
+                signalManager.deliverSignal("order-1", "payment.result", "paid"));
+
+        assertEquals(atLimit,
+                store.getUnconsumedSignals("order-1", "payment.result").getFirst().traceContext());
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────

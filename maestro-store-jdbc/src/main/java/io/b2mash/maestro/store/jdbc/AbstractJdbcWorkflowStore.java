@@ -257,6 +257,16 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     @Override
     public void appendEvent(WorkflowEvent event) {
         Objects.requireNonNull(event, "event");
+        if (event.eventType() == EventType.UNKNOWN) {
+            // The sentinel is how the READ path represents a type this build
+            // does not know. Persisting it would durably record "unreadable",
+            // which every node — upgraded or not — would then stand down on
+            // forever. It can never round-trip.
+            throw new IllegalArgumentException(
+                    "EventType.UNKNOWN is a read-side sentinel and must never be persisted "
+                            + "(workflowInstanceId=%s, sequenceNumber=%d)"
+                                    .formatted(event.workflowInstanceId(), event.sequenceNumber()));
+        }
 
         String sql = "INSERT INTO " + tableName("workflow_event")
                 + " (id, workflow_instance_id, sequence_number, event_type, step_name,"
@@ -400,7 +410,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
         String sql = "INSERT INTO " + tableName("workflow_signal")
                 + " (id, workflow_instance_id, workflow_id, signal_name, payload,"
-                + " consumed, received_at) VALUES (?, ?, ?, ?, ?, ?, ?)";
+                + " consumed, received_at, trace_context) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
 
         update(sql, ps -> {
             ps.setObject(1, signal.id());
@@ -410,6 +420,8 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             setJsonParameter(ps, 5, signal.payload());
             ps.setBoolean(6, signal.consumed());
             ps.setTimestamp(7, Timestamp.from(signal.receivedAt()));
+            // Opaque metadata (migration V4): written verbatim, never parsed.
+            ps.setString(8, signal.traceContext());
         });
     }
 
@@ -419,7 +431,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         Objects.requireNonNull(signalName, "signalName");
 
         String sql = "SELECT id, workflow_instance_id, workflow_id, signal_name, "
-                + "payload, consumed, received_at FROM " + tableName("workflow_signal")
+                + "payload, consumed, received_at, trace_context FROM " + tableName("workflow_signal")
                 + " WHERE workflow_id = ? AND signal_name = ? AND consumed = false"
                 + " ORDER BY received_at ASC";
 
@@ -600,14 +612,53 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
     // ── Row mappers ───────────────────────────────────────────────────────
 
-    private WorkflowInstance mapInstance(ResultSet rs) throws SQLException {
+    /**
+     * Maps an instance row, <b>skipping</b> (returning {@code null}) a row whose
+     * {@code status} string this build does not define — written by a node
+     * running a newer build (RULING 10).
+     *
+     * <p>{@link WorkflowStatus#valueOf} — what this used to call — throws
+     * {@link IllegalArgumentException}, and an instance status has a strictly
+     * wider blast radius than a single event does. The throw escapes
+     * {@code getInstance}, which is read on the recovery path
+     * ({@code WorkflowExecutor.launchWorkflow}'s pre-resume re-check), on the
+     * workflow thread ({@code InstanceStatusWriter.write},
+     * {@code transitionToTerminal}, {@code SagaManager.transitionToCompensating})
+     * and on the signal-delivery path ({@code SignalManager.deliverSignal}).
+     * {@code WorkflowExecutor.recoverWorkflows} has no per-instance
+     * {@code try}/{@code catch}, so one such row aborts the remainder of the
+     * <em>whole</em> recovery pass — every other workflow on this node with it.
+     *
+     * <p>Skipping instead means this node simply cannot see that one instance:
+     * {@code getInstance} returns empty and every caller already has a defined,
+     * non-destructive answer for an absent instance (log and return; treat a
+     * signal as pre-delivery so it is stored and adopted later, never
+     * discarded; report the workflow as not found to an operator API). The
+     * recovery pass continues, and an upgraded node — which can read the status
+     * — owns the instance.
+     *
+     * @param rs the row
+     * @return the mapped instance, or {@code null} to skip the row
+     */
+    private @Nullable WorkflowInstance mapInstance(ResultSet rs) throws SQLException {
+        var rawStatus = rs.getString("status");
+        WorkflowStatus status;
+        try {
+            status = WorkflowStatus.valueOf(rawStatus);
+        } catch (IllegalArgumentException | NullPointerException e) {
+            log.warn("Unknown workflow status '{}' on instance (workflowId={}, id={}) — written "
+                            + "by a newer node; skipping this instance so the rest of this "
+                            + "query, and any recovery pass it feeds, still completes",
+                    rawStatus, rs.getString("workflow_id"), rs.getObject("id", UUID.class));
+            return null;
+        }
         return WorkflowInstance.builder()
                 .id(rs.getObject("id", UUID.class))
                 .workflowId(rs.getString("workflow_id"))
                 .runId(rs.getObject("run_id", UUID.class))
                 .workflowType(rs.getString("workflow_type"))
                 .taskQueue(rs.getString("task_queue"))
-                .status(WorkflowStatus.valueOf(rs.getString("status")))
+                .status(status)
                 .input(getJsonValue(rs, "input"))
                 .output(getJsonValue(rs, "output"))
                 .serviceName(rs.getString("service_name"))
@@ -619,12 +670,38 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                 .build();
     }
 
+    /**
+     * Maps an event row, degrading an unrecognised {@code event_type} string to
+     * {@link EventType#UNKNOWN} instead of throwing.
+     *
+     * <p>{@link EventType#valueOf} — what this used to call — throws
+     * {@link IllegalArgumentException} for a type written by a node running a
+     * newer build. Thrown from inside {@code getEventBySequence}/{@code
+     * getEvents}, that exception reaches {@code WorkflowExecutor} looking
+     * exactly like a workflow failure, so the workflow is durably marked
+     * {@code FAILED} <em>and its sagas compensate</em> — reversing real work
+     * for a workflow that never failed. The read path therefore never throws
+     * on the type column; the engine detects the sentinel at its replay reads
+     * and stands the run down instead.
+     *
+     * <p>The WARN here is the durable diagnostic that carries the raw string:
+     * this is the one place it exists, since {@link WorkflowEvent} models a
+     * type, not a name.
+     */
     private WorkflowEvent mapEvent(ResultSet rs) throws SQLException {
+        var rawType = rs.getString("event_type");
+        var eventType = EventType.fromStoredName(rawType);
+        if (eventType == EventType.UNKNOWN) {
+            log.warn("Unknown event type '{}' at (instance={}, seq={}) — written by a newer "
+                            + "node; this node will stand down when it reads this history",
+                    rawType, rs.getObject("workflow_instance_id", UUID.class),
+                    rs.getInt("sequence_number"));
+        }
         return new WorkflowEvent(
                 rs.getObject("id", UUID.class),
                 rs.getObject("workflow_instance_id", UUID.class),
                 rs.getInt("sequence_number"),
-                EventType.valueOf(rs.getString("event_type")),
+                eventType,
                 rs.getString("step_name"),
                 getJsonValue(rs, "payload"),
                 rs.getTimestamp("created_at").toInstant()
@@ -639,7 +716,9 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                 rs.getString("signal_name"),
                 getJsonValue(rs, "payload"),
                 rs.getBoolean("consumed"),
-                rs.getTimestamp("received_at").toInstant()
+                rs.getTimestamp("received_at").toInstant(),
+                // Opaque metadata (migration V4): returned verbatim, never parsed.
+                rs.getString("trace_context")
         );
     }
 
@@ -664,7 +743,9 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             setter.set(ps);
             try (var rs = ps.executeQuery()) {
                 if (rs.next()) {
-                    return Optional.of(mapper.map(rs));
+                    // ofNullable, not of: a row mapper may return null to mean
+                    // "this build cannot interpret this row, skip it" (RULING 10).
+                    return Optional.ofNullable(mapper.map(rs));
                 }
                 return Optional.empty();
             }
@@ -681,7 +762,12 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             try (var rs = ps.executeQuery()) {
                 var results = new ArrayList<T>();
                 while (rs.next()) {
-                    results.add(mapper.map(rs));
+                    // A null mapping means "skip this row" (RULING 10) — the
+                    // scan continues rather than aborting on one bad row.
+                    var mapped = mapper.map(rs);
+                    if (mapped != null) {
+                        results.add(mapped);
+                    }
                 }
                 return results;
             }
@@ -767,7 +853,14 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
     @FunctionalInterface
     interface RowMapper<T> {
-        T map(ResultSet rs) throws SQLException;
+        /**
+         * @param rs the current row
+         * @return the mapped value, or {@code null} to <b>skip</b> this row —
+         *         how a mapper says "this build cannot interpret this row"
+         *         without aborting the query (RULING 10)
+         * @throws SQLException if the row cannot be read
+         */
+        @Nullable T map(ResultSet rs) throws SQLException;
     }
 
     // ── Exception wrapper ─────────────────────────────────────────────────

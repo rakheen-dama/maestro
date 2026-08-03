@@ -1,0 +1,32 @@
+# Task 1 (RabbitMQ removal) — module test-coverage gate output
+# pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening
+# gitHead: 722c96e8db715938fbf742de3eb0f3d979725bb4
+# branch: worktree-release-hardening
+# timestampUtc: 2026-08-02T13:35:45Z
+# command: ./gradlew verifyModuleTestCoverage
+
+> Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :build-logic:generateExternalPluginSpecBuilders UP-TO-DATE
+> Task :build-logic:extractPrecompiledScriptPluginPlugins UP-TO-DATE
+> Task :build-logic:compilePluginsBlocks UP-TO-DATE
+> Task :build-logic:generatePrecompiledScriptPluginAccessors UP-TO-DATE
+> Task :build-logic:generateScriptPluginAdapters UP-TO-DATE
+
+> Task :build-logic:compileKotlin UP-TO-DATE
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :build-logic:compileJava NO-SOURCE
+> Task :build-logic:pluginDescriptors UP-TO-DATE
+> Task :build-logic:processResources UP-TO-DATE
+> Task :build-logic:classes UP-TO-DATE
+> Task :build-logic:jar UP-TO-DATE
+
+> Configure project :maestro-admin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :verifyModuleTestCoverage
+Test-coverage gate: 11 modules with production code, 0 accepted without tests.
+
+BUILD SUCCESSFUL in 898ms
+10 actionable tasks: 1 executed, 9 up-to-date
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.2.0/userguide/configuration_cache_enabling.html

@@ -246,7 +246,7 @@ Recovery queries the `maestro_workflow_instance` table using the `idx_wf_instanc
 
 The guiding principle: **Postgres is truth, Valkey is optimisation, Kafka is transport.** If Valkey is unavailable, workflows proceed unlocked — the unique event index and optimistic instance versioning remain the correctness backstop — and signal wake-up degrades to the parked await's periodic store re-check (or use `maestro-lock-postgres` to keep distributed locking without Valkey). If Kafka rebalances, in-flight workflows are unaffected because their state lives in Postgres. The only hard dependency is Postgres -- and if Postgres is down, the correct behaviour is to wait.
 
-Self-recovery works identically regardless of your choice of messaging backend (Kafka, Postgres, or RabbitMQ) or lock backend (Valkey or Postgres). PostgreSQL is always the authoritative store for workflow state.
+Self-recovery works identically regardless of your choice of messaging backend (Kafka or Postgres) or lock backend (Valkey or Postgres). PostgreSQL is always the authoritative store for workflow state.
 
 ---
 

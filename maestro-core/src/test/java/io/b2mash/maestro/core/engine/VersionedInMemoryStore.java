@@ -3,6 +3,7 @@ package io.b2mash.maestro.core.engine;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
+import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.TimerStatus;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
@@ -10,6 +11,8 @@ import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.spi.WorkflowStore;
+import org.jspecify.annotations.Nullable;
+import tools.jackson.databind.JsonNode;
 
 import java.time.Instant;
 import java.util.List;
@@ -18,6 +21,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static io.b2mash.maestro.core.TestEventLogs.removeFailureEvents;
 
@@ -53,7 +57,10 @@ class VersionedInMemoryStore implements WorkflowStore {
     private final CopyOnWriteArrayList<WorkflowSignal> signals = new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<WorkflowTimer> timers = new CopyOnWriteArrayList<>();
     private final AtomicInteger updateAttempts = new AtomicInteger();
+    private final AtomicInteger appendAttempts = new AtomicInteger();
     private final AtomicInteger updatesToFail = new AtomicInteger();
+    private final AtomicReference<@Nullable EventType> collideOnType = new AtomicReference<>();
+    private final AtomicReference<@Nullable PendingWinner> pendingWinner = new AtomicReference<>();
 
     // ── Instances ───────────────────────────────────────────────────────
 
@@ -126,8 +133,66 @@ class VersionedInMemoryStore implements WorkflowStore {
 
     // ── Events ──────────────────────────────────────────────────────────
 
+    /**
+     * Forces every append of one event type to collide, modelling a concurrent
+     * runner that already persisted its own event at that sequence.
+     *
+     * @param type the event type whose appends must collide, or {@code null}
+     *             to stop colliding
+     */
+    void collideOnEventType(@Nullable EventType type) {
+        collideOnType.set(type);
+    }
+
+    /**
+     * @return how many times {@code appendEvent} has been <em>attempted</em>,
+     *         including attempts the uniqueness guard rejected — the
+     *         difference between "the run stood down before touching the
+     *         store" and "the run tried to re-execute a memoized step and was
+     *         only stopped by the unique index"
+     */
+    int appendAttempts() {
+        return appendAttempts.get();
+    }
+
+    /**
+     * Models the engine's normal tolerated append race (RULING 9): the next
+     * {@code appendEvent} at {@code winner}'s sequence finds that a concurrent
+     * runner — on a newer build — got there first. The winner is installed
+     * raw (so its type may be the {@link EventType#UNKNOWN} sentinel) and the
+     * append is rejected, which is exactly what a losing node sees.
+     *
+     * <p>The winner must appear <em>between</em> the memoization lookup and the
+     * append, or the run would simply replay it; that window is what this hook
+     * reproduces and what no pre-planted event can.
+     *
+     * @param sequenceNumber the sequence the race happens at
+     * @param type           the winner's event type — may be the sentinel
+     * @param payload        the winner's payload
+     */
+    void winnerAppearsOnNextAppend(int sequenceNumber, EventType type, @Nullable JsonNode payload) {
+        pendingWinner.set(new PendingWinner(sequenceNumber, type, payload));
+    }
+
+    private record PendingWinner(int sequenceNumber, EventType type, @Nullable JsonNode payload) {}
+
     @Override
     public void appendEvent(WorkflowEvent event) {
+        appendAttempts.incrementAndGet();
+        var winner = pendingWinner.get();
+        if (winner != null && winner.sequenceNumber() == event.sequenceNumber()
+                && pendingWinner.compareAndSet(winner, null)) {
+            synchronized (events) {
+                events.add(new WorkflowEvent(UUID.randomUUID(), event.workflowInstanceId(),
+                        winner.sequenceNumber(), winner.type(), event.stepName(),
+                        winner.payload(), Instant.now()));
+            }
+            throw new DuplicateEventException(event.workflowInstanceId(), event.sequenceNumber());
+        }
+        var collide = collideOnType.get();
+        if (collide != null && event.eventType() == collide) {
+            throw new DuplicateEventException(event.workflowInstanceId(), event.sequenceNumber());
+        }
         synchronized (events) {
             var duplicate = events.stream().anyMatch(
                     e -> e.workflowInstanceId().equals(event.workflowInstanceId())
@@ -137,6 +202,37 @@ class VersionedInMemoryStore implements WorkflowStore {
                         event.workflowInstanceId(), event.sequenceNumber());
             }
             events.add(event);
+        }
+    }
+
+    /**
+     * Plants an event without going through {@link #appendEvent} — the
+     * in-memory counterpart of the integration suite's raw SQL {@code INSERT}
+     * of a type string only a <em>newer</em> node could have written.
+     *
+     * <p>{@code appendEvent} rejects {@link EventType#UNKNOWN} precisely so the
+     * sentinel can never round-trip; this seam is how a test plants the history
+     * that guard's consequence is defined against.
+     *
+     * @param event the raw event, sentinel type permitted
+     */
+    void injectRawEvent(WorkflowEvent event) {
+        synchronized (events) {
+            events.add(event);
+        }
+    }
+
+    /**
+     * Removes the event at a sequence — the upgraded node's world, where the
+     * row this build could not read is no longer in the way.
+     *
+     * @param instanceId     the instance whose log to edit
+     * @param sequenceNumber the sequence to clear
+     */
+    void removeEvent(UUID instanceId, int sequenceNumber) {
+        synchronized (events) {
+            events.removeIf(e -> e.workflowInstanceId().equals(instanceId)
+                    && e.sequenceNumber() == sequenceNumber);
         }
     }
 

@@ -62,8 +62,7 @@ class MaestroPropertiesBindingTest {
                         "maestro.messaging.redelivery.initial-interval=250ms",
                         "maestro.messaging.redelivery.multiplier=3.5",
                         "maestro.messaging.redelivery.max-interval=90s",
-                        "maestro.messaging.redelivery.dead-letter-suffix=.dead",
-                        "maestro.messaging.redelivery.dead-letter-exchange=custom.dead-letter")
+                        "maestro.messaging.redelivery.dead-letter-suffix=.dead")
                 .run(context -> {
                     var redelivery = context.getBean(MaestroProperties.class).getMessaging().redelivery();
                     assertThat(redelivery.maxAttempts()).isEqualTo(4);
@@ -71,7 +70,6 @@ class MaestroPropertiesBindingTest {
                     assertThat(redelivery.multiplier()).isEqualTo(3.5);
                     assertThat(redelivery.maxInterval()).isEqualTo(Duration.ofSeconds(90));
                     assertThat(redelivery.deadLetterSuffix()).isEqualTo(".dead");
-                    assertThat(redelivery.deadLetterExchange()).isEqualTo("custom.dead-letter");
                 });
     }
 
@@ -112,6 +110,20 @@ class MaestroPropertiesBindingTest {
     }
 
     @Test
+    @DisplayName("the observability block binds from configuration")
+    void observabilityBlockBinds() {
+        runner.withPropertyValues(
+                        "maestro.service-name=binding-test",
+                        "maestro.observability.metrics.enabled=false",
+                        "maestro.observability.tracing.enabled=false")
+                .run(context -> {
+                    var observability = context.getBean(MaestroProperties.class).getObservability();
+                    assertThat(observability.metrics().enabled()).isFalse();
+                    assertThat(observability.tracing().enabled()).isFalse();
+                });
+    }
+
+    @Test
     @DisplayName("unset nested properties keep their documented defaults")
     void defaultsSurviveWhenNothingIsConfigured() {
         runner.withPropertyValues("maestro.service-name=binding-test").run(context -> {
@@ -128,7 +140,6 @@ class MaestroPropertiesBindingTest {
             assertThat(redelivery.multiplier()).isEqualTo(2.0);
             assertThat(redelivery.maxInterval()).isEqualTo(Duration.ofSeconds(30));
             assertThat(redelivery.deadLetterSuffix()).isEqualTo(".DLT");
-            assertThat(redelivery.deadLetterExchange()).isEqualTo("maestro.dead-letter");
             assertThat(properties.getLock().type()).isEqualTo("valkey");
             assertThat(properties.getLock().ttl()).isEqualTo(Duration.ofSeconds(30));
             assertThat(properties.getTimer().pollInterval()).isEqualTo(Duration.ofSeconds(5));
@@ -139,6 +150,8 @@ class MaestroPropertiesBindingTest {
             assertThat(properties.getAdmin().events().topic()).isEqualTo("maestro.admin.events");
             assertThat(properties.getShutdown().timeout()).isEqualTo(Duration.ofSeconds(30));
             assertThat(properties.getSignal().wakeRecheckInterval()).isEqualTo(Duration.ofSeconds(30));
+            assertThat(properties.getObservability().metrics().enabled()).isTrue();
+            assertThat(properties.getObservability().tracing().enabled()).isTrue();
         });
     }
 

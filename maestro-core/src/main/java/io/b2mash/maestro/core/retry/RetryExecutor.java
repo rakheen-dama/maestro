@@ -1,8 +1,7 @@
 package io.b2mash.maestro.core.retry;
 
 import io.b2mash.maestro.core.exception.ActivityExecutionException;
-import io.b2mash.maestro.core.exception.ExecutorShutdownException;
-import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
+import io.b2mash.maestro.core.exception.MaestroControlFlowError;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -50,17 +49,25 @@ public final class RetryExecutor {
         for (int attempt = 0; attempt < policy.maxAttempts(); attempt++) {
             try {
                 return task.call();
-            } catch (ExecutorShutdownException e) {
-                // Not a retryable failure — the executor is shutting down.
-                // Retrying (with a backoff sleep) would delay the drain for no
-                // reason, and wrapping it in ActivityExecutionException would
-                // hide it from executeWorkflow's shutdown handling.
-                throw e;
-            } catch (WorkflowTerminatedException e) {
-                // Not a retryable failure — the workflow has been terminated by an
-                // admin action. Retrying (with a backoff sleep) would delay the
-                // unwind for no reason, and wrapping it in ActivityExecutionException
-                // would hide it from executeWorkflow's terminate handling.
+            } catch (MaestroControlFlowError e) {
+                // None of the engine's control-flow signals is a retryable
+                // failure — this node is shutting down, an operator terminated
+                // the workflow, or a replay read met history this build cannot
+                // interpret. Retrying (with a backoff sleep) delays the unwind
+                // for no reason, and re-reading an unreadable row will not make
+                // it readable.
+                //
+                // Wrapping is the dangerous half: ActivityExecutionException is
+                // an ordinary Exception, so a wrapped signal reaches
+                // executeWorkflow's catch (Exception) and the workflow is
+                // recorded FAILED *with compensation* — reinstating, one layer
+                // down, the exact bug each signal exists to prevent.
+                //
+                // One catch for all three: compensation actions run through the
+                // activity proxy and therefore through this executor, so a
+                // nested replay read here can raise a stand-down. Enumerating
+                // the types individually is what let that case slip through
+                // when it was added.
                 throw e;
             } catch (Throwable e) {
                 var unwrapped = unwrap(e);

@@ -5,12 +5,17 @@ import io.b2mash.maestro.core.context.WorkflowMDC;
 import io.b2mash.maestro.core.exception.RetryExhaustedException;
 import io.b2mash.maestro.core.exception.SignalTimeoutException;
 import io.b2mash.maestro.core.exception.TimerCancelledException;
+import io.b2mash.maestro.core.exception.UnsupportedWorkflowVersionException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.model.TimerStatus;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.EngineObserver;
+import io.b2mash.maestro.core.observe.ParkKind;
+import io.b2mash.maestro.core.observe.TimerInfo;
+import io.b2mash.maestro.core.observe.WorkflowInfo;
 import io.b2mash.maestro.core.retry.RetryUntilOptions;
 import io.b2mash.maestro.core.saga.CompensationStack;
 import io.b2mash.maestro.core.spi.DistributedLock;
@@ -29,6 +34,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -66,6 +72,9 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
      */
     static final int BRANCH_MULTIPLIER = 1000;
 
+    /** Step-name prefix recorded on {@link EventType#VERSION_MARKER} events. */
+    private static final String VERSION_STEP_PREFIX = "$maestro:version:";
+
     private final WorkflowStore store;
     private final @Nullable DistributedLock distributedLock;
     private final @Nullable WorkflowMessaging messaging;
@@ -74,6 +83,17 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
     private final CompensationStack compensationStack;
     private final SignalManager signalManager;
     private final Duration wakeRecheckInterval;
+    private final EngineObserver observer;
+
+    /**
+     * Version decisions already resolved in this run, {@code changeId → version}.
+     *
+     * <p>Lifetime is exactly one local run — the executor builds a fresh
+     * operations instance per launch — so recovery re-resolves from the durable
+     * marker rather than from memory. Concurrent because parallel branches share
+     * the instance.
+     */
+    private final ConcurrentHashMap<String, Integer> versionCache = new ConcurrentHashMap<>();
 
     /**
      * Creates workflow operations with the default wake re-check interval
@@ -127,6 +147,40 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             SignalManager signalManager,
             Duration wakeRecheckInterval
     ) {
+        this(store, distributedLock, messaging, serializer, parkingLot, compensationStack,
+                signalManager, wakeRecheckInterval, EngineObserver.NOOP);
+    }
+
+    /**
+     * Creates workflow operations with an explicit wake re-check interval and
+     * an {@link EngineObserver}.
+     *
+     * @param store               workflow store for event persistence and signal management
+     * @param distributedLock     optional distributed lock backend
+     * @param messaging           optional messaging for lifecycle event publishing
+     * @param serializer          Jackson serializer for payloads
+     * @param parkingLot          virtual thread parking mechanism
+     * @param compensationStack   LIFO compensation stack (shared with WorkflowExecutor)
+     * @param signalManager       signal lifecycle manager for await/consume operations
+     * @param wakeRecheckInterval how often a live {@link #sleep(Duration)} park
+     *                            re-reads the durable timer row for a fire or
+     *                            cancel that happened on another node
+     * @param observer            engine observation seam — fires
+     *                            {@code timerScheduled}/{@code Fired}/{@code Cancelled}
+     *                            and {@code workflowParked}/{@code workflowUnparked(TIMER)};
+     *                            never {@code null} (pass {@link EngineObserver#NOOP})
+     */
+    public DefaultWorkflowOperations(
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            @Nullable WorkflowMessaging messaging,
+            PayloadSerializer serializer,
+            ParkingLot parkingLot,
+            CompensationStack compensationStack,
+            SignalManager signalManager,
+            Duration wakeRecheckInterval,
+            EngineObserver observer
+    ) {
         this.store = store;
         this.distributedLock = distributedLock;
         this.messaging = messaging;
@@ -135,6 +189,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         this.compensationStack = compensationStack;
         this.signalManager = signalManager;
         this.wakeRecheckInterval = wakeRecheckInterval;
+        this.observer = observer;
     }
 
     // ── sleep ──────────────────────────────────────────────────────────
@@ -146,23 +201,31 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         var stepName = "$maestro:sleep";
 
         // Replay check: look for TIMER_SCHEDULED at this sequence
-        var storedEvent = store.getEventBySequence(ctx.workflowInstanceId(), seq);
+        var storedEvent = UnknownHistoryGuard.requireKnown(
+                store.getEventBySequence(ctx.workflowInstanceId(), seq), ctx.workflowId());
         if (storedEvent.isPresent()) {
             if (storedEvent.get().eventType() == EventType.TIMER_SCHEDULED) {
+                var timerId = extractTimerId(storedEvent.get().payload());
+                // The scheduling is memoized history — re-observed with
+                // replayed=true so counting adapters can skip it.
+                observer.timerScheduled(observedTimer(ctx, timerId), true);
                 // Check whether the outcome at the next sequence is already
                 // memoized. Pure deterministic re-derivation from the event
                 // log — no writes, no timer-row read — for both terminal outcomes.
                 var nextSeq = seq + 1;
-                var nextEvent = store.getEventBySequence(ctx.workflowInstanceId(), nextSeq);
+                var nextEvent = UnknownHistoryGuard.requireKnown(
+                        store.getEventBySequence(ctx.workflowInstanceId(), nextSeq),
+                        ctx.workflowId());
                 if (nextEvent.isPresent() && nextEvent.get().eventType() == EventType.TIMER_FIRED) {
                     // Both events exist — skip the sleep entirely
                     ctx.nextSequence(); // advance past TIMER_FIRED
+                    observer.timerFired(observedTimer(ctx, timerId), true);
                     logger.debug("Replaying completed sleep at seq {} (skipped)", seq);
                     return;
                 }
                 if (nextEvent.isPresent() && nextEvent.get().eventType() == EventType.TIMER_CANCELLED) {
                     ctx.nextSequence(); // advance past TIMER_CANCELLED
-                    var timerId = extractTimerId(storedEvent.get().payload());
+                    observer.timerCancelled(observedTimer(ctx, timerId), true);
                     logger.debug("Replaying cancelled sleep at seq {} (skipped)", seq);
                     throw new TimerCancelledException(ctx.workflowId(), timerId);
                 }
@@ -173,7 +236,6 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                 // The durable row is what tells the two apart: only a PENDING
                 // timer will ever be handed to a poller again, so re-parking
                 // on a FIRED or CANCELLED one would wait forever.
-                var timerId = extractTimerId(storedEvent.get().payload());
                 var rowStatus = store.findTimer(ctx.workflowInstanceId(), timerId)
                         .map(WorkflowTimer::status)
                         .orElse(null);
@@ -182,7 +244,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                     logger.debug("Replaying sleep at seq {} whose timer '{}' was cancelled — "
                             + "healing the missing TIMER_CANCELLED event instead of re-parking",
                             seq, timerId);
-                    recordTimerCancelled(ctx);
+                    recordTimerCancelled(ctx, timerId);
                     updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
                     publishLifecycleEvent(ctx, stepName, LifecycleEventType.TIMER_CANCELLED);
                     throw new TimerCancelledException(ctx.workflowId(), timerId);
@@ -194,7 +256,9 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                             seq, timerId);
                 } else {
                     logger.debug("Replaying pending sleep at seq {} — re-parking", seq);
+                    observer.workflowParked(observed(ctx), ParkKind.TIMER);
                     parkForTimer(ctx, timerId);
+                    observer.workflowUnparked(observed(ctx), ParkKind.TIMER);
                     // The wake that ends the re-park can be a fire or a
                     // cancel racing in after this node came back up — the row
                     // decides, exactly as it does on the live path below.
@@ -202,7 +266,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                     return;
                 }
                 // Timer fired — record the TIMER_FIRED event
-                recordTimerFired(ctx);
+                recordTimerFired(ctx, timerId);
                 // Restore RUNNING status (matches the live path)
                 updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
                 publishLifecycleEvent(ctx, stepName, LifecycleEventType.TIMER_FIRED);
@@ -227,6 +291,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         // Append TIMER_SCHEDULED event
         var timerPayload = serializer.serialize(new TimerDetail(timerId, duration.toString()));
         appendEvent(ctx, seq, EventType.TIMER_SCHEDULED, stepName, timerPayload);
+        observer.timerScheduled(observedTimer(ctx, timerId), false);
 
         // Update instance status
         updateInstanceStatus(ctx, WorkflowStatus.WAITING_TIMER);
@@ -234,9 +299,13 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         // Publish lifecycle event (best-effort)
         publishLifecycleEvent(ctx, stepName, LifecycleEventType.TIMER_SCHEDULED);
 
-        // Park the virtual thread
+        // Park the virtual thread. Unparked fires only when the thread
+        // actually resumes — a shutdown or terminate propagating out of the
+        // park abandons the run and emits neither boundary.
         logger.debug("Workflow '{}' sleeping for {} (timerId={})", ctx.workflowId(), duration, timerId);
+        observer.workflowParked(observed(ctx), ParkKind.TIMER);
         parkForTimer(ctx, timerId);
+        observer.workflowUnparked(observed(ctx), ParkKind.TIMER);
 
         // Timer fired or cancelled — the row decides which (§3.1)
         recordWakeOutcome(ctx, stepName, timerId);
@@ -349,7 +418,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
      */
     private void recordWakeOutcome(WorkflowContext ctx, String stepName, String timerId) {
         if (isCancelled(ctx, timerId)) {
-            recordTimerCancelled(ctx);
+            recordTimerCancelled(ctx, timerId);
             updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
             publishLifecycleEvent(ctx, stepName, LifecycleEventType.TIMER_CANCELLED);
             logger.debug("Workflow '{}' woke from sleep — timer '{}' was cancelled",
@@ -358,7 +427,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         }
         // FIRED, or defensively absent — preserves today's behaviour
         // bit-for-bit for every workflow whose timers are never cancelled.
-        recordTimerFired(ctx);
+        recordTimerFired(ctx, timerId);
         updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
         publishLifecycleEvent(ctx, stepName, LifecycleEventType.TIMER_FIRED);
         logger.debug("Workflow '{}' woke from sleep (timerId={})", ctx.workflowId(), timerId);
@@ -384,14 +453,33 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                 .orElse(false);
     }
 
-    private void recordTimerFired(WorkflowContext ctx) {
+    /**
+     * Appends the {@code TIMER_FIRED} event and observes the fire live.
+     * This workflow-side record is the single place a fire is observed
+     * exactly once, regardless of which node's poller fired the row — the
+     * poller itself is deliberately not instrumented.
+     */
+    private void recordTimerFired(WorkflowContext ctx, String timerId) {
         var firedSeq = ctx.nextSequence();
         appendEvent(ctx, firedSeq, EventType.TIMER_FIRED, "$maestro:timer-fired", null);
+        observer.timerFired(observedTimer(ctx, timerId), false);
     }
 
-    private void recordTimerCancelled(WorkflowContext ctx) {
+    /** Appends the {@code TIMER_CANCELLED} event and observes the cancel live. */
+    private void recordTimerCancelled(WorkflowContext ctx, String timerId) {
         var cancelledSeq = ctx.nextSequence();
         appendEvent(ctx, cancelledSeq, EventType.TIMER_CANCELLED, "$maestro:timer-cancelled", null);
+        observer.timerCancelled(observedTimer(ctx, timerId), false);
+    }
+
+    /** Builds the identity-only timer observation record. */
+    private static TimerInfo observedTimer(WorkflowContext ctx, String timerId) {
+        return new TimerInfo(ctx.workflowId(), ctx.workflowType(), timerId);
+    }
+
+    /** Builds the identity-only workflow observation record. */
+    private static WorkflowInfo observed(WorkflowContext ctx) {
+        return new WorkflowInfo(ctx.workflowId(), ctx.workflowType(), ctx.serviceName());
     }
 
     private String extractTimerId(@Nullable JsonNode payload) {
@@ -463,8 +551,13 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         var parentSeq = ctx.nextSequence();
         var branchCount = tasks.size();
 
-        // Replay check: look for existing parallel fork event at this sequence
-        var storedEvent = store.getEventBySequence(ctx.workflowInstanceId(), parentSeq);
+        // Replay check: look for existing parallel fork event at this sequence.
+        // Guarded first: an unknown type here would otherwise fail the SIDE_EFFECT
+        // comparison, fall through to the live path, re-fork every branch and
+        // stand down only on the duplicate append — as STALE_RUN, after the
+        // branches have already touched the outside world.
+        var storedEvent = UnknownHistoryGuard.requireKnown(
+                store.getEventBySequence(ctx.workflowInstanceId(), parentSeq), ctx.workflowId());
         if (storedEvent.isEmpty() || storedEvent.get().eventType() != EventType.SIDE_EFFECT) {
             // Live path: record the parallel fork point
             ctx.setReplaying(false);
@@ -530,11 +623,14 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             throw new RuntimeException("Parallel execution interrupted", e);
         }
 
-        // Check for errors — fail fast with first error. ExecutorShutdownException
-        // (an Error, not a RuntimeException — see its Javadoc) is rethrown as-is:
-        // wrapping it here would hide a graceful shutdown inside a plain
-        // RuntimeException that executeWorkflow's catch (ExecutorShutdownException e)
-        // no longer recognises, turning a routine deploy into a recorded failure.
+        // Check for errors — fail fast with first error. Every engine
+        // control-flow signal (MaestroControlFlowError: shutdown, terminate,
+        // unknown-history stand-down) is an Error, not a RuntimeException, and
+        // is rethrown as-is by the `instanceof Error` arm below: wrapping one
+        // here would hide it inside a plain RuntimeException that
+        // executeWorkflow's dedicated catch arms no longer recognise, turning a
+        // routine deploy — or a mixed-version window — into a recorded failure
+        // with compensations.
         for (int i = 0; i < branchCount; i++) {
             var error = errors.get(i).get();
             if (error != null) {
@@ -564,9 +660,12 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         var seq = ctx.nextSequence();
 
         // Replay check
-        var storedEvent = store.getEventBySequence(ctx.workflowInstanceId(), seq);
+        var storedEvent = UnknownHistoryGuard.requireKnown(
+                store.getEventBySequence(ctx.workflowInstanceId(), seq), ctx.workflowId());
         if (storedEvent.isPresent() && storedEvent.get().eventType() == EventType.SIDE_EFFECT) {
-            return serializer.deserialize(storedEvent.get().payload(), Instant.class);
+            return UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), seq,
+                    "memoized currentTime()",
+                    () -> serializer.deserialize(storedEvent.get().payload(), Instant.class));
         }
 
         // Live path
@@ -584,9 +683,12 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         var seq = ctx.nextSequence();
 
         // Replay check
-        var storedEvent = store.getEventBySequence(ctx.workflowInstanceId(), seq);
+        var storedEvent = UnknownHistoryGuard.requireKnown(
+                store.getEventBySequence(ctx.workflowInstanceId(), seq), ctx.workflowId());
         if (storedEvent.isPresent() && storedEvent.get().eventType() == EventType.SIDE_EFFECT) {
-            return serializer.deserialize(storedEvent.get().payload(), String.class);
+            return UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), seq,
+                    "memoized randomUUID()",
+                    () -> serializer.deserialize(storedEvent.get().payload(), String.class));
         }
 
         // Live path
@@ -594,6 +696,157 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         var uuid = UUID.randomUUID().toString();
         appendEvent(ctx, seq, EventType.SIDE_EFFECT, "$maestro:randomUUID", serializer.serialize(uuid));
         return uuid;
+    }
+
+    // ── version ────────────────────────────────────────────────────────
+
+    @Override
+    public int version(String changeId, int minSupported, int maxSupported) {
+        if (changeId == null || changeId.isBlank()) {
+            throw new IllegalArgumentException("changeId must not be blank");
+        }
+        if (maxSupported < 0) {
+            throw new IllegalArgumentException(
+                    "maxSupported must not be negative for change '%s', got %d"
+                            .formatted(changeId, maxSupported));
+        }
+        if (minSupported > maxSupported) {
+            throw new IllegalArgumentException(
+                    "minSupported (%d) must not exceed maxSupported (%d) for change '%s'"
+                            .formatted(minSupported, maxSupported, changeId));
+        }
+
+        var ctx = WorkflowContext.current();
+
+        // Repeated calls with the same changeId in one run resolve once: the
+        // original run wrote a single marker, so later call sites must neither
+        // consume a sequence slot nor write. Branches share this cache because
+        // they share the operations instance — see version()'s Javadoc for the
+        // "resolve before forking" rule that follows from it.
+        var cached = versionCache.get(changeId);
+        if (cached != null) {
+            return guardVersion(ctx, changeId, cached, minSupported, maxSupported);
+        }
+
+        // PEEK — read the slot without consuming it. A non-matching event there
+        // means this history predates the change, and consuming the slot would
+        // shift every later replay lookup by one and corrupt the run.
+        var peekSeq = ctx.currentSequence() + 1;
+        // Guarded BEFORE the predates-the-change classification below: an event
+        // of a type this build does not know is not evidence that the history
+        // predates the change, it is evidence that this node cannot read the
+        // history at all. Classifying it as "predates" would silently take the
+        // pre-change branch.
+        var stored = UnknownHistoryGuard.requireKnown(
+                store.getEventBySequence(ctx.workflowInstanceId(), peekSeq), ctx.workflowId());
+
+        int resolved;
+        if (stored.isPresent()) {
+            var recorded = recordedVersion(stored.get(), changeId, ctx.workflowId(), peekSeq);
+            if (recorded != null) {
+                ctx.nextSequence(); // the marker is ours — consume the slot
+                resolved = recorded;
+                logger.debug("Replaying version {} for change '{}' at seq {}",
+                        resolved, changeId, peekSeq);
+            } else {
+                resolved = WorkflowContext.DEFAULT_VERSION;
+                logger.debug("No version marker at seq {} for change '{}' — history "
+                        + "predates the change, resolving to DEFAULT_VERSION", peekSeq, changeId);
+            }
+        } else {
+            // Live frontier: record the decision durably, then return it.
+            var seq = ctx.nextSequence();
+            ctx.setReplaying(false);
+            appendEvent(ctx, seq, EventType.VERSION_MARKER, VERSION_STEP_PREFIX + changeId,
+                    serializer.serialize(new VersionDetail(changeId, maxSupported)));
+            resolved = maxSupported;
+            logger.debug("Recorded version {} for change '{}' at seq {}", resolved, changeId, seq);
+        }
+
+        var checked = guardVersion(ctx, changeId, resolved, minSupported, maxSupported);
+        versionCache.put(changeId, checked);
+        return checked;
+    }
+
+    /**
+     * Returns the version recorded by {@code event} for {@code changeId}, or
+     * {@code null} if the event is genuine evidence that <em>this history
+     * predates the change</em>. A {@code null} means the caller must resolve to
+     * {@code DEFAULT_VERSION} <em>without</em> consuming the slot, because the
+     * event found there belongs to the workflow's next step.
+     *
+     * <p>Three outcomes, deliberately kept apart:
+     * <ul>
+     *   <li><b>Not a marker at all</b> → {@code null}. The workflow's next step
+     *       is sitting in that slot, which is exactly what a history written
+     *       before the change looks like.</li>
+     *   <li><b>Another change's marker</b> (readable, different {@code changeId})
+     *       → {@code null}, for the same reason: a marker that demonstrably
+     *       belongs to a different change is evidence that <em>this</em> change
+     *       had not been introduced when the history was written.</li>
+     *   <li><b>A marker this build cannot interpret</b> — no payload, no
+     *       readable {@code changeId}, or this change's {@code changeId} with a
+     *       {@code version} that is missing or not a number → <b>stand down</b>
+     *       ({@link UnknownWorkflowHistoryException.Kind#UNKNOWN_EVENT_PAYLOAD}).</li>
+     * </ul>
+     *
+     * <p>The third case used to return {@code null} along with the first two,
+     * and that collapse was a silent-wrong-branch bug: a marker a newer node
+     * reshaped ({@code "version":"3"} as a string) resolved to
+     * {@code DEFAULT_VERSION}, so the instance took the <em>pre</em>-change
+     * branch of a workflow whose durable history says it took the post-change
+     * one — and, because the slot was not consumed, the stranded marker shifted
+     * every later replay lookup by one. That surfaced (if at all) as an
+     * unrelated {@code IllegalStateException} at the next activity slot, or
+     * never, when the marker was the last event. A marker whose payload cannot
+     * be read is not a decision this node is entitled to guess at.
+     *
+     * @param event      the peeked event
+     * @param changeId   the change being resolved
+     * @param workflowId the workflow, for the stand-down message
+     * @param peekSeq    the peeked sequence, for the stand-down message
+     * @return the recorded version, or {@code null} if the history predates the change
+     * @throws UnknownWorkflowHistoryException if the event is a marker this
+     *                                         build cannot interpret
+     */
+    private static @Nullable Integer recordedVersion(WorkflowEvent event, String changeId,
+                                                     String workflowId, int peekSeq) {
+        if (event.eventType() != EventType.VERSION_MARKER) {
+            return null;
+        }
+        var payload = event.payload();
+        if (payload == null) {
+            throw UnknownHistoryGuard.payloadStandDown(workflowId, peekSeq,
+                    "a VERSION_MARKER with no payload, so it can be attributed to no change");
+        }
+        var recordedChangeId = payload.path("changeId").asString(null);
+        if (recordedChangeId == null) {
+            throw UnknownHistoryGuard.payloadStandDown(workflowId, peekSeq,
+                    "a VERSION_MARKER whose changeId is missing or not a string");
+        }
+        if (!changeId.equals(recordedChangeId)) {
+            return null;
+        }
+        var version = payload.path("version");
+        if (!version.isNumber()) {
+            throw UnknownHistoryGuard.payloadStandDown(workflowId, peekSeq,
+                    ("the VERSION_MARKER for change '%s' records a version this build cannot "
+                            + "read (%s)").formatted(changeId, version));
+        }
+        return version.intValue();
+    }
+
+    /**
+     * Enforces the floor: a recorded version below {@code minSupported} means
+     * the running code no longer carries the branch this instance needs.
+     */
+    private static int guardVersion(WorkflowContext ctx, String changeId, int resolved,
+                                    int minSupported, int maxSupported) {
+        if (resolved < minSupported) {
+            throw new UnsupportedWorkflowVersionException(
+                    ctx.workflowId(), changeId, resolved, minSupported, maxSupported);
+        }
+        return resolved;
     }
 
     // ── retryUntil ──────────────────────────────────────────────────────
@@ -700,4 +953,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
 
     private record TimerDetail(String timerId, String duration) {}
     private record ParallelDetail(int branchCount) {}
+
+    /** Payload of a {@link EventType#VERSION_MARKER} event. */
+    private record VersionDetail(String changeId, int version) {}
 }

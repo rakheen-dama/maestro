@@ -4,7 +4,7 @@
 [![Java](https://img.shields.io/badge/Java-25-orange.svg)](https://openjdk.org/projects/jdk/25/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.x-green.svg)](https://spring.io/projects/spring-boot)
 
-**Embeddable durable workflow engine for Spring Boot.** Add a starter to your microservice and get Temporal-grade workflow durability using your existing Postgres — plus optionally Kafka, RabbitMQ, or Valkey.
+**Embeddable durable workflow engine for Spring Boot.** Add a starter to your microservice and get Temporal-grade workflow durability using your existing Postgres — plus optionally Kafka or Valkey.
 
 ---
 
@@ -35,6 +35,8 @@ Maestro is an open-source durable workflow engine delivered as a Spring Boot Sta
 - **Queries** -- Read live workflow state without affecting execution.
 - **Durable Retries** -- Activities retry with exponential backoff. Retries survive JVM restarts.
 - **Admin Dashboard** -- Standalone monitoring UI with workflow list, event timelines, signal monitor, and one-click retry.
+- **Workflow Versioning** -- `workflow.version()` gates a code change behind a durable, memoized decision, so in-flight instances keep replaying the branch they recorded.
+- **Observability** -- Micrometer meters and OpenTelemetry spans out of the box, including W3C trace propagation through Kafka so a cross-service flow renders as one connected trace. Replayed steps are never counted or traced.
 - **Testing Library** -- `maestro-test` provides an in-memory engine with controllable time. No infrastructure required.
 
 ---
@@ -217,14 +219,12 @@ graph TB
 | `maestro-store-postgres` | Postgres implementation + Flyway migrations | No |
 | `maestro-messaging-kafka` | Kafka `WorkflowMessaging` implementation | Yes |
 | `maestro-messaging-postgres` | PostgreSQL `WorkflowMessaging` via LISTEN/NOTIFY + polling | No |
-| `maestro-messaging-rabbitmq` | RabbitMQ `WorkflowMessaging` via Spring AMQP | Yes |
 | `maestro-lock-valkey` | Valkey/Redis `DistributedLock` | No |
 | `maestro-lock-postgres` | PostgreSQL `DistributedLock` via table-backed locks | No |
 | `maestro-admin` | Standalone monitoring dashboard | Yes |
 | `maestro-admin-client` | Lifecycle event publisher | Minimal |
 | `maestro-test` | In-memory engine for testing | No |
 | `sample-postgres-only` | Document approval workflow -- Postgres-only demo | Yes |
-| `sample-rabbitmq-order-service` | E-commerce demo using RabbitMQ + Postgres | Yes |
 
 `maestro-core` is **pure Java** with zero Spring dependency. All Spring integration lives in `maestro-spring-boot-starter`.
 
@@ -273,6 +273,8 @@ See the [Samples README](maestro-samples/README.md) for crash recovery simulatio
 | **[Self-Recovery](docs/self-recovery.md)** | How signals survive crashes -- Maestro's killer feature |
 | **[Cross-Service Patterns](docs/cross-service.md)** | Multi-service coordination via Kafka and signals |
 | **[Testing Guide](docs/testing.md)** | Using `maestro-test` for fast, deterministic tests |
+| **[Observability](docs/observability.md)** | Meter catalog, span topology, and the Kafka trace-propagation contract |
+| **[Operations](docs/operations.md)** | Multi-instance behaviour, measured; versioning and mixed-version deploy playbook |
 | **[Admin Dashboard](docs/admin.md)** | Setup and feature guide for the monitoring UI |
 | **[Architecture](docs/maestro-architecture.md)** | System design, diagrams, failure modes |
 | **[Product Requirements](docs/maestro-prd.md)** | Full PRD with API design and use cases |

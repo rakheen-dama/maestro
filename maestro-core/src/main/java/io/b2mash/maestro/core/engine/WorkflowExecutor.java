@@ -8,6 +8,7 @@ import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.QueryNotDefinedException;
+import io.b2mash.maestro.core.exception.UnknownWorkflowHistoryException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowExecutionException;
 import io.b2mash.maestro.core.exception.WorkflowNotQueryableException;
@@ -17,6 +18,10 @@ import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.AbandonReason;
+import io.b2mash.maestro.core.observe.EngineObserver;
+import io.b2mash.maestro.core.observe.StandDownReason;
+import io.b2mash.maestro.core.observe.WorkflowInfo;
 import io.b2mash.maestro.core.saga.CompensationStack;
 import io.b2mash.maestro.core.saga.SagaManager;
 import io.b2mash.maestro.core.spi.DistributedLock;
@@ -41,7 +46,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Central orchestrator that runs workflow methods on Java 21 virtual threads.
+ * Central orchestrator that runs workflow methods on Java virtual threads.
  *
  * <p>The WorkflowExecutor manages the full lifecycle of durable workflows:
  * <ul>
@@ -58,7 +63,10 @@ import java.util.concurrent.atomic.AtomicReference;
  *       {@link io.b2mash.maestro.core.exception.TimerCancelledException}.</li>
  *   <li><b>Terminate:</b> Marks a workflow {@code TERMINATED} from any node and
  *       stops it — without compensation — evicting its virtual thread if this
- *       node happens to own it.</li>
+ *       node happens to own it. ("Without compensation" means terminate never
+ *       starts one; one open race can still let a compensation that was
+ *       already starting run to completion — {@code docs/open-issues.md}
+ *       Issue 22.)</li>
  *   <li><b>Shutdown:</b> Stops accepting new work, waits for in-flight
  *       workflows to drain, and leaves parked workflows in their
  *       {@code WAITING_*} status for another node to recover — a graceful
@@ -112,6 +120,7 @@ public final class WorkflowExecutor {
     private final boolean lifecycleEventsEnabled;
     private final Duration shutdownTimeout;
     private final Duration wakeRecheckInterval;
+    private final EngineObserver observer;
     private final LifecycleEventPublisher lifecycleEventPublisher;
     private final ConcurrentHashMap<String, RunningWorkflow> runningWorkflows;
     private final AtomicBoolean shuttingDown;
@@ -261,6 +270,64 @@ public final class WorkflowExecutor {
             Duration shutdownTimeout,
             Duration wakeRecheckInterval
     ) {
+        this(store, distributedLock, messaging, signalNotifier, serializer, serviceName,
+                lockKeyPrefix, instanceLockTtl, lifecycleEventsEnabled,
+                shutdownTimeout, wakeRecheckInterval, EngineObserver.NOOP);
+    }
+
+    /**
+     * Creates a new workflow executor with explicit lock configuration,
+     * explicit control over lifecycle event publishing, explicit
+     * shutdown/signal timing, and an {@link EngineObserver}.
+     *
+     * @param store                  workflow store for persistence
+     * @param distributedLock        optional distributed lock backend
+     * @param messaging              optional messaging for lifecycle events
+     * @param signalNotifier         optional cross-instance signal notification
+     * @param serializer             Jackson serializer for payloads
+     * @param serviceName            the name of the owning service
+     * @param lockKeyPrefix          prefix for distributed lock keys (e.g. {@code maestro:lock:})
+     * @param instanceLockTtl        TTL for the per-workflow instance lock; renewed
+     *                               at one third of this interval — must be strictly
+     *                               positive
+     * @param lifecycleEventsEnabled whether {@code WORKFLOW_STARTED}/{@code _COMPLETED}/
+     *                               {@code _FAILED} lifecycle events are published at all
+     *                               (independent of whether {@code messaging} is configured).
+     *                               Corresponds to {@code maestro.admin.events.enabled} in the
+     *                               Spring Boot starter.
+     * @param shutdownTimeout        how long {@link #shutdown()} waits for in-flight
+     *                               workflows to drain before returning — must be strictly
+     *                               positive. Corresponds to {@code maestro.shutdown.timeout}.
+     * @param wakeRecheckInterval    how often a parked {@code awaitSignal()} or
+     *                               {@code sleep()} re-checks the store for a wake that
+     *                               happened without a local unpark — must be strictly
+     *                               positive. Corresponds to
+     *                               {@code maestro.signal.wake-recheck-interval}.
+     * @param observer               engine observation seam invoked synchronously at
+     *                               execution boundaries and handed to every component
+     *                               this executor builds; pass
+     *                               {@link EngineObserver#NOOP} (never {@code null})
+     *                               when no observation is wanted — see
+     *                               {@link EngineObserver} for the callback and
+     *                               thread-safety contract
+     * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
+     *                                  or {@code wakeRecheckInterval} is {@code null}, zero,
+     *                                  or negative
+     */
+    public WorkflowExecutor(
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            @Nullable WorkflowMessaging messaging,
+            @Nullable SignalNotifier signalNotifier,
+            PayloadSerializer serializer,
+            String serviceName,
+            String lockKeyPrefix,
+            Duration instanceLockTtl,
+            boolean lifecycleEventsEnabled,
+            Duration shutdownTimeout,
+            Duration wakeRecheckInterval,
+            EngineObserver observer
+    ) {
         if (instanceLockTtl == null || instanceLockTtl.isNegative() || instanceLockTtl.isZero()) {
             throw new IllegalArgumentException(
                     "instanceLockTtl must be positive, got " + instanceLockTtl);
@@ -275,6 +342,7 @@ public final class WorkflowExecutor {
         }
         this.store = store;
         this.distributedLock = distributedLock;
+        this.observer = observer;
         // Wrapped once, here, and handed to every component this executor builds
         // (SignalManager, SagaManager, DefaultWorkflowOperations below) so the
         // enabled flag is honoured by every lifecycle-event publisher this
@@ -287,11 +355,12 @@ public final class WorkflowExecutor {
         this.serviceName = serviceName;
         this.parkingLot = new ParkingLot();
         this.signalManager = new SignalManager(
-                store, this.messaging, signalNotifier, serializer, parkingLot, wakeRecheckInterval);
-        this.sagaManager = new SagaManager(store, this.messaging, serializer, serviceName);
+                store, this.messaging, signalNotifier, serializer, parkingLot, wakeRecheckInterval,
+                observer);
+        this.sagaManager = new SagaManager(store, this.messaging, serializer, serviceName, observer);
         this.instanceLockManager = new WorkflowInstanceLockManager(
                 distributedLock, serviceName, lockKeyPrefix, instanceLockTtl,
-                instanceLockTtl.dividedBy(3));
+                instanceLockTtl.dividedBy(3), observer);
         this.queryRegistry = new QueryRegistry();
         this.lifecycleEventsEnabled = lifecycleEventsEnabled;
         this.shutdownTimeout = shutdownTimeout;
@@ -372,6 +441,7 @@ public final class WorkflowExecutor {
 
         // Publish WORKFLOW_STARTED lifecycle event
         publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_STARTED, null);
+        emit("workflowStarted", workflowId, () -> observer.workflowStarted(observed(instance)));
 
         // Launch on virtual thread
         launchWorkflow(instance, workflowImpl, workflowMethod, inputPayload, false, acquisition);
@@ -454,6 +524,9 @@ public final class WorkflowExecutor {
             logger.debug("Recovered 0 workflow(s) from {} recoverable instance(s)",
                     recoverable.size());
         }
+        var scanned = recoverable.size();
+        var adopted = count;
+        emit("recoveryPass", null, () -> observer.recoveryPass(scanned, adopted));
         return count;
     }
 
@@ -615,7 +688,13 @@ public final class WorkflowExecutor {
      *   <li><b>No compensation.</b> Terminate marks and stops; it does not
      *       unwind a saga. Compensation steps that already ran stay memoized,
      *       pending ones never run. ("Cancel", which compensates, is a
-     *       different and larger feature.)</li>
+     *       different and larger feature.) <b>One open exception:</b> terminate
+     *       never <em>starts</em> a compensation, but a narrow documented race
+     *       — this method's write landing between
+     *       {@code SagaManager.transitionToCompensating}'s terminal-status
+     *       check and its own status write — can let a compensation that was
+     *       already starting run to completion on the terminated workflow. See
+     *       {@code docs/open-issues.md} Issue 22.</li>
      *   <li><b>No interruption of an in-flight activity.</b> Consistent with
      *       {@link #shutdown()}: the activity finishes and memoizes its result
      *       (harmless), and the run stands down at its next park or at its
@@ -688,6 +767,7 @@ public final class WorkflowExecutor {
             }
 
             publishLifecycleEvent(terminated, LifecycleEventType.WORKFLOW_TERMINATED, null);
+            emit("workflowTerminated", workflowId, () -> observer.workflowTerminated(observed(terminated)));
 
             // Best-effort local eviction. Only this node's threads can be
             // abandoned; a remote owner converges via the terminal-status guard.
@@ -1159,6 +1239,20 @@ public final class WorkflowExecutor {
     }
 
     /**
+     * Returns the number of workflow virtual threads currently parked on this
+     * node (sleeping on a durable timer or awaiting a signal).
+     *
+     * <p>A node-local gauge source: together with {@link #runningCount()} it
+     * answers "what is this JVM doing right now" — the starter's
+     * observability auto-configuration registers both as gauges.
+     *
+     * @return the number of parked waiters in this executor's parking lot
+     */
+    public int parkedCount() {
+        return parkingLot.parkedCount();
+    }
+
+    /**
      * Returns whether the background timer poller is currently running on
      * this executor.
      *
@@ -1262,7 +1356,7 @@ public final class WorkflowExecutor {
         var compensationStack = new CompensationStack();
         var operations = new DefaultWorkflowOperations(
                 store, distributedLock, messaging, serializer, parkingLot, compensationStack,
-                signalManager, wakeRecheckInterval);
+                signalManager, wakeRecheckInterval, observer);
 
         var ctx = new WorkflowContext(
                 instance.id(),
@@ -1304,6 +1398,10 @@ public final class WorkflowExecutor {
             instanceLockManager.release(instance.workflowId());
             throw e;
         }
+        if (replaying) {
+            emit("workflowResumed", instance.workflowId(),
+                    () -> observer.workflowResumed(observed(instance)));
+        }
         return true;
     }
 
@@ -1320,16 +1418,33 @@ public final class WorkflowExecutor {
     ) {
         try {
             // Deserialize input and invoke the workflow method
-            Object result = invokeWorkflowMethod(workflowImpl, workflowMethod, inputPayload);
+            Object result = invokeWorkflowMethod(ctx, workflowImpl, workflowMethod, inputPayload);
 
             // Success — finalise, converging with any other writer
             var outputPayload = result != null ? serializer.serialize(result) : null;
             if (transitionToTerminal(ctx, instance, WorkflowStatus.COMPLETED, outputPayload)) {
+                // Only the winner of the terminal transition counts the
+                // outcome — a converged loser must not double-fire. Emitted
+                // BEFORE the event append and the lifecycle publish: winning
+                // the transition is what durably makes this run the completer,
+                // so nothing after it may decide whether the completion is
+                // observed. Contained, so a throwing observer cannot skip the
+                // append below or land in catch (Exception) — which would
+                // compensate a workflow that just succeeded.
+                emit("workflowCompleted", ctx.workflowId(),
+                        () -> observer.workflowCompleted(observed(instance)));
+
                 // Append WORKFLOW_COMPLETED event
                 appendEvent(ctx, EventType.WORKFLOW_COMPLETED, null, outputPayload);
                 publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_COMPLETED, null);
 
                 logger.info("Workflow '{}' completed successfully", ctx.workflowId());
+            } else {
+                // F4: the converged LOSER. Another writer finalised the row
+                // first, so this run deliberately records nothing — but it did
+                // run, on this thread, and a stateful observer still holds
+                // per-thread state that only this emission will release.
+                emitRunAbandoned(ctx, AbandonReason.CONVERGED);
             }
 
         } catch (ExecutorShutdownException e) {
@@ -1351,6 +1466,16 @@ public final class WorkflowExecutor {
             // Ahead of catch (Exception e) for the same readability reason as
             // the shutdown case above.
             handleTermination(ctx, e);
+        } catch (UnknownWorkflowHistoryException unreadableHistory) {
+            // Also not a failure: this node is too old to read part of this
+            // workflow's persisted history — a newer node wrote it during a
+            // mixed-version deploy window. Writes nothing, runs no
+            // compensation, and leaves the instance in whatever recoverable
+            // status it already had, so an upgraded node adopts it through
+            // ordinary recovery. Placed with the other non-failure arms; like
+            // them the ordering is readability-only, since the exception is an
+            // Error and catch (Exception e) below could never reach it.
+            handleUnknownHistoryStandDown(ctx, unreadableHistory);
         } catch (DuplicateEventException staleRun) {
             // Issue 18: a DuplicateEventException that reaches this level means
             // "another run owns this workflow's progress — this node's view is
@@ -1386,6 +1511,14 @@ public final class WorkflowExecutor {
                 // compensations do not run — that is terminate's contract —
                 // and the TERMINATED row already stands, so nothing is written.
                 handleTermination(ctx, terminatedDuringCompensation);
+            } catch (UnknownWorkflowHistoryException unreadableDuringCompensation) {
+                // A compensation replay read met history this build cannot
+                // interpret. SagaManager rethrows instead of recording
+                // COMPENSATION_STEP_FAILED (a stand-down is not a failed
+                // reversal — nothing ran), the instance stays COMPENSATING —
+                // active and recoverable — and an upgraded node finishes the
+                // unwind. Nothing is written here.
+                handleUnknownHistoryStandDown(ctx, unreadableDuringCompensation);
             } catch (DuplicateEventException staleDuringCompensation) {
                 // The duplicate landed while compensating a genuine failure:
                 // another runner adopted the workflow and is compensating it
@@ -1411,15 +1544,29 @@ public final class WorkflowExecutor {
     }
 
     private @Nullable Object invokeWorkflowMethod(
-            Object workflowImpl, Method workflowMethod, @Nullable JsonNode inputPayload
+            WorkflowContext ctx, Object workflowImpl, Method workflowMethod,
+            @Nullable JsonNode inputPayload
     ) throws Exception {
         try {
             if (workflowMethod.getParameterCount() == 0) {
                 return workflowMethod.invoke(workflowImpl);
             } else {
-                // Deserialize input to the method's parameter type
+                // Deserialize input to the method's parameter type.
+                //
+                // RULING 9: the input is persisted state, re-read on EVERY
+                // recovery run — including runs on a node older than whichever
+                // one wrote it. A shape this build cannot read must stand the
+                // run down, not be recorded as a workflow failure: this throw
+                // happens before the workflow body executes, so a FAILED here
+                // is a workflow that never ran a single step being marked
+                // failed. Sequence 0 names the instance's own input rather than
+                // any event.
                 var paramType = workflowMethod.getParameterTypes()[0];
-                var input = inputPayload != null ? serializer.deserialize(inputPayload, paramType) : null;
+                var input = inputPayload != null
+                        ? UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), 0,
+                                "persisted workflow input",
+                                () -> serializer.deserialize(inputPayload, paramType))
+                        : null;
                 return workflowMethod.invoke(workflowImpl, input);
             }
         } catch (InvocationTargetException e) {
@@ -1451,6 +1598,9 @@ public final class WorkflowExecutor {
                 .orElse(null);
         logger.info("Workflow '{}' suspended by shutdown while {} — left recoverable",
                 ctx.workflowId(), status);
+        // RULING 5: the only callback a stateful observer gets on this thread
+        // for this path. workflowTerminated/Completed/Failed never fire here.
+        emitRunAbandoned(ctx, AbandonReason.SHUTDOWN);
     }
 
     // ── Internal: termination ──────────────────────────────────────────
@@ -1465,6 +1615,10 @@ public final class WorkflowExecutor {
     private void handleTermination(WorkflowContext ctx, WorkflowTerminatedException e) {
         logger.info("Workflow '{}' abandoned its local run — terminated{}",
                 ctx.workflowId(), e.reason() != null ? " (" + e.reason() + ")" : "");
+        // RULING 5. Note workflowTerminated already fired — on the OPERATOR's
+        // thread, inside terminateWorkflow — so it cannot release anything this
+        // workflow thread holds. This emission is what closes that gap.
+        emitRunAbandoned(ctx, AbandonReason.TERMINATED);
     }
 
     // ── Internal: stale-run stand-down (Issue 18) ──────────────────────
@@ -1492,6 +1646,56 @@ public final class WorkflowExecutor {
                         + "concurrent runner (instance status now {}) — no failure recorded, "
                         + "no compensation run; the concurrent runner's durable state governs",
                 ctx.workflowId(), e.sequenceNumber(), status);
+        emit("standDown", ctx.workflowId(), () ->
+                observer.standDown(StandDownReason.STALE_RUN, ctx.workflowId(),
+                        "append collision at sequence " + e.sequenceNumber()));
+    }
+
+    // ── Internal: unknown-history stand-down (spec §C2) ────────────────
+
+    /**
+     * Records that a workflow's local run stood down because this node cannot
+     * interpret the workflow's persisted history — an event type this build
+     * does not define, or a stored payload it cannot read, written by a node
+     * running a newer build during a mixed-version deploy window.
+     *
+     * <p>Deliberately writes nothing. The instance keeps whatever recoverable
+     * status this run found it in and an upgraded node adopts it through the
+     * ordinary lock-TTL/recovery-poller machinery. This is <b>never</b>
+     * recorded as a workflow failure and <b>never</b> triggers compensation:
+     * doing either would mark a workflow that is perfectly healthy on the
+     * upgraded half of the fleet as {@code FAILED}, and unwind real work
+     * (refunds issued, reservations released) that never failed.
+     *
+     * <p>The instance lock is released by {@code executeWorkflow}'s
+     * {@code finally}, exactly as it is for a shutdown — this method
+     * deliberately adds no early return that could bypass it.
+     *
+     * <p><b>Re-adoption churn is intended.</b> This node's recovery poller will
+     * adopt and stand down the same instance once per poll until an upgraded
+     * node wins the lock race. Each pass logs one WARN and increments
+     * {@code maestro.standdown{reason}} — that steadily-rising counter <em>is</em>
+     * the operator signal that a mixed fleet is lingering, so it is not
+     * deduplicated away.
+     */
+    private void handleUnknownHistoryStandDown(WorkflowContext ctx,
+                                               UnknownWorkflowHistoryException e) {
+        var status = store.getInstance(ctx.workflowId())
+                .map(WorkflowInstance::status)
+                .orElse(null);
+        logger.warn("Workflow '{}' stood down at sequence {}: {} (instance status still {}) — no "
+                        + "failure recorded, no compensation run; an upgraded node will adopt it "
+                        + "via recovery",
+                ctx.workflowId(), e.sequenceNumber(), e.getMessage(), status);
+        emit("standDown", ctx.workflowId(), () ->
+                observer.standDown(standDownReason(e.kind()), ctx.workflowId(),
+                        "seq=" + e.sequenceNumber()));
+    }
+
+    private static StandDownReason standDownReason(UnknownWorkflowHistoryException.Kind kind) {
+        return kind == UnknownWorkflowHistoryException.Kind.UNKNOWN_EVENT_TYPE
+                ? StandDownReason.UNKNOWN_EVENT_TYPE
+                : StandDownReason.UNKNOWN_EVENT_PAYLOAD;
     }
 
     // ── Internal: failure handling ─────────────────────────────────────
@@ -1525,12 +1729,28 @@ public final class WorkflowExecutor {
                     exception.getMessage()
             ));
             if (transitionToTerminal(ctx, instance, WorkflowStatus.FAILED, errorPayload)) {
+                // Winner-only, and emitted before the append for the same
+                // reason as the COMPLETED transition above: the durable
+                // outcome is already written, so nothing that follows may
+                // decide whether it is observed.
+                emit("workflowFailed", ctx.workflowId(), () ->
+                        observer.workflowFailed(observed(instance), exception.getClass().getName()));
+
                 appendEvent(ctx, EventType.WORKFLOW_FAILED, null, errorPayload);
                 publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_FAILED, null);
+            } else {
+                // F4: converged loser on the failure path — same shape as the
+                // COMPLETED case above.
+                emitRunAbandoned(ctx, AbandonReason.CONVERGED);
             }
         } catch (Exception updateError) {
             logger.error("Failed to update workflow '{}' status to FAILED",
                     ctx.workflowId(), updateError);
+            // F4: the terminal write itself failed, so no terminal callback
+            // fired and the run is over on this thread regardless. Emitted
+            // inside the catch so it cannot be skipped by the failure it
+            // reports on.
+            emitRunAbandoned(ctx, AbandonReason.TERMINAL_WRITE_FAILED);
         }
     }
 
@@ -1614,6 +1834,67 @@ public final class WorkflowExecutor {
     }
 
     // ── Internal: event and lifecycle helpers ──────────────────────────
+
+    /** Builds the identity-only observation record for an instance. */
+    private WorkflowInfo observed(WorkflowInstance instance) {
+        return new WorkflowInfo(instance.workflowId(), instance.workflowType(), serviceName);
+    }
+
+    /**
+     * Builds the identity-only observation record for the run currently
+     * executing on this thread. Used by the abandonment emissions, which run
+     * after the instance row may already have been rewritten by another node —
+     * the context is the reliable identity there.
+     */
+    private WorkflowInfo observed(WorkflowContext ctx) {
+        return new WorkflowInfo(ctx.workflowId(), ctx.workflowType(), serviceName);
+    }
+
+    /**
+     * Emits {@link EngineObserver#runAbandoned} for a local run that ended on
+     * the workflow thread without recording an outcome (design §11, RULING 5).
+     *
+     * <p>Contained like every other emission here: a throwing observer must not
+     * turn a routine shutdown into an escaping exception on the unwind path.
+     */
+    private void emitRunAbandoned(WorkflowContext ctx, AbandonReason reason) {
+        emit("runAbandoned", ctx.workflowId(),
+                () -> observer.runAbandoned(observed(ctx), reason));
+    }
+
+    /**
+     * Invokes one observer callback, containing a misbehaving observer.
+     *
+     * <p>Since coordinator Ruling 4, containment is structural at the seam:
+     * {@link io.b2mash.maestro.core.observe.CompositeEngineObserver#of} always
+     * wraps, so a registered adapter's {@code RuntimeException} is contained
+     * before it ever reaches here. This guard stays as depth — the
+     * constructors accept <em>any</em> {@code EngineObserver}, so nothing
+     * forces an embedder or a test wiring the engine by hand through
+     * {@code of(...)} — and because every emission in this class sits on a
+     * durable path where an escaping {@code RuntimeException} would be read as
+     * something else entirely: a workflow failure (and its compensations), an
+     * aborted recovery pass, a leaked instance lock, or a terminated workflow
+     * whose local thread never gets abandoned.
+     *
+     * <p>{@code RuntimeException} only: {@code Error}s — the engine's
+     * control-flow signals {@code ExecutorShutdownException} and
+     * {@code WorkflowTerminatedException} — always propagate, exactly as the
+     * composite does it.
+     *
+     * @param callback   the callback name, for the containment log line
+     * @param workflowId the workflow the callback described, or {@code null}
+     *                   for node-scoped callbacks such as {@code recoveryPass}
+     * @param emission   the observer invocation
+     */
+    private void emit(String callback, @Nullable String workflowId, Runnable emission) {
+        try {
+            emission.run();
+        } catch (RuntimeException e) {
+            logger.warn("EngineObserver.{} threw for workflow '{}' — ignoring: {}",
+                    callback, workflowId, e.toString());
+        }
+    }
 
     private void appendEvent(WorkflowContext ctx, EventType type,
                              @Nullable String stepName, @Nullable JsonNode payload) {

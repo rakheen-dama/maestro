@@ -1,0 +1,124 @@
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening
+branch: worktree-release-hardening
+HEAD: 108cd73f3e3630a09ddc1637a7c6447859e80f42
+timestamp: 2026-08-02T20:10:37Z
+command: ./gradlew :maestro-core:test --tests *WorkflowVersion* :maestro-test:test --tests *DeterminismCheckerVersionMarker* (RED-1: naive stub (version() returns maxSupported, records nothing) — pins must observe the missing durable decision)
+> Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :build-logic:generateExternalPluginSpecBuilders UP-TO-DATE
+> Task :build-logic:extractPrecompiledScriptPluginPlugins UP-TO-DATE
+> Task :build-logic:compilePluginsBlocks UP-TO-DATE
+> Task :build-logic:generatePrecompiledScriptPluginAccessors UP-TO-DATE
+> Task :build-logic:generateScriptPluginAdapters UP-TO-DATE
+
+> Task :build-logic:compileKotlin UP-TO-DATE
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :build-logic:compileJava NO-SOURCE
+> Task :build-logic:pluginDescriptors UP-TO-DATE
+> Task :build-logic:processResources UP-TO-DATE
+> Task :build-logic:classes UP-TO-DATE
+> Task :build-logic:jar UP-TO-DATE
+
+> Configure project :maestro-admin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :maestro-test:processResources NO-SOURCE
+> Task :maestro-test:processTestResources NO-SOURCE
+> Task :maestro-core:compileJava
+> Task :maestro-core:processResources NO-SOURCE
+> Task :maestro-core:classes
+> Task :maestro-core:jar
+> Task :maestro-test:compileJava
+> Task :maestro-test:classes
+> Task :maestro-test:compileTestJava
+> Task :maestro-test:testClasses
+> Task :maestro-core:compileTestJava
+> Task :maestro-core:processTestResources NO-SOURCE
+> Task :maestro-core:testClasses
+
+> Task :maestro-test:test FAILED
+
+DeterminismChecker and VERSION_MARKER > a version marker is recorded as a decision in the event log FAILED
+    org.gradle.internal.exceptions.DefaultMultiCauseException at DeterminismCheckerVersionMarkerTest.java:59
+        Caused by: org.opentest4j.AssertionFailedError at DeterminismCheckerVersionMarkerTest.java:60
+
+DeterminismChecker and VERSION_MARKER > a workflow that resolves a different changeId per run is caught, and the marker names the divergence FAILED
+    org.opentest4j.AssertionFailedError at DeterminismCheckerVersionMarkerTest.java:78
+
+3 tests completed, 2 failed
+
+> Task :maestro-core:test FAILED
+
+workflow.version() inside a parallel branch > the marker lands in the branch's own sequence block (p*1000 + (i+1)*1000) FAILED
+    java.lang.AssertionError at WorkflowVersionParallelBranchTest.java:129
+
+workflow.version() inside a parallel branch > replay of a branch resolves from the branch's marker, not the code's new max FAILED
+    org.gradle.internal.exceptions.DefaultMultiCauseException at WorkflowVersionParallelBranchTest.java:101
+        Caused by: org.opentest4j.AssertionFailedError at WorkflowVersionParallelBranchTest.java:102
+
+A recorded version survives a redeploy that raises maxSupported > the replay returns the recorded version, appends no second marker, and takes the old branch FAILED
+    org.gradle.internal.exceptions.DefaultMultiCauseException at WorkflowVersionRecoveryTest.java:91
+        Caused by: org.opentest4j.AssertionFailedError at WorkflowVersionRecoveryTest.java:93
+
+workflow.version() — memoized change-branching > a history written before the change replays byte-identically and yields DEFAULT_VERSION FAILED
+    org.opentest4j.MultipleFailuresError at WorkflowVersionTest.java:136
+        Caused by: org.opentest4j.AssertionFailedError at WorkflowVersionTest.java:137
+
+workflow.version() — memoized change-branching > replay returns the recorded version even when the code's maxSupported has moved on FAILED
+    org.opentest4j.AssertionFailedError at WorkflowVersionTest.java:102
+
+workflow.version() — memoized change-branching > a pre-change history fails the guard when the code no longer carries the old branch FAILED
+    org.opentest4j.AssertionFailedError at WorkflowVersionTest.java:175
+
+workflow.version() — memoized change-branching > a recorded version below minSupported raises the typed error naming changeId and both bounds FAILED
+    org.opentest4j.AssertionFailedError at WorkflowVersionTest.java:153
+
+workflow.version() — memoized change-branching > repeated calls with the same changeId in one run return the same value and write once FAILED
+    org.opentest4j.MultipleFailuresError at WorkflowVersionTest.java:214
+        Caused by: org.opentest4j.AssertionFailedError at WorkflowVersionTest.java:217
+
+workflow.version() — memoized change-branching > a replayed run resolves a repeated changeId from the record, not from the new max FAILED
+    org.gradle.internal.exceptions.DefaultMultiCauseException at WorkflowVersionTest.java:236
+        Caused by: org.opentest4j.AssertionFailedError at WorkflowVersionTest.java:237
+
+workflow.version() — memoized change-branching > distinct changeIds resolve independently, each with its own marker FAILED
+    org.gradle.internal.exceptions.DefaultMultiCauseException at WorkflowVersionTest.java:254
+        Caused by: org.opentest4j.AssertionFailedError at WorkflowVersionTest.java:257
+
+workflow.version() — memoized change-branching > invalid arguments are a coding error, not a workflow outcome FAILED
+    org.gradle.internal.exceptions.DefaultMultiCauseException at WorkflowVersionTest.java:269
+        Caused by: org.opentest4j.AssertionFailedError at WorkflowVersionTest.java:270
+
+workflow.version() — memoized change-branching > the min-guard failure is a MaestroException — catchable, retryable, not a control-flow Error FAILED
+    org.opentest4j.AssertionFailedError at WorkflowVersionTest.java:189
+
+workflow.version() — memoized change-branching > a live call returns maxSupported and records a VERSION_MARKER at the consumed sequence FAILED
+    org.opentest4j.AssertionFailedError at WorkflowVersionTest.java:81
+
+13 tests completed, 13 failed
+
+FAILURE: Build completed with 2 failures.
+
+1: Task failed with an exception.
+-----------
+* What went wrong:
+Execution failed for task ':maestro-test:test'.
+> There were failing tests. See the report at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-test/build/reports/tests/test/index.html
+
+* Try:
+> Run with --scan to generate a Build Scan (powered by Develocity).
+==============================================================================
+
+2: Task failed with an exception.
+-----------
+* What went wrong:
+Execution failed for task ':maestro-core:test'.
+> There were failing tests. See the report at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/build/reports/tests/test/index.html
+
+* Try:
+> Run with --scan to generate a Build Scan (powered by Develocity).
+==============================================================================
+
+BUILD FAILED in 2s
+16 actionable tasks: 7 executed, 9 up-to-date
+exit-code: 1

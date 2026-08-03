@@ -153,7 +153,7 @@ maestro:
   store:
     type: postgres
   messaging:
-    type: kafka    # Also supports: postgres, rabbitmq
+    type: kafka    # Also supports: postgres
     topics:
       tasks: maestro.tasks.default
       signals: maestro.signals.my-service

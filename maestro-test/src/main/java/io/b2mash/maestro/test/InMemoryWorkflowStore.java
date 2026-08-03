@@ -109,6 +109,42 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
 
     @Override
     public void appendEvent(WorkflowEvent event) {
+        if (event.eventType() == EventType.UNKNOWN) {
+            // Mirrors AbstractJdbcWorkflowStore: the sentinel is how the READ
+            // path represents a type this build does not know. Persisting it
+            // would durably record "unreadable", which every node — upgraded or
+            // not — would then stand down on forever.
+            throw new IllegalArgumentException(
+                    "EventType.UNKNOWN is a read-side sentinel and must never be persisted "
+                            + "(workflowInstanceId=%s, sequenceNumber=%d)"
+                                    .formatted(event.workflowInstanceId(), event.sequenceNumber()));
+        }
+        put(event);
+    }
+
+    /**
+     * Test seam: stores {@code event} <em>without</em> the
+     * {@link EventType#UNKNOWN} write guard {@link #appendEvent} applies.
+     *
+     * <p>This is the in-memory counterpart of the integration suite's raw SQL
+     * {@code INSERT} of a future event type: it lets a core-level test plant
+     * history that only a <em>newer</em> node could have written — the exact
+     * shape an older node meets mid-deploy — and assert that the engine stands
+     * the run down instead of recording a failure and compensating.
+     *
+     * <p>Production code must never call this. The guard in {@link #appendEvent}
+     * is what makes the sentinel unable to round-trip; this method deliberately
+     * bypasses it and exists only so the guard's <em>consequence</em> can be
+     * tested.
+     *
+     * @param event the raw event to store, sentinel type permitted
+     * @throws DuplicateEventException if an event already exists at that sequence
+     */
+    public void injectRawEvent(WorkflowEvent event) {
+        put(event);
+    }
+
+    private void put(WorkflowEvent event) {
         var instanceEvents = events.computeIfAbsent(
                 event.workflowInstanceId(), _ -> new ConcurrentHashMap<>());
 
@@ -213,7 +249,9 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
                             signal.signalName(),
                             signal.payload(),
                             true,
-                            signal.receivedAt()
+                            signal.receivedAt(),
+                            // Opaque metadata: a status transition never drops it.
+                            signal.traceContext()
                     ));
                     return true;
                 }
@@ -235,7 +273,9 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
                             signal.signalName(),
                             signal.payload(),
                             signal.consumed(),
-                            signal.receivedAt()
+                            signal.receivedAt(),
+                            // Opaque metadata: adoption never drops it.
+                            signal.traceContext()
                     ));
                 }
             }

@@ -1,2 +1,3 @@
 io.b2mash.maestro.spring.config.MaestroAutoConfiguration
 io.b2mash.maestro.spring.health.MaestroHealthAutoConfiguration
+io.b2mash.maestro.spring.observe.MaestroObservabilityAutoConfiguration

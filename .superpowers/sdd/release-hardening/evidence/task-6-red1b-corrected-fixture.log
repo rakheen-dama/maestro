@@ -1,0 +1,50 @@
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening
+branch: worktree-release-hardening
+HEAD: 108cd73f3e3630a09ddc1637a7c6447859e80f42
+timestamp: 2026-08-02T20:13:44Z
+command: ./gradlew :maestro-core:test --tests *WorkflowVersionTest.defaultVersionBelowMin* (RED-1 re-run of the corrected pre-change-history guard fixture against the naive stub)
+> Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :build-logic:generateExternalPluginSpecBuilders UP-TO-DATE
+> Task :build-logic:extractPrecompiledScriptPluginPlugins UP-TO-DATE
+> Task :build-logic:compilePluginsBlocks UP-TO-DATE
+> Task :build-logic:generatePrecompiledScriptPluginAccessors UP-TO-DATE
+> Task :build-logic:generateScriptPluginAdapters UP-TO-DATE
+
+> Task :build-logic:compileKotlin UP-TO-DATE
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :build-logic:compileJava NO-SOURCE
+> Task :build-logic:pluginDescriptors UP-TO-DATE
+> Task :build-logic:processResources UP-TO-DATE
+> Task :build-logic:classes UP-TO-DATE
+> Task :build-logic:jar UP-TO-DATE
+
+> Configure project :maestro-admin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :maestro-core:compileJava
+> Task :maestro-core:processResources NO-SOURCE
+> Task :maestro-core:classes
+> Task :maestro-core:compileTestJava UP-TO-DATE
+> Task :maestro-core:processTestResources NO-SOURCE
+> Task :maestro-core:testClasses UP-TO-DATE
+
+> Task :maestro-core:test FAILED
+
+workflow.version() — memoized change-branching > a pre-change history fails the guard when the code no longer carries the old branch FAILED
+    org.opentest4j.AssertionFailedError at WorkflowVersionTest.java:180
+
+1 test completed, 1 failed
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':maestro-core:test'.
+> There were failing tests. See the report at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/build/reports/tests/test/index.html
+
+* Try:
+> Run with --scan to generate a Build Scan (powered by Develocity).
+
+BUILD FAILED in 1s
+12 actionable tasks: 2 executed, 10 up-to-date
+exit-code: 1

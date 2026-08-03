@@ -7,6 +7,8 @@ import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.SerializationException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
+import io.b2mash.maestro.core.observe.ActivityInfo;
+import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.retry.RetryExecutor;
 import io.b2mash.maestro.core.retry.RetryPolicy;
 import io.b2mash.maestro.core.spi.DistributedLock;
@@ -76,6 +78,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     private final PayloadSerializer serializer;
     private final RetryExecutor retryExecutor;
     private final String lockKeyPrefix;
+    private final EngineObserver observer;
 
     /**
      * Creates a new handler with the default lock key prefix
@@ -136,6 +139,46 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             RetryExecutor retryExecutor,
             String lockKeyPrefix
     ) {
+        this(activityImpl, activityName, store, distributedLock, messaging, retryPolicy,
+                startToCloseTimeout, serializer, retryExecutor, lockKeyPrefix,
+                EngineObserver.NOOP);
+    }
+
+    /**
+     * Creates a new handler with an explicit lock key prefix and an
+     * {@link EngineObserver}.
+     *
+     * @param activityImpl        the real activity implementation to delegate to
+     * @param activityName        the activity group name (for step name prefix)
+     * @param store               the workflow store for memoization lookups and event persistence
+     * @param distributedLock     optional distributed lock for dedup optimization
+     * @param messaging           optional messaging for lifecycle event publishing
+     * @param retryPolicy         retry policy for failed activity invocations
+     * @param startToCloseTimeout timeout used as lock TTL hint
+     * @param serializer          Jackson serializer for payloads
+     * @param retryExecutor       retry executor for live activity invocations
+     * @param lockKeyPrefix       prefix for the per-activity distributed lock key
+     *                            (e.g. {@code maestro:lock:})
+     * @param observer            engine observation seam — fires
+     *                            {@code activityStarted} (live only) and
+     *                            {@code activityCompleted}/{@code activityFailed}
+     *                            (live and replay, with the {@code replayed}
+     *                            flag); never {@code null} (pass
+     *                            {@link EngineObserver#NOOP})
+     */
+    public ActivityInvocationHandler(
+            Object activityImpl,
+            String activityName,
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            @Nullable WorkflowMessaging messaging,
+            RetryPolicy retryPolicy,
+            Duration startToCloseTimeout,
+            PayloadSerializer serializer,
+            RetryExecutor retryExecutor,
+            String lockKeyPrefix,
+            EngineObserver observer
+    ) {
         this.activityImpl = activityImpl;
         this.activityName = activityName;
         this.store = store;
@@ -146,6 +189,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         this.serializer = serializer;
         this.retryExecutor = retryExecutor;
         this.lockKeyPrefix = lockKeyPrefix;
+        this.observer = observer;
     }
 
     @Override
@@ -170,9 +214,22 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             var storedEvent = store.getEventBySequence(ctx.workflowInstanceId(), seq);
 
             if (storedEvent.isPresent()) {
+                // A type this build does not know means a newer node wrote this
+                // history: stand the run down BEFORE deciding replay-vs-live.
+                // (handleReplay's `default ->` guard stays — it still catches a
+                // known-but-wrong type, e.g. a TIMER_SCHEDULED at an activity slot.)
+                UnknownHistoryGuard.requireKnown(storedEvent.get(), ctx.workflowId());
+                var info = new ActivityInfo(ctx.workflowId(), ctx.workflowType(), stepName, seq);
+                if (storedEvent.get().eventType() == EventType.ACTIVITY_FAILED) {
+                    // handleReplay throws for a memoized failure — observe it
+                    // first, flagged replayed so adapters do not re-count it.
+                    observer.activityFailed(info, Duration.ZERO,
+                            storedExceptionType(storedEvent.get()), true);
+                }
                 var result = handleReplay(storedEvent.get(), method, stepName, ctx, seq);
                 // Register compensation on successful replay (rebuilds stack during recovery)
                 if (storedEvent.get().eventType() == EventType.ACTIVITY_COMPLETED) {
+                    observer.activityCompleted(info, Duration.ZERO, true);
                     registerCompensationIfAnnotated(proxy, method, args, result, ctx);
                 }
                 return result;
@@ -203,7 +260,14 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         return switch (event.eventType()) {
             case ACTIVITY_COMPLETED -> {
                 logger.debug("Replaying completed activity '{}' at seq {}", stepName, seq);
-                yield deserializeResult(event.payload(), method);
+                // A stored payload this build cannot read is the payload-flavoured
+                // half of the same problem the type sentinel covers: a newer node
+                // shaped it. Stand down instead of failing the workflow. Only the
+                // REPLAY caller is wrapped — a live-path serialization failure is
+                // an ordinary workflow failure and must stay one.
+                yield UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), seq,
+                        "result of activity '%s'".formatted(stepName),
+                        () -> deserializeResult(event.payload(), method));
             }
             case ACTIVITY_FAILED -> {
                 logger.debug("Replaying failed activity '{}' at seq {}", stepName, seq);
@@ -297,6 +361,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             WorkflowContext ctx, int seq, String stepName
     ) throws Throwable {
         LockHandle lockHandle = null;
+        var info = new ActivityInfo(ctx.workflowId(), ctx.workflowType(), stepName, seq);
 
         try {
             // Acquire distributed lock (optional — Postgres unique constraint is the real guard)
@@ -304,9 +369,12 @@ public final class ActivityInvocationHandler implements InvocationHandler {
 
             // Publish ACTIVITY_STARTED lifecycle event (best-effort)
             publishLifecycleEvent(ctx, stepName, LifecycleEventType.ACTIVITY_STARTED);
+            observer.activityStarted(info);
 
-            // Execute activity with retry
+            // Execute activity with retry, measuring the wall time of the
+            // live execution (including its retry attempts) for the observer.
             Object result;
+            var startNanos = System.nanoTime();
             try {
                 result = retryExecutor.executeWithRetry(
                         retryPolicy,
@@ -315,6 +383,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
                         ctx.workflowId()
                 );
             } catch (ActivityExecutionException e) {
+                var elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
                 // Retries exhausted — persist failure
                 boolean failurePersisted = persistFailure(ctx, seq, stepName, e);
                 if (failurePersisted) {
@@ -323,8 +392,14 @@ public final class ActivityInvocationHandler implements InvocationHandler {
                 // If failurePersisted is false, a prior ACTIVITY_COMPLETED event exists
                 // at this sequence (DuplicateEventException). Don't publish misleading
                 // ACTIVITY_FAILED lifecycle event — the stored result is a success.
+                // The observer still sees the failure this node genuinely
+                // executed: it measures this node's executions, not the
+                // durable record. (An Error — e.g. a shutdown signal — never
+                // reaches this catch and is never observed as a failure.)
+                observer.activityFailed(info, elapsed, failureExceptionType(e), false);
                 throw e;
             }
+            var elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
 
             // Persist success
             var payload = serializer.serialize(result);
@@ -333,10 +408,20 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             // If DuplicateEventException was caught, use the stored result
             if (persisted != null && persisted != payload) {
                 logger.debug("Using previously stored result for '{}' at seq {} (idempotent)", stepName, seq);
-                return deserializeResult(persisted, method);
+                observer.activityCompleted(info, elapsed, false);
+                // RULING 9: this is a payload this run did NOT write — a
+                // concurrent runner did, possibly on a newer build. Reading it
+                // is a replay read in everything but name, so a payload this
+                // build cannot interpret stands the run down instead of being
+                // recorded as a workflow failure with compensation.
+                return UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), seq,
+                        "result of activity '%s' adopted from a concurrent runner"
+                                .formatted(stepName),
+                        () -> deserializeResult(persisted, method));
             }
 
             publishLifecycleEvent(ctx, stepName, LifecycleEventType.ACTIVITY_COMPLETED);
+            observer.activityCompleted(info, elapsed, false);
             return result;
 
         } finally {
@@ -397,8 +482,20 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             return payload;
         } catch (DuplicateEventException e) {
             logger.debug("Event at seq {} already exists (idempotent), re-reading stored result", seq);
-            // Re-read the stored event and return its payload
-            var stored = store.getEventBySequence(ctx.workflowInstanceId(), seq);
+            // Re-read the stored event and return its payload — but only after
+            // checking this build can interpret the winner's TYPE (RULING 9).
+            //
+            // This branch is reached with NO author error, from the engine's own
+            // normal tolerated state: locks are best-effort, so an old node can
+            // read sequence N empty, execute live, and lose the append race to a
+            // newer node whose event at N is a type this build does not define.
+            // Adopting that winner blindly then either deserializes a foreign
+            // payload as this activity's return type — a SerializationException
+            // that executeWorkflow's catch (Exception) records as FAILED *with
+            // compensation* — or, worse, succeeds and memoizes a silently wrong
+            // value. Standing down instead costs one re-adoption.
+            var stored = UnknownHistoryGuard.requireKnown(
+                    store.getEventBySequence(ctx.workflowInstanceId(), seq), ctx.workflowId());
             return stored.map(WorkflowEvent::payload).orElse(payload);
         }
     }
@@ -435,6 +532,30 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * Structured error detail stored in the payload of ACTIVITY_FAILED events.
      */
     private record ErrorDetail(String exceptionType, @Nullable String message) {}
+
+    /**
+     * The exception type recorded for a live failure — the cause's class when
+     * present (mirrors {@link ErrorDetail}), else the wrapper's.
+     */
+    private static String failureExceptionType(ActivityExecutionException exception) {
+        return exception.getCause() != null
+                ? exception.getCause().getClass().getName()
+                : exception.getClass().getName();
+    }
+
+    /**
+     * The exception type stored in a memoized {@code ACTIVITY_FAILED} payload,
+     * or {@code "unknown"} when the payload does not carry one.
+     */
+    private static String storedExceptionType(WorkflowEvent event) {
+        if (event.payload() != null && event.payload().has("exceptionType")) {
+            var type = event.payload().get("exceptionType").stringValue();
+            if (type != null && !type.isEmpty()) {
+                return type;
+            }
+        }
+        return "unknown";
+    }
 
     // ── Lock management ───────────────────────────────────────────────
 

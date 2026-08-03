@@ -147,6 +147,33 @@ public sealed interface WorkflowOperations permits DefaultWorkflowOperations {
     <T> T retryUntil(Supplier<T> supplier, Predicate<T> predicate, RetryUntilOptions options);
 
     /**
+     * Resolves a memoized change-branching decision.
+     *
+     * <p>The first live evaluation records {@code maxSupported} durably as a
+     * {@link io.b2mash.maestro.core.model.EventType#VERSION_MARKER} event at the
+     * current sequence slot and returns it; every replay returns the recorded
+     * value, regardless of the code's current {@code maxSupported}. A history
+     * written before this change-id existed resolves to
+     * {@link io.b2mash.maestro.core.context.WorkflowContext#DEFAULT_VERSION}
+     * <em>without</em> consuming a sequence slot, so inserting a
+     * {@code version()} call into existing code leaves old instances' histories
+     * byte-stable.
+     *
+     * @param changeId     stable identifier for this change, unique within the
+     *                     workflow definition
+     * @param minSupported the lowest version the running code still carries
+     * @param maxSupported the highest version the running code carries
+     * @return the version this instance is bound to
+     * @throws io.b2mash.maestro.core.exception.UnsupportedWorkflowVersionException
+     *         if the resolved version is below {@code minSupported}
+     * @throws IllegalArgumentException if {@code changeId} is blank,
+     *         {@code maxSupported} is negative, or
+     *         {@code minSupported > maxSupported}
+     * @see io.b2mash.maestro.core.context.WorkflowContext#version(String, int, int)
+     */
+    int version(String changeId, int minSupported, int maxSupported);
+
+    /**
      * Pushes a compensation action onto the compensation stack.
      *
      * <p>On workflow failure, compensations are executed in LIFO order

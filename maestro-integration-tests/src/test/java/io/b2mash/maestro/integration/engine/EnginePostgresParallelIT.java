@@ -1,6 +1,15 @@
 package io.b2mash.maestro.integration.engine;
 
+import io.b2mash.maestro.core.annotation.DurableWorkflow;
+import io.b2mash.maestro.core.annotation.WorkflowMethod;
+import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.model.EventType;
+import io.b2mash.maestro.core.model.WorkflowEvent;
+import io.b2mash.maestro.core.model.WorkflowInstance;
+import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.integration.support.MaestroEngineHarness;
 import io.b2mash.maestro.integration.support.PostgresIntegrationSupport;
 import io.b2mash.maestro.integration.workflows.CountingActivities;
@@ -11,12 +20,19 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -156,7 +172,214 @@ class EnginePostgresParallelIT extends PostgresIntegrationSupport {
                 "the fork event must not be re-appended on replay");
     }
 
+    @Test
+    @DisplayName("two branches parking at once do not collide on the instance status row")
+    void twoParkingBranches_doNotRaceTheInstanceRow() {
+        var barrierStore = new BranchParkBarrierStore(store);
+        var workflow = new ParallelParkingWorkflow();
+        harness = MaestroEngineHarness.builder(barrierStore, objectMapper)
+                .serviceName("parking-branches-node")
+                .lock(newLock())
+                .instanceLockTtl(Duration.ofSeconds(30))
+                .build();
+        harness.registerWorkflow(workflow);
+
+        var workflowId = MaestroEngineHarness.uniqueWorkflowId("parallel-park");
+        var handle = harness.start(workflowId, ParallelParkingWorkflow.class, "seed");
+
+        // Both branch threads are inside the barrier: each has read the same
+        // instance version and neither has issued its CAS. Before the fix, the
+        // loser's UPDATE ... WHERE version = ? matched zero rows and the
+        // OptimisticLockException escaped parallel() into workflow code, where
+        // executeWorkflow recorded the run FAILED and ran its compensations.
+        await().atMost(Duration.ofSeconds(20))
+                .pollInterval(Duration.ofMillis(50))
+                .until(barrierStore::bothBranchesAtBarrier);
+
+        harness.deliverSignal(workflowId, ParallelParkingWorkflow.SIGNAL_A, "a");
+        harness.deliverSignal(workflowId, ParallelParkingWorkflow.SIGNAL_B, "b");
+
+        assertEquals(WorkflowStatus.COMPLETED, handle.awaitTerminal(Duration.ofSeconds(30)),
+                "a version conflict between two parking branches is not a workflow outcome");
+        assertEquals("a,b", handle.result(String.class),
+                "both parked branches must resume with their own signal payload");
+        assertFalse(workflow.compensated.get(),
+                "no compensation may run — nothing in this workflow failed");
+        assertEquals(2, handle.events().stream()
+                        .filter(e -> e.eventType() == EventType.SIGNAL_RECEIVED).count(),
+                "both branches must genuinely park and consume their own signal");
+        assertEquals(0, handle.events().stream()
+                        .filter(e -> e.eventType() == EventType.WORKFLOW_FAILED
+                                || e.eventType() == EventType.COMPENSATION_STARTED).count(),
+                "no failure or compensation may reach the durable log");
+    }
+
     // ── fixtures ──────────────────────────────────────────────────────────
+
+    /**
+     * Forks two branches that both park on their own signal — the shape
+     * {@code docs/cross-service.md} sells ("fan out to two services and await
+     * both replies"), and the one that used to die on the instance-row CAS.
+     *
+     * <p>Two branches is the minimum that actually forks: {@code parallel()}
+     * runs a single-task list inline on the calling thread.
+     */
+    @DurableWorkflow(name = "ParallelParkingWorkflow")
+    public static class ParallelParkingWorkflow {
+
+        /** Signal the first branch awaits. */
+        public static final String SIGNAL_A = "goA";
+        /** Signal the second branch awaits. */
+        public static final String SIGNAL_B = "goB";
+
+        /** Set if a compensation runs — it must not, since nothing here fails. */
+        final AtomicBoolean compensated = new AtomicBoolean();
+
+        /**
+         * @param input the seed value, unused
+         * @return both branches' signal payloads, joined in branch order
+         */
+        @WorkflowMethod
+        public String run(String input) {
+            var ctx = WorkflowContext.current();
+            ctx.addCompensation("reverseCharge", () -> compensated.set(true));
+            List<Callable<String>> branches = List.of(
+                    () -> WorkflowContext.current()
+                            .awaitSignal(SIGNAL_A, String.class, Duration.ofSeconds(60)),
+                    () -> WorkflowContext.current()
+                            .awaitSignal(SIGNAL_B, String.class, Duration.ofSeconds(60)));
+            return String.join(",", ctx.parallel(branches));
+        }
+    }
+
+    /**
+     * A {@link WorkflowStore} decorator that forces the branch-parking
+     * interleaving instead of hoping for it: the first {@code updateInstance}
+     * on each of the two branch threads rendezvouses <em>before</em> the CAS
+     * reaches Postgres, so both branches have already read the same version and
+     * neither may write until both are here.
+     *
+     * <p>The barrier must sit between the read and the write. A read-side
+     * barrier still lets the second read land after the first write, and the
+     * test then passes against broken code.
+     *
+     * <h2>Thread Safety</h2>
+     * <p>Safe for concurrent use — the barrier is a {@link CyclicBarrier}, the
+     * one-shot-per-thread flag is a {@link ThreadLocal}, and everything else
+     * delegates straight through.
+     */
+    private static final class BranchParkBarrierStore implements WorkflowStore {
+
+        private final WorkflowStore delegate;
+        private final CyclicBarrier barrier = new CyclicBarrier(2);
+        private final ThreadLocal<Boolean> used = ThreadLocal.withInitial(() -> false);
+        private final CountDownLatch atBarrier = new CountDownLatch(2);
+
+        BranchParkBarrierStore(WorkflowStore delegate) {
+            this.delegate = delegate;
+        }
+
+        /** @return whether both branch threads have reached the pre-CAS barrier */
+        boolean bothBranchesAtBarrier() {
+            return atBarrier.getCount() == 0;
+        }
+
+        @Override
+        public void updateInstance(WorkflowInstance instance) {
+            if (Thread.currentThread().getName().contains("-branch-") && !used.get()) {
+                used.set(true);
+                atBarrier.countDown();
+                try {
+                    barrier.await(20, TimeUnit.SECONDS);
+                } catch (Exception ignored) {
+                    // Best effort — the assertions, not the barrier, are the oracle.
+                }
+            }
+            delegate.updateInstance(instance);
+        }
+
+        // ── straight delegation ────────────────────────────────────────
+
+        @Override
+        public WorkflowInstance createInstance(WorkflowInstance instance) {
+            return delegate.createInstance(instance);
+        }
+
+        @Override
+        public Optional<WorkflowInstance> getInstance(String workflowId) {
+            return delegate.getInstance(workflowId);
+        }
+
+        @Override
+        public List<WorkflowInstance> getRecoverableInstances() {
+            return delegate.getRecoverableInstances();
+        }
+
+        @Override
+        public void appendEvent(WorkflowEvent event) {
+            delegate.appendEvent(event);
+        }
+
+        @Override
+        public Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int sequenceNumber) {
+            return delegate.getEventBySequence(instanceId, sequenceNumber);
+        }
+
+        @Override
+        public List<WorkflowEvent> getEvents(UUID instanceId) {
+            return delegate.getEvents(instanceId);
+        }
+
+        @Override
+        public int deleteFailureEvents(UUID instanceId) {
+            return delegate.deleteFailureEvents(instanceId);
+        }
+
+        @Override
+        public void saveSignal(WorkflowSignal signal) {
+            delegate.saveSignal(signal);
+        }
+
+        @Override
+        public List<WorkflowSignal> getUnconsumedSignals(String workflowId, String signalName) {
+            return delegate.getUnconsumedSignals(workflowId, signalName);
+        }
+
+        @Override
+        public boolean markSignalConsumed(UUID signalId) {
+            return delegate.markSignalConsumed(signalId);
+        }
+
+        @Override
+        public void adoptOrphanedSignals(String workflowId, UUID instanceId) {
+            delegate.adoptOrphanedSignals(workflowId, instanceId);
+        }
+
+        @Override
+        public void saveTimer(WorkflowTimer timer) {
+            delegate.saveTimer(timer);
+        }
+
+        @Override
+        public List<WorkflowTimer> getDueTimers(Instant now, int batchSize) {
+            return delegate.getDueTimers(now, batchSize);
+        }
+
+        @Override
+        public Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId) {
+            return delegate.findTimer(workflowInstanceId, timerId);
+        }
+
+        @Override
+        public boolean markTimerFired(UUID timerId) {
+            return delegate.markTimerFired(timerId);
+        }
+
+        @Override
+        public boolean markTimerCancelled(UUID timerId) {
+            return delegate.markTimerCancelled(timerId);
+        }
+    }
 
     /**
      * Chain activities where the third parallel branch never returns, leaving

@@ -32,6 +32,17 @@ dependencies {
     testImplementation(libs.testcontainers.postgresql)
     testImplementation(libs.testcontainers.kafka)
     testImplementation(libs.awaitility)
+
+    // Micrometer — the replay-no-double-count IT wires a SimpleMeterRegistry
+    // through MicrometerEngineObserver (starter's main sourceSet has it only
+    // compileOnly, so it does not propagate transitively; declared explicitly
+    // here per the design doc's §7.3 dependency table).
+    testImplementation(libs.micrometer.core)
+
+    // Micrometer Tracing + a real OTel SDK bridge — the cross-service trace
+    // linkage IT asserts real trace IDs across two engines and a real broker.
+    testImplementation(libs.micrometer.tracing)
+    testImplementation(libs.micrometer.tracing.bridge.otel)
 }
 
 // ---------------------------------------------------------------------------

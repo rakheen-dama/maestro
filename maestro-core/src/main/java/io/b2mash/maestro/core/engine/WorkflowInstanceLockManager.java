@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
 import org.jspecify.annotations.Nullable;
@@ -58,6 +59,7 @@ final class WorkflowInstanceLockManager {
     private final String keyPrefix;
     private final Duration ttl;
     private final Duration renewInterval;
+    private final EngineObserver observer;
     private final ConcurrentHashMap<String, LockHandle> heldLocks = new ConcurrentHashMap<>();
     private final AtomicBoolean renewerStarted = new AtomicBoolean(false);
     private final AtomicBoolean closed = new AtomicBoolean(false);
@@ -83,6 +85,25 @@ final class WorkflowInstanceLockManager {
             Duration ttl,
             Duration renewInterval
     ) {
+        this(distributedLock, serviceName, keyPrefix, ttl, renewInterval, EngineObserver.NOOP);
+    }
+
+    /**
+     * Creates a lock manager with an {@link EngineObserver}.
+     *
+     * @param observer engine observation seam — fires
+     *                 {@code instanceLockAcquired}, {@code instanceLockRenewFailed}
+     *                 and {@code instanceLockLost}; never {@code null} (pass
+     *                 {@link EngineObserver#NOOP})
+     */
+    WorkflowInstanceLockManager(
+            @Nullable DistributedLock distributedLock,
+            String serviceName,
+            String keyPrefix,
+            Duration ttl,
+            Duration renewInterval,
+            EngineObserver observer
+    ) {
         if (ttl == null || ttl.isNegative() || ttl.isZero()) {
             throw new IllegalArgumentException("instance lock ttl must be positive, got " + ttl);
         }
@@ -95,6 +116,7 @@ final class WorkflowInstanceLockManager {
         this.keyPrefix = keyPrefix;
         this.ttl = ttl;
         this.renewInterval = renewInterval;
+        this.observer = observer;
     }
 
     /**
@@ -120,12 +142,18 @@ final class WorkflowInstanceLockManager {
             }
             heldLocks.put(workflowId, handle.get());
             startRenewerIfNeeded();
-            return Acquisition.ACQUIRED;
         } catch (Exception e) {
             logger.warn("Instance lock backend unavailable for workflow '{}' — proceeding unlocked: {}",
                     workflowId, e.getMessage());
             return Acquisition.NO_BACKEND;
         }
+        // Deliberately outside the backend try: the lock IS held from the
+        // heldLocks.put() above, so a throwing observer must never be reported
+        // as NO_BACKEND — the caller would then skip release() and this node
+        // would renew a lock nobody releases, making the workflowId
+        // permanently unacquirable here and blocked cluster-wide.
+        emit("instanceLockAcquired", workflowId, () -> observer.instanceLockAcquired(workflowId));
+        return Acquisition.ACQUIRED;
     }
 
     /**
@@ -201,6 +229,7 @@ final class WorkflowInstanceLockManager {
 
     @SuppressWarnings("DataFlowIssue") // renewer only runs when distributedLock != null
     private void renewOne(String workflowId, LockHandle handle) {
+        var lost = false;
         try {
             if (!distributedLock.renew(handle, ttl)) {
                 logger.error("Instance lock for workflow '{}' was lost — another node may now be "
@@ -208,12 +237,43 @@ final class WorkflowInstanceLockManager {
                                 + "duplicate-execution guard",
                         workflowId);
                 heldLocks.remove(workflowId, handle);
+                lost = true;
             }
         } catch (Exception e) {
             // Transient backend error — keep the handle, retry next cycle
             // (TTL tolerates roughly two missed cycles)
             logger.warn("Failed to renew instance lock for workflow '{}' — will retry: {}",
                     workflowId, e.getMessage());
+            emit("instanceLockRenewFailed", workflowId, () -> observer.instanceLockRenewFailed(workflowId));
+            return;
+        }
+        // Same reasoning as tryAcquire: emitted outside the backend try so a
+        // throwing observer is not reported as a transient renew failure, and
+        // contained so it cannot escape renewLoop() and kill the single
+        // renewer thread — that would silently stop renewing EVERY held lock.
+        if (lost) {
+            emit("instanceLockLost", workflowId, () -> observer.instanceLockLost(workflowId));
+        }
+    }
+
+    /**
+     * Invokes one observer callback, containing a misbehaving observer.
+     *
+     * <p>Since coordinator Ruling 4, containment is structural at the seam:
+     * {@link io.b2mash.maestro.core.observe.CompositeEngineObserver#of} always
+     * wraps. This guard stays as depth — the constructors accept <em>any</em>
+     * {@code EngineObserver}, so nothing forces an embedder or a test wiring
+     * the engine by hand through {@code of(...)}, and an escape here would
+     * either report a held lock as {@code NO_BACKEND} or kill the single
+     * renewer thread. {@code RuntimeException} only: {@code Error}s (the
+     * engine's control-flow signals) always propagate.
+     */
+    private void emit(String callback, String workflowId, Runnable emission) {
+        try {
+            emission.run();
+        } catch (RuntimeException e) {
+            logger.warn("EngineObserver.{} threw for workflow '{}' — ignoring: {}",
+                    callback, workflowId, e.toString());
         }
     }
 }

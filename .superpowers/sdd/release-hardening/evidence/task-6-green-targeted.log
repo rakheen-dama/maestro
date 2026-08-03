@@ -1,0 +1,44 @@
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening
+branch: worktree-release-hardening
+HEAD: 108cd73f3e3630a09ddc1637a7c6447859e80f42
+timestamp: 2026-08-02T20:13:17Z
+command: ./gradlew :maestro-core:test --tests *WorkflowVersion* :maestro-test:test --tests *DeterminismCheckerVersionMarker* (GREEN: design §5 implemented — targeted version pins (defaultVersionBelowMin fixture corrected: the peeked slot must hold an event))
+> Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :build-logic:generateExternalPluginSpecBuilders UP-TO-DATE
+> Task :build-logic:extractPrecompiledScriptPluginPlugins UP-TO-DATE
+> Task :build-logic:compilePluginsBlocks UP-TO-DATE
+> Task :build-logic:generatePrecompiledScriptPluginAccessors UP-TO-DATE
+> Task :build-logic:generateScriptPluginAdapters UP-TO-DATE
+
+> Task :build-logic:compileKotlin UP-TO-DATE
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :build-logic:compileJava NO-SOURCE
+> Task :build-logic:pluginDescriptors UP-TO-DATE
+> Task :build-logic:processResources UP-TO-DATE
+> Task :build-logic:classes UP-TO-DATE
+> Task :build-logic:jar UP-TO-DATE
+
+> Configure project :maestro-admin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :maestro-test:processResources NO-SOURCE
+> Task :maestro-test:processTestResources NO-SOURCE
+> Task :maestro-core:compileJava UP-TO-DATE
+> Task :maestro-core:processResources NO-SOURCE
+> Task :maestro-core:classes UP-TO-DATE
+> Task :maestro-core:jar UP-TO-DATE
+> Task :maestro-test:compileJava UP-TO-DATE
+> Task :maestro-test:classes UP-TO-DATE
+> Task :maestro-test:compileTestJava UP-TO-DATE
+> Task :maestro-test:testClasses UP-TO-DATE
+> Task :maestro-test:test UP-TO-DATE
+> Task :maestro-core:compileTestJava
+> Task :maestro-core:processTestResources NO-SOURCE
+> Task :maestro-core:testClasses
+> Task :maestro-core:test
+
+BUILD SUCCESSFUL in 1s
+16 actionable tasks: 2 executed, 14 up-to-date
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.2.0/userguide/configuration_cache_enabling.html
+exit-code: 0

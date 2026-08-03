@@ -1,0 +1,31 @@
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening
+branch: worktree-release-hardening
+HEAD: 431fa689a10d94417f936381a0394785c58b052e
+timestamp: 2026-08-02T16:28:16Z
+command: ./gradlew :maestro-integration-tests:test
+JUnit XML totals: files=30 tests=93 failures=0 errors=0 skipped=0
+2026-08-02T18:26:40.364+02:00  INFO 85289 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.telemetry.internals.ClientTelemetryReporter
+2026-08-02T18:26:40.364+02:00  INFO 85289 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics reporters closed
+2026-08-02T18:26:40.365+02:00  INFO 85289 --- [anNameSet-0-C-1] o.a.kafka.common.utils.AppInfoParser     : App info kafka.consumer for consumer-maestro-kafka-roundtrip-18 unregistered
+2026-08-02T18:26:40.365+02:00  INFO 85289 --- [anNameSet-0-C-1] o.s.k.l.KafkaMessageListenerContainer    : maestro-kafka-roundtrip: Consumer stopped
+2026-08-02T18:26:40.365+02:00  INFO 85289 --- [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-6 - Shutdown initiated...
+2026-08-02T18:26:40.366+02:00  INFO 85289 --- [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-6 - Shutdown completed.
+2026-08-02T18:26:40.366+02:00  INFO 85289 --- [ionShutdownHook] l.MaestroSignalListenerBeanPostProcessor : Stopping 1 @MaestroSignalListener container(s)
+2026-08-02T18:26:40.366+02:00  INFO 85289 --- [anNameSet-0-C-1] k.c.c.i.ConsumerRebalanceListenerInvoker : [Consumer clientId=consumer-maestro-kafka-roundtrip-17, groupId=maestro-kafka-roundtrip] Revoke previously assigned partitions [it.roundtrip.approvals-0]
+2026-08-02T18:26:40.366+02:00  INFO 85289 --- [anNameSet-0-C-1] s.k.l.ConcurrentMessageListenerContainer : maestro-kafka-roundtrip: partitions revoked: [it.roundtrip.approvals-0]
+2026-08-02T18:26:40.366+02:00  INFO 85289 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-roundtrip-17, groupId=maestro-kafka-roundtrip] Member consumer-maestro-kafka-roundtrip-17-f1c0d7fa-ec02-4cd9-bcb7-a80fc8492716 sending LeaveGroup request to coordinator localhost:61945 (id: 2147483646 rack: null isFenced: false) due to the consumer unsubscribed from all topics
+2026-08-02T18:26:40.366+02:00  INFO 85289 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-roundtrip-17, groupId=maestro-kafka-roundtrip] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-08-02T18:26:40.366+02:00  INFO 85289 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-roundtrip-17, groupId=maestro-kafka-roundtrip] Request joining group due to: consumer pro-actively leaving the group
+2026-08-02T18:26:40.366+02:00  INFO 85289 --- [anNameSet-0-C-1] o.a.k.c.c.i.ClassicKafkaConsumer         : [Consumer clientId=consumer-maestro-kafka-roundtrip-17, groupId=maestro-kafka-roundtrip] Unsubscribed all topics or patterns and assigned partitions
+2026-08-02T18:26:40.366+02:00  INFO 85289 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-roundtrip-17, groupId=maestro-kafka-roundtrip] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-08-02T18:26:40.366+02:00  INFO 85289 --- [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-kafka-roundtrip-17, groupId=maestro-kafka-roundtrip] Request joining group due to: consumer pro-actively leaving the group
+2026-08-02T18:26:40.873+02:00  INFO 85289 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics scheduler closed
+2026-08-02T18:26:40.873+02:00  INFO 85289 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.metrics.JmxReporter
+2026-08-02T18:26:40.873+02:00  INFO 85289 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.telemetry.internals.ClientTelemetryReporter
+2026-08-02T18:26:40.873+02:00  INFO 85289 --- [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics reporters closed
+2026-08-02T18:26:40.873+02:00  INFO 85289 --- [anNameSet-0-C-1] o.a.kafka.common.utils.AppInfoParser     : App info kafka.consumer for consumer-maestro-kafka-roundtrip-17 unregistered
+2026-08-02T18:26:40.874+02:00  INFO 85289 --- [anNameSet-0-C-1] o.s.k.l.KafkaMessageListenerContainer    : maestro-kafka-roundtrip: Consumer stopped
+
+BUILD SUCCESSFUL in 1m 36s
+36 actionable tasks: 1 executed, 35 up-to-date
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.2.0/userguide/configuration_cache_enabling.html

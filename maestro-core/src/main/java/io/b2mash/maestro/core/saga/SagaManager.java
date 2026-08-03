@@ -4,17 +4,20 @@ import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.context.WorkflowMDC;
 import io.b2mash.maestro.core.exception.CompensationException;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
-import io.b2mash.maestro.core.exception.ExecutorShutdownException;
+import io.b2mash.maestro.core.exception.MaestroControlFlowError;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.EngineObserver;
+import io.b2mash.maestro.core.observe.WorkflowInfo;
 import io.b2mash.maestro.core.spi.LifecycleEventType;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
+import io.b2mash.maestro.core.engine.UnknownHistoryGuard;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -79,9 +82,10 @@ public final class SagaManager {
     private final @Nullable WorkflowMessaging messaging;
     private final PayloadSerializer serializer;
     private final String serviceName;
+    private final EngineObserver observer;
 
     /**
-     * Creates a new SagaManager.
+     * Creates a new SagaManager with no observation.
      *
      * @param store       workflow store for persistence
      * @param messaging   optional messaging for lifecycle events
@@ -94,10 +98,33 @@ public final class SagaManager {
             PayloadSerializer serializer,
             String serviceName
     ) {
+        this(store, messaging, serializer, serviceName, EngineObserver.NOOP);
+    }
+
+    /**
+     * Creates a new SagaManager with an {@link EngineObserver}.
+     *
+     * @param store       workflow store for persistence
+     * @param messaging   optional messaging for lifecycle events
+     * @param serializer  Jackson serializer for event payloads
+     * @param serviceName the owning service name
+     * @param observer    engine observation seam — fires
+     *                    {@code workflowCompensating} when a live (non-replay)
+     *                    compensation phase starts; never {@code null} (pass
+     *                    {@link EngineObserver#NOOP})
+     */
+    public SagaManager(
+            WorkflowStore store,
+            @Nullable WorkflowMessaging messaging,
+            PayloadSerializer serializer,
+            String serviceName,
+            EngineObserver observer
+    ) {
         this.store = store;
         this.messaging = messaging;
         this.serializer = serializer;
         this.serviceName = serviceName;
+        this.observer = observer;
     }
 
     /**
@@ -140,7 +167,21 @@ public final class SagaManager {
         // seq this call consumes doubles as the anchor for the sequential
         // loop's per-entry sequence blocks (see executeSequential).
         var startedSeq = ctx.nextSequence();
-        if (store.getEventBySequence(ctx.workflowInstanceId(), startedSeq).isEmpty()) {
+        if (UnknownHistoryGuard.requireKnown(
+                store.getEventBySequence(ctx.workflowInstanceId(), startedSeq),
+                ctx.workflowId()).isEmpty()) {
+            // Live only — guarded by the COMPENSATION_STARTED replay-skip
+            // above, so a recovery re-run does not double-count the phase.
+            // Emitted BEFORE the append: unlike the executor's appendEvent,
+            // this one rethrows DuplicateEventException so the run stands
+            // down, and emitting after it would report a compensation phase
+            // that started as a STALE_RUN stand-down instead. Contained, so a
+            // throwing observer cannot abort a compensation phase that must
+            // run (it would escape compensate(), skip the FAILED transition,
+            // and leave the instance stuck in COMPENSATING).
+            emit("workflowCompensating", ctx.workflowId(), () -> observer.workflowCompensating(
+                    new WorkflowInfo(ctx.workflowId(), ctx.workflowType(), serviceName)));
+
             appendEvent(ctx, startedSeq, EventType.COMPENSATION_STARTED, "$maestro:compensation", null);
             publishLifecycleEvent(ctx, "$maestro:compensation", LifecycleEventType.COMPENSATION_STARTED);
         } else {
@@ -158,7 +199,9 @@ public final class SagaManager {
 
         // Record COMPENSATION_COMPLETED — same replay-skip guard.
         var completedSeq = ctx.nextSequence();
-        if (store.getEventBySequence(ctx.workflowInstanceId(), completedSeq).isEmpty()) {
+        if (UnknownHistoryGuard.requireKnown(
+                store.getEventBySequence(ctx.workflowInstanceId(), completedSeq),
+                ctx.workflowId()).isEmpty()) {
             var completionPayload = failedCompensations.isEmpty()
                     ? null
                     : serializer.serialize(new CompensationSummary(entries.size(), failedCompensations));
@@ -214,7 +257,9 @@ public final class SagaManager {
             // already durable. A manually-registered compensation isn't
             // memoized the way an activity call is, so without this check
             // it would run again on every recovery replay.
-            var storedEvent = store.getEventBySequence(ctx.workflowInstanceId(), stepBaseSeq);
+            var storedEvent = UnknownHistoryGuard.requireKnown(
+                    store.getEventBySequence(ctx.workflowInstanceId(), stepBaseSeq),
+                    ctx.workflowId());
             if (storedEvent.isPresent()) {
                 var eventType = storedEvent.get().eventType();
                 logger.debug("Replaying compensation {} '{}' at seq {} ({}) for workflow '{}' — not re-invoking",
@@ -234,15 +279,17 @@ public final class SagaManager {
 
             try {
                 // catch (Exception e) deliberately does not catch the engine's
-                // control-flow signals — ExecutorShutdownException and
-                // WorkflowTerminatedException both extend Error, not Exception.
-                // A compensation action that parks (sleep()/awaitSignal()) and
-                // is abandoned by either propagates out of this loop uncaught,
-                // so no step is recorded failed. For a shutdown the remaining
-                // (not-yet-run) compensations are left for a recovering node,
-                // which replays this one's memoized side effects and continues;
-                // for a terminate they are simply never run, which is
-                // terminate's contract.
+                // control-flow signals — every MaestroControlFlowError extends
+                // Error, not Exception, so no rethrow arm is needed here for
+                // them. A compensation action that parks (sleep()/awaitSignal())
+                // and is abandoned by a shutdown or a terminate, or that reads
+                // history this build cannot interpret and stands down,
+                // propagates out of this loop uncaught, so no step is recorded
+                // failed. For a shutdown the remaining (not-yet-run)
+                // compensations are left for a recovering node, which replays
+                // this one's memoized side effects and continues; for a
+                // terminate they are simply never run, which is terminate's
+                // contract; for a stand-down an upgraded node finishes the job.
                 // Any entry already recorded COMPLETED earlier in this same
                 // call (i.e. before the entry that threw) stays durable —
                 // its append already happened, in an earlier loop iteration.
@@ -335,7 +382,9 @@ public final class SagaManager {
             // branch that already completed (or failed) durably before some
             // OTHER branch was interrupted by shutdown would be re-invoked
             // on recovery — never spawn its thread at all.
-            var storedEvent = store.getEventBySequence(ctx.workflowInstanceId(), branchBaseSeq);
+            var storedEvent = UnknownHistoryGuard.requireKnown(
+                    store.getEventBySequence(ctx.workflowInstanceId(), branchBaseSeq),
+                    ctx.workflowId());
             if (storedEvent.isPresent()) {
                 var eventType = storedEvent.get().eventType();
                 logger.debug("Replaying compensation branch {} '{}' at seq {} ({}) for workflow '{}' "
@@ -421,14 +470,16 @@ public final class SagaManager {
         // this call replay-skipped never ran, so they cannot be the source
         // of a shutdown here.)
         for (var errorRef : errors) {
-            if (errorRef.get() instanceof ExecutorShutdownException shutdown) {
-                throw shutdown;
-            }
-            // Same reasoning for a terminate: the branch never failed, the
-            // attempt is simply over. WorkflowExecutor leaves the
-            // already-durable TERMINATED row alone.
-            if (errorRef.get() instanceof WorkflowTerminatedException terminated) {
-                throw terminated;
+            // One check covers all three engine control-flow signals — a
+            // shutdown, an operator terminate, or a stand-down because a branch
+            // read history this build cannot interpret. None of them is a
+            // branch FAILURE, and recording one as COMPENSATION_STEP_FAILED
+            // would durably claim a reversal was attempted and failed when
+            // nothing ran at all. Enumerating the types individually here is
+            // what let the third one slip through when it was added, which is
+            // why MaestroControlFlowError exists.
+            if (errorRef.get() instanceof MaestroControlFlowError controlFlow) {
+                throw controlFlow;
             }
             // Issue 18: a branch whose append collided with a concurrent
             // runner's event means the whole attempt is stale — a peer owns
@@ -544,6 +595,28 @@ public final class SagaManager {
         } catch (Exception e) {
             logger.warn("Failed to record compensation step failure for '{}' in workflow '{}'",
                     stepName, ctx.workflowId(), e);
+        }
+    }
+
+    /**
+     * Invokes one observer callback, containing a misbehaving observer.
+     *
+     * <p>Since coordinator Ruling 4, containment is structural at the seam:
+     * {@link io.b2mash.maestro.core.observe.CompositeEngineObserver#of} always
+     * wraps. This guard stays as depth — the constructors accept <em>any</em>
+     * {@code EngineObserver}, so nothing forces an embedder or a test wiring
+     * the engine by hand through {@code of(...)}, and an escape here would
+     * abort a compensation phase and strand the instance in
+     * {@code COMPENSATING}. {@code RuntimeException} only: {@code Error}s (the
+     * engine's control-flow signals) always propagate, so a shutdown or
+     * terminate landing mid-compensation still unwinds this thread.
+     */
+    private void emit(String callback, String workflowId, Runnable emission) {
+        try {
+            emission.run();
+        } catch (RuntimeException e) {
+            logger.warn("EngineObserver.{} threw for workflow '{}' — ignoring: {}",
+                    callback, workflowId, e.toString());
         }
     }
 

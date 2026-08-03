@@ -7,6 +7,7 @@ import io.b2mash.maestro.core.engine.ActivityProxyFactory;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.engine.WorkflowRegistration;
+import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.retry.RetryExecutor;
 import io.b2mash.maestro.core.retry.RetryPolicy;
 import io.b2mash.maestro.core.spi.DistributedLock;
@@ -53,15 +54,24 @@ public final class MaestroEngineHarness implements AutoCloseable {
     private final WorkflowExecutor executor;
     private final ActivityProxyFactory proxyFactory = new ActivityProxyFactory();
     private final RetryExecutor retryExecutor = new RetryExecutor();
+    private final EngineObserver observer;
+    private final String lockKeyPrefix;
     private final Map<Class<?>, Object> activityImpls = new ConcurrentHashMap<>();
     private final Map<String, WorkflowRegistration> registrations = new ConcurrentHashMap<>();
+
+    /** Matches {@code WorkflowExecutor}'s own default — package-private there,
+     * so this harness (a different module) states it explicitly rather than
+     * referencing it. */
+    private static final Duration DEFAULT_WAKE_RECHECK_INTERVAL = Duration.ofSeconds(30);
 
     private MaestroEngineHarness(Builder builder) {
         this.store = builder.store;
         this.serializer = new PayloadSerializer(builder.objectMapper);
         this.lock = builder.lock;
         this.messaging = builder.messaging;
-        this.executor = builder.wakeRecheckInterval == null
+        this.observer = builder.observer != null ? builder.observer : EngineObserver.NOOP;
+        this.lockKeyPrefix = builder.lockKeyPrefix;
+        this.executor = builder.wakeRecheckInterval == null && builder.observer == null
                 ? new WorkflowExecutor(
                         builder.store,
                         builder.lock,
@@ -82,7 +92,9 @@ public final class MaestroEngineHarness implements AutoCloseable {
                         builder.instanceLockTtl,
                         true,
                         Duration.ofSeconds(30),
-                        builder.wakeRecheckInterval);
+                        builder.wakeRecheckInterval != null
+                                ? builder.wakeRecheckInterval : DEFAULT_WAKE_RECHECK_INTERVAL,
+                        this.observer);
     }
 
     /**
@@ -215,6 +227,14 @@ public final class MaestroEngineHarness implements AutoCloseable {
     }
 
     /**
+     * @return the {@link EngineObserver} this node was built with — {@link
+     *         EngineObserver#NOOP} if none was configured
+     */
+    public EngineObserver observer() {
+        return observer;
+    }
+
+    /**
      * @return the store this harness writes through
      */
     public WorkflowStore store() {
@@ -290,7 +310,9 @@ public final class MaestroEngineHarness implements AutoCloseable {
                     RetryPolicy.fromAnnotation(stub.retryPolicy()),
                     Duration.parse(stub.startToCloseTimeout()),
                     serializer,
-                    retryExecutor);
+                    retryExecutor,
+                    lockKeyPrefix,
+                    observer);
             try {
                 field.setAccessible(true);
                 field.set(workflowImpl, proxy);
@@ -312,6 +334,7 @@ public final class MaestroEngineHarness implements AutoCloseable {
         private String lockKeyPrefix = "maestro:lock:";
         private Duration instanceLockTtl = Duration.ofSeconds(30);
         private @Nullable Duration wakeRecheckInterval;
+        private @Nullable EngineObserver observer;
 
         private Builder(WorkflowStore store, ObjectMapper objectMapper) {
             this.store = store;
@@ -369,6 +392,16 @@ public final class MaestroEngineHarness implements AutoCloseable {
          */
         public Builder wakeRecheckInterval(@Nullable Duration wakeRecheckInterval) {
             this.wakeRecheckInterval = wakeRecheckInterval;
+            return this;
+        }
+
+        /**
+         * @param observer engine observation seam wired into both the executor
+         *                 and every activity proxy this harness builds; {@code
+         *                 null} (the default) keeps {@link EngineObserver#NOOP}
+         */
+        public Builder observer(@Nullable EngineObserver observer) {
+            this.observer = observer;
             return this;
         }
 

@@ -7,6 +7,11 @@ import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.EngineObserver;
+import io.b2mash.maestro.core.observe.ParkKind;
+import io.b2mash.maestro.core.observe.SignalInfo;
+import io.b2mash.maestro.core.observe.TraceContextHolder;
+import io.b2mash.maestro.core.observe.WorkflowInfo;
 import io.b2mash.maestro.core.spi.LifecycleEventType;
 import io.b2mash.maestro.core.spi.SignalNotifier;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
@@ -69,8 +74,8 @@ final class SignalManager {
     /**
      * How often a parked await re-checks the store for a signal persisted
      * without a notification reaching this instance — e.g. ingested on
-     * another node in a deployment with no {@link SignalNotifier} (Kafka or
-     * RabbitMQ messaging without Valkey), or delivered in the narrow window
+     * another node in a deployment with no {@link SignalNotifier} (Kafka
+     * messaging without Valkey), or delivered in the narrow window
      * before the park registered. Bounds cross-node signal latency in those
      * cases; with a working notifier the wake is instant and this never fires.
      *
@@ -87,6 +92,7 @@ final class SignalManager {
     private final PayloadSerializer serializer;
     private final ParkingLot parkingLot;
     private final Duration wakeRecheckInterval;
+    private final EngineObserver observer;
 
     /**
      * Ref-counted cross-instance wake subscriptions, keyed by workflow ID.
@@ -137,12 +143,35 @@ final class SignalManager {
             ParkingLot parkingLot,
             Duration wakeRecheckInterval
     ) {
+        this(store, messaging, signalNotifier, serializer, parkingLot, wakeRecheckInterval,
+                EngineObserver.NOOP);
+    }
+
+    /**
+     * Creates a new signal manager with a custom wake re-check interval and
+     * an {@link EngineObserver}.
+     *
+     * @param observer engine observation seam — fires {@code signalPersisted},
+     *                 {@code signalConsumed} and {@code workflowParked}/
+     *                 {@code workflowUnparked(SIGNAL)}; never {@code null}
+     *                 (pass {@link EngineObserver#NOOP})
+     */
+    SignalManager(
+            WorkflowStore store,
+            @Nullable WorkflowMessaging messaging,
+            @Nullable SignalNotifier signalNotifier,
+            PayloadSerializer serializer,
+            ParkingLot parkingLot,
+            Duration wakeRecheckInterval,
+            EngineObserver observer
+    ) {
         this.store = store;
         this.messaging = messaging;
         this.signalNotifier = signalNotifier;
         this.serializer = serializer;
         this.parkingLot = parkingLot;
         this.wakeRecheckInterval = wakeRecheckInterval;
+        this.observer = observer;
     }
 
     // ── Delivery ────────────────────────────────────────────────────────
@@ -166,9 +195,32 @@ final class SignalManager {
     void deliverSignal(String workflowId, String signalName, @Nullable Object payload) {
         // Determine workflow instance ID (may be null for pre-delivery)
         UUID workflowInstanceId = null;
+        String workflowType = null;
         var instance = store.getInstance(workflowId);
         if (instance.isPresent()) {
             workflowInstanceId = instance.get().id();
+            workflowType = instance.get().workflowType();
+        }
+
+        // Capture the calling thread's trace context, if a traced transport
+        // put one there (design §4.3(a)). Opaque to the engine: stored and
+        // returned verbatim, never parsed. Absence is normal, not an error.
+        //
+        // The one thing checked is LENGTH, and only to protect the insert. The
+        // holder is public API, so a transport or an embedder can put anything
+        // there; a value wider than the column would make saveSignal throw,
+        // and since delivery runs inside the transport listener that failure
+        // means the record is never acked and the signal is eventually
+        // dead-lettered — discarded. Decorative metadata must never cost a
+        // signal its delivery, so an over-long value degrades to no trace
+        // context (RULING 2: absence, never an error). This is a bound on size,
+        // not an interpretation of contents.
+        var traceContext = TraceContextHolder.current();
+        if (traceContext != null && traceContext.length() > TraceContextHolder.MAX_LENGTH) {
+            logger.warn("Discarding a {}-character trace context for signal '{}' on workflow "
+                            + "'{}' — the limit is {}. The signal is delivered untraced.",
+                    traceContext.length(), signalName, workflowId, TraceContextHolder.MAX_LENGTH);
+            traceContext = null;
         }
 
         // Persist the signal — always before in-memory delivery
@@ -180,9 +232,11 @@ final class SignalManager {
                 signalName,
                 signalPayload,
                 false,
-                Instant.now()
+                Instant.now(),
+                traceContext
         );
         store.saveSignal(signal);
+        observer.signalPersisted(new SignalInfo(workflowId, workflowType, signalName, traceContext));
 
         // Unpark if waiting locally
         var parkKey = workflowId + ":signal:" + signalName;
@@ -230,10 +284,15 @@ final class SignalManager {
         var stepName = "$maestro:awaitSignal:" + signalName;
 
         // Replay check: look for SIGNAL_RECEIVED at this sequence
-        var storedEvent = store.getEventBySequence(ctx.workflowInstanceId(), seq);
+        var storedEvent = UnknownHistoryGuard.requireKnown(
+                store.getEventBySequence(ctx.workflowInstanceId(), seq), ctx.workflowId());
         if (storedEvent.isPresent() && storedEvent.get().eventType() == EventType.SIGNAL_RECEIVED) {
             logger.debug("Replaying signal '{}' at seq {}", signalName, seq);
-            return serializer.deserialize(storedEvent.get().payload(), type);
+            observer.signalConsumed(
+                    new SignalInfo(ctx.workflowId(), ctx.workflowType(), signalName, null), true);
+            return UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), seq,
+                    "payload of signal '%s'".formatted(signalName),
+                    () -> serializer.deserialize(storedEvent.get().payload(), type));
         }
         // Replay check: a memoized timeout re-raises deterministically — from
         // the log alone, with no store read and no signal consumption. Without
@@ -280,6 +339,17 @@ final class SignalManager {
 
             var parkKey = ctx.workflowId() + ":signal:" + signalName;
             logger.debug("Workflow '{}' waiting for signal '{}' (timeout={})", ctx.workflowId(), signalName, timeout);
+            // Live park boundary (never replay — the replay branches returned
+            // above). Unparked fires only on the paths where the workflow
+            // thread actually resumes: signal consumed or await timeout. A
+            // shutdown or terminate emits neither — it emits
+            // EngineObserver.runAbandoned instead (design §11, RULING 5), from
+            // WorkflowExecutor's handleShutdownSuspension/handleTermination, so
+            // a stateful observer still gets exactly one closing callback on
+            // this thread. Note the status write a few lines above can itself
+            // raise WorkflowTerminatedException before this park emission ever
+            // runs, which is precisely why that closing callback is needed.
+            observer.workflowParked(observed(ctx), ParkKind.SIGNAL);
 
             // Park in re-check-interval chunks. Every wake OR chunk expiry
             // re-reads the store, so a signal persisted without a notification
@@ -304,6 +374,7 @@ final class SignalManager {
                             new SignalTimeoutDetail(signalName, timeout.toString()));
                     appendEvent(ctx, seq, EventType.SIGNAL_TIMEOUT, stepName, timeoutDetail);
                     updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
+                    observer.workflowUnparked(observed(ctx), ParkKind.SIGNAL);
                     throw new SignalTimeoutException(ctx.workflowId(), signalName, timeout);
                 }
                 var chunk = remaining.compareTo(wakeRecheckInterval) < 0 ? remaining : wakeRecheckInterval;
@@ -330,6 +401,7 @@ final class SignalManager {
                 if (!signals.isEmpty()) {
                     var result = consumeSignal(ctx, seq, stepName, signalName, signals.getFirst(), type);
                     updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
+                    observer.workflowUnparked(observed(ctx), ParkKind.SIGNAL);
                     return result;
                 }
                 if (woken) {
@@ -459,8 +531,24 @@ final class SignalManager {
                     signalName, signal.id(), ctx.workflowId(), seq);
         }
         publishLifecycleEvent(ctx, stepName, LifecycleEventType.SIGNAL_RECEIVED);
+        // The durable hop (design §4.3(b)): the row's trace context reaches the
+        // observer on the workflow thread — possibly a different thread on a
+        // different node from the one that persisted it, which is exactly why
+        // the column exists rather than an in-process handoff.
+        observer.signalConsumed(
+                new SignalInfo(ctx.workflowId(), ctx.workflowType(), signalName,
+                        signal.traceContext()), false);
         logger.debug("Consumed signal '{}' for workflow '{}'", signalName, ctx.workflowId());
-        return serializer.deserialize(signal.payload(), type);
+        // RULING 9: the signal row is persisted state this run did not write —
+        // a newer node's producer may have reshaped the payload. Unreadable
+        // means stand down, not fail: the SIGNAL_RECEIVED event above is
+        // already durable, so an upgraded node replays it (that read is guarded
+        // in awaitSignal) and carries on. Recording FAILED here would compensate
+        // a workflow whose signal simply arrived in a shape this build is too
+        // old to read.
+        return UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), seq,
+                "payload of consumed signal '%s'".formatted(signalName),
+                () -> serializer.deserialize(signal.payload(), type));
     }
 
     /**
@@ -486,6 +574,11 @@ final class SignalManager {
 
     private void updateInstanceStatus(WorkflowContext ctx, WorkflowStatus newStatus) {
         InstanceStatusWriter.write(store, ctx.workflowId(), newStatus);
+    }
+
+    /** Builds the identity-only observation record for the current context. */
+    private static WorkflowInfo observed(WorkflowContext ctx) {
+        return new WorkflowInfo(ctx.workflowId(), ctx.workflowType(), ctx.serviceName());
     }
 
     /**

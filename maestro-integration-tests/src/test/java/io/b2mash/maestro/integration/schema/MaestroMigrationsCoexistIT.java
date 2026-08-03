@@ -65,6 +65,37 @@ class MaestroMigrationsCoexistIT {
                 "messaging migration must have run, found: " + tables);
     }
 
+    /**
+     * Design §8.6: V4 is the cycle's only schema change, and it lands on
+     * databases that are already at V3 with live data. Applying it in sequence
+     * from an empty database — through the same shared {@code db/migration}
+     * location every other module writes into — is what proves it is not
+     * shadowed by a same-version sibling and that {@code trace_context} really
+     * exists for {@code AbstractJdbcWorkflowStore}'s insert/select to name.
+     */
+    @Test
+    @DisplayName("V4 adds a nullable maestro_workflow_signal.trace_context on top of V1–V3")
+    void v4AddsTheNullableSignalTraceContextColumn() throws SQLException {
+        Flyway.configure()
+                .dataSource(dataSource())
+                .locations("classpath:db/migration")
+                .load()
+                .migrate();
+
+        try (var conn = dataSource().getConnection();
+             var stmt = conn.prepareStatement(
+                     "SELECT data_type, is_nullable, character_maximum_length "
+                             + "FROM information_schema.columns "
+                             + "WHERE table_name = 'maestro_workflow_signal' AND column_name = 'trace_context'");
+             var rs = stmt.executeQuery()) {
+            assertTrue(rs.next(), "V4 must have added maestro_workflow_signal.trace_context");
+            assertEquals("character varying", rs.getString("data_type"));
+            assertEquals("YES", rs.getString("is_nullable"),
+                    "the column must be nullable — absence of trace context is normal, not an error");
+            assertEquals(128, rs.getInt("character_maximum_length"));
+        }
+    }
+
     @Test
     @DisplayName("no two migrations declare the same version")
     void migrationVersionsAreUnique() {

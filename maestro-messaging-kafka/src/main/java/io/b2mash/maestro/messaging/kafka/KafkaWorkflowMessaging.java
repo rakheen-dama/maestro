@@ -4,6 +4,8 @@ import io.b2mash.maestro.core.spi.SignalMessage;
 import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
@@ -34,6 +36,13 @@ import java.util.function.Consumer;
  *   <li>Admin events: {@code maestro.admin.events} (configurable)</li>
  * </ul>
  *
+ * <h2>Trace Propagation</h2>
+ * <p>When a {@link KafkaTracePropagation} collaborator is supplied, every
+ * published record carries the W3C trace context of the span active at publish
+ * time, and every consumed record's handler runs under the remote context it
+ * carried — see that class for the exact wire contract. Without the
+ * collaborator the wire format is byte-identical to a build with no tracing.
+ *
  * <h2>Partition Key</h2>
  * <p>All messages are keyed by {@code workflowId} to guarantee per-workflow
  * ordering within a topic partition.
@@ -63,6 +72,7 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
     private final ConsumerFactory<String, byte[]> consumerFactory;
     private final ObjectMapper objectMapper;
     private final KafkaMessagingConfig config;
+    private final @Nullable KafkaTracePropagation tracePropagation;
     private final List<ConcurrentMessageListenerContainer<String, byte[]>> containers =
             new CopyOnWriteArrayList<>();
 
@@ -80,10 +90,34 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
             ObjectMapper objectMapper,
             KafkaMessagingConfig config
     ) {
+        this(kafkaTemplate, consumerFactory, objectMapper, config, null);
+    }
+
+    /**
+     * Creates a new Kafka-based workflow messaging implementation with W3C trace
+     * context propagation.
+     *
+     * @param kafkaTemplate    the Kafka template for publishing messages
+     * @param consumerFactory  the consumer factory for creating listener containers
+     * @param objectMapper     Jackson 3 ObjectMapper for serialization
+     * @param config           resolved topic and consumer group configuration
+     * @param tracePropagation injects W3C headers on publish and restores the
+     *                         remote context around each handler call; when
+     *                         {@code null} the wire format is byte-identical to
+     *                         a build with no tracing at all
+     */
+    public KafkaWorkflowMessaging(
+            KafkaTemplate<String, byte[]> kafkaTemplate,
+            ConsumerFactory<String, byte[]> consumerFactory,
+            ObjectMapper objectMapper,
+            KafkaMessagingConfig config,
+            @Nullable KafkaTracePropagation tracePropagation
+    ) {
         this.kafkaTemplate = kafkaTemplate;
         this.consumerFactory = consumerFactory;
         this.objectMapper = objectMapper;
         this.config = config;
+        this.tracePropagation = tracePropagation;
     }
 
     // ── Publishing ───────────────────────────────────────────────────────
@@ -107,8 +141,7 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
         var topic = config.adminEventsTopic();
         var key = event.workflowId();
         try {
-            var bytes = serialize(event);
-            kafkaTemplate.send(topic, key, bytes);
+            kafkaTemplate.send(tracedRecord(topic, key, serialize(event)));
         } catch (Exception e) {
             // SPI contract: lifecycle event failures must not interrupt workflow execution
             logger.warn("Failed to publish lifecycle event {} for workflow '{}' to topic '{}'",
@@ -124,8 +157,14 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
         // Nothing is caught here on purpose: a handler failure — or an
         // undeserializable record — must reach the container's error handler so
         // the offset is not committed. See the class Javadoc.
-        var container = createContainer(topic, record ->
-                handler.accept(deserialize(record.value(), TaskMessage.class)));
+        var container = createContainer(topic, record -> {
+            var message = deserialize(record.value(), TaskMessage.class);
+            if (tracePropagation == null) {
+                handler.accept(message);
+            } else {
+                tracePropagation.runWithExtractedContext(record.headers(), () -> handler.accept(message));
+            }
+        });
         containers.add(container);
         container.start();
         logger.info("Subscribed to task queue '{}' on topic '{}'", taskQueue, topic);
@@ -134,8 +173,16 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
     @Override
     public void subscribeSignals(String serviceName, Consumer<SignalMessage> handler) {
         var topic = resolveSignalTopic(serviceName);
-        var container = createContainer(topic, record ->
-                handler.accept(deserialize(record.value(), SignalMessage.class)));
+        // The only place the raw ConsumerRecord — and therefore its W3C
+        // headers — is visible before the payload-typed handler runs.
+        var container = createContainer(topic, record -> {
+            var message = deserialize(record.value(), SignalMessage.class);
+            if (tracePropagation == null) {
+                handler.accept(message);
+            } else {
+                tracePropagation.runWithExtractedContext(record.headers(), () -> handler.accept(message));
+            }
+        });
         containers.add(container);
         container.start();
         logger.info("Subscribed to signals for service '{}' on topic '{}'", serviceName, topic);
@@ -159,11 +206,11 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
     // ── Internal helpers ─────────────────────────────────────────────────
 
     private void send(String topic, String key, Object message) {
-        var bytes = serialize(message);
+        var record = tracedRecord(topic, key, serialize(message));
         try {
             // Block on the future to ensure at-least-once delivery.
             // Safe on virtual threads — yields the carrier thread while waiting.
-            kafkaTemplate.send(topic, key, bytes).get();
+            kafkaTemplate.send(record).get();
         } catch (ExecutionException e) {
             throw new IllegalStateException(
                     "Failed to publish message to Kafka topic '" + topic + "' (key=" + key + ")", e.getCause());
@@ -172,6 +219,19 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
             throw new IllegalStateException(
                     "Interrupted while publishing message to Kafka topic '" + topic + "'", e);
         }
+    }
+
+    /**
+     * Builds the outbound record, injecting the current span's W3C trace context
+     * when tracing is configured. Without the collaborator the record is exactly
+     * what {@code kafkaTemplate.send(topic, key, bytes)} would have produced.
+     */
+    private ProducerRecord<String, byte[]> tracedRecord(String topic, String key, byte[] bytes) {
+        var record = new ProducerRecord<String, byte[]>(topic, key, bytes);
+        if (tracePropagation != null) {
+            tracePropagation.inject(record.headers());
+        }
+        return record;
     }
 
     private ConcurrentMessageListenerContainer<String, byte[]> createContainer(

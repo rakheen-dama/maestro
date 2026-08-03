@@ -1,0 +1,65 @@
+# Task 3 fix round 1 — RED
+# host=Rakheens-MacBook-Pro.local date=2026-08-02T15:06:59Z commit=006b62e branch=worktree-release-hardening
+# main sources reverted to HEAD via git stash; only the new tests applied
+# cmd: ./gradlew :maestro-core:test --tests '*WorkflowInstanceLockManagerObserverTest' --tests '*WorkflowExecutorObserverTest' --rerun-tasks
+
+> Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :build-logic:generateExternalPluginSpecBuilders
+> Task :build-logic:extractPrecompiledScriptPluginPlugins
+> Task :build-logic:generateScriptPluginAdapters
+> Task :build-logic:pluginDescriptors
+> Task :build-logic:processResources
+> Task :build-logic:compilePluginsBlocks
+> Task :build-logic:generatePrecompiledScriptPluginAccessors
+
+> Configure project :maestro-admin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :build-logic:compileKotlin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+w: [33m[1m⚠️ Inconsistent JVM Target Compatibility Between Java and Kotlin Tasks[0m[0m
+Inconsistent JVM-target compatibility detected for tasks 'compileJava' (25) and 'compileKotlin' (24).
+This will become an error in Gradle 8.0.
+[32m[1mSolution:[0m[0m
+[32m[3mConsider using JVM Toolchain: https://kotl.in/gradle/jvm/toolchain[0m[0m
+[36mLearn more about JVM-target validation: [0m[34mhttps://kotl.in/gradle/jvm/target-validation[0m[36m[0m
+
+
+> Task :build-logic:compileJava NO-SOURCE
+> Task :build-logic:classes
+> Task :build-logic:jar
+> Task :maestro-core:compileJava
+> Task :maestro-core:processResources NO-SOURCE
+> Task :maestro-core:classes
+> Task :maestro-core:compileTestJava
+> Task :maestro-core:processTestResources NO-SOURCE
+> Task :maestro-core:testClasses
+
+> Task :maestro-core:test
+
+WorkflowExecutor wires EngineObserver emissions at every design §1 site > compensation-start append collision: the compensation phase is still reported, not only the stand-down FAILED
+    org.opentest4j.AssertionFailedError at WorkflowExecutorObserverTest.java:249
+
+WorkflowInstanceLockManager emits lock observer callbacks > a throwing instanceLockLost does not kill the renewer — every held lock is still processed FAILED
+    org.opentest4j.AssertionFailedError at WorkflowInstanceLockManagerObserverTest.java:140
+
+WorkflowInstanceLockManager emits lock observer callbacks > a throwing instanceLockAcquired does not report NO_BACKEND and does not leak the lock FAILED
+    org.opentest4j.AssertionFailedError at WorkflowInstanceLockManagerObserverTest.java:121
+
+17 tests completed, 3 failed
+
+> Task :maestro-core:test FAILED
+
+[Incubating] Problems report is available at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/build/reports/problems/problems-report.html
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':maestro-core:test'.
+> There were failing tests. See the report at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/build/reports/tests/test/index.html
+
+* Try:
+> Run with --scan to generate a Build Scan (powered by Develocity).
+
+BUILD FAILED in 6s
+12 actionable tasks: 12 executed

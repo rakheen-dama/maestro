@@ -1,0 +1,81 @@
+# Task 3 RED evidence — observer tests before wiring implementation
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening
+HEAD: 74c9fa3d24b320f7e232350e6ff18c35e366cd90
+branch: worktree-release-hardening
+timestamp: 2026-08-02T14:25:01Z
+
+Replay emits observer callbacks flagged replayed=true — never double-counted > a memoized sleep replays timerScheduled/timerFired with replayed=true FAILED
+    org.opentest4j.AssertionFailedError at ObserverReplayNoDoubleCountTest.java:231
+
+Replay emits observer callbacks flagged replayed=true — never double-counted > 3 activities, crash after 2, recover: exactly-once live callbacks; replayed=true on the replayed pair FAILED
+    org.opentest4j.AssertionFailedError at ObserverReplayNoDoubleCountTest.java:98
+
+Replay emits observer callbacks flagged replayed=true — never double-counted > a memoized signal consumption replays with replayed=true FAILED
+    org.awaitility.core.ConditionTimeoutException at ObserverReplayNoDoubleCountTest.java:180
+
+WorkflowExecutor wires EngineObserver emissions at every design §1 site > recoverWorkflows emits recoveryPass(scanned, adopted) even when nothing is adoptable FAILED
+    org.opentest4j.AssertionFailedError at WorkflowExecutorObserverTest.java:277
+
+WorkflowExecutor wires EngineObserver emissions at every design §1 site > live run: workflowStarted, activityStarted/Completed(replayed=false), workflowCompleted FAILED
+    org.opentest4j.AssertionFailedError at WorkflowExecutorObserverTest.java:87
+
+WorkflowExecutor wires EngineObserver emissions at every design §1 site > failed run: workflowFailed carries the exception type FAILED
+    org.opentest4j.AssertionFailedError at WorkflowExecutorObserverTest.java:118
+
+WorkflowExecutor wires EngineObserver emissions at every design §1 site > signal flow: parked/unparked(SIGNAL) around the live park; signalPersisted + signalConsumed(replayed=false) FAILED
+    org.opentest4j.AssertionFailedError at WorkflowExecutorObserverTest.java:200
+
+WorkflowExecutor wires EngineObserver emissions at every design §1 site > saga: workflowCompensating fires once when a live compensation phase starts FAILED
+    org.opentest4j.AssertionFailedError at WorkflowExecutorObserverTest.java:262
+
+WorkflowExecutor wires EngineObserver emissions at every design §1 site > terminate: workflowTerminated fires once from the winning CAS, never on ALREADY_TERMINAL FAILED
+    org.opentest4j.AssertionFailedError at WorkflowExecutorObserverTest.java:165
+
+WorkflowExecutor wires EngineObserver emissions at every design §1 site > timer flow: timerScheduled/timerFired(replayed=false) + parked/unparked(TIMER) FAILED
+    org.opentest4j.AssertionFailedError at WorkflowExecutorObserverTest.java:234
+
+WorkflowExecutor wires EngineObserver emissions at every design §1 site > stale run: DuplicateEventException at top level emits standDown(STALE_RUN) FAILED
+    org.opentest4j.AssertionFailedError at WorkflowExecutorObserverTest.java:179
+
+WorkflowInstanceLockManager emits lock observer callbacks > a transient renew error emits instanceLockRenewFailed and keeps the handle FAILED
+    org.opentest4j.AssertionFailedError at WorkflowInstanceLockManagerObserverTest.java:75
+
+WorkflowInstanceLockManager emits lock observer callbacks > a winning acquire emits instanceLockAcquired; HELD_ELSEWHERE and NO_BACKEND emit nothing FAILED
+    org.opentest4j.AssertionFailedError at WorkflowInstanceLockManagerObserverTest.java:49
+
+WorkflowInstanceLockManager emits lock observer callbacks > lost ownership emits instanceLockLost and drops the handle FAILED
+    org.opentest4j.AssertionFailedError at WorkflowInstanceLockManagerObserverTest.java:96
+
+CompositeEngineObserver semantics > every callback fans out to every delegate FAILED
+    org.opentest4j.AssertionFailedError at CompositeEngineObserverTest.java:66
+
+CompositeEngineObserver semantics > delegates are invoked in list order FAILED
+    org.opentest4j.AssertionFailedError at CompositeEngineObserverTest.java:103
+
+CompositeEngineObserver semantics > of(single) returns the sole delegate itself FAILED
+    org.opentest4j.AssertionFailedError at CompositeEngineObserverTest.java:42
+
+CompositeEngineObserver semantics > of(empty) collapses to NOOP FAILED
+    org.opentest4j.AssertionFailedError at CompositeEngineObserverTest.java:35
+
+CompositeEngineObserver semantics > an Error (engine control-flow signal) propagates and is never swallowed FAILED
+    org.opentest4j.AssertionFailedError at CompositeEngineObserverTest.java:141
+
+CompositeEngineObserver semantics > a delegate throwing RuntimeException is contained; later delegates still run FAILED
+    org.opentest4j.AssertionFailedError at CompositeEngineObserverTest.java:125
+
+23 tests completed, 20 failed
+
+> Task :maestro-core:test FAILED
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':maestro-core:test'.
+> There were failing tests. See the report at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/build/reports/tests/test/index.html
+
+* Try:
+> Run with --scan to generate a Build Scan (powered by Develocity).
+
+BUILD FAILED in 31s
+12 actionable tasks: 1 executed, 11 up-to-date

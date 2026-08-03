@@ -1,0 +1,78 @@
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening
+branch: worktree-release-hardening
+HEAD: 108cd73f3e3630a09ddc1637a7c6447859e80f42
+timestamp: 2026-08-02T20:11:14Z
+command: ./gradlew :maestro-core:test --tests *WorkflowVersion* :maestro-test:test --tests *DeterminismCheckerVersionMarker* (RED-2: plausible-but-wrong stub (consume-unconditionally like currentTime, no per-run cache, no min-guard) — pins must observe the sequence shift and the double write)
+> Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :build-logic:generateExternalPluginSpecBuilders UP-TO-DATE
+> Task :build-logic:extractPrecompiledScriptPluginPlugins UP-TO-DATE
+> Task :build-logic:compilePluginsBlocks UP-TO-DATE
+> Task :build-logic:generatePrecompiledScriptPluginAccessors UP-TO-DATE
+> Task :build-logic:generateScriptPluginAdapters UP-TO-DATE
+
+> Task :build-logic:compileKotlin UP-TO-DATE
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :build-logic:compileJava NO-SOURCE
+> Task :build-logic:pluginDescriptors UP-TO-DATE
+> Task :build-logic:processResources UP-TO-DATE
+> Task :build-logic:classes UP-TO-DATE
+> Task :build-logic:jar UP-TO-DATE
+
+> Configure project :maestro-admin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :maestro-test:processResources NO-SOURCE
+> Task :maestro-test:processTestResources NO-SOURCE
+> Task :maestro-core:compileJava
+> Task :maestro-core:processResources NO-SOURCE
+> Task :maestro-core:classes
+> Task :maestro-test:compileJava UP-TO-DATE
+> Task :maestro-test:classes UP-TO-DATE
+> Task :maestro-test:compileTestJava UP-TO-DATE
+> Task :maestro-test:testClasses UP-TO-DATE
+> Task :maestro-core:jar
+> Task :maestro-core:compileTestJava UP-TO-DATE
+> Task :maestro-core:processTestResources NO-SOURCE
+> Task :maestro-core:testClasses UP-TO-DATE
+> Task :maestro-test:test
+
+> Task :maestro-core:test FAILED
+
+workflow.version() — memoized change-branching > a history written before the change replays byte-identically and yields DEFAULT_VERSION FAILED
+    io.b2mash.maestro.core.exception.DuplicateEventException at WorkflowVersionTest.java:131
+
+workflow.version() — memoized change-branching > a pre-change history fails the guard when the code no longer carries the old branch FAILED
+    org.opentest4j.AssertionFailedError at WorkflowVersionTest.java:175
+
+workflow.version() — memoized change-branching > a recorded version below minSupported raises the typed error naming changeId and both bounds FAILED
+    org.opentest4j.AssertionFailedError at WorkflowVersionTest.java:153
+
+workflow.version() — memoized change-branching > repeated calls with the same changeId in one run return the same value and write once FAILED
+    org.opentest4j.AssertionFailedError at WorkflowVersionTest.java:209
+
+workflow.version() — memoized change-branching > a replayed run resolves a repeated changeId from the record, not from the new max FAILED
+    org.opentest4j.MultipleFailuresError at WorkflowVersionTest.java:236
+        Caused by: org.opentest4j.AssertionFailedError at WorkflowVersionTest.java:239
+
+workflow.version() — memoized change-branching > invalid arguments are a coding error, not a workflow outcome FAILED
+    org.gradle.internal.exceptions.DefaultMultiCauseException at WorkflowVersionTest.java:269
+        Caused by: org.opentest4j.AssertionFailedError at WorkflowVersionTest.java:270
+
+workflow.version() — memoized change-branching > the min-guard failure is a MaestroException — catchable, retryable, not a control-flow Error FAILED
+    org.opentest4j.AssertionFailedError at WorkflowVersionTest.java:189
+
+13 tests completed, 7 failed
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':maestro-core:test'.
+> There were failing tests. See the report at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/build/reports/tests/test/index.html
+
+* Try:
+> Run with --scan to generate a Build Scan (powered by Develocity).
+
+BUILD FAILED in 1s
+16 actionable tasks: 4 executed, 12 up-to-date
+exit-code: 1

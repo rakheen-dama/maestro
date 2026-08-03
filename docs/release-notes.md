@@ -2,8 +2,199 @@
 
 ## Unreleased
 
+### Removed
+
+- **RabbitMQ messaging support has been removed** — the `maestro-messaging-rabbitmq`
+  module and the `sample-rabbitmq-order-service` sample are deleted. Nothing has
+  been published under this artifact yet, so this is a deletion, not a
+  deprecation: there is no migration path because there is no installed base to
+  migrate. **Rationale:** each additional transport carries its own real-backend
+  verification cost — a dedicated Testcontainers suite, its own redelivery/
+  dead-letter design, its own multi-instance and chaos coverage — and the
+  multi-instance verification cycle (PR #30) is the evidence for how much that
+  costs per transport. Shrinking the matrix to Kafka and Postgres before the
+  first public release keeps that cost bounded to backends the project can
+  actually keep verified. The `WorkflowMessaging` SPI itself is untouched and
+  remains transport-agnostic — a community `maestro-messaging-rabbitmq` (or any
+  other broker) adapter implementing the three-method SPI remains possible; it
+  is simply no longer shipped or verified in this repository.
+
+### Added — Observability: Micrometer meters and OpenTelemetry tracing
+
+Full reference: [`docs/observability.md`](observability.md).
+
+- **A framework-free observer seam in `maestro-core`.** New package
+  `io.b2mash.maestro.core.observe` with an `EngineObserver` interface the
+  engine calls at execution boundaries — 22 `default` no-op methods, a
+  composite, and the `*Info` records. `maestro-core` gains **no** dependency on
+  Micrometer, OpenTelemetry, or Spring; every adapter lives in the starter and
+  in `maestro-messaging-kafka`. Embedders can implement it directly.
+- **Micrometer meters under `maestro.*`**, auto-configured when a
+  `MeterRegistry` is present: counters
+  `maestro.workflow.started|completed|failed|compensated|terminated`,
+  `maestro.signal.consumed`, `maestro.timer.fired`, `maestro.recovery.scanned`,
+  `maestro.recovery.adopted`, `maestro.lock.renew.failures`,
+  `maestro.standdown`; timer `maestro.activity.duration`; gauges
+  `maestro.workflows.running` and `maestro.workflows.parked`. Nothing is ever
+  tagged by `workflowId` or `runId`. The two gauges are **node-local, in-JVM**
+  values — dashboard them per pod and sum across pods for a cluster total.
+- **Replayed steps are never counted and never traced.** A recovered workflow
+  replaying N activities does not double-count. Pinned end-to-end over a real
+  Postgres (crash node A, recover on node B, assert the replayed step's timer
+  count stays 1).
+- **Spans via the Micrometer Tracing API** (`io.micrometer.tracing.Tracer`, so
+  it bridges to whichever OpenTelemetry or Brave bridge your application
+  ships): `maestro.workflow.run` per run segment (the stretch of a run between
+  parks), `maestro.activity` per live activity execution, and
+  `maestro.signal.receive` on the Kafka listener side. The MDC keys
+  `workflowId` / `runId` / `activityName` appear as span attributes, so logs
+  and traces join.
+- **Cross-service trace propagation through Kafka.** W3C `traceparent` (plus
+  `tracestate` / `baggage` when the propagator emits them) is injected into
+  record headers on publish and extracted on consume, and the context is
+  **persisted on the signal row** so it survives a durable park — a signal
+  published by service A and consumed by service B's parked workflow renders as
+  **one connected trace**, not two. The exact header names and the
+  `traceparent` grammar are pinned by contract tests rather than inherited from
+  transport defaults. Absent, malformed, or oversized values degrade to an
+  untraced delivery with a fresh root span — never to an error and, critically,
+  never to a discarded signal.
+- **New properties** `maestro.observability.metrics.enabled` and
+  `maestro.observability.tracing.enabled`, both defaulting to `true` and both
+  silently inert without the beans they need. The tracing flag gates the Kafka
+  header injection too. With no tracing beans the Kafka wire format is
+  byte-identical to a pre-tracing build.
+- **Known limitations are documented rather than left to be discovered** — see
+  `docs/observability.md` → Known limitations. The most consequential: the
+  engine has no fork/join observation boundary, so a workflow that forks as its
+  first statement, or any recovered run whose first live step after replay sits
+  past a join, has no fork point to own; each such activity exports as its own
+  **root** span, fragmenting the run into one trace per activity. Closing it is
+  post-1.0 work.
+
+### Added — Workflow versioning: `workflow.version()`
+
+Full reference: [`docs/concepts.md` → Versioning Workflow Code](concepts.md#versioning-workflow-code).
+
+- **`WorkflowContext.version(changeId, minSupported, maxSupported)`** — the
+  Temporal-proven memoized change-branching model. The first live evaluation
+  records `maxSupported` as a `VERSION_MARKER` event and returns it; every
+  replay returns the **recorded** value forever, regardless of what the code's
+  `maxSupported` has moved on to. Histories that predate the change resolve to
+  `WorkflowContext.DEFAULT_VERSION` (`-1`) **without consuming a sequence
+  slot**, so introducing a `version()` call into existing code leaves in-flight
+  instances' event logs unshifted. This is what makes it usable: you can add
+  the gate to code that already has instances running through it.
+- Version decisions are visible to `DeterminismChecker` with no checker change
+  — the marker's step name is `$maestro:version:{changeId}`.
+- Raising `minSupported` above an instance's recorded version throws the new
+  `UnsupportedWorkflowVersionException`, naming the changeId, the recorded
+  version, and the supported range. That is an ordinary deterministic workflow
+  failure (it ends `FAILED`, saga compensation runs); the admin **Retry**
+  action composes with it once the old branch is restored, because retry clears
+  the failure memos but never the version marker.
+
+### Changed — Unreadable history stands down instead of failing the workflow
+
+- **A node that cannot interpret a workflow's persisted history no longer
+  records it `FAILED`.** Previously, an `event_type` string absent from this
+  build's enum threw an `IllegalArgumentException` that looked like any other
+  exception escaping a workflow method — so the engine marked the workflow
+  `FAILED` **and ran its compensations**, unwinding real work (refunds issued,
+  reservations released) for a workflow that never failed and was, on the other
+  half of the fleet, perfectly healthy. It now **stands down**: nothing is
+  written, no compensation runs, the instance keeps its recoverable status, the
+  instance lock is released, a `WARN` is logged, and
+  `maestro.standdown{reason=...}` is incremented. An upgraded node adopts and
+  finishes the workflow through the ordinary lock-TTL / recovery-poller
+  machinery, unchanged.
+- The same guard now covers **every path that deserializes a persisted payload
+  it did not itself just write**, not only the replay caller: the activity
+  duplicate-adopt branch, the persisted workflow input read on every recovery
+  run, and the persisted signal payload. This matters because the duplicate-adopt
+  path is reachable with **no author error** — an old node reads a sequence
+  empty, executes live, and loses the append race to a newer node whose event at
+  that sequence is a type it does not define.
+- **An unmappable instance `status` no longer aborts the whole recovery pass.**
+  `WorkflowStatus` mapping is now total: a status string a newer node wrote
+  causes that **one** instance to be skipped with a `WARN` carrying the raw
+  value, and the pass continues for every other workflow on the node.
+  Deliberate trade, documented in the mapper's Javadoc: while a node cannot map
+  the row, `getInstance` returns empty, so an operator API asking *that* node
+  about an existing workflow reports it **"not found"**. Every caller already
+  has a defined, non-destructive answer for an absent instance (a signal is
+  treated as pre-delivery and stored, never discarded).
+- **Control-flow signals now share a sealed base.** `MaestroControlFlowError
+  extends Error` permits exactly three types: `ExecutorShutdownException`,
+  `WorkflowTerminatedException`, and the new `UnknownWorkflowHistoryException`.
+  Behaviour-preserving — every existing catch site is still exact-type — but a
+  broad `catch (Throwable)` collector inside the engine now needs *one* check
+  rather than an enumeration that drifts each time a signal is added. **If you
+  maintain code that catches broadly around Maestro calls, check for
+  `MaestroControlFlowError` and rethrow.**
+- Operator guidance, including the one alarm that is easy to misread, is in
+  [`docs/operations.md` §10](operations.md#10-versioning-and-mixed-version-deploys).
+  Summary: a rising `maestro.standdown{reason=unknown_event_payload}` on a fleet
+  you know to be **homogeneous** means "an incompatible payload change needs
+  `workflow.version()`", **not** "wait for the deploy to finish" — otherwise the
+  new stand-down behaviour turns a visible failure into a silent zombie.
+
+### Database Migrations
+
+One new Flyway migration:
+
+- **`V4__signal_trace_context.sql`** (`maestro-store-postgres`, version band
+  1–99) — adds a nullable `trace_context VARCHAR(128)` column to
+  `maestro_workflow_signal`. It carries the W3C `traceparent` captured when the
+  signal was received, so a workflow parked on that signal can adopt the
+  publishing service's span as a remote parent when it resumes — possibly hours
+  later, possibly on another node. The column is opaque: no store or engine
+  logic parses it, branches on it, indexes it or joins on it, and `NULL` (an
+  untraced transport, or a build with tracing disabled) is normal and degrades
+  to a fresh root span rather than to an error. The DDL is a single
+  `ADD COLUMN` with no `DEFAULT` and no `NOT NULL`, so on Postgres 11+ it is
+  metadata-only — instant, no table rewrite, safe to apply to a live table.
+
+**The column must exist before a node running this version handles its first
+signal.** `AbstractJdbcWorkflowStore` names `trace_context` unconditionally in
+both the signal `INSERT` (`saveSignal`) and the signal `SELECT`
+(`getUnconsumedSignals`); there is no feature detection and no fallback path.
+Against a signal table that lacks the column, `saveSignal` throws — and because
+signal delivery runs *inside the transport listener*, that failure means the
+record is never acked, bounded redelivery exhausts, and the signal is
+**dead-lettered**, i.e. discarded. That is the one outcome the engine otherwise
+guarantees against.
+
+- **Default deployments (`maestro.store.table-prefix` left at `maestro_`): no
+  manual step.** Flyway applies `V4` automatically at startup, before the store
+  serves traffic — same as `V1`–`V3`.
+- **Deployments using a custom `maestro.store.table-prefix`: you must add the
+  column to your own migrations before upgrading.** Maestro's shipped
+  migrations hardcode the `maestro_` prefix — the note at the top of
+  `V1__create_maestro_schema.sql` tells custom-prefix users to provide
+  corresponding custom migrations, so such a deployment is already maintaining
+  its own set. `V4` is a new one to mirror there:
+
+  ```sql
+  ALTER TABLE <your_prefix>workflow_signal ADD COLUMN trace_context VARCHAR(128);
+  ```
+
+  This is not an exotic configuration: `docs/cross-service.md` recommends "a
+  unique `maestro.store.table-prefix` per service" for multi-service
+  deployments. Miss the column there and the failure mode is the discarded
+  signal described above, not a startup error.
+
 ### Upgrade notes — mixed-version deployments
 
+- **`VERSION_MARKER` is a new event type — the same upgrade-together rule
+  applies.** A workflow that has evaluated `workflow.version()` carries a
+  `VERSION_MARKER` event in its history. A node running the previous version
+  that adopts such a workflow cannot interpret it. Unlike the `SIGNAL_TIMEOUT`
+  case below, it no longer *fails* the workflow — it stands down and leaves it
+  for an upgraded node (see "Unreadable history stands down" above). That is a
+  safety net for the rolling window, **not** a licence to run a mixed fleet:
+  those workflows make no progress on the old nodes and simply wait. Upgrade
+  every node of a service together, or drain the service first.
 - **Upgrade every node of a service together (or drain it first) — the new
   `SIGNAL_TIMEOUT` event type is not readable by the previous version.** This
   release's Issue 19 fix (below) makes upgraded nodes write `SIGNAL_TIMEOUT`
@@ -56,6 +247,24 @@
 
 ### Bug Fixes
 
+- **Two `parallel()` branches parking at the same time no longer fail the
+  workflow** (`docs/open-issues.md` Issue 21). **Behavioural fix — read this if
+  you use `parallel()`.** Every branch thread of a fork writes its own park
+  status into the one instance row, and that write was an unguarded,
+  un-retried read-modify-write. Two branches whose reads both preceded either
+  write — the shape `docs/cross-service.md` sells, "fan out and await both
+  replies" — made the loser throw `OptimisticLockException`, which escaped
+  `parallel()` into workflow author code, into the executor's generic
+  `catch (Exception)`, and so into a workflow durably recorded `FAILED` **with
+  saga compensations run** — real refunds and inventory releases for work that
+  never failed. `FAILED` is not active, so recovery never healed it, and manual
+  retry refuses a compensated saga. The status write is now a bounded retry
+  against a *fresh* read (the same idiom the terminal write already used), with
+  the terminal guard re-evaluated on every attempt; on exhaustion it stands
+  down rather than propagating, because the status column is an advisory hint
+  for the recovery poller and the event log is the durable truth. Reproduced
+  deterministically on the natural race before the fix, and the fix is
+  mutation-proven.
 - **Parked workflows now ride out transient store outages instead of
   failing** (`docs/open-issues.md` Issue 20). Previously, a `RuntimeException`
   raised by the store during a parked workflow's periodic wake-recheck probe

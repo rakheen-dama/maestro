@@ -26,6 +26,16 @@ import org.jspecify.annotations.Nullable;
  * does not unwind a saga), and the instance lock is released as the thread
  * unwinds.
  *
+ * <p><b>One documented exception to "no compensation runs".</b> The guarantee
+ * holds on this exception's own path — wherever it propagates, nothing is
+ * unwound. It does not yet hold against one narrow race:
+ * {@code SagaManager.transitionToCompensating} re-reads the instance and
+ * throws this exception on a {@code TERMINATED} status, but that read and its
+ * status write are not atomic, and a terminate landing between them makes the
+ * write lose its optimistic-lock check — a conflict currently swallowed, after
+ * which the compensations run on the terminated workflow. Open; see
+ * {@code docs/open-issues.md} Issue 22 for the mechanism and the planned fix.
+ *
  * <h2>Why this extends {@code Error}, not {@code MaestroException}</h2>
  * <p>For exactly the reason {@link ExecutorShutdownException} does. Both are
  * engine control-flow signals delivered at a park point, and a workflow
@@ -36,10 +46,12 @@ import org.jspecify.annotations.Nullable;
  * would carry on — here, continuing to execute activities and write events for
  * a workflow an operator has explicitly terminated. Making it an {@code Error}
  * means ordinary {@code catch (Exception)} — and most {@code catch (Throwable)}
- * "log and continue" blocks — cannot intercept it.
+ * "log and continue" blocks — cannot intercept it. Both share the sealed base
+ * {@link MaestroControlFlowError}, so a broad-catch site needs one check rather
+ * than an enumeration.
  *
  * <p>See {@code CLAUDE.md} § Coding Standards for the project-wide note on the
- * two engine control-flow signals that deliberately do not extend
+ * engine control-flow signals that deliberately do not extend
  * {@code MaestroException}.
  *
  * <h2>Workflow authors</h2>
@@ -47,9 +59,12 @@ import org.jspecify.annotations.Nullable;
  * exception. Doing either keeps a terminated workflow's thread alive, executing
  * side effects the operator asked you to stop. If you must catch broadly (for
  * example {@code catch (Throwable t)} to log and continue), check for this type
- * first and rethrow it.
+ * first and rethrow it — or, better, check for {@link MaestroControlFlowError},
+ * which covers this signal and its siblings in one test.
+ *
+ * @see MaestroControlFlowError
  */
-public final class WorkflowTerminatedException extends Error {
+public final class WorkflowTerminatedException extends MaestroControlFlowError {
 
     private final String workflowId;
     private final @Nullable String reason;

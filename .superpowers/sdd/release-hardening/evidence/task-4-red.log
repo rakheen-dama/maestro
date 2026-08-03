@@ -1,0 +1,165 @@
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening
+branch: worktree-release-hardening
+HEAD: c92db65d5ec97158bfd5b1fe6d438eecfd53d3f8
+timestamp: 2026-08-02T15:57:20Z
+command: ./gradlew :maestro-spring-boot-starter:compileTestJava --rerun-tasks
+> Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :build-logic:generateExternalPluginSpecBuilders
+> Task :build-logic:extractPrecompiledScriptPluginPlugins
+
+> Configure project :maestro-admin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :build-logic:generateScriptPluginAdapters
+> Task :build-logic:pluginDescriptors
+> Task :build-logic:processResources
+> Task :build-logic:compilePluginsBlocks
+> Task :build-logic:generatePrecompiledScriptPluginAccessors
+
+> Task :build-logic:compileKotlin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+w: [33m[1m⚠️ Inconsistent JVM Target Compatibility Between Java and Kotlin Tasks[0m[0m
+Inconsistent JVM-target compatibility detected for tasks 'compileJava' (25) and 'compileKotlin' (24).
+This will become an error in Gradle 8.0.
+[32m[1mSolution:[0m[0m
+[32m[3mConsider using JVM Toolchain: https://kotl.in/gradle/jvm/toolchain[0m[0m
+[36mLearn more about JVM-target validation: [0m[34mhttps://kotl.in/gradle/jvm/target-validation[0m[36m[0m
+
+
+> Task :build-logic:compileJava NO-SOURCE
+> Task :build-logic:classes
+> Task :build-logic:jar
+> Task :maestro-spring-boot-starter:processResources
+> Task :maestro-core:compileJava
+> Task :maestro-test:compileJava
+> Task :maestro-spring-boot-starter:compileJava
+> Task :maestro-spring-boot-starter:classes
+
+> Task :maestro-spring-boot-starter:compileTestJava FAILED
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-spring-boot-starter/src/test/java/io/b2mash/maestro/spring/observe/MicrometerEngineObserverTest.java:31: error: cannot find symbol
+    private final MicrometerEngineObserver observer = new MicrometerEngineObserver(registry);
+                  ^
+  symbol:   class MicrometerEngineObserver
+  location: class MicrometerEngineObserverTest
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-spring-boot-starter/src/test/java/io/b2mash/maestro/spring/observe/MicrometerEngineObserverTest.java:31: error: cannot find symbol
+    private final MicrometerEngineObserver observer = new MicrometerEngineObserver(registry);
+                                                          ^
+  symbol:   class MicrometerEngineObserver
+  location: class MicrometerEngineObserverTest
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-spring-boot-starter/src/test/java/io/b2mash/maestro/spring/observe/MaestroObservabilityAutoConfigurationTest.java:50: error: cannot find symbol
+                    MaestroAutoConfiguration.class, MaestroObservabilityAutoConfiguration.class))
+                                                    ^
+  symbol:   class MaestroObservabilityAutoConfiguration
+  location: class MaestroObservabilityAutoConfigurationTest
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-spring-boot-starter/src/test/java/io/b2mash/maestro/spring/observe/MaestroObservabilityAutoConfigurationTest.java:84: error: cannot find symbol
+                    assertThat(context).doesNotHaveBean(MicrometerEngineObserver.class);
+                                                        ^
+  symbol:   class MicrometerEngineObserver
+  location: class MaestroObservabilityAutoConfigurationTest
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-spring-boot-starter/src/test/java/io/b2mash/maestro/spring/observe/MaestroObservabilityAutoConfigurationTest.java:85: error: cannot find symbol
+                    assertThat(context).doesNotHaveBean(MaestroEngineGauges.class);
+                                                        ^
+  symbol:   class MaestroEngineGauges
+  location: class MaestroObservabilityAutoConfigurationTest
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-spring-boot-starter/src/test/java/io/b2mash/maestro/spring/observe/MaestroObservabilityAutoConfigurationTest.java:104: error: cannot find symbol
+            assertThat(context).doesNotHaveBean(MicrometerEngineObserver.class);
+                                                ^
+  symbol:   class MicrometerEngineObserver
+  location: class MaestroObservabilityAutoConfigurationTest
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-spring-boot-starter/src/test/java/io/b2mash/maestro/spring/observe/MaestroObservabilityAutoConfigurationTest.java:105: error: cannot find symbol
+            assertThat(context).doesNotHaveBean(MaestroEngineGauges.class);
+                                                ^
+  symbol:   class MaestroEngineGauges
+  location: class MaestroObservabilityAutoConfigurationTest
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-spring-boot-starter/src/test/java/io/b2mash/maestro/spring/observe/MaestroObservabilityAutoConfigurationTest.java:115: error: cannot find symbol
+                    assertThat(context).doesNotHaveBean(MicrometerEngineObserver.class);
+                                                        ^
+  symbol:   class MicrometerEngineObserver
+  location: class MaestroObservabilityAutoConfigurationTest
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-spring-boot-starter/src/test/java/io/b2mash/maestro/spring/observe/MaestroObservabilityAutoConfigurationTest.java:116: error: cannot find symbol
+                    assertThat(context).doesNotHaveBean(MaestroEngineGauges.class);
+                                                        ^
+  symbol:   class MaestroEngineGauges
+  location: class MaestroObservabilityAutoConfigurationTest
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-spring-boot-starter/src/test/java/io/b2mash/maestro/spring/observe/MaestroObservabilityAutoConfigurationTest.java:126: error: cannot find symbol
+                    assertThat(context).hasSingleBean(MaestroEngineGauges.class);
+                                                      ^
+  symbol:   class MaestroEngineGauges
+  location: class MaestroObservabilityAutoConfigurationTest
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-spring-boot-starter/src/test/java/io/b2mash/maestro/spring/observe/MaestroObservabilityAutoConfigurationTest.java:168: error: cannot find symbol
+                                    MaestroAutoConfiguration.class, MaestroObservabilityAutoConfiguration.class))
+                                                                    ^
+  symbol:   class MaestroObservabilityAutoConfiguration
+  location: class MaestroObservabilityAutoConfigurationTest
+11 errors
+
+[Incubating] Problems report is available at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/build/reports/problems/problems-report.html
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':maestro-spring-boot-starter:compileTestJava'.
+> Compilation failed; see the compiler output below.
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-spring-boot-starter/src/test/java/io/b2mash/maestro/spring/observe/MicrometerEngineObserverTest.java:31: error: cannot find symbol
+      private final MicrometerEngineObserver observer = new MicrometerEngineObserver(registry);
+                    ^
+    symbol:   class MicrometerEngineObserver
+    location: class MicrometerEngineObserverTest
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-spring-boot-starter/src/test/java/io/b2mash/maestro/spring/observe/MicrometerEngineObserverTest.java:31: error: cannot find symbol
+      private final MicrometerEngineObserver observer = new MicrometerEngineObserver(registry);
+                                                            ^
+    symbol:   class MicrometerEngineObserver
+    location: class MicrometerEngineObserverTest
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-spring-boot-starter/src/test/java/io/b2mash/maestro/spring/observe/MaestroObservabilityAutoConfigurationTest.java:50: error: cannot find symbol
+                      MaestroAutoConfiguration.class, MaestroObservabilityAutoConfiguration.class))
+                                                      ^
+    symbol:   class MaestroObservabilityAutoConfiguration
+    location: class MaestroObservabilityAutoConfigurationTest
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-spring-boot-starter/src/test/java/io/b2mash/maestro/spring/observe/MaestroObservabilityAutoConfigurationTest.java:84: error: cannot find symbol
+                      assertThat(context).doesNotHaveBean(MicrometerEngineObserver.class);
+                                                          ^
+    symbol:   class MicrometerEngineObserver
+    location: class MaestroObservabilityAutoConfigurationTest
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-spring-boot-starter/src/test/java/io/b2mash/maestro/spring/observe/MaestroObservabilityAutoConfigurationTest.java:85: error: cannot find symbol
+                      assertThat(context).doesNotHaveBean(MaestroEngineGauges.class);
+                                                          ^
+    symbol:   class MaestroEngineGauges
+    location: class MaestroObservabilityAutoConfigurationTest
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-spring-boot-starter/src/test/java/io/b2mash/maestro/spring/observe/MaestroObservabilityAutoConfigurationTest.java:104: error: cannot find symbol
+              assertThat(context).doesNotHaveBean(MicrometerEngineObserver.class);
+                                                  ^
+    symbol:   class MicrometerEngineObserver
+    location: class MaestroObservabilityAutoConfigurationTest
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-spring-boot-starter/src/test/java/io/b2mash/maestro/spring/observe/MaestroObservabilityAutoConfigurationTest.java:105: error: cannot find symbol
+              assertThat(context).doesNotHaveBean(MaestroEngineGauges.class);
+                                                  ^
+    symbol:   class MaestroEngineGauges
+    location: class MaestroObservabilityAutoConfigurationTest
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-spring-boot-starter/src/test/java/io/b2mash/maestro/spring/observe/MaestroObservabilityAutoConfigurationTest.java:115: error: cannot find symbol
+                      assertThat(context).doesNotHaveBean(MicrometerEngineObserver.class);
+                                                          ^
+    symbol:   class MicrometerEngineObserver
+    location: class MaestroObservabilityAutoConfigurationTest
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-spring-boot-starter/src/test/java/io/b2mash/maestro/spring/observe/MaestroObservabilityAutoConfigurationTest.java:116: error: cannot find symbol
+                      assertThat(context).doesNotHaveBean(MaestroEngineGauges.class);
+                                                          ^
+    symbol:   class MaestroEngineGauges
+    location: class MaestroObservabilityAutoConfigurationTest
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-spring-boot-starter/src/test/java/io/b2mash/maestro/spring/observe/MaestroObservabilityAutoConfigurationTest.java:126: error: cannot find symbol
+                      assertThat(context).hasSingleBean(MaestroEngineGauges.class);
+                                                        ^
+    symbol:   class MaestroEngineGauges
+    location: class MaestroObservabilityAutoConfigurationTest
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-spring-boot-starter/src/test/java/io/b2mash/maestro/spring/observe/MaestroObservabilityAutoConfigurationTest.java:168: error: cannot find symbol
+                                      MaestroAutoConfiguration.class, MaestroObservabilityAutoConfiguration.class))
+                                                                      ^
+    symbol:   class MaestroObservabilityAutoConfiguration
+    location: class MaestroObservabilityAutoConfigurationTest
+  11 errors
+
+* Try:
+> Check your code and dependencies to fix the compilation error(s)
+> Run with --scan to generate a Build Scan (powered by Develocity).
+
+BUILD FAILED in 12s
+14 actionable tasks: 14 executed

@@ -382,6 +382,41 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
         }
 
         @Test
+        @DisplayName("VERSION_MARKER round-trips with its changeId/version payload")
+        void versionMarker_roundTrips() {
+            var instance = newInstance("order-version-marker");
+            store.createInstance(instance);
+
+            var marker = new WorkflowEvent(
+                    UUID.randomUUID(), instance.id(), 7,
+                    EventType.VERSION_MARKER, "$maestro:version:shipping-v2",
+                    jsonNode("{\"changeId\":\"shipping-v2\",\"version\":3}"),
+                    Instant.now().truncatedTo(ChronoUnit.MILLIS));
+            store.appendEvent(marker);
+
+            var found = store.getEventBySequence(instance.id(), 7).orElseThrow();
+            assertAll(
+                    () -> assertEquals(EventType.VERSION_MARKER, found.eventType(),
+                            "the new type must map back out of the VARCHAR column"),
+                    () -> assertEquals("$maestro:version:shipping-v2", found.stepName()),
+                    () -> assertEquals("shipping-v2",
+                            found.payload().get("changeId").stringValue()),
+                    () -> assertEquals(3, found.payload().get("version").intValue()));
+
+            // And through the bulk read the engine uses for admin/history views.
+            var viaGetEvents = store.getEvents(instance.id());
+            assertEquals(1, viaGetEvents.size());
+            assertEquals(EventType.VERSION_MARKER, viaGetEvents.getFirst().eventType());
+
+            // A marker is not a failure memo: admin Retry must leave it alone, so
+            // the retried run replays the same recorded version.
+            store.appendEvent(newEvent(instance.id(), 8, EventType.WORKFLOW_FAILED));
+            assertEquals(1, store.deleteFailureEvents(instance.id()));
+            assertEquals(List.of(EventType.VERSION_MARKER),
+                    store.getEvents(instance.id()).stream().map(WorkflowEvent::eventType).toList());
+        }
+
+        @Test
         @DisplayName("deleteFailureEvents deletes only ACTIVITY_FAILED and WORKFLOW_FAILED")
         void deleteFailureEvents_deletesOnlyFailures() {
             var instance = newInstance("order-del-failures");
@@ -654,6 +689,77 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
             var notAdopted = store.getUnconsumedSignals("order-other", "sig-b");
             assertEquals(1, notAdopted.size());
             assertNull(notAdopted.getFirst().workflowInstanceId());
+        }
+
+        // ── trace_context (migration V4, design §4.3(b), RULING 2) ────────
+
+        /** The W3C recommendation's own example traceparent. */
+        private static final String TRACEPARENT =
+                "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+
+        @Test
+        @DisplayName("saveSignal round-trips trace_context through the V4 column")
+        void saveSignal_roundTripsTraceContext() {
+            var instance = newInstance("order-trace");
+            store.createInstance(instance);
+
+            store.saveSignal(new WorkflowSignal(
+                    UUID.randomUUID(), instance.id(), "order-trace", "payment.result",
+                    jsonNode("{\"ok\":true}"), false,
+                    Instant.now().truncatedTo(ChronoUnit.MILLIS), TRACEPARENT));
+
+            var signals = store.getUnconsumedSignals("order-trace", "payment.result");
+            assertEquals(1, signals.size());
+            assertEquals(TRACEPARENT, signals.getFirst().traceContext());
+        }
+
+        @Test
+        @DisplayName("a signal saved without trace_context reads back null — absence degrades, never errors")
+        void saveSignal_nullTraceContextReadsBackNull() {
+            var instance = newInstance("order-trace-null");
+            store.createInstance(instance);
+
+            store.saveSignal(new WorkflowSignal(
+                    UUID.randomUUID(), instance.id(), "order-trace-null", "payment.result",
+                    null, false, Instant.now().truncatedTo(ChronoUnit.MILLIS), null));
+
+            var signals = store.getUnconsumedSignals("order-trace-null", "payment.result");
+            assertEquals(1, signals.size());
+            assertNull(signals.getFirst().traceContext());
+        }
+
+        @Test
+        @DisplayName("adoptOrphanedSignals preserves trace_context — the column is opaque metadata")
+        void adoptOrphanedSignals_preservesTraceContext() {
+            store.saveSignal(new WorkflowSignal(
+                    UUID.randomUUID(), null, "order-trace-adopt", "payment.result",
+                    null, false, Instant.now().truncatedTo(ChronoUnit.MILLIS), TRACEPARENT));
+
+            var instance = newInstance("order-trace-adopt");
+            store.createInstance(instance); // adopts the orphan
+
+            var signals = store.getUnconsumedSignals("order-trace-adopt", "payment.result");
+            assertEquals(1, signals.size());
+            assertEquals(instance.id(), signals.getFirst().workflowInstanceId());
+            assertEquals(TRACEPARENT, signals.getFirst().traceContext(),
+                    "adoption must not drop the trace context");
+        }
+
+        @Test
+        @DisplayName("the V4 column is wide enough for a traceparent plus a tracestate-sized suffix")
+        void traceContextColumnAcceptsLongValues() {
+            var instance = newInstance("order-trace-long");
+            store.createInstance(instance);
+
+            // 128 chars — the declared column width; a traceparent is 55.
+            var wide = "0".repeat(128);
+            store.saveSignal(new WorkflowSignal(
+                    UUID.randomUUID(), instance.id(), "order-trace-long", "payment.result",
+                    null, false, Instant.now().truncatedTo(ChronoUnit.MILLIS), wide));
+
+            var signals = store.getUnconsumedSignals("order-trace-long", "payment.result");
+            assertEquals(1, signals.size());
+            assertEquals(wide, signals.getFirst().traceContext());
         }
     }
 

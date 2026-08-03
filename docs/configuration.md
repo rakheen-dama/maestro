@@ -41,6 +41,17 @@ giving each a unique prefix. To target a non-default PostgreSQL schema, set it
 on the JDBC connection (e.g. `currentSchema` in the datasource URL) — Maestro
 does not manage schemas itself.
 
+> **A custom prefix means you own the schema, including every future
+> migration.** Maestro's shipped Flyway migrations hardcode `maestro_`, so
+> changing this property means Maestro's own migrations no longer apply to your
+> tables and you maintain equivalents yourself — for new releases as well as the
+> initial schema. The store issues the same SQL either way, so a column Maestro
+> adds and then uses is required, not optional: this release adds
+> `trace_context VARCHAR(128)` to `<prefix>workflow_signal`, and without it
+> `saveSignal` fails inside the transport listener and the signal is eventually
+> dead-lettered. See [`docs/operations.md` §10.6](operations.md#106-schema-migrations-and-a-custom-table-prefix)
+> and the release notes' Database Migrations section before upgrading.
+
 ---
 
 ## Messaging Configuration
@@ -52,7 +63,7 @@ and lifecycle event publishing.
 
 | Property                        | Type     | Default    | Description                                                                                     |
 |---------------------------------|----------|------------|-------------------------------------------------------------------------------------------------|
-| `maestro.messaging.type`        | `String` | `"kafka"`  | Messaging implementation. Supported values: `kafka` (default), `postgres`, `rabbitmq`.          |
+| `maestro.messaging.type`        | `String` | `"kafka"`  | Messaging implementation. Supported values: `kafka` (default), `postgres`.          |
 | `maestro.messaging.consumer-group`| `String`| `null`   | Kafka consumer group ID. If not set, defaults to `maestro-{serviceName}` at runtime.            |
 
 ### Topic Properties
@@ -77,18 +88,19 @@ dead-letter destination rather than dropping it or looping on it forever.
 
 | Property                                          | Type       | Default                 | Description                                                                 |
 |---------------------------------------------------|------------|-------------------------|-----------------------------------------------------------------------------|
-| `maestro.messaging.redelivery.max-attempts`       | `int`      | `10`                    | Total delivery attempts, including the first. All transports.               |
-| `maestro.messaging.redelivery.initial-interval`   | `Duration` | `1s`                    | Backoff before the second attempt. All transports.                          |
-| `maestro.messaging.redelivery.multiplier`         | `double`   | `2.0`                   | Factor applied to the backoff after each failure. All transports.           |
-| `maestro.messaging.redelivery.max-interval`       | `Duration` | `30s`                   | Ceiling for the computed backoff. All transports.                           |
+| `maestro.messaging.redelivery.max-attempts`       | `int`      | `10`                    | Total delivery attempts, including the first. Both transports.               |
+| `maestro.messaging.redelivery.initial-interval`   | `Duration` | `1s`                    | Backoff before the second attempt. Both transports.                          |
+| `maestro.messaging.redelivery.multiplier`         | `double`   | `2.0`                   | Factor applied to the backoff after each failure. Both transports.           |
+| `maestro.messaging.redelivery.max-interval`       | `Duration` | `30s`                   | Ceiling for the computed backoff. Both transports.                           |
 | `maestro.messaging.redelivery.dead-letter-suffix` | `String`   | `".DLT"`                | Appended to a topic to name its dead-letter topic. **Kafka only.**          |
-| `maestro.messaging.redelivery.dead-letter-exchange`| `String`  | `"maestro.dead-letter"` | Exchange exhausted messages are republished to. **RabbitMQ only.**          |
 
 The delay before the attempt following the *n*-th failure is
 `min(initial-interval × multiplier^(n-1), max-interval)`. The defaults give
 1s, 2s, 4s, 8s, 16s, 30s, 30s, 30s, 30s between 10 attempts — roughly 2.5
 minutes of tolerance, long enough to ride out a store blip and short enough
 that a poison message does not stall a service's signal channel for long.
+This section covers Kafka and Postgres — the only two transports Maestro
+ships today.
 
 **Tuning.** Raise `max-attempts` if your store outages routinely run longer
 than the budget (an outage longer than the budget dead-letters signals, which
@@ -97,7 +109,7 @@ contain a poison message sooner. There is no unbounded mode: a poison message
 would stall redelivery forever behind it — on Kafka this stalls the whole
 *topic* on that node (the default listener concurrency is one consumer
 thread per topic, which owns every partition assigned to it, not just the
-failed record's partition); on Postgres/RabbitMQ it stalls that queue.
+failed record's partition); on Postgres it stalls that queue.
 
 **Fatal exceptions bypass retries.** On Kafka, `DefaultErrorHandler` treats a
 handful of exception types as unrecoverable regardless of the configured
@@ -113,7 +125,6 @@ above only governs exceptions it doesn't consider fatal.
 |---|---|---|
 | Kafka | `<topic>` + `dead-letter-suffix`, e.g. `maestro.signals.order-service.DLT` | **The operator** — Maestro never creates topics |
 | Postgres | The same queue row, in `DEAD_LETTER` status | Nothing to create |
-| RabbitMQ | `<queue>.dlq`, bound to `dead-letter-exchange` | The module declares it idempotently, like its other topology |
 
 If a Kafka dead-letter topic is missing, the publish fails, the offset is not
 committed and the record is attempted again: consumption stalls noisily instead
@@ -152,32 +163,13 @@ UPDATE maestro_task_queue   SET status = 'PENDING', next_attempt_at = now() WHER
 
 ### Postgres Messaging
 
-When `maestro.messaging.type: postgres`, Maestro uses PostgreSQL queue tables with `LISTEN/NOTIFY` for immediate notification and polling as a fallback. No Kafka or RabbitMQ infrastructure is needed.
+When `maestro.messaging.type: postgres`, Maestro uses PostgreSQL queue tables with `LISTEN/NOTIFY` for immediate notification and polling as a fallback. No Kafka infrastructure is needed.
 
 The Postgres messaging module shares the same `DataSource` as the workflow store. Additional Flyway migrations create the queue tables (`maestro_task_queue`, `maestro_signal_queue`, `maestro_lifecycle_event_queue`).
 
 **Dependencies:**
 ```kotlin
 implementation("io.b2mash.maestro:maestro-messaging-postgres")
-```
-
-### RabbitMQ Messaging
-
-When `maestro.messaging.type: rabbitmq`, Maestro uses Spring AMQP with direct exchanges for task dispatch and signal delivery, and a fanout exchange for lifecycle events. All queues are quorum queues for durability.
-
-**Required Spring properties:**
-```yaml
-spring:
-  rabbitmq:
-    host: ${RABBITMQ_HOST:localhost}
-    port: ${RABBITMQ_PORT:5672}
-    username: ${RABBITMQ_USER:guest}
-    password: ${RABBITMQ_PASSWORD:guest}
-```
-
-**Dependencies:**
-```kotlin
-implementation("io.b2mash.maestro:maestro-messaging-rabbitmq")
 ```
 
 ---
@@ -212,13 +204,13 @@ implementation("io.b2mash.maestro:maestro-lock-postgres")
 
 ### Backend Comparison
 
-| | Kafka + Valkey | Postgres-only | RabbitMQ + Postgres |
-|---|---|---|---|
-| **External deps** | Postgres, Kafka, Valkey | Postgres only | Postgres, RabbitMQ |
-| **Throughput** | Highest | Moderate (~5-10k msg/s) | High |
-| **Latency** | Sub-ms locks | 1-5ms per lock/message | Low |
-| **Ordering** | Partition-keyed | FOR UPDATE SKIP LOCKED | Engine-level dedup |
-| **Best for** | High-scale production | Getting started, simple deployments | Spring/enterprise teams |
+| | Kafka + Valkey | Postgres-only |
+|---|---|---|
+| **External deps** | Postgres, Kafka, Valkey | Postgres only |
+| **Throughput** | Highest | Moderate (~5-10k msg/s) |
+| **Latency** | Sub-ms locks | 1-5ms per lock/message |
+| **Ordering** | Partition-keyed | FOR UPDATE SKIP LOCKED |
+| **Best for** | High-scale production | Getting started, simple deployments |
 
 ---
 
@@ -364,6 +356,43 @@ provide real-time visibility into workflow execution across all services.
 
 Set `enabled` to `false` if you are not running the admin dashboard and want to
 eliminate the publishing overhead.
+
+---
+
+## Observability Configuration
+
+Properties under `maestro.observability.*` control Micrometer meters and
+OpenTelemetry tracing. Full reference: [`docs/observability.md`](observability.md).
+
+| Property                                 | Type      | Default | Description                                                                                                    |
+|------------------------------------------|-----------|---------|------------------------------------------------------------------------------------------------------------------|
+| `maestro.observability.metrics.enabled`  | `boolean` | `true`  | Whether Maestro registers and emits Micrometer meters under `maestro.*`. Requires a `MeterRegistry` on the classpath **and** in the context; silently inert otherwise. |
+| `maestro.observability.tracing.enabled`  | `boolean` | `true`  | Whether Maestro creates spans **and** propagates W3C trace context through Kafka headers. Requires a Micrometer `Tracer` and a `Propagator` in the context; silently inert otherwise. |
+
+Both default to `true` and neither has to be set: an application with no
+`MeterRegistry` and no `Tracer` gets no meters and no spans regardless. Setting
+`maestro.observability.tracing.enabled: false` disables both the engine spans
+and the Kafka header injection — the same property gates both — and the Kafka
+wire format reverts to byte-identical to a pre-tracing build.
+
+The whole block is additionally gated by `maestro.enabled`.
+
+```yaml
+maestro:
+  observability:
+    metrics:
+      enabled: true
+    tracing:
+      enabled: true
+```
+
+Meters registered: counters `maestro.workflow.started|completed|failed|compensated|terminated`,
+`maestro.signal.consumed`, `maestro.timer.fired`, `maestro.recovery.scanned`,
+`maestro.recovery.adopted`, `maestro.lock.renew.failures`, `maestro.standdown`;
+timer `maestro.activity.duration`; gauges `maestro.workflows.running` and
+`maestro.workflows.parked` (node-local — sum across pods for a cluster total).
+See [`docs/observability.md`](observability.md) for tags, tag values, span
+topology, and the Kafka propagation header contract.
 
 ---
 
@@ -530,3 +559,5 @@ if the current leader goes down.
 - [Getting Started](getting-started.md) -- Set up Maestro in a new Spring Boot project
 - [Concepts](concepts.md) -- Workflows, activities, signals, timers, and the memoization model
 - [Cross-Service Patterns](cross-service.md) -- Orchestration within, choreography between services
+- [Observability](observability.md) -- The meter catalog, span topology, and the Kafka trace-propagation contract
+- [Operations](operations.md) -- Multi-instance behaviour, and the versioning / mixed-version playbook

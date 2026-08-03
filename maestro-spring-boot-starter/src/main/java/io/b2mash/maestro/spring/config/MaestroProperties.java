@@ -70,6 +70,8 @@ public class MaestroProperties {
 
     private SignalProperties signal = SignalProperties.defaults();
 
+    private ObservabilityProperties observability = ObservabilityProperties.defaults();
+
     // ── Getters and setters ─────────────────────────────────────────
 
     public boolean isEnabled() {
@@ -176,6 +178,14 @@ public class MaestroProperties {
         this.signal = signal;
     }
 
+    public ObservabilityProperties getObservability() {
+        return observability;
+    }
+
+    public void setObservability(ObservabilityProperties observability) {
+        this.observability = observability;
+    }
+
     // ── Nested configuration records ────────────────────────────────
     //
     // Every nested block is a record and is bound by Spring Boot's value-object
@@ -257,20 +267,18 @@ public class MaestroProperties {
      * @param multiplier         factor applied to the backoff after each failure
      * @param maxInterval        ceiling for the computed backoff
      * @param deadLetterSuffix   Kafka only — suffix appended to the source topic
-     * @param deadLetterExchange RabbitMQ only — exchange exhausted messages are republished to
      */
     public record RedeliveryProperties(
             @DefaultValue("10") int maxAttempts,
             @DefaultValue("1s") Duration initialInterval,
             @DefaultValue("2.0") double multiplier,
             @DefaultValue("30s") Duration maxInterval,
-            @DefaultValue(".DLT") String deadLetterSuffix,
-            @DefaultValue("maestro.dead-letter") String deadLetterExchange
+            @DefaultValue(".DLT") String deadLetterSuffix
     ) {
         /** @return the defaults documented above */
         public static RedeliveryProperties defaults() {
             return new RedeliveryProperties(10, Duration.ofSeconds(1), 2.0,
-                    Duration.ofSeconds(30), ".DLT", "maestro.dead-letter");
+                    Duration.ofSeconds(30), ".DLT");
         }
     }
 
@@ -457,8 +465,8 @@ public class MaestroProperties {
      *                            a signal persisted without a notification
      *                            reaching this instance — e.g. ingested on
      *                            another node in a deployment with no
-     *                            {@code SignalNotifier} (Kafka or RabbitMQ
-     *                            messaging without Valkey). Bounds cross-node
+     *                            {@code SignalNotifier} (Kafka messaging
+     *                            without Valkey). Bounds cross-node
      *                            signal latency in those cases.
      */
     public record SignalProperties(
@@ -467,6 +475,47 @@ public class MaestroProperties {
         /** @return the defaults documented above */
         public static SignalProperties defaults() {
             return new SignalProperties(Duration.ofSeconds(30));
+        }
+    }
+
+    /**
+     * Observability configuration: Micrometer meters and tracing.
+     *
+     * @param metrics meter registration and emission
+     * @param tracing span creation and Kafka trace propagation
+     */
+    public record ObservabilityProperties(
+            @DefaultValue MetricsProperties metrics,
+            @DefaultValue TracingProperties tracing
+    ) {
+        /** @return the defaults documented above */
+        public static ObservabilityProperties defaults() {
+            return new ObservabilityProperties(
+                    MetricsProperties.defaults(), TracingProperties.defaults());
+        }
+    }
+
+    /**
+     * @param enabled whether Maestro registers and emits Micrometer meters
+     *                (requires a {@code MeterRegistry} on the classpath and in
+     *                the context; silently inert otherwise)
+     */
+    public record MetricsProperties(@DefaultValue("true") boolean enabled) {
+        /** @return the defaults documented above */
+        public static MetricsProperties defaults() {
+            return new MetricsProperties(true);
+        }
+    }
+
+    /**
+     * @param enabled whether Maestro creates spans and propagates W3C trace
+     *                context through Kafka headers (requires a Micrometer
+     *                {@code Tracer} in the context; silently inert otherwise)
+     */
+    public record TracingProperties(@DefaultValue("true") boolean enabled) {
+        /** @return the defaults documented above */
+        public static TracingProperties defaults() {
+            return new TracingProperties(true);
         }
     }
 }

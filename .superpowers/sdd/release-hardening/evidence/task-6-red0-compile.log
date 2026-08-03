@@ -1,0 +1,578 @@
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening
+branch: worktree-release-hardening
+HEAD: 108cd73f3e3630a09ddc1637a7c6447859e80f42
+timestamp: 2026-08-02T20:08:44Z
+command: ./gradlew :maestro-core:compileTestJava :maestro-test:compileTestJava :maestro-store-postgres:compileTestJava (RED-0: new pins against HEAD production code — VERSION_MARKER/version()/UnsupportedWorkflowVersionException do not exist)
+> Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :build-logic:generateExternalPluginSpecBuilders UP-TO-DATE
+> Task :build-logic:extractPrecompiledScriptPluginPlugins UP-TO-DATE
+> Task :build-logic:compilePluginsBlocks UP-TO-DATE
+> Task :build-logic:generatePrecompiledScriptPluginAccessors UP-TO-DATE
+> Task :build-logic:generateScriptPluginAdapters UP-TO-DATE
+
+> Task :build-logic:compileKotlin UP-TO-DATE
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :build-logic:compileJava NO-SOURCE
+> Task :build-logic:pluginDescriptors UP-TO-DATE
+> Task :build-logic:processResources UP-TO-DATE
+> Task :build-logic:classes UP-TO-DATE
+> Task :build-logic:jar UP-TO-DATE
+
+> Configure project :maestro-admin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :maestro-test:processResources NO-SOURCE
+> Task :maestro-store-postgres:processResources UP-TO-DATE
+> Task :maestro-core:compileJava UP-TO-DATE
+> Task :maestro-core:processResources NO-SOURCE
+> Task :maestro-core:classes UP-TO-DATE
+> Task :maestro-store-jdbc:compileJava UP-TO-DATE
+> Task :maestro-test:compileJava UP-TO-DATE
+> Task :maestro-test:classes UP-TO-DATE
+> Task :maestro-spring-boot-starter:compileJava UP-TO-DATE
+> Task :maestro-store-postgres:compileJava UP-TO-DATE
+> Task :maestro-store-postgres:classes UP-TO-DATE
+
+> Task :maestro-test:compileTestJava FAILED
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-test/src/test/java/io/b2mash/maestro/test/DeterminismCheckerVersionMarkerTest.java:56: error: cannot find symbol
+                .filter(e -> e.eventType() == EventType.VERSION_MARKER)
+                                                       ^
+  symbol:   variable VERSION_MARKER
+  location: class EventType
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-test/src/test/java/io/b2mash/maestro/test/DeterminismCheckerVersionMarkerTest.java:137: error: cannot find symbol
+            var version = WorkflowContext.current().version("shipping-v2", -1, 2);
+                                                   ^
+  symbol:   method version(String,int,int)
+  location: class WorkflowContext
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-test/src/test/java/io/b2mash/maestro/test/DeterminismCheckerVersionMarkerTest.java:164: error: cannot find symbol
+            WorkflowContext.current().version(changeId, -1, 1);
+                                     ^
+  symbol:   method version(String,int,int)
+  location: class WorkflowContext
+3 errors
+
+> Task :maestro-core:compileTestJava FAILED
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:4: error: cannot find symbol
+import io.b2mash.maestro.core.exception.UnsupportedWorkflowVersionException;
+                                       ^
+  symbol:   class UnsupportedWorkflowVersionException
+  location: package io.b2mash.maestro.core.exception
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionParallelBranchTest.java:70: error: cannot find symbol
+                    () -> WorkflowContext.current().version("branch-change", -1, 2),
+                                                   ^
+  symbol:   method version(String,int,int)
+  location: class WorkflowContext
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionParallelBranchTest.java:71: error: cannot find symbol
+                    () -> WorkflowContext.current().version("other-change", -1, 4));
+                                                   ^
+  symbol:   method version(String,int,int)
+  location: class WorkflowContext
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionParallelBranchTest.java:93: error: cannot find symbol
+                () -> WorkflowContext.current().version("branch-change", -1, 2),
+                                               ^
+  symbol:   method version(String,int,int)
+  location: class WorkflowContext
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionParallelBranchTest.java:94: error: cannot find symbol
+                () -> WorkflowContext.current().version("other-change", -1, 4))));
+                                               ^
+  symbol:   method version(String,int,int)
+  location: class WorkflowContext
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionParallelBranchTest.java:98: error: cannot find symbol
+                () -> WorkflowContext.current().version("branch-change", -1, 9),
+                                               ^
+  symbol:   method version(String,int,int)
+  location: class WorkflowContext
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionParallelBranchTest.java:99: error: cannot find symbol
+                () -> WorkflowContext.current().version("other-change", -1, 9)))));
+                                               ^
+  symbol:   method version(String,int,int)
+  location: class WorkflowContext
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionParallelBranchTest.java:105: error: cannot find symbol
+                                .filter(e -> e.eventType() == EventType.VERSION_MARKER).count(),
+                                                                       ^
+  symbol:   variable VERSION_MARKER
+  location: class EventType
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionParallelBranchTest.java:125: error: cannot find symbol
+                .filter(e -> e.eventType() == EventType.VERSION_MARKER)
+                                                       ^
+  symbol:   variable VERSION_MARKER
+  location: class EventType
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:76: error: cannot find symbol
+        var resolved = inRun(ops -> ops.version("shipping-v2", -1, 3));
+                                       ^
+  symbol:   method version(String,int,int)
+  location: variable ops of type DefaultWorkflowOperations
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:80: error: cannot find symbol
+        var markers = eventsOfType(EventType.VERSION_MARKER);
+                                            ^
+  symbol:   variable VERSION_MARKER
+  location: class EventType
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:96: error: cannot find symbol
+        var original = inRun(ops -> ops.version("shipping-v2", -1, 3));
+                                       ^
+  symbol:   method version(String,int,int)
+  location: variable ops of type DefaultWorkflowOperations
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:100: error: cannot find symbol
+        var replayed = inRun(ops -> ops.version("shipping-v2", -1, 5));
+                                       ^
+  symbol:   method version(String,int,int)
+  location: variable ops of type DefaultWorkflowOperations
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:104: error: cannot find symbol
+        assertEquals(1, eventsOfType(EventType.VERSION_MARKER).size(),
+                                              ^
+  symbol:   variable VERSION_MARKER
+  location: class EventType
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:106: error: cannot find symbol
+        assertEquals(3, eventsOfType(EventType.VERSION_MARKER).getFirst()
+                                              ^
+  symbol:   variable VERSION_MARKER
+  location: class EventType
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:131: error: cannot find symbol
+            resolved.set(ops.version("shipping-v2", -1, 4));
+                            ^
+  symbol:   method version(String,int,int)
+  location: variable ops of type DefaultWorkflowOperations
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:137: error: cannot find symbol
+                () -> assertEquals(WorkflowContext.DEFAULT_VERSION, resolved.get(),
+                                                  ^
+  symbol:   variable DEFAULT_VERSION
+  location: class WorkflowContext
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:151: error: cannot find symbol
+        inRun(ops -> ops.version("shipping-v2", -1, 1));
+                        ^
+  symbol:   method version(String,int,int)
+  location: variable ops of type DefaultWorkflowOperations
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:153: error: cannot find symbol
+        var error = assertThrows(UnsupportedWorkflowVersionException.class,
+                                 ^
+  symbol:   class UnsupportedWorkflowVersionException
+  location: class WorkflowVersionTest
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:154: error: cannot find symbol
+                () -> inRun(ops -> ops.version("shipping-v2", 2, 4)));
+                                      ^
+  symbol:   method version(String,int,int)
+  location: variable ops of type DefaultWorkflowOperations
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:175: error: cannot find symbol
+        var error = assertThrows(UnsupportedWorkflowVersionException.class,
+                                 ^
+  symbol:   class UnsupportedWorkflowVersionException
+  location: class WorkflowVersionTest
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:178: error: cannot find symbol
+                    return ops.version("shipping-v2", 1, 2);
+                              ^
+  symbol:   method version(String,int,int)
+  location: variable ops of type DefaultWorkflowOperations
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:181: error: cannot find symbol
+        assertEquals(WorkflowContext.DEFAULT_VERSION, error.recordedVersion());
+                                    ^
+  symbol:   variable DEFAULT_VERSION
+  location: class WorkflowContext
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:187: error: cannot find symbol
+        inRun(ops -> ops.version("shipping-v2", -1, 1));
+                        ^
+  symbol:   method version(String,int,int)
+  location: variable ops of type DefaultWorkflowOperations
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:189: error: cannot find symbol
+        var error = assertThrows(UnsupportedWorkflowVersionException.class,
+                                 ^
+  symbol:   class UnsupportedWorkflowVersionException
+  location: class WorkflowVersionTest
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:190: error: cannot find symbol
+                () -> inRun(ops -> ops.version("shipping-v2", 2, 4)));
+                                      ^
+  symbol:   method version(String,int,int)
+  location: variable ops of type DefaultWorkflowOperations
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:206: error: cannot find symbol
+            var v1 = ops.version("shipping-v2", -1, 3);
+                        ^
+  symbol:   method version(String,int,int)
+  location: variable ops of type DefaultWorkflowOperations
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:208: error: cannot find symbol
+            second.set(ops.version("shipping-v2", -1, 3));
+                          ^
+  symbol:   method version(String,int,int)
+  location: variable ops of type DefaultWorkflowOperations
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:217: error: cannot find symbol
+                () -> assertEquals(1, eventsOfType(EventType.VERSION_MARKER).size(),
+                                                            ^
+  symbol:   variable VERSION_MARKER
+  location: class EventType
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:225: error: cannot find symbol
+            ops.version("shipping-v2", -1, 2);
+               ^
+  symbol:   method version(String,int,int)
+  location: variable ops of type DefaultWorkflowOperations
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:226: error: cannot find symbol
+            return ops.version("shipping-v2", -1, 2);
+                      ^
+  symbol:   method version(String,int,int)
+  location: variable ops of type DefaultWorkflowOperations
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:231: error: cannot find symbol
+            var v1 = ops.version("shipping-v2", -1, 7);
+                        ^
+  symbol:   method version(String,int,int)
+  location: variable ops of type DefaultWorkflowOperations
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:232: error: cannot find symbol
+            second.set(ops.version("shipping-v2", -1, 7));
+                          ^
+  symbol:   method version(String,int,int)
+  location: variable ops of type DefaultWorkflowOperations
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:239: error: cannot find symbol
+                () -> assertEquals(1, eventsOfType(EventType.VERSION_MARKER).size(),
+                                                            ^
+  symbol:   variable VERSION_MARKER
+  location: class EventType
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:248: error: cannot find symbol
+            var first = ops.version("change-a", -1, 1);
+                           ^
+  symbol:   method version(String,int,int)
+  location: variable ops of type DefaultWorkflowOperations
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:249: error: cannot find symbol
+            b.set(ops.version("change-b", -1, 2));
+                     ^
+  symbol:   method version(String,int,int)
+  location: variable ops of type DefaultWorkflowOperations
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:253: error: cannot find symbol
+        var markers = eventsOfType(EventType.VERSION_MARKER);
+                                            ^
+  symbol:   variable VERSION_MARKER
+  location: class EventType
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:271: error: cannot find symbol
+                        () -> inRun(ops -> ops.version("  ", -1, 1))),
+                                              ^
+  symbol:   method version(String,int,int)
+  location: variable ops of type DefaultWorkflowOperations
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:273: error: cannot find symbol
+                        () -> inRun(ops -> ops.version("c", 3, 1))),
+                                              ^
+  symbol:   method version(String,int,int)
+  location: variable ops of type DefaultWorkflowOperations
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:275: error: cannot find symbol
+                        () -> inRun(ops -> ops.version("c", -2, -1))));
+                                              ^
+  symbol:   method version(String,int,int)
+  location: variable ops of type DefaultWorkflowOperations
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionRecoveryTest.java:88: error: cannot find symbol
+                .filter(e -> e.eventType() == EventType.VERSION_MARKER)
+                                                       ^
+  symbol:   variable VERSION_MARKER
+  location: class EventType
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionRecoveryTest.java:125: error: cannot find symbol
+            var version = workflow.version("shipping-v2", -1, maxSupported);
+                                  ^
+  symbol:   method version(String,int,int)
+  location: variable workflow of type WorkflowContext
+42 errors
+
+> Task :maestro-store-postgres:compileTestJava FAILED
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-store-postgres/src/test/java/io/b2mash/maestro/store/postgres/PostgresWorkflowStoreTest.java:392: error: cannot find symbol
+                    EventType.VERSION_MARKER, "$maestro:version:shipping-v2",
+                             ^
+  symbol:   variable VERSION_MARKER
+  location: class EventType
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-store-postgres/src/test/java/io/b2mash/maestro/store/postgres/PostgresWorkflowStoreTest.java:399: error: cannot find symbol
+                    () -> assertEquals(EventType.VERSION_MARKER, found.eventType(),
+                                                ^
+  symbol:   variable VERSION_MARKER
+  location: class EventType
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-store-postgres/src/test/java/io/b2mash/maestro/store/postgres/PostgresWorkflowStoreTest.java:409: error: cannot find symbol
+            assertEquals(EventType.VERSION_MARKER, viaGetEvents.getFirst().eventType());
+                                  ^
+  symbol:   variable VERSION_MARKER
+  location: class EventType
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-store-postgres/src/test/java/io/b2mash/maestro/store/postgres/PostgresWorkflowStoreTest.java:415: error: cannot find symbol
+            assertEquals(List.of(EventType.VERSION_MARKER),
+                                          ^
+  symbol:   variable VERSION_MARKER
+  location: class EventType
+4 errors
+
+[Incubating] Problems report is available at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/build/reports/problems/problems-report.html
+
+FAILURE: Build completed with 3 failures.
+
+1: Task failed with an exception.
+-----------
+* What went wrong:
+Execution failed for task ':maestro-test:compileTestJava'.
+> Compilation failed; see the compiler output below.
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-test/src/test/java/io/b2mash/maestro/test/DeterminismCheckerVersionMarkerTest.java:56: error: cannot find symbol
+                  .filter(e -> e.eventType() == EventType.VERSION_MARKER)
+                                                         ^
+    symbol:   variable VERSION_MARKER
+    location: class EventType
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-test/src/test/java/io/b2mash/maestro/test/DeterminismCheckerVersionMarkerTest.java:137: error: cannot find symbol
+              var version = WorkflowContext.current().version("shipping-v2", -1, 2);
+                                                     ^
+    symbol:   method version(String,int,int)
+    location: class WorkflowContext
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-test/src/test/java/io/b2mash/maestro/test/DeterminismCheckerVersionMarkerTest.java:164: error: cannot find symbol
+              WorkflowContext.current().version(changeId, -1, 1);
+                                       ^
+    symbol:   method version(String,int,int)
+    location: class WorkflowContext
+  3 errors
+
+* Try:
+> Check your code and dependencies to fix the compilation error(s)
+> Run with --scan to generate a Build Scan (powered by Develocity).
+==============================================================================
+
+2: Task failed with an exception.
+-----------
+* What went wrong:
+Execution failed for task ':maestro-core:compileTestJava'.
+> Compilation failed; see the compiler output below.
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:4: error: cannot find symbol
+  import io.b2mash.maestro.core.exception.UnsupportedWorkflowVersionException;
+                                         ^
+    symbol:   class UnsupportedWorkflowVersionException
+    location: package io.b2mash.maestro.core.exception
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionParallelBranchTest.java:105: error: cannot find symbol
+                                  .filter(e -> e.eventType() == EventType.VERSION_MARKER).count(),
+                                                                         ^
+    symbol:   variable VERSION_MARKER
+    location: class EventType
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionParallelBranchTest.java:125: error: cannot find symbol
+                  .filter(e -> e.eventType() == EventType.VERSION_MARKER)
+                                                         ^
+    symbol:   variable VERSION_MARKER
+    location: class EventType
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:80: error: cannot find symbol
+          var markers = eventsOfType(EventType.VERSION_MARKER);
+                                              ^
+    symbol:   variable VERSION_MARKER
+    location: class EventType
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:104: error: cannot find symbol
+          assertEquals(1, eventsOfType(EventType.VERSION_MARKER).size(),
+                                                ^
+    symbol:   variable VERSION_MARKER
+    location: class EventType
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:106: error: cannot find symbol
+          assertEquals(3, eventsOfType(EventType.VERSION_MARKER).getFirst()
+                                                ^
+    symbol:   variable VERSION_MARKER
+    location: class EventType
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:137: error: cannot find symbol
+                  () -> assertEquals(WorkflowContext.DEFAULT_VERSION, resolved.get(),
+                                                    ^
+    symbol:   variable DEFAULT_VERSION
+    location: class WorkflowContext
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:153: error: cannot find symbol
+          var error = assertThrows(UnsupportedWorkflowVersionException.class,
+                                   ^
+    symbol:   class UnsupportedWorkflowVersionException
+    location: class WorkflowVersionTest
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:175: error: cannot find symbol
+          var error = assertThrows(UnsupportedWorkflowVersionException.class,
+                                   ^
+    symbol:   class UnsupportedWorkflowVersionException
+    location: class WorkflowVersionTest
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:181: error: cannot find symbol
+          assertEquals(WorkflowContext.DEFAULT_VERSION, error.recordedVersion());
+                                      ^
+    symbol:   variable DEFAULT_VERSION
+    location: class WorkflowContext
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:189: error: cannot find symbol
+          var error = assertThrows(UnsupportedWorkflowVersionException.class,
+                                   ^
+    symbol:   class UnsupportedWorkflowVersionException
+    location: class WorkflowVersionTest
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:217: error: cannot find symbol
+                  () -> assertEquals(1, eventsOfType(EventType.VERSION_MARKER).size(),
+                                                              ^
+    symbol:   variable VERSION_MARKER
+    location: class EventType
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:239: error: cannot find symbol
+                  () -> assertEquals(1, eventsOfType(EventType.VERSION_MARKER).size(),
+                                                              ^
+    symbol:   variable VERSION_MARKER
+    location: class EventType
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:253: error: cannot find symbol
+          var markers = eventsOfType(EventType.VERSION_MARKER);
+                                              ^
+    symbol:   variable VERSION_MARKER
+    location: class EventType
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionRecoveryTest.java:88: error: cannot find symbol
+                  .filter(e -> e.eventType() == EventType.VERSION_MARKER)
+                                                         ^
+    symbol:   variable VERSION_MARKER
+    location: class EventType
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionParallelBranchTest.java:70: error: cannot find symbol
+                      () -> WorkflowContext.current().version("branch-change", -1, 2),
+                                                     ^
+    symbol:   method version(String,int,int)
+    location: class WorkflowContext
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionParallelBranchTest.java:71: error: cannot find symbol
+                      () -> WorkflowContext.current().version("other-change", -1, 4));
+                                                     ^
+    symbol:   method version(String,int,int)
+    location: class WorkflowContext
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionParallelBranchTest.java:93: error: cannot find symbol
+                  () -> WorkflowContext.current().version("branch-change", -1, 2),
+                                                 ^
+    symbol:   method version(String,int,int)
+    location: class WorkflowContext
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionParallelBranchTest.java:94: error: cannot find symbol
+                  () -> WorkflowContext.current().version("other-change", -1, 4))));
+                                                 ^
+    symbol:   method version(String,int,int)
+    location: class WorkflowContext
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionParallelBranchTest.java:98: error: cannot find symbol
+                  () -> WorkflowContext.current().version("branch-change", -1, 9),
+                                                 ^
+    symbol:   method version(String,int,int)
+    location: class WorkflowContext
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionParallelBranchTest.java:99: error: cannot find symbol
+                  () -> WorkflowContext.current().version("other-change", -1, 9)))));
+                                                 ^
+    symbol:   method version(String,int,int)
+    location: class WorkflowContext
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:76: error: cannot find symbol
+          var resolved = inRun(ops -> ops.version("shipping-v2", -1, 3));
+                                         ^
+    symbol:   method version(String,int,int)
+    location: variable ops of type DefaultWorkflowOperations
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:96: error: cannot find symbol
+          var original = inRun(ops -> ops.version("shipping-v2", -1, 3));
+                                         ^
+    symbol:   method version(String,int,int)
+    location: variable ops of type DefaultWorkflowOperations
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:100: error: cannot find symbol
+          var replayed = inRun(ops -> ops.version("shipping-v2", -1, 5));
+                                         ^
+    symbol:   method version(String,int,int)
+    location: variable ops of type DefaultWorkflowOperations
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:131: error: cannot find symbol
+              resolved.set(ops.version("shipping-v2", -1, 4));
+                              ^
+    symbol:   method version(String,int,int)
+    location: variable ops of type DefaultWorkflowOperations
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:151: error: cannot find symbol
+          inRun(ops -> ops.version("shipping-v2", -1, 1));
+                          ^
+    symbol:   method version(String,int,int)
+    location: variable ops of type DefaultWorkflowOperations
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:154: error: cannot find symbol
+                  () -> inRun(ops -> ops.version("shipping-v2", 2, 4)));
+                                        ^
+    symbol:   method version(String,int,int)
+    location: variable ops of type DefaultWorkflowOperations
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:178: error: cannot find symbol
+                      return ops.version("shipping-v2", 1, 2);
+                                ^
+    symbol:   method version(String,int,int)
+    location: variable ops of type DefaultWorkflowOperations
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:187: error: cannot find symbol
+          inRun(ops -> ops.version("shipping-v2", -1, 1));
+                          ^
+    symbol:   method version(String,int,int)
+    location: variable ops of type DefaultWorkflowOperations
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:190: error: cannot find symbol
+                  () -> inRun(ops -> ops.version("shipping-v2", 2, 4)));
+                                        ^
+    symbol:   method version(String,int,int)
+    location: variable ops of type DefaultWorkflowOperations
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:206: error: cannot find symbol
+              var v1 = ops.version("shipping-v2", -1, 3);
+                          ^
+    symbol:   method version(String,int,int)
+    location: variable ops of type DefaultWorkflowOperations
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:208: error: cannot find symbol
+              second.set(ops.version("shipping-v2", -1, 3));
+                            ^
+    symbol:   method version(String,int,int)
+    location: variable ops of type DefaultWorkflowOperations
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:225: error: cannot find symbol
+              ops.version("shipping-v2", -1, 2);
+                 ^
+    symbol:   method version(String,int,int)
+    location: variable ops of type DefaultWorkflowOperations
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:226: error: cannot find symbol
+              return ops.version("shipping-v2", -1, 2);
+                        ^
+    symbol:   method version(String,int,int)
+    location: variable ops of type DefaultWorkflowOperations
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:231: error: cannot find symbol
+              var v1 = ops.version("shipping-v2", -1, 7);
+                          ^
+    symbol:   method version(String,int,int)
+    location: variable ops of type DefaultWorkflowOperations
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:232: error: cannot find symbol
+              second.set(ops.version("shipping-v2", -1, 7));
+                            ^
+    symbol:   method version(String,int,int)
+    location: variable ops of type DefaultWorkflowOperations
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:248: error: cannot find symbol
+              var first = ops.version("change-a", -1, 1);
+                             ^
+    symbol:   method version(String,int,int)
+    location: variable ops of type DefaultWorkflowOperations
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:249: error: cannot find symbol
+              b.set(ops.version("change-b", -1, 2));
+                       ^
+    symbol:   method version(String,int,int)
+    location: variable ops of type DefaultWorkflowOperations
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:271: error: cannot find symbol
+                          () -> inRun(ops -> ops.version("  ", -1, 1))),
+                                                ^
+    symbol:   method version(String,int,int)
+    location: variable ops of type DefaultWorkflowOperations
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:273: error: cannot find symbol
+                          () -> inRun(ops -> ops.version("c", 3, 1))),
+                                                ^
+    symbol:   method version(String,int,int)
+    location: variable ops of type DefaultWorkflowOperations
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionTest.java:275: error: cannot find symbol
+                          () -> inRun(ops -> ops.version("c", -2, -1))));
+                                                ^
+    symbol:   method version(String,int,int)
+    location: variable ops of type DefaultWorkflowOperations
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowVersionRecoveryTest.java:125: error: cannot find symbol
+              var version = workflow.version("shipping-v2", -1, maxSupported);
+                                    ^
+    symbol:   method version(String,int,int)
+    location: variable workflow of type WorkflowContext
+  42 errors
+
+* Try:
+> Check your code and dependencies to fix the compilation error(s)
+> Run with --scan to generate a Build Scan (powered by Develocity).
+==============================================================================
+
+3: Task failed with an exception.
+-----------
+* What went wrong:
+Execution failed for task ':maestro-store-postgres:compileTestJava'.
+> Compilation failed; see the compiler output below.
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-store-postgres/src/test/java/io/b2mash/maestro/store/postgres/PostgresWorkflowStoreTest.java:392: error: cannot find symbol
+                      EventType.VERSION_MARKER, "$maestro:version:shipping-v2",
+                               ^
+    symbol:   variable VERSION_MARKER
+    location: class EventType
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-store-postgres/src/test/java/io/b2mash/maestro/store/postgres/PostgresWorkflowStoreTest.java:399: error: cannot find symbol
+                      () -> assertEquals(EventType.VERSION_MARKER, found.eventType(),
+                                                  ^
+    symbol:   variable VERSION_MARKER
+    location: class EventType
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-store-postgres/src/test/java/io/b2mash/maestro/store/postgres/PostgresWorkflowStoreTest.java:409: error: cannot find symbol
+              assertEquals(EventType.VERSION_MARKER, viaGetEvents.getFirst().eventType());
+                                    ^
+    symbol:   variable VERSION_MARKER
+    location: class EventType
+  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/release-hardening/maestro-store-postgres/src/test/java/io/b2mash/maestro/store/postgres/PostgresWorkflowStoreTest.java:415: error: cannot find symbol
+              assertEquals(List.of(EventType.VERSION_MARKER),
+                                            ^
+    symbol:   variable VERSION_MARKER
+    location: class EventType
+  4 errors
+
+* Try:
+> Check your code and dependencies to fix the compilation error(s)
+> Run with --scan to generate a Build Scan (powered by Develocity).
+==============================================================================
+
+BUILD FAILED in 994ms
+18 actionable tasks: 3 executed, 15 up-to-date
+exit-code: 1
