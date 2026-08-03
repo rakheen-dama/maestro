@@ -1,6 +1,8 @@
 package io.b2mash.maestro.integration.support;
 
 import io.b2mash.maestro.core.engine.PayloadSerializer;
+import io.b2mash.maestro.core.model.WorkflowInstance;
+import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.lock.postgres.PostgresDistributedLock;
 import io.b2mash.maestro.store.postgres.PostgresWorkflowStore;
 import org.flywaydb.core.Flyway;
@@ -12,6 +14,7 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.sql.SQLException;
+import java.time.Duration;
 
 /**
  * Base class for integration suites that run the real engine against a real
@@ -117,6 +120,36 @@ public abstract class PostgresIntegrationSupport {
      */
     protected PostgresDistributedLock newLock() {
         return new PostgresDistributedLock(dataSource);
+    }
+
+    /**
+     * Waits until a workflow is finished in the durable log — terminal status
+     * <em>and</em> its terminal event appended.
+     *
+     * <p>Use this, never a bare {@code status().isTerminal()} poll, whenever the
+     * assertions that follow read the event log. See {@link TerminalWait} for
+     * why the two are not the same thing.
+     *
+     * @param workflowId the business workflow ID
+     * @param timeout    the bound
+     * @return the finalised instance
+     */
+    protected WorkflowInstance awaitTerminal(String workflowId, Duration timeout) {
+        return TerminalWait.awaitTerminal(store, workflowId, timeout);
+    }
+
+    /**
+     * Waits until a workflow reaches a specific status; when that status is
+     * terminal, also waits for the terminal event.
+     *
+     * @param workflowId the business workflow ID
+     * @param expected   the awaited status
+     * @param timeout    the bound
+     * @return the instance in that status
+     */
+    protected WorkflowInstance awaitStatus(String workflowId, WorkflowStatus expected,
+                                           Duration timeout) {
+        return TerminalWait.awaitStatus(store, workflowId, expected, timeout);
     }
 
     /**

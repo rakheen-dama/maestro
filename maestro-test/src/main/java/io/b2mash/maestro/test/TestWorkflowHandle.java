@@ -2,6 +2,7 @@ package io.b2mash.maestro.test;
 
 import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
+import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import org.jspecify.annotations.Nullable;
@@ -163,6 +164,21 @@ public final class TestWorkflowHandle {
 
     // ── Internal ─────────────────────────────────────────────────────────
 
+    /**
+     * Waits for the run to be finished in the durable log, not merely flagged as
+     * finished on the instance row.
+     *
+     * <p>The engine finalises a run with two separate writes: the instance row
+     * moves to {@code COMPLETED}/{@code FAILED} first, then the matching
+     * {@code WORKFLOW_COMPLETED}/{@code WORKFLOW_FAILED} event is appended.
+     * Returning on the status alone hands the caller a log the engine has not
+     * finished writing, so a test doing
+     * {@code handle.awaitCompletion(...); handle.getEvents()} can legitimately
+     * miss the terminal event. Waiting for the event closes that window.
+     *
+     * <p>{@link WorkflowStatus#TERMINATED} is exempt: terminating a workflow
+     * appends no event to the log, so there is nothing there to wait for.
+     */
     private io.b2mash.maestro.core.model.WorkflowInstance awaitTerminal(Duration timeout) throws TimeoutException {
         var deadline = Instant.now().plus(timeout);
 
@@ -171,7 +187,7 @@ public final class TestWorkflowHandle {
                     .orElseThrow(() -> new IllegalStateException(
                             "Workflow '%s' not found in store".formatted(workflowId)));
 
-            if (instance.status().isTerminal()) {
+            if (instance.status().isTerminal() && terminalEventLanded(instance.status())) {
                 return instance;
             }
 
@@ -189,5 +205,20 @@ public final class TestWorkflowHandle {
         throw new TimeoutException(
                 "Workflow '%s' did not complete within %s (current status: %s)"
                         .formatted(workflowId, timeout, currentStatus));
+    }
+
+    /**
+     * @param status the terminal status already observed on the instance row
+     * @return whether the event that closes the run is in the log — trivially
+     *         {@code true} for {@link WorkflowStatus#TERMINATED}, which appends
+     *         none
+     */
+    private boolean terminalEventLanded(WorkflowStatus status) {
+        if (status == WorkflowStatus.TERMINATED) {
+            return true;
+        }
+        return store.getEvents(instanceId).stream().anyMatch(e ->
+                e.eventType() == EventType.WORKFLOW_COMPLETED
+                        || e.eventType() == EventType.WORKFLOW_FAILED);
     }
 }

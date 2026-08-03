@@ -193,17 +193,16 @@ class MultiNodeLockContentionIT extends PostgresIntegrationSupport {
         assertEquals(1, launched.get(),
                 "exactly one node may launch the workflow — the other must see HELD_ELSEWHERE");
 
-        await().atMost(Duration.ofSeconds(15))
-                .pollInterval(Duration.ofMillis(50))
-                .until(() -> store.getInstance(workflowId)
-                        .map(i -> i.status() == WorkflowStatus.COMPLETED)
-                        .orElse(false));
+        // The event count below includes WORKFLOW_COMPLETED, which lands one
+        // write after the status turns COMPLETED — wait for the event, not the
+        // status. See TerminalWait.
+        var instance = awaitStatus(workflowId, WorkflowStatus.COMPLETED, Duration.ofSeconds(15));
 
         for (var step : List.of("stepOne", "stepTwo", "stepThree")) {
             assertEquals(1, recorderA.count(step) + recorderB.count(step),
                     step + " must have run exactly once across both nodes");
         }
-        assertEquals(4, store.getEvents(store.getInstance(workflowId).orElseThrow().id()).size());
+        assertEquals(4, store.getEvents(instance.id()).size());
     }
 
     // ── fixtures ──────────────────────────────────────────────────────────

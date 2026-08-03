@@ -1,0 +1,11 @@
+FILE: maestro-integration-tests/build/test-results/test/TEST-io.b2mash.maestro.integration.engine.EnginePostgresParallelIT.xml
+tests=4 failures=1 errors=0
+TESTCASE: replay after a crash re-runs only the branch that never finished
+org.opentest4j.AssertionFailedError: the fork event must not be re-appended on replay ==> expected: <[1:SIDE_EFFECT:$maestro:parallel, 2001:ACTIVITY_COMPLETED:chain.stepOne, 3001:ACTIVITY_COMPLETED:chain.stepTwo, 4001:ACTIVITY_COMPLETED:chain.stepThree, 5001:WORKFLOW_COMPLETED:null]> but was: <[1:SIDE_EFFECT:$maestro:parallel, 2001:ACTIVITY_COMPLETED:chain.stepOne, 3001:ACTIVITY_COMPLETED:chain.stepTwo, 4001:ACTIVITY_COMPLETED:chain.stepThree]>
+---- stack ----
+org.opentest4j.AssertionFailedError: the fork event must not be re-appended on replay ==> expected: <[1:SIDE_EFFECT:$maestro:parallel, 2001:ACTIVITY_COMPLETED:chain.stepOne, 3001:ACTIVITY_COMPLETED:chain.stepTwo, 4001:ACTIVITY_COMPLETED:chain.stepThree, 5001:WORKFLOW_COMPLETED:null]> but was: <[1:SIDE_EFFECT:$maestro:parallel, 2001:ACTIVITY_COMPLETED:chain.stepOne, 3001:ACTIVITY_COMPLETED:chain.stepTwo, 4001:ACTIVITY_COMPLETED:chain.stepThree]>
+	at app//org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:158)
+	at app//org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:139)
+	at app//org.junit.jupiter.api.AssertEquals.failNotEqual(AssertEquals.java:201)
+	at app//org.junit.jupiter.api.AssertEquals.assertEquals(AssertEquals.java:184)
+	at app//org.junit.jupiter.api.Assertions.assertEquals(Assertions.java:1199)

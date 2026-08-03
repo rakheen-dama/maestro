@@ -93,13 +93,9 @@ class MultiNodeOwnerDeathIT extends PostgresIntegrationSupport {
                 new PostgresDistributedLock(newDataSource()), SHORT_TTL);
         nodeB.startRecoveryPoller(Duration.ofMillis(200));
 
-        await().atMost(Duration.ofSeconds(30))
-                .pollInterval(Duration.ofMillis(100))
-                .until(() -> store.getInstance(workflowId)
-                        .map(i -> i.status() == WorkflowStatus.COMPLETED)
-                        .orElse(false));
-
-        var instance = store.getInstance(workflowId).orElseThrow();
+        // The log assertion below expects 4:WORKFLOW_COMPLETED, appended one
+        // write after the status turns COMPLETED. See TerminalWait.
+        var instance = awaitStatus(workflowId, WorkflowStatus.COMPLETED, Duration.ofSeconds(30));
         assertEquals("seed-one-two-three",
                 serializer.deserialize(instance.output(), String.class));
 
