@@ -45,6 +45,9 @@ side by side, which costs more stage time than it earns.
    build in CI so v2 cannot rot.
 4. `demo/RUNBOOK.md` — the operator script.
 5. `demo/presentation/index.html` — self-contained deck with presenter notes.
+6. `demo/DOMAIN-BRIEF.md` — the business domain (actors, flow, the three
+   design idioms, why this domain showcases Maestro, and vocabulary for the
+   room). Written 2026-08-04; the presenter reads this before rehearsing.
 
 ## The v1 → v2 change (one story, two features)
 
