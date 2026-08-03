@@ -3,6 +3,7 @@ package io.b2mash.maestro.integration.kafka;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.integration.support.PostgresIntegrationSupport;
+import io.b2mash.maestro.integration.support.TerminalWait;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.NewTopic;
@@ -174,6 +175,12 @@ abstract class KafkaSpringIntegrationSupport extends PostgresIntegrationSupport 
      * Waits until a workflow reaches a status, reading the instance row each
      * poll — the engine's in-memory state is never the subject of an assertion.
      *
+     * <p>When {@code expected} is terminal this additionally waits for the
+     * terminal event to be appended: the instance row turns terminal one
+     * non-transactional write ahead of the log, so returning on the status alone
+     * hands the caller a log the engine has not finished writing. See
+     * {@code TerminalWait}.
+     *
      * @param workflowId the business workflow ID
      * @param expected   the status to wait for
      * @param bound      how long to wait
@@ -185,6 +192,9 @@ abstract class KafkaSpringIntegrationSupport extends PostgresIntegrationSupport 
             assertTrue(instance.isPresent(), "no instance row for workflow " + workflowId);
             assertEquals(expected, instance.get().status(),
                     "workflow " + workflowId + " never reached " + expected);
+            assertTrue(!expected.isTerminal() || TerminalWait.isFinalised(store, instance.get()),
+                    "workflow " + workflowId + " reached " + expected
+                            + " but its terminal event is not in the log yet");
         });
         return store.getInstance(workflowId).orElseThrow();
     }

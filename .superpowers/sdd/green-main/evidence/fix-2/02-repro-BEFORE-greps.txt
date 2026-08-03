@@ -1,0 +1,10 @@
+117:    02:41:35.598 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PartitionReachabilityIT -- [repro] node up: alias=verify-b ip=10.173.244.2 harness endpoint=localhost:59057
+118:    02:41:35.698 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PartitionReachabilityIT -- [repro] PARTITION applied; ip now '<none>'
+119:    02:41:37.753 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PartitionReachabilityIT -- [repro] RECONNECT applied; ip now '10.173.244.99'; docker still advertises host port 59057
+121:Chaos harness: a reconnected node is reachable again > the harness endpoint for a node still works after PARTITION + RECONNECT FAILED
+122:    org.opentest4j.AssertionFailedError at PartitionReachabilityIT.java:117
+124:1 test completed, 1 failed
+126:> Task :maestro-integration-tests:e2eTest FAILED
+137:BUILD FAILED in 35s
+maestro-integration-tests/build/test-results/e2eTest/TEST-io.b2mash.maestro.integration.e2e.chaos.PartitionReachabilityIT.xml
+org.opentest4j.AssertionFailedError: after RECONNECT the harness must be able to reach the node again at localhost:59057 — this is the heal gate that failed in nightly run 30731056376 with 'Node VERIFY_B did not become HTTP-ready' ==&gt; expected: &lt;true&gt; but was: &lt;false&gt;

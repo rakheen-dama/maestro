@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.TestTerminalWait;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.TimerCancelledException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
@@ -604,9 +605,11 @@ class WorkflowExecutorTest {
         assertEquals(1, executor.recoverWorkflows(Map.of("CancellableSleepWorkflowWithActivity", registration)));
 
         assertTrue(completed.await(5, TimeUnit.SECONDS), "the handler must run to completion on replay");
-        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
-                assertEquals(WorkflowStatus.COMPLETED,
-                        store.getInstance("timer-cancel-replay-handler-1").orElseThrow().status()));
+        // Wait for the terminal EVENT, not just the terminal status: the row is
+        // written first and the event appended after, and :620 below asserts on
+        // the exact size of the log. See TestTerminalWait.
+        TestTerminalWait.awaitStatus(store, "timer-cancel-replay-handler-1",
+                WorkflowStatus.COMPLETED, Duration.ofSeconds(5));
 
         assertEquals(0, activityImpl.invocations.get(),
                 "the handler's activity must replay from the memoized event, never re-invoke the real impl");

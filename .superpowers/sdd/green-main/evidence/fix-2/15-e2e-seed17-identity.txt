@@ -1,0 +1,6 @@
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/green-main
+branch: worktree-green-main
+HEAD: 51eb9bcbde2c5c829bfba6aa5770a00be4bd426d
+timestamp: 2026-08-03T03:46:59Z
+cmd: ./gradlew :maestro-integration-tests:e2eTest --rerun-tasks -Dmaestro.chaos.seed=17
+seed rationale: SeedScan predicts PARTITION at controller iterations 2,3,6,7

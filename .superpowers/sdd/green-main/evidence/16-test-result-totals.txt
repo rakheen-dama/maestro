@@ -1,0 +1,30 @@
+=== IDENTITY ===
+pwd:       /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/green-main
+branch:    worktree-green-main
+HEAD:      ab30ac8c2fd02624b1f81132260d5bef66c60deb
+timestamp: 2026-08-03T22:05:17Z (UTC)
+java:      openjdk version "25.0.1" 2025-10-21 LTS
+================
+Per-module (tests / failures+errors), from on-disk JUnit XML reports:
+  maestro-admin                                                          tests=  20 failures+errors=0
+  maestro-admin-client                                                   tests=  16 failures+errors=0
+  maestro-core                                                           tests= 403 failures+errors=0
+  maestro-integration-tests                                              tests= 114 failures+errors=0
+  maestro-lock-postgres                                                  tests=  24 failures+errors=0
+  maestro-lock-valkey                                                    tests=  23 failures+errors=0
+  maestro-messaging-kafka                                                tests=  39 failures+errors=0
+  maestro-messaging-postgres                                             tests=  17 failures+errors=0
+  maestro-samples/sample-loan-origination/loan-application-service       tests=   8 failures+errors=0
+  maestro-samples/sample-loan-origination/underwriting-service           tests=   6 failures+errors=0
+  maestro-samples/sample-loan-origination/verification-gateway-service   tests=   4 failures+errors=0
+  maestro-spring-boot-starter                                            tests= 104 failures+errors=0
+  maestro-store-jdbc                                                     tests=  11 failures+errors=0
+  maestro-store-postgres                                                 tests=  64 failures+errors=0
+  maestro-test                                                           tests=  58 failures+errors=0
+
+TOTAL tests=911 failures=0 errors=0 skipped=3
+
+Skipped tests (3):
+  io.b2mash.maestro.integration.e2e.chaos.ClusterBootSmokeIT :: cluster boot brings up 6 healthy nodes with migrated per-service schemas
+  io.b2mash.maestro.integration.e2e.chaos.ChaosGoldenRunE2EIT :: all four paths reach their declared terminal chaos-free and gaps are recorded
+  io.b2mash.maestro.integration.e2e.chaos.ChaosSoakE2EIT :: cluster stays correct across the full soak window

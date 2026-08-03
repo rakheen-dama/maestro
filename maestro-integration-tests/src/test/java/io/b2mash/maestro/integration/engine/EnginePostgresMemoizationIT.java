@@ -234,16 +234,17 @@ class EnginePostgresMemoizationIT extends PostgresIntegrationSupport {
     }
 
     /**
-     * Waits until the workflow reaches a terminal status.
+     * Waits until the workflow is finished in the durable log — terminal status
+     * and its terminal event.
+     *
+     * <p>Every caller here goes on to assert on the event log (sequence
+     * continuity, the last event's type, replay stability), so the status alone
+     * is the wrong gate. See {@code TerminalWait}.
      *
      * @param workflowId the workflow to wait for
      */
     private void awaitTerminal(String workflowId) {
-        await().atMost(Duration.ofSeconds(15))
-                .pollInterval(Duration.ofMillis(50))
-                .until(() -> store.getInstance(workflowId)
-                        .map(i -> i.status().isTerminal())
-                        .orElse(false));
+        awaitTerminal(workflowId, Duration.ofSeconds(15));
     }
 
     /**

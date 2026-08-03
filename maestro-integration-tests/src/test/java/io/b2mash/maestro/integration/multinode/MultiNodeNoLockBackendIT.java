@@ -160,13 +160,9 @@ class MultiNodeNoLockBackendIT extends PostgresIntegrationSupport {
                 "without a lock both nodes adopt the same workflow — this is the behaviour, "
                         + "not a defect to be worked around in the test");
 
-        await().atMost(Duration.ofSeconds(20))
-                .pollInterval(Duration.ofMillis(50))
-                .until(() -> store.getInstance(workflowId)
-                        .map(i -> i.status() == WorkflowStatus.COMPLETED)
-                        .orElse(false));
-
-        var instance = store.getInstance(workflowId).orElseThrow();
+        // Sequence 4 is WORKFLOW_COMPLETED, appended one write after the status
+        // turns COMPLETED — wait for the event, not the status. See TerminalWait.
+        var instance = awaitStatus(workflowId, WorkflowStatus.COMPLETED, Duration.ofSeconds(20));
         var events = store.getEvents(instance.id());
         assertEquals(List.of(1, 2, 3, 4),
                 events.stream().map(e -> e.sequenceNumber()).toList(),

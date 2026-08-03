@@ -144,13 +144,10 @@ class EnginePostgresParallelIT extends PostgresIntegrationSupport {
                 true);
         assertEquals(1, recoveringNode.recover());
 
-        await().atMost(Duration.ofSeconds(15))
-                .pollInterval(Duration.ofMillis(50))
-                .until(() -> store.getInstance(workflowId)
-                        .map(i -> i.status().isTerminal())
-                        .orElse(false));
-
-        var instance = store.getInstance(workflowId).orElseThrow();
+        // Terminal *and* its terminal event appended — the assertions below read
+        // the event log, and the instance row turns terminal one write ahead of
+        // it. See TerminalWait.
+        var instance = awaitTerminal(workflowId, Duration.ofSeconds(15));
         assertEquals(WorkflowStatus.COMPLETED, instance.status());
         assertEquals("seed-one,seed-two,seed-three",
                 serializer.deserialize(instance.output(), String.class),

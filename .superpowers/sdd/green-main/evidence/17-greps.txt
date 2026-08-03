@@ -1,0 +1,85 @@
+=== IDENTITY ===
+pwd:       /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/green-main
+branch:    worktree-green-main
+HEAD:      ab30ac8c2fd02624b1f81132260d5bef66c60deb
+timestamp: 2026-08-03T22:05:50Z (UTC)
+java:      openjdk version "25.0.1" 2025-10-21 LTS
+================
+
+### Every number quoted in the Round 1 report, re-derived from the archived logs.
+
+$ grep -E 'tests completed|BUILD (SUCCESSFUL|FAILED)' evidence/11-core-pin-BEFORE-statusonly-raw.log
+398 tests completed, 12 failed
+BUILD FAILED in 1m 23s
+
+$ grep -c 'FAILED$' <failing-test roster in 11-*>
+12
+
+$ grep -E 'tests completed|BUILD (SUCCESSFUL|FAILED)' evidence/12-core-pin-AFTER-samegap-raw.log
+BUILD SUCCESSFUL in 1m 16s
+
+$ grep -E 'tests completed|FAILED$|BUILD' evidence/13-f3-pin-fails-without-mapping-raw.log
+> Task :maestro-core:test FAILED
+A run is finalised only when the event matching its status is in the log > a COMPLETED run is not satisfied by a leftover WORKFLOW_FAILED from an earlier attempt FAILED
+5 tests completed, 1 failed
+BUILD FAILED in 4s
+
+$ grep -E 'BUILD (SUCCESSFUL|FAILED)' evidence/14-core-test-rerun-raw.log
+BUILD SUCCESSFUL in 54s
+
+$ grep -E 'BUILD (SUCCESSFUL|FAILED)|actionable tasks' evidence/15-full-build-raw.log
+BUILD SUCCESSFUL in 2m
+134 actionable tasks: 11 executed, 123 up-to-date
+
+$ grep -E '^> Task .*:test$' evidence/15-full-build-raw.log | sort -u   # test tasks that actually EXECUTED
+> Task :maestro-integration-tests:test
+> Task :maestro-samples:sample-loan-origination:loan-application-service:test
+> Task :maestro-samples:sample-loan-origination:underwriting-service:test
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:test
+> Task :maestro-spring-boot-starter:test
+> Task :maestro-test:test
+
+$ grep TOTAL evidence/16-test-result-totals.txt
+TOTAL tests=911 failures=0 errors=0 skipped=3
+
+### Engine is untouched by this work (the 300ms TEMP-GAP injection was reverted):
+$ git diff 15b27dc..HEAD --stat -- maestro-core/src/main
+(no output above == no engine change)
+
+### Swept sites, line numbers at HEAD ab30ac8:
+$ grep -n 'TestTerminalWait\.' <maestro-core test sources>
+maestro-core/src/test/java/io/b2mash/maestro/core/TestTerminalWaitTest.java:38:        assertFalse(TestTerminalWait.isFinalised(store, instance(WorkflowStatus.COMPLETED)),
+maestro-core/src/test/java/io/b2mash/maestro/core/TestTerminalWaitTest.java:41:        assertFalse(TestTerminalWait.isFinalised(store, instance(WorkflowStatus.FAILED)));
+maestro-core/src/test/java/io/b2mash/maestro/core/TestTerminalWaitTest.java:54:        assertFalse(TestTerminalWait.isFinalised(store, instance(WorkflowStatus.COMPLETED)),
+maestro-core/src/test/java/io/b2mash/maestro/core/TestTerminalWaitTest.java:63:        assertTrue(TestTerminalWait.isFinalised(
+maestro-core/src/test/java/io/b2mash/maestro/core/TestTerminalWaitTest.java:66:        assertTrue(TestTerminalWait.isFinalised(
+maestro-core/src/test/java/io/b2mash/maestro/core/TestTerminalWaitTest.java:74:        assertTrue(TestTerminalWait.isFinalised(new FixedStore(List.of()),
+maestro-core/src/test/java/io/b2mash/maestro/core/TestTerminalWaitTest.java:83:        assertFalse(TestTerminalWait.isFinalised(store, instance(WorkflowStatus.RUNNING)));
+maestro-core/src/test/java/io/b2mash/maestro/core/TestTerminalWaitTest.java:84:        assertFalse(TestTerminalWait.isFinalised(store, instance(WorkflowStatus.WAITING_SIGNAL)));
+maestro-core/src/test/java/io/b2mash/maestro/core/TestTerminalWaitTest.java:85:        assertFalse(TestTerminalWait.isFinalised(store, instance(WorkflowStatus.COMPENSATING)));
+maestro-core/src/test/java/io/b2mash/maestro/core/engine/SignalTimeoutReplayDeterminismTest.java:112:        TestTerminalWait.awaitTerminal(store, workflowId, Duration.ofSeconds(5));
+maestro-core/src/test/java/io/b2mash/maestro/core/engine/SignalTimeoutReplayDeterminismTest.java:156:        TestTerminalWait.awaitTerminal(store, workflowId, Duration.ofSeconds(5));
+maestro-core/src/test/java/io/b2mash/maestro/core/engine/SignalTimeoutReplayDeterminismTest.java:179:        TestTerminalWait.awaitStatus(store, workflowId, WorkflowStatus.FAILED, Duration.ofSeconds(5));
+maestro-core/src/test/java/io/b2mash/maestro/core/engine/SignalTimeoutReplayDeterminismTest.java:187:        TestTerminalWait.awaitTerminal(store, workflowId, Duration.ofSeconds(5));
+maestro-core/src/test/java/io/b2mash/maestro/core/engine/SignalTimeoutReplayDeterminismTest.java:209:        TestTerminalWait.awaitStatus(store, workflowId, WorkflowStatus.FAILED, Duration.ofSeconds(5));
+maestro-core/src/test/java/io/b2mash/maestro/core/engine/SignalTimeoutReplayDeterminismTest.java:220:        TestTerminalWait.awaitTerminal(store, workflowId, Duration.ofSeconds(5));
+maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowExecutorRetryTest.java:479:        TestTerminalWait.awaitStatus(store, workflowId, expected, Duration.ofSeconds(5));
+maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowExecutorTest.java:610:        // the exact size of the log. See TestTerminalWait.
+maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowExecutorTest.java:611:        TestTerminalWait.awaitStatus(store, "timer-cancel-replay-handler-1",
+maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowExecutorShutdownTest.java:593:        TestTerminalWait.awaitStatus(store, workflowId, expected, Duration.ofSeconds(15));
+maestro-core/src/test/java/io/b2mash/maestro/core/engine/WorkflowExecutorTerminalTransitionTest.java:160:        TestTerminalWait.awaitTerminal(store, workflowId, Duration.ofSeconds(10));
+
+$ grep -n 'terminalEventFor\|terminalEventLanded' <all three predicate copies>
+maestro-core/src/test/java/io/b2mash/maestro/core/TestTerminalWait.java:80:        var expected = terminalEventFor(instance.status());
+maestro-core/src/test/java/io/b2mash/maestro/core/TestTerminalWait.java:134:                                    + terminalEventFor(expected) + " yet — the run is not finished");
+maestro-core/src/test/java/io/b2mash/maestro/core/TestTerminalWait.java:145:    private static @Nullable EventType terminalEventFor(WorkflowStatus status) {
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/support/TerminalWait.java:81:        var expected = terminalEventFor(instance.status());
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/support/TerminalWait.java:144:    private static @Nullable EventType terminalEventFor(WorkflowStatus status) {
+maestro-test/src/main/java/io/b2mash/maestro/test/TestWorkflowHandle.java:190:            if (instance.status().isTerminal() && terminalEventLanded(instance.status())) {
+maestro-test/src/main/java/io/b2mash/maestro/test/TestWorkflowHandle.java:216:    private boolean terminalEventLanded(WorkflowStatus status) {
+
+### F4: the shipped-main-code shape that is NOT being changed (harmless as written):
+$ grep -n 'status().isTerminal()' maestro-spring-boot-starter/.../WorkflowStub.java
+102:            if (instance.isPresent() && instance.get().status().isTerminal()) {
+$ grep -n 'getEvents' maestro-spring-boot-starter/.../WorkflowStub.java   # (no event-log read at all)
+  (none)

@@ -260,16 +260,13 @@ class EnginePostgresRecoveryIT extends PostgresIntegrationSupport {
     }
 
     /**
-     * Waits until the workflow reaches the given status.
+     * Waits until the workflow reaches the given status — and, when that status
+     * is terminal, until its terminal event has been appended too.
      *
      * @param workflowId the workflow to wait for
      * @param expected   the awaited status
      */
     private void awaitStatus(String workflowId, WorkflowStatus expected) {
-        await().atMost(Duration.ofSeconds(15))
-                .pollInterval(Duration.ofMillis(50))
-                .until(() -> store.getInstance(workflowId)
-                        .map(i -> i.status() == expected)
-                        .orElse(false));
+        awaitStatus(workflowId, expected, Duration.ofSeconds(15));
     }
 }

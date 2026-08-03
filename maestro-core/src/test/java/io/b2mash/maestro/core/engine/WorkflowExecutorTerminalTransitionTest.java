@@ -2,6 +2,7 @@ package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
+import io.b2mash.maestro.core.TestTerminalWait;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.model.EventType;
@@ -150,12 +151,13 @@ class WorkflowExecutorTerminalTransitionTest {
         return workflowId;
     }
 
+    /**
+     * Waits for the terminal <em>event</em>, not the terminal status: the row
+     * is written before the event is appended, and every caller here goes on to
+     * assert on the event log. See {@link TestTerminalWait}.
+     */
     private void awaitTerminal(String workflowId) {
-        await().atMost(Duration.ofSeconds(10))
-                .pollInterval(Duration.ofMillis(20))
-                .until(() -> store.getInstance(workflowId)
-                        .map(i -> i.status().isTerminal())
-                        .orElse(false));
+        TestTerminalWait.awaitTerminal(store, workflowId, Duration.ofSeconds(10));
     }
 
     /** A workflow with no activities — only its finalisation is under test. */
