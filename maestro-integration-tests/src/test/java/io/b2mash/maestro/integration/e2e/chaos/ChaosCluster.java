@@ -41,11 +41,19 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * containers.
  *
  * <p>Nodes reach infrastructure by network alias ({@code postgres:5432},
- * {@code kafka:9092}, {@code valkey:6379}); the test JVM reaches nodes and
- * infra through mapped host ports, re-resolved after every replacement. A node
- * killed by the controller is replaced by a fresh container reusing the same
- * alias, and its stdout streams to a per-generation host log file from the
- * moment it starts, so log capture survives {@code kill -9}.
+ * {@code kafka:9092}, {@code valkey:6379}); the test JVM reaches the infra
+ * containers through their mapped host ports, and reaches <em>nodes</em>
+ * through the {@link NodeAmbassador} — a never-harassed socat container inside
+ * the network that forwards a stable host port to each node alias. A node's own
+ * published port is deliberately not used and not even exposed: Docker programs
+ * a published-port NAT once at container start and never re-publishes it after
+ * a {@code network disconnect}/{@code connect} pair, so a partitioned node that
+ * reconnects on a different address would be unreachable from the host for the
+ * rest of the run (nightly run 30731056376). A node killed by the controller is
+ * replaced by a fresh container reusing the same alias — which the ambassador
+ * also follows, since it resolves the alias per connection — and its stdout
+ * streams to a per-generation host log file from the moment it starts, so log
+ * capture survives {@code kill -9}.
  *
  * <h2>Thread Safety</h2>
  * <p>Docker mutations (kill/pause/partition/replace/heal) are serialised by the
@@ -81,6 +89,7 @@ public final class ChaosCluster implements AutoCloseable {
     private PostgreSQLContainer<?> postgres;
     private GenericContainer<?> kafka;
     private GenericContainer<?> valkey;
+    private NodeAmbassador ambassador;
 
     private final Map<NodeRole, ManagedNode> nodes = new ConcurrentHashMap<>();
     private final Set<NodeRole> paused = ConcurrentHashMap.newKeySet();
@@ -165,6 +174,15 @@ public final class ChaosCluster implements AutoCloseable {
         valkey.start();
 
         createTopics();
+
+        // Started before the nodes: socat binds its listeners immediately and
+        // resolves each target alias per connection, so it does not care that
+        // no node exists yet — and every later probe, including the one inside
+        // replace(), already has a stable endpoint to use.
+        ambassador = new NodeAmbassador(network,
+                java.util.Arrays.stream(NodeRole.values()).map(NodeRole::alias).toList(),
+                NODE_PORT);
+        ambassador.start();
 
         log.info("[chaos] starting 6 workload nodes");
         for (NodeRole role : NodeRole.values()) {
@@ -276,7 +294,13 @@ public final class ChaosCluster implements AutoCloseable {
                 .withNetworkAliases(role.alias())
                 .withCopyFileToContainer(MountableFile.forHostPath(jar), "/app/app.jar")
                 .withCommand("java", "-jar", "/app/app.jar")
-                .withExposedPorts(NODE_PORT)
+                // Deliberately NOT withExposedPorts(NODE_PORT): a node's own
+                // published port is stranded permanently by the harness's own
+                // PARTITION action (see NodeAmbassador), so the host reaches
+                // nodes only through the ambassador. Leaving the port
+                // unpublished makes the broken route impossible to use by
+                // accident — getMappedPort() now throws instead of returning a
+                // number with nothing behind it.
                 .withEnv(nodeEnv(svc))
                 .withLogConsumer(consumer)
                 .waitingFor(Wait.forLogMessage(".*Started .*Application.*\\n", 1)
@@ -350,10 +374,16 @@ public final class ChaosCluster implements AutoCloseable {
         return ds;
     }
 
-    /** @return the host-mapped base URL for the currently-live container of {@code role}. */
+    /**
+     * @return the base URL the test JVM uses to reach {@code role}, via the
+     *         {@link NodeAmbassador}. Stable for the whole run — it survives
+     *         both a {@code PARTITION}/{@code RECONNECT} pair and a container
+     *         replacement, because the ambassador resolves the role's network
+     *         alias on every connection rather than a host NAT mapping frozen
+     *         at container start.
+     */
     public String baseUrl(NodeRole role) {
-        GenericContainer<?> c = nodes.get(role).container;
-        return "http://" + c.getHost() + ":" + c.getMappedPort(NODE_PORT);
+        return ambassador.baseUrl(role.alias());
     }
 
     /** @return the log files (across generations) captured for {@code role}. */
@@ -669,6 +699,9 @@ public final class ChaosCluster implements AutoCloseable {
             quietStop(n.container);
             n.closeLogConsumer();
         });
+        if (ambassador != null) {
+            ambassador.close();
+        }
         quietStop(valkey);
         quietStop(kafka);
         quietStop(postgres);

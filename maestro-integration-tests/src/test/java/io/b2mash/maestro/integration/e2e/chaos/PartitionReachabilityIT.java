@@ -80,17 +80,25 @@ class PartitionReachabilityIT {
     @DisplayName("the harness endpoint for a node still works after PARTITION + RECONNECT")
     void harnessEndpointSurvivesPartitionAndReconnect() throws Exception {
         try (Network network = subnettedNetwork();
+             NodeAmbassador ambassador = new NodeAmbassador(network, List.of(ALIAS), NODE_PORT);
              GenericContainer<?> node = echoNode(network)) {
 
+            // Started before any node exists, exactly as ChaosCluster.start() does.
+            ambassador.start();
             node.start();
 
-            // ---- the endpoint the harness hands out (ChaosCluster.baseUrl body) ----
-            String host = node.getHost();
-            int port = node.getMappedPort(NODE_PORT);
-            log.info("[repro] node up: alias={} ip={} harness endpoint={}:{}",
-                    ALIAS, containerIp(node), host, port);
+            // ---- the endpoint the harness hands out (ChaosCluster.baseUrl) ----
+            var endpoint = Endpoint.of(ambassador.baseUrl(ALIAS));
+            // ...and the route the harness used to hand out, kept only to show
+            // it is the thing that breaks.
+            String directHost = node.getHost();
+            int directPort = node.getFirstMappedPort();
+            log.info("[repro] node up: alias={} ip={} harness endpoint={} direct(published)={}:{}",
+                    ALIAS, containerIp(node), endpoint, directHost, directPort);
 
-            assertTrue(reachable(host, port), "precondition: the node must be reachable before chaos");
+            assertTrue(reachable(endpoint), "precondition: the node must be reachable before chaos");
+            assertTrue(reachable(new Endpoint(directHost, directPort)),
+                    "precondition: the published port works before chaos");
 
             // ---- PARTITION (ChaosCluster.partition) ----
             docker.disconnectFromNetworkCmd()
@@ -99,8 +107,9 @@ class PartitionReachabilityIT {
                     .withForce(true)
                     .exec();
             log.info("[repro] PARTITION applied; ip now '{}'", containerIp(node));
-            assertFalse(reachable(host, port),
-                    "a partitioned node must NOT be reachable — otherwise the fault is not real");
+            assertFalse(reachable(endpoint),
+                    "a partitioned node must NOT be reachable — otherwise the fault is not real, "
+                            + "and the harness would report a still-isolated node as healed");
 
             // ---- RECONNECT (ChaosCluster.reconnect), on a different address ----
             docker.connectToNetworkCmd()
@@ -112,12 +121,60 @@ class PartitionReachabilityIT {
                                     .withIpv4Address(RECONNECT_IP)))
                     .exec();
             log.info("[repro] RECONNECT applied; ip now '{}'; docker still advertises host port {}",
-                    containerIp(node), port);
+                    containerIp(node), directPort);
 
-            assertTrue(reachableWithin(host, port, 30_000),
+            assertTrue(reachableWithin(endpoint, 30_000),
                     "after RECONNECT the harness must be able to reach the node again at "
-                            + host + ":" + port + " — this is the heal gate that failed in "
+                            + endpoint + " — this is the heal gate that failed in "
                             + "nightly run 30731056376 with 'Node VERIFY_B did not become HTTP-ready'");
+
+            // The defect itself, recorded rather than asserted: the node's own
+            // published port is now a black hole and stays one. Docker offers no
+            // way to re-publish it, which is why the ambassador exists.
+            log.info("[repro] node's own published port {}:{} after RECONNECT: reachable={}",
+                    directHost, directPort, reachable(new Endpoint(directHost, directPort)));
+        }
+    }
+
+    @Test
+    @Timeout(value = 5, unit = TimeUnit.MINUTES)
+    @DisplayName("the harness endpoint follows a node replaced by a fresh container")
+    void harnessEndpointFollowsAReplacement() throws Exception {
+        try (Network network = subnettedNetwork();
+             NodeAmbassador ambassador = new NodeAmbassador(network, List.of(ALIAS), NODE_PORT)) {
+
+            ambassador.start();
+            var endpoint = Endpoint.of(ambassador.baseUrl(ALIAS));
+
+            try (GenericContainer<?> gen0 = echoNode(network)) {
+                gen0.start();
+                assertTrue(reachable(endpoint), "generation 0 must be reachable");
+                // KILL9 + replace(): the old container dies, a fresh one takes
+                // the alias. The endpoint must not move.
+                docker.killContainerCmd(gen0.getContainerId()).withSignal("SIGKILL").exec();
+            }
+
+            try (GenericContainer<?> gen1 = echoNode(network)) {
+                gen1.start();
+                log.info("[repro] replacement up at ip={}; endpoint unchanged: {}",
+                        containerIp(gen1), endpoint);
+                assertTrue(reachableWithin(endpoint, 30_000),
+                        "after a replacement the harness endpoint " + endpoint
+                                + " must reach the new container — the endpoint is run-stable");
+            }
+        }
+    }
+
+    /** A host-side {@code host:port} the test probes over raw TCP. */
+    private record Endpoint(String host, int port) {
+        static Endpoint of(String baseUrl) {
+            var uri = java.net.URI.create(baseUrl);
+            return new Endpoint(uri.getHost(), uri.getPort());
+        }
+
+        @Override
+        public String toString() {
+            return host + ":" + port;
         }
     }
 
@@ -158,10 +215,10 @@ class PartitionReachabilityIT {
 
     // ------------------------------------------------------------------- probe
 
-    private static boolean reachableWithin(String host, int port, long millis) {
+    private static boolean reachableWithin(Endpoint endpoint, long millis) {
         long deadline = System.nanoTime() + millis * 1_000_000L;
         while (System.nanoTime() < deadline) {
-            if (reachable(host, port)) {
+            if (reachable(endpoint)) {
                 return true;
             }
             try {
@@ -172,6 +229,10 @@ class PartitionReachabilityIT {
             }
         }
         return false;
+    }
+
+    private static boolean reachable(Endpoint endpoint) {
+        return reachable(endpoint.host(), endpoint.port());
     }
 
     /** @return true if a TCP round-trip to {@code host:port} completes within 2s. */

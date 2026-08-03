@@ -1,0 +1,7 @@
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/green-main
+toplevel: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/green-main
+branch: worktree-green-main
+HEAD: f0219f1e4f570ad199d7505e4ac4ccccbd1d1292
+timestamp: 2026-08-03T02:28:25Z
+docker: 28.5.1
+java: openjdk version "25.0.1" 2025-10-21 LTS
