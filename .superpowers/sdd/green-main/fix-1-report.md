@@ -284,3 +284,238 @@ and `:1735`. With `EngineObserver.NOOP` the cost is negligible, but it is
 strictly more work in the window, so the flake could only get more likely. The
 predicate fix removes the sensitivity entirely; if the engine is ever made
 atomic, the `emit()` placement stops mattering as well.
+
+---
+
+# Round 1 — closing the review findings
+
+**HEAD at write time:** `ab30ac8` · **Branch:** `worktree-green-main` · **Java:** Corretto 25.0.1
+**Date (UTC):** 2026-08-03
+
+**STATUS: ALL FOUR FINDINGS CLOSED.** `:maestro-core:test --rerun-tasks` green;
+full `./gradlew build` green; **911 tests, 0 failures, 0 errors** across every
+module. New evidence is `evidence/1*-*` and every number below is reproduced by
+`evidence/17-greps.txt`, which carries the same `=== IDENTITY ===` header as the
+rest.
+
+| Commit | What |
+|---|---|
+| `157c43b` | `test: sweep maestro-core's own terminal-event read race, and pin status->event` (F1 + F3) |
+| `ab30ac8` | `docs: release note for the maestro-test wait change, and stop teaching the bug` (F2 + F4) |
+
+---
+
+## F1 — `maestro-core`'s own tests. The reviewer found two; there were **seven**.
+
+The two reported sites were real. Auditing the module properly found five more of
+the same shape, and the experiment (below) then found two the audit itself had
+missed — because they are not event *reads*.
+
+| # | Site (pre-fix line) | Gated on | Then | Reported? |
+|---|---|---|---|---|
+| 1 | `WorkflowExecutorTest.java:607` (inline) | `== COMPLETED` | `:620 assertEquals(4, events.size())` — and the 4th event *is* `WORKFLOW_COMPLETED` | no — found by audit |
+| 2 | `WorkflowExecutorRetryTest.java:117` (helper `:464`) | `== COMPLETED` | `:126 hasEvent(WORKFLOW_COMPLETED)` | no — found by audit |
+| 3 | `WorkflowExecutorRetryTest.java:444` (same helper) | `== FAILED` | `:449 deleteFailureEvents(...)`, `:450 assertTrue(count > 0)` | **yes — the seam the reviewer flagged** |
+| 4 | `WorkflowExecutorShutdownTest.java:578` (helper `:586`) | `== FAILED` | `:581 hasEvent(WORKFLOW_FAILED)` | **yes** |
+| 5 | `WorkflowExecutorShutdownTest.java:233 / :281 / :452` (same helper) | `== FAILED` | `hasEvent(WORKFLOW_FAILED)` at `:238 / :293 / :457` | no — found by audit |
+| 6 | `WorkflowExecutorTerminalTransitionTest.java:131` (helper `:153`) | `isTerminal()` | `:136 assertEquals(1, eventsOfType(WORKFLOW_COMPLETED))` | **yes** |
+| 7 | `SignalTimeoutReplayDeterminismTest.java:184 / :220` (inline) | `== FAILED` | `retryWorkflow(...)`, which calls `deleteFailureEvents` | **no — found by the experiment, not by reading** |
+
+All of them now route through **`TestTerminalWait`**
+(`maestro-core/src/test/java/io/b2mash/maestro/core/TestTerminalWait.java`), the
+module-local twin of the integration suite's `TerminalWait`. Same predicate, same
+`TERMINATED` exemption, same doctrine: **wait for the terminal EVENT, not the
+status.** No sleeps, no lengthened timeouts — every bound is unchanged.
+
+The duplication across modules is deliberate and documented in the class Javadoc:
+`maestro-core` has no test-fixtures dependency on `maestro-integration-tests` or
+`maestro-test`, and introducing one to share nine lines of predicate would cost
+more than it saves.
+
+### The `deleteFailureEvents` seam — the reviewer's question, answered
+
+The reviewer asked whether `WorkflowExecutorRetryTest:444→447` is safe because
+`ACTIVITY_FAILED` is pre-terminal, and offered "make it robust **or** comment why
+it is safe". **It is not safe, and it is not about `ACTIVITY_FAILED`.**
+
+`deleteFailureEvents` deletes `ACTIVITY_FAILED` **and `WORKFLOW_FAILED`**. It is
+not an event *read* but an event *mutation*, and the mutation races the append
+the status gate did not wait for:
+
+1. the row flips to `FAILED`; the test's status gate returns;
+2. `deleteFailureEvents` runs and removes what is there;
+3. the engine's `appendEvent(WORKFLOW_FAILED, …)` lands **after** the delete.
+
+The memo the test believes it deleted is now back in the log. The test then
+asserts `firstDeleteCount > 0` and proceeds to model "crashed after delete,
+before CAS" against a log that no longer has that shape — the scenario is
+silently not the one under test. So: **made robust**, not commented away.
+
+That same seam is what makes site #7 above interesting. `retryWorkflow` calls
+`deleteFailureEvents` internally, so the two `SignalTimeoutReplayDeterminismTest`
+sites have the identical defect with no visible `getEvents` call anywhere near
+them. A read-only audit does not find those; the experiment did.
+
+### Proof: each changed test goes red when the property it pins is broken
+
+A repeat loop would prove nothing — the in-memory window is a thread preemption,
+so it reproduces at a low rate either way. Instead the window was made
+deterministic, exactly as in §2 of the original fix:
+
+- **Injected** a temporary `Thread.sleep(300)` into `WorkflowExecutor` between
+  `transitionToTerminal(...)` and `appendEvent(WORKFLOW_COMPLETED / WORKFLOW_FAILED)`
+  on **both** terminal paths (`:1425` and `:1731`). This widens the real gap; it
+  does not invent one.
+- **Reverted** `TestTerminalWait.isFinalised` to the pre-fix status-only
+  predicate.
+
+**BEFORE** (`evidence/11-core-pin-BEFORE-statusonly-raw.log`):
+
+```
+398 tests completed, 12 failed
+BUILD FAILED in 1m 23s
+```
+
+The full roster of 12 is appended to that log. It is exactly the seven sites
+above, expanded across their test methods — nothing else in the module reddened,
+which is itself the sweep's completeness check.
+
+**AFTER** — fixed predicate, **same 300 ms injection still present**
+(`evidence/12-core-pin-AFTER-samegap-raw.log`):
+
+```
+BUILD SUCCESSFUL in 1m 16s
+```
+
+The engine injection was then removed. `git diff 15b27dc..HEAD -- maestro-core/src/main`
+is **empty** — this work does not touch the engine, and `evidence/17-greps.txt`
+shows that emptiness.
+
+---
+
+## F3 — mapped status → expected event. **Not** documented-and-left.
+
+**Decision: map.** The reviewer offered either. Mapping wins on every axis I can
+see:
+
+- It is **three lines**, in a `switch` that the compiler checks, versus a comment
+  asserting a cross-module invariant that nothing enforces.
+- The dependency being documented is genuinely load-bearing and genuinely
+  distant: `TerminalWait` (a test helper) would be relying on
+  `AbstractJdbcWorkflowStore.deleteFailureEvents:356-363` (a shipped store) to
+  keep stripping `WORKFLOW_FAILED` before every retry. That is a promise **the
+  SPI does not make**. `WorkflowStore` is a public SPI with third-party
+  implementations; a store that retained failure memos — or a future retry path
+  that stopped deleting them — would be within contract and would silently
+  reintroduce the exact race the predicate exists to close, in the one place
+  nobody would look.
+- A comment documenting a bug's unreachability ages into a comment documenting a
+  bug. Mapping deletes the question.
+- There is no cost: the predicate already has the status in hand.
+
+Applied to **all three** copies, because the flaw was in all three:
+`TerminalWait` (integration), the new `TestTerminalWait` (core), and
+`maestro-test`'s **shipped** `TestWorkflowHandle.terminalEventLanded` — which the
+review did not flag but which had the identical `anyMatch(COMPLETED || FAILED)`
+and is the one downstream users inherit.
+
+**Pinned**, not just asserted: `TestTerminalWaitTest` (5 tests) covers the window
+itself, the stale-`WORKFLOW_FAILED` case, both matching events, the `TERMINATED`
+exemption, and non-terminal statuses. Reverting only the mapping to the
+either-event form reddens exactly one test
+(`evidence/13-f3-pin-fails-without-mapping-raw.log`):
+
+```
+A run is finalised only when the event matching its status is in the log > a COMPLETED run is not satisfied by a leftover WORKFLOW_FAILED from an earlier attempt FAILED
+5 tests completed, 1 failed
+```
+
+---
+
+## F2 — release note
+
+New `### Changed — maestro-test waits for the terminal event, not the terminal
+status` under **Unreleased** in `docs/release-notes.md`, stating plainly that
+`awaitCompletion(...)` / `getResult(...)` can now throw `TimeoutException` where
+they previously returned, why (the row-then-event ordering), and that a timeout
+there is an engine defect rather than a knob to widen. Verified against
+`15b27dc` that **no signature changed** — `TimeoutException` was already declared
+on both methods, so this is a behavioural note, not a source-compatibility break.
+
+---
+
+## F4 — docs, and the shipped-code shape that stays as it is
+
+`docs/testing.md` taught the bug twice; both are fixed.
+
+1. The Tips poll (was `:522`) is now `waitForParkedStatus`, explicitly scoped to
+   **non-terminal** statuses — where it is correct, because parking is a *single*
+   write — and given the missing timeout failure it silently lacked. It is
+   followed by an explicit right/wrong pair for the terminal case and the rule
+   for anyone polling a `WorkflowStore` directly.
+2. "Inspecting the Event Log" now says to read the log only after
+   `getResult`/`awaitCompletion` has returned, never after a terminal
+   `getStatus()`, with the two-write reason.
+
+### `WorkflowStub.startAndWait` — reported, deliberately unchanged
+
+`maestro-spring-boot-starter/.../client/WorkflowStub.java:102` has the same
+`status().isTerminal()` shape in **shipped main code**. It is **harmless as
+written**, and I did not touch it:
+
+- It reads `instance.get().output()` off **the same row it just gated on** — a
+  single read of a single row. The output column is written by
+  `transitionToTerminal` itself, in the same write that set the status, so by
+  construction it is present whenever the gate passes.
+- `grep -n 'getEvents' WorkflowStub.java` returns **nothing** — the class never
+  touches the event log, so there is no second, lagging source to be
+  inconsistent with (`evidence/17-greps.txt`).
+
+The shape is only a defect when the gate and the assertion read **different**
+stores of truth. Here they read one. Changing it would add a `getEvents` round
+trip per poll to a shipped client API for no behavioural gain. Worth knowing,
+worth leaving.
+
+---
+
+## Verification
+
+| Evidence | Command | Result |
+|---|---|---|
+| `11-core-pin-BEFORE-statusonly-raw.log` | `:maestro-core:test --rerun-tasks --continue`, 300 ms gap injected + predicate reverted | `398 tests completed, 12 failed` |
+| `12-core-pin-AFTER-samegap-raw.log` | same, fixed predicate, **same injection** | `BUILD SUCCESSFUL` |
+| `13-f3-pin-fails-without-mapping-raw.log` | `--tests '*TestTerminalWaitTest*'`, F3 mapping reverted | `5 tests completed, 1 failed` |
+| `14-core-test-rerun-raw.log` | `./gradlew :maestro-core:test --rerun-tasks` | `BUILD SUCCESSFUL in 54s` |
+| `15-full-build-raw.log` | `./gradlew build` | `BUILD SUCCESSFUL in 2m`, 134 actionable tasks |
+| `16-test-result-totals.txt` | XML aggregation, all modules | **`TOTAL tests=911 failures=0 errors=0 skipped=3`** |
+| `17-greps.txt` | every number above, re-grepped | — |
+
+**Honest notes.**
+
+- `./gradlew build` reports `11 executed, 123 up-to-date`. The test tasks that
+  genuinely **executed** are the ones downstream of the changed sources:
+  `:maestro-integration-tests:test` (114 tests — this is what verifies the F3
+  change to `TerminalWait`), `:maestro-test:test`,
+  `:maestro-spring-boot-starter:test`, and all three
+  `:maestro-samples:sample-loan-origination:*:test`. `:maestro-core:test` shows
+  up-to-date there only because it had just been run with `--rerun-tasks` (row 4).
+  The 911 total in `16-*` is aggregated from the on-disk XML across every module
+  and is the number to trust.
+- The 3 skipped tests are the opt-in chaos E2E suites
+  (`ClusterBootSmokeIT`, `ChaosGoldenRunE2EIT`, `ChaosSoakE2EIT`), named in
+  `16-*`. Pre-existing and unrelated.
+- Gradle prints no test total on a green run, so `12-*` is attested by
+  `BUILD SUCCESSFUL` rather than a count. It ran the identical task with
+  `--rerun-tasks` immediately after `11-*`; the suite was 398 tests at that
+  commit and is 403 at HEAD (the five new `TestTerminalWaitTest` pins).
+
+## One thing the reviewer's framing understated
+
+The finding was filed as "the sweep missed a module". The more useful lesson is
+that **the sweep's search key was wrong**: it looked for `getEvents` after a
+status gate. Two of the seven sites have no `getEvents` anywhere near them — they
+call `retryWorkflow`, which deletes failure memos internally. The correct key is
+"any observation *or mutation* of the event log gated on the instance row", and
+finding those needs the experiment, not the grep. That is why the deterministic
+injection is the load-bearing part of this round, and the audit was only its
+starting point.
