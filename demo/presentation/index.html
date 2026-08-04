@@ -136,6 +136,12 @@ body {
   overflow: hidden;
 }
 .slide.active { display: flex; animation: enter 180ms ease-out both; }
+/* Auto-fit. Presenter view takes roughly a third of the stage away, and
+   .slide{overflow:hidden} would swallow the difference silently. Content lives
+   in a .fit wrapper that JS scales down when it would not fit; k stays 1 for
+   anything that already fits, so ordinary slides are untouched. */
+.slide > .fit { width: 100%; display: flex; flex-direction: column; transform-origin: top center; }
+.slide.fitted { justify-content: flex-start; }
 @keyframes enter { from { opacity: 0; transform: translateY(0.6rem); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) {
   .slide.active { animation: none; }
@@ -460,12 +466,12 @@ pre.code mark { background: rgba(224, 168, 60, 0.14); color: inherit; }
 
 /* ---------- presenter panel ------------------------------------------- */
 
-body.presenting .slide { padding-bottom: 36vh; }
+body.presenting .slide { padding-top: 4vh; padding-bottom: 31vh; }
 #presenter {
   display: none;
   position: fixed;
   left: 5.25rem; right: 0; bottom: 0;
-  height: 33vh;
+  height: 30vh;
   background: var(--lift);
   border-top: 1px solid var(--rule-2);
   padding: 1rem 1.4rem;
@@ -1519,6 +1525,39 @@ body.presenting #presenter { display: grid; }
   function pad(n) { return (n < 10 ? '0' : '') + n; }
   function titleOf(s) { return s.dataset.title || s.dataset.id || 'slide'; }
 
+  /* ---- auto-fit --------------------------------------------------------
+     Presenter view leaves a slide about a third less height, and
+     .slide{overflow:hidden} would clip the difference without saying so. Each
+     slide's content is wrapped once, then scaled down only when it would not
+     fit. Measured with offsetHeight/clientHeight, which are layout values and
+     so are unaffected by the transform this applies — including inside the
+     preview, which is itself scaled. */
+
+  function wrapContent(s) {
+    if (s.firstElementChild && s.firstElementChild.className === 'fit') { return; }
+    var fit = document.createElement('div');
+    fit.className = 'fit';
+    while (s.firstChild) { fit.appendChild(s.firstChild); }
+    s.appendChild(fit);
+  }
+
+  function fitSlide(s) {
+    if (!s) { return; }
+    var fit = s.firstElementChild;
+    if (!fit || fit.className !== 'fit') { return; }
+    fit.style.transform = '';
+    s.classList.remove('fitted');
+    var cs = getComputedStyle(s);
+    var avail = s.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    var h = fit.offsetHeight;
+    if (avail > 0 && h > avail) {
+      s.classList.add('fitted');
+      fit.style.transform = 'scale(' + (avail / h) + ')';
+    }
+  }
+
+  function fitActive() { fitSlide(slides[idx]); }
+
   /* ---- ledger rail ---------------------------------------------------- */
 
   function buildRail() {
@@ -1588,14 +1627,17 @@ body.presenting #presenter { display: grid; }
     document.getElementById('pNextTitle').textContent = next ? '— ' + titleOf(next) : '— end of deck';
     var sc = document.getElementById('pScaler');
     sc.innerHTML = '';
+    var clone = null;
     if (next) {
-      var clone = next.cloneNode(true);
+      clone = next.cloneNode(true);
       clone.classList.add('active');
       var n = clone.querySelector('.notes');
       if (n) { n.parentNode.removeChild(n); }
       sc.appendChild(clone);
     }
     scalePreview();
+    // After scalePreview, which is what gives the scaler its box.
+    if (clone) { fitSlide(clone); }
     if (popup && !popup.closed) { renderPopup(); }
   }
 
@@ -1694,6 +1736,7 @@ body.presenting #presenter { display: grid; }
   function show(n) {
     idx = Math.max(0, Math.min(slides.length - 1, n));
     slides.forEach(function (s, k) { s.classList.toggle('active', k === idx); });
+    fitActive();
     paintRail();
     renderPresenter();
     var id = slides[idx].dataset.id;
@@ -1734,12 +1777,17 @@ body.presenting #presenter { display: grid; }
         break;
       case 'p': e.preventDefault();
         document.body.classList.toggle('presenting');
+        fitActive();
         renderPresenter();
         break;
       case 'P': e.preventDefault(); openPopup(); break;
-      case 'n': e.preventDefault(); document.body.classList.toggle('notes-inline'); break;
+      case 'n': e.preventDefault();
+        document.body.classList.toggle('notes-inline');
+        fitActive();
+        break;
       case 'Escape': if (document.body.classList.contains('presenting')) {
           e.preventDefault(); document.body.classList.remove('presenting');
+          fitActive();
         }
         break;
     }
@@ -1747,13 +1795,14 @@ body.presenting #presenter { display: grid; }
 
   jumpInput.addEventListener('input', function () { filterJump(jumpInput.value); });
   document.addEventListener('keydown', onKey);
-  window.addEventListener('resize', function () { scalePreview(); });
+  window.addEventListener('resize', function () { fitActive(); scalePreview(); });
   window.addEventListener('hashchange', function () { show(resolveHash()); });
   stage.addEventListener('click', function (e) {
     if (e.target.closest('a, button, code')) { return; }
     show(idx + 1);
   });
 
+  slides.forEach(wrapContent);
   buildRail();
   show(resolveHash());
   setInterval(tickClock, 1000);
