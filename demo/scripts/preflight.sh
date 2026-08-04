@@ -41,18 +41,28 @@ done
 docker info >/dev/null 2>&1 || die "Docker is not running"
 ok "docker, curl, jq, lsof, nc, shasum, unzip"
 
-step "1/8 every demo port free"
-busy=()
+step "1/8 every demo port free (or already held by this demo's own containers)"
+# Ports this demo's own compose project already publishes. Preflight must be
+# re-runnable on a warm stack, so those count as fine; anything else does not.
+ours=$(for cid in $("${COMPOSE[@]}" ps -q 2>/dev/null); do docker port "$cid" 2>/dev/null; done \
+        | sed -nE 's/.*:([0-9]+)$/\1/p' | sort -u)
+busy=(); mine=()
 for p in "${PORTS[@]}"; do
-  lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1 && busy+=("$p")
+  lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1 || continue
+  if printf '%s\n' "$ours" | grep -qx "$p"; then mine+=("$p"); else busy+=("$p"); fi
 done
 if [ ${#busy[@]} -gt 0 ]; then
   for p in "${busy[@]}"; do lsof -nP -iTCP:"$p" -sTCP:LISTEN | tail -n +2; done
-  die "ports already in use: ${busy[*]}
-       Run: demo/scripts/stop-services.sh && ${COMPOSE[*]} down
-       If the loan sample's own compose stack is up, it collides on 5433/6380/29093 — take it down first."
+  die "ports held by something that is not this demo: ${busy[*]}
+       Host JVM ports (8080/8091/8092/8093):  demo/scripts/stop-services.sh
+       Container ports (3000/4318/5433/6380/9090/16686/29093):  ${COMPOSE[*]} down
+       The loan sample's own compose stack collides on 5433/6380/29093 — take it down first:
+         docker compose -f maestro-samples/sample-loan-origination/docker-compose.yml down"
 fi
-ok "${#PORTS[@]} ports free: ${PORTS[*]}"
+if [ ${#mine[@]} -gt 0 ]; then
+  ok "already published by this demo's containers: ${mine[*]}"
+fi
+ok "$(( ${#PORTS[@]} - ${#mine[@]} )) of ${#PORTS[@]} ports free, none held by a foreign process"
 
 step "2/8 pull images"
 if [ "${DEMO_SKIP_PULL:-0}" = "1" ]; then info "skipped (DEMO_SKIP_PULL=1)"
