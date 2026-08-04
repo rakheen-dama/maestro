@@ -145,8 +145,12 @@ for name in loan-application-service verification-gateway-service underwriting-s
   [ -f "$pidfile" ] || die "no pid file for $name"
   pid=$(cat "$pidfile")
   kill -0 "$pid" 2>/dev/null || die "$name pid $pid is not alive"
-  jar=$(ps -o command= -p "$pid" | tr ' ' '\n' | grep -E '\.jar$' | tail -1)
-  [ -f "$jar" ] || die "cannot resolve the jar $name (pid $pid) is actually running"
+  # `|| true` is load-bearing: under `set -euo pipefail` an assignment takes the
+  # pipeline's status, so a non-matching `grep` would exit the script HERE —
+  # silently, at the last step, with no message and no PREFLIGHT PASSED, which
+  # is indistinguishable from a hang. The `die` below is the intended failure.
+  jar=$(ps -o command= -p "$pid" | tr ' ' '\n' | grep -E '\.jar$' | tail -1) || true
+  [ -n "$jar" ] && [ -f "$jar" ] || die "cannot resolve the jar $name (pid $pid) is actually running"
   sha=$(shasum -a 256 "$jar" | cut -c1-12)
   printf '    %-26s %-8s %-14s %s\n' "$name" "$pid" "$sha" "$(basename "$jar")"
 done

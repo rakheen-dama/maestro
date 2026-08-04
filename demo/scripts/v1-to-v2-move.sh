@@ -68,6 +68,7 @@ INFLIGHT_ID="${INFLIGHT_ID:-inflight-$STAMP}"
 NEW_ID="${NEW_ID:-newloan-$STAMP}"
 
 log() { printf '\n%s [move] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
+die() { printf '\n%s [move] FAILED: %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; exit 1; }
 
 psql_loan() { docker exec maestro-demo-postgres-1 psql -U maestro -d loan_application -tAc "$1"; }
 
@@ -220,7 +221,11 @@ fi
 # ─────────────────────────────────────────────────────────────────────────
 
 log "PIN 0 — what is running right now"
-echo "  pid $(cat "$PIDFILE") -> $(ps -p "$(cat "$PIDFILE")" -o args= | tr ' ' '\n' | tail -1)"
+[ -f "$PIDFILE" ] || die "no pid file at $PIDFILE — is the demo running? (demo/scripts/start-services.sh)"
+_pin0_pid=$(cat "$PIDFILE")
+_pin0_jar=$(ps -p "$_pin0_pid" -o args= | tr ' ' '\n' | grep -E '\.jar$' | tail -1) || true
+[ -n "$_pin0_jar" ] || die "pid $_pin0_pid is not running a jar — the demo's loan-application JVM is not up"
+echo "  pid $_pin0_pid -> $_pin0_jar"
 echo "  v1 jar sha256: $(shasum -a 256 "$V1_JAR" | awk '{print $1}')"
 echo "  v2 jar sha256: $(shasum -a 256 "$V2_JAR" | awk '{print $1}')"
 echo "  packaged workflow class differs between the jars:"
