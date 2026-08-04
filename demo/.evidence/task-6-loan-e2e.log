@@ -1,0 +1,28 @@
+=== LOAN E2E (untouched sample) 2026-08-04T17:16:46Z ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=823ecb6b1c5c8c29d293c45f401a7c9231468a57 branch=worktree-demo
+e2e/ diff vs main: 0 lines (0 == untouched)
+--- running maestro-samples/sample-loan-origination/e2e/run-e2e.sh ---
+19:16:46 [e2e] Loan-origination E2E run 191646 (logs: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/maestro-samples/sample-loan-origination/e2e/logs) - E2E_LOCK_BACKEND=valkey
+19:16:46 [e2e] E2E_SKIP_BUILD=1 - reusing existing boot jars.
+19:16:46 [e2e] Starting infrastructure (Postgres/Valkey/Kafka) via docker compose...
+ Network maestro-loan-origination_default  Creating
+ Network maestro-loan-origination_default  Created
+ Volume maestro-loan-origination_loan-pgdata  Creating
+ Volume maestro-loan-origination_loan-pgdata  Created
+ Container maestro-loan-origination-valkey-1  Creating
+ Container maestro-loan-origination-kafka-1  Creating
+ Container maestro-loan-origination-postgres-1  Creating
+ Container maestro-loan-origination-postgres-1  Created
+ Container maestro-loan-origination-kafka-1  Created
+ Container maestro-loan-origination-valkey-1  Created
+ Container maestro-loan-origination-valkey-1  Starting
+ Container maestro-loan-origination-kafka-1  Starting
+ Container maestro-loan-origination-postgres-1  Starting
+ Container maestro-loan-origination-valkey-1  Started
+ Container maestro-loan-origination-postgres-1  Started
+ Container maestro-loan-origination-kafka-1  Started
+ Container maestro-loan-origination-valkey-1  Waiting
+ Container maestro-loan-origination-kafka-1  Waiting
+ Container maestro-loan-origination-postgres-1  Waiting
+ Container maestro-loan-origination-valkey-1  Healthy
+ Container maestro-loan-origination-postgres-1  Healthy
