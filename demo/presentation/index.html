@@ -1395,6 +1395,82 @@ body.presenting #presenter { display: grid; }
     </div>
   </section>
 
+  <section class="slide" data-act="III" data-act-name="Deep dives" data-id="authoring" data-title="What you actually write">
+    <p class="eyebrow">Act III <span class="sep">/</span> authoring <span class="sep">/</span> <em>a complete workflow</em></p>
+    <h2 style="max-width:none">This is the whole of it.</h2>
+    <div class="cols" style="align-items:start;gap:1.6rem;grid-template-columns:1.42fr 1fr">
+      <div>
+        <pre class="code" style="font-size:.68rem"><span class="a">@DurableWorkflow</span>(name = <span class="s">"document-approval"</span>, taskQueue = <span class="s">"documents"</span>)
+<span class="k">public class</span> <span class="t">DocumentApprovalWorkflow</span> {
+
+    <span class="a">@ActivityStub</span>(startToCloseTimeout = <span class="s">"PT30S"</span>,
+                  retryPolicy = <span class="a">@RetryPolicy</span>(maxAttempts = <span class="s">3</span>))
+    <span class="k">private</span> <span class="t">DocumentActivities</span> activities;
+
+    <span class="a">@WorkflowMethod</span>
+    <span class="k">public</span> <span class="t">DocumentResult</span> execute(<span class="t">DocumentInput</span> input) {
+        <span class="k">var</span> workflow = <span class="t">WorkflowContext</span>.current();
+
+        <span class="k">var</span> documentId = activities.validateAndStore(input);
+
+        <span class="t">ReviewDecision</span> decision;
+        <span class="k">try</span> {
+            <mark>decision = workflow.awaitSignal(<span class="s">"review.decision"</span>,
+                <span class="t">ReviewDecision</span>.<span class="k">class</span>, <span class="t">Duration</span>.ofDays(<span class="s">7</span>));</mark>
+        } <span class="k">catch</span> (<span class="t">SignalTimeoutException</span> e) {
+            activities.notifyRejection(documentId, input.authorId(), <span class="s">"..."</span>);
+            <span class="k">return</span> <span class="k">new</span> <span class="t">DocumentResult</span>(<span class="k">false</span>, documentId, <span class="s">"TIMED_OUT"</span>, <span class="s">"..."</span>);
+        }
+
+        <span class="k">if</span> (decision.approved()) {
+            activities.publishDocument(documentId);
+            <span class="k">return</span> <span class="k">new</span> <span class="t">DocumentResult</span>(<span class="k">true</span>, documentId, <span class="s">"PUBLISHED"</span>, <span class="k">null</span>);
+        }
+        <span class="c">// ... rejection path ...</span>
+    }
+}</pre>
+        <p class="codecap">maestro-samples/sample-postgres-only/src/main/java/&hellip;/workflow/DocumentApprovalWorkflow.java
+          &nbsp;&middot;&nbsp; 91 lines in full; comments and the rejection branch elided</p>
+      </div>
+      <div>
+        <div class="card accent">
+          <h3>Seven days, inside a try/catch</h3>
+          <p><code>Duration.ofDays(7)</code>. The process can restart any number of
+            times inside that wait. Nothing is held open &mdash; no thread, no timer
+            in memory, no scheduler entry. The timeout is a row, and so is the
+            workflow.</p>
+        </div>
+        <div class="card" style="margin-top:.9rem">
+          <h3>No engine in sight</h3>
+          <p>No state machine to declare, no YAML, no DSL, no callback graph. It is
+            an ordinary Java method that happens to be crash-proof. The
+            <code>try/catch</code> around a seven-day wait is real Java control flow,
+            and it behaves the way you would expect it to.</p>
+        </div>
+        <div class="card" style="margin-top:.9rem">
+          <h3>And this one has no Kafka and no Valkey</h3>
+          <p><code>sample-postgres-only</code> uses Postgres for store, messaging and
+            locking &mdash; zero external dependencies. Same annotations, same code,
+            different SPIs.</p>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <p><strong>SAY:</strong> This is a complete, real workflow from the repository &mdash; not a
+        cut-down illustration. Four annotations and an ordinary Java method. The interesting line
+        is the <code>awaitSignal</code> with a seven-day timeout sitting inside a
+        <code>try/catch</code>: the service can be restarted, redeployed and crashed any number of
+        times during those seven days, and this method resumes on the line after it with the value
+        that arrived. That is the entire pitch. Everything else you have seen today &mdash;
+        recovery, compensation, versioning &mdash; is the engine keeping that promise.</p>
+      <p><strong>DO:</strong> No commands. Closing slide. If they want to read it:
+        <code>maestro-samples/sample-postgres-only</code>.</p>
+      <p><strong>IF ASKED &ldquo;can I run this without Kafka?&rdquo;</strong> Yes &mdash; this
+        sample is the answer. Postgres for store, messaging and locking; zero external
+        dependencies.</p>
+    </div>
+  </section>
+
   <p class="hint">&rarr; next &middot; g jump &middot; p presenter &middot; f fullscreen</p>
 </main>
 
