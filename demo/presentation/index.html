@@ -174,6 +174,7 @@ h1 {
   letter-spacing: -0.015em;
   color: var(--ink);
   margin: 0 0 0.9rem;
+  max-width: 26ch;
 }
 h2 {
   font-family: var(--serif);
@@ -258,6 +259,51 @@ code {
 }
 .ledger td:first-child { color: var(--ink); }
 .ledger tr:last-child td { border-bottom: 0; }
+/* beats — a measured timeline across the top of a scenario */
+.beats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.9rem;
+  list-style: none;
+  margin: 0.2rem 0 1.4rem;
+  padding: 0;
+}
+.beats li { border-top: 2px solid var(--rule-2); padding-top: 0.6rem; }
+.beats .t {
+  display: block;
+  font-family: var(--mono);
+  font-size: 1.05rem;
+  color: var(--ink);
+}
+.beats .b { display: block; margin-top: 0.22rem; font-size: 0.78rem; color: var(--mute); }
+.beats li.kill { border-top-color: var(--rose); }
+.beats li.kill .t { color: var(--rose); }
+.beats li.money { border-top-color: var(--brass); }
+.beats li.money .t { color: var(--brass); }
+
+/* the event log — what the engine records */
+.eventlog { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 0.74rem; }
+.eventlog th {
+  font-size: 0.6rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--mute);
+  text-align: left;
+  font-weight: 500;
+  padding: 0 1.2rem 0.45rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+.eventlog td {
+  padding: 0.3rem 1.2rem 0.3rem 0;
+  border-bottom: 1px solid var(--rule);
+  white-space: nowrap;
+  color: var(--body);
+}
+.eventlog td.seq { color: var(--rule-2); }
+.eventlog td.type { color: var(--brass); }
+.eventlog td.sig { color: var(--ink); }
+.eventlog tr.dots td { color: var(--rule-2); border-bottom: 0; }
+
 /* numbered steps — the ledger, as a flow */
 .steps {
   display: grid;
@@ -615,6 +661,97 @@ body.presenting #presenter { display: grid; }
       <p><strong>DO:</strong> &sect;D4 &mdash; <code>docker compose -f demo/docker-compose.yml ps</code>.
         Seven containers, none of them Maestro. If asked about footprint: the whole demo peaked
         at 2.27 GiB across those seven containers plus four host JVMs.</p>
+    </div>
+  </section>
+
+  <!-- ============================ ACT II ============================= -->
+
+  <section class="slide" data-act="II" data-act-name="Scenarios" data-id="scenario-1" data-title="Scenario 1 — one loan, three services">
+    <p class="eyebrow">Act II <span class="sep">/</span> scenario 1 <span class="sep">/</span> <em>&sect;1</em></p>
+    <h2>The event log <em style="font-style:normal;color:var(--brass)">is</em> the workflow&rsquo;s memory.</h2>
+    <div class="cols cols-2" style="align-items:start">
+      <div>
+        <p>One loan, driven end to end. It crosses all three services and comes
+          back <strong>FUNDED</strong>, with a rate lock id and a disbursement id.</p>
+        <p>Status moves <code>RUNNING</code> &rarr; <code>WAITING_SIGNAL</code> &rarr;
+          <code>COMPLETED</code> on the dashboard. Then open the instance: sequence
+          numbers, one row per completed activity, one row per signal received.</p>
+        <p class="small muted">There is a hard floor of about 8 s in every run &mdash;
+          the appraisal provider simulates 8 s of latency. Measured 14&ndash;20 s
+          end to end; budget 30 so you are never waiting on it.</p>
+      </div>
+      <div>
+        <table class="eventlog">
+          <thead><tr><th>seq</th><th>type</th><th>detail</th></tr></thead>
+          <tbody>
+            <tr><td class="seq">1</td><td class="type">ACTIVITY_COMPLETED</td><td>validateApplication</td></tr>
+            <tr><td class="seq">2</td><td class="type">ACTIVITY_COMPLETED</td><td>recordApplication</td></tr>
+            <tr><td class="seq">3</td><td class="type">SIDE_EFFECT</td><td>$maestro:currentTime</td></tr>
+            <tr><td class="seq">4</td><td class="type">ACTIVITY_COMPLETED</td><td>requestVerification</td></tr>
+            <tr><td class="seq">5</td><td class="type">SIGNAL_RECEIVED</td><td class="sig">verification.result</td></tr>
+            <tr><td class="seq">6</td><td class="type">SIGNAL_RECEIVED</td><td class="sig">verification.result</td></tr>
+            <tr><td class="seq">7</td><td class="type">SIGNAL_RECEIVED</td><td class="sig">verification.result</td></tr>
+            <tr class="dots"><td>&hellip;</td><td>&hellip;</td><td>&hellip;</td></tr>
+          </tbody>
+        </table>
+        <p class="mono small muted wide" style="margin-top:.6rem">
+          shape only &mdash; read the live log off /admin/workflows
+        </p>
+      </div>
+    </div>
+    <div class="notes">
+      <p><strong>SAY:</strong> Sequence numbers, activity names, signal names. This table is not
+        a log for humans to read after the fact &mdash; it is the workflow&rsquo;s memory. On
+        recovery the engine walks it and every completed step returns its stored result instead
+        of running again. And during the wait: the workflow is not running right now. It is a row
+        in Postgres. No thread is parked, no timer is held in memory &mdash; if I killed this
+        process during this pause you would not be able to tell afterwards.</p>
+      <p><strong>DO:</strong> &sect;1 &mdash; <code>demo/scripts/drive-loan.sh happy</code>. Then
+        <code>localhost:8080/admin/workflows</code>, click the id, point at the event log.</p>
+      <p><strong>WATCH OUT:</strong> nobody approves this one. DTI 2.0 is below the 3.0
+        auto-approve line, so the desk decides it without a human &mdash; do not go looking in the
+        pending queue. FALLBACK if a provider is slow: switch to any earlier COMPLETED instance,
+        or <code>drive-loan.sh events &lt;id&gt;</code>.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="II" data-act-name="Scenarios" data-id="scenario-2" data-title="Scenario 2 — kill -9">
+    <p class="eyebrow">Act II <span class="sep">/</span> scenario 2 <span class="sep">/</span> <em>&sect;2</em></p>
+    <h1><span class="mono rose" style="font-size:.8em">kill -9</span> mid-loan.<br>It resumes at the exact step.</h1>
+    <ol class="beats">
+      <li><span class="t">17 s</span><span class="b">the loan parks mid-flight, holding a lock</span></li>
+      <li class="kill"><span class="t">instant</span><span class="b"><code>kill -9</code> &mdash; no drain, no shutdown hook</span></li>
+      <li><span class="t">5 s</span><span class="b">restart the one process that died</span></li>
+      <li class="money"><span class="t">40 s</span><span class="b">FUNDED &mdash; nothing re-executed</span></li>
+    </ol>
+    <div class="cols cols-2">
+      <div class="card accent">
+        <h3>Proof 1 &mdash; the rows are byte-identical</h3>
+        <p>Phase 1 snapshots the event rows before the kill. Phase 3 re-reads them
+          after recovery and diffs. <strong>The diff is empty.</strong> Nothing was
+          rewritten, renumbered, or re-executed.</p>
+      </div>
+      <div class="card accent">
+        <h3>Proof 2 &mdash; duplicate sequence numbers: 0</h3>
+        <p>Every activity that ran before the crash has exactly one row. Both proofs
+          are assertions: if either fails the script exits non-zero and prints the
+          offending diff.</p>
+      </div>
+    </div>
+    <div class="notes">
+      <p><strong>SAY:</strong> No graceful shutdown. No drain. SIGKILL &mdash; the process cannot
+        run a shutdown hook even if it wanted to. Then we restart it and tell it to finish the
+        loan. It funds. And the proof is not my word: the rows recorded before the kill are
+        byte-identical afterwards, and there are zero duplicate sequence numbers.</p>
+      <p><strong>DO:</strong> &sect;2, three commands in order &mdash;
+        <code>demo/scripts/drive-loan.sh crash</code> (prints the id and the next two commands),
+        then <code>kill -9 $(cat demo/.run/loan-application-service.pid)</code>, then
+        <code>demo/scripts/restart-loan-app.sh</code> and
+        <code>demo/scripts/drive-loan.sh finish &lt;id&gt;</code>.</p>
+      <p><strong>WATCH OUT:</strong> not <code>start-services.sh</code> &mdash; it starts all four
+        JVMs and refuses to run while any port is taken, and 8092/8093/8080 are still healthy.
+        Read the row count off the screen rather than promising a number; it depends on how many
+        signals landed before the kill. Budget 90 s including what you say.</p>
     </div>
   </section>
 
