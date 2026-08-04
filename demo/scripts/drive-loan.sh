@@ -132,7 +132,7 @@ wait_step_event() { # id stepLike label [timeout]
 }
 
 event_rows() { # id — the event log with no decoration, for diffing
-  psql_q "select lpad(e.sequence_number::text,5,' ') || '  ' || rpad(e.event_type,24,' ') || '  ' || coalesce(e.step_name,'')
+  psql_q "select lpad(e.sequence_number::text,5,' ') || '  ' || rpad(e.event_type,28,' ') || '  ' || coalesce(e.step_name,'')
             from maestro_workflow_event e
             join maestro_workflow_instance i on i.id = e.workflow_instance_id
            where i.workflow_id = 'loan-$1' order by e.sequence_number"

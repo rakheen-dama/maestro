@@ -197,8 +197,13 @@ kill -9 $(cat demo/.run/loan-application-service.pid)
 **POINT AT:** nothing yet. Say: *"No graceful shutdown. No drain. SIGKILL. The
 process cannot run a shutdown hook even if it wanted to."*
 
-Optionally show it is gone: `curl -s -o /dev/null -w '%{http_code}\n'
-http://localhost:8091/actuator/health` → `000`.
+Optionally show it is gone:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' --max-time 2 http://localhost:8091/actuator/health || true
+```
+
+→ `000`.
 
 **RUN — phase 3**
 
