@@ -847,6 +847,94 @@ body.presenting #presenter { display: grid; }
     </div>
   </section>
 
+  <section class="slide" data-act="II" data-act-name="Scenarios" data-id="scenario-4" data-title="Scenario 4 — saga compensation">
+    <p class="eyebrow">Act II <span class="sep">/</span> scenario 4 <span class="sep">/</span> <em>&sect;4</em></p>
+    <h2>The borrower pulls out after the rate lock. The money unwinds itself.</h2>
+    <ol class="beats" style="grid-template-columns:repeat(3,minmax(0,1fr))">
+      <li class="money"><span class="t">reserve</span><span class="b">&ldquo;Reserved rate lock at 5.25%&rdquo; &mdash; money is now committed</span></li>
+      <li class="kill"><span class="t">withdraw</span><span class="b">the withdrawal lands <em>after</em> that, at gate #2</span></li>
+      <li class="money"><span class="t">release</span><span class="b">&ldquo;COMPENSATION: released rate lock&rdquo; &mdash; automatically</span></li>
+    </ol>
+    <div class="cols cols-2">
+      <div class="card">
+        <h3>The author wrote no rollback path</h3>
+        <p>They annotated <code>reserveRateLock</code> with
+          <code>@Compensate("releaseRateLock")</code> and threw an exception. The engine
+          unwound the compensation stack <strong>LIFO</strong>. Had disbursement already
+          happened, it would have been reversed first, then the rate lock.</p>
+      </div>
+      <div class="card alarm">
+        <h3>The loan ends FAILED &mdash; and that is correct</h3>
+        <p>A withdrawn loan is not a completed loan. The instance is on
+          <code>/admin/failed</code>, and its event log shows the compensation that
+          ran. Failure is recorded, not swept up.</p>
+      </div>
+    </div>
+    <p class="small muted" style="margin-top:1.1rem">Measured 18 s end to end &mdash; verifications 8 s,
+      the underwriting round-trip, then the signature fan-in. Budget 45 s.</p>
+    <div class="notes">
+      <p><strong>SAY:</strong> The workflow author wrote no rollback path. They annotated
+        <code>reserveRateLock</code> with <code>@Compensate("releaseRateLock")</code> and threw an
+        exception. The engine unwound the compensation stack LIFO. If disbursement had already
+        happened it would have reversed that first, then the rate lock. This is the one a
+        non-engineer feels: nobody wrote the cleanup for this particular path, and the money-adjacent
+        step still came back out.</p>
+      <p><strong>DO:</strong> &sect;4 &mdash; <code>demo/scripts/drive-loan.sh withdraw</code>. This
+        one <em>does</em> queue for a human (DTI 4.0) and the script posts the approval for you.
+        Point at, in order: the <code>Reserved rate lock ... at 5.25%</code> line, the withdrawal
+        going in after it, the <code>COMPENSATION: released rate lock</code> line, then
+        <code>localhost:8080/admin/failed</code> and its event log.</p>
+      <p><strong>HONEST DETAIL if asked:</strong> <code>reverseDisbursement</code> is wired but
+        unreachable in this sample &mdash; <code>disburse</code> is the last step, so nothing fails
+        after it. It is there to show LIFO ordering, not because the sample exercises it.</p>
+      <p><strong>FALLBACK:</strong> &ldquo;The signature fan-in is what pushes it into the second
+        withdrawal gate and it hasn&rsquo;t landed yet &mdash; here is a completed compensation.&rdquo;
+        &rarr; <code>grep -a COMPENSATION demo/.run/loan-application-service.log</code>.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="II" data-act-name="Scenarios" data-id="scenario-5" data-title="Scenario 5 — parked costs nothing">
+    <p class="eyebrow">Act II <span class="sep">/</span> scenario 5 <span class="sep">/</span> <em>&sect;5</em></p>
+    <h2>It climbs, and it comes back to zero.</h2>
+    <p class="lede" style="max-width:44ch">Three loans at once. The parked count rises &mdash;
+      and parked workflows cost nothing. No threads, no timers, no memory.</p>
+    <table class="ledger">
+      <thead><tr><th style="width:38%">Panel</th><th>What to say</th></tr></thead>
+      <tbody>
+        <tr><td>Workflows started / completed / failed</td><td>started and completed track each other; failures are flat</td></tr>
+        <tr><td class="brass">Workflows parked</td><td class="brass">this is the number that matters &mdash; parked workflows cost nothing</td></tr>
+        <tr><td>Activity duration p50 / p95</td><td>the appraisal provider&rsquo;s 8 s latency is visible, and it is not the engine&rsquo;s</td></tr>
+        <tr><td>Recovery adoptions</td><td>non-zero only after scenario 2 or D6</td></tr>
+        <tr><td>Stand-downs by reason</td><td>flat at zero &mdash; no workflow hit an event it could not interpret</td></tr>
+      </tbody>
+    </table>
+    <p class="mono small muted wide" style="margin-top:1.1rem">
+      measured with three loans: peak <span class="brass">12</span> at t+6 s &nbsp;&middot;&nbsp;
+      back to <span class="brass">0</span> at t+18 s &nbsp;&middot;&nbsp; 5 s scrape, so give it two
+    </p>
+    <div class="notes">
+      <p><strong>SAY:</strong> Each loan parks a workflow in the loan service, one in
+        verification-gateway and one in underwriting &mdash; so the count climbs to roughly three
+        times the loans in flight, and then it comes back to zero. Promise the shape, not the
+        number: an earlier rehearsal peaked at 9, this one read 12, because the loans overlap and
+        a workflow left parked from the previous scenario still counts.</p>
+      <p><strong>DO:</strong> &sect;5 &mdash;
+        <code>for i in 1 2 3; do demo/scripts/drive-loan.sh happy "load-$i" &amp; sleep 1; done</code>,
+        then <code>open http://localhost:3000</code>. Five panels, three rows; parked sits beside
+        started/completed/failed on the top row.</p>
+      <p><strong>SAY BEFORE ANYONE ASKS &mdash; two things.</strong> (1) Stand-downs by reason reads
+        zero, and that is the correct answer: the panel carries a deliberate <code>vector(0)</code>
+        series so it draws a flat line instead of &ldquo;No data&rdquo;. Honest caveat: a misspelled
+        metric name would look exactly the same &mdash; these names were verified against a live
+        scrape. (2) maestro-admin is not on this dashboard and never will be: its jar carries no
+        Micrometer Prometheus registry, so its actuator returns 404. It is a dashboard, not a
+        scrape target.</p>
+      <p><strong>FALLBACK:</strong> &ldquo;Grafana reads Prometheus on a 5-second scrape and we are
+        inside the first interval.&rdquo; &rarr; <code>localhost:9090/targets</code> to show three
+        services UP, then query <code>maestro_workflows_parked</code> directly.</p>
+    </div>
+  </section>
+
   <p class="hint">&rarr; next &middot; g jump &middot; p presenter &middot; f fullscreen</p>
 </main>
 
