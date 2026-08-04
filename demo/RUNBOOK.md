@@ -239,14 +239,54 @@ exactly the process that died, and tolerates a pid file pointing at a corpse.
 Both proofs are assertions: if either fails the script exits non-zero and
 prints the offending diff.
 
-**TIMING:** measured — phase 1 **13 s**, the kill is instant, restart **5 s**,
-phase 3 **5 s**. Budget 60 s including what you say.
+**TIMING:** measured — phase 1 **17 s** (allow up to 35 s; it waits on three
+simulated providers and on the underwriting desk), the kill is instant,
+`restart-loan-app.sh` **5 s**, `finish` **40 s**. Budget **90 s** including
+what you say. Evidence:
+`demo/.evidence/task-4-fix-f1-scenario-2-after-poll-interval.log`.
 
-**SAY:** *"The recovery poller found an instance whose owner was gone, took
-the lock, and re-invoked the workflow method from the top. Every activity that
-had already completed returned its stored result instantly — no HTTP call, no
-Kafka publish. It resumed at the first step with no stored result. That is the
-whole mechanism."*
+### The one pause in this scenario — fill it, do not wait it out
+
+Almost all of `finish`'s 40 s is a single wait: **33 s** between posting the
+underwriter's decision and `the rate lock recorded`. It is the only silence in
+the demo, it is on the demo's most important beat, and it is long enough that
+standing quietly through it reads as a hang. Start talking as soon as
+`waiting for the rate lock` appears:
+
+**SAY, during the wait:** *"Watch what has to happen before that line appears.
+The node that owned this workflow died holding a lock — so first that lock has
+to expire; nobody can hand it over, because nothing got a chance to release it.
+Then a recovery poll on another node has to notice the workflow is
+unowned and take it. Then the workflow method is re-invoked from the very first
+line — and every activity that already completed returns its stored result out
+of Postgres instantly. No HTTP call. No Kafka publish. It runs the replay at
+memory speed until it reaches the first step with no stored result, and only
+then does real work happen again. Everything you are waiting for right now is
+the engine deciding it is allowed to resume — the resume itself is
+instantaneous."*
+
+**SAY, when the rate lock line lands:** *"There it is. And the proof is on the
+next screen: the twelve rows recorded before the kill are byte-identical."*
+
+### If someone asks "how fast does it recover?"
+
+Answer with the knob, not a number: *"As fast as you configure it to notice.
+Here the recovery poll is 5 seconds; the shipped default is 60."* The demo sets
+`-Dmaestro.recovery.poll-interval=5s` from `start-services.sh` and
+`restart-loan-app.sh` so recovery is watchable. The samples' committed
+`application.yml` is untouched and still takes the production-sane 60 s
+default — at that default this same phase measured **250 s**
+(`demo/.evidence/task-4-fix-f1-scenario-2-phase-timings.log`).
+
+**What the remaining 33 s actually is — it is not Maestro's.** With the poll at
+5 s the wait is dominated by **Kafka**: a `kill -9` leaves the broker still
+believing the dead consumer is a live group member until its
+`session.timeout.ms` (45 s by default) runs out, so the restarted node cannot
+be assigned `loans.underwriting.decisions` and cannot see the decision until
+the group rebalances. Measured: join requested `15:21:39`, joined `15:22:15`.
+The same node rejoining after a *clean* restart takes 3 s. If asked, that is
+the honest answer — the recovery mechanism was ready long before the message
+bus was.
 
 **FALLBACK:** *"Recovery is on a poll interval and we have just caught it
 between polls — the important artefact is the event log, which is unchanged
