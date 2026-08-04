@@ -30,11 +30,10 @@ export VALKEY_HOST="${VALKEY_HOST:-localhost}"
 export VALKEY_PORT="${VALKEY_PORT:-6380}"
 export KAFKA_BOOTSTRAP="${KAFKA_BOOTSTRAP:-localhost:29093}"
 
-# Jaeger's OTLP/HTTP receiver. Bound in every service's application.yml to
-# Spring Boot 4's `management.opentelemetry.tracing.export.otlp.endpoint`.
-# The Boot 3.x property name (`management.otlp.tracing.endpoint`) is read by
-# NOTHING on Boot 4 — the exporter bean is never created and no connection is
-# ever attempted, which looks exactly like "Jaeger is empty" (task-1-report §3).
+# Jaeger's OTLP/HTTP receiver. NOT bound in the samples' application.yml —
+# see `_otlp_endpoint_prop` below for why the demo supplies it and the
+# committed config does not. Kept as an env var so overriding the collector is
+# one assignment, the same shape as every other endpoint in this block.
 export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4318/v1/traces}"
 
 # The loan sample sets maestro.admin.events.enabled=false in application.yml
@@ -113,6 +112,24 @@ _kafka_observation_props=(
     -Dspring.kafka.listener.observation-enabled=true
 )
 
+# WHERE THE SPANS GO — and why this is a -D and not committed config.
+#
+# `management.opentelemetry.tracing.export.otlp.endpoint` is the Spring Boot
+# 4.0.5 property name (the Boot-3-era `management.otlp.tracing.endpoint` is read
+# by NOTHING on Boot 4 — the exporter bean is never created and no connection is
+# ever attempted, which looks exactly like "Jaeger is empty"; task-1-report §3).
+#
+# It is set HERE rather than in the samples' application.yml for the same reason
+# as `maestro.recovery.poll-interval` above: the loan e2e suite runs against the
+# committed config. A live default there means the OTLP exporter bean is always
+# created, and e2e/run-e2e.sh runs no Jaeger — so every run emitted
+# `ERROR ... Failed to export spans ... ConnectException: Connection refused`
+# with a full okhttp stack trace, into a log sweep that prints only its first 15
+# matching lines. One export failure filled the sweep and hid every real error
+# behind it. Unset in the sample, supplied by the demo: logs stay clean, spans
+# still reach Jaeger.
+_otlp_endpoint_prop="-Dmanagement.opentelemetry.tracing.export.otlp.endpoint=$OTEL_EXPORTER_OTLP_ENDPOINT"
+
 # Every JVM is capped at 256m of heap: four of these plus seven containers has
 # to fit on a laptop.
 MAESTRO_JVM_OPTS=(
@@ -120,5 +137,6 @@ MAESTRO_JVM_OPTS=(
     -XX:+UseSerialGC
     "$_activity_histogram_prop"
     "$_recovery_poll_prop"
+    "$_otlp_endpoint_prop"
     "${_kafka_observation_props[@]}"
 )

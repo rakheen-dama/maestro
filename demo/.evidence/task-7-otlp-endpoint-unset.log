@@ -1,0 +1,46 @@
+=== F2 — OTLP endpoint removed from committed sample config, supplied by the demo ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=a08ca9c7632b52ea975327508aa811f5e835510f branch=worktree-demo
+timestamp-utc: 2026-08-04T18:50:44Z
+check: the loan sample e2e log sweep (e2e/run-e2e.sh:1204) was permanently tripped by
+       the demo giving all three services a LIVE default OTLP endpoint. Verified via
+       /actuator/conditions, the same way Task 1 did — not assumed.
+
+--- THE DEFECT, in the branch two archived E2E runs ---
+demo/.evidence/task-1-e2e.log:298-299 and demo/.evidence/task-6-loan-e2e.log:299,331:
+    task-6-loan-e2e.log:299:2026-08-04T19:23:40.591+02:00 ERROR 49179 --- [sample-verification-gateway-service] [alhost:4318/...] [                                                 ] i.o.exporter.internal.http.HttpExporter  : Failed to export spans. The request could not be executed. Full error message: Failed to connect to localhost/[0:0:0:0:0:0:0:1]:4318
+    task-6-loan-e2e.log:331:2026-08-04T19:17:28.004+02:00 ERROR 45508 --- [sample-underwriting-service] [alhost:4318/...] [                                                 ] i.o.exporter.internal.http.HttpExporter  : Failed to export spans. The request could not be executed. Full error message: Failed to connect to localhost/[0:0:0:0:0:0:0:1]:4318
+    (each one drags a full okhttp stack trace; the sweep prints only its first 15 lines)
+
+=== CASE A — committed config as it now stands: NO endpoint property ===
+$ java -Xmx256m -Dserver.port=18093 -Dmanagement.endpoints.web.exposure.include=* \
+       -jar underwriting-service-0.3.0-SNAPSHOT.jar        # no -Dmanagement.opentelemetry...endpoint
+
+/actuator/conditions negativeMatches, Otlp tracing:
+    OtlpTracingConfigurations.ConnectionDetails#otlpTracingConnectionDetails
+        @ConditionalOnProperty (management.opentelemetry.tracing.export.otlp.endpoint) did not find property 'management.opentelemetry.tracing.export.otlp.endpoint'
+    OtlpTracingConfigurations.Exporters
+        @ConditionalOnBean (types: org.springframework.boot.micrometer.tracing.opentelemetry.autoconfigure.otlp.OtlpTracingConnectionDetails; SearchStrategy: all) did not find any beans of type org.springframework.boot.micrometer.tracing.opentelemetry.autoconfigure.otlp.OtlpTracingConnectionDetails
+
+  => ConnectionDetails UNMATCHED, so Exporters finds no connection-details bean and
+     NO span exporter is created. /actuator/beans has no otlpHttpSpanExporter.
+  => "Failed to export spans" occurrences in this run: 0
+
+=== CASE B — the demo, which supplies the endpoint from jvm-env.sh ===
+$ java ... -Dmanagement.opentelemetry.tracing.export.otlp.endpoint=http://localhost:4318/v1/traces
+
+/actuator/conditions positiveMatches, Otlp tracing:
+    OtlpTracingAutoConfiguration
+    OtlpTracingConfigurations.ConnectionDetails#otlpTracingConnectionDetails
+    OtlpTracingConfigurations.Exporters
+    OtlpTracingConfigurations.Exporters#otlpHttpSpanExporter
+
+/actuator/beans:
+    otlpHttpSpanExporter
+    otlpTracingConnectionDetails
+  => exporter created; 9 established sockets to :4318 while running; 0 export errors.
+
+--- READING ---
+The condition is @ConditionalOnProperty on the endpoint key, so leaving the key UNSET
+(not empty — removed) backs the whole exporter chain off. The loan sample e2e now runs
+with no OTLP exporter at all and its log sweep goes back to being a signal; the demo
+supplies the endpoint on the JVM command line and Jaeger is unaffected.
