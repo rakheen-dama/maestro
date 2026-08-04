@@ -1,0 +1,36 @@
+=== F8 — script robustness, before/after ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=8852bbd0869566a0318653aa83f46759852d55a0 branch=worktree-demo
+timestamp-utc: 2026-08-04T18:56:49Z
+
+--- shellcheck -S warning, BEFORE (HEAD 0039863) ---
+    ^-------^ SC2034 (warning): REPO_ROOT appears unused. Verify use (or export if used externally).
+        ^-^ SC2034 (warning): i appears unused. Verify use (or export if used externally).
+    ^--------------^ SC2034 (warning): MAESTRO_JVM_OPTS appears unused. Verify use (or export if used externally).
+      https://www.shellcheck.net/wiki/SC2034 -- MAESTRO_JVM_OPTS appears unused. ...
+
+--- shellcheck -S warning, AFTER (whole demo/scripts tree) ---
+        ^-^ SC2034 (warning): i appears unused. Verify use (or export if used externally).
+    ^--------------^ SC2034 (warning): MAESTRO_JVM_OPTS appears unused. Verify use (or export if used externally).
+      https://www.shellcheck.net/wiki/SC2034 -- MAESTRO_JVM_OPTS appears unused. ...
+    (both remaining are structural and pre-existing: a seq-loop counter, and
+     jvm-env.sh being a sourced library. The dead REPO_ROOT is gone, as is
+     preflight.sh's never-referenced PG_CONTAINER.)
+
+--- bash -n on every script ---
+    ok  demo/scripts/drive-loan.sh
+    ok  demo/scripts/preflight.sh
+    ok  demo/scripts/reset.sh
+    ok  demo/scripts/restart-loan-app.sh
+    ok  demo/scripts/start-services.sh
+    ok  demo/scripts/stop-services.sh
+    ok  demo/scripts/v1-to-v2-move.sh
+    ok  demo/scripts/lib/jvm-env.sh
+
+--- the Compose V2 gate now in preflight step 0 ---
+    $ docker compose version --short  ->  2.40.3-desktop.1
+
+--- drive-loan.sh's two greps are now scoped to the loan id ---
+    COMPENSATION grep, archived §4 run:
+      2026-08-04T19:35:13.141+02:00  INFO 54347 --- [sample-loan-application-service] [draw-1785864899] [17b4c6a9848a78787fee4c0ec5b03893-23d0dffd37590b2e] b.m.s.l.a.a.i.SimulatedFundingActivities : COMPENSATION: released rate lock 17884bdf-5b71-4c25-b3af-be42904d288b for loan withdraw-1785864899
+    Reserved-rate-lock grep, live log:
+      2026-08-04T20:14:38.714+02:00  INFO 67465 --- [sample-loan-application-service] [rify-1785867264] [6240e7d800f5f05dca1fbccd3be4b0a0-6bddaa5b2161d14b] b.m.s.l.a.a.i.SimulatedFundingActivities : Reserved rate lock e0a021a6-28e1-42eb-89f8-dfca5a95017d for loan reverify-1785867264 at 5.25%

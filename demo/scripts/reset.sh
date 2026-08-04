@@ -20,7 +20,6 @@
 set -euo pipefail
 
 DEMO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REPO_ROOT="$(cd "$DEMO_DIR/.." && pwd)"
 PG_CONTAINER="${PG_CONTAINER:-maestro-demo-postgres-1}"
 VALKEY_CONTAINER="${VALKEY_CONTAINER:-maestro-demo-valkey-1}"
 

@@ -197,7 +197,10 @@ scenario_withdraw() { # DTI 4.0 -> approve -> rate lock -> withdraw -> LIFO comp
   wait_pending_review "$id" 1
   post_decision "$id" 1 APPROVED '[]'
   wait_step_event "$id" '%reserveRateLock' "the rate lock to be reserved (money is now committed)"
-  grep -a 'Reserved rate lock' "$LOAN_LOG" | tail -1 || true
+  # Scope to THIS loan's id. restart-loan-app.sh appends to a log that
+  # start-services.sh truncates, so the file can carry lines from before a
+  # scenario-2 restart; an unscoped `| tail -1` could surface one of those.
+  grep -a "Reserved rate lock .* for loan $id " "$LOAN_LOG" | tail -1 || true
   say "borrower withdraws AFTER the rate lock — this is the expensive case"
   withdraw_app "$id" "found a better rate"
   info "both borrowers still sign, so the workflow reaches withdrawal gate 2 and finds the signal already waiting"
@@ -207,7 +210,8 @@ scenario_withdraw() { # DTI 4.0 -> approve -> rate lock -> withdraw -> LIFO comp
   wait_status "$id" FAILED
   app_json "$id"
   say "compensation the engine ran, LIFO, without the workflow author writing a rollback path"
-  grep -a 'COMPENSATION' "$LOAN_LOG" | tail -5 || info "(no COMPENSATION lines yet — give it 2s and re-grep $LOAN_LOG)"
+  grep -a "COMPENSATION.* for loan $id\b" "$LOAN_LOG" | tail -5 \
+      || info "(no COMPENSATION lines for $id yet — give it 2s and re-grep $LOAN_LOG)"
   print_events "$id"
   say "DONE — $id FAILED with the rate lock released. Point at http://localhost:8080/admin/failed"
 }

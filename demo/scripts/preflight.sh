@@ -23,7 +23,6 @@ set -euo pipefail
 DEMO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$DEMO_DIR/.." && pwd)"
 COMPOSE=("docker" "compose" "-f" "$DEMO_DIR/docker-compose.yml")
-PG_CONTAINER="${PG_CONTAINER:-maestro-demo-postgres-1}"
 
 # 3000 Grafana, 4317 Jaeger OTLP/gRPC, 4318 Jaeger OTLP/HTTP, 5433 Postgres,
 # 6380 Valkey, 8080 admin, 8091/8092/8093 loan services, 8094 the TWO_NODE=1
@@ -49,7 +48,15 @@ for t in docker curl jq lsof nc shasum unzip; do
   command -v "$t" >/dev/null 2>&1 || die "missing host tool: $t"
 done
 docker info >/dev/null 2>&1 || die "Docker is not running"
-ok "docker, curl, jq, lsof, nc, shasum, unzip"
+# Every script in demo/scripts uses the Compose V2 subcommand (`docker compose`,
+# 14 call sites). `command -v docker` does not imply it: a host with only the
+# legacy `docker-compose` binary passes the tool check and then fails at step 4
+# with an unhelpful 'docker: unknown command'.
+docker compose version >/dev/null 2>&1 \
+  || die "'docker compose' (Compose V2) is not available. This demo uses the V2 subcommand
+       everywhere; the legacy 'docker-compose' binary will not do. Update Docker Desktop,
+       or install the compose plugin."
+ok "docker, curl, jq, lsof, nc, shasum, unzip; docker compose $(docker compose version --short 2>/dev/null || echo v2)"
 
 step "1/8 every demo port free (or already held by this demo's own containers)"
 # Ports this demo's own compose project already publishes. Preflight must be

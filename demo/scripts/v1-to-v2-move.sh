@@ -74,6 +74,8 @@ done
 V2_JAR="$SAMPLE_DIR/loan-application-service/build/libs/loan-application-v2.jar"
 PIDFILE="$RUN_DIR/loan-application-service.pid"
 V2_LOG="$RUN_DIR/loan-application-service-v2.log"
+# Overridable like drive-loan.sh:21 and reset.sh:26, rather than hardcoded.
+PG_CONTAINER="${PG_CONTAINER:-maestro-demo-postgres-1}"
 
 STAMP="$(date +%s)"
 INFLIGHT_ID="${INFLIGHT_ID:-inflight-$STAMP}"
@@ -82,7 +84,12 @@ NEW_ID="${NEW_ID:-newloan-$STAMP}"
 log() { printf '\n%s [move] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 die() { printf '\n%s [move] FAILED: %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; exit 1; }
 
-psql_loan() { docker exec maestro-demo-postgres-1 psql -U maestro -d loan_application -tAc "$1"; }
+# This script documents itself as independently runnable, so it checks its own
+# tools rather than relying on preflight having run — same shape as drive-loan.sh.
+need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
+need curl; need jq; need unzip; need shasum; need docker
+
+psql_loan() { docker exec "$PG_CONTAINER" psql -U maestro -d loan_application -tAc "$1"; }
 
 instance_id() { psql_loan "SELECT id FROM maestro_workflow_instance WHERE workflow_id = 'loan-$1';" | tr -d '[:space:]'; }
 instance_status() { psql_loan "SELECT status FROM maestro_workflow_instance WHERE workflow_id = 'loan-$1';" | tr -d '[:space:]'; }
