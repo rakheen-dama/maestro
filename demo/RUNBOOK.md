@@ -596,13 +596,22 @@ presenter who predicts two looks like they know the system.
 **AFTER D1, ALWAYS:**
 
 ```bash
+# CONTINUING INTO D2/D5 (the deck's next two slides) — use this one:
 RESTORE_V1=1 demo/scripts/v1-to-v2-move.sh    # restores just 8091, measured 6 s
-# or
+
+# ONLY if you are stopping here or restarting the whole sequence:
 demo/scripts/reset.sh                          # restores everything, measured 21-22 s
 ```
 
-Leaving v2 running poisons every later scenario's event log with branch-band
-sequence numbers, and D2's walk-through will not match what you say.
+**These two are not interchangeable.** `reset.sh` truncates the Maestro tables
+in all three service databases (§0.3) — and §D2's walk-through and §D5 both
+read a **completed loan** out of that event log. Run `reset.sh` here and the
+next slide has nothing to open. `RESTORE_V1=1` swaps the jar back and leaves
+every loan you have already run in place.
+
+Either way, do one of them: leaving v2 running poisons every later scenario's
+event log with branch-band sequence numbers, and D2's walk-through will not
+match what you say.
 
 **FALLBACK:** *"The deploy assertion is strict and it has caught something —
 which is the point of the assertion. Here is the recorded run."* →

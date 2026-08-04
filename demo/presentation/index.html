@@ -1080,10 +1080,15 @@ body.presenting #presenter { display: grid; }
         something &mdash; which is the point of the assertion. Here is the recorded run.&rdquo; Open
         <code>demo/.evidence/task-3-live-v1-to-v2-move.log</code>, then
         <code>RESTORE_V1=1 demo/scripts/v1-to-v2-move.sh</code> before continuing.</p>
-      <p><strong>AFTER D1, ALWAYS:</strong> <code>RESTORE_V1=1 demo/scripts/v1-to-v2-move.sh</code>
-        (6 s) or <code>demo/scripts/reset.sh</code> (21-22 s). Leaving v2 running poisons every later
-        event log with branch-band sequence numbers, and D2's walk-through will not match what you
-        say. Prerequisite: both jars must already exist &mdash; the script does not build.</p>
+      <p><strong>AFTER D1, ALWAYS &mdash; and the two options are not interchangeable.</strong>
+        Continuing into D2/D5 (the next two slides): <code>RESTORE_V1=1
+        demo/scripts/v1-to-v2-move.sh</code> (6 s), which swaps the jar back and leaves your
+        completed loans in place. Only if you are stopping or restarting the whole sequence:
+        <code>demo/scripts/reset.sh</code> (21-22 s) &mdash; it <em>truncates the Maestro tables</em>,
+        and D2 and D5 both read a completed loan out of that event log. Either way, do one: leaving
+        v2 running poisons every later event log with branch-band sequence numbers, and D2's
+        walk-through will not match what you say. Prerequisite: both jars must already exist
+        &mdash; the script does not build.</p>
     </div>
   </section>
 
