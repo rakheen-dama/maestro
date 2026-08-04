@@ -1,0 +1,37 @@
+=== §0.2 process identity re-print (RUNBOOK.md:118-120, typed verbatim) ===
+loan-application-service     52590   /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/maestro-samples/sample-loan-origination/loan-application-service/build/libs/loan-application-service-0.3.0-SNAPSHOT.jar
+maestro-admin                52602   /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/maestro-admin/build/libs/maestro-admin-0.3.0-SNAPSHOT.jar
+underwriting-service         52598   /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/maestro-samples/sample-loan-origination/underwriting-service/build/libs/underwriting-service-0.3.0-SNAPSHOT.jar
+verification-gateway-service 52594   /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/maestro-samples/sample-loan-origination/verification-gateway-service/build/libs/verification-gateway-service-0.3.0-SNAPSHOT.jar
+
+=== §0.3 reset.sh (typed verbatim) ===
+start 2026-08-04T17:31:12Z
+
+[1m==> 1/4 stopping host JVMs[0m
+19:31:12 [demo] maestro-admin: SIGTERM to pid 52602 (up to 5s grace)
+19:31:13 [demo] maestro-admin: exited cleanly after 1s
+19:31:13 [demo] loan-application-service: SIGTERM to pid 52590 (up to 5s grace)
+19:31:15 [demo] loan-application-service: exited cleanly after 2s
+19:31:15 [demo] underwriting-service: SIGTERM to pid 52598 (up to 5s grace)
+19:31:16 [demo] underwriting-service: exited cleanly after 1s
+19:31:16 [demo] verification-gateway-service: SIGTERM to pid 52594 (up to 5s grace)
+19:31:18 [demo] verification-gateway-service: exited cleanly after 2s
+19:31:18 [demo] Done. Infrastructure containers are untouched — tear them down with:
+19:31:18 [demo]   docker compose -f demo/docker-compose.yml down -v
+
+[1m==> 2/4 truncating Maestro tables[0m
+    loan_application       cleared
+    verification_gateway   cleared
+    underwriting           cleared
+    maestro_admin          cleared
+
+[1m==> 3/4 flushing Valkey[0m
+
+[1m==> 4/4 restarting host JVMs from the v1 jars[0m
+    localhost:8091   health 200
+    localhost:8092   health 200
+    localhost:8093   health 200
+    localhost:8080   health 200
+
+[1m==> clean slate in 17s — 0 workflow instances, all four JVMs healthy[0m
+RESET_EXIT=0

@@ -1,0 +1,56 @@
+=== QA FINDING F2 — §D5's 'there is no SIDE_EFFECT row' is false 2026-08-04T17:32:10Z ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=ddeb9006703069c423b8034bfece2391b40b26e4
+
+--- RUNBOOK.md §D5 says (lines 710-712) ---
+
+There is no `SIDE_EFFECT` row to point at: these workflows never call
+`currentTime()` or `randomUUID()`, so none was ever recorded. Point instead at
+the `FundingActivities.reserveRateLock` row in the D2 event log and say: *"That
+activity mints a random rate-lock id. That is fine — it runs inside an
+activity, so the id it returned is stored on this row, and a replay hands back
+that id instead of minting a new one. Do the same thing between activity calls
+and the second run of the method sees a different value than the first."*
+
+--- what the LIVE event log of the §1 happy loan actually contains ---
+    6  SIDE_EFFECT                   $maestro:currentTime
+    7  SIDE_EFFECT                   $maestro:currentTime
+   13  SIDE_EFFECT                   $maestro:currentTime
+   14  SIDE_EFFECT                   $maestro:currentTime
+count: 4
+
+--- confirmed straight from Postgres ---
+6 | SIDE_EFFECT | $maestro:currentTime
+7 | SIDE_EFFECT | $maestro:currentTime
+13 | SIDE_EFFECT | $maestro:currentTime
+14 | SIDE_EFFECT | $maestro:currentTime
+
+--- does the workflow source really call currentTime()? ---
+38: * {@code workflow.currentTime()} / {@code workflow.randomUUID()} if needed.
+
+--- does the DECK repeat the claim? ---
+(deck does NOT repeat it)
+
+--- MECHANISM (why the rows exist even though the workflow author never wrote currentTime()) ---
+maestro-core/.../engine/DefaultWorkflowOperations.java:506-510 —
+        var results = new ArrayList<T>(count);
+        // Use memoized currentTime() for deterministic deadline on replay
+        var deadline = currentTime().plus(timeout);
+
+        for (int i = 0; i < count; i++) {
+            var remaining = Duration.between(currentTime(), deadline);
+            if (remaining.isNegative() || remaining.isZero()) {
+…and currentTime() itself appends the row:
+        ctx.setReplaying(false);
+        var now = Instant.now();
+        appendEvent(ctx, seq, EventType.SIDE_EFFECT, "$maestro:currentTime", serializer.serialize(now));
+        return now;
+
+So a TIMED awaitSignal records a $maestro:currentTime SIDE_EFFECT to make its deadline
+replay-deterministic. The loan workflow's two withdrawal gates are timed awaits, which is
+why the rows sit at 6/7 (before the document + withdrawn awaits at 8/9) and 13/14 (before
+the package.signed + withdrawn awaits at 15/16).
+
+IMPACT: §D5 tells the presenter, verbatim, 'There is no SIDE_EFFECT row to point at'.
+The FIRST event log the demo puts on screen (§1) contains four of them, and §D2 invites the
+room to read that very table. A questioner reading the screen contradicts the presenter.
+The engine-behaviour explanation is better material than the disclaimer it replaces.
