@@ -433,8 +433,9 @@ the approval for you.
     <id> is FAILED
 ```
 
-**TIMING:** measured **18 s** (verifications 8 s, the underwriting round-trip,
-then the signature fan-in). Budget 45 s.
+**TIMING:** measured **16 s** (verifications 8 s, the underwriting round-trip,
+then the signature fan-in) —
+`demo/.evidence/task-6-runbook-05-scenario4-withdraw.log:63`. Budget 45 s.
 
 **SAY:** *"The workflow author wrote no rollback path. They annotated
 `reserveRateLock` with `@Compensate("releaseRateLock")` and threw an
