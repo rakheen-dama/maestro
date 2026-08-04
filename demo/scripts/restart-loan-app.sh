@@ -60,8 +60,14 @@ export MAESTRO_ADMIN_EVENTS_ENABLED="${MAESTRO_ADMIN_EVENTS_ENABLED:-true}"
 export POSTGRES_DB=loan_application SERVER_PORT="$PORT"
 
 log "starting $NAME from $(basename "$JAR")"
+# -Dmaestro.recovery.poll-interval: see the long note in start-services.sh. The
+# committed default is 60s; the demo shortens it to 5s so the restarted node
+# adopts the parked workflow while the audience is still looking at it. This is
+# THE flag that matters on this script — it is the one the crash scenario waits
+# on — so it must stay identical to start-services.sh.
 java -Xmx256m -XX:+UseSerialGC \
      -Dmanagement.metrics.distribution.percentiles-histogram.maestro.activity.duration=true \
+     -Dmaestro.recovery.poll-interval="${DEMO_RECOVERY_POLL_INTERVAL:-5s}" \
      -Dspring.kafka.template.observation-enabled=true \
      -Dspring.kafka.listener.observation-enabled=true \
      -jar "$JAR" >>"$RUN_DIR/$NAME.log" 2>&1 &

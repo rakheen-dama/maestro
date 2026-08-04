@@ -110,9 +110,26 @@ KAFKA_OBSERVATION_PROPS=(
     -Dspring.kafka.listener.observation-enabled=true
 )
 
+# HOW FAST RECOVERY NOTICES A DEAD NODE.
+#
+# `maestro.recovery.poll-interval` defaults to 60s (MaestroProperties
+# RecoveryProperties). That is a production-sane default — it bounds how often
+# every node scans for workflows whose owner's instance lock has expired — but
+# it is not a watchable one. Scenario 2 (kill -9 + restart) crosses that poll
+# more than once: the restarted node must adopt the parked workflow before it
+# can consume `underwriting.decision`, and again before the rate lock. At the
+# 60s default the demo's headline beat measured 250s of silence
+# (demo/.evidence/task-4-fix-f1-scenario-2-phase-timings.log).
+#
+# 5s here is a DEMO tuning knob, not a fix: recovery is as fast as you
+# configure it to notice. Set as a system property rather than in the samples'
+# application.yml on purpose — the loan e2e suite runs against the committed
+# config, and the committed default should stay production-sane.
+RECOVERY_POLL_PROP="-Dmaestro.recovery.poll-interval=${DEMO_RECOVERY_POLL_INTERVAL:-5s}"
+
 # Every JVM is capped at 256m of heap: four of these plus seven containers has
 # to fit on a laptop.
-JVM_OPTS=(-Xmx256m -XX:+UseSerialGC "$ACTIVITY_HISTOGRAM_PROP" "${KAFKA_OBSERVATION_PROPS[@]}")
+JVM_OPTS=(-Xmx256m -XX:+UseSerialGC "$ACTIVITY_HISTOGRAM_PROP" "$RECOVERY_POLL_PROP" "${KAFKA_OBSERVATION_PROPS[@]}")
 
 log() { printf '%s [demo] %s\n' "$(date +%H:%M:%S)" "$*"; }
 err() { printf '%s [demo] ERROR: %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
