@@ -58,7 +58,19 @@ LOAN_URL="http://localhost:8091"
 UW_URL="http://localhost:8093"
 JAEGER="http://localhost:16686"
 
-V1_JAR="$SAMPLE_DIR/loan-application-service/build/libs/loan-application-service-0.3.0-SNAPSHOT.jar"
+# Resolved by GLOB, not by literal version, and deliberately so. RESTORE_V1=1
+# stops the running JVM *first* and then starts this path: a stale hardcoded
+# version would SIGTERM v1 and then `java -jar` a file that does not exist, so
+# the JVM would die instantly and the health loop would burn its full 120 s
+# before saying anything — with 8091 down the whole time. That is the reset
+# path between rehearsals, the one most likely to be run under time pressure.
+# start-services.sh (jar_for) and restart-loan-app.sh both glob; this now agrees.
+V1_JAR=""
+for _j in "$SAMPLE_DIR/loan-application-service/build/libs/loan-application-service-"*.jar; do
+    [ -f "$_j" ] || continue
+    case "$_j" in *-plain.jar) continue;; esac
+    V1_JAR="$_j"; break
+done
 V2_JAR="$SAMPLE_DIR/loan-application-service/build/libs/loan-application-v2.jar"
 PIDFILE="$RUN_DIR/loan-application-service.pid"
 V2_LOG="$RUN_DIR/loan-application-service-v2.log"
@@ -213,6 +225,11 @@ stop_loan_jvm() { # graceful SIGTERM, no KILL fallback — this is a rolling dep
 # stack between runs of this script without restarting the other three JVMs.
 if [[ "${RESTORE_V1:-0}" == 1 ]]; then
     log "RESTORE_V1=1 — putting the v1 jar back on 8091"
+    # Check the jar BEFORE stopping anything. Failing here costs nothing;
+    # failing after stop_loan_jvm leaves 8091 down for the health loop's full
+    # 120 s while the presenter waits to be told why.
+    [ -n "$V1_JAR" ] && [ -f "$V1_JAR" ] \
+        || die "no v1 jar under $SAMPLE_DIR/loan-application-service/build/libs — 8091 has NOT been touched. Build it: ./gradlew :maestro-samples:sample-loan-origination:loan-application-service:bootJar"
     stop_loan_jvm
     start_loan_jvm "$V1_JAR" "$RUN_DIR/loan-application-service.log"
     exit 0
