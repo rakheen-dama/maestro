@@ -116,15 +116,25 @@ wait_pending_review() { # <appId> <round> <timeout>
     return 1
 }
 
-# drive_to_funded <appId> <docType...> — uploads docs, approves underwriting,
-# collects both signatures. Documents are uploaded by the caller for the new
-# loan (timing matters there), so this takes an optional doc list.
+# approve_and_fund <appId> — carries a loan from "documents collected" to
+# FUNDED. Documents are uploaded by the caller, because for the new loan their
+# TIMING is the whole point.
+#
+# The underwriting service auto-assesses on DTI (UnderwritingWorkflow.autoAssess)
+# and only borderline cases reach the human queue. These loan parameters
+# (250k against 90k income) are a clear-cut AUTO_APPROVE, so no decision is
+# posted by hand — hence the wait-then-fall-back shape rather than an
+# unconditional POST, which would hang forever on a queue nothing ever enters.
 approve_and_fund() { # <appId>
     local id="$1"
-    wait_pending_review "$id" 1 120
-    decide "$id" 1
-    wait_signal_count "$id" underwriting.decision 1 60
+    if ! wait_signal_count "$id" underwriting.decision 1 60; then
+        echo "  no automatic decision — treating as a borderline case in the human queue"
+        wait_pending_review "$id" 1 60
+        decide "$id" 1
+        wait_signal_count "$id" underwriting.decision 1 60
+    fi
     sign_app "$id" b1
+    sleep 0.5
     sign_app "$id" b2
     wait_status "$id" COMPLETED 180
 }
@@ -151,6 +161,58 @@ trace_for() { # <appId> — prints "traceID spanCount" for the richest trace tag
         --data-urlencode 'lookback=2h' --data-urlencode 'limit=50' \
     | jq -r '[.data[] | {id: .traceID, n: (.spans | length)}] | sort_by(-.n) | .[] | "\(.id) \(.n)"'
 }
+
+# start_loan_jvm <jar> <log-file> [EXTRA_ENV=...] — boots one loan-application
+# JVM with exactly the environment demo/scripts/start-services.sh gives it, and
+# claims the same pid file so stop-services.sh keeps working.
+start_loan_jvm() {
+    local jar="$1" logfile="$2"
+    shift 2
+    : >"$logfile"
+    SERVER_PORT=8091 \
+    POSTGRES_HOST=localhost POSTGRES_PORT=5433 POSTGRES_USER=maestro POSTGRES_PASSWORD=maestro \
+    POSTGRES_DB=loan_application \
+    VALKEY_HOST=localhost VALKEY_PORT=6380 \
+    KAFKA_BOOTSTRAP=localhost:29093 \
+    OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces \
+    MAESTRO_ADMIN_EVENTS_ENABLED=true \
+    env ${1+"$@"} \
+        java -Xmx256m -XX:+UseSerialGC \
+            -Dmanagement.metrics.distribution.percentiles-histogram.maestro.activity.duration=true \
+            -Dspring.kafka.template.observation-enabled=true \
+            -Dspring.kafka.listener.observation-enabled=true \
+            -jar "$jar" >>"$logfile" 2>&1 &
+    echo $! >"$PIDFILE"
+    echo "  started $(basename "$jar") as pid $(cat "$PIDFILE") (log: $logfile)"
+    local i
+    for i in $(seq 1 120); do
+        [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "$LOAN_URL/actuator/health")" == 200 ]] && break
+        sleep 1
+    done
+    [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "$LOAN_URL/actuator/health")" == 200 ]] \
+        || { echo "  FAILED: $(basename "$jar") did not become healthy on 8091 — see $logfile" >&2; return 1; }
+    echo "  healthy on 8091"
+}
+
+stop_loan_jvm() { # graceful SIGTERM, no KILL fallback — this is a rolling deploy
+    local pid; pid="$(cat "$PIDFILE")"
+    kill -TERM "$pid"
+    local i
+    for i in $(seq 1 45); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+    if kill -0 "$pid" 2>/dev/null; then
+        echo "  FAILED: pid $pid still alive 45s after SIGTERM" >&2; return 1
+    fi
+    echo "  pid $pid exited on SIGTERM (a real rolling deploy, not kill -9)"
+}
+
+# RESTORE_V1=1 puts the v1 jar back on 8091 and exits — how you reset the demo
+# stack between runs of this script without restarting the other three JVMs.
+if [[ "${RESTORE_V1:-0}" == 1 ]]; then
+    log "RESTORE_V1=1 — putting the v1 jar back on 8091"
+    stop_loan_jvm
+    start_loan_jvm "$V1_JAR" "$RUN_DIR/loan-application-service.log"
+    exit 0
+fi
 
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -180,37 +242,11 @@ event_log "$INFLIGHT_ID" | sed 's/^/    /'
 echo "  VERSION_MARKER rows in its history: $(count_version_markers "$INFLIGHT_ID")"
 
 log "PIN 2 — graceful SIGTERM of the v1 JVM, then start the v2 jar in its place"
-V1_PID="$(cat "$PIDFILE")"
-kill -TERM "$V1_PID"
-for _ in $(seq 1 45); do kill -0 "$V1_PID" 2>/dev/null || break; sleep 1; done
-if kill -0 "$V1_PID" 2>/dev/null; then echo "  FAILED: v1 pid $V1_PID still alive 45s after SIGTERM" >&2; exit 1; fi
-echo "  v1 pid $V1_PID exited on SIGTERM (a real rolling deploy, not kill -9)"
+stop_loan_jvm
 echo "  in-flight loan survived the shutdown as: $(instance_status "$INFLIGHT_ID")"
-
-: >"$V2_LOG"
-SERVER_PORT=8091 \
-POSTGRES_HOST=localhost POSTGRES_PORT=5433 POSTGRES_USER=maestro POSTGRES_PASSWORD=maestro \
-POSTGRES_DB=loan_application \
-VALKEY_HOST=localhost VALKEY_PORT=6380 \
-KAFKA_BOOTSTRAP=localhost:29093 \
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces \
-MAESTRO_ADMIN_EVENTS_ENABLED=true \
-LOGGING_LEVEL_IO_B2MASH_MAESTRO_CORE_ENGINE=DEBUG \
-    java -Xmx256m -XX:+UseSerialGC \
-        -Dmanagement.metrics.distribution.percentiles-histogram.maestro.activity.duration=true \
-        -Dspring.kafka.template.observation-enabled=true \
-        -Dspring.kafka.listener.observation-enabled=true \
-        -jar "$V2_JAR" >>"$V2_LOG" 2>&1 &
-V2_PID=$!
-echo "$V2_PID" >"$PIDFILE"
-echo "  v2 jar started as pid $V2_PID (log: $V2_LOG)"
-for _ in $(seq 1 120); do
-    [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "$LOAN_URL/actuator/health")" == 200 ]] && break
-    sleep 1
-done
-[[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "$LOAN_URL/actuator/health")" == 200 ]] \
-    || { echo "  FAILED: v2 did not become healthy" >&2; exit 1; }
-echo "  v2 is healthy on 8091"
+# DEBUG on the engine package only for the v2 JVM: ParkingLot's unpark lines
+# are the concurrent-parking evidence PIN 5 reads back.
+start_loan_jvm "$V2_JAR" "$V2_LOG" LOGGING_LEVEL_IO_B2MASH_MAESTRO_CORE_ENGINE=DEBUG
 
 log "PIN 3 — the in-flight loan finishes on the SEQUENTIAL path under v2"
 # It was parked mid-verification; the results published while the JVM was down
