@@ -81,8 +81,9 @@ passes. (Maestro's own consumers set `auto.offset.reset=earliest` and were
 never at risk.)
 
 **Timing:** 3–6 minutes on a truly cold machine (the image pull dominates).
-**Measured warm, with `DEMO_SKIP_PULL=1`: 36 s**, including a full Gradle
-build (`demo/.evidence/task-4-fix-f3-f4-preflight.log`).
+**Measured warm, with `DEMO_SKIP_PULL=1`: 42 s** (up from 36 s — the B1
+consumer-group readiness gate adds ~4–5 s to every start), including a full
+Gradle build (`demo/.evidence/task-6-REVERIFY-timing-drift.log`).
 
 **Re-running it needs the host JVMs stopped first.** The port check accepts
 ports published by this demo's own *containers*, but nothing else — so with
@@ -150,8 +151,10 @@ databases, clears `maestro_admin`, flushes Valkey, restarts the JVMs **from
 the v1 jars**. Containers stay up, so Grafana history and Jaeger traces
 survive on purpose. Idempotent; safe to run twice.
 
-**Timing:** measured **17 s**. It prints `clean slate in <n>s`. If it takes
-longer than 30 s, something is wedged — `docker compose -f demo/docker-compose.yml ps`.
+**Timing:** measured **21–22 s** (`demo/.evidence/task-6-REVERIFY-timing-drift.log`;
+up from 17 s — the B1 consumer-group readiness gate adds ~4–5 s to every
+start). It prints `clean slate in <n>s`. If it takes longer than 30 s,
+something is wedged — `docker compose -f demo/docker-compose.yml ps`.
 
 Note: reset does not drain Kafka. A handful of `unknown workflow` warnings in
 `demo/.run/*.log` right after a reset are stale messages for deleted
@@ -588,7 +591,7 @@ presenter who predicts two looks like they know the system.
 ```bash
 RESTORE_V1=1 demo/scripts/v1-to-v2-move.sh    # restores just 8091, measured 6 s
 # or
-demo/scripts/reset.sh                          # restores everything, measured 17 s
+demo/scripts/reset.sh                          # restores everything, measured 21-22 s
 ```
 
 Leaving v2 running poisons every later scenario's event log with branch-band
