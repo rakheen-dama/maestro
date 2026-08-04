@@ -39,6 +39,16 @@ reference these numbers.
 | `start-services.sh` / `stop-services.sh` | All four JVMs at once. Only when *none* of them is running. |
 | `v1-to-v2-move.sh` | Deep dive D1. `RESTORE_V1=1` puts v1 back on 8091 alone. |
 
+**The deck — decide this before the room fills.** `demo/presentation/index.html`
+opens in any browser, no server. `→`/`←` navigate, `g` jumps to a slide, `f`
+fullscreen, `p` the in-page presenter panel, **`P` the presenter in a second
+window**. Project at **1440×900 or larger**: the deck never clips a slide, but
+it scales dense ones down to fit, and `p` takes 30% of the height for notes —
+at 1280×720 with `p` on, the closing authoring slide renders at 62% and the D1
+code slide at 68%, which is fine on a laptop and small from the back of a room.
+`P` keeps the projected stage full size and puts the notes on your screen only,
+so it is the better setup whenever you have two displays.
+
 ---
 
 ## §0 — T-30 pre-flight
