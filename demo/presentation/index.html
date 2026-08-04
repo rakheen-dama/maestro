@@ -1174,6 +1174,100 @@ body.presenting #presenter { display: grid; }
     </div>
   </section>
 
+  <section class="slide" data-act="III" data-act-name="Deep dives" data-id="d2" data-title="D2 — how memoization works">
+    <p class="eyebrow">Act III <span class="sep">/</span> deep dive 2 <span class="sep">/</span> <em>&sect;D2</em></p>
+    <h2>The sequence number is the step&rsquo;s address.</h2>
+    <div class="cols cols-2" style="align-items:start">
+      <div>
+        <table class="eventlog">
+          <thead><tr><th>seq</th><th>type</th><th>detail</th></tr></thead>
+          <tbody>
+            <tr><td class="seq">1</td><td class="type">ACTIVITY_COMPLETED</td><td>LoanActivities.recordApplication</td></tr>
+            <tr><td class="seq">2</td><td class="type">ACTIVITY_COMPLETED</td><td>LoanMessagingActivities.requestVerifications</td></tr>
+            <tr><td class="seq">3</td><td class="type">SIGNAL_RECEIVED</td><td class="sig">$maestro:awaitSignal:verification.result</td></tr>
+            <tr class="dots"><td>&hellip;</td><td>&hellip;</td><td>&hellip;</td></tr>
+            <tr><td class="seq">&nbsp;</td><td class="type">ACTIVITY_COMPLETED</td><td>FundingActivities.reserveRateLock</td></tr>
+            <tr><td class="seq">&nbsp;</td><td class="type">SIGNAL_RECEIVED</td><td class="sig">$maestro:awaitSignal:package.signed</td></tr>
+            <tr><td class="seq">&nbsp;</td><td class="type">ACTIVITY_COMPLETED</td><td>FundingActivities.disburse</td></tr>
+            <tr><td class="seq">&nbsp;</td><td class="type">WORKFLOW_COMPLETED</td><td>&nbsp;</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <div class="card accent">
+          <h3>On recovery, the method runs from the top</h3>
+          <p>At each activity call the proxy asks Postgres: <em>is there a row at this
+            sequence number?</em> If yes, it returns the stored result and the activity
+            body never executes. If no, it executes, persists, returns.</p>
+        </div>
+        <div class="card" style="margin-top:.9rem">
+          <h3>There is no snapshot</h3>
+          <p>No serialised continuation, no thread state on disk. This table is the
+            whole of it. <code>SIDE_EFFECT</code> rows are
+            <code>workflow.currentTime()</code> and <code>workflow.randomUUID()</code>
+            &mdash; the non-deterministic bits, recorded once so replay sees the same
+            values.</p>
+        </div>
+        <div class="card" style="margin-top:.9rem">
+          <h3>Two nodes cannot both win</h3>
+          <p><code>idx_wf_event_replay</code> is
+            <code>UNIQUE (workflow_instance_id, sequence_number)</code>. Racing nodes
+            cannot both persist a result for the same step.</p>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <p><strong>SAY:</strong> One row per step; the sequence number is the step&rsquo;s address.
+        On recovery the method is re-invoked from the top. At each activity call the proxy asks
+        Postgres whether there is a row at this sequence number. If yes it returns the stored
+        result and the activity body never executes; if no, it executes, persists, returns. There
+        is no snapshot, no serialised continuation, no thread state on disk &mdash; this table is
+        the whole of it.</p>
+      <p><strong>DO:</strong> &sect;D2 &mdash; <code>demo/scripts/drive-loan.sh events &lt;id&gt;</code>
+        against any completed loan. To show the uniqueness guarantee:
+        <code>docker exec maestro-demo-postgres-1 psql -U maestro -d loan_application -c '\d maestro_workflow_event'</code>.
+        No moving parts; this runs as long as you talk.</p>
+      <p><strong>WATCH OUT:</strong> if D1 has been run and not restored, the numbers will jump
+        into the branch bands (5001 / 6001 / 7001) and this walk-through will not match what you
+        say. That is why D1 ends with a restore.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="III" data-act-name="Deep dives" data-id="d3" data-title="D3 — the evidence">
+    <p class="eyebrow">Act III <span class="sep">/</span> deep dive 3 <span class="sep">/</span> <em>&sect;D3</em></p>
+    <h2>Why I am willing to run <span class="mono rose" style="font-size:.82em">kill -9</span> in front of you.</h2>
+    <ol class="beats">
+      <li><span class="t">2 h</span><span class="b">chaos window, verdict PASS</span></li>
+      <li><span class="t">2,376</span><span class="b">workflows driven</span></li>
+      <li class="money"><span class="t">0</span><span class="b">invariant violations</span></li>
+      <li class="money"><span class="t">0</span><span class="b">duplicate side effects</span></li>
+    </ol>
+    <div class="cols cols-2">
+      <div class="card">
+        <h3>What the harness does</h3>
+        <p>It kills nodes, partitions the lock backend and delays Kafka while
+          workflows run &mdash; then checks two invariants: no workflow ends in an
+          inconsistent state, and no side effect happens twice.</p>
+      </div>
+      <div class="card accent">
+        <h3>It found four engine defects &mdash; that is the point</h3>
+        <p>They are fixed. A harness that finds nothing is a harness that is not
+          looking. This is the difference between believing the engine is correct and
+          having evidence for it.</p>
+      </div>
+    </div>
+    <p class="mono small muted wide" style="margin-top:1.2rem">run id 20260801-214325--6973268155056049009 &nbsp;&middot;&nbsp; soak of record in tasks/todo.md</p>
+    <div class="notes">
+      <p><strong>SAY:</strong> The harness kills nodes, partitions the lock backend and delays
+        Kafka while workflows run, then checks two invariants: no workflow ends in an inconsistent
+        state, and no side effect happens twice. It found four engine defects. They are fixed.
+        That is why I am willing to run <code>kill -9</code> in front of you.</p>
+      <p><strong>DO:</strong> &sect;D3 &mdash; no live commands. <strong>Do not run the chaos
+        harness live.</strong> It is a two-hour job and it is out of scope for this demo by
+        design.</p>
+    </div>
+  </section>
+
   <p class="hint">&rarr; next &middot; g jump &middot; p presenter &middot; f fullscreen</p>
 </main>
 
