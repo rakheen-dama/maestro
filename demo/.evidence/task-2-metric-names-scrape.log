@@ -1,0 +1,61 @@
+=== identity ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+HEAD: afb322c4fc70c2913f8059ecc80a9047ddaddfa2
+branch: worktree-demo
+timestamp: 2026-08-04T07:58:41Z
+
+Purpose: every metric name used by demo/grafana/dashboards/maestro.json is
+verified against this live scrape of loan-application-service (8091).
+
+=== maestro meter names (HELP/TYPE) from http://localhost:8091/actuator/prometheus ===
+# TYPE maestro_activity_duration_seconds histogram
+# TYPE maestro_activity_duration_seconds_max gauge
+# TYPE maestro_recovery_adopted_total counter
+# TYPE maestro_recovery_scanned_total counter
+# TYPE maestro_signal_consumed_total counter
+# TYPE maestro_workflow_compensated_total counter
+# TYPE maestro_workflow_completed_total counter
+# TYPE maestro_workflow_failed_total counter
+# TYPE maestro_workflow_started_total counter
+# TYPE maestro_workflows_parked gauge
+# TYPE maestro_workflows_running gauge
+
+=== sample series with label sets (buckets elided) ===
+maestro_activity_duration_seconds_count{activity="FundingActivities.disburse",outcome="completed",workflow="loan-application"} 1
+maestro_activity_duration_seconds_sum{activity="FundingActivities.disburse",outcome="completed",workflow="loan-application"} 3.89791E-4
+maestro_activity_duration_seconds_count{activity="FundingActivities.releaseRateLock",outcome="completed",workflow="loan-application"} 1
+maestro_activity_duration_seconds_sum{activity="FundingActivities.releaseRateLock",outcome="completed",workflow="loan-application"} 1.92708E-4
+maestro_activity_duration_seconds_count{activity="FundingActivities.reserveRateLock",outcome="completed",workflow="loan-application"} 2
+maestro_activity_duration_seconds_sum{activity="FundingActivities.reserveRateLock",outcome="completed",workflow="loan-application"} 0.001353667
+maestro_activity_duration_seconds_count{activity="LoanActivities.recordApplication",outcome="completed",workflow="loan-application"} 2
+maestro_activity_duration_seconds_sum{activity="LoanActivities.recordApplication",outcome="completed",workflow="loan-application"} 9.30125E-4
+maestro_activity_duration_seconds_count{activity="LoanMessagingActivities.requestUnderwriting",outcome="completed",workflow="loan-application"} 2
+maestro_activity_duration_seconds_sum{activity="LoanMessagingActivities.requestUnderwriting",outcome="completed",workflow="loan-application"} 0.022030292
+maestro_activity_duration_seconds_count{activity="LoanMessagingActivities.requestVerifications",outcome="completed",workflow="loan-application"} 2
+maestro_activity_duration_seconds_sum{activity="LoanMessagingActivities.requestVerifications",outcome="completed",workflow="loan-application"} 0.145535
+maestro_activity_duration_seconds_max{activity="FundingActivities.disburse",outcome="completed",workflow="loan-application"} 0.0
+maestro_activity_duration_seconds_max{activity="FundingActivities.releaseRateLock",outcome="completed",workflow="loan-application"} 0.0
+maestro_activity_duration_seconds_max{activity="FundingActivities.reserveRateLock",outcome="completed",workflow="loan-application"} 0.0
+maestro_activity_duration_seconds_max{activity="LoanActivities.recordApplication",outcome="completed",workflow="loan-application"} 0.0
+maestro_activity_duration_seconds_max{activity="LoanMessagingActivities.requestUnderwriting",outcome="completed",workflow="loan-application"} 0.0
+maestro_activity_duration_seconds_max{activity="LoanMessagingActivities.requestVerifications",outcome="completed",workflow="loan-application"} 0.0
+maestro_recovery_adopted_total 0.0
+maestro_recovery_scanned_total 0.0
+maestro_signal_consumed_total{signal="application.withdrawn",workflow="loan-application"} 1.0
+maestro_signal_consumed_total{signal="document.uploaded",workflow="loan-application"} 3.0
+maestro_signal_consumed_total{signal="package.signed",workflow="loan-application"} 3.0
+maestro_signal_consumed_total{signal="underwriting.decision",workflow="loan-application"} 2.0
+maestro_signal_consumed_total{signal="verification.result",workflow="loan-application"} 6.0
+maestro_workflow_compensated_total{workflow="loan-application"} 1.0
+maestro_workflow_completed_total{workflow="loan-application"} 1.0
+maestro_workflow_failed_total{workflow="loan-application"} 1.0
+maestro_workflow_started_total{workflow="loan-application"} 2.0
+maestro_workflows_parked 0.0
+maestro_workflows_running 0.0
+
+=== histogram bucket series count (needed for histogram_quantile) ===
+414
+
+=== NOTE: maestro_standdown_total is registered lazily on first stand-down
+(MicrometerEngineObserver.standDown), so it is absent from a quiet stack.
+0

@@ -1,0 +1,440 @@
+{
+  "uid": "maestro-demo",
+  "title": "Maestro — Loan Origination Demo",
+  "description": "Panels for the Maestro demo stack. Every metric name here was verified against a live /actuator/prometheus scrape — see demo/.evidence/task-2-metric-names-scrape.log. Datasource is referenced by the pinned uid 'maestro-prometheus' from demo/grafana/provisioning/datasources/prometheus.yml.",
+  "tags": ["maestro", "demo"],
+  "editable": false,
+  "schemaVersion": 41,
+  "version": 1,
+  "refresh": "5s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": ["5s", "10s", "30s", "1m", "5m"]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "maestro-prometheus"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values(maestro_workflows_running, service)",
+          "refId": "service-variable"
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": ["All"],
+          "value": ["$__all"]
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Workflows started / completed / failed",
+      "description": "Rate of the three lifecycle counters (maestro.workflow.started/completed/failed). Counters are per-JVM; summed across the selected services.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "maestro-prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 16,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "auto",
+            "spanNulls": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "failed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "completed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "started"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": ["lastNotNull", "max"]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "maestro-prometheus"
+          },
+          "expr": "sum(rate(maestro_workflow_started_total{service=~\"$service\"}[$__rate_interval]))",
+          "legendFormat": "started",
+          "range": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "maestro-prometheus"
+          },
+          "expr": "sum(rate(maestro_workflow_completed_total{service=~\"$service\"}[$__rate_interval]))",
+          "legendFormat": "completed",
+          "range": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "maestro-prometheus"
+          },
+          "expr": "sum(rate(maestro_workflow_failed_total{service=~\"$service\"}[$__rate_interval]))",
+          "legendFormat": "failed",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Workflows parked",
+      "description": "maestro.workflows.parked — workflows whose virtual thread is parked on a signal or timer. This is the panel the kill -9 scenario points at: parked workflows survive the kill and are re-adopted by recovery on the surviving node. The gauge is node-local by design, so it is summed across the selected services.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "maestro-prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 16,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "blue",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "maestro-prometheus"
+          },
+          "expr": "sum(maestro_workflows_parked{service=~\"$service\"})",
+          "legendFormat": "parked",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Activity duration p50 / p95 by activity",
+      "description": "histogram_quantile over maestro.activity.duration's bucket series. The Timer is recorded on live execution only — replayed (memoized) activity calls are deliberately not timed, so these are true execution latencies.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "maestro-prometheus"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "auto",
+            "spanNulls": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*p50.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [8, 4]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": ["lastNotNull", "max"]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "maestro-prometheus"
+          },
+          "expr": "histogram_quantile(0.50, sum by (activity, le) (rate(maestro_activity_duration_seconds_bucket{service=~\"$service\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{activity}}",
+          "range": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "maestro-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (activity, le) (rate(maestro_activity_duration_seconds_bucket{service=~\"$service\"}[$__rate_interval])))",
+          "legendFormat": "p95 {{activity}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Recovery adoptions",
+      "description": "maestro.recovery.adopted — cumulative count of workflow instances a recovery pass has adopted (picked up from a dead or restarted node). Stays flat until something dies; steps up after the kill -9 scenario. The sparkline shows the rate over the dashboard window.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "maestro-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 19
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "maestro-prometheus"
+          },
+          "expr": "sum(maestro_recovery_adopted_total{service=~\"$service\"})",
+          "legendFormat": "adopted",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Stand-downs by reason",
+      "description": "maestro.standdown, broken down by reason — a node declining to run a workflow it does not hold the lock for. This meter is registered lazily on the first stand-down, so on a quiet single-node stack the series does not exist yet and the panel reads 0 rather than 'No data'. It becomes interesting in the two-node (TWO_NODE=1) and kill -9 scenarios.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "maestro-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 8,
+        "y": 19
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 60,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": ["lastNotNull", "max"]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "maestro-prometheus"
+          },
+          "expr": "sum by (reason) (rate(maestro_standdown_total{service=~\"$service\"}[$__rate_interval]))",
+          "legendFormat": "{{reason}}",
+          "range": true
+        },
+        {
+          "refId": "B",
+          "hide": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "maestro-prometheus"
+          },
+          "expr": "vector(0)",
+          "legendFormat": "no stand-downs",
+          "range": true
+        }
+      ]
+    }
+  ]
+}
