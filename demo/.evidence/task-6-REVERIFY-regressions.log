@@ -1,0 +1,36 @@
+=== RE-VERIFY: regressions at HEAD fb29c9f2baa3711acf13bac642489c1d12bfc933 2026-08-04T18:11:14Z ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo branch=worktree-demo
+
+--- (4a) constraints still zero-diff vs main ---
+  maestro-core                                         zero-diff
+  maestro-samples/sample-loan-origination/e2e          zero-diff
+  maestro-integration-tests                            zero-diff
+
+--- (4b) deck still self-contained: any external reference? ---
+  (none — still fully self-contained)
+  deck sha256: cafe88c9f34881d7d60af50927bdba3b43dd77f5f527d64a4194623a3d6cab37
+
+--- (4c) DO: blocks still resolve to real runbook headings ---
+  OK      §0
+  OK      §1
+  OK      §2
+  OK      §3
+  OK      §4
+  OK      §5
+  OK      §D1
+  OK      §D2
+  OK      §D3
+  OK      §D4
+  OK      §D5
+  OK      §D6
+  DO: block count: 20
+
+--- (4d) scripts still syntactically valid ---
+  drive-loan.sh                            ok
+  preflight.sh                             ok
+  reset.sh                                 ok
+  restart-loan-app.sh                      ok
+  start-services.sh                        ok
+  stop-services.sh                         ok
+  v1-to-v2-move.sh                         ok
+  jvm-env.sh                               ok

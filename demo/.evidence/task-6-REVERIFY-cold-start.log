@@ -1,0 +1,159 @@
+=== RE-VERIFY B1: COLD START FROM down -v  2026-08-04T18:08:23Z ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=fb29c9f2baa3711acf13bac642489c1d12bfc933 branch=worktree-demo
+
+--- teardown ---
+20:08:29 [demo] verification-gateway-service: exited cleanly after 2s
+20:08:29 [demo] Done. Infrastructure containers are untouched — tear them down with:
+20:08:29 [demo]   docker compose -f demo/docker-compose.yml down -v
+ Network maestro-demo_default  Removing
+ Volume maestro-demo_demo-pgdata  Removed
+ Network maestro-demo_default  Removed
+(eval):1: no matches found: demo/.run/*.pid
+
+--- PROVING THE COLD PRECONDITION ---
+maestro-demo containers: 0
+maestro-demo volumes:    0
+(eval):1: no matches found: demo/.run/*.pid
+pid files:               0
+ports held:              0
+
+--- SINGLE preflight, NO skips, NO retry: demo/scripts/preflight.sh ---
+
+[1m==> 0/8 host tools[0m
+    [32mok[0m   docker, curl, jq, lsof, nc, shasum, unzip
+
+[1m==> 1/8 every demo port free (or already held by this demo's own containers)[0m
+    [32mok[0m   11 of 11 ports free, none held by a foreign process
+
+[1m==> 2/8 pull images[0m
+ kafka-init Skipped - Image is already being pulled by kafka 
+ valkey Pulling 
+ prometheus Pulling 
+ postgres Pulling 
+ grafana Pulling 
+ jaeger Pulling 
+ kafka Pulling 
+ prometheus Pulled 
+ jaeger Pulled 
+ valkey Pulled 
+ postgres Pulled 
+ grafana Pulled 
+ kafka Pulled 
+    [32mok[0m   images present
+
+[1m==> 3/8 build jars (including v2)[0m
+    [32mok[0m   bootJar + v2BootJar
+    [32mok[0m   loan-application-v2.jar present
+
+[1m==> 4/8 containers up and healthy[0m
+ Network maestro-demo_default  Creating
+ Network maestro-demo_default  Created
+ Volume maestro-demo_demo-pgdata  Creating
+ Volume maestro-demo_demo-pgdata  Created
+ Container maestro-demo-kafka-1  Creating
+ Container maestro-demo-postgres-1  Creating
+ Container maestro-demo-jaeger-1  Creating
+ Container maestro-demo-valkey-1  Creating
+ Container maestro-demo-prometheus-1  Creating
+ Container maestro-demo-prometheus-1  Created
+ Container maestro-demo-grafana-1  Creating
+ Container maestro-demo-postgres-1  Created
+ Container maestro-demo-jaeger-1  Created
+ Container maestro-demo-valkey-1  Created
+ Container maestro-demo-kafka-1  Created
+ Container maestro-demo-kafka-init-1  Creating
+ Container maestro-demo-grafana-1  Created
+ Container maestro-demo-kafka-init-1  Created
+ Container maestro-demo-jaeger-1  Starting
+ Container maestro-demo-prometheus-1  Starting
+ Container maestro-demo-kafka-1  Starting
+ Container maestro-demo-valkey-1  Starting
+ Container maestro-demo-postgres-1  Starting
+ Container maestro-demo-valkey-1  Started
+ Container maestro-demo-kafka-1  Started
+ Container maestro-demo-kafka-1  Waiting
+ Container maestro-demo-prometheus-1  Started
+ Container maestro-demo-grafana-1  Starting
+ Container maestro-demo-postgres-1  Started
+ Container maestro-demo-jaeger-1  Started
+ Container maestro-demo-grafana-1  Started
+ Container maestro-demo-kafka-1  Healthy
+ Container maestro-demo-kafka-init-1  Starting
+ Container maestro-demo-kafka-init-1  Started
+    [32mok[0m   postgres healthy
+    [32mok[0m   valkey healthy
+    [32mok[0m   kafka healthy
+    [32mok[0m   prometheus healthy
+    [32mok[0m   grafana healthy
+    [32mok[0m   jaeger http://localhost:16686/ answers (200)
+    [32mok[0m   jaeger http://localhost:4318/v1/traces answers (405)
+    [32mok[0m   kafka-init exited 0
+
+[1m==> 5/8 Kafka topics (never auto-created)[0m
+    [32mok[0m   11 topics present
+
+[1m==> 6/8 start host JVMs (and wait for their Kafka partitions, not just health 200)[0m
+20:08:57 [demo] Postgres reachable at localhost:5433
+20:08:57 [demo] Valkey reachable at localhost:6380
+20:08:57 [demo] Kafka reachable at localhost:29093
+20:08:57 [demo] Jaeger-OTLP reachable at localhost:4318
+20:08:57 [demo] Waiting for 11 Kafka topics to exist...
+20:08:58 [demo] All Kafka topics present
+20:08:59 [demo] All service ports are free
+20:08:59 [demo] DEMO_SKIP_BUILD=1 — reusing existing boot jars
+20:08:59 [demo] Starting loan-application-service on port 8091...
+20:08:59 [demo] Starting verification-gateway-service on port 8092...
+20:08:59 [demo] Starting underwriting-service on port 8093...
+20:08:59 [demo] Starting maestro-admin on port 8080...
+20:09:04 [demo] loan-application-service is up (HTTP 200 from http://localhost:8091/actuator/health)
+20:09:04 [demo] verification-gateway-service is up (HTTP 200 from http://localhost:8092/actuator/health)
+20:09:05 [demo] underwriting-service is up (HTTP 200 from http://localhost:8093/actuator/health)
+20:09:05 [demo] maestro-admin is up (HTTP 200 from http://localhost:8080/actuator/health)
+20:09:09 [demo] Kafka consumer group 'verification-gateway' is stable (1 member(s)) — its partitions are assigned
+20:09:11 [demo] Kafka consumer group 'underwriting' is stable (1 member(s)) — its partitions are assigned
+20:09:11 [demo] All demo services are up. PID files in /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/demo/.run:
+    loan-application-service         pid 66035
+    maestro-admin                    pid 66047
+    underwriting-service             pid 66043
+    verification-gateway-service     pid 66039
+
+  Grafana        http://localhost:3000
+  Prometheus     http://localhost:9090
+  Jaeger UI      http://localhost:16686
+  maestro-admin  http://localhost:8080
+  loan-application     http://localhost:8091
+  verification-gateway http://localhost:8092
+  underwriting         http://localhost:8093
+    [32mok[0m   loan-application 8091, verification-gateway 8092, underwriting 8093, admin 8080
+    [32mok[0m   consumer groups verification-gateway + underwriting Stable — safe to publish
+
+[1m==> 7/8 throwaway loan end to end[0m
+    [32mok[0m   preflight-1785866951 COMPLETED (path is warm: JIT, connection pools, Kafka consumer groups)
+         clear it before the demo with: demo/scripts/reset.sh
+
+[1m==> 8/8 process identity — trust nothing on screen until this matches[0m
+    SERVICE                    PID      JAR-SHA256(12) JAR
+    loan-application-service   66035    0023c6f46fd8   loan-application-service-0.3.0-SNAPSHOT.jar
+    verification-gateway-service 66039    d24802d3bdcd   verification-gateway-service-0.3.0-SNAPSHOT.jar
+    underwriting-service       66043    822ace7902c6   underwriting-service-0.3.0-SNAPSHOT.jar
+    maestro-admin              66047    d549c7a85b02   maestro-admin-0.3.0-SNAPSHOT.jar
+         loan-application started at:Tue Aug  4 20:08:59 2026      (if that is not from this minute, you are looking at a stale JVM)
+
+[32mPREFLIGHT PASSED in 60s.[0m Now run: demo/scripts/reset.sh
+PREFLIGHT_EXIT=0
+WALL_SECONDS=60
+end 2026-08-04T18:09:31Z
+
+=== THE ORDERING MARGIN — the whole point of B1 ===
+throwaway loan id: preflight-1785866951
+--- verification-gateway: domain-topic partitions assigned ---
+2026-08-04T20:09:07.868+02:00  INFO 66039 --- [sample-verification-gateway-service] [ntainer#0-0-C-1] [                                                 ] o.s.k.l.KafkaMessageListenerContainer    : verification-gateway: partitions assigned: [loans.verification.requests-0, loans.verification.requests-1, loans.verification.requests-2]
+--- underwriting: domain-topic partitions assigned ---
+2026-08-04T20:09:07.916+02:00  INFO 66043 --- [sample-underwriting-service] [ntainer#0-0-C-1] [                                                 ] o.s.k.l.KafkaMessageListenerContainer    : underwriting: partitions assigned: [loans.underwriting.requests-0, loans.underwriting.requests-1, loans.underwriting.requests-2]
+--- loan-application: workflow started (publishes the verification request) ---
+2026-08-04T20:09:11.341+02:00  INFO 66035 --- [sample-loan-application-service] [nio-8091-exec-3] [710908d6183fd6a5f708b04cddd4a728-74c8a2db5e556446] i.b.m.core.engine.WorkflowExecutor       : Started workflow 'loan-preflight-1785866951' (type=loan-application, id=aa3769b3-8c74-4079-bae8-b0e10509aab7)
+
+--- did the request actually get consumed this time? ---
+verification_gateway workflow instances: 3
+throwaway loan event count (2 == still stuck; 18 == completed): 18
+throwaway loan status: COMPLETED
