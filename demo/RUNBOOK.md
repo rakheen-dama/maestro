@@ -720,14 +720,20 @@ Four sentences:
    domain events on Kafka.
 
 Point at the running stack as proof of (1): `docker compose -f
-demo/docker-compose.yml ps` — seven containers, none of them Maestro.
+demo/docker-compose.yml ps` — **six** containers, none of them Maestro:
+postgres, valkey, kafka, prometheus, grafana, jaeger. (The compose file defines
+seven services; the seventh, `kafka-init`, created the eleven topics and
+exited, so it shows up under `ps -a` and not under `ps`. Say six — that is what
+the room can count on the projector.)
 
 **If asked about footprint:** the whole demo peaked at **2.27 GiB** (2,329 MiB,
-the sum of per-component peaks) across those seven containers plus four host
+the sum of per-component peaks) across those six containers plus four host
 JVMs, against a ~4 GB budget; each service runs `-Xmx256m`, and the largest
 single consumer is Kafka at 656 MiB. `TWO_NODE=1` adds ~360 MiB for a fifth
 JVM, still inside the budget
-(`demo/.evidence/task-2-peak-memory.log`).
+(`demo/.evidence/task-2-peak-memory.log`). A QA re-measurement put the true
+simultaneous peak — the max of the instantaneous sum, not the sum of peaks — at
+**2.42 GiB** including the fifth JVM (`demo/.evidence/task-6-peak-memory.log`).
 
 ---
 
