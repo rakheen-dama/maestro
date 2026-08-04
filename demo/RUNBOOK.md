@@ -28,6 +28,17 @@ reference these numbers.
 | underwriting | <http://localhost:8093> |
 | Postgres / Valkey / Kafka | 5433 / 6380 / 29093 |
 
+**The scripts, and when each one is the right answer**
+
+| Script | Use it when |
+|---|---|
+| `preflight.sh` | Once, T-30. Cold start plus every gate. |
+| `reset.sh` | Between rehearsals. Also un-does the v1→v2 move. |
+| `drive-loan.sh <scenario>` | Every scenario. `happy`, `conditions`, `withdraw`, `crash`, `finish <id>`, `events <id>`. |
+| `restart-loan-app.sh` | After scenario 2's `kill -9`, when only loan-application died. |
+| `start-services.sh` / `stop-services.sh` | All four JVMs at once. Only when *none* of them is running. |
+| `v1-to-v2-move.sh` | Deep dive D1. `RESTORE_V1=1` puts v1 back on 8091 alone. |
+
 ---
 
 ## §0 — T-30 pre-flight
@@ -44,8 +55,10 @@ demo/scripts/preflight.sh
 healthy → verifies all 11 Kafka topics exist → starts the four host JVMs →
 drives one throwaway loan end to end → prints the process-identity table.
 
-**Timing:** 3–6 minutes cold (image pull dominates), ~90 s if images are
-already local, ~45 s with `DEMO_SKIP_PULL=1 DEMO_SKIP_BUILD=1`.
+**Timing:** 3–6 minutes on a truly cold machine (the image pull dominates).
+**Measured warm, with `DEMO_SKIP_PULL=1`: 36 s**, including a full Gradle
+build. It is safe to re-run: ports already published by this demo's own
+containers are accepted, only a foreign listener fails it.
 
 **Should appear:** the last line is
 
@@ -60,8 +73,8 @@ failed. Fix it now, not on stage.
 
 | Symptom | Fix |
 |---|---|
-| `ports already in use: 5433 6380 29093` | The loan sample's *own* compose stack is up. `docker compose -f maestro-samples/sample-loan-origination/docker-compose.yml down`. The two stacks cannot both run. |
-| `ports already in use: 8091 8092 8093 8080` | `demo/scripts/stop-services.sh` |
+| `ports held by something that is not this demo: 5433 6380 29093` | The loan sample's *own* compose stack is up. `docker compose -f maestro-samples/sample-loan-origination/docker-compose.yml down`. The two stacks cannot both run. |
+| `ports held by something that is not this demo: 8091 8092 8093 8080` | `demo/scripts/stop-services.sh` |
 | `topics still missing after 120s` | `docker compose -f demo/docker-compose.yml logs kafka-init`. Topics are **never** auto-created (`KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"`); a missing topic makes `startWorkflow` hang, not fail. |
 | `loan-application-v2.jar missing` | `./gradlew :maestro-samples:sample-loan-origination:loan-application-service:v2BootJar`. Deep dive D1 cannot run without it. |
 
@@ -101,8 +114,8 @@ databases, clears `maestro_admin`, flushes Valkey, restarts the JVMs **from
 the v1 jars**. Containers stay up, so Grafana history and Jaeger traces
 survive on purpose. Idempotent; safe to run twice.
 
-**Timing:** ~20 s. It prints `clean slate in <n>s`. If it takes longer than
-30 s, something is wedged — `docker compose -f demo/docker-compose.yml ps`.
+**Timing:** measured **17 s**. It prints `clean slate in <n>s`. If it takes
+longer than 30 s, something is wedged — `docker compose -f demo/docker-compose.yml ps`.
 
 Note: reset does not drain Kafka. A handful of `unknown workflow` warnings in
 `demo/.run/*.log` right after a reset are stale messages for deleted
@@ -139,8 +152,9 @@ the workflow id is always `loan-<applicationId>`.)
 - Final JSON with `"status":"FUNDED"`, a `rateLockId` and a `disbursementId`.
 - An event log ending `WORKFLOW_COMPLETED`.
 
-**TIMING:** 20–30 s. There is a hard ~8 s floor: the appraisal provider
-simulates 8 s of latency (`credit PT2S`, `employment PT5S`, `appraisal PT8S`).
+**TIMING:** measured **15 s**. There is a hard ~8 s floor inside that: the
+appraisal provider simulates 8 s of latency (`credit PT2S`, `employment PT5S`,
+`appraisal PT8S`). Budget 30 s so you are never waiting on it.
 
 **SAY, during the wait:** "The workflow is not running right now. It is a row
 in Postgres. No thread is parked, no timer is held in memory — if I killed
@@ -189,27 +203,39 @@ http://localhost:8091/actuator/health` → `000`.
 **RUN — phase 3**
 
 ```bash
-DEMO_SKIP_BUILD=1 demo/scripts/start-services.sh
+demo/scripts/restart-loan-app.sh
 demo/scripts/drive-loan.sh finish <id>
 ```
 
+**Not `start-services.sh`.** It starts all four JVMs and refuses to run while
+any of their ports is taken — and 8092, 8093 and 8080 are still perfectly
+healthy, because you only killed one process. `restart-loan-app.sh` restarts
+exactly the process that died, and tolerates a pid file pointing at a corpse.
+
 **POINT AT**
 
-- The pre-crash event count `drive-loan.sh` printed in phase 1, and the
-  identical activity count it prints in phase 2.
-- The final event log: sequence numbers are **contiguous and unique**. The
-  activities that ran before the crash have exactly one row each.
-- `duplicate sequence numbers after the crash: 0`.
+- Phase 1 snapshotted the event rows to
+  `demo/.run/crash-<id>-before-rows.txt`. Phase 2 re-reads the same rows after
+  recovery and **diffs them**. An empty diff is the proof.
+- The final event log: sequence numbers are contiguous and unique, and every
+  activity that ran before the crash has exactly one row.
 
 **SHOULD APPEAR**
 
 ```
-duplicate sequence numbers after the crash: 0  (must be 0)
-DONE — <id> FUNDED across a kill -9. Nothing re-executed.
+==> PROOF 1 — the 12 rows recorded before the kill -9 are byte-identical now
+    diff is empty. Nothing was rewritten, renumbered, or re-executed.
+
+==> PROOF 2 — duplicate sequence numbers after the crash: 0  (must be 0)
+
+==> DONE — <id> FUNDED across a kill -9. Nothing re-executed.
 ```
 
-**TIMING:** phase 1 ~35 s, the kill is instant, restart ~10 s
-(`DEMO_SKIP_BUILD=1`), phase 3 ~25 s. Budget 90 s for the whole scenario.
+Both proofs are assertions: if either fails the script exits non-zero and
+prints the offending diff.
+
+**TIMING:** measured — phase 1 **13 s**, the kill is instant, restart **5 s**,
+phase 3 **5 s**. Budget 60 s including what you say.
 
 **SAY:** *"The recovery poller found an instance whose owner was gone, took
 the lock, and re-invoked the workflow method from the top. Every activity that
@@ -263,12 +289,19 @@ Spring's."*
    signal. Time passes inside a single trace with no thread held open.
 3. Individual activity spans with their durations.
 
-**SHOULD APPEAR:** a trace in the 15–30 span range spanning all three
-services. A verified v1-shaped example, archived:
-`b39b554f4c94c659f68468588295431c  spans=20`
+**SHOULD APPEAR:** for a `happy` loan, **one** trace of roughly 20–35 spans
+across all three services (a rehearsal measured 31). A verified v1-shaped
+example, archived: `b39b554f4c94c659f68468588295431c  spans=20`
 (`demo/.evidence/task-3-jaeger-v1-vs-v2-traces.log`).
 
 **TIMING:** 30 s of flush, then it is instant.
+
+**Any JVM restart splits the trace into two.** This is not specific to the
+v1→v2 move — a loan that lived through scenario 2's `kill -9` shows up as two
+traces as well (a rehearsal measured 10 spans before the crash and 23 after).
+So: run scenario 3 against a loan that did **not** get crashed, or say up
+front that a restarted workflow produces two traces and show both. Do not
+promise one trace for a loan you just killed a process under.
 
 **Do not point at** the three verification *request* spans as evidence of
 anything concurrent. The three-way **send** fan-out looks identical in v1 and
@@ -308,8 +341,8 @@ the approval for you.
     <id> is FAILED
 ```
 
-**TIMING:** 45–70 s (verifications 8 s, the underwriting round-trip, then the
-signature fan-in).
+**TIMING:** measured **18 s** (verifications 8 s, the underwriting round-trip,
+then the signature fan-in). Budget 45 s.
 
 **SAY:** *"The workflow author wrote no rollback path. They annotated
 `reserveRateLock` with `@Compensate("releaseRateLock")` and threw an
@@ -348,10 +381,14 @@ link: <http://localhost:3000/d/maestro-demo>.)
 | **Recovery adoptions** | `maestro_recovery_adopted_total` | non-zero only after scenario 2 or D6 |
 | **Stand-downs by reason** | flat line at zero | see below |
 
-**SHOULD APPEAR:** the parked-count panel visibly rises to 3 and falls back to
-0 within ~30 s. Scrape interval is 5 s, so give it two scrapes.
+**SHOULD APPEAR:** the parked-count panel rises to roughly **3× the number of
+loans in flight** — each loan parks a workflow in the loan service, one in
+verification-gateway and one in underwriting. A rehearsal with three loans
+peaked at **9** and was back to **0** within 20 s. Do not promise the number
+3; promise "it climbs and comes back to zero". Scrape interval is 5 s, so give
+it two scrapes.
 
-**TIMING:** 45 s for all three loans; the panels move within 10 s.
+**TIMING:** measured — peak within 5 s of launching, back to 0 by 20 s.
 
 **Two things to say before anyone asks:**
 
@@ -409,8 +446,14 @@ the parking-lot evidence (PIN 5) → prints both loans' Jaeger trace ids (PIN 6)
 **SHOULD APPEAR:** the script exits 0. Every PIN asserts; a violated
 assertion exits non-zero and says which.
 
-**TIMING:** ~32 s end to end (measured:
-`demo/.evidence/task-3-live-v1-to-v2-move.log`). The swap itself is ~7 s.
+**TIMING:** measured **32–36 s** end to end
+(`demo/.evidence/task-3-live-v1-to-v2-move.log`). The swap itself is ~7 s.
+
+**PIN 6's span counts are undercounts — do not read them out.** The script
+queries Jaeger the moment it finishes, before the collector has flushed. In a
+rehearsal PIN 6 reported the v2 loan at 12 spans; re-querying 35 s later gave
+**28**, which is exactly the archived reference. Wait, then re-run the query
+from §3 with the loan id the script printed.
 
 ### The four things to say precisely
 
@@ -451,9 +494,9 @@ presenter who predicts two looks like they know the system.
 **AFTER D1, ALWAYS:**
 
 ```bash
-RESTORE_V1=1 demo/scripts/v1-to-v2-move.sh    # restores just 8091, ~10-15 s
+RESTORE_V1=1 demo/scripts/v1-to-v2-move.sh    # restores just 8091, measured 5 s
 # or
-demo/scripts/reset.sh                          # restores everything, ~20 s
+demo/scripts/reset.sh                          # restores everything, measured 17 s
 ```
 
 Leaving v2 running poisons every later scenario's event log with branch-band
@@ -610,10 +653,20 @@ service-discovery within 5 s.
 Then:
 
 ```bash
-demo/scripts/drive-loan.sh crash                                   # park a loan
-kill -9 $(cat demo/.run/loan-application-service.pid)              # kill the owner only
-demo/scripts/drive-loan.sh finish <id>                             # node B carries it
+demo/scripts/drive-loan.sh crash                       # park a loan; note the id it prints
+
+# confirm which node owns it before you kill anything:
+grep -l <id> demo/.run/loan-application-service.log demo/.run/loan-application-service-b.log
+
+kill -9 $(cat demo/.run/loan-application-service.pid)  # kill the owner (usually node A)
+
+# node B is on 8094 — node A is gone, so drive the rest through B:
+LOAN_URL=http://localhost:8094 demo/scripts/drive-loan.sh finish <id>
 ```
+
+**The `LOAN_URL=` override is not optional.** `drive-loan.sh` talks to 8091 by
+default and 8091 is the process you just killed. Forgetting it produces a
+connection-refused, not an adoption failure.
 
 **POINT AT**
 
@@ -623,8 +676,10 @@ demo/scripts/drive-loan.sh finish <id>                             # node B carr
 - `demo/.run/loan-application-service-b.log` — node B logging that it adopted
   the instance.
 
-**TIMING:** adoption waits for the owner's lock TTL to lapse (30 s), so budget
-**up to 60 s** of silence. Fill it with the D4 architecture points.
+**TIMING:** adoption waits for the owner's lock TTL to lapse. A rehearsal
+adopted **27 s** after the `kill -9` (`Resuming workflow 'loan-<id>'` in node
+B's log). Budget **up to 60 s** of silence and fill it with the D4
+architecture points.
 
 **Caveat to state:** `GET /underwriting/pending` is a node-local in-memory
 view. In two-node mode a loan queued on one node may not appear on the other,
