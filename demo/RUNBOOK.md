@@ -532,10 +532,14 @@ the parking-lot evidence (PIN 5) → prints both loans' Jaeger trace ids (PIN 6)
 
 1. PIN 0's two jar SHAs and the `parallel-verification` string count: 0 in v1,
    non-zero in v2. Same class, same FQN, different jar.
-2. PIN 3's assertion: the in-flight loan finished with `VERSION_MARKER == 0`
-   and **zero events at sequence ≥ 1000**. It never saw the new code path.
-3. PIN 4's assertion: the new loan has `VERSION_MARKER == 1` and events in the
-   branch bands.
+2. PIN 3's assertion: the in-flight loan finished with **zero `VERSION_MARKER`
+   rows** and **zero events at sequence ≥ 1000**. It never saw the new code
+   path. (The pins count *rows*, not version values — say "rows". The version
+   *value* for a pre-change history is `DEFAULT_VERSION` = **-1**, which is
+   what slide 14 has on screen.)
+3. PIN 4's assertion: the new loan has **one `VERSION_MARKER` row** — recorded
+   version **2**, `PARALLEL_VERIFICATION_VERSION` — and events in the branch
+   bands.
 4. PIN 6's two trace ids, opened side by side.
 
 **SHOULD APPEAR:** the script exits 0. Every PIN asserts; a violated
