@@ -165,7 +165,7 @@ body.notes-inline .slide.active .notes {
   margin: 0 0 1.1rem;
 }
 .eyebrow .sep { color: var(--rule-2); padding: 0 0.5em; }
-.eyebrow em { font-style: normal; color: var(--brass); }
+.eyebrow em { font-style: normal; color: var(--brass); text-transform: none; }
 h1 {
   font-family: var(--serif);
   font-weight: 400;
@@ -258,6 +258,78 @@ code {
 }
 .ledger td:first-child { color: var(--ink); }
 .ledger tr:last-child td { border-bottom: 0; }
+/* numbered steps — the ledger, as a flow */
+.steps {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem 2.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.steps li {
+  display: grid;
+  grid-template-columns: 2.1rem minmax(0, 1fr);
+  gap: 0.7rem;
+  align-items: baseline;
+  padding: 0.42rem 0;
+  border-bottom: 1px solid var(--rule);
+  font-size: 0.86rem;
+}
+.steps .n {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--rule-2);
+  letter-spacing: 0.08em;
+}
+.steps .what { color: var(--ink); }
+.steps .why { color: var(--mute); }
+.steps li.money { border-bottom-color: var(--brass-d); }
+.steps li.money .n, .steps li.money .what { color: var(--brass); }
+.steps li.gate .n { color: var(--rose); }
+
+/* architecture diagram */
+.arch { margin: 0.3rem 0 1.2rem; }
+.arch-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.9rem; }
+.svc, .inf {
+  background: var(--lift);
+  border: 1px solid var(--rule);
+  padding: 0.7rem 0.85rem;
+}
+.svc { border-top: 2px solid var(--rule-2); }
+.svc .svc-name { display: block; font-family: var(--mono); font-size: 0.76rem; color: var(--ink); }
+.svc .port { font-family: var(--mono); font-size: 0.66rem; color: var(--mute); }
+.svc .lib {
+  display: inline-block;
+  margin-top: 0.5rem;
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+  color: var(--brass);
+  border: 1px solid var(--brass-d);
+  padding: 0.1rem 0.4rem;
+}
+.arch-band {
+  position: relative;
+  margin: 0.85rem 0;
+  border-top: 1px solid var(--rule);
+  text-align: center;
+}
+.arch-band span {
+  position: relative;
+  top: -0.62em;
+  background: var(--ground);
+  padding: 0 0.8rem;
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--mute);
+}
+.inf { border-top: 2px solid var(--brass-d); }
+.inf .spi { display: block; font-family: var(--mono); font-size: 0.74rem; color: var(--brass); }
+.inf .impl { font-family: var(--mono); font-size: 0.66rem; color: var(--mute); }
+
 .hint {
   position: absolute;
   right: 1.3rem;
@@ -416,6 +488,136 @@ body.presenting #presenter { display: grid; }
     </div>
   </section>
 
+  <section class="slide" data-act="I" data-act-name="Opening" data-id="problem" data-title="The problem, in business terms">
+    <p class="eyebrow">Act I <span class="sep">/</span> the problem</p>
+    <h2>A mortgage is not a request and a response.</h2>
+    <p class="lede">It is the process from a borrower applying to money leaving
+      the lender&rsquo;s account &mdash; and it runs for <span class="brass">days to weeks</span>.</p>
+    <div class="cols cols-3">
+      <div class="card">
+        <h3>It outlives your deployment</h3>
+        <p>A loan in flight will be redeployed to, restarted, and crashed into.
+          The process has to survive all three without a human reconstructing it.</p>
+      </div>
+      <div class="card">
+        <h3>Nobody coordinates</h3>
+        <p>Borrower and co-borrower act independently. Credit, employment and
+          appraisal providers answer in any order, at any latency &mdash; and
+          sometimes twice. A human underwriter may never answer at all.</p>
+      </div>
+      <div class="card accent">
+        <h3>It ends in money</h3>
+        <p>A rate lock is reserved and funds are disbursed. Those two steps cost
+          real money and are expensive to undo, so &ldquo;just run it again&rdquo;
+          is not an available answer.</p>
+      </div>
+    </div>
+    <div class="notes">
+      <p><strong>SAY:</strong> Loan origination is not a contrived example picked to flatter a
+        workflow engine &mdash; it is the canonical shape of the problem workflow engines exist
+        for. Long-running, uncoordinated parties, irreversible ending. Every awkward property
+        of it maps onto something the engine has to get right.</p>
+      <p><strong>DO:</strong> Nothing live. This is the framing before §1.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="I" data-act-name="Opening" data-id="flow" data-title="The flow — eight steps">
+    <p class="eyebrow">Act I <span class="sep">/</span> the flow <span class="sep">/</span> <em>LoanApplicationWorkflow</em></p>
+    <h2>Eight steps. Everything you see today happens inside them.</h2>
+    <ol class="steps">
+      <li><span class="n">01</span><span><span class="what">Validate and record</span> <span class="why">&mdash; the application becomes durable state.</span></span></li>
+      <li><span class="n">02</span><span><span class="what">Fan out three verifications</span> <span class="why">&mdash; credit, employment, appraisal.</span></span></li>
+      <li><span class="n">03</span><span><span class="what">Fan in, in any order</span> <span class="why">&mdash; one signal name, loop until all three types have arrived. Duplicates tolerated.</span></span></li>
+      <li><span class="n">04</span><span><span class="what">Collect documents</span> <span class="why">&mdash; from either borrower, in any order.</span></span></li>
+      <li class="gate"><span class="n">05</span><span><span class="what">Withdrawal gate #1</span> <span class="why">&mdash; nothing reserved yet, so withdrawing fails cleanly with no compensation.</span></span></li>
+      <li><span class="n">06</span><span><span class="what">Underwriting, up to three rounds</span> <span class="why">&mdash; approved, rejected, or conditions. Conditions means &ldquo;more paperwork&rdquo; and another round.</span></span></li>
+      <li class="money"><span class="n">07</span><span><span class="what">The funding saga</span> <span class="why">&mdash; reserve rate lock &rarr; collect signatures &rarr; disburse. Withdrawal gate #2 sits just before disbursement; compensation releases the lock.</span></span></li>
+      <li><span class="n">08</span><span><span class="what">Complete</span> <span class="why">&mdash; the loan is funded.</span></span></li>
+    </ol>
+    <p class="mono small muted wide" style="margin-top:1.1rem">
+      loan-application-service :8091 orchestrates &nbsp;&middot;&nbsp;
+      verification-gateway-service :8092 plays the three providers &nbsp;&middot;&nbsp;
+      underwriting-service :8093 holds the humans
+    </p>
+    <div class="notes">
+      <p><strong>SAY:</strong> Keep this shape in your head. The five scenarios are all the same
+        eight steps under different pressure &mdash; a crash, a withdrawal, a deploy. Note step 5
+        and step 7: cancellation is honoured at <em>defined</em> points, and where the gate sits
+        decides whether money has to be cleaned up. That is a business decision, made explicit
+        in code.</p>
+      <p><strong>DO:</strong> Nothing live. This is the spine of §1 &mdash; the next slide after
+        the architecture goes straight to it.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="I" data-act-name="Opening" data-id="pressure" data-title="What the domain forces">
+    <p class="eyebrow">Act I <span class="sep">/</span> why this domain</p>
+    <h2>Every awkward property forces something the engine must prove.</h2>
+    <table class="ledger">
+      <thead><tr><th style="width:44%">Domain property</th><th>What it forces</th></tr></thead>
+      <tbody>
+        <tr><td>Runs for days; outlives any deployment</td><td>Durable state, crash recovery, resume mid-flight</td></tr>
+        <tr><td>Third parties answer out of order, twice, or before you are ready</td><td>Signals persisted immediately; orphaned signals adopted; never discard one</td></tr>
+        <tr><td>A human may simply never respond</td><td>Durable timers, with escalation</td></tr>
+        <tr><td>Rate lock and disbursement move money</td><td>Saga compensation, and idempotent activities</td></tr>
+        <tr><td>Three services own their own state</td><td>Orchestration within a service, choreography between</td></tr>
+        <tr><td>It will be deployed to mid-flight</td><td>Versioning, and safety in the mixed-version window</td></tr>
+      </tbody>
+    </table>
+    <div class="notes">
+      <p><strong>SAY:</strong> This table is the demo&rsquo;s running order. Every row on the left
+        is a business fact anyone in this room recognises; every row on the right is something
+        you are about to watch happen on a live system rather than take on trust.</p>
+      <p><strong>DO:</strong> Nothing live. Right-hand column maps to §2 (recovery), §4
+        (compensation), §D1 (versioning), §D6 (multi-node).</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="I" data-act-name="Opening" data-id="architecture" data-title="Architecture — there is no server">
+    <p class="eyebrow">Act I <span class="sep">/</span> architecture <span class="sep">/</span> <em>&sect;D4</em></p>
+    <h2>There is no server.</h2>
+    <div class="arch">
+      <div class="arch-row">
+        <div class="svc"><span class="svc-name">loan-application-service</span> <span class="port">:8091</span><br><span class="lib">maestro on the classpath</span></div>
+        <div class="svc"><span class="svc-name">verification-gateway-service</span> <span class="port">:8092</span><br><span class="lib">maestro on the classpath</span></div>
+        <div class="svc"><span class="svc-name">underwriting-service</span> <span class="port">:8093</span><br><span class="lib">maestro on the classpath</span></div>
+      </div>
+      <div class="arch-band"><span>three SPIs</span></div>
+      <div class="arch-row">
+        <div class="inf"><span class="spi">WorkflowStore</span><span class="impl">Postgres &mdash; the truth</span></div>
+        <div class="inf"><span class="spi">WorkflowMessaging</span><span class="impl">Kafka &mdash; tasks and signals</span></div>
+        <div class="inf"><span class="spi">DistributedLock</span><span class="impl">Valkey &mdash; an optimisation</span></div>
+      </div>
+    </div>
+    <div class="cols cols-2">
+      <div class="card">
+        <h3>Nothing to operate</h3>
+        <p>Maestro is a library in your service. No cluster to run, no control
+          plane to upgrade, nothing to page anyone about at 3am. Swap the SPIs and
+          the same workflow code runs Postgres-only, with zero external dependencies.</p>
+      </div>
+      <div class="card accent">
+        <h3>Postgres is truth; Valkey is optimisation</h3>
+        <p>Every lock is best-effort. If one is lost, the unique event index still
+          prevents a duplicate <em>persisted</em> result &mdash; which is why activities
+          must be idempotent, and why we say that out loud rather than claiming
+          exactly-once.</p>
+      </div>
+    </div>
+    <div class="notes">
+      <p><strong>SAY:</strong> Four sentences. One: there is no server &mdash; Maestro is a
+        library in your service. Two: three SPIs &mdash; <code>WorkflowStore</code>,
+        <code>WorkflowMessaging</code>, <code>DistributedLock</code>; this demo runs Postgres,
+        Kafka and Valkey, and the same code runs Postgres-only. Three: Postgres is truth,
+        Valkey is an optimisation, and locks are best-effort, which is why activities must be
+        idempotent. Four: orchestration within a service, choreography between them &mdash;
+        each service owns its own database, and what crosses the wire is domain events.</p>
+      <p><strong>DO:</strong> &sect;D4 &mdash; <code>docker compose -f demo/docker-compose.yml ps</code>.
+        Seven containers, none of them Maestro. If asked about footprint: the whole demo peaked
+        at 2.27 GiB across those seven containers plus four host JVMs.</p>
+    </div>
+  </section>
+
   <p class="hint">&rarr; next &middot; g jump &middot; p presenter &middot; f fullscreen</p>
 </main>
 
@@ -528,7 +730,7 @@ body.presenting #presenter { display: grid; }
     document.getElementById('pNotes').innerHTML = notes ? notes.innerHTML : '<p class="muted">No notes.</p>';
     document.getElementById('pPos').textContent = (idx + 1) + ' / ' + slides.length;
     document.getElementById('pTitle').textContent = titleOf(cur).toUpperCase();
-    document.getElementById('pNextTitle').textContent = next ? 'next: ' + titleOf(next) : 'end of deck';
+    document.getElementById('pNextTitle').textContent = next ? '— ' + titleOf(next) : '— end of deck';
     var sc = document.getElementById('pScaler');
     sc.innerHTML = '';
     if (next) {
