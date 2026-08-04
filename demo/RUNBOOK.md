@@ -906,8 +906,14 @@ and **49 s** for the whole `finish` through node B
 30 + 5, and that is not an error:** the lock the owner was holding had already
 been alive for some of its 30 s TTL when you killed it, so what has to elapse
 is the *remaining* TTL, not a fresh one. Worst case is a full 30 s TTL plus one
-5 s recovery poll plus slack — so budget **up to 60 s** and fill it with the D4
-architecture points.
+5 s recovery poll plus slack — so budget **up to 60 s**.
+
+**Fill that 60 s from this section, not from D4.** D4 is two slides behind you
+by then and its four sentences have already been said twice. Two things here
+the room has not heard yet: the `/underwriting/pending` caveat below, and the
+Kafka rebalance — node B cannot receive the decision until the group rebalances
+away from the SIGKILLed member (measured 37.2 s, §2). Say those two, in that
+order.
 
 Note the same Kafka effect as §2: node B cannot receive the underwriting
 decision until the group rebalances away from the SIGKILLed member, so the

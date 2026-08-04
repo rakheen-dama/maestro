@@ -792,6 +792,11 @@ body.presenting #presenter { display: grid; }
         of running again. And during the wait: the workflow is not running right now. It is a row
         in Postgres. No thread is parked, no timer is held in memory &mdash; if I killed this
         process during this pause you would not be able to tell afterwards.</p>
+      <p><strong>BEFORE THE FIRST COMMAND &mdash; &sect;0.2, every single time.</strong> The
+        runbook's rule #1: nothing on screen is trusted until the process-identity table matches.
+        Re-print it with the one-liner in &sect;0.2 and check every PID is alive and
+        <code>loan-application started at:</code> is from this session. A previous cycle demoed a
+        stale JVM for four minutes before anyone noticed.</p>
       <p><strong>DO:</strong> &sect;1 &mdash; <code>demo/scripts/drive-loan.sh happy</code>. Then
         <code>localhost:8080/admin/workflows</code>, click the id, point at the event log.</p>
       <p><strong>WATCH OUT:</strong> nobody approves this one. DTI 2.0 is below the 3.0
@@ -836,11 +841,13 @@ body.presenting #presenter { display: grid; }
         run a shutdown hook even if it wanted to. Then we restart it and tell it to finish the
         loan. It funds. And the proof is not my word: the rows recorded before the kill are
         byte-identical afterwards, and there are zero duplicate sequence numbers.</p>
-      <p><strong>DO:</strong> &sect;2, three commands in order &mdash;
+      <p><strong>DO &mdash; stop before the fourth command.</strong> &sect;2 in order:
         <code>demo/scripts/drive-loan.sh crash</code> (prints the id and the next two commands),
         then <code>kill -9 $(cat demo/.run/loan-application-service.pid)</code>, then
-        <code>demo/scripts/restart-loan-app.sh</code> and
-        <code>demo/scripts/drive-loan.sh finish &lt;id&gt;</code>.</p>
+        <code>demo/scripts/restart-loan-app.sh</code>. <strong>Advance to the next slide, THEN
+        run</strong> <code>demo/scripts/drive-loan.sh finish &lt;id&gt;</code> &mdash; the 33 s
+        pause happens inside <code>finish</code>, and the next slide is the narration for it.
+        Run all four here and you have missed the window slide 8 exists for.</p>
       <p><strong>WATCH OUT:</strong> not <code>start-services.sh</code> &mdash; it starts all four
         JVMs and refuses to run while any port is taken, and 8092/8093/8080 are still healthy.
         Read the row count off the screen rather than promising a number; it depends on how many
@@ -941,6 +948,14 @@ body.presenting #presenter { display: grid; }
         material, not this slide&rsquo;s. (2) Any JVM restart splits the trace in two, so run this
         against a loan that was <em>not</em> crashed, or say up front that a restarted workflow
         produces two traces and show both.</p>
+      <p><strong>IF ASKED &ldquo;is the Kafka tracing real, or did you special-case it?&rdquo;</strong>
+        (&sect;Q, and it is the one hostile question this slide invites) &mdash; it is real, with one
+        honest caveat, filed as <strong>Issue 23</strong>: Maestro's <code>maestroKafkaTemplate</code>
+        suppresses Boot's, so <code>spring.kafka.template.observation-enabled</code> is inert for all
+        users, and <code>@MaestroSignalListener</code> does not extract trace context on domain
+        topics. The producer-side workaround is a <code>@Bean</code>
+        (<code>ObservedKafkaTemplateConfig</code>), <em>not</em> the property. A library defect with
+        a documented workaround, not a demo trick. Full wording: RUNBOOK &sect;Q.</p>
       <p><strong>FALLBACK:</strong> &ldquo;The collector hasn&rsquo;t flushed yet &mdash; here is
         the same trace from this morning&rsquo;s run.&rdquo; &rarr;
         <code>demo/.evidence/task-2-jaeger-cross-service-trace.log</code>.</p>
@@ -1433,7 +1448,7 @@ body.presenting #presenter { display: grid; }
           The measured 27 s is under 30 + 5 because the lock was already part-way
           through its TTL when the owner died &mdash; what elapses is the
           <em>remaining</em> TTL. Worst case is a full 30 s TTL plus one 5 s recovery
-          poll plus slack. Budget up to 60 s and fill it with D4.</p>
+          poll plus slack. Budget up to 60 s.</p>
       </div>
     </div>
     <div class="notes">
@@ -1460,6 +1475,13 @@ body.presenting #presenter { display: grid; }
         The <em>decision</em> endpoint is store-backed and works from either node &mdash; only the
         read-side queue is local. And the same Kafka effect as &sect;2 applies: node B cannot receive
         the decision until the group rebalances away from the SIGKILLed member.</p>
+      <p><strong>FILL THE WAIT FROM THIS SLIDE, not by jumping back to D4.</strong> D4 is two
+        slides behind you and its four sentences have already been said twice (slide 5 and slide 17).
+        You have ~60 s and two things on this slide the room has not heard: the <em>CAVEAT</em>
+        below (<code>/underwriting/pending</code> is node-local; the decision endpoint is
+        store-backed) and the Kafka rebalance &mdash; node B cannot receive the decision until the
+        group rebalances away from the SIGKILLed member, measured 37.2 s. Say those, in that order,
+        and the wait is covered.</p>
       <p><strong>FALLBACK:</strong> &ldquo;Adoption is bounded by the lock TTL and we are inside it
         &mdash; this is the one place in the demo where the honest answer is &lsquo;wait 30
         seconds&rsquo;.&rdquo; Give it 120 s before you call it; only then
