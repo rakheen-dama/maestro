@@ -1,0 +1,34 @@
+=== identity ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+HEAD: fb756e76bd8cacd766c286adbd5e9e596eec2a1f
+branch: worktree-demo
+timestamp: 2026-08-04T08:17:05Z
+
+TWO_NODE=1 path: a fifth JVM (loan-application node B, 8094) plus the
+Prometheus file-SD target demo/targets/loan-application-b.json.
+
+=== four targets UP, node B discovered via file_sd (GET /api/v1/targets) ===
+maestro-loan-services            loan-application       http://host.docker.internal:8091/actuator/prometheus     up
+maestro-loan-services            verification-gateway   http://host.docker.internal:8092/actuator/prometheus     up
+maestro-loan-services            underwriting           http://host.docker.internal:8093/actuator/prometheus     up
+maestro-loan-services-node-b     loan-application-b     http://host.docker.internal:8094/actuator/prometheus     up
+
+=== work genuinely ran on BOTH nodes (4 loans round-robined 8091/8094) ===
+-- node on 8091 --
+maestro_workflow_completed_total{workflow="loan-application"} 3.0
+maestro_workflow_started_total{workflow="loan-application"} 3.0
+-- node on 8094 --
+maestro_workflow_completed_total{workflow="loan-application"} 2.0
+maestro_workflow_started_total{workflow="loan-application"} 2.0
+
+=== cross-node signalling: created on node A (8091), every signal sent to node B (8094) ===
+result: COMPLETED / FUNDED (see task-2-report.md)
+
+=== stand-downs ===
+maestro_standdown_total is ABSENT from both nodes above. That is correct,
+not a gap: StandDownReason has exactly three values -- UNKNOWN_EVENT_TYPE,
+UNKNOWN_EVENT_PAYLOAD, STALE_RUN -- all pathological (unreadable history
+from a newer build, or an append colliding with a concurrent runner).
+Ordinary two-node traffic and cross-node signalling do not raise any of
+them, so Micrometer never registers the counter. The dashboard panel
+carries a vector(0) companion series so it renders a flat zero.

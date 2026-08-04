@@ -371,7 +371,7 @@
       "id": 5,
       "type": "timeseries",
       "title": "Stand-downs by reason",
-      "description": "maestro.standdown, broken down by reason — a node declining to run a workflow it does not hold the lock for. This meter is registered lazily on the first stand-down, so on a quiet single-node stack the series does not exist yet and the panel reads 0 rather than 'No data'. It becomes interesting in the two-node (TWO_NODE=1) and kill -9 scenarios.",
+      "description": "maestro.standdown, broken down by reason — a local run abandoning itself WITHOUT recording a workflow outcome. The reasons are exactly StandDownReason's three: UNKNOWN_EVENT_TYPE and UNKNOWN_EVENT_PAYLOAD (this build cannot read history a newer build wrote — the mixed-version case) and STALE_RUN (an event append collided with a concurrent runner, i.e. two nodes briefly raced for the same instance). All three are pathological, so a healthy demo is SUPPOSED to leave this flat at zero: it is the panel you point at to say 'nothing was silently dropped', not one that is meant to move. Verified: ordinary traffic does not raise it — four loans round-robined across two nodes plus a loan created on node A and signalled entirely through node B all left the counter unregistered. Because Micrometer registers it lazily on first use, the series does not exist at all on a healthy stack; the vector(0) companion series is what makes this render a flat zero instead of 'No data'.",
       "datasource": {
         "type": "prometheus",
         "uid": "maestro-prometheus"
