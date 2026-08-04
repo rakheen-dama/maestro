@@ -611,18 +611,33 @@ Walk one workflow's rows, then crash it and walk them again.
 demo/scripts/drive-loan.sh events <id>          # any completed loan
 ```
 
-**POINT AT** — a v1 event log reads, in order:
+**POINT AT** — the whole of a v1 happy loan's event log, read off a real run
+(`demo/.evidence/task-6-runbook-02-scenario1-happy.log`). Eighteen rows, in
+order, and this is *all* of it:
 
 ```
-    1  ACTIVITY_COMPLETED    LoanActivities.recordApplication
-    2  ACTIVITY_COMPLETED    LoanMessagingActivities.requestVerifications
-    3  SIGNAL_RECEIVED       $maestro:awaitSignal:verification.result
-   ...
-       ACTIVITY_COMPLETED    FundingActivities.reserveRateLock
-       SIGNAL_RECEIVED       $maestro:awaitSignal:package.signed
-       ACTIVITY_COMPLETED    FundingActivities.disburse
-       WORKFLOW_COMPLETED
+    1  ACTIVITY_COMPLETED            LoanActivities.recordApplication
+    2  ACTIVITY_COMPLETED            LoanMessagingActivities.requestVerifications
+    3  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    4  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    5  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    6  SIDE_EFFECT                   $maestro:currentTime
+    7  SIDE_EFFECT                   $maestro:currentTime
+    8  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+    9  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+   10  ACTIVITY_COMPLETED            LoanMessagingActivities.requestUnderwriting
+   11  SIGNAL_RECEIVED               $maestro:awaitSignal:underwriting.decision
+   12  ACTIVITY_COMPLETED            FundingActivities.reserveRateLock
+   13  SIDE_EFFECT                   $maestro:currentTime
+   14  SIDE_EFFECT                   $maestro:currentTime
+   15  SIGNAL_RECEIVED               $maestro:awaitSignal:package.signed
+   16  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+   17  ACTIVITY_COMPLETED            FundingActivities.disburse
+   18  WORKFLOW_COMPLETED
 ```
+
+Row counts move with the scenario — the §2 crashed loan carries its
+`SIDE_EFFECT` rows at 6/7/9 and 15/16/18 — but the *shape* is this.
 
 **SAY**
 
@@ -633,6 +648,11 @@ demo/scripts/drive-loan.sh events <id>          # any completed loan
   executes, persists, returns."
 - "`SIDE_EFFECT` rows are `workflow.currentTime()` and `workflow.randomUUID()`
   — the non-deterministic bits, recorded once so replay sees the same values."
+- "The four in this log are the **engine's** own, not the author's — this
+  workflow never writes `currentTime()`. They come from
+  `workflow.collectSignals(...)`, which fixes its timeout deadline with the
+  engine's own memoized clock. That is §D5's whole argument, already on
+  the screen."
 - "There is no snapshot, no serialised continuation, no thread state on disk.
   This table is the whole of it."
 
@@ -723,13 +743,40 @@ Maestro gives you `workflow.currentTime()` and `workflow.randomUUID()`, which
 record their value as a `SIDE_EFFECT` row the first time and return the
 recorded value on every replay."*
 
-There is no `SIDE_EFFECT` row to point at: these workflows never call
-`currentTime()` or `randomUUID()`, so none was ever recorded. Point instead at
-the `FundingActivities.reserveRateLock` row in the D2 event log and say: *"That
-activity mints a random rate-lock id. That is fine — it runs inside an
-activity, so the id it returned is stored on this row, and a replay hands back
-that id instead of minting a new one. Do the same thing between activity calls
-and the second run of the method sees a different value than the first."*
+**POINT AT the `SIDE_EFFECT` rows in the D2 event log — there are four, and
+they are the best evidence in the demo.** Sequence 6, 7, 13 and 14, all
+`$maestro:currentTime`:
+
+```
+    6  SIDE_EFFECT                   $maestro:currentTime
+    7  SIDE_EFFECT                   $maestro:currentTime
+   13  SIDE_EFFECT                   $maestro:currentTime
+   14  SIDE_EFFECT                   $maestro:currentTime
+```
+
+**SAY:** *"Nobody wrote `currentTime()` in this workflow — the Javadoc says so.
+The **engine** wrote them. Step 4 collects documents with
+`workflow.collectSignals(...)`, and that takes a timeout. A timeout is a
+deadline; a deadline is computed from the clock; and the clock is exactly the
+non-determinism we have been talking about. So the engine calls its own
+memoized `currentTime()` — once to fix the deadline, once per signal it is
+still waiting for — and each of those calls lands as a `SIDE_EFFECT` row. Rows
+6 and 7 belong to the document collect at 8; rows 13 and 14 to the signature
+collect at 15. If the engine did not record them, a workflow recovered an hour
+later would recompute the deadline an hour further out and wait twice. The rule
+applies to the engine's own code, not just to yours."*
+
+To read them live: `demo/scripts/drive-loan.sh events <id>` on any completed
+loan. Every scenario has them, and the count follows the collect: §1 collects
+one document and one signature, so **two** rows each (6/7 and 13/14); §2's
+crashed loan collects two of each, so **three** each (6/7/9 and 15/16/18).
+
+**Then contrast with an activity.** Point at the
+`FundingActivities.reserveRateLock` row and say: *"That activity mints a random
+rate-lock id, and that is fine — it runs inside an activity, so the id it
+returned is stored on its row, and a replay hands back that id instead of
+minting a new one. Do the same thing **between** activity calls and the second
+run of the method sees a different value than the first."*
 
 **If asked "what happens if I get it wrong?"** — the engine has a
 `DeterminismChecker` that detects a replay diverging from the recorded history

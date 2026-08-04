@@ -769,14 +769,17 @@ body.presenting #presenter { display: grid; }
             <tr><td class="seq">2</td><td class="type">ACTIVITY_COMPLETED</td><td>LoanMessagingActivities.requestVerifications</td></tr>
             <tr><td class="seq">3</td><td class="type">SIGNAL_RECEIVED</td><td class="sig">$maestro:awaitSignal:verification.result</td></tr>
             <tr class="dots"><td>&hellip;</td><td>&hellip;</td><td>&hellip;</td></tr>
-            <tr><td class="seq">&nbsp;</td><td class="type">ACTIVITY_COMPLETED</td><td>FundingActivities.reserveRateLock</td></tr>
-            <tr><td class="seq">&nbsp;</td><td class="type">SIGNAL_RECEIVED</td><td class="sig">$maestro:awaitSignal:package.signed</td></tr>
-            <tr><td class="seq">&nbsp;</td><td class="type">ACTIVITY_COMPLETED</td><td>FundingActivities.disburse</td></tr>
-            <tr><td class="seq">&nbsp;</td><td class="type">WORKFLOW_COMPLETED</td><td>&nbsp;</td></tr>
+            <tr><td class="seq">12</td><td class="type">ACTIVITY_COMPLETED</td><td>FundingActivities.reserveRateLock</td></tr>
+            <tr><td class="seq">13</td><td class="type">SIDE_EFFECT</td><td class="sig">$maestro:currentTime</td></tr>
+            <tr><td class="seq">14</td><td class="type">SIDE_EFFECT</td><td class="sig">$maestro:currentTime</td></tr>
+            <tr><td class="seq">15</td><td class="type">SIGNAL_RECEIVED</td><td class="sig">$maestro:awaitSignal:package.signed</td></tr>
+            <tr><td class="seq">16</td><td class="type">SIGNAL_TIMEOUT</td><td class="sig">$maestro:awaitSignal:application.withdrawn</td></tr>
+            <tr><td class="seq">17</td><td class="type">ACTIVITY_COMPLETED</td><td>FundingActivities.disburse</td></tr>
+            <tr><td class="seq">18</td><td class="type">WORKFLOW_COMPLETED</td><td>&nbsp;</td></tr>
           </tbody>
         </table>
         <p class="mono small muted wide" style="margin-top:.6rem">
-          the v1 log, in order &mdash; middle rows elided; read the live one off /admin/workflows
+          the v1 log, in order &mdash; rows 4&ndash;11 elided; read the live one off /admin/workflows
         </p>
       </div>
     </div>
@@ -793,6 +796,13 @@ body.presenting #presenter { display: grid; }
         auto-approve line, so the desk decides it without a human &mdash; do not go looking in the
         pending queue. FALLBACK if a provider is slow: switch to any earlier COMPLETED instance,
         or <code>demo/scripts/drive-loan.sh events &lt;id&gt;</code>.</p>
+      <p><strong>IF ASKED about rows 13/14 or 16:</strong> the two
+        <code>SIDE_EFFECT $maestro:currentTime</code> rows are the <em>engine</em> memoising its
+        own clock to fix <code>collectSignals(&hellip;)</code>'s timeout deadline &mdash; that is
+        &sect;D5's material, arriving early. <code>SIGNAL_TIMEOUT</code> on
+        <code>application.withdrawn</code> is the withdrawal gate: a short await that nobody
+        signalled, so it timed out and the loan carried on. That is the &sect;4 path
+        <em>not</em> taken.</p>
     </div>
   </section>
 
@@ -1206,12 +1216,18 @@ body.presenting #presenter { display: grid; }
             <tr><td class="seq">2</td><td class="type">ACTIVITY_COMPLETED</td><td>LoanMessagingActivities.requestVerifications</td></tr>
             <tr><td class="seq">3</td><td class="type">SIGNAL_RECEIVED</td><td class="sig">$maestro:awaitSignal:verification.result</td></tr>
             <tr class="dots"><td>&hellip;</td><td>&hellip;</td><td>&hellip;</td></tr>
-            <tr><td class="seq">&nbsp;</td><td class="type">ACTIVITY_COMPLETED</td><td>FundingActivities.reserveRateLock</td></tr>
-            <tr><td class="seq">&nbsp;</td><td class="type">SIGNAL_RECEIVED</td><td class="sig">$maestro:awaitSignal:package.signed</td></tr>
-            <tr><td class="seq">&nbsp;</td><td class="type">ACTIVITY_COMPLETED</td><td>FundingActivities.disburse</td></tr>
-            <tr><td class="seq">&nbsp;</td><td class="type">WORKFLOW_COMPLETED</td><td>&nbsp;</td></tr>
+            <tr><td class="seq">12</td><td class="type">ACTIVITY_COMPLETED</td><td>FundingActivities.reserveRateLock</td></tr>
+            <tr><td class="seq">13</td><td class="type">SIDE_EFFECT</td><td class="sig">$maestro:currentTime</td></tr>
+            <tr><td class="seq">14</td><td class="type">SIDE_EFFECT</td><td class="sig">$maestro:currentTime</td></tr>
+            <tr><td class="seq">15</td><td class="type">SIGNAL_RECEIVED</td><td class="sig">$maestro:awaitSignal:package.signed</td></tr>
+            <tr><td class="seq">16</td><td class="type">SIGNAL_TIMEOUT</td><td class="sig">$maestro:awaitSignal:application.withdrawn</td></tr>
+            <tr><td class="seq">17</td><td class="type">ACTIVITY_COMPLETED</td><td>FundingActivities.disburse</td></tr>
+            <tr><td class="seq">18</td><td class="type">WORKFLOW_COMPLETED</td><td>&nbsp;</td></tr>
           </tbody>
         </table>
+        <p class="mono small muted" style="margin-top:.6rem">
+          a real v1 happy loan, 18 rows &mdash; 4&ndash;11 elided
+        </p>
       </div>
       <div>
         <div class="card accent">
@@ -1226,7 +1242,8 @@ body.presenting #presenter { display: grid; }
             whole of it. <code>SIDE_EFFECT</code> rows are
             <code>workflow.currentTime()</code> and <code>workflow.randomUUID()</code>
             &mdash; the non-deterministic bits, recorded once so replay sees the same
-            values.</p>
+            values. Rows 13&ndash;14 are the <em>engine&rsquo;s</em> own: nobody wrote
+            <code>currentTime()</code> here.</p>
         </div>
         <div class="card" style="margin-top:.9rem">
           <h3>Two nodes cannot both win</h3>
@@ -1347,6 +1364,11 @@ body.presenting #presenter { display: grid; }
           return the recorded value on every replay.</p>
       </div>
     </div>
+    <p style="margin-top:1rem"><strong>Four of them are already on screen in D2</strong> &mdash;
+      <code class="mono">6, 7, 13, 14 &nbsp;SIDE_EFFECT &nbsp;$maestro:currentTime</code> &mdash;
+      and nobody wrote <code>currentTime()</code> in this workflow. The engine did, to fix
+      <code>collectSignals(&hellip;)</code>&rsquo;s timeout deadline. The rule applies to the
+      engine&rsquo;s own code too.</p>
     <p style="margin-top:1.2rem"><strong>And if you get it wrong:</strong> the engine has a
       <code>DeterminismChecker</code> that detects a replay diverging from the recorded history
       and <strong>fails the run loudly</strong> rather than silently corrupting state.</p>
@@ -1358,13 +1380,16 @@ body.presenting #presenter { display: grid; }
         <code>workflow.randomUUID()</code>, which record their value as a <code>SIDE_EFFECT</code>
         row the first time and return the recorded value on every replay.</p>
       <p><strong>DO:</strong> &sect;D5 &mdash; no live commands in the demo stack; the
-        <code>DeterminismChecker</code> demo lives in the engine's own tests. There is no
-        <code>SIDE_EFFECT</code> row to point at: these workflows never call
-        <code>currentTime()</code> or <code>randomUUID()</code>, so none was ever recorded. Point
-        instead at the <code>FundingActivities.reserveRateLock</code> row in D2's event log &mdash;
-        that activity mints a random rate-lock id, which is safe because it runs inside an activity:
-        the id it returned is stored on that row and a replay hands back that id instead of minting
-        a new one.</p>
+        <code>DeterminismChecker</code> demo lives in the engine's own tests. Point at the four
+        <code>SIDE_EFFECT $maestro:currentTime</code> rows in D2's event log &mdash; sequence 6, 7,
+        13 and 14 on the &sect;1 happy loan (the &sect;2 crashed loan has six: 6/7/9 and 15/16/18,
+        because it collects two documents and two signatures instead of one). The workflow author
+        never calls <code>currentTime()</code>; the engine does, inside
+        <code>collectSignals(&hellip;)</code>, to fix that call's timeout deadline so a recovered
+        run does not recompute it an hour further out. Then contrast with an activity: the
+        <code>FundingActivities.reserveRateLock</code> row mints a random rate-lock id, which is
+        safe because it runs inside an activity &mdash; the id it returned is stored on that row
+        and a replay hands back that id instead of minting a new one.</p>
       <p><strong>IF ASKED &ldquo;what happens if I get it wrong?&rdquo;</strong> The engine detects
         a replay diverging from recorded history and fails the run loudly rather than silently
         corrupting state.</p>
