@@ -325,12 +325,21 @@ default — at that default this same phase measured **250 s**
 **What the remaining 33 s actually is — it is not Maestro's.** With the poll at
 5 s the wait is dominated by **Kafka**: a `kill -9` leaves the broker still
 believing the dead consumer is a live group member until its
-`session.timeout.ms` (45 s by default) runs out, so the restarted node cannot
-be assigned `loans.underwriting.decisions` and cannot see the decision until
-the group rebalances. Measured: join requested `15:21:39`, joined `15:22:15`.
-The same node rejoining after a *clean* restart takes 3 s. If asked, that is
-the honest answer — the recovery mechanism was ready long before the message
-bus was.
+`session.timeout.ms` runs out, so the restarted node cannot be assigned
+`loans.underwriting.decisions` and cannot see the decision until the group
+rebalances. The three numbers, and how they fit:
+
+| | |
+|---|---|
+| `session.timeout.ms`, effective | **45 s** — confirmed for *this* broker and all five demo consumers (`demo/.evidence/task-7-kafka-session-timeout-confirmed.log`), not just quoted as the Apache default |
+| rejoin after `kill -9`, measured | **37.2 s** — join requested `19:33:26.782`, joined `19:34:04.011`, partitions assigned `19:34:04.031` (`demo/.evidence/task-6-kafka-rejoin-measured.log:28-33`) |
+| rejoin after a *clean* restart | **3.0 s** (`…:35-37`) |
+
+The 37.2 s sits *under* the 45 s ceiling — the coordinator expires the dead
+member somewhere inside that window and the rebalance follows — and it is the
+upper bound on the 33 s the room is watching, because the workflow cannot see
+the decision before its partitions are assigned. If asked, that is the honest
+answer: the recovery mechanism was ready long before the message bus was.
 
 **FALLBACK:** *"Recovery is on a poll interval and we have just caught it
 between polls — the important artefact is the event log, which is unchanged
@@ -480,10 +489,10 @@ stand-downs beside recovery adoptions on the bottom one:
 loans in flight** — each loan parks a workflow in the loan service, one in
 verification-gateway and one in underwriting — and then falls back to zero.
 Measured with three loans: peak **12** at t+6 s, back to **0** at t+18 s
-(`demo/.evidence/task-4-fix-f3-unevidenced-figures.log`; an earlier rehearsal
-peaked at 9). **Do not promise any number** — 9 is the arithmetic, 12 is what
-it actually read, because the three loans overlap and a workflow left parked
-from the previous scenario still counts. Promise only "it climbs and comes back
+(`demo/.evidence/task-4-fix-f3-unevidenced-figures.log`). **Do not promise any
+number** — 9 is the arithmetic (3 loans × 3 workflows), 12 is what it actually
+read, because the three loans overlap and a workflow left parked from the
+previous scenario still counts. Promise only "it climbs and comes back
 to zero". Scrape interval is 5 s, so give it two scrapes.
 
 **TIMING:** measured — peak at t+6 s, back to 0 at t+18 s. Both are quantised
@@ -553,10 +562,11 @@ assertion exits non-zero and says which.
 (`demo/.evidence/task-3-live-v1-to-v2-move.log`). The swap itself is ~7 s.
 
 **PIN 6's span counts are undercounts — do not read them out.** The script
-queries Jaeger the moment it finishes, before the collector has flushed. In a
-rehearsal PIN 6 reported the v2 loan at 11 spans; re-querying 35 s later gave
-**28**, which is exactly the archived reference. Wait, then re-run the query
-from §3 with the loan id the script printed.
+queries Jaeger the moment it finishes, before the collector has flushed. In the
+archived run PIN 6 reported the new loan at **12** spans; re-querying **30 s**
+later gave **28**
+(`demo/.evidence/task-6-runbook-07-D1-v1-to-v2.log:127` → `:141`). Wait, then
+re-run the query from §3 with the loan id the script printed.
 
 ### The four things to say precisely
 

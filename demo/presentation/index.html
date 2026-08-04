@@ -873,9 +873,10 @@ body.presenting #presenter { display: grid; }
       <div class="card">
         <h3>The residual 33 s is Kafka&rsquo;s, not Maestro&rsquo;s</h3>
         <p>A <code>kill -9</code> leaves the broker believing the dead consumer is still
-          a live group member until <code>session.timeout.ms</code> (45 s) runs out. The
-          restarted node cannot be assigned the decisions topic until the group rebalances.
-          A <em>clean</em> restart rejoins in 3 s.</p>
+          a live group member until <code>session.timeout.ms</code> (45 s, confirmed on this
+          broker) runs out. The restarted node cannot be assigned the decisions topic until the
+          group rebalances: measured <strong>37.2 s</strong> to rejoin after a <code>kill -9</code>,
+          against <strong>3.0 s</strong> after a <em>clean</em> restart.</p>
       </div>
     </div>
     <div class="notes">
@@ -1015,8 +1016,9 @@ body.presenting #presenter { display: grid; }
       <p><strong>SAY:</strong> Each loan parks a workflow in the loan service, one in
         verification-gateway and one in underwriting &mdash; so the count climbs to roughly three
         times the loans in flight, and then it comes back to zero. Promise the shape, not the
-        number: an earlier rehearsal peaked at 9, this one read 12, because the loans overlap and
-        a workflow left parked from the previous scenario still counts.</p>
+        number: 9 is the arithmetic (3 loans &times; 3 workflows), the measured run read 12,
+        because the loans overlap and a workflow left parked from the previous scenario still
+        counts.</p>
       <p><strong>DO:</strong> &sect;5 &mdash;
         <code>for i in 1 2 3; do demo/scripts/drive-loan.sh happy "load-$i" &amp; sleep 1; done</code>,
         then <code>open http://localhost:3000</code>. Five panels, three rows; parked sits beside
@@ -1142,8 +1144,8 @@ body.presenting #presenter { display: grid; }
         (<code>demo/.evidence/task-3-jaeger-v1-vs-v2-traces.log</code>).</p>
       <p><strong>WATCH OUT &mdash; two traps.</strong> (1) <strong>PIN 6's span counts are
         undercounts; do not read them out.</strong> The script queries Jaeger the moment it
-        finishes, before the collector has flushed &mdash; a rehearsal reported the v2 loan at 11
-        spans, and re-querying 35 s later gave 28. Wait, then re-run the &sect;3 query with the
+        finishes, before the collector has flushed &mdash; the archived run reported the new loan
+        at 12 spans, and re-querying 30 s later gave 28. Wait, then re-run the &sect;3 query with the
         printed loan id. (2) Never point at the three verification <em>request</em> spans: the
         send fan-out is identical in v1 and v2 (offsets 24 / 36 / 46 ms). What changed is what the
         workflow <em>waits on</em>.</p>

@@ -1,0 +1,33 @@
+=== §2's session.timeout.ms = 45 s, CONFIRMED FOR THIS BROKER AND THESE CONSUMERS ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=6e9935421621f689925fe171d4e3e6c58c1d514e branch=worktree-demo
+timestamp-utc: 2026-08-04T18:40:05Z
+check: F12 — RUNBOOK §2 attributes the 33 s pause to a 45 s session.timeout.ms.
+       The review noted 45 s is the Apache default but was confirmed nowhere for THIS broker.
+
+--- PART A: the broker's bounds on what a consumer may ask for ---
+$ docker exec maestro-demo-kafka-1 kafka-configs.sh --bootstrap-server localhost:9092 \
+    --entity-type brokers --entity-name 1 --describe --all | grep session.timeout
+      group.max.session.timeout.ms=1800000 sensitive=false synonyms={DEFAULT_CONFIG:group.max.session.timeout.ms=1800000}
+      group.min.session.timeout.ms=6000 sensitive=false synonyms={DEFAULT_CONFIG:group.min.session.timeout.ms=6000}
+
+    => the classic-protocol bounds are 6 s..1800 s, so a consumer asking for 45 s
+       gets 45 s verbatim; the broker does not clamp it.
+
+--- PART B: what the demo's consumers actually negotiated (effective ConsumerConfig) ---
+Kafka logs the resolved ConsumerConfig at consumer construction. Taken from the
+QA run's own service logs in demo/.run/ (untracked; quoted here so the figure is archived):
+    loan-application-service         session.timeout.ms = 45000
+    verification-gateway-service     session.timeout.ms = 45000
+    underwriting-service             session.timeout.ms = 45000
+    maestro-admin                    session.timeout.ms = 45000
+    loan-application-service-b       session.timeout.ms = 45000
+
+    All five JVMs: session.timeout.ms = 45000 (45 s). Nothing in the demo or the
+    sample overrides it — it is Spring Kafka passing through the Apache default,
+    and this broker accepts it unchanged.
+
+--- VERDICT ---
+RUNBOOK §2's '45 s by default' is correct FOR THIS BROKER AND THESE CONSUMERS, not
+merely correct in the abstract. It bounds the measured 37.2 s post-SIGKILL rejoin in
+demo/.evidence/task-6-kafka-rejoin-measured.log:28-33 (37.2 < 45), which is the
+arithmetic the runbook now states.
