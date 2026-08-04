@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maestro — Demo Deck</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #0d0f14; color: #e6e9ef;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #deck { height: 100%; }
+  .slide { display: none; height: 100%; padding: 6vh 7vw; }
+  .slide.active { display: block; }
+  h1 { font-size: 4rem; margin: 0 0 1rem; }
+  .notes { display: none; }
+</style>
+</head>
+<body>
+<main id="deck">
+  <section class="slide active" data-id="title">
+    <h1>Maestro</h1>
+    <p>Durable workflows without a central server.</p>
+    <div class="notes">
+      <p><strong>SAY:</strong> placeholder.</p>
+      <p><strong>DO:</strong> placeholder.</p>
+    </div>
+  </section>
+</main>
+<script>
+(function () {
+  var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var i = 0;
+  function show(n) {
+    i = Math.max(0, Math.min(slides.length - 1, n));
+    slides.forEach(function (s, k) { s.classList.toggle('active', k === i); });
+    location.hash = '#' + (i + 1);
+  }
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowRight' || e.key === ' ') { show(i + 1); }
+    else if (e.key === 'ArrowLeft') { show(i - 1); }
+  });
+  show(0);
+})();
+</script>
+</body>
+</html>
