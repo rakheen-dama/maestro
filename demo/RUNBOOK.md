@@ -690,9 +690,13 @@ Maestro gives you `workflow.currentTime()` and `workflow.randomUUID()`, which
 record their value as a `SIDE_EFFECT` row the first time and return the
 recorded value on every replay."*
 
-Point at the `SIDE_EFFECT` rows in the event log from D2 —
-`$maestro:currentTime` — and say: *"That row exists so the second run of this
-method sees the same clock the first run saw."*
+There is no `SIDE_EFFECT` row to point at: these workflows never call
+`currentTime()` or `randomUUID()`, so none was ever recorded. Point instead at
+the `FundingActivities.reserveRateLock` row in the D2 event log and say: *"That
+activity mints a random rate-lock id. That is fine — it runs inside an
+activity, so the id it returned is stored on this row, and a replay hands back
+that id instead of minting a new one. Do the same thing between activity calls
+and the second run of the method sees a different value than the first."*
 
 **If asked "what happens if I get it wrong?"** — the engine has a
 `DeterminismChecker` that detects a replay diverging from the recorded history

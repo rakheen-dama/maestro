@@ -1343,10 +1343,13 @@ body.presenting #presenter { display: grid; }
         <code>workflow.randomUUID()</code>, which record their value as a <code>SIDE_EFFECT</code>
         row the first time and return the recorded value on every replay.</p>
       <p><strong>DO:</strong> &sect;D5 &mdash; no live commands in the demo stack; the
-        <code>DeterminismChecker</code> demo lives in the engine's own tests. Point instead at the
-        <code>SIDE_EFFECT</code> rows in D2's event log &mdash; <code>$maestro:currentTime</code>
-        &mdash; and say: that row exists so the second run of this method sees the same clock the
-        first run saw.</p>
+        <code>DeterminismChecker</code> demo lives in the engine's own tests. There is no
+        <code>SIDE_EFFECT</code> row to point at: these workflows never call
+        <code>currentTime()</code> or <code>randomUUID()</code>, so none was ever recorded. Point
+        instead at the <code>FundingActivities.reserveRateLock</code> row in D2's event log &mdash;
+        that activity mints a random rate-lock id, which is safe because it runs inside an activity:
+        the id it returned is stored on that row and a replay hands back that id instead of minting
+        a new one.</p>
       <p><strong>IF ASKED &ldquo;what happens if I get it wrong?&rdquo;</strong> The engine detects
         a replay diverging from recorded history and fails the run loudly rather than silently
         corrupting state.</p>
