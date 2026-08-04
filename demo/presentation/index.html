@@ -1826,8 +1826,16 @@ body.presenting #presenter { display: grid; }
   document.addEventListener('keydown', onKey);
   window.addEventListener('resize', function () { fitActive(); scalePreview(); });
   window.addEventListener('hashchange', function () { show(resolveHash()); });
+  // Click-to-advance, but a drag that selects text is not an advance: a
+  // presenter highlighting a trace id or a command mid-talk must not lose the
+  // slide out from under it.
+  var downAt = null;
+  stage.addEventListener('mousedown', function (e) { downAt = [e.clientX, e.clientY]; });
   stage.addEventListener('click', function (e) {
     if (e.target.closest('a, button, code')) { return; }
+    if (downAt && Math.abs(e.clientX - downAt[0]) + Math.abs(e.clientY - downAt[1]) > 6) { return; }
+    var sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.toString().trim()) { return; }
     show(idx + 1);
   });
 
