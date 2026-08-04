@@ -755,18 +755,18 @@ body.presenting #presenter { display: grid; }
         <table class="eventlog">
           <thead><tr><th>seq</th><th>type</th><th>detail</th></tr></thead>
           <tbody>
-            <tr><td class="seq">1</td><td class="type">ACTIVITY_COMPLETED</td><td>validateApplication</td></tr>
-            <tr><td class="seq">2</td><td class="type">ACTIVITY_COMPLETED</td><td>recordApplication</td></tr>
-            <tr><td class="seq">3</td><td class="type">SIDE_EFFECT</td><td>$maestro:currentTime</td></tr>
-            <tr><td class="seq">4</td><td class="type">ACTIVITY_COMPLETED</td><td>requestVerification</td></tr>
-            <tr><td class="seq">5</td><td class="type">SIGNAL_RECEIVED</td><td class="sig">verification.result</td></tr>
-            <tr><td class="seq">6</td><td class="type">SIGNAL_RECEIVED</td><td class="sig">verification.result</td></tr>
-            <tr><td class="seq">7</td><td class="type">SIGNAL_RECEIVED</td><td class="sig">verification.result</td></tr>
+            <tr><td class="seq">1</td><td class="type">ACTIVITY_COMPLETED</td><td>LoanActivities.recordApplication</td></tr>
+            <tr><td class="seq">2</td><td class="type">ACTIVITY_COMPLETED</td><td>LoanMessagingActivities.requestVerifications</td></tr>
+            <tr><td class="seq">3</td><td class="type">SIGNAL_RECEIVED</td><td class="sig">$maestro:awaitSignal:verification.result</td></tr>
             <tr class="dots"><td>&hellip;</td><td>&hellip;</td><td>&hellip;</td></tr>
+            <tr><td class="seq">&nbsp;</td><td class="type">ACTIVITY_COMPLETED</td><td>FundingActivities.reserveRateLock</td></tr>
+            <tr><td class="seq">&nbsp;</td><td class="type">SIGNAL_RECEIVED</td><td class="sig">$maestro:awaitSignal:package.signed</td></tr>
+            <tr><td class="seq">&nbsp;</td><td class="type">ACTIVITY_COMPLETED</td><td>FundingActivities.disburse</td></tr>
+            <tr><td class="seq">&nbsp;</td><td class="type">WORKFLOW_COMPLETED</td><td>&nbsp;</td></tr>
           </tbody>
         </table>
         <p class="mono small muted wide" style="margin-top:.6rem">
-          shape only &mdash; read the live log off /admin/workflows
+          the v1 log, in order &mdash; middle rows elided; read the live one off /admin/workflows
         </p>
       </div>
     </div>
