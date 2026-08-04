@@ -1,0 +1,55 @@
+=== identity ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+HEAD: 353696f5af92e1712811122c4d2a923460093177
+branch: worktree-demo
+timestamp: 2026-08-04T08:14:39Z
+
+Method: sampled every 3s for 200s while six loans were driven end to end
+through the stack (all reached COMPLETED/FUNDED; maestro_workflow_failed_total
+stayed absent). Containers: docker stats MemUsage. Host JVMs: ps RSS, which
+counts the whole process (heap + metaspace + thread stacks + code cache), not
+just the 256m -Xmx. Per-component PEAK, then summed -- deliberately
+pessimistic, since the components do not all peak at the same instant.
+
+Default demo shape: 6 containers + 4 host JVMs (three loan services + admin).
+docker stats rows from OTHER projects on this machine are excluded by the
+maestro-demo-* name filter.
+
+samples: 29 over 200s at 3s intervals
+
+COMPONENT                                    PEAK MiB
+container:grafana-1                               131
+container:prometheus-1                             56
+container:postgres-1                              111
+container:kafka-1                                 656
+container:valkey-1                                 13
+container:jaeger-1                                 23
+jvm:loan-application-service                      356
+jvm:maestro-admin                                 265
+jvm:underwriting-service                          357
+jvm:verification-gateway-service                  361
+
+PEAK TOTAL (sum of per-component peaks): 2329 MiB = 2.27 GiB
+
+Budget: ~4 GB. Headroom: ~1.7 GB.
+
+TWO_NODE=1 adds a fifth JVM (loan-application node B), another ~360 MiB by
+the figure above, for ~2.7 GiB total -- still inside the budget.
+
+Largest single consumer is Kafka at 656 MiB against its 1g mem_limit (64%).
+No container came close to its limit; the tightest ratio after Kafka is
+Grafana at 131/512 MiB.
+
+=== raw docker stats at end of run (maestro-demo only) ===
+maestro-demo-grafana-1	129.1MiB / 512MiB	25.21%
+maestro-demo-prometheus-1	44.2MiB / 512MiB	8.63%
+maestro-demo-postgres-1	111.3MiB / 512MiB	21.74%
+maestro-demo-kafka-1	575.1MiB / 1GiB	56.17%
+maestro-demo-valkey-1	13.16MiB / 128MiB	10.28%
+maestro-demo-jaeger-1	23.95MiB / 768MiB	3.12%
+
+=== raw host JVM RSS at end of run ===
+loan-application-service         pid 83324    356 MiB
+maestro-admin                    pid 83336    264 MiB
+underwriting-service             pid 83332    360 MiB
+verification-gateway-service     pid 83328    361 MiB
