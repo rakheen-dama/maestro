@@ -1,0 +1,140 @@
+=== EVIDENCE IDENTITY ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+HEAD: cb73e1d2267bfa8f6640024db33d39abc3607e99
+branch: worktree-demo
+timestamp-utc: 2026-08-04T08:55:43Z
+check: F1 — start-services.sh gates on the 11 Kafka topics existing, not on the broker port answering
+==========================
+
+Reproduces the clean-machine first-five-minutes command EXACTLY, from a
+'docker compose down -v' (volumes removed), with no pause between the two
+halves:
+
+    docker compose -f demo/docker-compose.yml up -d && \
+    DEMO_SKIP_BUILD=1 demo/scripts/start-services.sh
+
+'up -d' returns while kafka-init is still running, so the broker has bound
+its port but the topics do not exist yet. Before the fix the JVMs started
+into that window and failed with UNKNOWN_TOPIC_OR_PARTITION (auto-create is
+off). The [demo] timestamps below show the gate holding until they exist.
+
+=== RUN ===
+ Network maestro-demo_default  Creating
+ Network maestro-demo_default  Created
+ Volume maestro-demo_demo-pgdata  Creating
+ Volume maestro-demo_demo-pgdata  Created
+ Container maestro-demo-kafka-1  Creating
+ Container maestro-demo-postgres-1  Creating
+ Container maestro-demo-jaeger-1  Creating
+ Container maestro-demo-valkey-1  Creating
+ Container maestro-demo-prometheus-1  Creating
+ Container maestro-demo-prometheus-1  Created
+ Container maestro-demo-grafana-1  Creating
+ Container maestro-demo-valkey-1  Created
+ Container maestro-demo-postgres-1  Created
+ Container maestro-demo-jaeger-1  Created
+ Container maestro-demo-kafka-1  Created
+ Container maestro-demo-kafka-init-1  Creating
+ Container maestro-demo-grafana-1  Created
+ Container maestro-demo-kafka-init-1  Created
+ Container maestro-demo-jaeger-1  Starting
+ Container maestro-demo-kafka-1  Starting
+ Container maestro-demo-postgres-1  Starting
+ Container maestro-demo-valkey-1  Starting
+ Container maestro-demo-prometheus-1  Starting
+ Container maestro-demo-valkey-1  Started
+ Container maestro-demo-postgres-1  Started
+ Container maestro-demo-jaeger-1  Started
+ Container maestro-demo-prometheus-1  Started
+ Container maestro-demo-grafana-1  Starting
+ Container maestro-demo-kafka-1  Started
+ Container maestro-demo-kafka-1  Waiting
+ Container maestro-demo-grafana-1  Started
+ Container maestro-demo-kafka-1  Healthy
+ Container maestro-demo-kafka-init-1  Starting
+ Container maestro-demo-kafka-init-1  Started
+10:55:51 [demo] Postgres reachable at localhost:5433
+10:55:51 [demo] Valkey reachable at localhost:6380
+10:55:51 [demo] Kafka reachable at localhost:29093
+10:55:51 [demo] Jaeger-OTLP reachable at localhost:4318
+10:55:51 [demo] Waiting for 11 Kafka topics to exist...
+10:56:02 [demo] All Kafka topics present
+10:56:03 [demo] All service ports are free
+10:56:03 [demo] DEMO_SKIP_BUILD=1 — reusing existing boot jars
+10:56:03 [demo] Starting loan-application-service on port 8091...
+10:56:03 [demo] Starting verification-gateway-service on port 8092...
+10:56:03 [demo] Starting underwriting-service on port 8093...
+10:56:03 [demo] Starting maestro-admin on port 8080...
+10:56:08 [demo] loan-application-service is up (HTTP 200 from http://localhost:8091/actuator/health)
+10:56:08 [demo] verification-gateway-service is up (HTTP 200 from http://localhost:8092/actuator/health)
+10:56:09 [demo] underwriting-service is up (HTTP 200 from http://localhost:8093/actuator/health)
+10:56:09 [demo] maestro-admin is up (HTTP 200 from http://localhost:8080/actuator/health)
+10:56:09 [demo] All demo services are up. PID files in /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/demo/.run:
+    loan-application-service         pid 94643
+    maestro-admin                    pid 94655
+    underwriting-service             pid 94651
+    verification-gateway-service     pid 94647
+
+  Grafana        http://localhost:3000
+  Prometheus     http://localhost:9090
+  Jaeger UI      http://localhost:16686
+  maestro-admin  http://localhost:8080
+  loan-application     http://localhost:8091
+  verification-gateway http://localhost:8092
+  underwriting         http://localhost:8093
+
+=== CORROBORATION: kafka-init was still working during that 11s wait ===
+$ docker compose logs --timestamps kafka-init
+kafka-init-1  | 2026-08-04T08:55:50.973996970Z Creating Kafka topics...
+kafka-init-1  | 2026-08-04T08:56:02.265336128Z All Kafka topics created successfully.
+
+$ docker compose ps -a kafka-init  (exited 0 => topic creation finished)
+maestro-demo-kafka-init-1	exited	Exited (0) 19 seconds ago
+
+Timeline: the gate began waiting at 10:55:51 and cleared at 10:56:02.
+kafka-init's own 'All Kafka topics created successfully.' falls inside that
+window, so the 11s was a genuine wait on missing topics, not a fixed sleep.
+
+=== final topic count on the broker ===
+12
+(12 = the 11 required topics + Kafka's internal __consumer_offsets; the gate
+ checks the required set is a SUBSET of what exists, so extras are fine.)
+
+=== F4 NEGATIVE TEST: ports are checked BEFORE anything starts ===
+Services are already running, so a second invocation must refuse all four
+ports up front and start no JVM. Before the fix this failed inside
+start_jvm, one at a time, leaving earlier JVMs orphaned.
+
+$ pids before:
+    loan-application-service=94643
+    maestro-admin=94655
+    underwriting-service=94651
+    verification-gateway-service=94647
+
+$ DEMO_SKIP_BUILD=1 demo/scripts/start-services.sh   # expected to fail
+    10:56:34 [demo] Postgres reachable at localhost:5433
+    10:56:34 [demo] Valkey reachable at localhost:6380
+    10:56:34 [demo] Kafka reachable at localhost:29093
+    10:56:34 [demo] Jaeger-OTLP reachable at localhost:4318
+    10:56:34 [demo] Waiting for 11 Kafka topics to exist...
+    10:56:36 [demo] All Kafka topics present
+    10:56:36 [demo] ERROR: Port 8091 is already in use — cannot start loan-application-service.
+    10:56:36 [demo] ERROR: Run demo/scripts/stop-services.sh first.
+    10:56:36 [demo] ERROR: Port 8092 is already in use — cannot start verification-gateway-service.
+    10:56:36 [demo] ERROR: Run demo/scripts/stop-services.sh first.
+    10:56:36 [demo] ERROR: Port 8093 is already in use — cannot start underwriting-service.
+    10:56:36 [demo] ERROR: Run demo/scripts/stop-services.sh first.
+    10:56:36 [demo] ERROR: Port 8080 is already in use — cannot start maestro-admin.
+    10:56:36 [demo] ERROR: Run demo/scripts/stop-services.sh first.
+    exit status: 
+
+$ pids after (unchanged — nothing was started, nothing was orphaned):
+    loan-application-service=94643
+    maestro-admin=94655
+    underwriting-service=94651
+    verification-gateway-service=94647
+
+(The 'exit status:' line above was lost to the reporting pipeline. Captured
+ cleanly, the same invocation exits non-zero:)
+$ DEMO_SKIP_BUILD=1 demo/scripts/start-services.sh >/dev/null 2>&1; echo $?
+1
