@@ -1,0 +1,123 @@
+=== EVIDENCE IDENTITY ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+git-root: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+branch: worktree-demo
+commit: 6e52b5ba74a5e3bbae27311987c23f01273807c3
+dirty: 1 uncommitted change(s)
+timestamp-utc: 2026-08-04T12:50:06Z
+run: F1 re-measure: scenario 2 (kill -9) phase timings — reset, crash phase 1, kill, restart-loan-app.sh, finish. Wall-clock per phase via SECONDS.
+==========================
+
+########## reset.sh ##########
+    localhost:8080   health 200
+
+[1m==> clean slate in 15s — 0 workflow instances, all four JVMs healthy[0m
+ELAPSED reset.sh: 15s
+
+########## PHASE 1 — drive-loan.sh crash f1-crash ##########
+
+[1m==> SCENARIO 2 (crash), phase 1 — application f1-crash, $350,000 on $100,000 income, DTI 3.5[0m
+{"applicationId":"f1-crash"} [http 202]
+
+[1m==> waiting for all 3 verification results (credit 2s, employment 5s, appraisal 8s simulated)[0m
+    SAY: "nothing here is mocked out — three providers answer on their own schedule, in any order."
+    3/3 verification.result signals recorded after 10s
+    document.uploaded pay-stub by alice [http 202]
+    document.uploaded bank-statement by bob [http 202]
+
+[1m==> waiting for the underwriting desk to queue round 1[0m
+[{"loanId":"f1-crash","round":1,"dti":3.5,"escalated":false}]
+
+[1m==> durable event log for loan-f1-crash  (this is the whole of the workflow's memory)[0m
+    1  ACTIVITY_COMPLETED            LoanActivities.recordApplication
+    2  ACTIVITY_COMPLETED            LoanMessagingActivities.requestVerifications
+    3  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    4  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    5  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    6  SIDE_EFFECT                   $maestro:currentTime
+    7  SIDE_EFFECT                   $maestro:currentTime
+    8  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+    9  SIDE_EFFECT                   $maestro:currentTime
+   10  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+   11  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+   12  ACTIVITY_COMPLETED            LoanMessagingActivities.requestUnderwriting
+
+[1m==> PARKED. 12 durable events recorded. The workflow is holding nothing in memory that matters.[0m
+    snapshot of those 12 rows: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/demo/.run/crash-f1-crash-before-rows.txt
+
+  Now, on stage, in this order:
+
+    1.  kill -9 $(cat /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/demo/.run/loan-application-service.pid)              <- no graceful shutdown, no drain
+    2.  demo/scripts/restart-loan-app.sh      <- restarts ONLY the process you killed
+    3.  demo/scripts/drive-loan.sh finish f1-crash
+
+  (Step 2 is not start-services.sh: that starts all four JVMs and refuses to
+  run while 8092/8093/8080 are still healthy, which they are.)
+
+  Expected after step 3: the loan completes, and the 12 rows above are
+  byte-identical afterwards — they replayed from Postgres, they did not run
+  again.
+
+ELAPSED phase 1: 32s
+
+########## PHASE 2 — kill -9 ##########
+SIGKILL sent at 12:51:13Z
+health on 8091 after the kill: 000
+health on 8091 after the kill: 000
+
+########## PHASE 3a — restart-loan-app.sh ##########
+14:51:13 [demo] pid 17925 is already gone (this is the kill -9 case)
+14:51:13 [demo] starting loan-application-service from loan-application-service-0.3.0-SNAPSHOT.jar
+14:51:18 [demo] loan-application-service is up — pid 18124, jar loan-application-service-0.3.0-SNAPSHOT.jar, sha256 0023c6f46fd8
+ELAPSED restart-loan-app.sh: 4s
+
+########## PHASE 3b — drive-loan.sh finish f1-crash ##########
+started at 12:51:24Z
+
+[1m==> SCENARIO 2 (crash), phase 2 — resuming f1-crash after the restart[0m
+    pre-crash snapshot: 12 durable events
+
+[1m==> waiting for the underwriting desk to queue round 1[0m
+[{"loanId":"f1-crash","round":1,"dti":3.5,"escalated":false}]
+{"workflowId":"underwriting-f1-crash-round1","verdict":"APPROVED","signal":"underwriter.decision"}
+
+[1m==> waiting for the rate lock[0m
+    the rate lock recorded after 48s
+    package.signed by alice [http 202]
+    package.signed by bob [http 202]
+
+[1m==> waiting for f1-crash to reach COMPLETED[0m
+    f1-crash is COMPLETED after 2s
+{"applicationId":"f1-crash","workflowId":"loan-f1-crash","status":"COMPLETED","output":{"status":"FUNDED","rateLockId":"9b476077-7b1b-4b22-a468-afaa879d915a","applicationId":"f1-crash","disbursementId":"219bdb87-beeb-4383-826a-4b1826d1566d"}}
+
+[1m==> durable event log for loan-f1-crash  (this is the whole of the workflow's memory)[0m
+    1  ACTIVITY_COMPLETED            LoanActivities.recordApplication
+    2  ACTIVITY_COMPLETED            LoanMessagingActivities.requestVerifications
+    3  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    4  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    5  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    6  SIDE_EFFECT                   $maestro:currentTime
+    7  SIDE_EFFECT                   $maestro:currentTime
+    8  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+    9  SIDE_EFFECT                   $maestro:currentTime
+   10  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+   11  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+   12  ACTIVITY_COMPLETED            LoanMessagingActivities.requestUnderwriting
+   13  SIGNAL_RECEIVED               $maestro:awaitSignal:underwriting.decision
+   14  ACTIVITY_COMPLETED            FundingActivities.reserveRateLock
+   15  SIDE_EFFECT                   $maestro:currentTime
+   16  SIDE_EFFECT                   $maestro:currentTime
+   17  SIGNAL_RECEIVED               $maestro:awaitSignal:package.signed
+   18  SIDE_EFFECT                   $maestro:currentTime
+   19  SIGNAL_RECEIVED               $maestro:awaitSignal:package.signed
+   20  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+   21  ACTIVITY_COMPLETED            FundingActivities.disburse
+   22  WORKFLOW_COMPLETED            
+
+[1m==> PROOF 1 — the 12 rows recorded before the kill -9 are byte-identical now[0m
+    diff is empty. Nothing was rewritten, renumbered, or re-executed.
+
+[1m==> PROOF 2 — duplicate sequence numbers after the crash: 0  (must be 0)[0m
+
+[1m==> DONE — f1-crash FUNDED across a kill -9. Nothing re-executed.[0m
+ELAPSED phase 3 (finish): 250s
