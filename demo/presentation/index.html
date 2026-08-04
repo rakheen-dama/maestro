@@ -920,7 +920,7 @@ body.presenting #presenter { display: grid; }
       </div>
     </div>
     <p class="mono small muted wide" style="margin-top:1.3rem">
-      archived v1-shaped example &nbsp; <span class="brass">b39b554f4c94c659f68468588295431c</span> &nbsp; spans=20
+      archived example, uncrashed happy loan &nbsp; <span class="brass">0f99a173c6c6047e20e0357c254393f8</span> &nbsp; spans=31
       <br>services: sample-loan-application-service &middot; sample-verification-gateway-service &middot; sample-underwriting-service
     </p>
     <div class="notes">
@@ -928,8 +928,8 @@ body.presenting #presenter { display: grid; }
         separate JVMs are batching their spans independently. While it lands: nothing in this
         trace was hand-instrumented for the demo. It is the engine&rsquo;s own spans plus
         Spring&rsquo;s.</p>
-      <p><strong>DO:</strong> &sect;3, after &sect;1 or &sect;2 has completed and roughly 30 s have
-        passed. <code>open http://localhost:16686/search?service=sample-loan-application-service</code>.
+      <p><strong>DO:</strong> &sect;3, against an <strong>uncrashed</strong> loan &mdash; &sect;1's,
+        not &sect;2's &mdash; roughly 30 s after it completed. <code>open http://localhost:16686/search?service=sample-loan-application-service</code>.
         Point at: the three service colours, the gap in the middle, then individual activity
         span durations.</p>
       <p><strong>WATCH OUT &mdash; two traps.</strong> (1) Do <em>not</em> point at the three

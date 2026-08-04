@@ -379,9 +379,12 @@ Spring's."*
 3. Individual activity spans with their durations.
 
 **SHOULD APPEAR:** for a `happy` loan, **one** trace of roughly 20–35 spans
-across all three services (a rehearsal measured 31). A verified v1-shaped
-example, archived: `b39b554f4c94c659f68468588295431c  spans=20`
-(`demo/.evidence/task-3-jaeger-v1-vs-v2-traces.log`).
+across all three services. The archived exemplar is a genuinely *uncrashed*
+happy loan: `0f99a173c6c6047e20e0357c254393f8  spans=31`, all three services
+(`demo/.evidence/task-6-runbook-04-scenario3-jaeger.log:7-11`). Do **not** use
+`b39b554f4c94c659f68468588295431c` here — that id is the *post-swap fragment*
+of a restart-split loan (see §D1's "two traces, not one"), and 20 is the floor
+of the range above.
 
 **TIMING:** 30 s of flush, then it is instant.
 
