@@ -755,6 +755,98 @@ body.presenting #presenter { display: grid; }
     </div>
   </section>
 
+  <section class="slide" data-act="II" data-act-name="Scenarios" data-id="the-pause" data-title="Scenario 2 — narrating the pause">
+    <p class="eyebrow">Act II <span class="sep">/</span> scenario 2 <span class="sep">/</span> <em>&sect;2</em> <span class="sep">/</span> the pause</p>
+    <h2>The silence is the engine deciding it is <em style="font-style:normal;color:var(--brass)">allowed</em> to resume.</h2>
+    <ol class="steps" style="grid-template-columns:minmax(0,1fr)">
+      <li><span class="n">01</span><span><span class="what">The lock expires</span> <span class="why">&mdash; the node that owned this workflow died holding it. Nobody can hand it over; nothing got the chance to release it.</span></span></li>
+      <li><span class="n">02</span><span><span class="what">A recovery poll notices the workflow is unowned</span> <span class="why">&mdash; the restarted process here, a surviving peer in a real cluster. Same mechanism either way.</span></span></li>
+      <li><span class="n">03</span><span><span class="what">The workflow method is re-invoked from its first line</span> <span class="why">&mdash; every completed activity returns its stored result out of Postgres. No HTTP call, no Kafka publish. Replay runs at memory speed.</span></span></li>
+      <li class="money"><span class="n">04</span><span><span class="what">Real work resumes at the first step with no stored result</span> <span class="why">&mdash; the resume itself is instantaneous.</span></span></li>
+    </ol>
+    <div class="cols cols-2" style="margin-top:1.2rem">
+      <div class="card">
+        <h3>How fast does it recover? Answer with the knob</h3>
+        <p>&ldquo;As fast as you configure it to notice.&rdquo; The demo sets the recovery
+          poll to <strong>5 s</strong> so it is watchable; the shipped default is
+          <strong>60 s</strong>, and at that default this same phase measured 250 s.</p>
+      </div>
+      <div class="card">
+        <h3>The residual 33 s is Kafka&rsquo;s, not Maestro&rsquo;s</h3>
+        <p>A <code>kill -9</code> leaves the broker believing the dead consumer is still
+          a live group member until <code>session.timeout.ms</code> (45 s) runs out. The
+          restarted node cannot be assigned the decisions topic until the group rebalances.
+          A <em>clean</em> restart rejoins in 3 s.</p>
+      </div>
+    </div>
+    <div class="notes">
+      <p><strong>SAY</strong> (start the moment <code>waiting for the rate lock</code> appears &mdash;
+        do not stand quietly through this, it reads as a hang): Watch what has to happen before
+        that line appears. The node that owned this workflow died holding a lock, so first that
+        lock has to expire &mdash; nobody can hand it over, because nothing got a chance to
+        release it. Then a recovery poll has to notice the workflow is unowned and take it. Then
+        the workflow method is re-invoked from the very first line, and every activity that
+        already completed returns its stored result out of Postgres instantly. It runs the replay
+        at memory speed until it reaches the first step with no stored result, and only then does
+        real work happen again. Everything you are waiting for right now is the engine deciding
+        it is allowed to resume &mdash; the resume itself is instantaneous.</p>
+      <p><strong>SAY</strong> when the rate lock line lands: There it is. And the proof is on the
+        next screen &mdash; the rows recorded before the kill are byte-identical.</p>
+      <p><strong>DO:</strong> &sect;2, during <code>drive-loan.sh finish</code>. Nothing to click:
+        this slide is what you say while the terminal is quiet.</p>
+      <p><strong>WATCH OUT:</strong> the honest answer if asked about the 33 s is that the recovery
+        mechanism was ready long before the message bus was. Do not let it read as Maestro being
+        slow, and do not quote a recovery number without the poll interval attached.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="II" data-act-name="Scenarios" data-id="scenario-3" data-title="Scenario 3 — the trace">
+    <p class="eyebrow">Act II <span class="sep">/</span> scenario 3 <span class="sep">/</span> <em>&sect;3</em></p>
+    <h2>One trace. Three services. A gap where nothing was running.</h2>
+    <div class="cols cols-3">
+      <div class="card">
+        <h3>It crosses process boundaries</h3>
+        <p>Three service colours in a single trace. The workflow leaves one JVM,
+          runs in another, and comes back &mdash; and the trace does not break.</p>
+      </div>
+      <div class="card accent">
+        <h3>The gap in the middle</h3>
+        <p>That silence is the workflow <strong>parked</strong>, durably, awaiting a
+          signal. Time passes inside one trace with no thread held open and nothing
+          in memory.</p>
+      </div>
+      <div class="card">
+        <h3>Nothing was hand-instrumented</h3>
+        <p>These are the engine&rsquo;s own spans plus Spring&rsquo;s. No demo-only
+          tracing was added to make this picture.</p>
+      </div>
+    </div>
+    <p class="mono small muted wide" style="margin-top:1.3rem">
+      archived v1-shaped example &nbsp; <span class="brass">b39b554f4c94c659f68468588295431c</span> &nbsp; spans=20
+      <br>services: sample-loan-application-service &middot; sample-verification-gateway-service &middot; sample-underwriting-service
+    </p>
+    <div class="notes">
+      <p><strong>SAY</strong> during the 30 s flush: Give the collector a moment &mdash; three
+        separate JVMs are batching their spans independently. While it lands: nothing in this
+        trace was hand-instrumented for the demo. It is the engine&rsquo;s own spans plus
+        Spring&rsquo;s.</p>
+      <p><strong>DO:</strong> &sect;3, after &sect;1 or &sect;2 has completed and roughly 30 s have
+        passed. <code>open http://localhost:16686/search?service=sample-loan-application-service</code>.
+        Point at: the three service colours, the gap in the middle, then individual activity
+        span durations.</p>
+      <p><strong>WATCH OUT &mdash; two traps.</strong> (1) Do <em>not</em> point at the three
+        verification request spans as evidence of anything concurrent: the send fan-out looks
+        identical in v1 and v2 (offsets 24 / 36 / 46 ms in the archived v1 trace). What changes in
+        v2 is what the workflow <em>waits on</em>, not what it sends &mdash; that is D1&rsquo;s
+        material, not this slide&rsquo;s. (2) Any JVM restart splits the trace in two, so run this
+        against a loan that was <em>not</em> crashed, or say up front that a restarted workflow
+        produces two traces and show both.</p>
+      <p><strong>FALLBACK:</strong> &ldquo;The collector hasn&rsquo;t flushed yet &mdash; here is
+        the same trace from this morning&rsquo;s run.&rdquo; &rarr;
+        <code>demo/.evidence/task-2-jaeger-cross-service-trace.log</code>.</p>
+    </div>
+  </section>
+
   <p class="hint">&rarr; next &middot; g jump &middot; p presenter &middot; f fullscreen</p>
 </main>
 
