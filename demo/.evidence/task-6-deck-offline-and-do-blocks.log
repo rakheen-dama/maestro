@@ -64,3 +64,18 @@ OK      §D3 -> heading present
 OK      §D4 -> heading present
 OK      §D5 -> heading present
 OK      §D6 -> heading present
+
+=== INDEPENDENT RENDER WALK (QA, playwright, 1440x900) 2026-08-04T17:19:14Z ===
+served from a local python http.server ONLY because the automation harness blocks file://;
+the offline property is proven statically above: the file declares ZERO external subresources.
+slides in #stage: 20 (21 .slide elements total — the 21st is the presenter-preview clone)
+walk with presenter panel OFF: 20/20 unique hashes reached, bodyOverflowX=false, docOverflowY=false on all 20
+  #title #problem #flow #pressure #architecture #scenario-1 #scenario-2 #the-pause #scenario-3 #scenario-4
+  #scenario-5 #d1 #d1-traces #d1-code #d2 #d3 #d4 #d5 #d6 #authoring
+walk with presenter panel ON ('p'): 0/20 clipped. Non-unit fit scales: #d1-code 0.84, #d2 0.93, #authoring 0.74.
+  (RUNBOOK.md:44-48 discloses 62%/68% at 1280x720; at the recommended 1440x900 the same two
+   slides measure 68%->84% and the closing slide 62%->74%. Runbook figures are for 720p and are
+   the conservative ones — consistent.)
+only console message on the whole walk: 404 for /favicon.ico — emitted by the browser's automatic
+  favicon probe against MY temporary http server, not requested by the deck; absent under file://.
+only network resource recorded by performance.getEntriesByType('resource'): http://127.0.0.1:8777/favicon.ico
