@@ -259,6 +259,77 @@ code {
 }
 .ledger td:first-child { color: var(--ink); }
 .ledger tr:last-child td { border-bottom: 0; }
+/* trace shape — a schematic of what the spans look like, not to scale */
+.trace { border: 1px solid var(--rule); background: var(--lift); padding: 0.9rem 1rem 1rem; }
+.trace h3 {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--mute);
+  margin: 0 0 0.85rem;
+  font-weight: 500;
+}
+.trace .row { position: relative; height: 1.7rem; margin-bottom: 0.3rem; }
+.trace .span {
+  position: absolute;
+  top: 0.95rem;
+  height: 0.42rem;
+  background: var(--rule-2);
+  border-radius: 1px;
+}
+.trace .span.accent { background: var(--brass); }
+.trace .lbl {
+  position: absolute;
+  top: 0;
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  color: var(--mute);
+  white-space: nowrap;
+}
+.trace .axis {
+  margin-top: 0.55rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--rule);
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+  color: var(--rule-2);
+  display: flex;
+  justify-content: space-between;
+}
+
+/* code — hand-rolled highlighting, no library */
+pre.code {
+  margin: 0;
+  background: var(--lift);
+  border: 1px solid var(--rule);
+  border-left: 2px solid var(--brass);
+  padding: 0.85rem 1rem;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  line-height: 1.65;
+  color: var(--body);
+  white-space: pre;
+  tab-size: 2;
+}
+pre.code.v1 { border-left-color: var(--rule-2); }
+pre.code .k  { color: #9fb4cc; }              /* keyword */
+pre.code .t  { color: var(--ink); }           /* type / class */
+pre.code .s  { color: var(--brass); }         /* string / literal */
+pre.code .c  { color: var(--rule-2); font-style: italic; }  /* comment */
+pre.code .a  { color: var(--rose); }          /* annotation */
+pre.code mark { background: rgba(224, 168, 60, 0.14); color: inherit; }
+.codecap {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  color: var(--mute);
+  margin: 0.5rem 0 0;
+  max-width: none;
+}
+
 /* beats — a measured timeline across the top of a scenario */
 .beats {
   display: grid;
@@ -932,6 +1003,174 @@ body.presenting #presenter { display: grid; }
       <p><strong>FALLBACK:</strong> &ldquo;Grafana reads Prometheus on a 5-second scrape and we are
         inside the first interval.&rdquo; &rarr; <code>localhost:9090/targets</code> to show three
         services UP, then query <code>maestro_workflows_parked</code> directly.</p>
+    </div>
+  </section>
+
+  <!-- =========================== ACT III ============================= -->
+
+  <section class="slide" data-act="III" data-act-name="Deep dives" data-id="d1" data-title="D1 — the rolling deploy">
+    <p class="eyebrow">Act III <span class="sep">/</span> deep dive 1 <span class="sep">/</span> <em>&sect;D1</em></p>
+    <h1>A deploy, under a loan that is already running.</h1>
+    <ol class="beats">
+      <li><span class="t">v1</span><span class="b">a loan starts and records a verification result</span></li>
+      <li class="kill"><span class="t">~7 s</span><span class="b">SIGTERM v1, start v2 on the same port and pid file</span></li>
+      <li><span class="t">in-flight</span><span class="b">the old loan finishes on the <strong>sequential</strong> path</span></li>
+      <li class="money"><span class="t">new</span><span class="b">a fresh loan takes the <strong>parallel</strong> path</span></li>
+    </ol>
+    <div class="cols cols-2">
+      <div class="card">
+        <h3>The in-flight loan never saw the new code</h3>
+        <p>It finishes with <strong>zero</strong> <code>VERSION_MARKER</code> rows and
+          zero events at sequence &ge; 1000. Not "it was careful" &mdash; it was never
+          offered the branch.</p>
+      </div>
+      <div class="card accent">
+        <h3>The new loan fans out</h3>
+        <p>One <code>VERSION_MARKER</code> row, and events in the branch bands. Same
+          class, same fully-qualified name, different jar.</p>
+      </div>
+    </div>
+    <p class="lede" style="max-width:none;margin:1.3rem 0 0;font-size:1.15rem">
+      The v2 change, said precisely: <span class="brass">documents now collect while the
+      verifications are still outstanding.</span></p>
+    <div class="notes">
+      <p><strong>SAY:</strong> This is a rolling deploy with work in flight &mdash; the case
+        everyone asks about and nobody demos. We stop v1 while a loan is mid-flight, start v2 on
+        the same port, and drive the old loan to completion. It keeps its original behaviour, and
+        the loan started after the deploy takes the new one. Neither of them knows the other
+        exists.</p>
+      <p><strong>DO:</strong> &sect;D1 &mdash; <code>demo/scripts/v1-to-v2-move.sh</code>.
+        Everything is scripted and every PIN asserts; a violated assertion exits non-zero and says
+        which. Point at PIN 0 (two jar SHAs, and the <code>parallel-verification</code> string
+        count: 0 in v1, non-zero in v2), PIN 3, PIN 4, then PIN 6's trace ids. Measured 32&ndash;36 s.</p>
+      <p><strong>SAY IT THIS WAY &mdash; two branches, not three.</strong> v2 runs verification
+        collection and document collection concurrently. It is <em>not</em> a three-way
+        verification fan-out: three concurrent branches awaiting the same signal name are
+        impossible on this engine, because the parking lot holds one waiter per
+        <code>workflowId:signal:name</code> key. The line is &ldquo;documents now collect while
+        the verifications are still outstanding.&rdquo;</p>
+      <p><strong>AFTER D1, ALWAYS:</strong> <code>RESTORE_V1=1 demo/scripts/v1-to-v2-move.sh</code>
+        (6 s) or <code>demo/scripts/reset.sh</code> (17 s). Leaving v2 running poisons every later
+        event log with branch-band sequence numbers, and D2's walk-through will not match what you
+        say. Prerequisite: both jars must already exist &mdash; the script does not build.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="III" data-act-name="Deep dives" data-id="d1-traces" data-title="D1 — the two trace shapes">
+    <p class="eyebrow">Act III <span class="sep">/</span> deep dive 1 <span class="sep">/</span> <em>&sect;D1</em> <span class="sep">/</span> the shapes</p>
+    <h2>Same workflow class. Two shapes.</h2>
+    <div class="cols cols-2">
+      <div class="trace">
+        <h3>v1 &mdash; sequential</h3>
+        <div class="row"><span class="lbl" style="left:0">verifications</span><span class="span" style="left:0;width:46%"></span></div>
+        <div class="row"><span class="lbl" style="left:48%">documents</span><span class="span" style="left:48%;width:22%"></span></div>
+        <div class="row"><span class="lbl" style="left:72%">underwriting</span><span class="span" style="left:72%;width:28%"></span></div>
+        <div class="axis"><span>b39b554f4c94c659f68468588295431c</span><span>spans=20</span></div>
+      </div>
+      <div class="trace">
+        <h3>v2 &mdash; two branches</h3>
+        <div class="row"><span class="lbl" style="left:0">verifications</span><span class="span accent" style="left:0;width:46%"></span></div>
+        <div class="row"><span class="lbl" style="left:6%">documents</span><span class="span accent" style="left:6%;width:22%"></span></div>
+        <div class="row"><span class="lbl" style="left:48%">underwriting</span><span class="span" style="left:48%;width:28%"></span></div>
+        <div class="axis"><span>5c79c33935721eb3afe5f9ae8ca742f5</span><span>spans=28</span></div>
+      </div>
+    </div>
+    <p class="mono small muted wide" style="margin-top:.7rem">schematic &mdash; the shape, not the timings</p>
+    <div class="cols cols-2" style="margin-top:1.2rem">
+      <div class="card">
+        <h3>The branch bands are visible in the event log</h3>
+        <p>Parallel branches partition the sequence space by
+          <code>p*1000 + (i+1)*1000</code>. With the fork at parent sequence 4:
+          branch 0 allocates from <span class="brass">5001</span>, branch 1 from
+          <span class="brass">6001</span>, and the parent resumes at
+          <span class="brass">7001</span>. See those bands and you are looking at v2.</p>
+      </div>
+      <div class="card">
+        <h3>Predict two traces before you open Jaeger</h3>
+        <p>Restarting the JVM ends the first trace. The in-flight loan appears as a
+          13-span fragment plus a 20-span continuation; the v2-native loan is a single
+          28-span trace. A presenter who promises one trace and finds two looks wrong.</p>
+      </div>
+    </div>
+    <div class="notes">
+      <p><strong>SAY:</strong> Same class, same fully-qualified name. On the left the workflow
+        waits for verifications and only then starts collecting documents. On the right those two
+        overlap &mdash; documents collect while the verifications are still outstanding. That is
+        the whole of the v2 change, and the in-flight loan on the left never got offered it.</p>
+      <p><strong>DO:</strong> &sect;D1 PIN 6 prints both loans' trace ids &mdash; open them side by
+        side. Archived reference:
+        <code>b39b554f4c94c659f68468588295431c spans=20</code> against
+        <code>5c79c33935721eb3afe5f9ae8ca742f5 spans=28</code>, plus the pre-swap fragment
+        <code>ec798a7ed25b754fae81371d77cdbcc1 spans=13</code>
+        (<code>demo/.evidence/task-3-jaeger-v1-vs-v2-traces.log</code>).</p>
+      <p><strong>WATCH OUT &mdash; two traps.</strong> (1) <strong>PIN 6's span counts are
+        undercounts; do not read them out.</strong> The script queries Jaeger the moment it
+        finishes, before the collector has flushed &mdash; a rehearsal reported the v2 loan at 11
+        spans, and re-querying 35 s later gave 28. Wait, then re-run the &sect;3 query with the
+        printed loan id. (2) Never point at the three verification <em>request</em> spans: the
+        send fan-out is identical in v1 and v2 (offsets 24 / 36 / 46 ms). What changed is what the
+        workflow <em>waits on</em>.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="III" data-act-name="Deep dives" data-id="d1-code" data-title="D1 — the code that makes it safe">
+    <p class="eyebrow">Act III <span class="sep">/</span> deep dive 1 <span class="sep">/</span> <em>&sect;D1</em> <span class="sep">/</span> the diff</p>
+    <h2 style="max-width:none">One argument you must not get wrong.</h2>
+    <pre class="code"><span class="k">static final</span> <span class="t">String</span> PARALLEL_VERIFICATION = <span class="s">"parallel-verification"</span>;
+<span class="k">static final int</span> PARALLEL_VERIFICATION_VERSION = <span class="s">2</span>;
+
+<mark><span class="k">int</span> v = workflow.version(PARALLEL_VERIFICATION, <span class="t">WorkflowContext</span>.DEFAULT_VERSION,
+        PARALLEL_VERIFICATION_VERSION);</mark>
+<span class="c">// ... steps 1 and 2 are identical in both versions ...</span>
+
+<span class="k">if</span> (v &lt; PARALLEL_VERIFICATION_VERSION) {
+    awaitAllVerifications();                      <span class="c">// v1: fan in, THEN collect</span>
+    collectRequiredDocuments(application);
+} <span class="k">else</span> {
+    workflow.parallel(<span class="t">List</span>.&lt;<span class="t">Callable</span>&lt;<span class="t">String</span>&gt;&gt;of(
+            () -&gt; { awaitAllVerifications();              <span class="k">return</span> <span class="s">"verifications"</span>; },
+            () -&gt; { collectRequiredDocuments(application); <span class="k">return</span> <span class="s">"documents"</span>; }));
+}</pre>
+    <p class="codecap">maestro-samples/sample-loan-origination/loan-application-service/src/<span class="brass">v2</span>/java/&hellip;/workflow/LoanApplicationWorkflow.java
+      &nbsp;&middot;&nbsp; comments elided, lambda bodies folded onto one line</p>
+    <div class="cols cols-2" style="margin-top:1.2rem">
+      <div class="card alarm">
+        <h3>Never <code>version(changeId, 1, 2)</code></h3>
+        <p><code>DEFAULT_VERSION</code> is <strong>-1</strong>. A history that predates
+          the change resolves to it, so a literal <code>1</code> floor puts every
+          in-flight loan below the minimum &mdash; throwing
+          <code>UnsupportedWorkflowVersionException</code>, failing the loan and running
+          its saga compensations. That is a recorded RED test, not a hypothetical.</p>
+      </div>
+      <div class="card">
+        <h3>Why the gate sits before step 1</h3>
+        <p><code>version()</code> peeks the next sequence slot without consuming it.
+          Resolving here pins <strong>every loan that has already recorded its
+          application</strong>. Resolve it later and a loan parked at the very first
+          await would find an empty slot, record version 2, and switch paths
+          mid-flight.</p>
+      </div>
+    </div>
+    <div class="notes">
+      <p><strong>SAY:</strong> That is the entire change. A named change id &mdash; durable, never
+        renamed &mdash; a minimum, a maximum, and a branch. The engine writes the resolved version
+        into the event log as a <code>VERSION_MARKER</code> row the first time a workflow reaches
+        this line, and from then on that loan is pinned. Old loans keep the old path forever; new
+        loans get the new one. You delete the old branch when no pre-change loan can still be
+        running.</p>
+      <p><strong>SAY the second argument out loud:</strong> <code>WorkflowContext.DEFAULT_VERSION</code>,
+        not <code>1</code>. <code>DEFAULT_VERSION</code> is -1 and it means "this history predates
+        the change". Writing the literal <code>1</code> as the minimum fails every in-flight loan
+        &mdash; it inverts the entire point of the gate. Evidence:
+        <code>demo/.evidence/task-3-red-2-brief-literal-bounds-fail-inflight.log</code>.</p>
+      <p><strong>DO:</strong> &sect;D1. No commands on this slide &mdash; it is the code behind what
+        the script just proved.</p>
+      <p><strong>IF ASKED why the branches return a String:</strong> <code>parallel()</code>
+        collects results with <code>List.copyOf</code>, which rejects nulls, so a
+        <code>Callable&lt;Void&gt;</code> branch fails the workflow with a message-less NPE. And
+        both helpers call <code>WorkflowContext.current()</code> rather than closing over the
+        parent context, because inside <code>parallel()</code> the current context is the
+        <em>branch</em> context with its own partitioned sequence space.</p>
     </div>
   </section>
 
