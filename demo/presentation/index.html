@@ -829,6 +829,12 @@ body.presenting #presenter { display: grid; }
         JVMs and refuses to run while any port is taken, and 8092/8093/8080 are still healthy.
         Read the row count off the screen rather than promising a number; it depends on how many
         signals landed before the kill. Budget 90 s including what you say.</p>
+      <p><strong>FALLBACK:</strong> &ldquo;Recovery is on a poll interval and we have just caught it
+        between polls &mdash; the important artefact is the event log, which is unchanged by the
+        crash.&rdquo; Then <code>demo/scripts/drive-loan.sh events &lt;id&gt;</code> and point at the
+        contiguous sequence numbers. If the service will not restart:
+        <code>demo/scripts/reset.sh</code> and move to scenario 3 &mdash; do not retry the crash
+        live.</p>
     </div>
   </section>
 
@@ -1055,6 +1061,10 @@ body.presenting #presenter { display: grid; }
         impossible on this engine, because the parking lot holds one waiter per
         <code>workflowId:signal:name</code> key. The line is &ldquo;documents now collect while
         the verifications are still outstanding.&rdquo;</p>
+      <p><strong>FALLBACK:</strong> &ldquo;The deploy assertion is strict and it has caught
+        something &mdash; which is the point of the assertion. Here is the recorded run.&rdquo; Open
+        <code>demo/.evidence/task-3-live-v1-to-v2-move.log</code>, then
+        <code>RESTORE_V1=1 demo/scripts/v1-to-v2-move.sh</code> before continuing.</p>
       <p><strong>AFTER D1, ALWAYS:</strong> <code>RESTORE_V1=1 demo/scripts/v1-to-v2-move.sh</code>
         (6 s) or <code>demo/scripts/reset.sh</code> (17 s). Leaving v2 running poisons every later
         event log with branch-band sequence numbers, and D2's walk-through will not match what you
@@ -1401,6 +1411,10 @@ body.presenting #presenter { display: grid; }
         The <em>decision</em> endpoint is store-backed and works from either node &mdash; only the
         read-side queue is local. And the same Kafka effect as &sect;2 applies: node B cannot receive
         the decision until the group rebalances away from the SIGKILLed member.</p>
+      <p><strong>FALLBACK:</strong> &ldquo;Adoption is bounded by the lock TTL and we are inside it
+        &mdash; this is the one place in the demo where the honest answer is &lsquo;wait 30
+        seconds&rsquo;.&rdquo; Give it 120 s before you call it; only then
+        <code>demo/scripts/reset.sh</code> and move on.</p>
       <p><strong>AFTER D6:</strong> <code>demo/scripts/stop-services.sh &amp;&amp; DEMO_SKIP_BUILD=1
         demo/scripts/start-services.sh</code> to drop back to one node.</p>
     </div>
