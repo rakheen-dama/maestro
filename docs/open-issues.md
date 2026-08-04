@@ -266,6 +266,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [21](#issue-21) | Two `parallel()` branches parking at once fail the workflow and run compensations | Library defect | High | **Resolved** |
 | [22](#issue-22) | Compensations can run on an operator-terminated workflow | Library defect | Medium | Open |
 | [23](#issue-23) | Maestro's Kafka beans silently disable `spring.kafka.*`; `@MaestroSignalListener` drops trace context | Library defect | Critical | Open |
+| [24](#issue-24) | Redelivery is always on and always dead-letters, but nothing documents or creates the `.DLT` topics | Library gap — docs + config | Medium | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -1996,6 +1997,56 @@ produces no `traceparent` on a record published through the injected
 topic **with** a valid `traceparent` persists `trace_context = NULL`. Both go
 green after the fix, and a cross-service test asserts one trace id spans
 producer and consumer services.
+
+---
+
+### Issue 24 — Redelivery always dead-letters, but nothing creates or documents the `.DLT` topics {#issue-24}
+
+> **Open.** Found by the final whole-branch review of the demo cycle (`demo/`),
+> triaged there as *Minor for the demo* and filed here because it is not a demo
+> defect at all: the demo's compose file faithfully mirrors the loan sample's
+> own, and neither pre-creates dead-letter topics. It sits next to Issue 23 as
+> another "the config looks right and nothing fires" case.
+
+**Kind:** Library gap — configuration and documentation, not code.
+**Severity:** Medium. Nothing is lost; the failure mode is a long silence
+followed by a message that never arrives, at the exact moment an operator is
+already debugging something else.
+
+**What's wrong.** `maestro.messaging.redelivery` has **no enable flag**.
+`MaestroProperties.RedeliveryProperties` is always active with
+`maxAttempts=10`, exponential backoff to a 30 s ceiling, and
+`deadLetterSuffix=".DLT"` — so on Kafka a repeatedly-failing handler will,
+after roughly 2.5 minutes of backoff, try to publish to
+`<topic>.DLT`. `MaestroProperties` states outright that Maestro never creates
+dead-letter destinations on Kafka; they are pre-declared by the operator like
+every other topic.
+
+Nothing in the repository declares them. Both compose files that pre-create
+topics — `maestro-samples/sample-loan-origination/docker-compose.yml` and
+`demo/docker-compose.yml` — create the same 11 topics and not one
+`.DLT` companion, and both set
+`KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"`, which is the correct posture
+everywhere else. So the dead-letter path that Issue 1's fix shipped as a
+guarantee cannot actually complete on either stack.
+
+**Why this is filed rather than fixed here.** The right fix is a product
+decision, not an edit:
+
+1. **Document it.** `docs/configuration.md` and the Kafka setup docs should list
+   `<topic>.DLT` for every topic Maestro or the application consumes, as part of
+   the pre-creation checklist. Cheapest, and it makes the requirement visible.
+2. **Make it detectable.** A startup check that the configured dead-letter topic
+   exists for each subscribed topic, warning (not failing) when it does not —
+   the same shape as the topic gate `demo/scripts/preflight.sh` performs.
+3. **Give it an off switch.** `maestro.messaging.redelivery.enabled`, so an
+   operator who does not want dead-lettering is not silently relying on a
+   destination they never created.
+
+**Done when.** The dead-letter topics are named in the pre-creation
+documentation, and a test asserts that a handler failing `maxAttempts` times on
+a stack with no `.DLT` topic produces a diagnosable error rather than a silent
+stall.
 
 ---
 
