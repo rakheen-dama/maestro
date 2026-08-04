@@ -1,0 +1,214 @@
+=== TASK 6 FIX B1 VERIFICATION — genuine cold start, first-attempt preflight  2026-08-04T18:02:43Z ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+branch=worktree-demo HEAD=d64c1d52ff3dd6343139399a9de53246041a00d3
+host=Darwin 25.5.0 arm64  docker=Docker version 28.5.1, build e180ab8  java=openjdk version "25.0.1" 2025-10-21 LTS
+git status (should be clean): 1 modified files
+
+=== step A: stop host JVMs ===
+20:02:43 [demo] maestro-admin: SIGTERM to pid 61251 (up to 35s grace)
+20:02:44 [demo] maestro-admin: exited cleanly after 1s
+20:02:44 [demo] loan-application-service: SIGTERM to pid 61239 (up to 35s grace)
+20:02:46 [demo] loan-application-service: exited cleanly after 2s
+20:02:46 [demo] underwriting-service: SIGTERM to pid 61247 (up to 35s grace)
+20:02:48 [demo] underwriting-service: exited cleanly after 2s
+20:02:48 [demo] verification-gateway-service: SIGTERM to pid 61243 (up to 35s grace)
+20:02:51 [demo] verification-gateway-service: exited cleanly after 2s
+20:02:51 [demo] Done. Infrastructure containers are untouched — tear them down with:
+20:02:51 [demo]   docker compose -f demo/docker-compose.yml down -v
+STOP_EXIT=0
+
+=== step B: docker compose down -v  (RUNBOOK §T's 'correct way to get a truly clean start') ===
+ Container maestro-demo-jaeger-1  Stopping
+ Container maestro-demo-grafana-1  Stopping
+ Container maestro-demo-valkey-1  Stopping
+ Container maestro-demo-postgres-1  Stopping
+ Container maestro-demo-kafka-init-1  Stopping
+ Container maestro-demo-kafka-init-1  Stopped
+ Container maestro-demo-kafka-init-1  Removing
+ Container maestro-demo-kafka-init-1  Removed
+ Container maestro-demo-kafka-1  Stopping
+ Container maestro-demo-jaeger-1  Stopped
+ Container maestro-demo-jaeger-1  Removing
+ Container maestro-demo-jaeger-1  Removed
+ Container maestro-demo-grafana-1  Stopped
+ Container maestro-demo-grafana-1  Removing
+ Container maestro-demo-grafana-1  Removed
+ Container maestro-demo-prometheus-1  Stopping
+ Container maestro-demo-valkey-1  Stopped
+ Container maestro-demo-valkey-1  Removing
+ Container maestro-demo-valkey-1  Removed
+ Container maestro-demo-postgres-1  Stopped
+ Container maestro-demo-postgres-1  Removing
+ Container maestro-demo-postgres-1  Removed
+ Container maestro-demo-prometheus-1  Stopped
+ Container maestro-demo-prometheus-1  Removing
+ Container maestro-demo-prometheus-1  Removed
+ Container maestro-demo-kafka-1  Stopped
+ Container maestro-demo-kafka-1  Removing
+ Container maestro-demo-kafka-1  Removed
+ Volume maestro-demo_demo-pgdata  Removing
+ Network maestro-demo_default  Removing
+ Volume maestro-demo_demo-pgdata  Removed
+ Network maestro-demo_default  Removed
+DOWN_EXIT=0
+
+--- proof the stack is genuinely cold ---
+containers (ps -a, expect none): 0
+maestro-demo volumes remaining (expect none): 0
+host jvm pid files remaining (expect none): (eval):15: no matches found: demo/.run/*.pid
+0
+
+=== step C: FIRST preflight attempt on the cold stack (no retries, no skips) ===
+started 2026-08-04T18:02:59Z
+
+[1m==> 0/8 host tools[0m
+    [32mok[0m   docker, curl, jq, lsof, nc, shasum, unzip
+
+[1m==> 1/8 every demo port free (or already held by this demo's own containers)[0m
+    [32mok[0m   11 of 11 ports free, none held by a foreign process
+
+[1m==> 2/8 pull images[0m
+ kafka-init Skipped - Image is already being pulled by kafka 
+ kafka Pulling 
+ jaeger Pulling 
+ valkey Pulling 
+ prometheus Pulling 
+ grafana Pulling 
+ postgres Pulling 
+ valkey Pulled 
+ grafana Pulled 
+ kafka Pulled 
+ postgres Pulled 
+ jaeger Pulled 
+ prometheus Pulled 
+    [32mok[0m   images present
+
+[1m==> 3/8 build jars (including v2)[0m
+    [32mok[0m   bootJar + v2BootJar
+    [32mok[0m   loan-application-v2.jar present
+
+[1m==> 4/8 containers up and healthy[0m
+ Network maestro-demo_default  Creating
+ Network maestro-demo_default  Created
+ Volume maestro-demo_demo-pgdata  Creating
+ Volume maestro-demo_demo-pgdata  Created
+ Container maestro-demo-kafka-1  Creating
+ Container maestro-demo-valkey-1  Creating
+ Container maestro-demo-jaeger-1  Creating
+ Container maestro-demo-prometheus-1  Creating
+ Container maestro-demo-postgres-1  Creating
+ Container maestro-demo-valkey-1  Created
+ Container maestro-demo-prometheus-1  Created
+ Container maestro-demo-grafana-1  Creating
+ Container maestro-demo-postgres-1  Created
+ Container maestro-demo-jaeger-1  Created
+ Container maestro-demo-kafka-1  Created
+ Container maestro-demo-kafka-init-1  Creating
+ Container maestro-demo-grafana-1  Created
+ Container maestro-demo-kafka-init-1  Created
+ Container maestro-demo-postgres-1  Starting
+ Container maestro-demo-prometheus-1  Starting
+ Container maestro-demo-kafka-1  Starting
+ Container maestro-demo-valkey-1  Starting
+ Container maestro-demo-jaeger-1  Starting
+ Container maestro-demo-kafka-1  Started
+ Container maestro-demo-kafka-1  Waiting
+ Container maestro-demo-valkey-1  Started
+ Container maestro-demo-postgres-1  Started
+ Container maestro-demo-jaeger-1  Started
+ Container maestro-demo-prometheus-1  Started
+ Container maestro-demo-grafana-1  Starting
+ Container maestro-demo-grafana-1  Started
+ Container maestro-demo-kafka-1  Healthy
+ Container maestro-demo-kafka-init-1  Starting
+ Container maestro-demo-kafka-init-1  Started
+    [32mok[0m   postgres healthy
+    [32mok[0m   valkey healthy
+    [32mok[0m   kafka healthy
+    [32mok[0m   prometheus healthy
+    [32mok[0m   grafana healthy
+    [32mok[0m   jaeger http://localhost:16686/ answers (200)
+    [32mok[0m   jaeger http://localhost:4318/v1/traces answers (405)
+    [32mok[0m   kafka-init exited 0
+
+[1m==> 5/8 Kafka topics (never auto-created)[0m
+    [32mok[0m   11 topics present
+
+[1m==> 6/8 start host JVMs (and wait for their Kafka partitions, not just health 200)[0m
+20:03:26 [demo] Postgres reachable at localhost:5433
+20:03:26 [demo] Valkey reachable at localhost:6380
+20:03:27 [demo] Kafka reachable at localhost:29093
+20:03:27 [demo] Jaeger-OTLP reachable at localhost:4318
+20:03:27 [demo] Waiting for 11 Kafka topics to exist...
+20:03:28 [demo] All Kafka topics present
+20:03:28 [demo] All service ports are free
+20:03:28 [demo] DEMO_SKIP_BUILD=1 — reusing existing boot jars
+20:03:28 [demo] Starting loan-application-service on port 8091...
+20:03:28 [demo] Starting verification-gateway-service on port 8092...
+20:03:28 [demo] Starting underwriting-service on port 8093...
+20:03:28 [demo] Starting maestro-admin on port 8080...
+20:03:35 [demo] loan-application-service is up (HTTP 200 from http://localhost:8091/actuator/health)
+20:03:35 [demo] verification-gateway-service is up (HTTP 200 from http://localhost:8092/actuator/health)
+20:03:35 [demo] underwriting-service is up (HTTP 200 from http://localhost:8093/actuator/health)
+20:03:35 [demo] maestro-admin is up (HTTP 200 from http://localhost:8080/actuator/health)
+20:03:40 [demo] Kafka consumer group 'verification-gateway' is stable (1 member(s)) — its partitions are assigned
+20:03:41 [demo] Kafka consumer group 'underwriting' is stable (1 member(s)) — its partitions are assigned
+20:03:41 [demo] All demo services are up. PID files in /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/demo/.run:
+    loan-application-service         pid 64452
+    maestro-admin                    pid 64464
+    underwriting-service             pid 64460
+    verification-gateway-service     pid 64456
+
+  Grafana        http://localhost:3000
+  Prometheus     http://localhost:9090
+  Jaeger UI      http://localhost:16686
+  maestro-admin  http://localhost:8080
+  loan-application     http://localhost:8091
+  verification-gateway http://localhost:8092
+  underwriting         http://localhost:8093
+    [32mok[0m   loan-application 8091, verification-gateway 8092, underwriting 8093, admin 8080
+    [32mok[0m   consumer groups verification-gateway + underwriting Stable — safe to publish
+
+[1m==> 7/8 throwaway loan end to end[0m
+    [32mok[0m   preflight-1785866621 COMPLETED (path is warm: JIT, connection pools, Kafka consumer groups)
+         clear it before the demo with: demo/scripts/reset.sh
+
+[1m==> 8/8 process identity — trust nothing on screen until this matches[0m
+    SERVICE                    PID      JAR-SHA256(12) JAR
+    loan-application-service   64452    0023c6f46fd8   loan-application-service-0.3.0-SNAPSHOT.jar
+    verification-gateway-service 64456    d24802d3bdcd   verification-gateway-service-0.3.0-SNAPSHOT.jar
+    underwriting-service       64460    822ace7902c6   underwriting-service-0.3.0-SNAPSHOT.jar
+    maestro-admin              64464    d549c7a85b02   maestro-admin-0.3.0-SNAPSHOT.jar
+         loan-application started at:Tue Aug  4 20:03:28 2026      (if that is not from this minute, you are looking at a stale JVM)
+
+[32mPREFLIGHT PASSED in 60s.[0m Now run: demo/scripts/reset.sh
+PREFLIGHT_EXIT=0
+finished 2026-08-04T18:03:59Z
+
+=== step D: the gate did the work — ordering proof (this is what failed before) ===
+
+--- the new gate's own lines in preflight's output ---
+154:20:03:40 [demo] Kafka consumer group 'verification-gateway' is stable (1 member(s)) — its partitions are assigned
+155:20:03:41 [demo] Kafka consumer group 'underwriting' is stable (1 member(s)) — its partitions are assigned
+170:    ok   consumer groups verification-gateway + underwriting Stable — safe to publish
+
+--- domain-topic partition assignment, from the sample's own logs ---
+2026-08-04T20:03:37.437+02:00  INFO 64456 --- [sample-verification-gateway-service] [anNameSet-0-C-1] [                                                 ] s.k.l.ConcurrentMessageListenerContainer : maestro-verification-gateway: partitions assigned: [maestro.signals.verification-gateway-0, maestro.signals.verification-gateway-1, maestro.signals.verification-gateway-2]
+2026-08-04T20:03:37.452+02:00  INFO 64456 --- [sample-verification-gateway-service] [ntainer#0-0-C-1] [                                                 ] o.s.k.l.KafkaMessageListenerContainer    : verification-gateway: partitions assigned: [loans.verification.requests-0, loans.verification.requests-1, loans.verification.requests-2]
+2026-08-04T20:03:37.537+02:00  INFO 64460 --- [sample-underwriting-service] [anNameSet-0-C-1] [                                                 ] s.k.l.ConcurrentMessageListenerContainer : maestro-underwriting: partitions assigned: [maestro.signals.underwriting-0, maestro.signals.underwriting-1, maestro.signals.underwriting-2]
+2026-08-04T20:03:37.558+02:00  INFO 64460 --- [sample-underwriting-service] [ntainer#0-0-C-1] [                                                 ] o.s.k.l.KafkaMessageListenerContainer    : underwriting: partitions assigned: [loans.underwriting.requests-0, loans.underwriting.requests-1, loans.underwriting.requests-2]
+
+--- when the throwaway loan actually published ---
+2026-08-04T20:03:41.746+02:00  INFO 64452 --- [sample-loan-application-service] [nio-8091-exec-4] [8b64f64eb23f9f82642c871c24eb1f53-01fd6c44ad4982ee] i.b.m.core.engine.WorkflowExecutor       : Started workflow 'loan-preflight-1785866621' (type=loan-application, id=bca252a5-130d-4cbb-b5c0-651cd7cdee3c)
+
+ORDERING: both domain listeners have their partitions BEFORE the throwaway loan starts.
+QA measured the opposite on two cold runs: assignment 2.21 s and 2.13 s too LATE.
+
+--- throwaway loan reached COMPLETED, so the request was delivered ---
+173:    ok   preflight-1785866621 COMPLETED (path is warm: JIT, connection pools, Kafka consumer groups)
+
+--- verdict ---
+184:PREFLIGHT PASSED in 60s. Now run: demo/scripts/reset.sh
+185:PREFLIGHT_EXIT=0
+
+FIRST ATTEMPT. No re-run. No DEMO_SKIP_PULL, no DEMO_SKIP_BUILD.

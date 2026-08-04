@@ -201,3 +201,124 @@ of `start-services.sh` — both post-demo.
   queues. The runbook states ranges, not points.
 - Every figure above is one or two runs on one laptop. They are honest
   measurements, not distributions.
+
+---
+
+# Task 4 reopened — closing the three QA-gate defects (Task 6 fixes)
+
+**Identity.** `pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo`,
+branch `worktree-demo`, HEAD at start `a21561e`. Host Darwin 25.5.0 arm64,
+Docker 28.5.1. Window 2026-08-04 17:55Z → 18:06Z. One commit per defect.
+
+## B1 (blocking) — cold-start preflight, fixed at the cause — `94cd829`
+
+**Cause, confirmed.** The two sample-owned domain-topic `@KafkaListener` beans
+(`groupId = "verification-gateway"` on `loans.verification.requests`,
+`groupId = "underwriting"` on `loans.underwriting.requests`) inherit Spring
+Boot's default `auto.offset.reset=latest`. `start-services.sh` declared
+readiness on `/actuator/health == 200`, which is silent about consumer-group
+membership. On a cold broker there are no committed offsets, so `latest`
+applies and everything published before partition assignment is dropped.
+Maestro's own consumers were never at risk —
+`KafkaMessagingAutoConfiguration` sets `auto.offset.reset=earliest` explicitly.
+
+**Fix.** `start-services.sh` now blocks until both groups report `Stable` with
+≥1 member before it returns (`wait_for_domain_listeners`). preflight, `reset.sh`
+and a manual start all inherit it; `restart-loan-app.sh` and `v1-to-v2-move.sh`
+restart only loan-application, whose groups are `maestro-*`/earliest, so they
+need nothing. This is the same gate the loan sample's own e2e harness already
+applies for the same reason — the demo's start path simply lacked it. A
+common-failures row was added for the *new* gate's own timeout symptom, not as
+a substitute for the fix.
+
+**Verification — genuine cold start, first attempt, no skips**
+(`demo/.evidence/task-6-fix-B1-cold-start-verification.log`):
+
+```
+DOWN_EXIT=0
+containers (ps -a, expect none): 0
+maestro-demo volumes remaining (expect none): 0
+```
+
+then, on the first and only preflight run — no `DEMO_SKIP_PULL`, no
+`DEMO_SKIP_BUILD`, no re-run:
+
+```
+20:03:40 [demo] Kafka consumer group 'verification-gateway' is stable (1 member(s)) — its partitions are assigned
+20:03:41 [demo] Kafka consumer group 'underwriting' is stable (1 member(s)) — its partitions are assigned
+    ok   consumer groups verification-gateway + underwriting Stable — safe to publish
+    ok   preflight-1785866621 COMPLETED (path is warm: JIT, connection pools, Kafka consumer groups)
+PREFLIGHT PASSED in 60s. Now run: demo/scripts/reset.sh
+PREFLIGHT_EXIT=0
+```
+
+Ordering, the thing that was wrong:
+
+| | QA's cold run 1 | QA's cold run 2 | this run |
+|---|---|---|---|
+| `verification-gateway: partitions assigned` | 19:27:18.284 | 19:43:20.803 | **20:03:37.452** |
+| `Started workflow 'loan-preflight-…'` | 19:27:16.078 | 19:43:18.673 | **20:03:41.746** |
+| gap | 2.21 s **too late** | 2.13 s **too late** | 4.29 s **early** |
+
+## B2 — §D5 now points at the four real `SIDE_EFFECT` rows — `95c7137`
+
+The earlier review *did* over-correct. It reasoned from
+`LoanApplicationWorkflow`'s Javadoc that the author calls neither
+`currentTime()` nor `randomUUID()` — true — and concluded no such row exists,
+which is false: the engine emits them. `workflow.collectSignals(name, type,
+count, timeout)` fixes its deadline with the engine's own memoized
+`currentTime()` and re-reads it once per signal awaited, and `currentTime()`
+appends a `SIDE_EFFECT` row. §1 collects one document and one signature → two
+rows each (6/7, 13/14); §2's crashed loan collects two of each → three each
+(6/7/9, 15/16/18). Both match the archived logs.
+
+Fixed: RUNBOOK §D2 now prints the whole 18-row log of a real run instead of an
+elided invention; §D5 points at rows 6/7/13/14 and makes them the teaching
+moment; deck slides 6 and 15 carry real sequence numbers, the `SIDE_EFFECT`
+rows and the `SIGNAL_TIMEOUT` row instead of blank-numbered tails; slide 6
+gains an IF ASKED note. **The deck also repeated the false claim** in slide
+18's DO block — QA's grep missed it because of HTML wrapping — and that is
+fixed too.
+
+Re-checked live on this HEAD after `reset.sh`
+(`demo/.evidence/task-6-fix-B2-live-eventlog-recheck.log`):
+
+```
+runbook rows:       18   live rows:       18
+diff is empty — the runbook table IS this event log
+```
+
+Deck re-walked in Chromium at 1440×900 with the presenter panel on: **20/20
+slides, 0 clipped**, no horizontal overflow; `#d2` 0.93 → 0.90, `#d5` 1.00 →
+0.86, deepest in the deck unchanged at `#authoring`. Still zero external
+references — the only absolute URLs are three `http://localhost:*`.
+
+## B3 — six containers — `d64c1d5`
+
+`docker compose ps` prints six; the compose file defines seven services and
+`kafka-init` has exited. Corrected in all four places the number appeared:
+RUNBOOK §D4's claim and its memory paragraph, and the deck's slide 5 notes,
+slide 17 headline, footprint line and DO block. Each now says six and explains
+the seventh in one clause. §D4's memory paragraph also gained QA's
+independently measured true simultaneous peak (2.42 GiB with the fifth JVM),
+which the 2.27 GiB sum-of-peaks figure never covered. No other count in the
+runbook or deck disagrees with reality — 11 ports, 11 topics, 5 Grafana panels,
+3 services, 4 host JVMs all re-grepped and all correct.
+
+## Concerns
+
+- The consumer-group gate costs ~4 s on a cold start and ~0 s warm, but it adds
+  a `docker compose exec kafka` poll every 2 s to *every* `start-services.sh`
+  run, including `reset.sh` between rehearsals. Measured `reset.sh` at 22 s
+  against the runbook's documented 17 s. The runbook's "longer than 30 s means
+  something is wedged" threshold still holds, but the 17 s figure is now
+  optimistic by about five seconds.
+- The gate waits for ≥1 member. `TWO_NODE=1` adds a second loan-application,
+  whose groups are `maestro-*`/earliest and so cannot lose a record this way —
+  but if a future change gives a *second* node one of the two `latest` groups,
+  this gate would pass trivially before that node rebalanced. The sample's e2e
+  harness already solves that with a member floor; the demo does not need one
+  today, and would if the topology changed.
+- Cold preflight measured 60 s here because the images were cached and the
+  Gradle build was incremental. The runbook's 3–6 minute figure for a *truly*
+  cold machine (first pull) is untouched and unverified by this run.

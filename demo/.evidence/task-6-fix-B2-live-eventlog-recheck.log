@@ -1,0 +1,92 @@
+=== TASK 6 FIX B2 RECHECK — the runbook §D2 table against a live run on this HEAD  2026-08-04T18:04:28Z ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+branch=worktree-demo HEAD=d64c1d52ff3dd6343139399a9de53246041a00d3
+
+--- reset.sh (clears the preflight throwaway) ---
+
+[1m==> 1/4 stopping host JVMs[0m
+20:04:28 [demo] maestro-admin: SIGTERM to pid 64464 (up to 5s grace)
+20:04:29 [demo] maestro-admin: exited cleanly after 1s
+20:04:29 [demo] loan-application-service: SIGTERM to pid 64452 (up to 5s grace)
+20:04:31 [demo] loan-application-service: exited cleanly after 2s
+20:04:31 [demo] underwriting-service: SIGTERM to pid 64460 (up to 5s grace)
+20:04:32 [demo] underwriting-service: exited cleanly after 1s
+20:04:32 [demo] verification-gateway-service: SIGTERM to pid 64456 (up to 5s grace)
+20:04:34 [demo] verification-gateway-service: exited cleanly after 2s
+20:04:34 [demo] Done. Infrastructure containers are untouched — tear them down with:
+20:04:34 [demo]   docker compose -f demo/docker-compose.yml down -v
+
+[1m==> 2/4 truncating Maestro tables[0m
+    loan_application       cleared
+    verification_gateway   cleared
+    underwriting           cleared
+    maestro_admin          cleared
+
+[1m==> 3/4 flushing Valkey[0m
+
+[1m==> 4/4 restarting host JVMs from the v1 jars[0m
+    localhost:8091   health 200
+    localhost:8092   health 200
+    localhost:8093   health 200
+    localhost:8080   health 200
+
+[1m==> clean slate in 22s — 0 workflow instances, all four JVMs healthy[0m
+RESET_EXIT=0
+
+--- drive-loan.sh happy b2recheck-1785866690 ---
+
+[1m==> SCENARIO 1 (happy) — application b2recheck-1785866690, $200,000 on $100,000 income, DTI 2.0[0m
+    DTI 2.0 is below the 3.0 auto-approve line, so no underwriter is involved.
+{"applicationId":"b2recheck-1785866690"} [http 202]
+
+[1m==> waiting for all 3 verification results (credit 2s, employment 5s, appraisal 8s simulated)[0m
+    SAY: "nothing here is mocked out — three providers answer on their own schedule, in any order."
+    3/3 verification.result signals recorded after 14s
+    document.uploaded tax-return by carol [http 202]
+
+[1m==> waiting for the rate lock (auto-approved, then the funding saga starts)[0m
+    the rate lock (auto-approved, then the funding saga starts) recorded after 2s
+    package.signed by carol [http 202]
+
+[1m==> waiting for b2recheck-1785866690 to reach COMPLETED[0m
+    b2recheck-1785866690 is COMPLETED after 2s
+{"applicationId":"b2recheck-1785866690","workflowId":"loan-b2recheck-1785866690","status":"COMPLETED","output":{"status":"FUNDED","rateLockId":"3f3cccc3-5916-4434-902c-4f2949395c96","applicationId":"b2recheck-1785866690","disbursementId":"9800be6f-d26b-4e62-800e-ff1244a0f2d3"}}
+
+[1m==> durable event log for loan-b2recheck-1785866690  (this is the whole of the workflow's memory)[0m
+    1  ACTIVITY_COMPLETED            LoanActivities.recordApplication
+    2  ACTIVITY_COMPLETED            LoanMessagingActivities.requestVerifications
+    3  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    4  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    5  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    6  SIDE_EFFECT                   $maestro:currentTime
+    7  SIDE_EFFECT                   $maestro:currentTime
+    8  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+    9  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+   10  ACTIVITY_COMPLETED            LoanMessagingActivities.requestUnderwriting
+   11  SIGNAL_RECEIVED               $maestro:awaitSignal:underwriting.decision
+   12  ACTIVITY_COMPLETED            FundingActivities.reserveRateLock
+   13  SIDE_EFFECT                   $maestro:currentTime
+   14  SIDE_EFFECT                   $maestro:currentTime
+   15  SIGNAL_RECEIVED               $maestro:awaitSignal:package.signed
+   16  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+   17  ACTIVITY_COMPLETED            FundingActivities.disburse
+   18  WORKFLOW_COMPLETED            
+
+[1m==> DONE — b2recheck-1785866690 FUNDED. Point at http://localhost:8080/admin/workflows/loan-b2recheck-1785866690[0m
+DRIVE_EXIT=0
+
+--- diff: RUNBOOK §D2's printed table (RUNBOOK.md:614-640)  vs  this live run's event log ---
+runbook rows:       18   live rows:       18
+diff is empty — the runbook table IS this event log
+
+--- deck slides 6 and 15, tail rows, same log ---
+ 12 ACTIVITY_COMPLETED FundingActivities.reserveRateLock
+ 13 SIDE_EFFECT $maestro:currentTime
+ 14 SIDE_EFFECT $maestro:currentTime
+ 15 SIGNAL_RECEIVED $maestro:awaitSignal:package.signed
+ 16 SIGNAL_TIMEOUT $maestro:awaitSignal:application.withdrawn
+ 17 ACTIVITY_COMPLETED FundingActivities.disburse
+ 18 WORKFLOW_COMPLETED &nbsp;
+
+--- §D5 quotes rows 6/7/13/14; they are in the live log above ---
+4
