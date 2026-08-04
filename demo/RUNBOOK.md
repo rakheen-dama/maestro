@@ -721,10 +721,17 @@ connection-refused, not an adoption failure.
 - `demo/.run/loan-application-service-b.log` — node B logging that it adopted
   the instance.
 
-**TIMING:** adoption waits for the owner's lock TTL to lapse. A rehearsal
-adopted **27 s** after the `kill -9` (`Resuming workflow 'loan-<id>'` in node
-B's log). Budget **up to 60 s** of silence and fill it with the D4
-architecture points.
+**TIMING:** adoption waits for the dead owner's lock TTL to lapse — nothing can
+release it, so it has to expire. Measured in this demo's own configuration:
+**27 s** from the `kill -9` to `Resuming workflow 'loan-<id>'` in node B's log,
+and **49 s** for the whole `finish` through node B
+(`demo/.evidence/task-4-fix-f2-d6-adoption-latency.log`). The bound is the
+30 s instance-lock TTL plus one 5 s recovery poll plus slack, so budget **up to
+60 s** and fill it with the D4 architecture points.
+
+Note the same Kafka effect as §2: node B cannot receive the underwriting
+decision until the group rebalances away from the SIGKILLed member, so the
+`finish` is longer than the adoption it is waiting on.
 
 **Caveat to state:** `GET /underwriting/pending` is a node-local in-memory
 view. In two-node mode a loan queued on one node may not appear on the other,
@@ -737,7 +744,9 @@ demo/scripts/start-services.sh` to drop back to one node
 
 **FALLBACK:** *"Adoption is bounded by the lock TTL and we are inside it —
 this is the one place in the demo where the honest answer is 'wait 30
-seconds'."* If it has not adopted after 90 s, `demo/scripts/reset.sh` and move on.
+seconds'."* Do **not** abandon early: 49 s is a normal, successful run here, so
+give it **120 s** before you call it. Only then `demo/scripts/reset.sh` and
+move on.
 
 ---
 

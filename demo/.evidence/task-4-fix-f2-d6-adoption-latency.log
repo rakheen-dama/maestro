@@ -1,0 +1,74 @@
+=== EVIDENCE IDENTITY ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+git-root: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+branch: worktree-demo
+commit: ef30006d619f08a5b71e31852964c28bdedd7e61
+dirty: 1 uncommitted change(s)
+timestamp-utc: 2026-08-04T13:24:40Z
+run: F2 — §D6 two-node adoption latency measured in the DEMO's own config
+     (maestro.recovery.poll-interval=5s). Park a loan on node A, kill -9 node A,
+     drive the rest through node B on 8094, time kill -> node B 'Resuming workflow'.
+==========================
+
+########## restart two-node ##########
+15:24:57 [demo] loan-application-service is up (HTTP 200 from http://localhost:8091/actuator/health)
+15:24:57 [demo] verification-gateway-service is up (HTTP 200 from http://localhost:8092/actuator/health)
+15:24:57 [demo] underwriting-service is up (HTTP 200 from http://localhost:8093/actuator/health)
+15:24:57 [demo] maestro-admin is up (HTTP 200 from http://localhost:8080/actuator/health)
+15:24:57 [demo] loan-application-service-b is up (HTTP 200 from http://localhost:8094/actuator/health)
+    loan-application-service-b       pid 20920
+    loan-application-service         pid 20904
+    maestro-admin                    pid 20916
+    underwriting-service             pid 20912
+    verification-gateway-service     pid 20908
+ELAPSED two-node start: 11s
+
+--- poll interval bound in each JVM ---
+loan-application-service         PT5S
+loan-application-service-b       PT5S
+underwriting-service             PT5S
+verification-gateway-service     PT5S
+
+########## park a loan ##########
+==> SCENARIO 2 (crash), phase 1 — application d6-152440, $350,000 on $100,000 income, DTI 3.5
+    3/3 verification.result signals recorded after 14s
+==> waiting for the underwriting desk to queue round 1
+==> PARKED. 12 durable events recorded. The workflow is holding nothing in memory that matters.
+ELAPSED crash phase 1: 17s
+
+########## which node owns it ##########
+OWNER (log mentions d6-152440): loan-application-service
+OWNER (log mentions d6-152440): loan-application-service-b
+valkey lock: 3bf8c6d3:44:0483f739-534d-4fc7-9969-dd4ceb17ed3b
+
+########## kill -9 node A ##########
+SIGKILL to node A pid 20904 at 13:25:14Z  (epoch 1785849914)
+
+########## drive the finish through node B (8094) ##########
+==> waiting for the rate lock
+    the rate lock recorded after 41s
+==> waiting for d6-152440 to reach COMPLETED
+    d6-152440 is COMPLETED after 2s
+{"applicationId":"d6-152440","workflowId":"loan-d6-152440","status":"COMPLETED","output":{"status":"FUNDED","rateLockId":"098d5d27-e6cc-4326-b693-82eb18b34fc4","applicationId":"d6-152440","disbursementId":"07c0fbf1-16cf-4247-b52d-b97f0eee4989"}}
+    1  ACTIVITY_COMPLETED            LoanActivities.recordApplication
+    2  ACTIVITY_COMPLETED            LoanMessagingActivities.requestVerifications
+   12  ACTIVITY_COMPLETED            LoanMessagingActivities.requestUnderwriting
+   14  ACTIVITY_COMPLETED            FundingActivities.reserveRateLock
+   21  ACTIVITY_COMPLETED            FundingActivities.disburse
+   22  WORKFLOW_COMPLETED            
+==> PROOF 1 — the 12 rows recorded before the kill -9 are byte-identical now
+==> PROOF 2 — duplicate sequence numbers after the crash: 0  (must be 0)
+==> DONE — d6-152440 FUNDED across a kill -9. Nothing re-executed.
+ELAPSED finish via node B: 49s   exit=0
+
+########## ADOPTION LATENCY ##########
+node B line: 2026-08-04T15:25:41.946+02:00  INFO 20920 --- [sample-loan-application-service] [oan-application] [                                                 ] i.b.m.core.engine.WorkflowExecutor       : Resuming workflow 'loan-d6-152440' (type=loan-application, status=WAITING_SIGNAL)
+ADOPTION LATENCY: 27s  (kill -> node B's resume line)
+
+########## node B recovery/adoption lines around the kill ##########
+2026-08-04T15:24:56.823+02:00  INFO 20920 --- [sample-loan-application-service] [           main] [                                                 ] i.b.m.s.config.StartupRecoveryRunner     : Maestro startup recovery complete: 0 workflow(s) recovered
+2026-08-04T15:24:56.826+02:00  INFO 20920 --- [sample-loan-application-service] [           main] [                                                 ] i.b.m.s.config.StartupRecoveryRunner     : Maestro timer poller started (interval=PT5S, batchSize=100)
+2026-08-04T15:24:56.827+02:00  INFO 20920 --- [sample-loan-application-service] [           main] [                                                 ] i.b.maestro.core.engine.RecoveryPoller   : Recovery poller started (interval=PT5S, service=loan-application)
+2026-08-04T15:24:56.827+02:00  INFO 20920 --- [sample-loan-application-service] [           main] [                                                 ] i.b.m.s.config.StartupRecoveryRunner     : Maestro recovery poller started (interval=PT5S)
+2026-08-04T15:25:41.946+02:00  INFO 20920 --- [sample-loan-application-service] [oan-application] [                                                 ] i.b.m.core.engine.WorkflowExecutor       : Resuming workflow 'loan-d6-152440' (type=loan-application, status=WAITING_SIGNAL)
+2026-08-04T15:25:41.947+02:00  INFO 20920 --- [sample-loan-application-service] [oan-application] [                                                 ] i.b.maestro.core.engine.RecoveryPoller   : Recovery poller adopted 1 orphaned workflow(s)
