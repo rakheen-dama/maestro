@@ -44,7 +44,8 @@ The fan-out is **two** `workflow.parallel()` branches — *verification fan-in*
 signal names**: `ParkingLot.register` keys on `workflowId + ":signal:" +
 signalName` and throws `"Parking key … already occupied"` on a second park at
 the same key, and a pre-arrived signal would be handed to all three branches
-identically. Both failure modes are pinned by `LoanApplicationWorkflowV2Test`.
+identically. Both failure modes are pinned by `LoanApplicationWorkflowV2Test` (the second was
+added in Fix round 1 — see §7).
 The *three verification requests* do fan out three ways — but they do so in v1
 too, so they are not what changed. Slides must say **"documents collect while
 verifications are outstanding"**, not "three parallel verifications".
@@ -131,8 +132,13 @@ branch.
 ```
 
 The marker is at sequence 1 — the gate resolves before the first step, so it
-pins *every* already-started loan, not merely those that had got as far as
-verification. The band bases confirm the documented partitioning exactly: the
+pins every loan that **has already recorded its application**, not merely those
+that had got as far as verification. That is the guarantee the engine gives, and
+it is the wording the v2 source uses; do not widen it on a slide to "every
+already-started loan". A workflow row that exists with an *empty* event log
+(created, never yet run a step) finds slot 1 free, records marker version 2, and
+takes the v2 path — correctly, since it has no history to diverge from. The band
+bases confirm the documented partitioning exactly: the
 fork is at parent sequence `p = 4`, so branch 0 allocates from
 `4*1000 + 1*1000 = 5000` and branch 1 from `4*1000 + 2*1000 = 6000`; the parent
 resumes above both, at 7001. Total events in branch bands: 20.
@@ -170,7 +176,11 @@ verifications:*
 ```
 
 *v2 new loan — ONE 10.8-second run segment spanning the whole parallel phase,
-with the three verification requests fanning out beneath it:*
+inside which the documents were collected while the verifications were still
+outstanding. (The three `loans.verification.requests send` spans at 6/13/22 ms
+are **not** the v2 change: the v1 trace `ec798a7e…` has the identical three-way
+send at 24/36/46 ms. What is new is that the run never stands down between
+verification and documents.)*
 
 ```
     0ms  dur=10770ms  maestro.workflow.run
@@ -267,8 +277,97 @@ guard is there for when they do; it was not exercised here.
    with `LOGGING_LEVEL_IO_B2MASH_MAESTRO_CORE_ENGINE=DEBUG`; at INFO the
    `ParkingLot` lines that carry the concurrency proof do not exist.
 
-## 6. Current stack state
+## 6. Current stack state (as of the original run)
 
 The v2 jar (pid 4803) is running on 8091; verification-gateway, underwriting
 and maestro-admin are untouched from Task 2's run. Both demo loans are
 `COMPLETED`/`FUNDED`.
+
+---
+
+## 7. Fix round 1
+
+Four Minors, two of them slide-critical. No live re-run was needed; F3 added a
+test, so that module's suite was re-run. New evidence:
+`demo/.evidence/task-3-fix1-cas-loses-pin.log`.
+
+### F1 (slide-critical) — "pins *every* already-started loan" was over-broad
+
+Corrected in §2 Pin D. The guarantee is that the gate pins every loan that **has
+already recorded its application** — which is how the v2 source has always
+worded it (`src/v2/.../LoanApplicationWorkflow.java`, the version-gate comment).
+A workflow row created but with an empty event log finds sequence slot 1 free,
+records marker version 2 and takes v2 — correctly, having no history to diverge
+from. The report now says so explicitly and warns against widening it on a
+slide. Nothing in the live run changes: `loan-inflight-1785841603` had events at
+sequences 1–3 before the swap.
+
+### F2 (slide-critical) — the v2 trace caption reused the framing §1 forbids
+
+Corrected in §3. The three `loans.verification.requests send` spans are **not**
+the v2 change; the reviewer is right that they are identical in v1. Grepped back
+out of `task-3-jaeger-v1-vs-v2-traces.log`:
+
+```
+v1 ec798a7e…    24ms  dur=12ms   loans.verification.requests send
+                36ms  dur=9ms    loans.verification.requests send
+                46ms  dur=9ms    loans.verification.requests send
+v2 5c79c339…     6ms  dur=6ms    loans.verification.requests send
+                13ms  dur=8ms    loans.verification.requests send
+                22ms  dur=7ms    loans.verification.requests send
+```
+
+The caption now describes what actually differs: documents collecting while the
+verifications are outstanding, inside a run segment that never stands down.
+
+### F3 (Minor) — "Both are pinned" was false. Fixed by adding the pin, not by footnoting it.
+
+The second mode is now tested:
+`LoanApplicationWorkflowV2Test.concurrentBranchesOnOneSignalNameConsumeTheSameSignalRow`.
+
+Left to chance the two modes are a race — whether branch B queries before or
+after branch A's `markSignalConsumed` CAS decides which one you get, and the
+existing fixture demonstrably lands on the parking-key mode (same run, same
+class: `["IllegalStateException: Parking key 'same-name-1:signal:dup' already
+occupied — duplicate park call would orphan the existing waiter", …]`). So the
+new test forces the interleaving the Javadoc describes, with a
+`java.lang.reflect.Proxy` over `WorkflowStore` that holds both branches at
+`getUnconsumedSignals(_, "dup")` on a `CountDownLatch(2)` until each has the row
+in hand. Nothing about the engine is stubbed — only the moment the two reads
+happen relative to each other. The signal is delivered *before* the workflow
+starts (orphan adoption) so it is already pending and neither branch parks.
+
+Observed, from the fresh `--rerun`:
+
+```
+same-signal-name pending-signal outcomes: ["received:only-one","received:only-one"]
+SIGNAL_RECEIVED events: [2001, 3001]
+```
+
+One delivered signal row; two `SIGNAL_RECEIVED` events, one per branch at its
+own branch-band sequence; both branches returning the same payload. That is
+exactly `SignalManager.consumeSignal`'s documented "proceed when the CAS loses",
+and exactly why one branch per verification type would silently collect one
+verification three times.
+
+Prove-it-can-fail: temporarily demanding 3 `SIGNAL_RECEIVED` events instead of 2
+turns it RED (`… consume the SAME row FAILED` / `BUILD FAILED`), reverted
+immediately; both runs are in the evidence log. Suite: 6 tests, 0 failures.
+
+The v2 source's Javadoc now names both tests rather than claiming an unqualified
+"both are pinned".
+
+### F4 (Minor) — unused parameter
+
+`awaitAllVerifications(LoanApplication application)` → `awaitAllVerifications()`.
+The parameter was vestigial (v1's equivalent takes a `WorkflowContext`, and this
+method reads `WorkflowContext.current()` itself because inside `parallel()` the
+current context is the *branch* context). Both call sites updated;
+`compileV2Java` and the suite are green.
+
+### Not changed
+
+The three Fix-round-1 code changes touch only the v2 source's Javadoc, one
+parameter list, and the test class. The event sequences the demo pins are
+untouched, so §2–§5 and both trace IDs stand as evidenced — no re-run was
+required and none was performed.

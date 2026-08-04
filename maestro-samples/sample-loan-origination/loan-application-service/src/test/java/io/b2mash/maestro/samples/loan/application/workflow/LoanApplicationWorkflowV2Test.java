@@ -13,6 +13,7 @@ import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.retry.RetryExecutor;
 import io.b2mash.maestro.core.retry.RetryPolicy;
+import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.samples.loan.application.activity.FundingActivities;
 import io.b2mash.maestro.samples.loan.application.activity.LoanActivities;
 import io.b2mash.maestro.samples.loan.application.activity.LoanMessagingActivities;
@@ -49,6 +50,8 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertAll;
@@ -314,7 +317,102 @@ class LoanApplicationWorkflowV2Test {
     }
 
     /**
-     * Fixture for {@link #concurrentBranchesOnOneSignalNameAreUnsupported()}:
+     * The <em>second</em> way one-branch-per-verification-type fails, and the
+     * reason the same-signal-name rule is not merely about the parking key: when
+     * the signal has <b>already arrived</b>, no branch parks at all, so
+     * {@link ParkingLot}'s one-waiter-per-key guard never fires. Every branch
+     * instead takes {@code getUnconsumedSignals(...).getFirst()} — the
+     * <em>same row</em> — and {@code SignalManager.consumeSignal} deliberately
+     * <em>proceeds</em> when its {@code markSignalConsumed} CAS loses, because
+     * the {@code SIGNAL_RECEIVED} event it already appended is the durable
+     * memoized truth for that sequence. Both branches therefore return the same
+     * verification result, and a workflow that believed it had collected two
+     * distinct verifications has collected one twice.
+     *
+     * <p><b>Why the store is proxied.</b> Left to chance this is a race: if
+     * branch B happens to query after branch A's CAS, it finds nothing pending
+     * and parks instead, which is a different (also broken, also timing-
+     * dependent) outcome. The proxy holds both branches at the read until each
+     * has the row in hand, forcing the interleaving the Javadoc describes so the
+     * assertion pins the documented behaviour rather than the luckier half of a
+     * race. Nothing about the engine is stubbed — only the moment the two reads
+     * happen relative to each other.
+     */
+    @Test
+    @DisplayName("with the signal already pending, both same-name branches consume the SAME row")
+    void concurrentBranchesOnOneSignalNameConsumeTheSameSignalRow() {
+        // Released once both branches have read the pending-signal list, so
+        // neither can CAS before the other has seen the row.
+        var bothRead = new CountDownLatch(2);
+        var latchedStore = latchOnRead(store, "dup", bothRead);
+        var node = new WorkflowExecutor(latchedStore, lock, messaging, notifier, serializer,
+                "node-same-name-pending");
+        nodes.add(node);
+
+        var workflowId = "same-name-pending-1";
+        // Delivered BEFORE the workflow starts: an orphan signal, adopted at
+        // start, so it is already unconsumed and pending when both branches
+        // reach their await and neither of them parks.
+        node.deliverSignal(workflowId, "dup", "only-one");
+        node.startWorkflow(workflowId, "same-name-branches", "test", null,
+                workflowImpl(SameSignalNameBranchesWorkflow.class),
+                workflowMethod(SameSignalNameBranchesWorkflow.class));
+
+        await().atMost(SETTLE).until(() ->
+                store.getInstance(workflowId).map(i -> i.status().isTerminal()).orElse(false));
+
+        var instance = store.getInstance(workflowId).orElseThrow();
+        var outcomes = String.valueOf(instance.output());
+        var signalEvents = store.getEvents(instance.id()).stream()
+                .filter(e -> e.eventType() == EventType.SIGNAL_RECEIVED)
+                .toList();
+        System.out.println("same-signal-name pending-signal outcomes: " + outcomes);
+        System.out.println("SIGNAL_RECEIVED events: " + sequences(signalEvents));
+
+        assertAll(
+                () -> assertEquals(2, signalEvents.size(),
+                        "one delivered signal, but each branch appends its own SIGNAL_RECEIVED "
+                                + "at its own branch sequence — the row is consumed twice"),
+                () -> assertTrue(outcomes.contains("received:only-one")
+                                && outcomes.lastIndexOf("received:only-one")
+                                   != outcomes.indexOf("received:only-one"),
+                        "both branches must return the SAME payload — one signal row satisfying "
+                                + "two concurrent awaits is exactly why one branch per "
+                                + "verification type cannot work. Actual outcomes: " + outcomes));
+    }
+
+    /**
+     * Wraps a {@link WorkflowStore} so that every
+     * {@code getUnconsumedSignals(_, signalName)} counts the latch down and then
+     * waits on it before returning. A dynamic proxy rather than a hand-written
+     * decorator so the SPI can grow methods without this fixture rotting.
+     */
+    private static WorkflowStore latchOnRead(WorkflowStore delegate, String signalName,
+                                             CountDownLatch bothRead) {
+        return (WorkflowStore) java.lang.reflect.Proxy.newProxyInstance(
+                WorkflowStore.class.getClassLoader(), new Class<?>[]{WorkflowStore.class},
+                (proxy, method, args) -> {
+                    Object result;
+                    try {
+                        result = method.invoke(delegate, args);
+                    } catch (java.lang.reflect.InvocationTargetException e) {
+                        throw e.getCause();
+                    }
+                    if ("getUnconsumedSignals".equals(method.getName())
+                            && args != null && args.length == 2 && signalName.equals(args[1])) {
+                        bothRead.countDown();
+                        // Bounded: if only one branch ever gets here the test
+                        // degrades to the unforced race rather than hanging,
+                        // and the assertion — not a timeout — reports it.
+                        bothRead.await(5, TimeUnit.SECONDS);
+                    }
+                    return result;
+                });
+    }
+
+    /**
+     * Fixture for {@link #concurrentBranchesOnOneSignalNameAreUnsupported()} and
+     * {@link #concurrentBranchesOnOneSignalNameConsumeTheSameSignalRow()}:
      * two branches awaiting one signal name. Each branch reports its own
      * outcome instead of throwing, because {@code parallel()} rethrows only the
      * <em>first</em> branch error and which branch loses the park race varies.
