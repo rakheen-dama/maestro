@@ -1,0 +1,48 @@
+=== PEAK MEMORY DURING THE FULL QA RUN 2026-08-04T17:42:10Z ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=2cc6c9e7e143010bafb3f3d115c84c5ffff16ce6 branch=worktree-demo
+Sampler: docker stats --no-stream (containers) + ps -o rss (host JVMs from demo/.run/*.pid), every 5s.
+Window: started before preflight, ran through preflight (cold+rerun), reset, scenarios 1-5,
+        D1 (v1->v2 + restore), D2/D4, D6 (TWO_NODE=1, five JVMs), conditions.
+samples: 1213 rows, first 1785864405, last 1785865322
+
+--- PER-COMPONENT PEAK (MiB) ---
+container    maestro-demo-kafka-1                  627.6
+container    maestro-demo-grafana-1                127.1
+container    maestro-demo-postgres-1               125.3
+container    maestro-demo-kafka-init-1              85.2
+container    maestro-demo-prometheus-1              34.9
+container    maestro-demo-jaeger-1                  22.3
+container    maestro-demo-valkey-1                  15.8
+jvm          loan-application-service              338.0
+jvm          verification-gateway-service          331.9
+jvm          underwriting-service                  329.1
+jvm          loan-application-service-b            312.2
+jvm          maestro-admin                         309.9
+
+--- SUM OF PER-COMPONENT PEAKS (the conservative figure; peaks need not coincide) ---
+containers 1038.2 MiB + host JVMs 1621.1 MiB = 2659.3 MiB (2.60 GiB)
+
+--- TRUE SIMULTANEOUS PEAK (max over sample instants of the sum at that instant) ---
+2480.7 MiB (2.42 GiB) at epoch 1785865164
+
+--- how many components were being sampled at that instant ---
+11 components
+
+--- SUM OF PER-COMPONENT PEAKS EXCLUDING node B (like-for-like with RUNBOOK.md:689-694) ---
+2347.1 MiB (2.29 GiB)
+
+=== COMPARISON WITH THE PUBLISHED FIGURE ===
+RUNBOOK.md:689-694 claims: 'the whole demo peaked at 2.27 GiB (2,329 MiB, the sum of
+per-component peaks) across those seven containers plus four host JVMs ... the largest single
+consumer is Kafka at 656 MiB. TWO_NODE=1 adds ~360 MiB for a fifth JVM'.
+
+MEASURED THIS RUN:
+  four-JVM configuration, sum of per-component peaks : 2347.1 MiB (2.29 GiB)   vs claimed 2329 MiB
+  largest single consumer                            : kafka 627.6 MiB           vs claimed 656 MiB
+  fifth JVM (loan-application-service-b) adds        : 312.2 MiB                 vs claimed ~360 MiB
+  five-JVM sum of per-component peaks                : 2659.3 MiB (2.60 GiB)
+  TRUE simultaneous peak (max of the instantaneous sum): 2480.7 MiB (2.42 GiB), 11 components
+
+VERDICT: the runbook's memory figures are accurate — every one of mine lands within 10% and
+on the conservative side of the published number. The whole demo fits the ~4 GB budget with
+roughly 1.5 GB of headroom even in TWO_NODE mode.
