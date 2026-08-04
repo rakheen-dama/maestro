@@ -270,8 +270,9 @@ standing quietly through it reads as a hang. Start talking as soon as
 **SAY, during the wait:** *"Watch what has to happen before that line appears.
 The node that owned this workflow died holding a lock — so first that lock has
 to expire; nobody can hand it over, because nothing got a chance to release it.
-Then a recovery poll on another node has to notice the workflow is
-unowned and take it. Then the workflow method is re-invoked from the very first
+Then a recovery poll has to notice the workflow is unowned and take it — the
+restarted process here, a surviving peer in a real cluster, and the mechanism
+is the same either way. Then the workflow method is re-invoked from the very first
 line — and every activity that already completed returns its stored result out
 of Postgres instantly. No HTTP call. No Kafka publish. It runs the replay at
 memory speed until it reaches the first step with no stored result, and only
@@ -280,7 +281,7 @@ the engine deciding it is allowed to resume — the resume itself is
 instantaneous."*
 
 **SAY, when the rate lock line lands:** *"There it is. And the proof is on the
-next screen: the twelve rows recorded before the kill are byte-identical."*
+next screen: the rows recorded before the kill are byte-identical."*
 
 ### If someone asks "how fast does it recover?"
 
