@@ -745,14 +745,15 @@ seven services; the seventh, `kafka-init`, created the eleven topics and
 exited, so it shows up under `ps -a` and not under `ps`. Say six — that is what
 the room can count on the projector.)
 
-**If asked about footprint:** the whole demo peaked at **2.27 GiB** (2,329 MiB,
-the sum of per-component peaks) across those six containers plus four host
-JVMs, against a ~4 GB budget; each service runs `-Xmx256m`, and the largest
-single consumer is Kafka at 656 MiB. `TWO_NODE=1` adds ~360 MiB for a fifth
-JVM, still inside the budget
-(`demo/.evidence/task-2-peak-memory.log`). A QA re-measurement put the true
-simultaneous peak — the max of the instantaneous sum, not the sum of peaks — at
-**2.42 GiB** including the fifth JVM (`demo/.evidence/task-6-peak-memory.log`).
+**If asked about footprint:** the whole demo peaked at **2.42 GiB**
+(2,480.7 MiB) against a ~4 GB budget — that is the *true simultaneous* peak,
+the max of the instantaneous sum across all 11 components at one instant, with
+`TWO_NODE=1`'s fifth JVM included. Each service runs `-Xmx256m`; the largest
+single consumer is Kafka at **627.6 MiB**, and the fifth JVM adds **312.2
+MiB**. (The more conservative sum-of-per-component-peaks measure, which assumes
+peaks coincide when they need not, gives 2.60 GiB with the fifth JVM and
+2.29 GiB without.) All from 1,213 samples over the full QA run:
+`demo/.evidence/task-6-peak-memory.log`.
 
 ---
 
@@ -812,7 +813,8 @@ and fails the run loudly rather than silently corrupting state.
 ## §D6 — Deep dive: multi-node adoption
 
 **Off by default.** Requires a restart with the two-node toggle, so decide
-before you start, not mid-demo. It adds ~360 MiB.
+before you start, not mid-demo. The fifth JVM adds **312 MiB** measured
+(`demo/.evidence/task-6-peak-memory.log`).
 
 **RUN**
 
