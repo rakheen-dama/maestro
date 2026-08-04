@@ -1,0 +1,21 @@
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+git rev-parse HEAD: 69095d34a4f3889e1f8db4aa9c97febb4bce0f1b
+git branch --show-current: worktree-demo
+timestamp: 2026-08-04T07:16:28Z
+---
+Jaeger/OTLP collector deliberately NOT running (per task brief). Expected:
+app stays healthy, OTLP exporter fails to connect and logs the failure.
+---
+$ curl -s -o /dev/null -w '%{http_code}
+' localhost:8091/actuator/health
+200
+---
+grep 'Failed to export spans' /tmp/loan-app-final.log (first match, with connect-exception cause):
+2026-08-04T09:15:53.581+02:00 ERROR 72534 --- [sample-loan-application-service] [alhost:4318/...] [                                                 ] i.o.exporter.internal.http.HttpExporter  : Failed to export spans. The request could not be executed. Full error message: Failed to connect to localhost/[0:0:0:0:0:0:0:1]:4318
+
+java.net.ConnectException: Failed to connect to localhost/[0:0:0:0:0:0:0:1]:4318
+	at okhttp3.internal.connection.ConnectPlan.connectSocket(ConnectPlan.kt:275) ~[okhttp-jvm-5.2.1.jar:na]
+--
+2026-08-04T09:16:06.680+02:00 ERROR 72534 --- [sample-loan-application-service] [alhost:4318/...] [                                                 ] i.o.exporter.internal.http.HttpExporter  : Failed to export spans. The request could not be executed. Full error message: Failed to connect to localhost/[0:0:0:0:0:0:0:1]:4318
+
+java.net.ConnectException: Failed to connect to localhost/[0:0:0:0:0:0:0:1]:4318

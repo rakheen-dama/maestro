@@ -1,0 +1,87 @@
+=== EVIDENCE IDENTITY ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/maestro-samples/sample-loan-origination
+git-root: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+branch: worktree-demo
+commit: 69095d34a4f3889e1f8db4aa9c97febb4bce0f1b
+dirty: 7 uncommitted change(s)
+timestamp-utc: 2026-08-04T07:17:13Z
+task: task-1 (observability wiring) — confirm nothing regressed
+==========================
+
+09:17:13 [e2e] Loan-origination E2E run 091713 (logs: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/maestro-samples/sample-loan-origination/e2e/logs) - E2E_LOCK_BACKEND=valkey
+09:17:13 [e2e] Building boot jars (gradle bootJar)...
+09:17:15 [e2e] Starting infrastructure (Postgres/Valkey/Kafka) via docker compose...
+ Container maestro-loan-origination-valkey-1  Running
+ Container maestro-loan-origination-kafka-1  Running
+ Container maestro-loan-origination-postgres-1  Running
+ Container maestro-loan-origination-valkey-1  Waiting
+ Container maestro-loan-origination-kafka-1  Waiting
+ Container maestro-loan-origination-postgres-1  Waiting
+ Container maestro-loan-origination-valkey-1  Healthy
+ Container maestro-loan-origination-postgres-1  Healthy
+ Container maestro-loan-origination-kafka-1  Healthy
+ Container maestro-loan-origination-kafka-1  Running
+ Container maestro-loan-origination-kafka-1  Waiting
+ Container maestro-loan-origination-kafka-1  Healthy
+ Container maestro-loan-origination-kafka-init-1  Starting
+ Container maestro-loan-origination-kafka-init-1  Started
+09:17:17 [e2e] Waiting for kafka-init to finish creating topics...
+09:17:29 [e2e] kafka-init completed - all topics created.
+09:17:29 [e2e] Starting loan-application-service (service=loan-application-service) on port 8091...
+09:17:32 [e2e] LOCK BACKEND VERIFIED (loan-application-service, E2E_LOCK_BACKEND=valkey): io.b2mash.maestro.lock.valkey.ValkeyDistributedLock
+09:17:32 [e2e] Starting verification-gateway-service (service=verification-gateway-service) on port 8092...
+09:17:35 [e2e] LOCK BACKEND VERIFIED (verification-gateway-service, E2E_LOCK_BACKEND=valkey): io.b2mash.maestro.lock.valkey.ValkeyDistributedLock
+09:17:35 [e2e] Starting underwriting-service (service=underwriting-service) on port 8093...
+09:17:38 [e2e] LOCK BACKEND VERIFIED (underwriting-service, E2E_LOCK_BACKEND=valkey): io.b2mash.maestro.lock.valkey.ValkeyDistributedLock
+09:17:38 [e2e] loan-application-service is up (HTTP 404 from http://localhost:8091/applications/__probe__)
+09:17:39 [e2e] verification-gateway-service is up (HTTP 405 from http://localhost:8092/webhooks/credit/__probe__)
+09:17:39 [e2e] underwriting-service is up (HTTP 200 from http://localhost:8093/underwriting/pending)
+09:17:40 [e2e] Kafka consumer group 'verification-gateway' is stable (1 member(s), needed >=1).
+09:17:45 [e2e] Kafka consumer group 'underwriting' is stable (1 member(s), needed >=1).
+
+=== SCENARIO: 1. Happy path (co-borrower signs first) ===
+09:17:45 [e2e] Created application e2e-091713-s1 (2 borrowers, DTI 4.0 -> human review)
+09:17:57 [e2e] Round 1 queued for human review - underwriter approves
+09:17:59 [e2e]   assert OK: engine status = 'COMPLETED'
+09:17:59 [e2e]   assert OK: loan result = 'FUNDED'
+PASS 1. Happy path (co-borrower signs first) (14s)
+
+=== SCENARIO: 2. Out-of-order doc (orphan adoption) ===
+09:17:59 [e2e] Uploaded document for e2e-091713-s2 BEFORE creating the application
+09:17:59 [e2e] Created application e2e-091713-s2 (auto-approve DTI, pre-delivered doc must be adopted)
+09:18:14 [e2e]   assert OK: engine status = 'COMPLETED'
+09:18:14 [e2e]   assert OK: loan result = 'FUNDED'
+PASS 2. Out-of-order doc (orphan adoption) (15s)
+
+=== SCENARIO: 3. Conditions loop -> round-2 approval ===
+09:18:27 [e2e] Round 1 queued - underwriter returns CONDITIONS (proof-of-insurance)
+09:18:27 [e2e] Round 2 queued (conditions loop worked) - underwriter approves
+09:18:29 [e2e]   assert OK: engine status = 'COMPLETED'
+09:18:29 [e2e]   assert OK: loan result = 'FUNDED'
+PASS 3. Conditions loop -> round-2 approval (15s)
+
+=== SCENARIO: 4. Withdrawal after rate lock (saga) ===
+09:18:43 [e2e] Rate lock reserved - borrower withdraws BEFORE signing
+09:18:43 [e2e]   assert OK: engine status = 'FAILED'
+09:18:43 [e2e]   assert OK: rate-lock compensation logged
+PASS 4. Withdrawal after rate lock (saga) (14s)
+
+=== SCENARIO: 5. Crash recovery (kill -9 + replay) ===
+09:18:57 [e2e] kill -9 loan-application-service (pid 72877) mid-underwriting wait
+./e2e/run-e2e.sh: line 228: 72877 Killed: 9                  SERVER_PORT="$port" env ${extra_env[@]+"${extra_env[@]}"} java -jar "$jar" >> "$LOG_DIR/$iname.log" 2>&1
+09:18:58 [e2e] Restarting loan-application-service...
+09:18:58 [e2e] Starting loan-application-service (service=loan-application-service) on port 8091...
+09:19:01 [e2e] LOCK BACKEND VERIFIED (loan-application-service, E2E_LOCK_BACKEND=valkey): io.b2mash.maestro.lock.valkey.ValkeyDistributedLock
+09:19:02 [e2e] loan-application-service is up (HTTP 404 from http://localhost:8091/applications/__probe__)
+09:19:02 [e2e] Post-restart status of e2e-091713-s5: WAITING_SIGNAL
+09:19:02 [e2e] Delivering the underwriting decision after the restart
+09:20:04 [e2e]   assert OK: engine status = 'COMPLETED'
+09:20:04 [e2e]   assert OK: loan result = 'FUNDED'
+PASS 5. Crash recovery (kill -9 + replay) (81s)
+
+=== SCENARIO: 6. Two-node loan-application (multi-node) ===
+09:20:04 [e2e] Starting loan-application-service-b (service=loan-application-service) on port 8094...
+09:20:07 [e2e] LOCK BACKEND VERIFIED (loan-application-service-b, E2E_LOCK_BACKEND=valkey): io.b2mash.maestro.lock.valkey.ValkeyDistributedLock
+09:20:08 [e2e] loan-application-service-b is up (HTTP 404 from http://localhost:8094/applications/__probe__)
+09:20:08 [e2e] Node A pid=73886, node B pid=74738
+09:20:08 [e2e] Created e2e-091713-s6 on node A; every signal below goes to node B

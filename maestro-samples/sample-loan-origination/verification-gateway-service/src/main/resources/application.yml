@@ -23,8 +23,35 @@ spring:
 server:
   port: ${SERVER_PORT:8092}
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  tracing:
+    sampling:
+      probability: 1.0
+  # Spring Boot 4.0.5 moved the OTLP tracing property out of the Boot-3-era
+  # `management.otlp.tracing.endpoint` into the modular autoconfigure
+  # package's own prefix. Verified at runtime via /actuator/conditions:
+  # the old key leaves OtlpTracingConfigurations.ConnectionDetails
+  # unmatched (@ConditionalOnProperty on the NEW key), so no SpanExporter
+  # bean is ever created and the OTLP exporter never even attempts a
+  # connection - the failure is silent, not a connection-refused.
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318/v1/traces}
+
 maestro:
   service-name: verification-gateway
+
+  observability:
+    metrics:
+      enabled: true
+    tracing:
+      enabled: true
 
   # Multi-instance responsiveness: how often a parked workflow re-reads the
   # store for a wake that happened on another node (a signal ingested

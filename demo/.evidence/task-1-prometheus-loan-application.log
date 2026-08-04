@@ -1,0 +1,21 @@
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+git rev-parse HEAD: 69095d34a4f3889e1f8db4aa9c97febb4bce0f1b
+git branch --show-current: worktree-demo
+timestamp: 2026-08-04T07:16:13Z
+---
+$ curl -s localhost:8091/actuator/prometheus | grep -c '^maestro_'
+12
+---
+$ curl -s localhost:8091/actuator/prometheus | grep '^maestro_'
+maestro_activity_duration_seconds_count{activity="LoanActivities.recordApplication",outcome="completed",workflow="loan-application"} 1
+maestro_activity_duration_seconds_sum{activity="LoanActivities.recordApplication",outcome="completed",workflow="loan-application"} 6.66708E-4
+maestro_activity_duration_seconds_count{activity="LoanMessagingActivities.requestVerifications",outcome="completed",workflow="loan-application"} 1
+maestro_activity_duration_seconds_sum{activity="LoanMessagingActivities.requestVerifications",outcome="completed",workflow="loan-application"} 0.062148042
+maestro_activity_duration_seconds_max{activity="LoanActivities.recordApplication",outcome="completed",workflow="loan-application"} 6.66708E-4
+maestro_activity_duration_seconds_max{activity="LoanMessagingActivities.requestVerifications",outcome="completed",workflow="loan-application"} 0.062148042
+maestro_recovery_adopted_total 9.0
+maestro_recovery_scanned_total 9.0
+maestro_signal_consumed_total{signal="verification.result",workflow="loan-application"} 3.0
+maestro_workflow_started_total{workflow="loan-application"} 1.0
+maestro_workflows_parked 10.0
+maestro_workflows_running 10.0

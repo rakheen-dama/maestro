@@ -1,0 +1,13 @@
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+git rev-parse HEAD: 69095d34a4f3889e1f8db4aa9c97febb4bce0f1b
+git branch --show-current: worktree-demo
+timestamp: 2026-08-04T07:16:13Z
+---
+$ curl -s localhost:8093/actuator/prometheus | grep -c '^maestro_'
+4
+---
+$ curl -s localhost:8093/actuator/prometheus | grep '^maestro_'
+maestro_recovery_adopted_total 0.0
+maestro_recovery_scanned_total 0.0
+maestro_workflows_parked 0.0
+maestro_workflows_running 0.0
