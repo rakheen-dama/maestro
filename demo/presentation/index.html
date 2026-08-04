@@ -4,43 +4,702 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Maestro — Demo Deck</title>
+<!--
+  Self-contained presentation. No CDN, no webfonts, no network at runtime.
+  Slides are plain <section class="slide"> elements: edit content with any editor.
+
+  Keys:  → / space / PageDown  next      ← / PageUp / Backspace  previous
+         Home / End            first/last
+         g                     jump to slide          f  fullscreen
+         p                     presenter panel        P  presenter in a second window
+         n                     toggle notes inline    Esc  close overlay
+-->
 <style>
-  :root { color-scheme: dark; }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; background: #0d0f14; color: #e6e9ef;
-    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
-  #deck { height: 100%; }
-  .slide { display: none; height: 100%; padding: 6vh 7vw; }
-  .slide.active { display: block; }
-  h1 { font-size: 4rem; margin: 0 0 1rem; }
-  .notes { display: none; }
+:root {
+  color-scheme: dark;
+  --ground: #0e151d;
+  --lift:   #141d27;
+  --rule:   #233040;
+  --rule-2: #31445a;
+  --brass:  #e0a83c;
+  --brass-d:#8a6a29;
+  --rose:   #e07a86;
+  --ink:    #eef2f7;
+  --body:   #c3cddb;
+  --mute:   #7f8ea1;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --serif: ui-serif, Georgia, "Iowan Old Style", "Palatino Linotype", "Times New Roman", serif;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+* { box-sizing: border-box; }
+html {
+  font-size: clamp(15px, 0.52vw + 10px, 25px);
+  background: var(--ground);
+}
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 5.25rem 1fr;
+  background: var(--ground);
+  color: var(--body);
+  font-family: var(--sans);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* ---------- the ledger rail ------------------------------------------- */
+
+#rail {
+  position: relative;
+  border-right: 1px solid var(--rule);
+  background: linear-gradient(180deg, var(--lift), var(--ground) 60%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 1.35rem 0 1.1rem;
+  gap: 1.1rem;
+  overflow: hidden;
+}
+.rail-count {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  color: var(--brass);
+}
+.rail-count .of { color: var(--rule-2); }
+#railTicks {
+  flex: 1 1 auto;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+#railTicks::-webkit-scrollbar { display: none; }
+.act {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.38rem;
+}
+.act + .act { padding-top: 0.5rem; border-top: 1px solid var(--rule); width: 2.6rem; }
+.act-label {
+  font-family: var(--mono);
+  font-size: 0.55rem;
+  letter-spacing: 0.22em;
+  color: var(--rule-2);
+  padding-top: 0.1rem;
+}
+.act.current .act-label { color: var(--mute); }
+.tick {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  display: block;
+  width: 1.05rem;
+  height: 2px;
+  background: var(--rule-2);
+  transition: width 140ms ease, background 140ms ease;
+}
+.tick:hover { background: var(--mute); }
+.tick.seen { background: var(--brass-d); }
+.tick.current {
+  width: 1.9rem;
+  height: 3px;
+  background: var(--brass);
+  box-shadow: 0 0 0.5rem rgba(224, 168, 60, 0.35);
+}
+.rail-brand {
+  writing-mode: vertical-rl;
+  font-family: var(--mono);
+  font-size: 0.55rem;
+  letter-spacing: 0.42em;
+  color: var(--rule-2);
+  user-select: none;
+}
+
+/* ---------- stage ------------------------------------------------------ */
+
+#stage { position: relative; overflow: hidden; }
+.slide {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  justify-content: center;
+  padding: 6vh 5.5vw 7vh;
+  overflow: hidden;
+}
+.slide.active { display: flex; animation: enter 180ms ease-out both; }
+@keyframes enter { from { opacity: 0; transform: translateY(0.6rem); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .slide.active { animation: none; }
+  .tick { transition: none; }
+}
+.notes { display: none; }
+body.notes-inline .slide.active .notes {
+  display: block;
+  margin-top: 1.6rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--rule);
+  font-size: 0.72rem;
+}
+
+/* ---------- type roles -------------------------------------------------
+   mono  = what the engine records: addresses, code, event rows, data
+   serif = what the business sees: display, ledes
+   sans  = body prose
+   ---------------------------------------------------------------------- */
+
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--mute);
+  margin: 0 0 1.1rem;
+}
+.eyebrow .sep { color: var(--rule-2); padding: 0 0.5em; }
+.eyebrow em { font-style: normal; color: var(--brass); }
+h1 {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 3.4rem;
+  line-height: 1.04;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+  margin: 0 0 0.9rem;
+}
+h2 {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 2.15rem;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  margin: 0 0 1.1rem;
+  max-width: 22ch;
+}
+.lede {
+  font-family: var(--serif);
+  font-size: 1.35rem;
+  line-height: 1.4;
+  color: var(--ink);
+  max-width: 34ch;
+  margin: 0 0 1.4rem;
+}
+p { max-width: 62ch; margin: 0 0 0.85rem; }
+strong { color: var(--ink); font-weight: 600; }
+.brass { color: var(--brass); }
+.rose  { color: var(--rose); }
+.mono, code, kbd { font-family: var(--mono); }
+code {
+  font-size: 0.86em;
+  color: var(--ink);
+  background: var(--lift);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  padding: 0.05em 0.32em;
+}
+.rule {
+  width: 3.2rem;
+  height: 2px;
+  background: var(--brass);
+  margin: 0 0 1.4rem;
+}
+.muted { color: var(--mute); }
+.small { font-size: 0.82rem; }
+.wide { max-width: none; }
+
+/* ---------- reusable slide furniture ---------------------------------- */
+
+.cols { display: grid; gap: 1.4rem; }
+.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.card {
+  background: var(--lift);
+  border: 1px solid var(--rule);
+  border-left: 2px solid var(--rule-2);
+  padding: 1rem 1.1rem;
+}
+.card.accent { border-left-color: var(--brass); }
+.card.alarm  { border-left-color: var(--rose); }
+.card h3 {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--mute);
+  margin: 0 0 0.55rem;
+  font-weight: 500;
+}
+.card p:last-child { margin-bottom: 0; }
+.ledger { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+.ledger th {
+  font-family: var(--mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--mute);
+  text-align: left;
+  font-weight: 500;
+  padding: 0 1rem 0.5rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+.ledger td {
+  padding: 0.55rem 1rem 0.55rem 0;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+.ledger td:first-child { color: var(--ink); }
+.ledger tr:last-child td { border-bottom: 0; }
+.hint {
+  position: absolute;
+  right: 1.3rem;
+  bottom: 0.9rem;
+  font-family: var(--mono);
+  font-size: 0.58rem;
+  letter-spacing: 0.12em;
+  color: var(--rule-2);
+  user-select: none;
+}
+
+/* ---------- presenter panel ------------------------------------------- */
+
+body.presenting .slide { padding-bottom: 36vh; }
+#presenter {
+  display: none;
+  position: fixed;
+  left: 5.25rem; right: 0; bottom: 0;
+  height: 33vh;
+  background: var(--lift);
+  border-top: 1px solid var(--rule-2);
+  padding: 1rem 1.4rem;
+  gap: 1.4rem;
+  grid-template-columns: minmax(0, 1fr) 30%;
+  z-index: 40;
+}
+body.presenting #presenter { display: grid; }
+#presenter .pane { min-width: 0; min-height: 0; overflow: auto; }
+#presenter .pane.right { display: flex; flex-direction: column; overflow: hidden; }
+#presenter h4 {
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--mute);
+  margin: 0 0 0.5rem;
+  font-weight: 500;
+}
+.p-notes { font-size: 0.8rem; }
+.p-notes p { margin: 0 0 0.6rem; max-width: none; }
+.p-notes strong { color: var(--brass); font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.12em; }
+.p-meta {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  color: var(--mute);
+  display: flex;
+  gap: 1.2rem;
+  margin-bottom: 0.5rem;
+}
+.p-meta .clock { color: var(--brass); }
+.preview {
+  position: relative;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--rule);
+  background: var(--ground);
+}
+.preview-scaler { position: absolute; top: 0; left: 0; transform-origin: top left; }
+.preview-scaler .slide {
+  position: static;
+  display: flex;
+  animation: none;
+  height: 100%;
+  padding-bottom: 7vh;
+}
+
+/* ---------- jump overlay ---------------------------------------------- */
+
+#jump {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(8, 12, 17, 0.9);
+  padding: 12vh 0;
+  justify-content: center;
+  align-items: flex-start;
+}
+#jump.open { display: flex; }
+.jump-panel {
+  width: min(46rem, 88vw);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--lift);
+  border: 1px solid var(--rule-2);
+}
+#jumpInput {
+  appearance: none;
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  padding: 0.9rem 1.1rem;
+  outline: none;
+}
+#jumpInput::placeholder { color: var(--rule-2); }
+#jumpList { list-style: none; margin: 0; padding: 0.4rem 0; overflow-y: auto; }
+#jumpList li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.9rem;
+  padding: 0.42rem 1.1rem;
+  cursor: pointer;
+  font-size: 0.86rem;
+}
+#jumpList li .num {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  color: var(--rule-2);
+  width: 2.2rem;
+  flex: none;
+}
+#jumpList li .act-tag {
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.14em;
+  color: var(--mute);
+  margin-left: auto;
+  flex: none;
+}
+#jumpList li.sel { background: rgba(224, 168, 60, 0.1); }
+#jumpList li.sel .num { color: var(--brass); }
+#jumpList li.sel .title { color: var(--ink); }
 </style>
 </head>
 <body>
-<main id="deck">
-  <section class="slide active" data-id="title">
+
+<nav id="rail" aria-label="Slide ledger">
+  <div class="rail-count"><span id="railNum">01</span><span class="of">/</span><span id="railTotal" class="of">01</span></div>
+  <div id="railTicks"></div>
+  <div class="rail-brand">MAESTRO</div>
+</nav>
+
+<main id="stage">
+
+  <!-- ============================ ACT I ============================== -->
+
+  <section class="slide" data-act="I" data-act-name="Opening" data-id="title" data-title="Maestro">
+    <p class="eyebrow">Durable workflow engine <span class="sep">/</span> live demo</p>
     <h1>Maestro</h1>
-    <p>Durable workflows without a central server.</p>
+    <div class="rule"></div>
+    <p class="lede">Durable, crash-recoverable workflows with no central server —
+      built on the Postgres, Kafka and Valkey you already run.</p>
+    <p class="mono small muted wide">loan origination &middot; three services &middot; five scenarios &middot; six deep dives</p>
     <div class="notes">
-      <p><strong>SAY:</strong> placeholder.</p>
-      <p><strong>DO:</strong> placeholder.</p>
+      <p><strong>SAY:</strong> Everything you are about to see runs as a library inside three
+        ordinary Spring Boot services. There is no workflow server anywhere in this room.</p>
+      <p><strong>DO:</strong> §0 pre-flight is already done — stack is up. If you want proof on
+        screen: <code>docker compose -f demo/docker-compose.yml ps</code>.</p>
     </div>
   </section>
+
+  <p class="hint">&rarr; next &middot; g jump &middot; p presenter &middot; f fullscreen</p>
 </main>
+
+<div id="presenter">
+  <div class="pane">
+    <div class="p-meta">
+      <span class="clock" id="pClock">00:00</span>
+      <span id="pPos">1 / 1</span>
+      <span id="pTitle"></span>
+    </div>
+    <h4>Notes</h4>
+    <div class="p-notes" id="pNotes"></div>
+  </div>
+  <div class="pane right">
+    <h4>Next <span class="muted" id="pNextTitle"></span></h4>
+    <div class="preview" id="pPreview"><div class="preview-scaler" id="pScaler"></div></div>
+  </div>
+</div>
+
+<div id="jump" role="dialog" aria-label="Jump to slide">
+  <div class="jump-panel">
+    <input id="jumpInput" type="text" autocomplete="off" spellcheck="false"
+           placeholder="jump to slide — type a number, a title, or an act (D4, scenario 2)">
+    <ul id="jumpList"></ul>
+  </div>
+</div>
+
 <script>
 (function () {
-  var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
-  var i = 0;
-  function show(n) {
-    i = Math.max(0, Math.min(slides.length - 1, n));
-    slides.forEach(function (s, k) { s.classList.toggle('active', k === i); });
-    location.hash = '#' + (i + 1);
+  'use strict';
+
+  var slides   = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var stage    = document.getElementById('stage');
+  var railTicks= document.getElementById('railTicks');
+  var railNum  = document.getElementById('railNum');
+  var railTotal= document.getElementById('railTotal');
+  var jump     = document.getElementById('jump');
+  var jumpInput= document.getElementById('jumpInput');
+  var jumpList = document.getElementById('jumpList');
+  var idx = 0;
+  var started = Date.now();
+  var popup = null;
+
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function titleOf(s) { return s.dataset.title || s.dataset.id || 'slide'; }
+
+  /* ---- ledger rail ---------------------------------------------------- */
+
+  function buildRail() {
+    var act = null, group = null;
+    slides.forEach(function (s, k) {
+      if (s.dataset.act !== act) {
+        act = s.dataset.act;
+        var wrap = document.createElement('div');
+        wrap.className = 'act';
+        wrap.dataset.act = act;
+        var label = document.createElement('span');
+        label.className = 'act-label';
+        label.textContent = act;
+        wrap.appendChild(label);
+        group = document.createElement('div');
+        group.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:.38rem';
+        wrap.appendChild(group);
+        railTicks.appendChild(wrap);
+      }
+      var t = document.createElement('button');
+      t.className = 'tick';
+      t.type = 'button';
+      t.dataset.i = k;
+      t.title = (k + 1) + '. ' + titleOf(s);
+      t.setAttribute('aria-label', t.title);
+      t.addEventListener('click', function () { show(k); });
+      group.appendChild(t);
+    });
+    railTotal.textContent = pad(slides.length);
   }
-  document.addEventListener('keydown', function (e) {
-    if (e.key === 'ArrowRight' || e.key === ' ') { show(i + 1); }
-    else if (e.key === 'ArrowLeft') { show(i - 1); }
+
+  function paintRail() {
+    var ticks = railTicks.querySelectorAll('.tick');
+    for (var k = 0; k < ticks.length; k++) {
+      ticks[k].classList.toggle('current', k === idx);
+      ticks[k].classList.toggle('seen', k < idx);
+    }
+    var acts = railTicks.querySelectorAll('.act');
+    for (var a = 0; a < acts.length; a++) {
+      acts[a].classList.toggle('current', acts[a].dataset.act === slides[idx].dataset.act);
+    }
+    railNum.textContent = pad(idx + 1);
+  }
+
+  /* ---- presenter ------------------------------------------------------ */
+
+  function scalePreview() {
+    var box = document.getElementById('pPreview');
+    var sc  = document.getElementById('pScaler');
+    if (!box || !sc) { return; }
+    var vw = Math.max(1, stage.clientWidth), vh = Math.max(1, stage.clientHeight);
+    var k = Math.min(box.clientWidth / vw, box.clientHeight / vh);
+    sc.style.width  = vw + 'px';
+    sc.style.height = vh + 'px';
+    sc.style.left   = ((box.clientWidth - vw * k) / 2) + 'px';
+    sc.style.top    = ((box.clientHeight - vh * k) / 2) + 'px';
+    sc.style.transform = 'scale(' + k + ')';
+  }
+
+  function renderPresenter() {
+    var cur = slides[idx];
+    var next = slides[idx + 1] || null;
+    var notes = cur.querySelector('.notes');
+    document.getElementById('pNotes').innerHTML = notes ? notes.innerHTML : '<p class="muted">No notes.</p>';
+    document.getElementById('pPos').textContent = (idx + 1) + ' / ' + slides.length;
+    document.getElementById('pTitle').textContent = titleOf(cur).toUpperCase();
+    document.getElementById('pNextTitle').textContent = next ? 'next: ' + titleOf(next) : 'end of deck';
+    var sc = document.getElementById('pScaler');
+    sc.innerHTML = '';
+    if (next) {
+      var clone = next.cloneNode(true);
+      clone.classList.add('active');
+      var n = clone.querySelector('.notes');
+      if (n) { n.parentNode.removeChild(n); }
+      sc.appendChild(clone);
+    }
+    scalePreview();
+    if (popup && !popup.closed) { renderPopup(); }
+  }
+
+  function tickClock() {
+    var s = Math.floor((Date.now() - started) / 1000);
+    var el = document.getElementById('pClock');
+    if (el) { el.textContent = pad(Math.floor(s / 60)) + ':' + pad(s % 60); }
+    if (popup && !popup.closed) {
+      var pc = popup.document.getElementById('clock');
+      if (pc) { pc.textContent = el ? el.textContent : ''; }
+    }
+  }
+
+  /* Second-window presenter view: same notes + next-slide title, no network. */
+  function openPopup() {
+    popup = window.open('', 'maestro-presenter', 'width=900,height=620');
+    if (!popup) { return; }
+    popup.document.open();
+    popup.document.write(
+      '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Presenter — Maestro</title>' +
+      '<style>' +
+      'body{margin:0;padding:1.6rem 2rem;background:#0e151d;color:#c3cddb;' +
+      'font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;line-height:1.55}' +
+      '.meta{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.75rem;' +
+      'letter-spacing:.12em;color:#7f8ea1;display:flex;gap:1.5rem;margin-bottom:1rem}' +
+      '.meta .c{color:#e0a83c}' +
+      'h1{font-family:ui-serif,Georgia,serif;font-weight:400;font-size:1.7rem;color:#eef2f7;margin:0 0 1rem}' +
+      '.notes p{margin:0 0 .8rem;max-width:70ch}' +
+      '.notes strong{color:#e0a83c;font-family:ui-monospace,Menlo,monospace;font-size:.8rem;letter-spacing:.12em}' +
+      'code{font-family:ui-monospace,Menlo,monospace;background:#141d27;border:1px solid #233040;' +
+      'border-radius:2px;padding:.05em .32em;font-size:.88em;color:#eef2f7}' +
+      '.next{margin-top:1.6rem;padding-top:.9rem;border-top:1px solid #233040;' +
+      'font-family:ui-monospace,Menlo,monospace;font-size:.78rem;color:#7f8ea1}' +
+      '</style></head><body>' +
+      '<div class="meta"><span class="c" id="clock">00:00</span><span id="pos"></span></div>' +
+      '<h1 id="title"></h1><div class="notes" id="notes"></div><div class="next" id="next"></div>' +
+      '</body></html>');
+    popup.document.close();
+    popup.addEventListener('keydown', onKey);
+    renderPopup();
+  }
+
+  function renderPopup() {
+    var d = popup.document;
+    var cur = slides[idx], next = slides[idx + 1] || null;
+    var notes = cur.querySelector('.notes');
+    d.getElementById('title').textContent = titleOf(cur);
+    d.getElementById('pos').textContent = (idx + 1) + ' / ' + slides.length;
+    d.getElementById('notes').innerHTML = notes ? notes.innerHTML : '<p>No notes.</p>';
+    d.getElementById('next').textContent = next ? 'NEXT — ' + titleOf(next) : 'END OF DECK';
+  }
+
+  /* ---- jump overlay --------------------------------------------------- */
+
+  var jumpSel = 0, jumpHits = [];
+
+  function openJump() {
+    jump.classList.add('open');
+    jumpInput.value = '';
+    filterJump('');
+    jumpInput.focus();
+  }
+  function closeJump() { jump.classList.remove('open'); jumpInput.blur(); }
+
+  function filterJump(q) {
+    var needle = q.trim().toLowerCase();
+    jumpHits = [];
+    slides.forEach(function (s, k) {
+      var hay = ((k + 1) + ' ' + titleOf(s) + ' ' + (s.dataset.id || '') + ' ' +
+                 (s.dataset.act || '') + ' ' + (s.dataset.actName || '')).toLowerCase();
+      if (!needle || hay.indexOf(needle) !== -1) { jumpHits.push(k); }
+    });
+    jumpSel = 0;
+    jumpList.innerHTML = '';
+    jumpHits.forEach(function (k, r) {
+      var li = document.createElement('li');
+      li.innerHTML = '<span class="num">' + pad(k + 1) + '</span>' +
+                     '<span class="title">' + titleOf(slides[k]) + '</span>' +
+                     '<span class="act-tag">' + (slides[k].dataset.actName || slides[k].dataset.act) + '</span>';
+      if (r === 0) { li.className = 'sel'; }
+      li.addEventListener('click', function () { closeJump(); show(k); });
+      jumpList.appendChild(li);
+    });
+  }
+
+  function moveJump(d) {
+    if (!jumpHits.length) { return; }
+    jumpSel = Math.max(0, Math.min(jumpHits.length - 1, jumpSel + d));
+    var items = jumpList.children;
+    for (var r = 0; r < items.length; r++) { items[r].classList.toggle('sel', r === jumpSel); }
+    if (items[jumpSel]) { items[jumpSel].scrollIntoView({ block: 'nearest' }); }
+  }
+
+  /* ---- navigation ----------------------------------------------------- */
+
+  function show(n) {
+    idx = Math.max(0, Math.min(slides.length - 1, n));
+    slides.forEach(function (s, k) { s.classList.toggle('active', k === idx); });
+    paintRail();
+    renderPresenter();
+    var id = slides[idx].dataset.id;
+    if (id) { history.replaceState(null, '', '#' + id); }
+  }
+
+  function resolveHash() {
+    var h = decodeURIComponent((location.hash || '').replace('#', '')).toLowerCase();
+    if (!h) { return 0; }
+    for (var k = 0; k < slides.length; k++) {
+      if ((slides[k].dataset.id || '').toLowerCase() === h) { return k; }
+    }
+    var n = parseInt(h, 10);
+    return isNaN(n) ? 0 : n - 1;
+  }
+
+  function onKey(e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) { return; }
+    if (jump.classList.contains('open')) {
+      if (e.key === 'Escape') { e.preventDefault(); closeJump(); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); moveJump(1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); moveJump(-1); }
+      else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (jumpHits.length) { var t = jumpHits[jumpSel]; closeJump(); show(t); }
+      }
+      return;
+    }
+    switch (e.key) {
+      case 'ArrowRight': case ' ': case 'PageDown': e.preventDefault(); show(idx + 1); break;
+      case 'ArrowLeft': case 'PageUp': case 'Backspace': e.preventDefault(); show(idx - 1); break;
+      case 'Home': e.preventDefault(); show(0); break;
+      case 'End': e.preventDefault(); show(slides.length - 1); break;
+      case 'g': case 'G': e.preventDefault(); openJump(); break;
+      case 'f': e.preventDefault();
+        if (document.fullscreenElement) { document.exitFullscreen(); }
+        else { document.documentElement.requestFullscreen(); }
+        break;
+      case 'p': e.preventDefault();
+        document.body.classList.toggle('presenting');
+        renderPresenter();
+        break;
+      case 'P': e.preventDefault(); openPopup(); break;
+      case 'n': e.preventDefault(); document.body.classList.toggle('notes-inline'); break;
+      case 'Escape': if (document.body.classList.contains('presenting')) {
+          e.preventDefault(); document.body.classList.remove('presenting');
+        }
+        break;
+    }
+  }
+
+  jumpInput.addEventListener('input', function () { filterJump(jumpInput.value); });
+  document.addEventListener('keydown', onKey);
+  window.addEventListener('resize', function () { scalePreview(); });
+  window.addEventListener('hashchange', function () { show(resolveHash()); });
+  stage.addEventListener('click', function (e) {
+    if (e.target.closest('a, button, code')) { return; }
+    show(idx + 1);
   });
-  show(0);
+
+  buildRail();
+  show(resolveHash());
+  setInterval(tickClock, 1000);
 })();
 </script>
 </body>
