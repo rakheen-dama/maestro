@@ -36,14 +36,22 @@ scrape_configs:
           service: underwriting
 
   # maestro-admin (host JVM on 8080) is deliberately NOT scraped. It depends on
-  # spring-boot-starter-actuator but NOT on micrometer-registry-prometheus
-  # (verified: `unzip -l maestro-admin-*.jar | grep micrometer` lists only
-  # micrometer-core/-commons/-observation/-jakarta9), so /actuator/prometheus
-  # cannot exist there however the exposure list is configured — it answers 404.
-  # It also runs no workflow engine, so it would emit no maestro.* meters even
-  # if it did. Adding the registry to maestro-admin's build is a product change,
-  # not a demo change; a permanently-DOWN target on stage is worse than no
-  # target. See demo/.evidence/task-2-admin-no-prometheus-endpoint.log.
+  # spring-boot-starter-actuator but NOT on micrometer-registry-prometheus, so
+  # /actuator/prometheus cannot exist there however the exposure list is
+  # configured — it answers 404. It also runs no workflow engine, so it would
+  # emit no maestro.* meters even if it did. Adding the registry to
+  # maestro-admin's build is a product change, not a demo change; a
+  # permanently-DOWN target on stage is worse than no target.
+  #
+  # Evidence: demo/.evidence/task-2-admin-no-prometheus-endpoint-rerun.log —
+  # `unzip -l maestro-admin-0.3.0-SNAPSHOT.jar | grep -ci prometheus` → 0, the
+  # BOOT-INF/lib micrometer entries are exactly jakarta9 / core / observation /
+  # commons (no registry), and the endpoint answers 404.
+  #
+  # Read the RERUN file, not the original task-2-admin-no-prometheus-endpoint.log:
+  # that one's jar greps ran with cwd=<repo>/demo, where the relative glob matched
+  # nothing, so unzip never ran and both greps were vacuously empty/zero. The 404
+  # in it was always real; the jar half is only proven by the rerun.
 
   # Optional second loan-application node (port 8094), started only by
   # `TWO_NODE=1 demo/scripts/start-services.sh`. File-based service discovery

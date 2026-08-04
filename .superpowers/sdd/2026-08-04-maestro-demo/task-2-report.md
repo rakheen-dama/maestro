@@ -46,7 +46,7 @@ to trust the list:
 panel query was executed via `POST /api/ds/query` against datasource uid
 `maestro-prometheus`, which also proves the provisioning and the uid pinning.
 `demo/.evidence/task-2-grafana-dashboard-renders.log`: 8 of 9 target queries
-return data (171, 171, 107, 168, 186, 186, 168, 181 points).
+return data (174, 174, 107, 171, 186, 186, 171, 181 points).
 
 Two things worth knowing:
 
