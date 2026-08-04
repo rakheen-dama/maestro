@@ -1,0 +1,37 @@
+=== EVIDENCE IDENTITY ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/demo
+git-root: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+branch: worktree-demo
+commit: 7e8be6931d6ac24efe8564bdc29cf7ce9869fd17
+dirty: 7 uncommitted change(s)
+timestamp-utc: 2026-08-04T07:36:23Z
+check: host.docker.internal resolves + is scrapable from inside the Prometheus container
+==========================
+
+$ docker compose -f demo/docker-compose.yml ps
+NAME                        IMAGE                         COMMAND                   SERVICE      CREATED          STATUS                    PORTS
+maestro-demo-grafana-1      grafana/grafana:12.2.0        "/run.sh"                 grafana      14 seconds ago   Up 13 seconds (healthy)   0.0.0.0:3000->3000/tcp, [::]:3000->3000/tcp
+maestro-demo-jaeger-1       jaegertracing/jaeger:2.11.0   "/cmd/jaeger/jaeger-…"    jaeger       14 seconds ago   Up 14 seconds             0.0.0.0:4317-4318->4317-4318/tcp, [::]:4317-4318->4317-4318/tcp, 0.0.0.0:16686->16686/tcp, [::]:16686->16686/tcp
+maestro-demo-kafka-1        apache/kafka:3.9.0            "/__cacert_entrypoin…"    kafka        14 seconds ago   Up 14 seconds (healthy)   0.0.0.0:29093->29093/tcp, [::]:29093->29093/tcp
+maestro-demo-kafka-init-1   apache/kafka:3.9.0            "/bin/sh -c 'echo \"C…"   kafka-init   14 seconds ago   Up 7 seconds              9092/tcp
+maestro-demo-postgres-1     postgres:16-alpine            "docker-entrypoint.s…"    postgres     14 seconds ago   Up 14 seconds (healthy)   0.0.0.0:5433->5432/tcp, [::]:5433->5432/tcp
+maestro-demo-prometheus-1   prom/prometheus:v3.6.0        "/bin/prometheus --c…"    prometheus   14 seconds ago   Up 14 seconds (healthy)   0.0.0.0:9090->9090/tcp, [::]:9090->9090/tcp
+maestro-demo-valkey-1       valkey/valkey:8-alpine        "docker-entrypoint.s…"    valkey       14 seconds ago   Up 14 seconds (healthy)   0.0.0.0:6380->6379/tcp, [::]:6380->6379/tcp
+
+$ docker compose exec -T prometheus getent hosts host.docker.internal
+OCI runtime exec failed: exec failed: unable to start container process: exec: "getent": executable file not found in $PATH: unknown
+getent unavailable/failed (exit 127)
+
+$ docker compose exec -T prometheus nslookup host.docker.internal
+Server:		127.0.0.11
+Address:	127.0.0.11:53
+
+Non-authoritative answer:
+Name:	host.docker.internal
+Address: 192.168.65.254
+
+*** Can't find host.docker.internal: No answer
+
+
+$ docker compose exec -T prometheus wget -qO- http://host.docker.internal:9090/-/healthy  # sanity: host loopback reachable? (nothing on 9090 from host view)
+--- deferred: real proof is the /actuator/prometheus scrape below, run after the services start ---

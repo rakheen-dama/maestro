@@ -1,0 +1,102 @@
+=== identity ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+HEAD: d789246e48273a9684c302211f09e2ca73594da0
+branch: worktree-demo
+timestamp: 2026-08-04T07:57:29Z
+
+=== docker compose ps ===
+maestro-demo-grafana-1	running	Up 21 minutes (healthy)
+maestro-demo-jaeger-1	running	Up 21 minutes
+maestro-demo-kafka-1	running	Up 21 minutes (healthy)
+maestro-demo-postgres-1	running	Up 21 minutes (healthy)
+maestro-demo-prometheus-1	running	Up 19 minutes (healthy)
+maestro-demo-valkey-1	running	Up 21 minutes (healthy)
+
+=== GET http://localhost:9090/api/v1/targets ===
+{
+    "status": "success",
+    "data": {
+        "activeTargets": [
+            {
+                "discoveredLabels": {
+                    "__address__": "host.docker.internal:8091",
+                    "__metrics_path__": "/actuator/prometheus",
+                    "__scheme__": "http",
+                    "__scrape_interval__": "5s",
+                    "__scrape_timeout__": "4s",
+                    "job": "maestro-loan-services",
+                    "service": "loan-application"
+                },
+                "labels": {
+                    "instance": "host.docker.internal:8091",
+                    "job": "maestro-loan-services",
+                    "service": "loan-application"
+                },
+                "scrapePool": "maestro-loan-services",
+                "scrapeUrl": "http://host.docker.internal:8091/actuator/prometheus",
+                "globalUrl": "http://host.docker.internal:8091/actuator/prometheus",
+                "lastError": "",
+                "lastScrape": "2026-08-04T07:57:27.152817541Z",
+                "lastScrapeDuration": 0.004637083,
+                "health": "up",
+                "scrapeInterval": "5s",
+                "scrapeTimeout": "4s"
+            },
+            {
+                "discoveredLabels": {
+                    "__address__": "host.docker.internal:8092",
+                    "__metrics_path__": "/actuator/prometheus",
+                    "__scheme__": "http",
+                    "__scrape_interval__": "5s",
+                    "__scrape_timeout__": "4s",
+                    "job": "maestro-loan-services",
+                    "service": "verification-gateway"
+                },
+                "labels": {
+                    "instance": "host.docker.internal:8092",
+                    "job": "maestro-loan-services",
+                    "service": "verification-gateway"
+                },
+                "scrapePool": "maestro-loan-services",
+                "scrapeUrl": "http://host.docker.internal:8092/actuator/prometheus",
+                "globalUrl": "http://host.docker.internal:8092/actuator/prometheus",
+                "lastError": "",
+                "lastScrape": "2026-08-04T07:56:52.624820305Z",
+                "lastScrapeDuration": 0.005249958,
+                "health": "up",
+                "scrapeInterval": "5s",
+                "scrapeTimeout": "4s"
+            },
+            {
+                "discoveredLabels": {
+                    "__address__": "host.docker.internal:8093",
+                    "__metrics_path__": "/actuator/prometheus",
+                    "__scheme__": "http",
+                    "__scrape_interval__": "5s",
+                    "__scrape_timeout__": "4s",
+                    "job": "maestro-loan-services",
+                    "service": "underwriting"
+                },
+                "labels": {
+                    "instance": "host.docker.internal:8093",
+                    "job": "maestro-loan-services",
+                    "service": "underwriting"
+                },
+                "scrapePool": "maestro-loan-services",
+                "scrapeUrl": "http://host.docker.internal:8093/actuator/prometheus",
+                "globalUrl": "http://host.docker.internal:8093/actuator/prometheus",
+                "lastError": "",
+                "lastScrape": "2026-08-04T07:57:29.316762334Z",
+                "lastScrapeDuration": 0.006146,
+                "health": "up",
+                "scrapeInterval": "5s",
+                "scrapeTimeout": "4s"
+            }
+        ],
+        "droppedTargets": [],
+        "droppedTargetCounts": {
+            "maestro-loan-services": 0,
+            "maestro-loan-services-node-b": 0
+        }
+    }
+}

@@ -1,0 +1,20 @@
+=== EVIDENCE IDENTITY ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/demo
+git-root: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+branch: worktree-demo
+commit: 7e8be6931d6ac24efe8564bdc29cf7ce9869fd17
+dirty: 7 uncommitted change(s)
+timestamp-utc: 2026-08-04T07:38:21Z
+check: maestro-admin has no /actuator/prometheus endpoint (registry absent) -> not scraped
+==========================
+
+$ curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/actuator/prometheus
+404
+
+$ curl -s http://localhost:8080/actuator/health
+{"groups":["liveness","readiness"],"status":"UP"}
+
+$ unzip -l maestro-admin/build/libs/maestro-admin-*.jar | grep -i "BOOT-INF/lib/micrometer"
+
+$ unzip -l maestro-admin/build/libs/maestro-admin-*.jar | grep -ci prometheus
+0
