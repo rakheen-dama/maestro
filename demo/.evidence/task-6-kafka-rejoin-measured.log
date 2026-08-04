@@ -1,0 +1,44 @@
+=== Measuring the §2 'remaining 33s is Kafka' claim on MY run 2026-08-04T17:34:21Z ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=461a70d9a9a6d711d1c4ab6dc449bb7de0e2c34f
+loan id: crash-1785864776; 'the rate lock recorded after 34s' (see task-6-runbook-03-scenario2-crash.log)
+
+--- restarted loan-application: group-join request and success for the underwriting-decisions group ---
+2026-08-04T19:31:27.950+02:00  INFO 53341 --- [sample-loan-application-service] [anNameSet-0-C-1] [                                                 ] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-loan-application-3, groupId=maestro-loan-application] Request joining group due to: need to re-join with the given member-id: consumer-maestro-loan-application-3-6faff8b9-9fa2-416a-8ac2-b152f4adec87
+2026-08-04T19:31:27.955+02:00  INFO 53341 --- [sample-loan-application-service] [anNameSet-0-C-1] [                                                 ] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-loan-application-1, groupId=maestro-loan-application] Request joining group due to: need to re-join with the given member-id: consumer-maestro-loan-application-1-910365a0-568a-4eef-bc3d-0a0cdc184b8d
+2026-08-04T19:31:27.957+02:00  INFO 53341 --- [sample-loan-application-service] [anNameSet-0-C-1] [                                                 ] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-loan-application-2, groupId=maestro-loan-application] Request joining group due to: need to re-join with the given member-id: consumer-maestro-loan-application-2-e5a5ef96-5a6a-4b20-bb77-41fb008f2c22
+2026-08-04T19:31:30.954+02:00  INFO 53341 --- [sample-loan-application-service] [anNameSet-0-C-1] [                                                 ] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-loan-application-2, groupId=maestro-loan-application] Successfully joined group with generation Generation{generationId=6, memberId='consumer-maestro-loan-application-2-e5a5ef96-5a6a-4b20-bb77-41fb008f2c22', protocol='range'}
+2026-08-04T19:31:30.954+02:00  INFO 53341 --- [sample-loan-application-service] [anNameSet-0-C-1] [                                                 ] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-loan-application-1, groupId=maestro-loan-application] Successfully joined group with generation Generation{generationId=6, memberId='consumer-maestro-loan-application-1-910365a0-568a-4eef-bc3d-0a0cdc184b8d', protocol='range'}
+2026-08-04T19:31:30.954+02:00  INFO 53341 --- [sample-loan-application-service] [anNameSet-0-C-1] [                                                 ] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-loan-application-3, groupId=maestro-loan-application] Successfully joined group with generation Generation{generationId=6, memberId='consumer-maestro-loan-application-3-6faff8b9-9fa2-416a-8ac2-b152f4adec87', protocol='range'}
+2026-08-04T19:31:30.968+02:00  INFO 53341 --- [sample-loan-application-service] [anNameSet-0-C-1] [                                                 ] s.k.l.ConcurrentMessageListenerContainer : maestro-loan-application: partitions assigned: [loans.verification.results-0, loans.verification.results-1, loans.verification.results-2]
+2026-08-04T19:31:30.968+02:00  INFO 53341 --- [sample-loan-application-service] [anNameSet-0-C-1] [                                                 ] s.k.l.ConcurrentMessageListenerContainer : maestro-loan-application: partitions assigned: [loans.underwriting.decisions-0, loans.underwriting.decisions-1, loans.underwriting.decisions-2]
+2026-08-04T19:31:30.968+02:00  INFO 53341 --- [sample-loan-application-service] [anNameSet-0-C-1] [                                                 ] s.k.l.ConcurrentMessageListenerContainer : maestro-loan-application: partitions assigned: [maestro.signals.loan-application-0, maestro.signals.loan-application-1, maestro.signals.loan-application-2]
+2026-08-04T19:33:26.782+02:00  INFO 54347 --- [sample-loan-application-service] [anNameSet-0-C-1] [                                                 ] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-loan-application-3, groupId=maestro-loan-application] Request joining group due to: need to re-join with the given member-id: consumer-maestro-loan-application-3-10465fc9-7d3e-48e8-9678-be93b14c29c4
+2026-08-04T19:33:26.782+02:00  INFO 54347 --- [sample-loan-application-service] [anNameSet-0-C-1] [                                                 ] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-loan-application-1, groupId=maestro-loan-application] Request joining group due to: need to re-join with the given member-id: consumer-maestro-loan-application-1-085d7a6c-0bba-4659-96e1-3b25be5ccfe0
+2026-08-04T19:33:26.782+02:00  INFO 54347 --- [sample-loan-application-service] [anNameSet-0-C-1] [                                                 ] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-loan-application-2, groupId=maestro-loan-application] Request joining group due to: need to re-join with the given member-id: consumer-maestro-loan-application-2-ef299a83-83b3-43d7-968e-3f8072419e6d
+2026-08-04T19:34:04.011+02:00  INFO 54347 --- [sample-loan-application-service] [anNameSet-0-C-1] [                                                 ] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-loan-application-3, groupId=maestro-loan-application] Successfully joined group with generation Generation{generationId=7, memberId='consumer-maestro-loan-application-3-10465fc9-7d3e-48e8-9678-be93b14c29c4', protocol='range'}
+2026-08-04T19:34:04.011+02:00  INFO 54347 --- [sample-loan-application-service] [anNameSet-0-C-1] [                                                 ] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-loan-application-2, groupId=maestro-loan-application] Successfully joined group with generation Generation{generationId=7, memberId='consumer-maestro-loan-application-2-ef299a83-83b3-43d7-968e-3f8072419e6d', protocol='range'}
+2026-08-04T19:34:04.011+02:00  INFO 54347 --- [sample-loan-application-service] [anNameSet-0-C-1] [                                                 ] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-loan-application-1, groupId=maestro-loan-application] Successfully joined group with generation Generation{generationId=7, memberId='consumer-maestro-loan-application-1-085d7a6c-0bba-4659-96e1-3b25be5ccfe0', protocol='range'}
+2026-08-04T19:34:04.031+02:00  INFO 54347 --- [sample-loan-application-service] [anNameSet-0-C-1] [                                                 ] s.k.l.ConcurrentMessageListenerContainer : maestro-loan-application: partitions assigned: [maestro.signals.loan-application-0, maestro.signals.loan-application-1, maestro.signals.loan-application-2]
+2026-08-04T19:34:04.031+02:00  INFO 54347 --- [sample-loan-application-service] [anNameSet-0-C-1] [                                                 ] s.k.l.ConcurrentMessageListenerContainer : maestro-loan-application: partitions assigned: [loans.underwriting.decisions-0, loans.underwriting.decisions-1, loans.underwriting.decisions-2]
+2026-08-04T19:34:04.031+02:00  INFO 54347 --- [sample-loan-application-service] [anNameSet-0-C-1] [                                                 ] s.k.l.ConcurrentMessageListenerContainer : maestro-loan-application: partitions assigned: [loans.verification.results-0, loans.verification.results-1, loans.verification.results-2]
+
+=== RESULT — the §2 Kafka attribution, now MEASURED AND ARCHIVED ===
+(this is the evidence the deferred Task-4 minor said was missing)
+
+AFTER kill -9  (restarted JVM pid 54347):
+  Request joining group     19:33:26.782
+  Successfully joined group 19:34:04.011
+  loans.underwriting.decisions partitions assigned 19:34:04.031
+  => 37.2 s to rejoin after SIGKILL
+
+AFTER a CLEAN restart (pid 53341, started by reset.sh):
+  Request joining group     19:31:27.950
+  Successfully joined group 19:31:30.954
+  => 3.0 s
+
+RUNBOOK.md:311 claims 'join requested 15:21:39, joined 15:22:15' (=36 s) and 'a clean restart
+takes 3 s'. My independent run reproduces 37.2 s and 3.0 s. The claim is CORRECT; what it
+lacked was an archived log. It now has one: this file.
+
+Consistency check: 'the rate lock recorded after 34s' in the same run, bounded by the 37.2 s
+rejoin — the workflow could not see the decision before its partitions were assigned.
