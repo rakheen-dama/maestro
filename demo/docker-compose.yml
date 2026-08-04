@@ -206,10 +206,13 @@ services:
   # restart, and nothing here is worth persisting.
   #
   # The three loan services export to http://localhost:4318/v1/traces via
-  # OTEL_EXPORTER_OTLP_ENDPOINT, bound in application.yml to Spring Boot 4's
-  # `management.opentelemetry.tracing.export.otlp.endpoint` (the Boot 3.x name
-  # `management.otlp.tracing.endpoint` is silently inert on Boot 4 — see
-  # task-1-report.md §3).
+  # Spring Boot 4's `management.opentelemetry.tracing.export.otlp.endpoint`
+  # (the Boot 3.x name `management.otlp.tracing.endpoint` is silently inert on
+  # Boot 4 — see task-1-report.md §3). That property is NOT set in any of the
+  # three samples' application.yml — it is supplied as a -D by
+  # demo/scripts/lib/jvm-env.sh, so the loan e2e suite (which runs no Jaeger)
+  # never gets a live exporter bean and never fails its error-log sweep on
+  # OTLP connection-refused noise.
   jaeger:
     image: jaegertracing/jaeger:2.11.0
     mem_limit: 768m

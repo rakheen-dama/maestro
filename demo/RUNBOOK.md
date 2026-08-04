@@ -538,9 +538,10 @@ demo/scripts/v1-to-v2-move.sh
 ```
 
 **PREREQUISITE:** both jars must already exist — the script does **not**
-build. `preflight.sh` builds them. It also hardcodes
-`loan-application-service-0.3.0-SNAPSHOT.jar`; if the project version is
-bumped, this script must be updated.
+build. `preflight.sh` builds them. The v1 jar is resolved by glob
+(`loan-application-service-*.jar`, skipping `-plain.jar`), the same pattern
+`start-services.sh` and `restart-loan-app.sh` use, so a project version bump
+does not require touching this script.
 
 **What it does:** prints both jars' fingerprints (PIN 0) → starts a loan under
 v1 and waits until it has recorded a verification result (PIN 1) → SIGTERMs
@@ -854,7 +855,10 @@ because the toggle is a *cold* choice: `TWO_NODE=1` only takes effect at
 five. The RUN block below is exactly that restart, and it is fine to run it here
 at the top of D6; what you cannot do is reach D6 and discover you needed two
 nodes back at §1. If you are showing D6, plan for a ~40 s stop/start at this
-point in the deck (deck slide 17 is the designated filler).
+point in the deck. Stay on the D6 slide already on screen and narrate the
+restart itself: *"We're stopping all four JVMs and bringing five back up —
+the fifth is a second instance of the loan-application-service, so recovery
+has somewhere else to adopt a parked workflow."*
 
 **RUN**
 
