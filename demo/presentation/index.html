@@ -740,7 +740,8 @@ body.presenting #presenter { display: grid; }
         each service owns its own database, and what crosses the wire is domain events.</p>
       <p><strong>DO:</strong> &sect;D4 &mdash; <code>docker compose -f demo/docker-compose.yml ps</code>.
         Seven containers, none of them Maestro. If asked about footprint: the whole demo peaked
-        at 2.27 GiB across those seven containers plus four host JVMs.</p>
+        at 2.27 GiB across those seven containers plus four host JVMs, against a ~4 GB budget
+        (<code>demo/.evidence/task-2-peak-memory.log</code>).</p>
     </div>
   </section>
 
@@ -1302,6 +1303,7 @@ body.presenting #presenter { display: grid; }
     <p class="mono small muted wide" style="margin-top:1.2rem">
       whole demo peaked at <span class="brass">2.27 GiB</span> across 7 containers + 4 host JVMs
       &nbsp;&middot;&nbsp; each service runs <span class="brass">-Xmx256m</span>
+      <br>measured &mdash; demo/.evidence/task-2-peak-memory.log
     </p>
     <div class="notes">
       <p><strong>SAY &mdash; four sentences.</strong> One: there is no server; Maestro is a library

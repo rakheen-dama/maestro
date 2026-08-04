@@ -676,6 +676,13 @@ Four sentences:
 Point at the running stack as proof of (1): `docker compose -f
 demo/docker-compose.yml ps` — seven containers, none of them Maestro.
 
+**If asked about footprint:** the whole demo peaked at **2.27 GiB** (2,329 MiB,
+the sum of per-component peaks) across those seven containers plus four host
+JVMs, against a ~4 GB budget; each service runs `-Xmx256m`, and the largest
+single consumer is Kafka at 656 MiB. `TWO_NODE=1` adds ~360 MiB for a fifth
+JVM, still inside the budget
+(`demo/.evidence/task-2-peak-memory.log`).
+
 ---
 
 ## §D5 — Deep dive: determinism
