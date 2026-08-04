@@ -16,20 +16,24 @@
 #      bands (branch i of a fork at parent seq p allocates from
 #      p*1000 + (i+1)*1000).
 #
-#   3. The two parallel branches genuinely park CONCURRENTLY. Proven by
-#      interleaving in ParkingLot's DEBUG log: a `document.uploaded` unpark
-#      strictly between two `verification.result` unparks means both keys held
-#      live parked waiters at the same moment. (unpark() logs "Unparked
-#      workflow at key" only when a waiter was actually registered; otherwise
-#      it logs "stored wake permit".) That is the exact shape of the
-#      InstanceStatusWriter optimistic-lock defect fixed earlier this month, so
-#      the run also greps for its version-conflict line.
+#   3. The two parallel branches genuinely park CONCURRENTLY. Read off
+#      ParkingLot's DEBUG log, which distinguishes the two cases: unpark()
+#      logs "Unparked workflow at key" ONLY when a waiter was actually
+#      registered at that key, and "stored wake permit" when there was none.
+#      So a successful unpark timestamps a live park. The branches overlap
+#      when the document.uploaded key is unparked at a moment the
+#      verification.result key still holds its (later-unparked, never-yet-
+#      woken) waiter. That overlap is the exact shape of the
+#      InstanceStatusWriter optimistic-lock defect fixed earlier this month,
+#      so the run also greps for its version-conflict line and for
+#      ParkingLot's "already occupied" guard.
 #
 # TIMING. The verification gateway's simulated latencies are credit 2s,
-# employment 5s, appraisal 8s (VerificationGatewayProperties.Latency defaults).
-# The new loan therefore uploads its documents at ~3.5s: after credit's result,
-# before employment's and appraisal's. That is what puts the document unpark
-# between two verification unparks.
+# employment 5s, appraisal 8s (VerificationGatewayProperties.Latency defaults),
+# and the loan's own event log timestamps every signal it consumed. The new
+# loan therefore uploads its documents at ~3.5s, early in the verification
+# window, so the document branch demonstrably parks and wakes while the
+# verification branch is still parked with nothing consumed.
 #
 # Usage:  demo/scripts/v1-to-v2-move.sh
 # Leaves the v2 jar running on 8091 with its pid in demo/.run (so
