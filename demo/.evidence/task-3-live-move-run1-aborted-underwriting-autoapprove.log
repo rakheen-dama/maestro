@@ -1,0 +1,59 @@
+=== EVIDENCE IDENTITY ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+git-root: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+branch: worktree-demo
+commit: e79284452cd73558635c5c6eba3b0ab042da9b25
+dirty: 1 uncommitted change(s)
+timestamp-utc: 2026-08-04T11:01:58Z
+run: demo/scripts/v1-to-v2-move.sh (live v1->v2 versioned redeploy against the running demo stack)
+==========================
+
+
+11:01:58 [move] PIN 0 — what is running right now
+  pid 94643 -> /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/maestro-samples/sample-loan-origination/loan-application-service/build/libs/loan-application-service-0.3.0-SNAPSHOT.jar
+  v1 jar sha256: 0023c6f46fd8dc368c34a872bd2a67eb8c0e1b31cc32826d5402aa914b423b02
+  v2 jar sha256: 6672cd95b3b54a4f7a9dfd0ed3b5a5ec1e5bfe7b06fa7faa3b2ff5a609b4f885
+  packaged workflow class differs between the jars:
+    loan-application-service-0.3.0-SNAPSHOT.jar: 70117aba5ac2343a8ccc3ab4777368d2bd6c8c547313953259f3ee00d0edb513
+    loan-application-v2.jar: c8caa962d45ec22797a5ce00e957f09de2a8f938b7965c0fd020f927db6a09fb
+  occurrences of the change id 'parallel-verification' in v2's packaged class: 1
+  occurrences of the change id 'parallel-verification' in v1's packaged class: 0
+
+11:01:59 [move] PIN 1 — start loan 'inflight-1785841318' under v1 and let it reach verification
+{"applicationId":"inflight-1785841318"}
+  verification.result SIGNAL_RECEIVED count = 2 (>= 1)
+  status now: WAITING_SIGNAL
+  event log at the moment of the swap:
+    1 | ACTIVITY_COMPLETED | LoanActivities.recordApplication | 11:01:59.445
+    2 | ACTIVITY_COMPLETED | LoanMessagingActivities.requestVerifications | 11:01:59.479
+    3 | SIGNAL_RECEIVED | $maestro:awaitSignal:verification.result | 11:02:05.777
+    4 | SIGNAL_RECEIVED | $maestro:awaitSignal:verification.result | 11:02:05.792
+  VERSION_MARKER rows in its history: 0
+
+11:02:06 [move] PIN 2 — graceful SIGTERM of the v1 JVM, then start the v2 jar in its place
+  v1 pid 94643 exited on SIGTERM (a real rolling deploy, not kill -9)
+  in-flight loan survived the shutdown as: WAITING_SIGNAL
+  v2 jar started as pid 2493 (log: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/demo/.run/loan-application-service-v2.log)
+  v2 is healthy on 8091
+
+11:02:13 [move] PIN 3 — the in-flight loan finishes on the SEQUENTIAL path under v2
+  verification.result SIGNAL_RECEIVED count = 3 (>= 3)
+
+
+  FAILED: inflight-1785841318 round 1 never appeared in the underwriting pending queue
+
+=== POST-MORTEM (appended after the run aborted) ===
+The abort is a DRIVER bug, not an engine or workflow defect: UnderwritingWorkflow
+auto-assesses on DTI and these loan parameters (250k against 90k income) are a
+clear-cut AUTO_APPROVE, so the loan never entered the human review queue the
+driver was polling. The in-flight loan itself was FINE — it had already reached
+COLLECTING_SIGNATURES on the v1 sequential path under the v2 jar, and completed
+FUNDED once the two signatures were posted by hand:
+
+  loan-inflight-1785841318|COMPLETED|{"status": "FUNDED", "rateLockId": "aeba1f24-9d5f-4740-890c-5e6dca1b065a", "applicationId": "inflight-1785841318", "disbursementId": "7837fbdf-8e8b-4581-8a3c-7b6b310c0af2"}
+
+  VERSION_MARKER rows | events at sequence >= 1000 | total events
+  0                   | 0                          | 22
+
+Driver fixed in a1f20f9; the clean end-to-end run is
+demo/.evidence/task-3-live-v1-to-v2-move.log.
