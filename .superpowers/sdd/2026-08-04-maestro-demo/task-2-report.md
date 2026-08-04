@@ -171,3 +171,107 @@ Containers up; four host JVMs running with pid files in `demo/.run/`. Stop with
 3. Expect the stand-down panel to read zero — that is the healthy state, and
    the runbook should say so rather than let someone read it as broken.
 4. The whole stack peaks around 2.3 GiB.
+
+---
+
+# Fix round 1
+
+## F1 — clean-machine Kafka topic race (`demo/scripts/start-services.sh`)
+
+Real, and the reviewer's reading of the window was exact. Preflight TCP-probed
+the broker, which binds 29093 well before `kafka-init` creates the topics, and
+`docker compose up -d` **returns inside that window** — so the documented
+first-run sequence could start the JVMs against a topic-less broker and fail
+with `UNKNOWN_TOPIC_OR_PARTITION`.
+
+Preflight now gates on the topics themselves, asked of the broker via the kafka
+container's own CLI. The required list is **derived** by grepping `--topic` out
+of `docker-compose.yml` rather than duplicated in the script, so a topic added
+to compose can never silently go ungated (parses to 11).
+
+Caught in the act, from `docker compose down -v` with the two halves run
+back to back as a user would
+(`demo/.evidence/task-2-kafka-topic-gate.log`):
+
+```
+10:55:51 [demo] Waiting for 11 Kafka topics to exist...
+10:56:02 [demo] All Kafka topics present
+```
+
+Eleven seconds of genuine waiting. `kafka-init`'s own log timestamps
+`All Kafka topics created successfully.` at `2026-08-04T08:56:02.265Z` — the
+gate cleared exactly when the topics appeared, which is what distinguishes a
+real wait from a `sleep`. Cold stack then verified: three targets UP, one loan
+`COMPLETED`/`FUNDED`.
+
+## F2 — filed as Issue 23; library untouched
+
+Filed in `docs/open-issues.md` as **Issue 23 — Library defect, Critical, Open**,
+indexed in §4 and written up in §5 with both citations
+(`KafkaMessagingAutoConfiguration.java:105-110`,
+`MaestroSignalListenerBeanPostProcessor.java:213-219`), the affected property
+surface, the recommended fix, the user-side workaround and a Done-when. No
+library code changed; the sample-level stopgap stays exactly as it was.
+
+I verified the ruling's two mechanisms rather than restating them, archived in
+`demo/.evidence/task-2-kafka-template-library-defect.log`:
+
+- Boot's `kafkaTemplate` is `@ConditionalOnMissingBean(KafkaTemplate.class)`
+  and its `kafkaProducerFactory` is
+  `@ConditionalOnMissingBean(ProducerFactory.class)` — read out of
+  `spring-boot-kafka-4.0.5` bytecode. Maestro's beans are conditional on bean
+  *name*, so they shadow Boot's by *type*. That asymmetry is the whole bug.
+- `grep -c runWithExtractedContext` over the bean-post-processor returns **0**.
+- The consequence is now measured, not inferred. On the running demo — where
+  the producer side demonstrably *is* injecting `traceparent` — every signal row
+  lands with `trace_context` NULL, including `underwriting.decision` (1) and
+  `verification.result` (3), which arrive on domain topics carrying the header.
+  (`document.uploaded`/`package.signed` are NULL too but are *not* evidence:
+  they enter over REST and have no header to extract. Noted in the issue so
+  nobody over-reads the table.)
+
+`docs/observability.md`'s "one connected trace" promise now carries an explicit
+scope limit: it holds for `maestro.tasks.*`/`maestro.signals.*` only, states
+plainly that `spring.kafka.template.observation-enabled` is inert, gives the
+`maestroKafkaTemplate` override users need today, and cross-references Issue 23
+and `cross-service.md`.
+
+## F3 — evidence discipline
+
+Panel point counts in §2 corrected to the archived values: **174, 174, 107,
+171, 186, 186, 171, 181**. All eight grep back out of
+`task-2-grafana-dashboard-renders.log`.
+
+The admin-jar claim was worse than the reviewer could see from the log alone.
+The enumeration was unevidenced *and so was the load-bearing
+`grep -ci prometheus` → 0*: that capture ran with `cwd=<repo>/demo`, where the
+relative glob `maestro-admin/build/libs/maestro-admin-*.jar` matched nothing,
+so `unzip` never ran. The empty grep and the zero were artefacts of a path that
+did not resolve, not facts about the jar. Only the 404 was ever real.
+
+Re-run from the repo root against a jar shown to exist
+(`task-2-admin-no-prometheus-endpoint-rerun.log`). **The conclusion survives and
+is now actually proven:** `grep -ci prometheus` → 0, micrometer entries exactly
+`jakarta9` / `core` / `observation` / `commons` (no registry), endpoint 404.
+`demo/prometheus.yml` now cites the rerun and warns readers off the original
+file's jar half.
+
+## F4 — startup robustness
+
+`wait_for_http` accepted any 1xx–4xx, so a 404 from an unexposed actuator read
+as healthy. Narrowed to 2xx — which also makes it *more correct*, not merely
+stricter: Spring Boot's health endpoint answers 503 while components are still
+starting, so 2xx keeps it waiting through startup instead of declaring victory
+on the first response of any kind.
+
+`assert_port_free` ran inside `start_jvm`, so a conflict on the third port
+aborted under `set -e` with the first two JVMs already running and pid files
+written. All ports are now checked in preflight before anything starts, and an
+`EXIT` trap stops any JVM *this run* started if a later step fails. Negative
+test in the same evidence file: a second invocation reports all four ports at
+once, starts nothing, leaves the running pids byte-identical, and exits 1.
+
+## Deferred, as agreed
+
+The 8092 `lastScrape` skew (cosmetic) and the `vector(0)` caveat (for Task 4's
+runbook to note) are untouched.
