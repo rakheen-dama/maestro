@@ -36,7 +36,7 @@ reference these numbers.
 | `reset.sh` | Between rehearsals. Also un-does the v1→v2 move. |
 | `drive-loan.sh <scenario>` | Every scenario. `happy` (§1), `withdraw` (§4), `crash` + `finish <id>` (§2), `events <id>`. Also `conditions` — a two-round human-review path with **no section in this runbook**; it works, but do not improvise it on stage. |
 | `restart-loan-app.sh` | After scenario 2's `kill -9`, when only loan-application died. |
-| `start-services.sh` / `stop-services.sh` | All four JVMs at once. Only when *none* of them is running. |
+| `start-services.sh` / `stop-services.sh` | All four JVMs at once — **five** under `TWO_NODE=1` (§D6). Only when *none* of them is running. |
 | `v1-to-v2-move.sh` | Deep dive D1. `RESTORE_V1=1` puts v1 back on 8091 alone. |
 
 **The deck — decide this before the room fills.** `demo/presentation/index.html`
@@ -65,6 +65,10 @@ demo/scripts/preflight.sh
 healthy → verifies all 11 Kafka topics exist → starts the four host JVMs **and
 waits for the two domain-topic consumer groups to go Stable** → drives one
 throwaway loan end to end → prints the process-identity table.
+
+Nine things, numbered **0/8 to 8/8** — zero-indexed, so the labels the script
+prints run one behind the count. When it says it failed at *step 7/8*, that is
+the throwaway loan, the eighth thing in the list above.
 
 **Why that consumer-group wait is a step and not a detail.** A service
 answering `/actuator/health` with 200 has *not* necessarily joined its Kafka
@@ -495,8 +499,12 @@ read, because the three loans overlap and a workflow left parked from the
 previous scenario still counts. Promise only "it climbs and comes back
 to zero". Scrape interval is 5 s, so give it two scrapes.
 
-**TIMING:** measured — peak at t+6 s, back to 0 at t+18 s. Both are quantised
-to the 5 s scrape.
+**TIMING:** measured — peak at t+6 s, back to 0 at t+18 s. Those are the
+sampling grid of the archived run, which queried Prometheus every **3 s**
+(`demo/.evidence/task-4-fix-f3-unevidenced-figures.log:30-35`), not the 5 s
+scrape — so read them as "about 6 s" and "about 18 s". Prometheus itself
+scrapes every 5 s, so give the panel two scrapes before you believe a number
+on it either way.
 
 **Two things to say before anyone asks:**
 
@@ -837,9 +845,16 @@ and fails the run loudly rather than silently corrupting state.
 
 ## §D6 — Deep dive: multi-node adoption
 
-**Off by default.** Requires a restart with the two-node toggle, so decide
-before you start, not mid-demo. The fifth JVM adds **312 MiB** measured
+**Off by default.** The fifth JVM adds **312 MiB** measured
 (`demo/.evidence/task-6-peak-memory.log`).
+
+**"Decide before you start" means decide whether you are doing D6 at all** —
+because the toggle is a *cold* choice: `TWO_NODE=1` only takes effect at
+`start-services.sh`, so turning it on means stopping all four JVMs and starting
+five. The RUN block below is exactly that restart, and it is fine to run it here
+at the top of D6; what you cannot do is reach D6 and discover you needed two
+nodes back at §1. If you are showing D6, plan for a ~40 s stop/start at this
+point in the deck (deck slide 17 is the designated filler).
 
 **RUN**
 
@@ -887,9 +902,12 @@ connection-refused, not an adoption failure.
 release it, so it has to expire. Measured in this demo's own configuration:
 **27 s** from the `kill -9` to `Resuming workflow 'loan-<id>'` in node B's log,
 and **49 s** for the whole `finish` through node B
-(`demo/.evidence/task-4-fix-f2-d6-adoption-latency.log`). The bound is the
-30 s instance-lock TTL plus one 5 s recovery poll plus slack, so budget **up to
-60 s** and fill it with the D4 architecture points.
+(`demo/.evidence/task-4-fix-f2-d6-adoption-latency.log`). **27 is less than
+30 + 5, and that is not an error:** the lock the owner was holding had already
+been alive for some of its 30 s TTL when you killed it, so what has to elapse
+is the *remaining* TTL, not a fresh one. Worst case is a full 30 s TTL plus one
+5 s recovery poll plus slack — so budget **up to 60 s** and fill it with the D4
+architecture points.
 
 Note the same Kafka effect as §2: node B cannot receive the underwriting
 decision until the group rebalances away from the SIGKILLed member, so the
@@ -956,7 +974,7 @@ Postgres for store, messaging and locking. Zero external dependencies.
 ## §T — Teardown
 
 ```bash
-demo/scripts/stop-services.sh                          # four host JVMs
+demo/scripts/stop-services.sh                          # four host JVMs (five after §D6)
 docker compose -f demo/docker-compose.yml down         # containers, keep the volume
 ```
 

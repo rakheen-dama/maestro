@@ -1009,8 +1009,8 @@ body.presenting #presenter { display: grid; }
       </tbody>
     </table>
     <p class="mono small muted wide" style="margin-top:1.1rem">
-      measured with three loans: peak <span class="brass">12</span> at t+6 s &nbsp;&middot;&nbsp;
-      back to <span class="brass">0</span> at t+18 s &nbsp;&middot;&nbsp; 5 s scrape, so give it two
+      measured with three loans: peak <span class="brass">12</span> at ~t+6 s &nbsp;&middot;&nbsp;
+      back to <span class="brass">0</span> at ~t+18 s &nbsp;&middot;&nbsp; sampled every 3 s; Prometheus scrapes every 5 s, so give it two
     </p>
     <div class="notes">
       <p><strong>SAY:</strong> Each loan parks a workflow in the loan service, one in
@@ -1430,8 +1430,10 @@ body.presenting #presenter { display: grid; }
       <div class="card accent">
         <h3>The wait is the lock TTL, and it cannot be shortened</h3>
         <p>Nothing can release a lock held by a dead process, so it has to expire.
-          The bound is the 30 s instance-lock TTL plus one 5 s recovery poll plus
-          slack. Budget up to 60 s and fill it with D4.</p>
+          The measured 27 s is under 30 + 5 because the lock was already part-way
+          through its TTL when the owner died &mdash; what elapses is the
+          <em>remaining</em> TTL. Worst case is a full 30 s TTL plus one 5 s recovery
+          poll plus slack. Budget up to 60 s and fill it with D4.</p>
       </div>
     </div>
     <div class="notes">
