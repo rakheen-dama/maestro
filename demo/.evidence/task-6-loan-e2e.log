@@ -84,3 +84,26 @@ PASS 4. Withdrawal after rate lock (saga) (15s)
 19:18:40 [e2e] loan-application-service is up (HTTP 404 from http://localhost:8091/applications/__probe__)
 19:18:40 [e2e] Post-restart status of e2e-191646-s5: WAITING_SIGNAL
 19:18:40 [e2e] Delivering the underwriting decision after the restart
+19:19:42 [e2e]   assert OK: engine status = 'COMPLETED'
+19:19:42 [e2e]   assert OK: loan result = 'FUNDED'
+PASS 5. Crash recovery (kill -9 + replay) (81s)
+
+=== SCENARIO: 6. Two-node loan-application (multi-node) ===
+19:19:42 [e2e] Starting loan-application-service-b (service=loan-application-service) on port 8094...
+19:19:45 [e2e] LOCK BACKEND VERIFIED (loan-application-service-b, E2E_LOCK_BACKEND=valkey): io.b2mash.maestro.lock.valkey.ValkeyDistributedLock
+19:19:46 [e2e] loan-application-service-b is up (HTTP 404 from http://localhost:8094/applications/__probe__)
+19:19:46 [e2e] Node A pid=46580, node B pid=47329
+19:19:46 [e2e] Created e2e-191646-s6 on node A; every signal below goes to node B
+19:19:57 [e2e]   assert OK: node A engine status = 'COMPLETED'
+19:19:57 [e2e]   assert OK: node A loan result = 'FUNDED'
+19:19:57 [e2e]   assert OK: node B engine status = 'COMPLETED'
+19:19:57 [e2e]   assert OK: node B loan result = 'FUNDED'
+19:19:57 [e2e] Disbursement side effect observed 0 time(s) across both nodes
+PASS 6. Two-node loan-application (multi-node) (25s)
+
+=== SCENARIO: 7. Owner-kill -> peer adoption (multi-node) ===
+19:20:07 [e2e] Starting loan-application-service-b (service=loan-application-service) on port 8094...
+19:20:10 [e2e] LOCK BACKEND VERIFIED (loan-application-service-b, E2E_LOCK_BACKEND=valkey): io.b2mash.maestro.lock.valkey.ValkeyDistributedLock
+19:20:11 [e2e] loan-application-service-b is up (HTTP 404 from http://localhost:8094/applications/__probe__)
+19:20:11 [e2e] Node A (owner-to-be) pid=46580, node B (peer) pid=47543
+19:20:11 [e2e] Created e2e-191646-s7 on node A (port 8091) - node A is the owner-to-be
