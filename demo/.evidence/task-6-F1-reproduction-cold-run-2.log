@@ -178,3 +178,28 @@ step 7/8. RUNBOOK.md:88-90 says 'Anything else is a hard stop'. The 'Common fail
 fix' table (RUNBOOK.md:92-99) has NO row for this symptom. Nothing in the runbook tells them
 that simply running preflight a second time succeeds — which it does, in 35 s, because the
 consumer group then has committed offsets and auto.offset.reset no longer applies.
+
+=== leaving the machine usable: the documented re-run (RUNBOOK.md:78) ===
+19:45:30 [demo] maestro-admin: SIGTERM to pid 59901 (up to 35s grace)
+19:45:31 [demo] maestro-admin: exited cleanly after 1s
+19:45:31 [demo] loan-application-service: SIGTERM to pid 59889 (up to 35s grace)
+19:45:33 [demo] loan-application-service: exited cleanly after 2s
+19:45:33 [demo] underwriting-service: SIGTERM to pid 59897 (up to 35s grace)
+19:45:35 [demo] underwriting-service: exited cleanly after 2s
+19:45:35 [demo] verification-gateway-service: SIGTERM to pid 59893 (up to 35s grace)
+19:45:37 [demo] verification-gateway-service: exited cleanly after 2s
+19:45:37 [demo] Done. Infrastructure containers are untouched — tear them down with:
+19:45:37 [demo]   docker compose -f demo/docker-compose.yml down -v
+    [32mok[0m   preflight-1785865551 COMPLETED (path is warm: JIT, connection pools, Kafka consumer groups)
+         clear it before the demo with: demo/scripts/reset.sh
+
+[1m==> 8/8 process identity — trust nothing on screen until this matches[0m
+    SERVICE                    PID      JAR-SHA256(12) JAR
+    loan-application-service   61239    0023c6f46fd8   loan-application-service-0.3.0-SNAPSHOT.jar
+    verification-gateway-service 61243    d24802d3bdcd   verification-gateway-service-0.3.0-SNAPSHOT.jar
+    underwriting-service       61247    822ace7902c6   underwriting-service-0.3.0-SNAPSHOT.jar
+    maestro-admin              61251    d549c7a85b02   maestro-admin-0.3.0-SNAPSHOT.jar
+         loan-application started at:Tue Aug  4 19:45:44 2026      (if that is not from this minute, you are looking at a stale JVM)
+
+[32mPREFLIGHT PASSED in 34s.[0m Now run: demo/scripts/reset.sh
+SECOND_ATTEMPT_WALL_SECONDS=42
