@@ -50,86 +50,11 @@ mkdir -p "$RUN_DIR" "$TARGETS_DIR"
 DEMO_SKIP_BUILD="${DEMO_SKIP_BUILD:-0}"
 TWO_NODE="${TWO_NODE:-0}"
 
-# ── Where the demo stack lives (must match demo/docker-compose.yml) ──────
-export POSTGRES_HOST="${POSTGRES_HOST:-localhost}"
-export POSTGRES_PORT="${POSTGRES_PORT:-5433}"
-export POSTGRES_USER="${POSTGRES_USER:-maestro}"
-export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-maestro}"
-export VALKEY_HOST="${VALKEY_HOST:-localhost}"
-export VALKEY_PORT="${VALKEY_PORT:-6380}"
-export KAFKA_BOOTSTRAP="${KAFKA_BOOTSTRAP:-localhost:29093}"
-
-# Jaeger's OTLP/HTTP receiver. Bound in every service's application.yml to
-# Spring Boot 4's `management.opentelemetry.tracing.export.otlp.endpoint`.
-# The Boot 3.x property name (`management.otlp.tracing.endpoint`) is read by
-# NOTHING on Boot 4 — the exporter bean is never created and no connection is
-# ever attempted, which looks exactly like "Jaeger is empty" (task-1-report §3).
-export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4318/v1/traces}"
-
-# The loan sample sets maestro.admin.events.enabled=false in application.yml
-# (it runs no dashboard). This demo DOES run maestro-admin, so lifecycle
-# publishing is turned back on here via relaxed binding rather than by editing
-# the sample's committed config.
-export MAESTRO_ADMIN_EVENTS_ENABLED="${MAESTRO_ADMIN_EVENTS_ENABLED:-true}"
-
-# `maestro.activity.duration` is a plain Micrometer Timer: by default it
-# publishes only _count/_sum/_max, which cannot answer "p95 by activity". This
-# asks Micrometer for a percentile HISTOGRAM for that one meter, which is what
-# emits the `maestro_activity_duration_seconds_bucket{le=...}` series the
-# dashboard's histogram_quantile() panels read. Scoped to the single meter name
-# so no other timer's cardinality changes.
-ACTIVITY_HISTOGRAM_PROP="-Dmanagement.metrics.distribution.percentiles-histogram.maestro.activity.duration=true"
-
-# WHAT MAKES THE CROSS-SERVICE TRACE ONE TRACE.
-#
-# Maestro's own KafkaTracePropagation injects/extracts W3C `traceparent` on the
-# `maestro.tasks.*` / `maestro.signals.*` topics it owns. But the three loan
-# services talk to each other over the SAMPLE's OWN domain topics —
-# loans.verification.{requests,results}, loans.underwriting.{requests,decisions}
-# — published with a plain Spring `KafkaTemplate` and consumed with plain
-# `@KafkaListener` (KafkaLoanMessagingActivities, UnderwritingRequestListener,
-# VerificationRequestListener). Maestro never sees those records, so the header
-# has to come from Spring Kafka's own observation instrumentation.
-#
-# Both flags default to FALSE in Spring Boot 4.0.5 (verified against
-# spring-boot-kafka-4.0.5's spring-configuration-metadata.json). With them off,
-# records go out with NO_HEADERS, each service starts a fresh root trace, and
-# Jaeger shows three unrelated single-service traces that look superficially
-# fine — which is exactly what this demo must not show.
-#
-#   template.observation-enabled  → producer side: writes `traceparent`,
-#                                   parented to the active maestro.activity span
-#   listener.observation-enabled  → consumer side: reads it back and continues
-#                                   the trace instead of starting a new one
-#
-# Set here as JVM system properties rather than in the samples' application.yml
-# on purpose: this is demo wiring, and the samples' committed config stays the
-# config their e2e suite runs against.
-KAFKA_OBSERVATION_PROPS=(
-    -Dspring.kafka.template.observation-enabled=true
-    -Dspring.kafka.listener.observation-enabled=true
-)
-
-# HOW FAST RECOVERY NOTICES A DEAD NODE.
-#
-# `maestro.recovery.poll-interval` defaults to 60s (MaestroProperties
-# RecoveryProperties). That is a production-sane default — it bounds how often
-# every node scans for workflows whose owner's instance lock has expired — but
-# it is not a watchable one. Scenario 2 (kill -9 + restart) crosses that poll
-# more than once: the restarted node must adopt the parked workflow before it
-# can consume `underwriting.decision`, and again before the rate lock. At the
-# 60s default the demo's headline beat measured 250s of silence
-# (demo/.evidence/task-4-fix-f1-scenario-2-phase-timings.log).
-#
-# 5s here is a DEMO tuning knob, not a fix: recovery is as fast as you
-# configure it to notice. Set as a system property rather than in the samples'
-# application.yml on purpose — the loan e2e suite runs against the committed
-# config, and the committed default should stay production-sane.
-RECOVERY_POLL_PROP="-Dmaestro.recovery.poll-interval=${DEMO_RECOVERY_POLL_INTERVAL:-5s}"
-
-# Every JVM is capped at 256m of heap: four of these plus seven containers has
-# to fit on a laptop.
-JVM_OPTS=(-Xmx256m -XX:+UseSerialGC "$ACTIVITY_HISTOGRAM_PROP" "$RECOVERY_POLL_PROP" "${KAFKA_OBSERVATION_PROPS[@]}")
+# Every environment variable and JVM option below is shared with
+# restart-loan-app.sh, so both read them from one file. Each setting's rationale
+# lives there, next to the setting.
+# shellcheck source=lib/jvm-env.sh
+. "$SCRIPT_DIR/lib/jvm-env.sh"
 
 log() { printf '%s [demo] %s\n' "$(date +%H:%M:%S)" "$*"; }
 err() { printf '%s [demo] ERROR: %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
@@ -270,7 +195,7 @@ start_jvm() {
     # ${arr[@]+...} guard is for bash 3.2 (macOS stock /bin/bash), where an
     # empty array's "${arr[@]}" is an unbound-variable error under `set -u`.
     SERVER_PORT="$port" env ${extra_env[@]+"${extra_env[@]}"} \
-        java "${JVM_OPTS[@]}" -jar "$jar" >>"$RUN_DIR/$iname.log" 2>&1 &
+        java "${MAESTRO_JVM_OPTS[@]}" -jar "$jar" >>"$RUN_DIR/$iname.log" 2>&1 &
     echo $! >"$RUN_DIR/$iname.pid"
     STARTED_PIDS+=("$!")
     STARTED_NAMES+=("$iname")

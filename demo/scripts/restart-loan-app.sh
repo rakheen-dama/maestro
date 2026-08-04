@@ -9,10 +9,11 @@
 # loan-application died and the other three are still healthy — it aborts on
 # 8092/8093/8080. This restarts exactly the one process that died.
 #
-# Env/JVM options are kept identical to start-services.sh on purpose; if that
-# file changes, change this one.
+# The JVM it starts is configured identically to start-services.sh's, because
+# both read that configuration from lib/jvm-env.sh.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$DEMO_DIR/.." && pwd)"
 RUN_DIR="$DEMO_DIR/.run"
@@ -51,26 +52,14 @@ for _ in $(seq 1 30); do
 done
 lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 && die "port $PORT still held after 30s"
 
-export POSTGRES_HOST="${POSTGRES_HOST:-localhost}" POSTGRES_PORT="${POSTGRES_PORT:-5433}"
-export POSTGRES_USER="${POSTGRES_USER:-maestro}" POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-maestro}"
-export VALKEY_HOST="${VALKEY_HOST:-localhost}" VALKEY_PORT="${VALKEY_PORT:-6380}"
-export KAFKA_BOOTSTRAP="${KAFKA_BOOTSTRAP:-localhost:29093}"
-export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4318/v1/traces}"
-export MAESTRO_ADMIN_EVENTS_ENABLED="${MAESTRO_ADMIN_EVENTS_ENABLED:-true}"
+# shellcheck source=lib/jvm-env.sh
+. "$SCRIPT_DIR/lib/jvm-env.sh"
+
+# Instance-specific — deliberately NOT in the shared file.
 export POSTGRES_DB=loan_application SERVER_PORT="$PORT"
 
 log "starting $NAME from $(basename "$JAR")"
-# -Dmaestro.recovery.poll-interval: see the long note in start-services.sh. The
-# committed default is 60s; the demo shortens it to 5s so the restarted node
-# adopts the parked workflow while the audience is still looking at it. This is
-# THE flag that matters on this script — it is the one the crash scenario waits
-# on — so it must stay identical to start-services.sh.
-java -Xmx256m -XX:+UseSerialGC \
-     -Dmanagement.metrics.distribution.percentiles-histogram.maestro.activity.duration=true \
-     -Dmaestro.recovery.poll-interval="${DEMO_RECOVERY_POLL_INTERVAL:-5s}" \
-     -Dspring.kafka.template.observation-enabled=true \
-     -Dspring.kafka.listener.observation-enabled=true \
-     -jar "$JAR" >>"$RUN_DIR/$NAME.log" 2>&1 &
+java "${MAESTRO_JVM_OPTS[@]}" -jar "$JAR" >>"$RUN_DIR/$NAME.log" 2>&1 &
 pid=$!
 echo "$pid" >"$PIDFILE"
 

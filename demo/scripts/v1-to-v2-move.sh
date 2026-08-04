@@ -47,6 +47,13 @@ REPO_ROOT="$(cd "$DEMO_DIR/.." && pwd)"
 SAMPLE_DIR="$REPO_ROOT/maestro-samples/sample-loan-origination"
 RUN_DIR="$DEMO_DIR/.run"
 
+# The JVMs this script starts must be configured exactly like the ones
+# start-services.sh starts — this file swaps a jar underneath a running demo,
+# so any divergence shows up as the swap having changed behaviour it did not
+# change. One definition, shared with start-services.sh and restart-loan-app.sh.
+# shellcheck source=lib/jvm-env.sh
+. "$SCRIPT_DIR/lib/jvm-env.sh"
+
 LOAN_URL="http://localhost:8091"
 UW_URL="http://localhost:8093"
 JAEGER="http://localhost:16686"
@@ -167,25 +174,17 @@ trace_for() { # <appId> — prints "traceID spanCount" for the richest trace tag
 }
 
 # start_loan_jvm <jar> <log-file> [EXTRA_ENV=...] — boots one loan-application
-# JVM with exactly the environment demo/scripts/start-services.sh gives it, and
-# claims the same pid file so stop-services.sh keeps working.
+# JVM with exactly the environment demo/scripts/start-services.sh gives it (both
+# read it from lib/jvm-env.sh, sourced above), and claims the same pid file so
+# stop-services.sh keeps working.
 start_loan_jvm() {
     local jar="$1" logfile="$2"
     shift 2
     : >"$logfile"
-    SERVER_PORT=8091 \
-    POSTGRES_HOST=localhost POSTGRES_PORT=5433 POSTGRES_USER=maestro POSTGRES_PASSWORD=maestro \
-    POSTGRES_DB=loan_application \
-    VALKEY_HOST=localhost VALKEY_PORT=6380 \
-    KAFKA_BOOTSTRAP=localhost:29093 \
-    OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces \
-    MAESTRO_ADMIN_EVENTS_ENABLED=true \
+    # Instance-specific; everything else came from lib/jvm-env.sh.
+    SERVER_PORT=8091 POSTGRES_DB=loan_application \
     env ${1+"$@"} \
-        java -Xmx256m -XX:+UseSerialGC \
-            -Dmanagement.metrics.distribution.percentiles-histogram.maestro.activity.duration=true \
-            -Dspring.kafka.template.observation-enabled=true \
-            -Dspring.kafka.listener.observation-enabled=true \
-            -jar "$jar" >>"$logfile" 2>&1 &
+        java "${MAESTRO_JVM_OPTS[@]}" -jar "$jar" >>"$logfile" 2>&1 &
     echo $! >"$PIDFILE"
     echo "  started $(basename "$jar") as pid $(cat "$PIDFILE") (log: $logfile)"
     local i
