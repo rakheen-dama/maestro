@@ -28,7 +28,16 @@
 # their DATA separate.
 #
 # Every container gets an explicit mem_limit: the whole stack has to fit
-# alongside four 256m-heap JVMs on a laptop.
+# alongside four 256m-heap JVMs on a laptop (five under TWO_NODE=1).
+#
+# READ THESE AS CEILINGS, NOT RESERVATIONS. The seven limits sum to 3.38 GiB and
+# five host JVMs peak around 340 MiB RSS each, so the theoretical worst case is
+# ~5.1 GiB — above the ~4 GB budget the demo quotes. The budget holds because
+# nothing approaches its ceiling: the measured true simultaneous peak across all
+# 11 components is 2.42 GiB (demo/.evidence/task-6-peak-memory.log, 1213
+# samples), with Kafka the largest single consumer at 627.6 MiB against its 1g
+# limit. "Every container is capped" is not the same claim as "the stack fits
+# 4 GB"; the second one is true by measurement, not by these numbers.
 
 name: maestro-demo
 
