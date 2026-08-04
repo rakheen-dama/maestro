@@ -1,0 +1,60 @@
+# Prometheus scrape config for the Maestro demo stack.
+#
+# The four JVMs (three loan services + maestro-admin) run on the HOST, not in
+# containers — see demo/scripts/start-services.sh and the demo runbook. From
+# inside this container the host is reachable as `host.docker.internal`, which
+# Docker Desktop provides natively and which docker-compose.yml additionally
+# pins via `extra_hosts: host-gateway` so the same file works on plain Docker
+# Engine / Linux. Verified from inside the running container — see
+# demo/.evidence/task-2-prometheus-host-resolution.log.
+#
+# 5s scrape interval: a demo needs graphs that move while someone is watching,
+# not 15s-granularity production defaults.
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+  scrape_timeout: 4s
+
+scrape_configs:
+
+  # The three loan-origination services. Each carries a `service` label so the
+  # dashboard can break Maestro's node-local gauges down per service (the
+  # `maestro.workflows.running`/`parked` gauges are per-JVM by design — see
+  # docs/observability.md "Gauges").
+  - job_name: maestro-loan-services
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['host.docker.internal:8091']
+        labels:
+          service: loan-application
+      - targets: ['host.docker.internal:8092']
+        labels:
+          service: verification-gateway
+      - targets: ['host.docker.internal:8093']
+        labels:
+          service: underwriting
+
+  # maestro-admin (host JVM on 8080) is deliberately NOT scraped. It depends on
+  # spring-boot-starter-actuator but NOT on micrometer-registry-prometheus
+  # (verified: `unzip -l maestro-admin-*.jar | grep micrometer` lists only
+  # micrometer-core/-commons/-observation/-jakarta9), so /actuator/prometheus
+  # cannot exist there however the exposure list is configured — it answers 404.
+  # It also runs no workflow engine, so it would emit no maestro.* meters even
+  # if it did. Adding the registry to maestro-admin's build is a product change,
+  # not a demo change; a permanently-DOWN target on stage is worse than no
+  # target. See demo/.evidence/task-2-admin-no-prometheus-endpoint.log.
+
+  # Optional second loan-application node (port 8094), started only by
+  # `TWO_NODE=1 demo/scripts/start-services.sh`. File-based service discovery
+  # rather than a static target so a single-node demo shows ZERO down targets:
+  # start-services.sh writes demo/targets/loan-application-b.json when
+  # TWO_NODE=1 and removes it otherwise; Prometheus picks the change up on its
+  # own (file SD polls every 5m by default, so `refresh_interval` is pinned
+  # short here to keep it demo-responsive).
+  - job_name: maestro-loan-services-node-b
+    metrics_path: /actuator/prometheus
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/targets/*.json
+        refresh_interval: 5s
