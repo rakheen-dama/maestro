@@ -1384,9 +1384,11 @@ body.presenting #presenter { display: grid; }
         not care which; there is no owner registry and no handover protocol. A lock lapses and
         whoever polls next takes it.</p>
       <p><strong>DO:</strong> &sect;D6, and <strong>decide before you start</strong> &mdash; it needs
-        a restart with <code>TWO_NODE=1 DEMO_SKIP_BUILD=1 demo/scripts/start-services.sh</code> and
-        adds ~360 MiB. Park a loan with <code>drive-loan.sh crash</code>, confirm the owner with
-        <code>grep -l "Started workflow 'loan-&lt;id&gt;'"</code> across both logs, kill it, then
+        a restart, <code>demo/scripts/stop-services.sh</code> first and then
+        <code>TWO_NODE=1 DEMO_SKIP_BUILD=1 demo/scripts/start-services.sh</code>, and adds ~360 MiB.
+        Park a loan with <code>demo/scripts/drive-loan.sh crash</code>, confirm the owner with
+        <code>grep -l "Started workflow 'loan-&lt;id&gt;'" demo/.run/loan-application-service.log
+        demo/.run/loan-application-service-b.log</code>, kill it, then
         <code>LOAN_URL=http://localhost:8094 demo/scripts/drive-loan.sh finish &lt;id&gt;</code>.</p>
       <p><strong>WATCH OUT &mdash; three things.</strong> (1) The <code>LOAN_URL=</code> override is
         not optional: <code>drive-loan.sh</code> talks to 8091 by default and 8091 is what you just
