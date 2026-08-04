@@ -47,9 +47,12 @@ create_app() { # id borrowersJson amount income propertyValue docsJson
 }
 
 upload_doc() { # id docType uploadedBy
-  curl -sS -o /dev/null -w "    document.uploaded %s by %s [http %%{http_code}]\n" "$2" "$3" \
+  local code
+  code=$(curl -sS -o /dev/null -w '%{http_code}' \
     -X POST "$LOAN_URL/applications/$1/documents" -H 'Content-Type: application/json' \
-    -d "{\"docType\":\"$2\",\"uploadedBy\":\"$3\"}"
+    -d "{\"docType\":\"$2\",\"uploadedBy\":\"$3\"}")
+  printf '    document.uploaded %s by %s [http %s]\n' "$2" "$3" "$code"
+  [ "$code" = "202" ] || die "document upload for $1 returned $code"
 }
 
 sign_app() { # id signerId
@@ -150,7 +153,7 @@ scenario_happy() { # DTI 2.0 -> AUTO_APPROVE, no human touches it
   wait_status "$id" COMPLETED
   app_json "$id"
   print_events "$id"
-  say "DONE — $id FUNDED. Point at: admin dashboard $LOAN_URL -> $DEMO_DIR, and http://localhost:8080/admin/workflows"
+  say "DONE — $id FUNDED. Point at http://localhost:8080/admin/workflows/loan-$id"
 }
 
 scenario_conditions() { # DTI 4.5 -> HUMAN_REVIEW, round 1 CONDITIONS, round 2 APPROVED
