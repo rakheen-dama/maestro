@@ -1455,7 +1455,10 @@ body.presenting #presenter { display: grid; }
     }
 }</pre>
         <p class="codecap">maestro-samples/sample-postgres-only/src/main/java/&hellip;/workflow/DocumentApprovalWorkflow.java
-          &nbsp;&middot;&nbsp; 91 lines in full; comments and the rejection branch elided</p>
+          &nbsp;&middot;&nbsp; 91 lines in full. Elided: comments, the <code>assignReviewer</code> call,
+          the <code>currentStep</code> field and its <code>@QueryMethod getStatus()</code>, three
+          <code>archiveAuditTrail</code> calls, and the rejection branch &mdash; all activity calls
+          and ordinary assignments, nothing of a different kind</p>
       </div>
       <div>
         <div class="card accent">
@@ -1481,8 +1484,10 @@ body.presenting #presenter { display: grid; }
       </div>
     </div>
     <div class="notes">
-      <p><strong>SAY:</strong> This is a complete, real workflow from the repository &mdash; not a
-        cut-down illustration. Four annotations and an ordinary Java method. The interesting line
+      <p><strong>SAY:</strong> This is a real workflow from the repository, 91 lines, trimmed to
+        fit the slide &mdash; and what came out is more of the same: three more activity calls, a
+        status field, and a rejection branch shaped exactly like the approval one. Nothing of a
+        different kind is hiding. Four annotations and an ordinary Java method. The interesting line
         is the <code>awaitSignal</code> with a seven-day timeout sitting inside a
         <code>try/catch</code>: the service can be restarted, redeployed and crashed any number of
         times during those seven days, and this method resumes on the line after it with the value
