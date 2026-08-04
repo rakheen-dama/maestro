@@ -57,7 +57,7 @@ drives one throwaway loan end to end → prints the process-identity table.
 
 **Timing:** 3–6 minutes on a truly cold machine (the image pull dominates).
 **Measured warm, with `DEMO_SKIP_PULL=1`: 36 s**, including a full Gradle
-build. It is safe to re-run: ports already published by this demo's own
+build (`demo/.evidence/task-4-fix-f3-f4-preflight.log`). It is safe to re-run: ports already published by this demo's own
 containers are accepted, only a foreign listener fails it.
 
 **Should appear:** the last line is
@@ -152,9 +152,11 @@ the workflow id is always `loan-<applicationId>`.)
 - Final JSON with `"status":"FUNDED"`, a `rateLockId` and a `disbursementId`.
 - An event log ending `WORKFLOW_COMPLETED`.
 
-**TIMING:** measured **15 s**. There is a hard ~8 s floor inside that: the
-appraisal provider simulates 8 s of latency (`credit PT2S`, `employment PT5S`,
-`appraisal PT8S`). Budget 30 s so you are never waiting on it.
+**TIMING:** measured **14–20 s** over two back-to-back runs
+(`demo/.evidence/task-4-fix-f3-unevidenced-figures.log`). There is a hard ~8 s
+floor inside that: the appraisal provider simulates 8 s of latency (`credit
+PT2S`, `employment PT5S`, `appraisal PT8S`). Budget 30 s so you are never
+waiting on it.
 
 **SAY, during the wait:** "The workflow is not running right now. It is a row
 in Postgres. No thread is parked, no timer is held in memory — if I killed
@@ -428,12 +430,16 @@ link: <http://localhost:3000/d/maestro-demo>.)
 
 **SHOULD APPEAR:** the parked-count panel rises to roughly **3× the number of
 loans in flight** — each loan parks a workflow in the loan service, one in
-verification-gateway and one in underwriting. A rehearsal with three loans
-peaked at **9** and was back to **0** within 20 s. Do not promise the number
-3; promise "it climbs and comes back to zero". Scrape interval is 5 s, so give
-it two scrapes.
+verification-gateway and one in underwriting — and then falls back to zero.
+Measured with three loans: peak **12** at t+6 s, back to **0** at t+18 s
+(`demo/.evidence/task-4-fix-f3-unevidenced-figures.log`; an earlier rehearsal
+peaked at 9). **Do not promise any number** — 9 is the arithmetic, 12 is what
+it actually read, because the three loans overlap and a workflow left parked
+from the previous scenario still counts. Promise only "it climbs and comes back
+to zero". Scrape interval is 5 s, so give it two scrapes.
 
-**TIMING:** measured — peak within 5 s of launching, back to 0 by 20 s.
+**TIMING:** measured — peak at t+6 s, back to 0 at t+18 s. Both are quantised
+to the 5 s scrape.
 
 **Two things to say before anyone asks:**
 
@@ -539,7 +545,7 @@ presenter who predicts two looks like they know the system.
 **AFTER D1, ALWAYS:**
 
 ```bash
-RESTORE_V1=1 demo/scripts/v1-to-v2-move.sh    # restores just 8091, measured 5 s
+RESTORE_V1=1 demo/scripts/v1-to-v2-move.sh    # restores just 8091, measured 6 s
 # or
 demo/scripts/reset.sh                          # restores everything, measured 17 s
 ```
