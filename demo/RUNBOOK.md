@@ -59,7 +59,7 @@ so it is the better setup whenever you have two displays.
 demo/scripts/preflight.sh
 ```
 
-**What it does, in order:** checks host tools → checks all 11 ports are free
+**What it does, in order:** checks host tools → checks all 13 ports are free
 *before starting anything* → pulls images → builds every jar **including
 `loan-application-v2.jar`** → `compose up -d` and waits for each container
 healthy → verifies all 11 Kafka topics exist → starts the four host JVMs **and
@@ -971,7 +971,7 @@ docker compose -f demo/docker-compose.yml down -v
 Verify nothing is left holding a port:
 
 ```bash
-lsof -nP -iTCP:3000,4318,5433,6380,8080,8091,8092,8093,9090,16686,29093 -sTCP:LISTEN
+lsof -nP -iTCP:3000,4317,4318,5433,6380,8080,8091,8092,8093,8094,9090,16686,29093 -sTCP:LISTEN
 ```
 
 Empty output means you are done.

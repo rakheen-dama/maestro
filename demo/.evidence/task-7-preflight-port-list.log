@@ -1,0 +1,43 @@
+=== F5 — preflight step 1 with 4317 and 8094 added ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=0ce3855afd81cfc542cf77db138dea4f8091737c branch=worktree-demo
+timestamp-utc: 2026-08-04T18:44:50Z
+check: the two ports the list was missing — 4317 (jaeger OTLP gRPC, published at
+       demo/docker-compose.yml) and 8094 (TWO_NODE=1 node B, start-services.sh:371)
+
+--- the list before / after ---
+  before: PORTS=(3000 4318 5433 6380 8080 8091 8092 8093 9090 16686 29093)          # 11
+  after:  38:PORTS=(3000 4317 4318 5433 6380 8080 8091 8092 8093 8094 9090 16686 29093)
+
+--- 4317 IS published by this demo's jaeger container (so step 1 must know about it) ---
+    4317/tcp -> 0.0.0.0:4317
+    4317/tcp -> [::]:4317
+    4318/tcp -> 0.0.0.0:4318
+    4318/tcp -> [::]:4318
+    16686/tcp -> 0.0.0.0:16686
+    16686/tcp -> [::]:16686
+
+--- step 1 executed verbatim against the running stack (steps 21-75 of preflight.sh) ---
+    
+    ==> 0/8 host tools
+        ok   docker, curl, jq, lsof, nc, shasum, unzip
+    
+    ==> 1/8 every demo port free (or already held by this demo's own containers)
+    java    67477 rakheendama   21u  IPv6 0x480ec2c81809efdc      0t0  TCP *:8080 (LISTEN)
+    java    67465 rakheendama   63u  IPv6 0xd2b25170a7daa856      0t0  TCP *:8091 (LISTEN)
+    java    67469 rakheendama   54u  IPv6 0x4d4868898eb1a43      0t0  TCP *:8092 (LISTEN)
+    java    67473 rakheendama   54u  IPv6 0xde9524ccff9cb646      0t0  TCP *:8093 (LISTEN)
+    
+    PREFLIGHT FAILED: ports held by something that is not this demo: 8080 8091 8092 8093
+           Host JVM ports (8080/8091/8092/8093, and 8094 under TWO_NODE=1):  demo/scripts/stop-services.sh
+           Container ports (3000/4317/4318/5433/6380/9090/16686/29093):  docker compose -f /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/demo/docker-compose.yml down
+           The loan sample's own compose stack collides on 5433/6380/29093 — take it down first:
+             docker compose -f maestro-samples/sample-loan-origination/docker-compose.yml down
+    EXIT=1
+
+--- READING ---
+4317 and 4318 are BOTH correctly classified as this demo's own container ports and are
+not flagged; 8094 is free and not flagged; the four host JVM ports are correctly flagged
+foreign because the QA run's JVMs are still up — that is preflight's documented
+'re-running it needs the host JVMs stopped first' behaviour (RUNBOOK §0.1), not a
+regression. Before this change a foreign listener on 4317 passed step 1 and reappeared
+at step 4 as a bare 'docker compose up failed'; 8094 passed preflight entirely.

@@ -25,9 +25,17 @@ REPO_ROOT="$(cd "$DEMO_DIR/.." && pwd)"
 COMPOSE=("docker" "compose" "-f" "$DEMO_DIR/docker-compose.yml")
 PG_CONTAINER="${PG_CONTAINER:-maestro-demo-postgres-1}"
 
-# 3000 Grafana, 4318 Jaeger OTLP/HTTP, 5433 Postgres, 6380 Valkey, 8080 admin,
-# 8091/8092/8093 loan services, 9090 Prometheus, 16686 Jaeger UI, 29093 Kafka.
-PORTS=(3000 4318 5433 6380 8080 8091 8092 8093 9090 16686 29093)
+# 3000 Grafana, 4317 Jaeger OTLP/gRPC, 4318 Jaeger OTLP/HTTP, 5433 Postgres,
+# 6380 Valkey, 8080 admin, 8091/8092/8093 loan services, 8094 the TWO_NODE=1
+# node B, 9090 Prometheus, 16686 Jaeger UI, 29093 Kafka.
+#
+# 4317 and 8094 are checked even though the happy path does not use them:
+# 4317 IS published by the jaeger service (docker-compose.yml), so a foreign
+# listener there passes step 1 and reappears at step 4 as a bare
+# `docker compose up failed`, stripped of this step's remediation text; 8094 is
+# worse in kind — it would pass preflight entirely and first surface mid-demo,
+# in §D6.
+PORTS=(3000 4317 4318 5433 6380 8080 8091 8092 8093 8094 9090 16686 29093)
 
 step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 ok()   { printf '    \033[32mok\033[0m   %s\n' "$*"; }
@@ -56,8 +64,8 @@ done
 if [ ${#busy[@]} -gt 0 ]; then
   for p in "${busy[@]}"; do lsof -nP -iTCP:"$p" -sTCP:LISTEN | tail -n +2; done
   die "ports held by something that is not this demo: ${busy[*]}
-       Host JVM ports (8080/8091/8092/8093):  demo/scripts/stop-services.sh
-       Container ports (3000/4318/5433/6380/9090/16686/29093):  ${COMPOSE[*]} down
+       Host JVM ports (8080/8091/8092/8093, and 8094 under TWO_NODE=1):  demo/scripts/stop-services.sh
+       Container ports (3000/4317/4318/5433/6380/9090/16686/29093):  ${COMPOSE[*]} down
        The loan sample's own compose stack collides on 5433/6380/29093 — take it down first:
          docker compose -f maestro-samples/sample-loan-origination/docker-compose.yml down"
 fi
