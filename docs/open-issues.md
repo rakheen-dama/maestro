@@ -220,7 +220,12 @@ parked wake-recheck probe), is **now resolved** — see its section. A ninth
 cycle and triaged as release-blocking, is **now resolved** — see its section.
 A tenth (22), found by the review of 21's fix in the same class of
 read-modify-write race, is **open**: narrow, pre-existing, and behavioural
-rather than cosmetic.
+rather than cosmetic. An eleventh (23), found while building the demo stack —
+where it surfaced as a cross-service trace that would not join up — is
+**open** and the highest-severity thing on this list: Maestro's Kafka beans
+shadow Spring Boot's by type, silently voiding `spring.kafka.producer.*` and
+`spring.kafka.template.*` for every user, and `@MaestroSignalListener` never
+extracts the inbound `traceparent`.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -260,6 +265,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [20](#issue-20) | A transient store outage during a parked wake-recheck fails a healthy workflow | Library defect | High | **Resolved** |
 | [21](#issue-21) | Two `parallel()` branches parking at once fail the workflow and run compensations | Library defect | High | **Resolved** |
 | [22](#issue-22) | Compensations can run on an operator-terminated workflow | Library defect | Medium | Open |
+| [23](#issue-23) | Maestro's Kafka beans silently disable `spring.kafka.*`; `@MaestroSignalListener` drops trace context | Library defect | Critical | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -1840,6 +1846,156 @@ compensations after the fix, with `WorkflowTerminatedException` propagating.
 Pin the mechanism the way Issue 21's fix was pinned: assert the store write
 ledger and the compensation invocations, not merely that the workflow ended up
 `TERMINATED`.
+
+---
+
+### Issue 23 — Maestro's Kafka beans silently disable Spring Boot's `spring.kafka.*` configuration, and `@MaestroSignalListener` drops trace context {#issue-23}
+
+> **Open.** Found while building the demo stack (`demo/`), where it presented
+> as "Jaeger shows three unrelated single-service traces". Filed rather than
+> fixed: the demo cycle's remit was the stack, and the fix changes shipped
+> behaviour for every Maestro + Kafka user, so it wants its own cycle with
+> pinning tests. A sample-level stopgap is in place — see "Today's
+> workaround".
+
+**Kind:** Library defect (plus a documentation gap — corrected in
+`docs/observability.md` §"Cross-service trace propagation (Kafka)", whose
+"one connected trace" promise now carries an explicit scope limit).
+**Severity:** Critical as a
+product issue: it silently voids a whole family of documented Spring Boot
+properties, and it breaks the cross-service trace that `docs/cross-service.md`
+and `docs/observability.md` both promise.
+
+Evidence for everything below:
+`demo/.evidence/task-2-kafka-template-library-defect.log`.
+
+**What's wrong — part 1: Maestro's beans suppress Boot's.**
+
+`KafkaMessagingAutoConfiguration` contributes a `ProducerFactory` and a
+`KafkaTemplate` unconditionally:
+
+```java
+// maestro-messaging-kafka/src/main/java/.../config/KafkaMessagingAutoConfiguration.java:105-110
+@Bean
+@ConditionalOnMissingBean(name = "maestroKafkaTemplate")
+public KafkaTemplate<String, byte[]> maestroKafkaTemplate(
+        ProducerFactory<String, byte[]> maestroKafkaProducerFactory
+) {
+    return new KafkaTemplate<>(maestroKafkaProducerFactory);   // bare — nothing configured
+}
+```
+
+Note the condition is on the **bean name**, but Spring Boot's own beans are
+conditional on the **type**. Verified in `spring-boot-kafka-4.0.5` bytecode:
+`KafkaAutoConfiguration.kafkaTemplate` is
+`@ConditionalOnMissingBean(KafkaTemplate.class)` and
+`KafkaAutoConfiguration.kafkaProducerFactory` is
+`@ConditionalOnMissingBean(ProducerFactory.class)`. So in **every** Maestro +
+Kafka application, Boot's template and producer factory never exist, and every
+property they are responsible for reading is silently inert:
+
+| Property | Effect today |
+|---|---|
+| `spring.kafka.template.observation-enabled` | Ignored — no producer spans, no `traceparent` on user-published records |
+| `spring.kafka.template.default-topic` | Ignored |
+| `spring.kafka.producer.*` (serializers, `acks`, `compression-type`, `batch-size`, `properties.*`, …) | Ignored — `maestroKafkaProducerFactory` builds its own map with hardcoded `String`/`byte[]` serializers and `acks=all` |
+| `spring.kafka.producer.transaction-id-prefix` | Ignored — no `KafkaTransactionManager` |
+
+The failure mode is the bad kind: the property binds without complaint,
+`/actuator/configprops` shows the value you set, and nothing happens.
+
+**What's wrong — part 2: `@MaestroSignalListener` never extracts trace context.**
+
+`MaestroSignalListenerBeanPostProcessor.createListenerContainer` hand-builds
+`ContainerProperties`:
+
+```java
+// maestro-messaging-kafka/src/main/java/.../listener/MaestroSignalListenerBeanPostProcessor.java:213-219
+var containerProps = new ContainerProperties(reg.topic());
+containerProps.setGroupId(groupId);
+containerProps.setAckMode(ContainerProperties.AckMode.RECORD);
+containerProps.setMessageListener(
+        (MessageListener<String, byte[]>) record -> handleMessage(record.value(), reg, executor, objectMapper));
+var container = new ConcurrentMessageListenerContainer<>(consumerFactory, containerProps);
+```
+
+Two consequences. `spring.kafka.listener.*` (including
+`observation-enabled`) cannot reach a container Boot never configured. And the
+listener lambda calls `handleMessage(record.value(), …)` directly — it takes
+the record's **value** and never looks at its **headers**.
+`KafkaTracePropagation` exposes `runWithExtractedContext(Headers, Runnable)`
+for precisely this hop; `grep -c runWithExtractedContext` over the
+bean-post-processor returns **0**.
+
+So a signal arriving on a user's own domain topic is persisted with
+`trace_context = NULL` even when the record carries a valid `traceparent`.
+Measured on the demo stack, with the producer side confirmed to be injecting
+the header:
+
+```
+      signal_name      | rows | with_trace | null_trace
+-----------------------+------+------------+------------
+ underwriting.decision |    1 |          0 |          1
+ verification.result   |    3 |          0 |          3
+```
+
+(`document.uploaded` and `package.signed` are also NULL in that table but are
+not evidence — they enter over REST, so there is no header to extract.)
+
+**Why it matters.** `trace_context` on the signal row is the hop designed to
+survive a park, a crash and a different node — the one thing an in-memory
+scope cannot do. Leaving it NULL means the durable half of the trace story is
+absent exactly where the engine's value proposition lives.
+
+**Where.**
+- `maestro-messaging-kafka/src/main/java/io/b2mash/maestro/messaging/kafka/config/KafkaMessagingAutoConfiguration.java:105-110`
+- `maestro-messaging-kafka/src/main/java/io/b2mash/maestro/messaging/kafka/listener/MaestroSignalListenerBeanPostProcessor.java:213-219`
+
+**How to tackle it.**
+
+1. **Producer.** Honour `spring.kafka.template.observation-enabled` on
+   `maestroKafkaTemplate` — or, better, default observation **on** when a
+   `Tracer` bean is present, matching the condition
+   `TracePropagationConfiguration` already uses. Enabling it does not
+   double-write the header: Spring's Kafka sender context removes before it
+   adds, so the observation's `traceparent` replaces the engine's manual one
+   with a child span of the same trace.
+2. **Consumer.** Set `containerProps.setObservationEnabled(...)` from the
+   bound listener properties, and wrap the message listener in
+   `KafkaTracePropagation.runWithExtractedContext(record.headers(), …)` so the
+   inbound header reaches `TraceContextHolder` and is persisted by
+   `SignalManager.deliverSignal`.
+3. **Decide the bean-suppression question explicitly.** Either narrow Maestro's
+   beans so Boot's survive (e.g. give Maestro's a distinct type or mark them
+   `@ConditionalOnMissingBean(name = …)` *and* not shadow the type), or
+   document loudly that `spring.kafka.producer.*` does not apply. Silently
+   swallowing a documented Spring Boot property surface is the worst of the
+   three options.
+
+**Today's workaround** (what the demo does, and what users hitting this should
+do until it is fixed): define your own bean **named `maestroKafkaTemplate`**
+with observation enabled. Maestro's `@ConditionalOnMissingBean(name = …)` then
+backs off and engine and application traffic share one observed template:
+
+```java
+@Bean
+public KafkaTemplate<String, byte[]> maestroKafkaTemplate(
+        ProducerFactory<String, byte[]> maestroKafkaProducerFactory) {
+    var template = new KafkaTemplate<>(maestroKafkaProducerFactory);
+    template.setObservationEnabled(true);
+    return template;
+}
+```
+
+See `maestro-samples/sample-loan-origination/*/src/main/java/.../config/ObservedKafkaTemplateConfig.java`.
+This fixes the producer side only; part 2 has no user-side workaround.
+
+**Done when.** A RED pin shows (a) `spring.kafka.template.observation-enabled=true`
+produces no `traceparent` on a record published through the injected
+`KafkaTemplate`, and (b) a record delivered to an `@MaestroSignalListener`
+topic **with** a valid `traceparent` persists `trace_context = NULL`. Both go
+green after the fix, and a cross-service test asserts one trace id spans
+producer and consumer services.
 
 ---
 

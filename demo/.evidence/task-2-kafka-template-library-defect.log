@@ -1,0 +1,93 @@
+=== EVIDENCE IDENTITY ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+HEAD: 10367bdf65a10cf201528315fb5d046bf58a3520
+branch: worktree-demo
+timestamp-utc: 2026-08-04T08:59:02Z
+check: F2 — evidence for the Maestro library defect filed as open-issues Issue 23
+==========================
+
+PART A — Maestro's beans suppress Spring Boot's, so spring.kafka.* is inert.
+Boot's conditions, read out of spring-boot-kafka-4.0.5 bytecode:
+
+$ javap -v KafkaAutoConfiguration.class   # kafkaTemplate(...)
+        RuntimeVisibleAnnotations:
+          0: #434()
+            org.springframework.context.annotation.Bean
+          1: #435(#436=[c#447])
+            org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean(
+    --
+
+$ javap -v KafkaAutoConfiguration.class   # kafkaProducerFactory(...)
+        RuntimeVisibleAnnotations:
+          0: #434()
+            org.springframework.context.annotation.Bean
+          1: #435(#436=[c#441])
+            org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean(
+              value=[class Lorg/springframework/kafka/core/ProducerFactory;]
+            )
+
+Both are @ConditionalOnMissingBean on the TYPE, and Maestro contributes a
+bean of each type unconditionally, so Boot's never exist in a Maestro+Kafka
+app and the properties they read are never applied.
+
+Maestro's replacements (no observation, no spring.kafka.* binding):
+$ sed -n '93,110p' maestro-messaging-kafka/.../config/KafkaMessagingAutoConfiguration.java
+        @Bean
+        @ConditionalOnMissingBean(name = "maestroKafkaProducerFactory")
+        public ProducerFactory<String, byte[]> maestroKafkaProducerFactory(Environment env) {
+            var props = new HashMap<String, Object>();
+            props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, resolveBootstrapServers(env));
+            props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+            props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
+            props.put(ProducerConfig.ACKS_CONFIG, "all");
+            return new DefaultKafkaProducerFactory<>(props);
+        }
+    
+        @Bean
+        @ConditionalOnMissingBean(name = "maestroKafkaTemplate")
+        public KafkaTemplate<String, byte[]> maestroKafkaTemplate(
+                ProducerFactory<String, byte[]> maestroKafkaProducerFactory
+        ) {
+            return new KafkaTemplate<>(maestroKafkaProducerFactory);
+        }
+
+PART B — the @MaestroSignalListener container is hand-built, so
+spring.kafka.listener.* cannot reach it and no trace context is extracted.
+$ sed -n '213,220p' maestro-messaging-kafka/.../listener/MaestroSignalListenerBeanPostProcessor.java
+            var containerProps = new ContainerProperties(reg.topic());
+            containerProps.setGroupId(groupId);
+            containerProps.setAckMode(ContainerProperties.AckMode.RECORD);
+            containerProps.setMessageListener(
+                    (MessageListener<String, byte[]>) record -> handleMessage(record.value(), reg, executor, objectMapper));
+    
+            var container = new ConcurrentMessageListenerContainer<>(consumerFactory, containerProps);
+            // Without this the default error handler logs and skips once its
+
+The listener lambda calls handleMessage(...) directly. KafkaTracePropagation
+exposes runWithExtractedContext(Headers, Runnable) for exactly this hop and
+is never called here; setObservationEnabled is never set on containerProps.
+$ grep -c runWithExtractedContext <the BPP>
+0
+
+PART C — observable consequence, measured on the running demo.
+The producer side IS injecting traceparent here (the sample override is in
+place; see task-2-jaeger-cross-service-trace.log for the header on the wire),
+so any NULL below is the CONSUMER side dropping it.
+
+$ psql loan_application -c 'SELECT signal_name, count(*), count(trace_context) ...'
+          signal_name      | rows | with_trace | null_trace 
+    -----------------------+------+------------+------------
+     document.uploaded     |    1 |          0 |          1
+     package.signed        |    1 |          0 |          1
+     underwriting.decision |    1 |          0 |          1
+     verification.result   |    3 |          0 |          3
+    (4 rows)
+    
+
+verification.result and underwriting.decision arrive on the sample's DOMAIN
+topics through @MaestroSignalListener, with a traceparent header present on
+the record — and land with trace_context NULL. That is the defect.
+
+document.uploaded and package.signed are NOT counter-evidence: they enter
+through the REST API, not Kafka, so they have no inbound header to extract
+and NULL is correct for them.
