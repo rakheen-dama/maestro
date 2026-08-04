@@ -87,10 +87,27 @@ _recovery_poll_prop="-Dmaestro.recovery.poll-interval=${DEMO_RECOVERY_POLL_INTER
 # Jaeger shows three unrelated single-service traces that look superficially
 # fine — which is exactly what this demo must not show.
 #
-#   template.observation-enabled  → producer side: writes `traceparent`,
-#                                   parented to the active maestro.activity span
-#   listener.observation-enabled  → consumer side: reads it back and continues
-#                                   the trace instead of starting a new one
+#   listener.observation-enabled  → consumer side: reads `traceparent` back and
+#                                   continues the trace instead of starting a
+#                                   new one. THIS FLAG IS THE ONE DOING WORK —
+#                                   Boot's listener-container factory is not
+#                                   shadowed, so the property reaches it.
+#
+#   template.observation-enabled  → INERT. It configures Boot's auto-configured
+#                                   `kafkaTemplate`, which never exists in a
+#                                   Maestro+Kafka app: Boot declares it
+#                                   @ConditionalOnMissingBean(KafkaTemplate.class)
+#                                   and Maestro contributes maestroKafkaTemplate
+#                                   unconditionally (Issue 23; evidence in
+#                                   demo/.evidence/task-2-kafka-template-library-defect.log).
+#                                   Kept only so the pair reads symmetrically.
+#
+# THE PRODUCER SIDE IS A BEAN, NOT THIS FLAG. Each of the three services
+# declares ObservedKafkaTemplateConfig in src/main/java/.../config/ — a
+# @Bean NAMED maestroKafkaTemplate that calls setObservationEnabled(true) and
+# wins because Maestro's own is @ConditionalOnMissingBean(name =
+# "maestroKafkaTemplate"). DELETING THAT CLASS BREAKS THE CROSS-SERVICE TRACE
+# INTO THREE UNRELATED ONES, and no flag here will save you.
 _kafka_observation_props=(
     -Dspring.kafka.template.observation-enabled=true
     -Dspring.kafka.listener.observation-enabled=true

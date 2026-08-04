@@ -891,12 +891,27 @@ move on.
 
 **"Is the tracing across Kafka real, or did you special-case it?"**
 It is real, and there is one honest caveat. Maestro's `maestroKafkaTemplate`
-suppresses Boot's, so `spring.kafka.template.observation-enabled` is inert for
-all users, and `@MaestroSignalListener` does not extract trace context on
-domain topics. That is filed as **Issue 23 in `docs/open-issues.md`**. The
-samples carry an explicit override — that is why you will see
-`-Dspring.kafka.template.observation-enabled=true` on the JVM command line. It
-is a library defect with a documented workaround, not a demo trick.
+suppresses Boot's auto-configured `kafkaTemplate`
+(`@ConditionalOnMissingBean(KafkaTemplate.class)`), so
+`spring.kafka.template.observation-enabled` configures a bean that is never
+created — it is **inert for all users**. And `@MaestroSignalListener` builds
+its container by hand, so it does not extract trace context on domain topics
+either. Both are filed as **Issue 23 in `docs/open-issues.md`**.
+
+The producer-side workaround is therefore **not** a property: each sample
+declares an `ObservedKafkaTemplateConfig` `@Bean` named `maestroKafkaTemplate`
+(`src/main/java/.../config/`) that calls `setObservationEnabled(true)`. It wins
+because Maestro declares its own template
+`@ConditionalOnMissingBean(name = "maestroKafkaTemplate")` — a real extension
+point, used as intended. That bean is what puts `traceparent` on the wire, with
+or without any `-D` flag.
+
+The `-Dspring.kafka.template.observation-enabled=true` you will see on the JVM
+command line is the *inert half* of a pair, kept only so the pairing reads
+symmetrically; its sibling
+`-Dspring.kafka.listener.observation-enabled=true` **is** effective, because
+Boot's listener-container factory is not shadowed. It is a library defect with
+a documented workaround, not a demo trick.
 
 **"Exactly-once?"** No. At-least-once execution with exactly-once *persisted
 results*. The unique index on `(workflow_instance_id, sequence_number)`
