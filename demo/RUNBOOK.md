@@ -709,20 +709,34 @@ the same log is in your terminal scrollback from scenario 1.
 
 ## §D3 — Deep dive: the evidence
 
-No live commands. One slide's worth of numbers, all from the project's own
-chaos harness (soak of record, `tasks/todo.md`):
+No live commands. One slide's worth of numbers, every one of them read out of
+the run's own primary record —
+`.superpowers/sdd/multi-instance/evidence/task7/20260801-214325--6973268155056049009/run-summary.json`
+(not `tasks/todo.md`, which is a checklist that quotes it):
 
-- **2-hour chaos window**, verdict PASS
-- **2376 workflows** driven
-- **0 invariant violations**
-- **0 duplicate side effects**
-- run id `20260801-214325--6973268155056049009`
+- **2-hour chaos window** (`durationMinutes: 120`), `verdict: PASS`
+- **2376 workflows** driven (`workflowsSubmitted`)
+- **0 invariant violations** (`violations: []`)
+- **0 duplicate side effects** (`sideEffectDuplicates: 0`)
+- run id `20260801-214325--6973268155056049009`, `gitHead 7113e06`
+
+That run is from the multi-instance verification branch, not this one — which
+is the right answer if anyone asks why it is not in `demo/.evidence/`. Open the
+JSON, not the to-do list.
 
 **SAY:** *"The harness kills nodes, partitions the lock backend and delays
 Kafka while workflows run, then checks two invariants: no workflow ends in an
 inconsistent state, and no side effect happens twice. It found four engine
 defects. They are fixed. That is why I am willing to run `kill -9` in front of
 you."*
+
+**Know which sentence you are standing behind** if someone presses on "four".
+Four engine defects were found across the whole verification effort — Issues
+17, 18, 19, 20 (`tasks/todo.md:25`). **Three** of them (18, 19, 20) were found
+by the chaos harness itself; Issue 17, the cross-node timer wake, came out of
+the Phase 1 multi-process E2E before the harness existed
+(`docs/multi-instance-test-plan.md:3-6`). "Four defects, three of them by the
+chaos harness" is the sentence that survives a follow-up question.
 
 **Do not** run the chaos harness live. It is a two-hour job and it is out of
 scope for this demo by design.
