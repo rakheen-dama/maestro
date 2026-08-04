@@ -1,0 +1,19 @@
+# Auto-loads every dashboard JSON under /var/lib/grafana/dashboards, which
+# docker-compose.yml mounts read-only from demo/grafana/dashboards.
+#
+# allowUiUpdates:false + the read-only mount means the dashboard on stage is
+# always the one in git — a demo cannot be broken by someone poking at a panel.
+
+apiVersion: 1
+
+providers:
+  - name: maestro
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 10
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

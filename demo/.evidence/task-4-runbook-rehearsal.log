@@ -1,0 +1,268 @@
+=== EVIDENCE IDENTITY ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+git-root: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+branch: worktree-demo
+commit: cd23863f1adc6efebfa230d0451af5321eb25b58
+dirty: 1 uncommitted change(s)
+timestamp-utc: 2026-08-04T12:14:32Z
+run: demo/RUNBOOK.md followed top to bottom (task-4 rehearsal, final pass) — reset, scenario 1, scenario 2 incl. kill -9, scenario 4
+==========================
+
+########## §0.3 reset.sh ##########
+
+[1m==> 1/4 stopping host JVMs[0m
+14:14:32 [demo] maestro-admin: SIGTERM to pid 15536 (up to 5s grace)
+14:14:33 [demo] maestro-admin: exited cleanly after 1s
+14:14:33 [demo] loan-application-service: SIGTERM to pid 15524 (up to 5s grace)
+14:14:35 [demo] loan-application-service: exited cleanly after 2s
+14:14:35 [demo] underwriting-service: SIGTERM to pid 15532 (up to 5s grace)
+14:14:36 [demo] underwriting-service: exited cleanly after 1s
+14:14:36 [demo] verification-gateway-service: SIGTERM to pid 15528 (up to 5s grace)
+14:14:38 [demo] verification-gateway-service: exited cleanly after 2s
+14:14:38 [demo] Done. Infrastructure containers are untouched — tear them down with:
+14:14:38 [demo]   docker compose -f demo/docker-compose.yml down -v
+
+[1m==> 2/4 truncating Maestro tables[0m
+    loan_application       cleared
+    verification_gateway   cleared
+    underwriting           cleared
+    maestro_admin          cleared
+
+[1m==> 3/4 flushing Valkey[0m
+
+[1m==> 4/4 restarting host JVMs from the v1 jars[0m
+    localhost:8091   health 200
+    localhost:8092   health 200
+    localhost:8093   health 200
+    localhost:8080   health 200
+
+[1m==> clean slate in 16s — 0 workflow instances, all four JVMs healthy[0m
+
+########## §0.2 process identity ##########
+loan-application-service     15822   /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/maestro-samples/sample-loan-origination/loan-application-service/build/libs/loan-application-service-0.3.0-SNAPSHOT.jar
+maestro-admin                15835   /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/maestro-admin/build/libs/maestro-admin-0.3.0-SNAPSHOT.jar
+underwriting-service         15831   /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/maestro-samples/sample-loan-origination/underwriting-service/build/libs/underwriting-service-0.3.0-SNAPSHOT.jar
+verification-gateway-service 15827   /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/maestro-samples/sample-loan-origination/verification-gateway-service/build/libs/verification-gateway-service-0.3.0-SNAPSHOT.jar
+
+########## §1 scenario 1: happy ##########
+
+[1m==> SCENARIO 1 (happy) — application rb-happy, $200,000 on $100,000 income, DTI 2.0[0m
+    DTI 2.0 is below the 3.0 auto-approve line, so no underwriter is involved.
+{"applicationId":"rb-happy"} [http 202]
+
+[1m==> waiting for all 3 verification results (credit 2s, employment 5s, appraisal 8s simulated)[0m
+    SAY: "nothing here is mocked out — three providers answer on their own schedule, in any order."
+    3/3 verification.result signals recorded after 14s
+    document.uploaded tax-return by carol [http 202]
+
+[1m==> waiting for the rate lock (auto-approved, then the funding saga starts)[0m
+    the rate lock (auto-approved, then the funding saga starts) recorded after 2s
+    package.signed by carol [http 202]
+
+[1m==> waiting for rb-happy to reach COMPLETED[0m
+    rb-happy is COMPLETED after 2s
+{"applicationId":"rb-happy","workflowId":"loan-rb-happy","status":"COMPLETED","output":{"status":"FUNDED","rateLockId":"862fb93b-959b-4107-849d-748f5015f22f","applicationId":"rb-happy","disbursementId":"811165df-b247-463a-ba97-d1bb181700cf"}}
+
+[1m==> durable event log for loan-rb-happy  (this is the whole of the workflow's memory)[0m
+    1  ACTIVITY_COMPLETED        LoanActivities.recordApplication
+    2  ACTIVITY_COMPLETED        LoanMessagingActivities.requestVerifications
+    3  SIGNAL_RECEIVED           $maestro:awaitSignal:verification.result
+    4  SIGNAL_RECEIVED           $maestro:awaitSignal:verification.result
+    5  SIGNAL_RECEIVED           $maestro:awaitSignal:verification.result
+    6  SIDE_EFFECT               $maestro:currentTime
+    7  SIDE_EFFECT               $maestro:currentTime
+    8  SIGNAL_RECEIVED           $maestro:awaitSignal:document.uploaded
+    9  SIGNAL_TIMEOUT            $maestro:awaitSignal:application.withdrawn
+   10  ACTIVITY_COMPLETED        LoanMessagingActivities.requestUnderwriting
+   11  SIGNAL_RECEIVED           $maestro:awaitSignal:underwriting.decision
+   12  ACTIVITY_COMPLETED        FundingActivities.reserveRateLock
+   13  SIDE_EFFECT               $maestro:currentTime
+   14  SIDE_EFFECT               $maestro:currentTime
+   15  SIGNAL_RECEIVED           $maestro:awaitSignal:package.signed
+   16  SIGNAL_TIMEOUT            $maestro:awaitSignal:application.withdrawn
+   17  ACTIVITY_COMPLETED        FundingActivities.disburse
+   18  WORKFLOW_COMPLETED        
+
+[1m==> DONE — rb-happy FUNDED. Point at http://localhost:8080/admin/workflows/loan-rb-happy[0m
+
+########## §2 scenario 2: crash — phase 1 ##########
+
+[1m==> SCENARIO 2 (crash), phase 1 — application rb-crash, $350,000 on $100,000 income, DTI 3.5[0m
+{"applicationId":"rb-crash"} [http 202]
+
+[1m==> waiting for all 3 verification results (credit 2s, employment 5s, appraisal 8s simulated)[0m
+    SAY: "nothing here is mocked out — three providers answer on their own schedule, in any order."
+    3/3 verification.result signals recorded after 10s
+    document.uploaded pay-stub by alice [http 202]
+    document.uploaded bank-statement by bob [http 202]
+
+[1m==> waiting for the underwriting desk to queue round 1[0m
+[{"loanId":"rb-crash","round":1,"dti":3.5,"escalated":false}]
+
+[1m==> durable event log for loan-rb-crash  (this is the whole of the workflow's memory)[0m
+    1  ACTIVITY_COMPLETED        LoanActivities.recordApplication
+    2  ACTIVITY_COMPLETED        LoanMessagingActivities.requestVerifications
+    3  SIGNAL_RECEIVED           $maestro:awaitSignal:verification.result
+    4  SIGNAL_RECEIVED           $maestro:awaitSignal:verification.result
+    5  SIGNAL_RECEIVED           $maestro:awaitSignal:verification.result
+    6  SIDE_EFFECT               $maestro:currentTime
+    7  SIDE_EFFECT               $maestro:currentTime
+    8  SIGNAL_RECEIVED           $maestro:awaitSignal:document.uploaded
+    9  SIDE_EFFECT               $maestro:currentTime
+   10  SIGNAL_RECEIVED           $maestro:awaitSignal:document.uploaded
+   11  SIGNAL_TIMEOUT            $maestro:awaitSignal:application.withdrawn
+   12  ACTIVITY_COMPLETED        LoanMessagingActivities.requestUnderwriting
+
+[1m==> PARKED. 12 durable events recorded. The workflow is holding nothing in memory that matters.[0m
+    snapshot of those 12 rows: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/demo/.run/crash-rb-crash-before-rows.txt
+
+  Now, on stage, in this order:
+
+    1.  kill -9 $(cat /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/demo/.run/loan-application-service.pid)              <- no graceful shutdown, no drain
+    2.  demo/scripts/restart-loan-app.sh      <- restarts ONLY the process you killed
+    3.  demo/scripts/drive-loan.sh finish rb-crash
+
+  (Step 2 is not start-services.sh: that starts all four JVMs and refuses to
+  run while 8092/8093/8080 are still healthy, which they are.)
+
+  Expected after step 3: the loan completes, and the 12 rows above are
+  byte-identical afterwards — they replayed from Postgres, they did not run
+  again.
+
+
+########## §2 phase 2: kill -9 ##########
+SIGKILL sent
+health on 8091 after the kill: 000000
+
+########## §2 phase 3: restart-loan-app.sh (NOT start-services.sh) ##########
+14:15:31 [demo] pid 15822 is already gone (this is the kill -9 case)
+14:15:31 [demo] starting loan-application-service from loan-application-service-0.3.0-SNAPSHOT.jar
+14:15:35 [demo] loan-application-service is up — pid 16109, jar loan-application-service-0.3.0-SNAPSHOT.jar, sha256 0023c6f46fd8
+
+########## §2 phase 3: finish ##########
+
+[1m==> SCENARIO 2 (crash), phase 2 — resuming rb-crash after the restart[0m
+    pre-crash snapshot: 12 durable events
+
+[1m==> waiting for the underwriting desk to queue round 1[0m
+[{"loanId":"rb-crash","round":1,"dti":3.5,"escalated":false}]
+{"workflowId":"underwriting-rb-crash-round1","verdict":"APPROVED","signal":"underwriter.decision"}
+
+[1m==> waiting for the rate lock[0m
+    the rate lock recorded after 54s
+    package.signed by alice [http 202]
+    package.signed by bob [http 202]
+
+[1m==> waiting for rb-crash to reach COMPLETED[0m
+    rb-crash is COMPLETED after 2s
+{"applicationId":"rb-crash","workflowId":"loan-rb-crash","status":"COMPLETED","output":{"status":"FUNDED","rateLockId":"7d2d666a-7da3-4eff-8894-2727e1c76692","applicationId":"rb-crash","disbursementId":"bcc64a8d-dba7-4a95-90fc-d73f3aa6d434"}}
+
+[1m==> durable event log for loan-rb-crash  (this is the whole of the workflow's memory)[0m
+    1  ACTIVITY_COMPLETED        LoanActivities.recordApplication
+    2  ACTIVITY_COMPLETED        LoanMessagingActivities.requestVerifications
+    3  SIGNAL_RECEIVED           $maestro:awaitSignal:verification.result
+    4  SIGNAL_RECEIVED           $maestro:awaitSignal:verification.result
+    5  SIGNAL_RECEIVED           $maestro:awaitSignal:verification.result
+    6  SIDE_EFFECT               $maestro:currentTime
+    7  SIDE_EFFECT               $maestro:currentTime
+    8  SIGNAL_RECEIVED           $maestro:awaitSignal:document.uploaded
+    9  SIDE_EFFECT               $maestro:currentTime
+   10  SIGNAL_RECEIVED           $maestro:awaitSignal:document.uploaded
+   11  SIGNAL_TIMEOUT            $maestro:awaitSignal:application.withdrawn
+   12  ACTIVITY_COMPLETED        LoanMessagingActivities.requestUnderwriting
+   13  SIGNAL_RECEIVED           $maestro:awaitSignal:underwriting.decision
+   14  ACTIVITY_COMPLETED        FundingActivities.reserveRateLock
+   15  SIDE_EFFECT               $maestro:currentTime
+   16  SIDE_EFFECT               $maestro:currentTime
+   17  SIGNAL_RECEIVED           $maestro:awaitSignal:package.signed
+   18  SIDE_EFFECT               $maestro:currentTime
+   19  SIGNAL_RECEIVED           $maestro:awaitSignal:package.signed
+   20  SIGNAL_TIMEOUT            $maestro:awaitSignal:application.withdrawn
+   21  ACTIVITY_COMPLETED        FundingActivities.disburse
+   22  WORKFLOW_COMPLETED        
+
+[1m==> PROOF 1 — the 12 rows recorded before the kill -9 are byte-identical now[0m
+    diff is empty. Nothing was rewritten, renumbered, or re-executed.
+
+[1m==> PROOF 2 — duplicate sequence numbers after the crash: 0  (must be 0)[0m
+
+[1m==> DONE — rb-crash FUNDED across a kill -9. Nothing re-executed.[0m
+
+########## §4 scenario 4: withdraw + compensation ##########
+
+[1m==> SCENARIO 4 (withdraw) — application rb-withdraw, $400,000 on $100,000 income, DTI 4.0[0m
+{"applicationId":"rb-withdraw"} [http 202]
+
+[1m==> waiting for all 3 verification results (credit 2s, employment 5s, appraisal 8s simulated)[0m
+    SAY: "nothing here is mocked out — three providers answer on their own schedule, in any order."
+    3/3 verification.result signals recorded after 10s
+    document.uploaded pay-stub by alice [http 202]
+    document.uploaded bank-statement by bob [http 202]
+
+[1m==> waiting for the underwriting desk to queue round 1[0m
+[{"loanId":"rb-withdraw","round":1,"dti":4.0,"escalated":false}]
+{"workflowId":"underwriting-rb-withdraw-round1","verdict":"APPROVED","signal":"underwriter.decision"}
+
+[1m==> waiting for the rate lock to be reserved (money is now committed)[0m
+    the rate lock to be reserved (money is now committed) recorded after 0s
+2026-08-04T14:16:51.654+02:00  INFO 16109 --- [sample-loan-application-service] [oan-rb-withdraw] [2add65349f427d72cdf41a31e9dec228-70fd68f820c9fea2] b.m.s.l.a.a.i.SimulatedFundingActivities : Reserved rate lock 63e96691-4aed-4773-a15f-27ae246184fb for loan rb-withdraw at 5.25%
+
+[1m==> borrower withdraws AFTER the rate lock — this is the expensive case[0m
+    application.withdrawn [http 202]
+    both borrowers still sign, so the workflow reaches withdrawal gate 2 and finds the signal already waiting
+    package.signed by alice [http 202]
+    package.signed by bob [http 202]
+
+[1m==> waiting for rb-withdraw to reach FAILED[0m
+    rb-withdraw is FAILED after 2s
+{"applicationId":"rb-withdraw","workflowId":"loan-rb-withdraw","status":"FAILED","output":{"message":"Application withdrawn: found a better rate","exceptionType":"io.b2mash.maestro.samples.loan.application.exception.LoanWithdrawnException"}}
+
+[1m==> compensation the engine ran, LIFO, without the workflow author writing a rollback path[0m
+2026-08-04T14:16:52.826+02:00  INFO 16109 --- [sample-loan-application-service] [oan-rb-withdraw] [2add65349f427d72cdf41a31e9dec228-c5affbe36b1ffc41] b.m.s.l.a.a.i.SimulatedFundingActivities : COMPENSATION: released rate lock 63e96691-4aed-4773-a15f-27ae246184fb for loan rb-withdraw
+
+[1m==> durable event log for loan-rb-withdraw  (this is the whole of the workflow's memory)[0m
+    1  ACTIVITY_COMPLETED        LoanActivities.recordApplication
+    2  ACTIVITY_COMPLETED        LoanMessagingActivities.requestVerifications
+    3  SIGNAL_RECEIVED           $maestro:awaitSignal:verification.result
+    4  SIGNAL_RECEIVED           $maestro:awaitSignal:verification.result
+    5  SIGNAL_RECEIVED           $maestro:awaitSignal:verification.result
+    6  SIDE_EFFECT               $maestro:currentTime
+    7  SIDE_EFFECT               $maestro:currentTime
+    8  SIGNAL_RECEIVED           $maestro:awaitSignal:document.uploaded
+    9  SIDE_EFFECT               $maestro:currentTime
+   10  SIGNAL_RECEIVED           $maestro:awaitSignal:document.uploaded
+   11  SIGNAL_TIMEOUT            $maestro:awaitSignal:application.withdrawn
+   12  ACTIVITY_COMPLETED        LoanMessagingActivities.requestUnderwriting
+   13  SIGNAL_RECEIVED           $maestro:awaitSignal:underwriting.decision
+   14  ACTIVITY_COMPLETED        FundingActivities.reserveRateLock
+   15  SIDE_EFFECT               $maestro:currentTime
+   16  SIDE_EFFECT               $maestro:currentTime
+   17  SIGNAL_RECEIVED           $maestro:awaitSignal:package.signed
+   18  SIDE_EFFECT               $maestro:currentTime
+   19  SIGNAL_RECEIVED           $maestro:awaitSignal:package.signed
+   20  SIGNAL_RECEIVED           $maestro:awaitSignal:application.withdrawn
+   21  COMPENSATION_STARTED      $maestro:compensation
+22000  COMPENSATION_STEP_COMPLE  FundingActivities.releaseRateLock
+22001  ACTIVITY_COMPLETED        FundingActivities.releaseRateLock
+23001  COMPENSATION_COMPLETED    $maestro:compensation
+23002  WORKFLOW_FAILED           
+
+[1m==> DONE — rb-withdraw FAILED with the rate lock released. Point at http://localhost:8080/admin/failed[0m
+
+########## §3 scenario 3: Jaeger, after the ~30s flush ##########
+-- loan-rb-happy
+   3f7faebf005b5d639d5f8b83f69a7c69  spans=31  services=sample-loan-application-service,sample-underwriting-service,sample-verification-gateway-service
+-- loan-rb-crash
+   6888adf3b1771e3a1af7f6befb2b8f9a  spans=10  services=sample-loan-application-service
+   d053d205425d695a6fbc4322a4d1f622  spans=23  services=sample-loan-application-service,sample-underwriting-service,sample-verification-gateway-service
+   (rb-happy: one trace. rb-crash lived through a kill -9, so it is two — see §3.)
+
+########## §5 scenario 5: dashboard panel queries against Prometheus ##########
+   sum(rate(maestro_workflow_started_total[5m]))                                                        -> success  series=1
+   sum(maestro_workflows_parked)                                                                        -> success  series=1
+   histogram_quantile(0.95, sum by (activity, le) (rate(maestro_activity_duration_seconds_bucket[5m]))) -> success  series=10
+   sum(maestro_recovery_adopted_total)                                                                  -> success  series=1
+   sum by (reason) (rate(maestro_standdown_total[5m]))                                                  -> success  series=0
+   maestro_standdown_total returns 0 series — this is why the panel carries a vector(0) fallback (§5).
+   grafana /d/maestro-demo -> HTTP 200
+   admin /actuator/prometheus -> HTTP 404 (expected 404: maestro-admin is not a scrape target)

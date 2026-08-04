@@ -1,0 +1,135 @@
+=== EVIDENCE IDENTITY ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+git-root: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+branch: worktree-demo
+commit: 8a120a3e7cffcac76c32a965811105209c6e623a
+dirty: 1 uncommitted change(s)
+timestamp-utc: 2026-08-04T11:06:43Z
+run: demo/scripts/v1-to-v2-move.sh (live v1->v2 versioned redeploy against the running demo stack)
+==========================
+
+
+11:06:43 [move] PIN 0 — what is running right now
+  pid 4679 -> /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/maestro-samples/sample-loan-origination/loan-application-service/build/libs/loan-application-service-0.3.0-SNAPSHOT.jar
+  v1 jar sha256: 0023c6f46fd8dc368c34a872bd2a67eb8c0e1b31cc32826d5402aa914b423b02
+  v2 jar sha256: 6672cd95b3b54a4f7a9dfd0ed3b5a5ec1e5bfe7b06fa7faa3b2ff5a609b4f885
+  packaged workflow class differs between the jars:
+    loan-application-service-0.3.0-SNAPSHOT.jar: 70117aba5ac2343a8ccc3ab4777368d2bd6c8c547313953259f3ee00d0edb513
+    loan-application-v2.jar: c8caa962d45ec22797a5ce00e957f09de2a8f938b7965c0fd020f927db6a09fb
+  occurrences of the change id 'parallel-verification' in v2's packaged class: 1
+  occurrences of the change id 'parallel-verification' in v1's packaged class: 0
+
+11:06:44 [move] PIN 1 — start loan 'inflight-1785841603' under v1 and let it reach verification
+{"applicationId":"inflight-1785841603"}
+  verification.result SIGNAL_RECEIVED count = 1 (>= 1)
+  status now: WAITING_SIGNAL
+  event log at the moment of the swap:
+    1 | ACTIVITY_COMPLETED | LoanActivities.recordApplication | 11:06:44.150
+    2 | ACTIVITY_COMPLETED | LoanMessagingActivities.requestVerifications | 11:06:44.205
+    3 | SIGNAL_RECEIVED | $maestro:awaitSignal:verification.result | 11:06:46.318
+  VERSION_MARKER rows in its history: 0
+
+11:06:46 [move] PIN 2 — graceful SIGTERM of the v1 JVM, then start the v2 jar in its place
+  pid 4679 exited on SIGTERM (a real rolling deploy, not kill -9)
+  in-flight loan survived the shutdown as: WAITING_SIGNAL
+  started loan-application-v2.jar as pid 4803 (log: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/demo/.run/loan-application-service-v2.log)
+  healthy on 8091
+
+11:06:53 [move] PIN 3 — the in-flight loan finishes on the SEQUENTIAL path under v2
+  verification.result SIGNAL_RECEIVED count = 3 (>= 3)
+
+
+  underwriting.decision SIGNAL_RECEIVED count = 1 (>= 1)
+
+
+  loan-inflight-1785841603 status = COMPLETED
+  final event log:
+    1 | ACTIVITY_COMPLETED | LoanActivities.recordApplication | 11:06:44.150
+    2 | ACTIVITY_COMPLETED | LoanMessagingActivities.requestVerifications | 11:06:44.205
+    3 | SIGNAL_RECEIVED | $maestro:awaitSignal:verification.result | 11:06:46.318
+    4 | SIGNAL_RECEIVED | $maestro:awaitSignal:verification.result | 11:06:55.819
+    5 | SIGNAL_RECEIVED | $maestro:awaitSignal:verification.result | 11:06:56.318
+    6 | SIDE_EFFECT | $maestro:currentTime | 11:06:56.326
+    7 | SIDE_EFFECT | $maestro:currentTime | 11:06:56.329
+    8 | SIGNAL_RECEIVED | $maestro:awaitSignal:document.uploaded | 11:06:57.017
+    9 | SIDE_EFFECT | $maestro:currentTime | 11:06:57.024
+    10 | SIGNAL_RECEIVED | $maestro:awaitSignal:document.uploaded | 11:06:57.035
+    11 | SIGNAL_TIMEOUT | $maestro:awaitSignal:application.withdrawn | 11:06:58.055
+    12 | ACTIVITY_COMPLETED | LoanMessagingActivities.requestUnderwriting | 11:06:58.091
+    13 | SIGNAL_RECEIVED | $maestro:awaitSignal:underwriting.decision | 11:06:58.122
+    14 | ACTIVITY_COMPLETED | FundingActivities.reserveRateLock | 11:06:58.130
+    15 | SIDE_EFFECT | $maestro:currentTime | 11:06:58.134
+    16 | SIDE_EFFECT | $maestro:currentTime | 11:06:58.135
+    17 | SIGNAL_RECEIVED | $maestro:awaitSignal:package.signed | 11:06:58.338
+    18 | SIDE_EFFECT | $maestro:currentTime | 11:06:58.344
+    19 | SIGNAL_RECEIVED | $maestro:awaitSignal:package.signed | 11:06:58.871
+    20 | SIGNAL_TIMEOUT | $maestro:awaitSignal:application.withdrawn | 11:06:59.891
+    21 | ACTIVITY_COMPLETED | FundingActivities.disburse | 11:06:59.903
+    22 | WORKFLOW_COMPLETED |  | 11:06:59.914
+  VERSION_MARKER rows: 0   (must be 0 — history predates the change)
+  events in parallel branch bands (sequence >= 1000): 0   (must be 0 — sequential path)
+  output: {"status": "FUNDED", "rateLockId": "1e3d3668-0dd5-456a-b7f4-3f1911e48db4", "applicationId": "inflight-1785841603", "disbursementId": "bb219257-68e0-46c5-bbc1-3aa094dceef6"}
+
+11:07:00 [move] PIN 4 — a NEW loan under v2 fans out
+{"applicationId":"newloan-1785841603"}
+
+
+  verification.result SIGNAL_RECEIVED count = 3 (>= 3)
+  underwriting.decision SIGNAL_RECEIVED count = 1 (>= 1)
+
+
+  loan-newloan-1785841603 status = COMPLETED
+  final event log:
+    1 | VERSION_MARKER | $maestro:version:parallel-verification | 11:07:00.585
+    2 | ACTIVITY_COMPLETED | LoanActivities.recordApplication | 11:07:00.589
+    3 | ACTIVITY_COMPLETED | LoanMessagingActivities.requestVerifications | 11:07:00.619
+    4 | SIDE_EFFECT | $maestro:parallel | 11:07:00.628
+    5001 | SIGNAL_RECEIVED | $maestro:awaitSignal:verification.result | 11:07:06.346
+    5002 | SIGNAL_RECEIVED | $maestro:awaitSignal:verification.result | 11:07:06.355
+    5003 | SIGNAL_RECEIVED | $maestro:awaitSignal:verification.result | 11:07:11.349
+    6001 | SIDE_EFFECT | $maestro:currentTime | 11:07:00.635
+    6002 | SIDE_EFFECT | $maestro:currentTime | 11:07:00.641
+    6003 | SIGNAL_RECEIVED | $maestro:awaitSignal:document.uploaded | 11:07:04.137
+    6004 | SIDE_EFFECT | $maestro:currentTime | 11:07:04.144
+    6005 | SIGNAL_RECEIVED | $maestro:awaitSignal:document.uploaded | 11:07:04.675
+    7001 | SIGNAL_TIMEOUT | $maestro:awaitSignal:application.withdrawn | 11:07:12.362
+    7002 | ACTIVITY_COMPLETED | LoanMessagingActivities.requestUnderwriting | 11:07:12.384
+    7003 | SIGNAL_RECEIVED | $maestro:awaitSignal:underwriting.decision | 11:07:12.409
+    7004 | ACTIVITY_COMPLETED | FundingActivities.reserveRateLock | 11:07:12.416
+    7005 | SIDE_EFFECT | $maestro:currentTime | 11:07:12.419
+    7006 | SIDE_EFFECT | $maestro:currentTime | 11:07:12.421
+    7007 | SIGNAL_RECEIVED | $maestro:awaitSignal:package.signed | 11:07:13.169
+    7008 | SIDE_EFFECT | $maestro:currentTime | 11:07:13.174
+    7009 | SIGNAL_RECEIVED | $maestro:awaitSignal:package.signed | 11:07:13.709
+    7010 | SIGNAL_TIMEOUT | $maestro:awaitSignal:application.withdrawn | 11:07:14.724
+    7011 | ACTIVITY_COMPLETED | FundingActivities.disburse | 11:07:14.735
+    7012 | WORKFLOW_COMPLETED |  | 11:07:14.741
+  VERSION_MARKER rows: 1   (must be 1)
+  VERSION_MARKER row: 1 | $maestro:version:parallel-verification | {"version": 2, "changeId": "parallel-verification"}
+  events in parallel branch bands (sequence >= 1000): 20   (must be > 0)
+  output: {"status": "FUNDED", "rateLockId": "af540531-c5b9-45f1-bdbe-e3d609ecf636", "applicationId": "newloan-1785841603", "disbursementId": "43683723-d19a-4883-ab2d-e7827a9f9c8e"}
+
+11:07:15 [move] PIN 5 — did the two branches park CONCURRENTLY?
+  ParkingLot lines for loan-newloan-1785841603's two branch signal keys, in log order:
+    2026-08-04T13:07:04.132+02:00 DEBUG 4803 --- [sample-loan-application-service] [nio-8091-exec-6] [aef89d998b530e70bf2bd747f31b35e9-6708aa6e8c130a43] i.b2mash.maestro.core.engine.ParkingLot  : Unparked workflow at key 'loan-newloan-1785841603:signal:document.uploaded'
+    2026-08-04T13:07:04.134+02:00 DEBUG 4803 --- [sample-loan-application-service] [ioEventLoop-4-2] [                                                 ] i.b2mash.maestro.core.engine.ParkingLot  : No parked workflow at key 'loan-newloan-1785841603:signal:document.uploaded' — stored wake permit
+    2026-08-04T13:07:04.668+02:00 DEBUG 4803 --- [sample-loan-application-service] [nio-8091-exec-9] [0476ecca5eec8a45dfafa0813851ba15-5c844efe6ee13095] i.b2mash.maestro.core.engine.ParkingLot  : Unparked workflow at key 'loan-newloan-1785841603:signal:document.uploaded'
+    2026-08-04T13:07:04.673+02:00 DEBUG 4803 --- [sample-loan-application-service] [ioEventLoop-4-2] [                                                 ] i.b2mash.maestro.core.engine.ParkingLot  : No parked workflow at key 'loan-newloan-1785841603:signal:document.uploaded' — stored wake permit
+    2026-08-04T13:07:06.344+02:00 DEBUG 4803 --- [sample-loan-application-service] [anNameSet-0-C-1] [                                                 ] i.b2mash.maestro.core.engine.ParkingLot  : Unparked workflow at key 'loan-newloan-1785841603:signal:verification.result'
+    2026-08-04T13:07:06.346+02:00 DEBUG 4803 --- [sample-loan-application-service] [ioEventLoop-4-2] [                                                 ] i.b2mash.maestro.core.engine.ParkingLot  : No parked workflow at key 'loan-newloan-1785841603:signal:verification.result' — stored wake permit
+    2026-08-04T13:07:06.353+02:00 DEBUG 4803 --- [sample-loan-application-service] [anNameSet-0-C-1] [                                                 ] i.b2mash.maestro.core.engine.ParkingLot  : No parked workflow at key 'loan-newloan-1785841603:signal:verification.result' — stored wake permit
+    2026-08-04T13:07:11.345+02:00 DEBUG 4803 --- [sample-loan-application-service] [anNameSet-0-C-1] [                                                 ] i.b2mash.maestro.core.engine.ParkingLot  : Unparked workflow at key 'loan-newloan-1785841603:signal:verification.result'
+    2026-08-04T13:07:11.347+02:00 DEBUG 4803 --- [sample-loan-application-service] [ioEventLoop-4-2] [                                                 ] i.b2mash.maestro.core.engine.ParkingLot  : No parked workflow at key 'loan-newloan-1785841603:signal:verification.result' — stored wake permit
+
+  InstanceStatusWriter version-conflict lines (the optimistic-lock shape): 0
+  status-write give-ups (must be 0): 0
+  'Parking key already occupied' errors (must be 0): 0
+
+11:07:15 [move] PIN 6 — Jaeger trace ids
+  in-flight loan (loan-inflight-1785841603)  traceID spans:
+    b39b554f4c94c659f68468588295431c 20
+    ec798a7ed25b754fae81371d77cdbcc1 13
+  new loan (loan-newloan-1785841603)  traceID spans:
+    5c79c33935721eb3afe5f9ae8ca742f5 11
+
+11:07:15 [move] DONE. in-flight=inflight-1785841603 new=newloan-1785841603

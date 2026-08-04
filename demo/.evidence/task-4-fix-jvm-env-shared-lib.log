@@ -1,0 +1,96 @@
+=== EVIDENCE IDENTITY ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+git-root: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+branch: worktree-demo
+commit: aca2292b1593626a72460270dd7af50bdbe14704
+dirty: 5 uncommitted change(s)
+timestamp-utc: 2026-08-04T13:41:14Z
+run: verify demo/scripts/lib/jvm-env.sh — the three scripts that start a demo
+     JVM now share one definition, and a restarted JVM still binds PT5S.
+==========================
+
+########## 1. syntax ##########
+ok  demo/scripts/lib/jvm-env.sh
+ok  demo/scripts/start-services.sh
+ok  demo/scripts/restart-loan-app.sh
+ok  demo/scripts/v1-to-v2-move.sh
+
+########## 2. the -D flags now exist in exactly one place ##########
+grep for each flag across demo/scripts (expect: only lib/jvm-env.sh):
+
+  maestro.recovery.poll-interval
+    demo/scripts/lib/jvm-env.sh:10:# That is not a safeguard — `maestro.recovery.poll-interval` reached
+    demo/scripts/lib/jvm-env.sh:58:# `maestro.recovery.poll-interval` defaults to 60s (MaestroProperties
+    demo/scripts/lib/jvm-env.sh:71:_recovery_poll_prop="-Dmaestro.recovery.poll-interval=${DEMO_RECOVERY_POLL_INTERVAL:-5s}"
+
+  percentiles-histogram
+    demo/scripts/lib/jvm-env.sh:54:_activity_histogram_prop="-Dmanagement.metrics.distribution.percentiles-histogram.maestro.activity.duration=true"
+
+  spring.kafka.template.observation-enabled
+    demo/scripts/lib/jvm-env.sh:95:    -Dspring.kafka.template.observation-enabled=true
+
+  spring.kafka.listener.observation-enabled
+    demo/scripts/lib/jvm-env.sh:96:    -Dspring.kafka.listener.observation-enabled=true
+
+########## 3. effective options, resolved from the lib ##########
+MAESTRO_JVM_OPTS (6 entries):
+  -Xmx256m
+  -XX:+UseSerialGC
+  -Dmanagement.metrics.distribution.percentiles-histogram.maestro.activity.duration=true
+  -Dmaestro.recovery.poll-interval=5s
+  -Dspring.kafka.template.observation-enabled=true
+  -Dspring.kafka.listener.observation-enabled=true
+exported env:
+  POSTGRES_HOST                    localhost
+  POSTGRES_PORT                    5433
+  POSTGRES_USER                    maestro
+  VALKEY_HOST                      localhost
+  VALKEY_PORT                      6380
+  KAFKA_BOOTSTRAP                  localhost:29093
+  OTEL_EXPORTER_OTLP_ENDPOINT      http://localhost:4318/v1/traces
+  MAESTRO_ADMIN_EVENTS_ENABLED     true
+
+the DEMO_RECOVERY_POLL_INTERVAL override still works:
+  -Dmaestro.recovery.poll-interval=17s
+
+########## 4. THE BINDING PROOF — a real restart-loan-app.sh JVM ##########
+pid before: 22810
+  15:41:15 [demo] stopping loan-application-service (pid 22810)
+  15:41:17 [demo] starting loan-application-service from loan-application-service-0.3.0-SNAPSHOT.jar
+  15:41:21 [demo] loan-application-service is up — pid 23925, jar loan-application-service-0.3.0-SNAPSHOT.jar, sha256 0023c6f46fd8
+pid after:  23925
+
+startup line from THAT pid (23925):
+  2026-08-04T15:41:20.790+02:00  INFO 23925 --- [sample-loan-application-service] [           main] [                                                 ] i.b.m.s.config.StartupRecoveryRunner     : Maestro recovery poller started (interval=PT5S)
+
+and the flag as the JVM actually received it (ps of the running process):
+  -Xmx256m
+  -XX:+UseSerialGC
+  -Dmanagement.metrics.distribution.percentiles-histogram.maestro.activity.duration=true
+  -Dmaestro.recovery.poll-interval=5s
+  -Dspring.kafka.template.observation-enabled=true
+  -Dspring.kafka.listener.observation-enabled=true
+
+health: 200
+
+########## 5. full stop + start with the refactored start-services.sh ##########
+15:41:42 [demo] Done. Infrastructure containers are untouched — tear them down with:
+15:41:42 [demo]   docker compose -f demo/docker-compose.yml down -v
+15:41:50 [demo] loan-application-service is up (HTTP 200 from http://localhost:8091/actuator/health)
+15:41:50 [demo] verification-gateway-service is up (HTTP 200 from http://localhost:8092/actuator/health)
+15:41:51 [demo] underwriting-service is up (HTTP 200 from http://localhost:8093/actuator/health)
+15:41:51 [demo] maestro-admin is up (HTTP 200 from http://localhost:8080/actuator/health)
+ELAPSED start-services.sh: 9s
+
+recovery poller interval per JVM (all must be PT5S):
+  loan-application-service         PT5S
+  verification-gateway-service     PT5S
+  underwriting-service             PT5S
+
+kafka observation flags reached the JVMs (ps):
+  flags found: 2
+health:
+  8080 200
+  8091 200
+  8092 200
+  8093 200

@@ -1,0 +1,94 @@
+=== EVIDENCE IDENTITY ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+git-root: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+branch: worktree-demo
+commit: b63c059301e3d99e7f756cbcf5c502ae2563eadd
+dirty: 2 uncommitted change(s)
+timestamp-utc: 2026-08-04T11:20:10Z
+F3: second same-signal-name failure mode (CAS loses -> both branches consume one row) now pinned
+==========================
+
+=== RED (assertEquals(2, signalEvents.size()) temporarily demanded 3; reverted immediately) ===
+v2 (parallel verification) behind workflow.version() > with the signal already pending, both same-name branches consume the SAME row FAILED
+> Task :maestro-samples:sample-loan-origination:loan-application-service:test FAILED
+BUILD FAILED in 7s
+
+=== GREEN: ./gradlew :...:loan-application-service:test --tests '*LoanApplicationWorkflowV2Test*' --rerun ===
+> Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :build-logic:generateExternalPluginSpecBuilders UP-TO-DATE
+> Task :build-logic:extractPrecompiledScriptPluginPlugins UP-TO-DATE
+> Task :build-logic:compilePluginsBlocks UP-TO-DATE
+> Task :build-logic:generatePrecompiledScriptPluginAccessors UP-TO-DATE
+> Task :build-logic:generateScriptPluginAdapters UP-TO-DATE
+
+> Task :build-logic:compileKotlin UP-TO-DATE
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :build-logic:compileJava NO-SOURCE
+> Task :build-logic:pluginDescriptors UP-TO-DATE
+> Task :build-logic:processResources UP-TO-DATE
+> Task :build-logic:classes UP-TO-DATE
+> Task :build-logic:jar UP-TO-DATE
+
+> Configure project :maestro-admin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :maestro-store-jdbc:processResources NO-SOURCE
+> Task :maestro-lock-valkey:processResources UP-TO-DATE
+> Task :maestro-lock-postgres:processResources UP-TO-DATE
+> Task :maestro-messaging-kafka:processResources UP-TO-DATE
+> Task :maestro-test:processResources NO-SOURCE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:processResources UP-TO-DATE
+> Task :maestro-spring-boot-starter:processResources UP-TO-DATE
+> Task :maestro-store-postgres:processResources UP-TO-DATE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:processTestResources NO-SOURCE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:processV2Resources NO-SOURCE
+> Task :maestro-core:compileJava UP-TO-DATE
+> Task :maestro-core:processResources NO-SOURCE
+> Task :maestro-core:classes UP-TO-DATE
+> Task :maestro-core:jar UP-TO-DATE
+> Task :maestro-store-jdbc:compileJava UP-TO-DATE
+> Task :maestro-store-jdbc:classes UP-TO-DATE
+> Task :maestro-store-jdbc:jar UP-TO-DATE
+> Task :maestro-test:compileJava UP-TO-DATE
+> Task :maestro-test:classes UP-TO-DATE
+> Task :maestro-spring-boot-starter:compileJava UP-TO-DATE
+> Task :maestro-spring-boot-starter:classes UP-TO-DATE
+> Task :maestro-test:jar UP-TO-DATE
+> Task :maestro-spring-boot-starter:jar UP-TO-DATE
+> Task :maestro-messaging-kafka:compileJava UP-TO-DATE
+> Task :maestro-messaging-kafka:classes UP-TO-DATE
+> Task :maestro-lock-postgres:compileJava UP-TO-DATE
+> Task :maestro-lock-postgres:classes UP-TO-DATE
+> Task :maestro-store-postgres:compileJava UP-TO-DATE
+> Task :maestro-lock-valkey:compileJava UP-TO-DATE
+> Task :maestro-store-postgres:classes UP-TO-DATE
+> Task :maestro-lock-valkey:classes UP-TO-DATE
+> Task :maestro-messaging-kafka:jar UP-TO-DATE
+> Task :maestro-lock-postgres:jar UP-TO-DATE
+> Task :maestro-store-postgres:jar UP-TO-DATE
+> Task :maestro-lock-valkey:jar UP-TO-DATE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:compileJava UP-TO-DATE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:classes UP-TO-DATE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:compileTestJava UP-TO-DATE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:testClasses UP-TO-DATE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:compileV2Java UP-TO-DATE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:v2Classes UP-TO-DATE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:test
+
+BUILD SUCCESSFUL in 7s
+35 actionable tasks: 1 executed, 34 up-to-date
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.2.0/userguide/configuration_cache_enabling.html
+
+=== test-results XML (fresh, --rerun) ===
+<testsuite name="v2 (parallel verification) behind workflow.version()" tests="6" skipped="0" failures="0" errors="0" timestamp="2026-08-04T11:20:11.857Z" hostname="Rakheens-MacBook-Pro.local" time="5.943"
+  with the signal already pending, both same-name branches consume the SAME row  (0.262s)
+  a loan in flight when v2 is deployed replays the sequential path with an identical event log  (1.851s)
+  two branches awaiting the SAME signal name collide on the parking key  (2.07s)
+  each branch allocates from parentSeq*1000 + (i+1)*1000  (0.875s)
+  the v2 class is a genuinely different class at the same name  (0.002s)
+  a loan started on v2 records the marker and forks verification ∥ documents  (0.88s)
+
+same-signal-name pending-signal outcomes: ["received:only-one","received:only-one"]
+SIGNAL_RECEIVED events: [2001, 3001]
+same-signal-name branch outcomes: ["IllegalStateException: Parking key 'same-name-1:signal:dup' already occupied — duplicate park call would orphan the existing waiter","SignalTimeoutException: Signal 'dup' timed out after PT2S for workflow 'same-name-1'"]

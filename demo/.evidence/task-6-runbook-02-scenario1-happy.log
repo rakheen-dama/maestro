@@ -1,0 +1,44 @@
+=== §1 SCENARIO 1 — demo/scripts/drive-loan.sh happy (typed verbatim) ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=ddeb9006703069c423b8034bfece2391b40b26e4 start=2026-08-04T17:31:37Z
+
+[1m==> SCENARIO 1 (happy) — application happy-1785864697, $200,000 on $100,000 income, DTI 2.0[0m
+    DTI 2.0 is below the 3.0 auto-approve line, so no underwriter is involved.
+{"applicationId":"happy-1785864697"} [http 202]
+
+[1m==> waiting for all 3 verification results (credit 2s, employment 5s, appraisal 8s simulated)[0m
+    SAY: "nothing here is mocked out — three providers answer on their own schedule, in any order."
+    3/3 verification.result signals recorded after 10s
+    document.uploaded tax-return by carol [http 202]
+
+[1m==> waiting for the rate lock (auto-approved, then the funding saga starts)[0m
+    the rate lock (auto-approved, then the funding saga starts) recorded after 2s
+    package.signed by carol [http 202]
+
+[1m==> waiting for happy-1785864697 to reach COMPLETED[0m
+    happy-1785864697 is COMPLETED after 2s
+{"applicationId":"happy-1785864697","workflowId":"loan-happy-1785864697","status":"COMPLETED","output":{"status":"FUNDED","rateLockId":"b9cfebd1-074d-4054-b530-d4dcd57f95bc","applicationId":"happy-1785864697","disbursementId":"4dc4829f-c2fa-4e20-8654-f534eb0b619d"}}
+
+[1m==> durable event log for loan-happy-1785864697  (this is the whole of the workflow's memory)[0m
+    1  ACTIVITY_COMPLETED            LoanActivities.recordApplication
+    2  ACTIVITY_COMPLETED            LoanMessagingActivities.requestVerifications
+    3  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    4  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    5  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    6  SIDE_EFFECT                   $maestro:currentTime
+    7  SIDE_EFFECT                   $maestro:currentTime
+    8  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+    9  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+   10  ACTIVITY_COMPLETED            LoanMessagingActivities.requestUnderwriting
+   11  SIGNAL_RECEIVED               $maestro:awaitSignal:underwriting.decision
+   12  ACTIVITY_COMPLETED            FundingActivities.reserveRateLock
+   13  SIDE_EFFECT                   $maestro:currentTime
+   14  SIDE_EFFECT                   $maestro:currentTime
+   15  SIGNAL_RECEIVED               $maestro:awaitSignal:package.signed
+   16  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+   17  ACTIVITY_COMPLETED            FundingActivities.disburse
+   18  WORKFLOW_COMPLETED            
+
+[1m==> DONE — happy-1785864697 FUNDED. Point at http://localhost:8080/admin/workflows/loan-happy-1785864697[0m
+DRIVE_EXIT=0
+WALL_SECONDS=15
+end=2026-08-04T17:31:52Z

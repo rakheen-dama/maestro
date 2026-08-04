@@ -23,8 +23,47 @@ spring:
 server:
   port: ${SERVER_PORT:8092}
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  tracing:
+    sampling:
+      probability: 1.0
+  #
+  # NO OTLP ENDPOINT IS SET HERE, DELIBERATELY.
+  #
+  # The property is `management.opentelemetry.tracing.export.otlp.endpoint` on
+  # Spring Boot 4.0.5 - the Boot-3-era `management.otlp.tracing.endpoint` is
+  # read by nothing, and setting it leaves
+  # OtlpTracingConfigurations.ConnectionDetails unmatched
+  # (@ConditionalOnProperty on the NEW key), so no SpanExporter bean is created
+  # and the exporter never even attempts a connection. That failure is silent,
+  # which is why the name is written out here.
+  #
+  # But the correct key must stay UNSET in committed config. With a live
+  # default the exporter bean is always created, and every environment that
+  # runs no collector - starting with this sample's own e2e/run-e2e.sh, which
+  # runs no Jaeger - gets `ERROR ... Failed to export spans ...
+  # ConnectException: Connection refused` with a full okhttp stack trace on
+  # every run. run-e2e.sh:1204 sweeps the service logs for exactly that shape
+  # and prints only the first 15 matching lines, so one export failure fills
+  # the sweep and hides any real error behind it.
+  #
+  # Whoever wants OTLP supplies the endpoint: the demo does it from
+  # demo/scripts/lib/jvm-env.sh (-D on the command line, alongside
+  # maestro.recovery.poll-interval, for the same reason - the committed config
+  # is what the e2e suite runs against and it should stay production-sane).
+
 maestro:
   service-name: verification-gateway
+
+  observability:
+    metrics:
+      enabled: true
+    tracing:
+      enabled: true
 
   # Multi-instance responsiveness: how often a parked workflow re-reads the
   # store for a wake that happened on another node (a signal ingested

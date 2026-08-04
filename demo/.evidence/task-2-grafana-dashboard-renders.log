@@ -1,0 +1,68 @@
+=== identity ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+HEAD: ff2f4a5dc81336ce21141706aaa3944a6269d9bd
+branch: worktree-demo
+timestamp: 2026-08-04T08:10:26Z
+
+Every panel query in demo/grafana/dashboards/maestro.json executed THROUGH
+Grafana (POST /api/ds/query against datasource uid maestro-prometheus),
+not against Prometheus directly -- so this proves datasource provisioning,
+the uid pinning and the query all work, which is what 'the dashboard
+renders non-empty' actually means.
+
+=== dashboard is loaded by Grafana (GET /api/search?query=Maestro) ===
+[
+    {
+        "id": 1,
+        "uid": "maestro-demo",
+        "orgId": 1,
+        "title": "Maestro \u2014 Loan Origination Demo",
+        "uri": "db/maestro-e28094-loan-origination-demo",
+        "url": "/d/maestro-demo/maestro-e28094-loan-origination-demo",
+        "slug": "",
+        "type": "dash-db",
+        "tags": [
+            "demo",
+            "maestro"
+        ],
+        "isStarred": false,
+        "sortMeta": 0,
+        "isDeleted": false
+    }
+]
+
+=== provisioned datasource (GET /api/datasources/uid/maestro-prometheus) ===
+{
+  "name": "Prometheus",
+  "uid": "maestro-prometheus",
+  "type": "prometheus",
+  "url": "http://prometheus:9090",
+  "isDefault": true,
+  "readOnly": true
+}
+
+=== per-panel query results ===
+panel 1 [DATA] http=200 frames=1 points=174  Workflows started / completed / failed (A)
+           expr: sum(rate(maestro_workflow_started_total{service=~".*"}[1m]))
+panel 1 [DATA] http=200 frames=1 points=174  Workflows started / completed / failed (B)
+           expr: sum(rate(maestro_workflow_completed_total{service=~".*"}[1m]))
+panel 1 [DATA] http=200 frames=1 points=107  Workflows started / completed / failed (C)
+           expr: sum(rate(maestro_workflow_failed_total{service=~".*"}[1m]))
+panel 2 [DATA] http=200 frames=1 points=171  Workflows parked (A)
+           expr: sum(maestro_workflows_parked{service=~".*"})
+panel 3 [DATA] http=200 frames=10 points=186  Activity duration p50 / p95 by activity (A)
+           expr: histogram_quantile(0.50, sum by (activity, le) (rate(maestro_activity_duration_seconds_bucket{service=~".*"}[1m])))
+panel 3 [DATA] http=200 frames=10 points=186  Activity duration p50 / p95 by activity (B)
+           expr: histogram_quantile(0.95, sum by (activity, le) (rate(maestro_activity_duration_seconds_bucket{service=~".*"}[1m])))
+panel 4 [DATA] http=200 frames=1 points=171  Recovery adoptions (A)
+           expr: sum(maestro_recovery_adopted_total{service=~".*"})
+panel 5 [EMPTY] http=200 frames=1 points=0  Stand-downs by reason (A)
+           expr: sum by (reason) (rate(maestro_standdown_total{service=~".*"}[1m]))
+panel 5 [DATA] http=200 frames=1 points=181  Stand-downs by reason (B)
+           expr: vector(0)
+
+NOTE on panel 5: maestro_standdown_total does not exist yet on a quiet
+single-node stack -- MicrometerEngineObserver registers that counter
+lazily on the first stand-down. Query A therefore returns zero series.
+The panel's companion vector(0) series (B, 181 points) is why it renders
+a flat zero instead of 'No data'.

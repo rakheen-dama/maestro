@@ -1,0 +1,22 @@
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+git rev-parse HEAD: 69095d34a4f3889e1f8db4aa9c97febb4bce0f1b
+git branch --show-current: worktree-demo
+timestamp: 2026-08-04T07:16:13Z
+---
+$ curl -s localhost:8092/actuator/prometheus | grep -c '^maestro_'
+13
+---
+$ curl -s localhost:8092/actuator/prometheus | grep '^maestro_'
+maestro_activity_duration_seconds_count{activity="VerificationMessagingActivities.publishResult",outcome="completed",workflow="verification"} 3
+maestro_activity_duration_seconds_sum{activity="VerificationMessagingActivities.publishResult",outcome="completed",workflow="verification"} 0.075538667
+maestro_activity_duration_seconds_count{activity="VerificationProviderActivities.callProvider",outcome="completed",workflow="verification"} 3
+maestro_activity_duration_seconds_sum{activity="VerificationProviderActivities.callProvider",outcome="completed",workflow="verification"} 0.002243042
+maestro_activity_duration_seconds_max{activity="VerificationMessagingActivities.publishResult",outcome="completed",workflow="verification"} 0.051315625
+maestro_activity_duration_seconds_max{activity="VerificationProviderActivities.callProvider",outcome="completed",workflow="verification"} 0.001676292
+maestro_recovery_adopted_total 0.0
+maestro_recovery_scanned_total 0.0
+maestro_timer_fired_total{workflow="verification"} 3.0
+maestro_workflow_completed_total{workflow="verification"} 3.0
+maestro_workflow_started_total{workflow="verification"} 3.0
+maestro_workflows_parked 0.0
+maestro_workflows_running 0.0

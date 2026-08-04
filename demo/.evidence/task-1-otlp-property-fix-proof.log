@@ -1,0 +1,36 @@
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+git rev-parse HEAD: 69095d34a4f3889e1f8db4aa9c97febb4bce0f1b
+git branch --show-current: worktree-demo
+timestamp: 2026-08-04T07:16:45Z
+---
+During verification, /actuator/conditions on a debug-exposed instance of
+loan-application-service showed OtlpTracingConfigurations.ConnectionDetails
+unmatched against the brief-literal property 'management.otlp.tracing.endpoint'
+(the Spring Boot 3.x property name):
+
+  OtlpTracingConfigurations.ConnectionDetails#otlpTracingConnectionDetails
+   - OnPropertyCondition @ConditionalOnProperty (management.opentelemetry.tracing.export.otlp.endpoint)
+     did not find property (management.opentelemetry.tracing.export.otlp.endpoint)
+
+This meant NO SpanExporter/OtlpHttpSpanExporter bean was ever created and the
+app made ZERO network attempts to the OTLP endpoint (confirmed via lsof - no
+socket to :4317/:4318, not even a failed one) despite Tracer/Propagator beans
+existing and Maestro's TracingEngineObserver correctly creating real spans
+(non-zero W3C trace/span IDs observed in MDC-correlated log lines).
+
+application.yml was corrected to the Spring Boot 4.0.5 property path
+(management.opentelemetry.tracing.export.otlp.endpoint) in all three services.
+After the fix, /actuator/beans showed a genuine 'otlpHttpSpanExporter' bean,
+and a temporary local HTTP listener on 127.0.0.1:4318/[::1]:4318 (standing in
+for a real OTLP collector, since Jaeger is deliberately not part of this
+task's verification per the brief) received real OTLP/HTTP protobuf POSTs
+to /v1/traces while a loan was driven through loan-application-service:
+
+RECEIVED POST /v1/traces len=1933 from=('::1', 56416, 0, 0)
+RECEIVED POST /v1/traces len=561 from=('::1', 56417, 0, 0)
+RECEIVED POST /v1/traces len=561 from=('::1', 56424, 0, 0)
+RECEIVED POST /v1/traces len=561 from=('::1', 56426, 0, 0)
+
+(3-4 POSTs of realistic protobuf-encoded batch sizes, confirming spans for
+the run/activity segments were genuinely exported over OTLP/HTTP - not just
+a bean existing inertly.)

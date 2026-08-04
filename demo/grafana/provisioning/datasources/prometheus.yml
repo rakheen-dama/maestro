@@ -1,0 +1,24 @@
+# Auto-provisioned Prometheus datasource. Nothing is configured by hand on
+# stage — Grafana reads this on startup.
+#
+# `uid: maestro-prometheus` is pinned because every panel in
+# demo/grafana/dashboards/maestro.json references the datasource by this uid.
+# Change it here and the dashboard silently renders "Datasource not found".
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: maestro-prometheus
+    type: prometheus
+    access: proxy
+    # Container-to-container: Grafana and Prometheus share the compose network.
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # Must match prometheus.yml's global scrape_interval, otherwise Grafana's
+      # $__rate_interval computes a window narrower than the scrape period and
+      # every rate() panel goes empty.
+      timeInterval: 5s
+      httpMethod: POST

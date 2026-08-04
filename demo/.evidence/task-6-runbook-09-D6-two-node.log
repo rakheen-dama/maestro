@@ -1,0 +1,185 @@
+=== §D6 — multi-node adoption. RUNBOOK.md:731-733 typed verbatim ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=195a07e44ae258e46f785299c4f9086505279975 start=2026-08-04T17:39:08Z
+  demo/scripts/stop-services.sh
+  TWO_NODE=1 DEMO_SKIP_BUILD=1 demo/scripts/start-services.sh
+19:39:08 [demo] maestro-admin: SIGTERM to pid 53353 (up to 35s grace)
+19:39:09 [demo] maestro-admin: exited cleanly after 1s
+19:39:09 [demo] loan-application-service: SIGTERM to pid 57208 (up to 35s grace)
+19:39:11 [demo] loan-application-service: exited cleanly after 2s
+19:39:11 [demo] underwriting-service: SIGTERM to pid 53349 (up to 35s grace)
+19:39:12 [demo] underwriting-service: exited cleanly after 1s
+19:39:12 [demo] verification-gateway-service: SIGTERM to pid 53345 (up to 35s grace)
+19:39:13 [demo] verification-gateway-service: exited cleanly after 1s
+19:39:14 [demo] Done. Infrastructure containers are untouched — tear them down with:
+19:39:14 [demo]   docker compose -f demo/docker-compose.yml down -v
+19:39:14 [demo] Postgres reachable at localhost:5433
+19:39:14 [demo] Valkey reachable at localhost:6380
+19:39:14 [demo] Kafka reachable at localhost:29093
+19:39:14 [demo] Jaeger-OTLP reachable at localhost:4318
+19:39:14 [demo] Waiting for 11 Kafka topics to exist...
+19:39:15 [demo] All Kafka topics present
+19:39:15 [demo] All service ports are free
+19:39:15 [demo] DEMO_SKIP_BUILD=1 — reusing existing boot jars
+19:39:15 [demo] Starting loan-application-service on port 8091...
+19:39:15 [demo] Starting verification-gateway-service on port 8092...
+19:39:15 [demo] Starting underwriting-service on port 8093...
+19:39:16 [demo] Starting maestro-admin on port 8080...
+19:39:16 [demo] Starting loan-application-service-b on port 8094...
+19:39:16 [demo] Wrote Prometheus file-SD target for loan-application node B (8094)
+19:39:23 [demo] loan-application-service is up (HTTP 200 from http://localhost:8091/actuator/health)
+19:39:23 [demo] verification-gateway-service is up (HTTP 200 from http://localhost:8092/actuator/health)
+19:39:23 [demo] underwriting-service is up (HTTP 200 from http://localhost:8093/actuator/health)
+19:39:24 [demo] maestro-admin is up (HTTP 200 from http://localhost:8080/actuator/health)
+19:39:24 [demo] loan-application-service-b is up (HTTP 200 from http://localhost:8094/actuator/health)
+19:39:24 [demo] All demo services are up. PID files in /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/demo/.run:
+    loan-application-service-b       pid 57725
+    loan-application-service         pid 57709
+    maestro-admin                    pid 57721
+    underwriting-service             pid 57717
+    verification-gateway-service     pid 57713
+
+  Grafana        http://localhost:3000
+  Prometheus     http://localhost:9090
+  Jaeger UI      http://localhost:16686
+  maestro-admin  http://localhost:8080
+  loan-application     http://localhost:8091
+  verification-gateway http://localhost:8092
+  underwriting         http://localhost:8093
+START_EXIT=0
+
+--- RUNBOOK.md:737-739: node B on 8094 + Prometheus file-SD target within 5s ---
+.rw-r--r--@  24 rakheendama  4 Aug 09:36 󰊢 .gitignore
+.rw-r--r--@ 108 rakheendama  4 Aug 19:39  loan-application-b.json
+.rw-r--r--@ 335 rakheendama  4 Aug 09:36 󰂺 README.md
+host.docker.internal:8091  loan-application  up
+host.docker.internal:8092  verification-gateway  up
+host.docker.internal:8093  underwriting  up
+host.docker.internal:8094  loan-application-b  up
+
+=== D6 step 1 — demo/scripts/drive-loan.sh crash ===
+    5  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    6  SIDE_EFFECT                   $maestro:currentTime
+    7  SIDE_EFFECT                   $maestro:currentTime
+    8  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+    9  SIDE_EFFECT                   $maestro:currentTime
+   10  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+   11  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+   12  ACTIVITY_COMPLETED            LoanMessagingActivities.requestUnderwriting
+
+[1m==> PARKED. 12 durable events recorded. The workflow is holding nothing in memory that matters.[0m
+    snapshot of those 12 rows: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/demo/.run/crash-crash-1785865181-before-rows.txt
+
+  Now, on stage, in this order:
+
+    1.  kill -9 $(cat /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/demo/.run/loan-application-service.pid)              <- no graceful shutdown, no drain
+    2.  demo/scripts/restart-loan-app.sh      <- restarts ONLY the process you killed
+    3.  demo/scripts/drive-loan.sh finish crash-1785865181
+
+  (Step 2 is not start-services.sh: that starts all four JVMs and refuses to
+  run while 8092/8093/8080 are still healthy, which they are.)
+
+  Expected after step 3: the loan completes, and the 12 rows above are
+  byte-identical afterwards — they replayed from Postgres, they did not run
+  again.
+
+ID=crash-1785865181
+
+=== D6 step 2 — the ownership grep, RUNBOOK.md:749 typed verbatim ===
+  grep -l "Started workflow 'loan-crash-1785865181'" demo/.run/loan-application-service.log demo/.run/loan-application-service-b.log
+demo/.run/loan-application-service.log
+GREP_EXIT=0
+
+--- (deferred-minor check) the OLD check, grep -l on the bare id, for comparison ---
+demo/.run/loan-application-service-b.log
+demo/.run/loan-application-service.log
+--- hit counts per log, bare id ---
+  demo/.run/loan-application-service.log             4
+  demo/.run/loan-application-service-b.log           3
+
+=== D6 step 3 — kill -9 the owner (node A), RUNBOOK.md:751 typed verbatim ===
+T0=2026-08-04T17:40:07.3NZ  pid=57709
+KILL_EXIT=0
+
+=== D6 step 4 — RUNBOOK.md:754 typed verbatim (the LOAN_URL override) ===
+  LOAN_URL=http://localhost:8094 demo/scripts/drive-loan.sh finish crash-1785865181
+
+[1m==> SCENARIO 2 (crash), phase 2 — resuming crash-1785865181 after the restart[0m
+    pre-crash snapshot: 12 durable events
+
+[1m==> waiting for the underwriting desk to queue round 1[0m
+[{"loanId":"crash-1785865181","round":1,"dti":3.5,"escalated":false}]
+{"signal":"underwriter.decision","verdict":"APPROVED","workflowId":"underwriting-crash-1785865181-round1"}
+
+[1m==> waiting for the rate lock[0m
+    the rate lock recorded after 24s
+    package.signed by alice [http 202]
+    package.signed by bob [http 202]
+
+[1m==> waiting for crash-1785865181 to reach COMPLETED[0m
+    crash-1785865181 is COMPLETED after 2s
+{"applicationId":"crash-1785865181","workflowId":"loan-crash-1785865181","status":"COMPLETED","output":{"status":"FUNDED","rateLockId":"90386240-9dc2-4d17-88e9-c73e7e357a8d","applicationId":"crash-1785865181","disbursementId":"13c7e789-6a21-43c3-a131-f26f9b7345d5"}}
+
+[1m==> durable event log for loan-crash-1785865181  (this is the whole of the workflow's memory)[0m
+    1  ACTIVITY_COMPLETED            LoanActivities.recordApplication
+    2  ACTIVITY_COMPLETED            LoanMessagingActivities.requestVerifications
+    3  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    4  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    5  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    6  SIDE_EFFECT                   $maestro:currentTime
+    7  SIDE_EFFECT                   $maestro:currentTime
+    8  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+    9  SIDE_EFFECT                   $maestro:currentTime
+   10  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+   11  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+   12  ACTIVITY_COMPLETED            LoanMessagingActivities.requestUnderwriting
+   13  SIGNAL_RECEIVED               $maestro:awaitSignal:underwriting.decision
+   14  ACTIVITY_COMPLETED            FundingActivities.reserveRateLock
+   15  SIDE_EFFECT                   $maestro:currentTime
+   16  SIDE_EFFECT                   $maestro:currentTime
+   17  SIGNAL_RECEIVED               $maestro:awaitSignal:package.signed
+   18  SIDE_EFFECT                   $maestro:currentTime
+   19  SIGNAL_RECEIVED               $maestro:awaitSignal:package.signed
+   20  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+   21  ACTIVITY_COMPLETED            FundingActivities.disburse
+   22  WORKFLOW_COMPLETED            
+
+[1m==> PROOF 1 — the 12 rows recorded before the kill -9 are byte-identical now[0m
+    diff is empty. Nothing was rewritten, renumbered, or re-executed.
+
+[1m==> PROOF 2 — duplicate sequence numbers after the crash: 0  (must be 0)[0m
+
+[1m==> DONE — crash-1785865181 FUNDED across a kill -9. Nothing re-executed.[0m
+FINISH_EXIT=0
+FINISH_WALL_SECONDS=30
+TOTAL_FROM_KILL_SECONDS=30
+
+--- RUNBOOK.md:770-772 claims 27s from kill -9 to node B logging 'Resuming workflow' ---
+2026-08-04T19:40:33.656+02:00  INFO 57725 --- [sample-loan-application-service] [oan-application] [                                                 ] i.b.m.core.engine.WorkflowExecutor       : Resuming workflow 'loan-crash-1785865181' (type=loan-application, status=WAITING_SIGNAL)
+kill was at: 2026-08-04T17:40:07Z
+
+=== D6 ADOPTION LATENCY, measured ===
+kill -9 of node A (owner) at 19:40:07 SAST
+node B 'Resuming workflow' at    19:40:33.656 SAST  => 26.7 s  (RUNBOOK.md:771 claims 27 s)
+finish through node B: 30 s          (RUNBOOK.md:772 claims 49 s; budget 'up to 60 s' — inside it)
+node B's line is 'Resuming workflow', NOT 'Started workflow' — which is exactly why the
+ownership grep in RUNBOOK.md:749 discriminates. Observed, not merely reasoned.
+
+=== §D6 'AFTER D6' — RUNBOOK.md:786-787 typed verbatim ===
+19:40:54 [demo] maestro-admin: SIGTERM to pid 57721 (up to 35s grace)
+19:40:55 [demo] maestro-admin: exited cleanly after 1s
+19:40:55 [demo] loan-application-service-b: SIGTERM to pid 57725 (up to 35s grace)
+19:40:57 [demo] loan-application-service-b: exited cleanly after 2s
+19:40:57 [demo] loan-application-service: pid 57709 is not running (stale pid file) — removing
+19:40:57 [demo] underwriting-service: SIGTERM to pid 57717 (up to 35s grace)
+19:40:58 [demo] underwriting-service: exited cleanly after 1s
+19:40:58 [demo] verification-gateway-service: SIGTERM to pid 57713 (up to 35s grace)
+19:40:59 [demo] verification-gateway-service: exited cleanly after 1s
+19:40:59 [demo] Done. Infrastructure containers are untouched — tear them down with:
+19:40:59 [demo]   docker compose -f demo/docker-compose.yml down -v
+AFTER_D6_EXIT=0
+--- stop-services.sh should also have removed the Prometheus file-SD target ---
+󰂺 README.md
+--- targets now ---
+host.docker.internal:8091  up
+host.docker.internal:8092  up
+host.docker.internal:8093  up

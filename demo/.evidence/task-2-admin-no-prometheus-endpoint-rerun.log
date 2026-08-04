@@ -1,0 +1,32 @@
+=== EVIDENCE IDENTITY ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+HEAD: 2e290887f8500c54a46219e8f5f5cbb1eb83cdf2
+branch: worktree-demo
+timestamp-utc: 2026-08-04T08:52:16Z
+check: maestro-admin ships no Prometheus registry, so it is not a scrape target
+==========================
+
+SUPERSEDES the jar-inspection half of task-2-admin-no-prometheus-endpoint.log.
+That capture ran with cwd=<repo>/demo, where the relative glob
+maestro-admin/build/libs/maestro-admin-*.jar matched nothing, so unzip never
+ran and BOTH greps were vacuous - including the 'grep -ci prometheus -> 0'
+that the comment in demo/prometheus.yml leaned on. Re-run below from the
+repo root against a jar that demonstrably exists.
+
+$ ls -l $JAR
+.rw-r--r--@ 51M rakheendama  4 Aug 09:15  /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/maestro-admin/build/libs/maestro-admin-0.3.0-SNAPSHOT.jar
+
+$ unzip -l $JAR | grep -ci prometheus
+0
+
+$ unzip -l $JAR | grep -i 'BOOT-INF/lib/micrometer' | awk '{print $4}'
+BOOT-INF/lib/micrometer-jakarta9-1.16.4.jar
+BOOT-INF/lib/micrometer-core-1.16.4.jar
+BOOT-INF/lib/micrometer-observation-1.16.4.jar
+BOOT-INF/lib/micrometer-commons-1.16.4.jar
+
+$ curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/actuator/prometheus
+404
+
+$ curl -s http://localhost:8080/actuator/health
+{"groups":["liveness","readiness"],"status":"UP"}

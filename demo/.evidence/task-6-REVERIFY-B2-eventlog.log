@@ -1,0 +1,31 @@
+=== RE-VERIFY B2: does §D2's printed table match a REAL live log, row for row? 2026-08-04T18:09:25Z ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=fb29c9f2baa3711acf13bac642489c1d12bfc933
+
+--- extract the 18 rows from RUNBOOK.md §D2 ---
+      18
+--- extract the same rows from my archived LIVE §1 happy run ---
+      18
+
+--- diff (empty == the runbook is printing a real log) ---
+IDENTICAL — 18/18 rows match the live run byte for byte
+
+--- the crashed-loan claim '6/7/9 and 15/16/18' against my archived §2 log ---
+6 7 9 6 7 9 15 16 18 
+
+=== SLIDE EVENT-LOG TABLES vs the LIVE log ===
+live rows parsed: 18
+live §1 happy rows: 18
+  slide 'scenario-1': 10 event rows checked, mismatches=0
+  slide 'd2': 10 event rows checked, mismatches=0
+TOTAL event rows checked across the deck: 20, mismatches: 0
+
+=== FRESH live run at HEAD fb29c9f vs the table §D2 now prints ===
+DRIVE_EXIT=0
+fresh live rows:       18   runbook §D2 rows:       18
+IDENTICAL — §D2's table reproduces on a brand-new run at this HEAD
+
+--- and the four SIDE_EFFECT rows §D5 points at ---
+    6  SIDE_EFFECT                   $maestro:currentTime
+    7  SIDE_EFFECT                   $maestro:currentTime
+   13  SIDE_EFFECT                   $maestro:currentTime
+   14  SIDE_EFFECT                   $maestro:currentTime

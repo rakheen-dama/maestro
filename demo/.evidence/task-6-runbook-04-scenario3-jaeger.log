@@ -1,0 +1,22 @@
+=== §3 SCENARIO 3 — the Jaeger trace ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=75f13239ce8b21251b207bcb64e15935d8475fa1 start=2026-08-04T17:34:50Z
+Per RUNBOOK.md:326-328 Jaeger needs ~30s after completion. The §1 happy loan completed at 19:31:52; it is now 19:34:50.
+Running the runbook's own trace-id query (RUNBOOK.md:342-346) verbatim against the happy loan.
+
+--- happy loan (NOT crashed — the runbook says to use one that was not crashed) ---
+0f99a173c6c6047e20e0357c254393f8  spans=31
+
+--- distinct services inside that trace ---
+sample-loan-application-service
+sample-underwriting-service
+sample-verification-gateway-service
+
+--- the crashed loan, to test the runbook's 'any JVM restart splits the trace' claim ---
+c6b54c2e2e53aeb8fddb382638728498  spans=10
+ffd05efa70e4efbf586f7a4f3f2dbab5  spans=23
+
+--- the three service names the runbook lists (RUNBOOK.md:336-337) ---
+jaeger
+sample-loan-application-service
+sample-underwriting-service
+sample-verification-gateway-service

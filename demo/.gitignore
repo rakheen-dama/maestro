@@ -1,0 +1,4 @@
+.run/
+
+# Evidence logs are deliberately tracked (root .gitignore excludes *.log)
+!.evidence/*.log

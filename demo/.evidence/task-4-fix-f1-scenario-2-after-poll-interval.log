@@ -1,0 +1,133 @@
+=== EVIDENCE IDENTITY ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+git-root: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+branch: worktree-demo
+commit: 052e7b4ee06b188f997eef578bf6163199380556
+dirty: 1 uncommitted change(s)
+timestamp-utc: 2026-08-04T13:21:02Z
+run: F1 re-measure AFTER -Dmaestro.recovery.poll-interval=5s. Scenario 2 (kill -9)
+     end to end: reset, crash phase 1, kill -9, restart-loan-app.sh, finish.
+     Wall clock per phase via SECONDS; per-line [+Ns] is elapsed within the phase.
+==========================
+
+--- poll interval actually bound in the running JVMs ---
+INFO 19754 --- [sample-loan-application-service] [           main] [                                                 ] i.b.m.s.config.StartupRecoveryRunner     : Maestro recovery poller started (interval=PT5S)
+INFO 19762 --- [sample-underwriting-service] [           main] [                                                 ] i.b.m.s.config.StartupRecoveryRunner     : Maestro recovery poller started (interval=PT5S)
+INFO 19758 --- [sample-verification-gateway-service] [           main] [                                                 ] i.b.m.s.config.StartupRecoveryRunner     : Maestro recovery poller started (interval=PT5S)
+
+########## reset.sh ##########
+    localhost:8080   health 200
+
+[1m==> clean slate in 14s — 0 workflow instances, all four JVMs healthy[0m
+ELAPSED reset.sh: 14s
+
+########## PHASE 1 — drive-loan.sh crash f1-after-152102 ##########
+[+  0s] 
+[+  0s] [1m==> SCENARIO 2 (crash), phase 1 — application f1-after-152102, $350,000 on $100,000 income, DTI 3.5[0m
+[+  0s] {"applicationId":"f1-after-152102"} [http 202]
+[+  0s] 
+[+  0s] [1m==> waiting for all 3 verification results (credit 2s, employment 5s, appraisal 8s simulated)[0m
+[+  0s]     SAY: "nothing here is mocked out — three providers answer on their own schedule, in any order."
+[+ 15s]     3/3 verification.result signals recorded after 14s
+[+ 15s]     document.uploaded pay-stub by alice [http 202]
+[+ 15s]     document.uploaded bank-statement by bob [http 202]
+[+ 15s] 
+[+ 15s] [1m==> waiting for the underwriting desk to queue round 1[0m
+[+ 17s] [{"loanId":"f1-after-152102","round":1,"dti":3.5,"escalated":false}]
+[+ 17s] 
+[+ 17s] [1m==> durable event log for loan-f1-after-152102  (this is the whole of the workflow's memory)[0m
+[+ 17s]     1  ACTIVITY_COMPLETED            LoanActivities.recordApplication
+[+ 17s]     2  ACTIVITY_COMPLETED            LoanMessagingActivities.requestVerifications
+[+ 17s]     3  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+[+ 17s]     4  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+[+ 17s]     5  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+[+ 17s]     6  SIDE_EFFECT                   $maestro:currentTime
+[+ 17s]     7  SIDE_EFFECT                   $maestro:currentTime
+[+ 17s]     8  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+[+ 17s]     9  SIDE_EFFECT                   $maestro:currentTime
+[+ 17s]    10  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+[+ 17s]    11  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+[+ 17s]    12  ACTIVITY_COMPLETED            LoanMessagingActivities.requestUnderwriting
+[+ 17s] 
+[+ 17s] [1m==> PARKED. 12 durable events recorded. The workflow is holding nothing in memory that matters.[0m
+[+ 17s]     snapshot of those 12 rows: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/demo/.run/crash-f1-after-152102-before-rows.txt
+[+ 17s] 
+[+ 17s]   Now, on stage, in this order:
+[+ 17s] 
+[+ 17s]     1.  kill -9 $(cat /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/demo/.run/loan-application-service.pid)              <- no graceful shutdown, no drain
+[+ 17s]     2.  demo/scripts/restart-loan-app.sh      <- restarts ONLY the process you killed
+[+ 17s]     3.  demo/scripts/drive-loan.sh finish f1-after-152102
+[+ 17s] 
+[+ 17s]   (Step 2 is not start-services.sh: that starts all four JVMs and refuses to
+[+ 17s]   run while 8092/8093/8080 are still healthy, which they are.)
+[+ 17s] 
+[+ 17s]   Expected after step 3: the loan completes, and the 12 rows above are
+[+ 17s]   byte-identical afterwards — they replayed from Postgres, they did not run
+[+ 17s]   again.
+[+ 17s] 
+ELAPSED phase 1: 17s
+
+########## PHASE 2 — kill -9 ##########
+SIGKILL sent to pid 20037 at 13:21:33Z
+health on 8091 after the kill: 000
+ELAPSED phase 2 (kill + confirm dead): 2s
+
+########## PHASE 3a — restart-loan-app.sh ##########
+[+  0s] 15:21:35 [demo] pid 20037 is already gone (this is the kill -9 case)
+[+  0s] 15:21:35 [demo] starting loan-application-service from loan-application-service-0.3.0-SNAPSHOT.jar
+[+  5s] 15:21:40 [demo] loan-application-service is up — pid 20246, jar loan-application-service-0.3.0-SNAPSHOT.jar, sha256 0023c6f46fd8
+ELAPSED restart-loan-app.sh: 5s
+
+########## PHASE 3b — drive-loan.sh finish f1-after-152102 ##########
+started at 13:21:40Z
+[+  0s] 
+[+  0s] [1m==> SCENARIO 2 (crash), phase 2 — resuming f1-after-152102 after the restart[0m
+[+  0s]     pre-crash snapshot: 12 durable events
+[+  0s] 
+[+  0s] [1m==> waiting for the underwriting desk to queue round 1[0m
+[+  0s] [{"loanId":"f1-after-152102","round":1,"dti":3.5,"escalated":false}]
+[+  0s] {"workflowId":"underwriting-f1-after-152102-round1","signal":"underwriter.decision","verdict":"APPROVED"}
+[+  0s] 
+[+  0s] [1m==> waiting for the rate lock[0m
+[+ 36s]     the rate lock recorded after 33s
+[+ 36s]     package.signed by alice [http 202]
+[+ 37s]     package.signed by bob [http 202]
+[+ 37s] 
+[+ 37s] [1m==> waiting for f1-after-152102 to reach COMPLETED[0m
+[+ 39s]     f1-after-152102 is COMPLETED after 2s
+[+ 39s] {"applicationId":"f1-after-152102","workflowId":"loan-f1-after-152102","status":"COMPLETED","output":{"status":"FUNDED","rateLockId":"ef0953d1-a8ad-4050-b519-b70ab370465d","applicationId":"f1-after-152102","disbursementId":"f2ecfd2b-03d3-45eb-b695-143d180a77d2"}}
+[+ 40s] 
+[+ 40s] [1m==> durable event log for loan-f1-after-152102  (this is the whole of the workflow's memory)[0m
+[+ 40s]     1  ACTIVITY_COMPLETED            LoanActivities.recordApplication
+[+ 40s]     2  ACTIVITY_COMPLETED            LoanMessagingActivities.requestVerifications
+[+ 40s]     3  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+[+ 40s]     4  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+[+ 40s]     5  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+[+ 40s]     6  SIDE_EFFECT                   $maestro:currentTime
+[+ 40s]     7  SIDE_EFFECT                   $maestro:currentTime
+[+ 40s]     8  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+[+ 40s]     9  SIDE_EFFECT                   $maestro:currentTime
+[+ 40s]    10  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+[+ 40s]    11  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+[+ 40s]    12  ACTIVITY_COMPLETED            LoanMessagingActivities.requestUnderwriting
+[+ 40s]    13  SIGNAL_RECEIVED               $maestro:awaitSignal:underwriting.decision
+[+ 40s]    14  ACTIVITY_COMPLETED            FundingActivities.reserveRateLock
+[+ 40s]    15  SIDE_EFFECT                   $maestro:currentTime
+[+ 40s]    16  SIDE_EFFECT                   $maestro:currentTime
+[+ 40s]    17  SIGNAL_RECEIVED               $maestro:awaitSignal:package.signed
+[+ 40s]    18  SIDE_EFFECT                   $maestro:currentTime
+[+ 40s]    19  SIGNAL_RECEIVED               $maestro:awaitSignal:package.signed
+[+ 40s]    20  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+[+ 40s]    21  ACTIVITY_COMPLETED            FundingActivities.disburse
+[+ 40s]    22  WORKFLOW_COMPLETED            
+[+ 40s] 
+[+ 40s] [1m==> PROOF 1 — the 12 rows recorded before the kill -9 are byte-identical now[0m
+[+ 40s]     diff is empty. Nothing was rewritten, renumbered, or re-executed.
+[+ 40s] 
+[+ 40s] [1m==> PROOF 2 — duplicate sequence numbers after the crash: 0  (must be 0)[0m
+[+ 40s] 
+[+ 40s] [1m==> DONE — f1-after-152102 FUNDED across a kill -9. Nothing re-executed.[0m
+ELAPSED phase 3b (finish): 40s   exit=0
+
+########## recovery poller line from the RESTARTED jvm ##########
+2026-08-04T15:21:39.476+02:00  INFO 20246 --- [sample-loan-application-service] [           main] [                                                 ] i.b.m.s.config.StartupRecoveryRunner     : Maestro recovery poller started (interval=PT5S)

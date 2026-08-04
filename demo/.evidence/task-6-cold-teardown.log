@@ -1,0 +1,50 @@
+=== COLD TEARDOWN 2026-08-04T17:12:54Z ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=12675649e87d975528538a5dd771be4047010960 branch=worktree-demo
+--- stop-services.sh ---
+19:12:54 [demo] maestro-admin: SIGTERM to pid 24068 (up to 35s grace)
+19:12:55 [demo] maestro-admin: exited cleanly after 1s
+19:12:55 [demo] loan-application-service: SIGTERM to pid 24056 (up to 35s grace)
+19:12:58 [demo] loan-application-service: exited cleanly after 2s
+19:12:58 [demo] underwriting-service: SIGTERM to pid 24064 (up to 35s grace)
+19:12:59 [demo] underwriting-service: exited cleanly after 1s
+19:12:59 [demo] verification-gateway-service: SIGTERM to pid 24060 (up to 35s grace)
+19:13:01 [demo] verification-gateway-service: exited cleanly after 2s
+19:13:01 [demo] Done. Infrastructure containers are untouched — tear them down with:
+19:13:01 [demo]   docker compose -f demo/docker-compose.yml down -v
+--- docker compose down -v ---
+ Container maestro-demo-kafka-init-1  Stopping
+ Container maestro-demo-jaeger-1  Stopping
+ Container maestro-demo-valkey-1  Stopping
+ Container maestro-demo-postgres-1  Stopping
+ Container maestro-demo-grafana-1  Stopping
+ Container maestro-demo-kafka-init-1  Stopped
+ Container maestro-demo-kafka-init-1  Removing
+ Container maestro-demo-kafka-init-1  Removed
+ Container maestro-demo-kafka-1  Stopping
+ Container maestro-demo-jaeger-1  Stopped
+ Container maestro-demo-jaeger-1  Removing
+ Container maestro-demo-jaeger-1  Removed
+ Container maestro-demo-grafana-1  Stopped
+ Container maestro-demo-grafana-1  Removing
+ Container maestro-demo-grafana-1  Removed
+ Container maestro-demo-prometheus-1  Stopping
+ Container maestro-demo-postgres-1  Stopped
+ Container maestro-demo-postgres-1  Removing
+ Container maestro-demo-postgres-1  Removed
+ Container maestro-demo-valkey-1  Stopped
+ Container maestro-demo-valkey-1  Removing
+ Container maestro-demo-valkey-1  Removed
+ Container maestro-demo-prometheus-1  Stopped
+ Container maestro-demo-prometheus-1  Removing
+ Container maestro-demo-prometheus-1  Removed
+ Container maestro-demo-kafka-1  Stopped
+ Container maestro-demo-kafka-1  Removing
+ Container maestro-demo-kafka-1  Removed
+ Network maestro-demo_default  Removing
+ Volume maestro-demo_demo-pgdata  Removing
+ Volume maestro-demo_demo-pgdata  Removed
+ Network maestro-demo_default  Removed
+--- ports after ---
+(empty above = clean)
+--- volumes ---
+(empty = wiped)

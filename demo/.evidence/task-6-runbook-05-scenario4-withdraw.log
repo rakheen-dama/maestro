@@ -1,0 +1,64 @@
+=== §4 SCENARIO 4 — demo/scripts/drive-loan.sh withdraw (typed verbatim) ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=75f13239ce8b21251b207bcb64e15935d8475fa1 start=2026-08-04T17:34:59Z
+
+[1m==> SCENARIO 4 (withdraw) — application withdraw-1785864899, $400,000 on $100,000 income, DTI 4.0[0m
+{"applicationId":"withdraw-1785864899"} [http 202]
+
+[1m==> waiting for all 3 verification results (credit 2s, employment 5s, appraisal 8s simulated)[0m
+    SAY: "nothing here is mocked out — three providers answer on their own schedule, in any order."
+    3/3 verification.result signals recorded after 10s
+    document.uploaded pay-stub by alice [http 202]
+    document.uploaded bank-statement by bob [http 202]
+
+[1m==> waiting for the underwriting desk to queue round 1[0m
+[{"loanId":"withdraw-1785864899","round":1,"dti":4.0,"escalated":false}]
+{"workflowId":"underwriting-withdraw-1785864899-round1","signal":"underwriter.decision","verdict":"APPROVED"}
+
+[1m==> waiting for the rate lock to be reserved (money is now committed)[0m
+    the rate lock to be reserved (money is now committed) recorded after 0s
+2026-08-04T19:35:12.005+02:00  INFO 54347 --- [sample-loan-application-service] [draw-1785864899] [17b4c6a9848a78787fee4c0ec5b03893-867953f842f4ced5] b.m.s.l.a.a.i.SimulatedFundingActivities : Reserved rate lock 17884bdf-5b71-4c25-b3af-be42904d288b for loan withdraw-1785864899 at 5.25%
+
+[1m==> borrower withdraws AFTER the rate lock — this is the expensive case[0m
+    application.withdrawn [http 202]
+    both borrowers still sign, so the workflow reaches withdrawal gate 2 and finds the signal already waiting
+    package.signed by alice [http 202]
+    package.signed by bob [http 202]
+
+[1m==> waiting for withdraw-1785864899 to reach FAILED[0m
+    withdraw-1785864899 is FAILED after 2s
+{"applicationId":"withdraw-1785864899","workflowId":"loan-withdraw-1785864899","status":"FAILED","output":{"message":"Application withdrawn: found a better rate","exceptionType":"io.b2mash.maestro.samples.loan.application.exception.LoanWithdrawnException"}}
+
+[1m==> compensation the engine ran, LIFO, without the workflow author writing a rollback path[0m
+2026-08-04T19:35:13.141+02:00  INFO 54347 --- [sample-loan-application-service] [draw-1785864899] [17b4c6a9848a78787fee4c0ec5b03893-23d0dffd37590b2e] b.m.s.l.a.a.i.SimulatedFundingActivities : COMPENSATION: released rate lock 17884bdf-5b71-4c25-b3af-be42904d288b for loan withdraw-1785864899
+
+[1m==> durable event log for loan-withdraw-1785864899  (this is the whole of the workflow's memory)[0m
+    1  ACTIVITY_COMPLETED            LoanActivities.recordApplication
+    2  ACTIVITY_COMPLETED            LoanMessagingActivities.requestVerifications
+    3  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    4  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    5  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    6  SIDE_EFFECT                   $maestro:currentTime
+    7  SIDE_EFFECT                   $maestro:currentTime
+    8  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+    9  SIDE_EFFECT                   $maestro:currentTime
+   10  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+   11  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+   12  ACTIVITY_COMPLETED            LoanMessagingActivities.requestUnderwriting
+   13  SIGNAL_RECEIVED               $maestro:awaitSignal:underwriting.decision
+   14  ACTIVITY_COMPLETED            FundingActivities.reserveRateLock
+   15  SIDE_EFFECT                   $maestro:currentTime
+   16  SIDE_EFFECT                   $maestro:currentTime
+   17  SIGNAL_RECEIVED               $maestro:awaitSignal:package.signed
+   18  SIDE_EFFECT                   $maestro:currentTime
+   19  SIGNAL_RECEIVED               $maestro:awaitSignal:package.signed
+   20  SIGNAL_RECEIVED               $maestro:awaitSignal:application.withdrawn
+   21  COMPENSATION_STARTED          $maestro:compensation
+22000  COMPENSATION_STEP_COMPLETED   FundingActivities.releaseRateLock
+22001  ACTIVITY_COMPLETED            FundingActivities.releaseRateLock
+23001  COMPENSATION_COMPLETED        $maestro:compensation
+23002  WORKFLOW_FAILED               
+
+[1m==> DONE — withdraw-1785864899 FAILED with the rate lock released. Point at http://localhost:8080/admin/failed[0m
+WITHDRAW_EXIT=0
+WALL_SECONDS=16
+end=2026-08-04T17:35:15Z

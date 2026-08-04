@@ -1,0 +1,1915 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maestro — Demo Deck</title>
+<!--
+  Self-contained presentation. No CDN, no webfonts, no network at runtime.
+  Slides are plain <section class="slide"> elements: edit content with any editor.
+
+  Keys:  → / space / PageDown  next      ← / PageUp / Backspace  previous
+         Home / End            first/last
+         g                     jump to slide          f  fullscreen
+         p                     presenter panel        P  presenter in a second window
+         n                     toggle notes inline    Esc  close overlay
+-->
+<style>
+:root {
+  color-scheme: dark;
+  --ground: #0e151d;
+  --lift:   #141d27;
+  --rule:   #233040;
+  --rule-2: #31445a;
+  --brass:  #e0a83c;
+  --brass-d:#8a6a29;
+  --rose:   #e07a86;
+  --ink:    #eef2f7;
+  --body:   #c3cddb;
+  --mute:   #7f8ea1;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --serif: ui-serif, Georgia, "Iowan Old Style", "Palatino Linotype", "Times New Roman", serif;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+* { box-sizing: border-box; }
+html {
+  font-size: clamp(15px, 0.52vw + 10px, 25px);
+  background: var(--ground);
+}
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 5.25rem 1fr;
+  background: var(--ground);
+  color: var(--body);
+  font-family: var(--sans);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* ---------- the ledger rail ------------------------------------------- */
+
+#rail {
+  position: relative;
+  border-right: 1px solid var(--rule);
+  background: linear-gradient(180deg, var(--lift), var(--ground) 60%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 1.35rem 0 1.1rem;
+  gap: 1.1rem;
+  overflow: hidden;
+}
+.rail-count {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  color: var(--brass);
+}
+.rail-count .of { color: var(--rule-2); }
+#railTicks {
+  flex: 1 1 auto;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+#railTicks::-webkit-scrollbar { display: none; }
+.act {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.38rem;
+}
+.act + .act { padding-top: 0.5rem; border-top: 1px solid var(--rule); width: 2.6rem; }
+.act-label {
+  font-family: var(--mono);
+  font-size: 0.55rem;
+  letter-spacing: 0.22em;
+  color: var(--rule-2);
+  padding-top: 0.1rem;
+}
+.act.current .act-label { color: var(--mute); }
+.tick {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  display: block;
+  width: 1.05rem;
+  height: 2px;
+  background: var(--rule-2);
+  transition: width 140ms ease, background 140ms ease;
+}
+.tick:hover { background: var(--mute); }
+.tick.seen { background: var(--brass-d); }
+.tick.current {
+  width: 1.9rem;
+  height: 3px;
+  background: var(--brass);
+  box-shadow: 0 0 0.5rem rgba(224, 168, 60, 0.35);
+}
+.rail-brand {
+  writing-mode: vertical-rl;
+  font-family: var(--mono);
+  font-size: 0.55rem;
+  letter-spacing: 0.42em;
+  color: var(--rule-2);
+  user-select: none;
+}
+
+/* ---------- stage ------------------------------------------------------ */
+
+#stage { position: relative; overflow: hidden; }
+.slide {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  justify-content: center;
+  padding: 6vh 5.5vw 7vh;
+  overflow: hidden;
+}
+.slide.active { display: flex; animation: enter 180ms ease-out both; }
+/* Auto-fit. Presenter view takes roughly a third of the stage away, and
+   .slide{overflow:hidden} would swallow the difference silently. Content lives
+   in a .fit wrapper that JS scales down when it would not fit; k stays 1 for
+   anything that already fits, so ordinary slides are untouched. */
+.slide > .fit { width: 100%; display: flex; flex-direction: column; transform-origin: top center; }
+.slide.fitted { justify-content: flex-start; }
+@keyframes enter { from { opacity: 0; transform: translateY(0.6rem); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .slide.active { animation: none; }
+  .tick { transition: none; }
+}
+.notes { display: none; }
+body.notes-inline .slide.active .notes {
+  display: block;
+  margin-top: 1.6rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--rule);
+  font-size: 0.72rem;
+}
+
+/* ---------- type roles -------------------------------------------------
+   mono  = what the engine records: addresses, code, event rows, data
+   serif = what the business sees: display, ledes
+   sans  = body prose
+   ---------------------------------------------------------------------- */
+
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--mute);
+  margin: 0 0 1.1rem;
+}
+.eyebrow .sep { color: var(--rule-2); padding: 0 0.5em; }
+.eyebrow em { font-style: normal; color: var(--brass); text-transform: none; }
+h1 {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 3.4rem;
+  line-height: 1.04;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+  margin: 0 0 0.9rem;
+  max-width: 26ch;
+}
+h2 {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 2.15rem;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  margin: 0 0 1.1rem;
+  max-width: 22ch;
+}
+.lede {
+  font-family: var(--serif);
+  font-size: 1.35rem;
+  line-height: 1.4;
+  color: var(--ink);
+  max-width: 34ch;
+  margin: 0 0 1.4rem;
+}
+p { max-width: 62ch; margin: 0 0 0.85rem; }
+strong { color: var(--ink); font-weight: 600; }
+.brass { color: var(--brass); }
+.rose  { color: var(--rose); }
+.mono, code, kbd { font-family: var(--mono); }
+code {
+  font-size: 0.86em;
+  color: var(--ink);
+  background: var(--lift);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  padding: 0.05em 0.32em;
+}
+.rule {
+  width: 3.2rem;
+  height: 2px;
+  background: var(--brass);
+  margin: 0 0 1.4rem;
+}
+.muted { color: var(--mute); }
+.small { font-size: 0.82rem; }
+.wide { max-width: none; }
+
+/* ---------- reusable slide furniture ---------------------------------- */
+
+.cols { display: grid; gap: 1.4rem; }
+.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.card {
+  background: var(--lift);
+  border: 1px solid var(--rule);
+  border-left: 2px solid var(--rule-2);
+  padding: 1rem 1.1rem;
+}
+.card.accent { border-left-color: var(--brass); }
+.card.alarm  { border-left-color: var(--rose); }
+.card h3 {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--mute);
+  margin: 0 0 0.55rem;
+  font-weight: 500;
+}
+.card p:last-child { margin-bottom: 0; }
+.ledger { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+.ledger th {
+  font-family: var(--mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--mute);
+  text-align: left;
+  font-weight: 500;
+  padding: 0 1rem 0.5rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+.ledger td {
+  padding: 0.55rem 1rem 0.55rem 0;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+.ledger td:first-child { color: var(--ink); }
+.ledger tr:last-child td { border-bottom: 0; }
+/* trace shape — a schematic of what the spans look like, not to scale */
+.trace { border: 1px solid var(--rule); background: var(--lift); padding: 0.9rem 1rem 1rem; }
+.trace h3 {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--mute);
+  margin: 0 0 0.85rem;
+  font-weight: 500;
+}
+.trace .row { position: relative; height: 1.7rem; margin-bottom: 0.3rem; }
+.trace .span {
+  position: absolute;
+  top: 0.95rem;
+  height: 0.42rem;
+  background: var(--rule-2);
+  border-radius: 1px;
+}
+.trace .span.accent { background: var(--brass); }
+.trace .lbl {
+  position: absolute;
+  top: 0;
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  color: var(--mute);
+  white-space: nowrap;
+}
+.trace .axis {
+  margin-top: 0.55rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--rule);
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+  color: var(--rule-2);
+  display: flex;
+  justify-content: space-between;
+}
+
+/* code — hand-rolled highlighting, no library */
+pre.code {
+  margin: 0;
+  background: var(--lift);
+  border: 1px solid var(--rule);
+  border-left: 2px solid var(--brass);
+  padding: 0.85rem 1rem;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  line-height: 1.65;
+  color: var(--body);
+  white-space: pre;
+  tab-size: 2;
+}
+pre.code.v1 { border-left-color: var(--rule-2); }
+pre.code .k  { color: #9fb4cc; }              /* keyword */
+pre.code .t  { color: var(--ink); }           /* type / class */
+pre.code .s  { color: var(--brass); }         /* string / literal */
+pre.code .c  { color: var(--rule-2); font-style: italic; }  /* comment */
+pre.code .a  { color: var(--brass); }         /* annotation — brass, not rose:
+                                                 rose is the alarm hue and is
+                                                 reserved for failure and
+                                                 compensation */
+pre.code mark { background: rgba(224, 168, 60, 0.14); color: inherit; }
+.codecap {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  color: var(--mute);
+  margin: 0.5rem 0 0;
+  max-width: none;
+}
+
+/* beats — a measured timeline across the top of a scenario */
+.beats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.9rem;
+  list-style: none;
+  margin: 0.2rem 0 1.4rem;
+  padding: 0;
+}
+.beats li { border-top: 2px solid var(--rule-2); padding-top: 0.6rem; }
+.beats .t {
+  display: block;
+  font-family: var(--mono);
+  font-size: 1.05rem;
+  color: var(--ink);
+}
+.beats .b { display: block; margin-top: 0.22rem; font-size: 0.78rem; color: var(--mute); }
+.beats li.kill { border-top-color: var(--rose); }
+.beats li.kill .t { color: var(--rose); }
+.beats li.money { border-top-color: var(--brass); }
+.beats li.money .t { color: var(--brass); }
+
+/* the event log — what the engine records */
+.eventlog { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 0.74rem; }
+.eventlog th {
+  font-size: 0.6rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--mute);
+  text-align: left;
+  font-weight: 500;
+  padding: 0 1.2rem 0.45rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+.eventlog td {
+  padding: 0.3rem 1.2rem 0.3rem 0;
+  border-bottom: 1px solid var(--rule);
+  white-space: nowrap;
+  color: var(--body);
+}
+.eventlog td.seq { color: var(--rule-2); }
+.eventlog td.type { color: var(--brass); }
+.eventlog td.sig { color: var(--ink); }
+.eventlog tr.dots td { color: var(--rule-2); border-bottom: 0; }
+
+/* numbered steps — the ledger, as a flow */
+.steps {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem 2.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.steps li {
+  display: grid;
+  grid-template-columns: 2.1rem minmax(0, 1fr);
+  gap: 0.7rem;
+  align-items: baseline;
+  padding: 0.42rem 0;
+  border-bottom: 1px solid var(--rule);
+  font-size: 0.86rem;
+}
+.steps .n {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--rule-2);
+  letter-spacing: 0.08em;
+}
+.steps .what { color: var(--ink); }
+.steps .why { color: var(--mute); }
+.steps li.money { border-bottom-color: var(--brass-d); }
+.steps li.money .n, .steps li.money .what { color: var(--brass); }
+.steps li.gate .n { color: var(--rose); }
+
+/* architecture diagram */
+.arch { margin: 0.3rem 0 1.2rem; }
+.arch-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.9rem; }
+.svc, .inf {
+  background: var(--lift);
+  border: 1px solid var(--rule);
+  padding: 0.7rem 0.85rem;
+}
+.svc { border-top: 2px solid var(--rule-2); }
+.svc .svc-name { display: block; font-family: var(--mono); font-size: 0.76rem; color: var(--ink); }
+.svc .port { font-family: var(--mono); font-size: 0.66rem; color: var(--mute); }
+.svc .lib {
+  display: inline-block;
+  margin-top: 0.5rem;
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+  color: var(--brass);
+  border: 1px solid var(--brass-d);
+  padding: 0.1rem 0.4rem;
+}
+.arch-band {
+  position: relative;
+  margin: 0.85rem 0;
+  border-top: 1px solid var(--rule);
+  text-align: center;
+}
+.arch-band span {
+  position: relative;
+  top: -0.62em;
+  background: var(--ground);
+  padding: 0 0.8rem;
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--mute);
+}
+.inf { border-top: 2px solid var(--brass-d); }
+.inf .spi { display: block; font-family: var(--mono); font-size: 0.74rem; color: var(--brass); }
+.inf .impl { font-family: var(--mono); font-size: 0.66rem; color: var(--mute); }
+
+.hint {
+  position: absolute;
+  right: 1.3rem;
+  bottom: 0.9rem;
+  font-family: var(--mono);
+  font-size: 0.58rem;
+  letter-spacing: 0.12em;
+  color: var(--rule-2);
+  user-select: none;
+}
+
+/* ---------- presenter panel ------------------------------------------- */
+
+body.presenting .slide { padding-top: 4vh; padding-bottom: 31vh; }
+#presenter {
+  display: none;
+  position: fixed;
+  left: 5.25rem; right: 0; bottom: 0;
+  height: 30vh;
+  background: var(--lift);
+  border-top: 1px solid var(--rule-2);
+  padding: 1rem 1.4rem;
+  gap: 1.4rem;
+  grid-template-columns: minmax(0, 1fr) 30%;
+  z-index: 40;
+}
+body.presenting #presenter { display: grid; }
+#presenter .pane { min-width: 0; min-height: 0; overflow: auto; }
+#presenter .pane.right { display: flex; flex-direction: column; overflow: hidden; }
+#presenter h4 {
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--mute);
+  margin: 0 0 0.5rem;
+  font-weight: 500;
+}
+.p-notes { font-size: 0.8rem; }
+.p-notes p { margin: 0 0 0.6rem; max-width: none; }
+.p-notes strong { color: var(--brass); font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.12em; }
+.p-meta {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  color: var(--mute);
+  display: flex;
+  gap: 1.2rem;
+  margin-bottom: 0.5rem;
+}
+.p-meta .clock { color: var(--brass); }
+.preview {
+  position: relative;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--rule);
+  background: var(--ground);
+}
+.preview-scaler { position: absolute; top: 0; left: 0; transform-origin: top left; }
+.preview-scaler .slide {
+  position: static;
+  display: flex;
+  animation: none;
+  height: 100%;
+  padding-bottom: 7vh;
+}
+
+/* ---------- jump overlay ---------------------------------------------- */
+
+#jump {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(8, 12, 17, 0.9);
+  padding: 12vh 0;
+  justify-content: center;
+  align-items: flex-start;
+}
+#jump.open { display: flex; }
+.jump-panel {
+  width: min(46rem, 88vw);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--lift);
+  border: 1px solid var(--rule-2);
+}
+#jumpInput {
+  appearance: none;
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  padding: 0.9rem 1.1rem;
+  outline: none;
+}
+#jumpInput::placeholder { color: var(--rule-2); }
+#jumpList { list-style: none; margin: 0; padding: 0.4rem 0; overflow-y: auto; }
+#jumpList li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.9rem;
+  padding: 0.42rem 1.1rem;
+  cursor: pointer;
+  font-size: 0.86rem;
+}
+#jumpList li .num {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  color: var(--rule-2);
+  width: 2.2rem;
+  flex: none;
+}
+#jumpList li .act-tag {
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.14em;
+  color: var(--mute);
+  margin-left: auto;
+  flex: none;
+}
+#jumpList li.sel { background: rgba(224, 168, 60, 0.1); }
+#jumpList li.sel .num { color: var(--brass); }
+#jumpList li.sel .title { color: var(--ink); }
+</style>
+</head>
+<body>
+
+<nav id="rail" aria-label="Slide ledger">
+  <div class="rail-count"><span id="railNum">01</span><span class="of">/</span><span id="railTotal" class="of">01</span></div>
+  <div id="railTicks"></div>
+  <div class="rail-brand">MAESTRO</div>
+</nav>
+
+<main id="stage">
+
+  <!-- ============================ ACT I ============================== -->
+
+  <section class="slide" data-act="I" data-act-name="Opening" data-id="title" data-title="Maestro">
+    <p class="eyebrow">Durable workflow engine <span class="sep">/</span> live demo</p>
+    <h1>Maestro</h1>
+    <div class="rule"></div>
+    <p class="lede">Durable, crash-recoverable workflows with no central server —
+      built on the Postgres, Kafka and Valkey you already run.</p>
+    <p class="mono small muted wide">loan origination &middot; three services &middot; five scenarios &middot; six deep dives</p>
+    <div class="notes">
+      <p><strong>SAY:</strong> Everything you are about to see runs as a library inside three
+        ordinary Spring Boot services. There is no workflow server anywhere in this room.</p>
+      <p><strong>DO:</strong> §0 pre-flight is already done — stack is up. If you want proof on
+        screen: <code>docker compose -f demo/docker-compose.yml ps</code>.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="I" data-act-name="Opening" data-id="problem" data-title="The problem, in business terms">
+    <p class="eyebrow">Act I <span class="sep">/</span> the problem</p>
+    <h2>A mortgage is not a request and a response.</h2>
+    <p class="lede">It is the process from a borrower applying to money leaving
+      the lender&rsquo;s account &mdash; and it runs for <span class="brass">days to weeks</span>.</p>
+    <div class="cols cols-3">
+      <div class="card">
+        <h3>It outlives your deployment</h3>
+        <p>A loan in flight will be redeployed to, restarted, and crashed into.
+          The process has to survive all three without a human reconstructing it.</p>
+      </div>
+      <div class="card">
+        <h3>Nobody coordinates</h3>
+        <p>Borrower and co-borrower act independently. Credit, employment and
+          appraisal providers answer in any order, at any latency &mdash; and
+          sometimes twice. A human underwriter may never answer at all.</p>
+      </div>
+      <div class="card accent">
+        <h3>It ends in money</h3>
+        <p>A rate lock is reserved and funds are disbursed. Those two steps cost
+          real money and are expensive to undo, so &ldquo;just run it again&rdquo;
+          is not an available answer.</p>
+      </div>
+    </div>
+    <div class="notes">
+      <p><strong>SAY:</strong> Loan origination is not a contrived example picked to flatter a
+        workflow engine &mdash; it is the canonical shape of the problem workflow engines exist
+        for. Long-running, uncoordinated parties, irreversible ending. Every awkward property
+        of it maps onto something the engine has to get right.</p>
+      <p><strong>DO:</strong> Nothing live. This is the framing before §1.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="I" data-act-name="Opening" data-id="flow" data-title="The flow — eight steps">
+    <p class="eyebrow">Act I <span class="sep">/</span> the flow <span class="sep">/</span> <em>LoanApplicationWorkflow</em></p>
+    <h2>Eight steps. Everything you see today happens inside them.</h2>
+    <ol class="steps">
+      <li><span class="n">01</span><span><span class="what">Validate and record</span> <span class="why">&mdash; the application becomes durable state.</span></span></li>
+      <li><span class="n">02</span><span><span class="what">Fan out three verifications</span> <span class="why">&mdash; credit, employment, appraisal.</span></span></li>
+      <li><span class="n">03</span><span><span class="what">Fan in, in any order</span> <span class="why">&mdash; one signal name, loop until all three types have arrived. Duplicates tolerated.</span></span></li>
+      <li><span class="n">04</span><span><span class="what">Collect documents</span> <span class="why">&mdash; from either borrower, in any order.</span></span></li>
+      <li class="gate"><span class="n">05</span><span><span class="what">Withdrawal gate #1</span> <span class="why">&mdash; nothing reserved yet, so withdrawing fails cleanly with no compensation.</span></span></li>
+      <li><span class="n">06</span><span><span class="what">Underwriting, up to three rounds</span> <span class="why">&mdash; approved, rejected, or conditions. Conditions means &ldquo;more paperwork&rdquo; and another round.</span></span></li>
+      <li class="money"><span class="n">07</span><span><span class="what">The funding saga</span> <span class="why">&mdash; reserve rate lock &rarr; collect signatures &rarr; disburse. Withdrawal gate #2 sits just before disbursement; compensation releases the lock.</span></span></li>
+      <li><span class="n">08</span><span><span class="what">Complete</span> <span class="why">&mdash; the loan is funded.</span></span></li>
+    </ol>
+    <p class="mono small muted wide" style="margin-top:1.1rem">
+      loan-application-service :8091 orchestrates &nbsp;&middot;&nbsp;
+      verification-gateway-service :8092 plays the three providers &nbsp;&middot;&nbsp;
+      underwriting-service :8093 holds the humans
+    </p>
+    <div class="notes">
+      <p><strong>SAY:</strong> Keep this shape in your head. The five scenarios are all the same
+        eight steps under different pressure &mdash; a crash, a withdrawal, a deploy. Note step 5
+        and step 7: cancellation is honoured at <em>defined</em> points, and where the gate sits
+        decides whether money has to be cleaned up. That is a business decision, made explicit
+        in code.</p>
+      <p><strong>DO:</strong> Nothing live. This is the spine of §1 &mdash; the next slide after
+        the architecture goes straight to it.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="I" data-act-name="Opening" data-id="pressure" data-title="What the domain forces">
+    <p class="eyebrow">Act I <span class="sep">/</span> why this domain</p>
+    <h2>Every awkward property forces something the engine must prove.</h2>
+    <table class="ledger">
+      <thead><tr><th style="width:44%">Domain property</th><th>What it forces</th></tr></thead>
+      <tbody>
+        <tr><td>Runs for days; outlives any deployment</td><td>Durable state, crash recovery, resume mid-flight</td></tr>
+        <tr><td>Third parties answer out of order, twice, or before you are ready</td><td>Signals persisted immediately; orphaned signals adopted; never discard one</td></tr>
+        <tr><td>A human may simply never respond</td><td>Durable timers, with escalation</td></tr>
+        <tr><td>Rate lock and disbursement move money</td><td>Saga compensation, and idempotent activities</td></tr>
+        <tr><td>Three services own their own state</td><td>Orchestration within a service, choreography between</td></tr>
+        <tr><td>It will be deployed to mid-flight</td><td>Versioning, and safety in the mixed-version window</td></tr>
+      </tbody>
+    </table>
+    <div class="notes">
+      <p><strong>SAY:</strong> This table is the demo&rsquo;s running order. Every row on the left
+        is a business fact anyone in this room recognises; every row on the right is something
+        you are about to watch happen on a live system rather than take on trust.</p>
+      <p><strong>DO:</strong> Nothing live. Right-hand column maps to §2 (recovery), §4
+        (compensation), §D1 (versioning), §D6 (multi-node).</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="I" data-act-name="Opening" data-id="architecture" data-title="Architecture — there is no server">
+    <p class="eyebrow">Act I <span class="sep">/</span> architecture <span class="sep">/</span> <em>&sect;D4</em></p>
+    <h2>There is no server.</h2>
+    <div class="arch">
+      <div class="arch-row">
+        <div class="svc"><span class="svc-name">loan-application-service</span> <span class="port">:8091</span><br><span class="lib">maestro on the classpath</span></div>
+        <div class="svc"><span class="svc-name">verification-gateway-service</span> <span class="port">:8092</span><br><span class="lib">maestro on the classpath</span></div>
+        <div class="svc"><span class="svc-name">underwriting-service</span> <span class="port">:8093</span><br><span class="lib">maestro on the classpath</span></div>
+      </div>
+      <div class="arch-band"><span>three SPIs</span></div>
+      <div class="arch-row">
+        <div class="inf"><span class="spi">WorkflowStore</span><span class="impl">Postgres &mdash; the truth</span></div>
+        <div class="inf"><span class="spi">WorkflowMessaging</span><span class="impl">Kafka &mdash; tasks and signals</span></div>
+        <div class="inf"><span class="spi">DistributedLock</span><span class="impl">Valkey &mdash; an optimisation</span></div>
+      </div>
+    </div>
+    <div class="cols cols-2">
+      <div class="card">
+        <h3>Nothing to operate</h3>
+        <p>Maestro is a library in your service. No cluster to run, no control
+          plane to upgrade, nothing to page anyone about at 3am. Swap the SPIs and
+          the same workflow code runs Postgres-only, with zero external dependencies.</p>
+      </div>
+      <div class="card accent">
+        <h3>Postgres is truth; Valkey is optimisation</h3>
+        <p>Every lock is best-effort. If one is lost, the unique event index still
+          prevents a duplicate <em>persisted</em> result &mdash; which is why activities
+          must be idempotent, and why we say that out loud rather than claiming
+          exactly-once.</p>
+      </div>
+    </div>
+    <div class="notes">
+      <p><strong>SAY:</strong> Four sentences. One: there is no server &mdash; Maestro is a
+        library in your service. Two: three SPIs &mdash; <code>WorkflowStore</code>,
+        <code>WorkflowMessaging</code>, <code>DistributedLock</code>; this demo runs Postgres,
+        Kafka and Valkey, and the same code runs Postgres-only. Three: Postgres is truth,
+        Valkey is an optimisation, and locks are best-effort, which is why activities must be
+        idempotent. Four: orchestration within a service, choreography between them &mdash;
+        each service owns its own database, and what crosses the wire is domain events.</p>
+      <p><strong>DO:</strong> &sect;D4 &mdash; <code>docker compose -f demo/docker-compose.yml ps</code>.
+        Six containers, none of them Maestro (a seventh, kafka-init, created the topics and
+        exited). If asked about footprint: the whole demo peaked
+        at 2.42 GiB &mdash; the true simultaneous peak across all 11 components, five host JVMs
+        included &mdash; against a ~4 GB budget
+        (<code>demo/.evidence/task-6-peak-memory.log</code>).</p>
+    </div>
+  </section>
+
+  <!-- ============================ ACT II ============================= -->
+
+  <section class="slide" data-act="II" data-act-name="Scenarios" data-id="scenario-1" data-title="Scenario 1 — one loan, three services">
+    <p class="eyebrow">Act II <span class="sep">/</span> scenario 1 <span class="sep">/</span> <em>&sect;1</em></p>
+    <h2>The event log <em style="font-style:normal;color:var(--brass)">is</em> the workflow&rsquo;s memory.</h2>
+    <div class="cols cols-2" style="align-items:start">
+      <div>
+        <p>One loan, driven end to end. It crosses all three services and comes
+          back <strong>FUNDED</strong>, with a rate lock id and a disbursement id.</p>
+        <p>Status moves <code>RUNNING</code> &rarr; <code>WAITING_SIGNAL</code> &rarr;
+          <code>COMPLETED</code> on the dashboard. Then open the instance: sequence
+          numbers, one row per completed activity, one row per signal received.</p>
+        <p class="small muted">There is a hard floor of about 8 s in every run &mdash;
+          the appraisal provider simulates 8 s of latency. Measured 14&ndash;20 s
+          end to end; budget 30 so you are never waiting on it.</p>
+      </div>
+      <div>
+        <table class="eventlog">
+          <thead><tr><th>seq</th><th>type</th><th>detail</th></tr></thead>
+          <tbody>
+            <tr><td class="seq">1</td><td class="type">ACTIVITY_COMPLETED</td><td>LoanActivities.recordApplication</td></tr>
+            <tr><td class="seq">2</td><td class="type">ACTIVITY_COMPLETED</td><td>LoanMessagingActivities.requestVerifications</td></tr>
+            <tr><td class="seq">3</td><td class="type">SIGNAL_RECEIVED</td><td class="sig">$maestro:awaitSignal:verification.result</td></tr>
+            <tr class="dots"><td>&hellip;</td><td>&hellip;</td><td>&hellip;</td></tr>
+            <tr><td class="seq">12</td><td class="type">ACTIVITY_COMPLETED</td><td>FundingActivities.reserveRateLock</td></tr>
+            <tr><td class="seq">13</td><td class="type">SIDE_EFFECT</td><td class="sig">$maestro:currentTime</td></tr>
+            <tr><td class="seq">14</td><td class="type">SIDE_EFFECT</td><td class="sig">$maestro:currentTime</td></tr>
+            <tr><td class="seq">15</td><td class="type">SIGNAL_RECEIVED</td><td class="sig">$maestro:awaitSignal:package.signed</td></tr>
+            <tr><td class="seq">16</td><td class="type">SIGNAL_TIMEOUT</td><td class="sig">$maestro:awaitSignal:application.withdrawn</td></tr>
+            <tr><td class="seq">17</td><td class="type">ACTIVITY_COMPLETED</td><td>FundingActivities.disburse</td></tr>
+            <tr><td class="seq">18</td><td class="type">WORKFLOW_COMPLETED</td><td>&nbsp;</td></tr>
+          </tbody>
+        </table>
+        <p class="mono small muted wide" style="margin-top:.6rem">
+          the v1 log, in order &mdash; rows 4&ndash;11 elided; read the live one off /admin/workflows
+        </p>
+      </div>
+    </div>
+    <div class="notes">
+      <p><strong>SAY:</strong> Sequence numbers, activity names, signal names. This table is not
+        a log for humans to read after the fact &mdash; it is the workflow&rsquo;s memory. On
+        recovery the engine walks it and every completed step returns its stored result instead
+        of running again. And during the wait: the workflow is not running right now. It is a row
+        in Postgres. No thread is parked, no timer is held in memory &mdash; if I killed this
+        process during this pause you would not be able to tell afterwards.</p>
+      <p><strong>BEFORE THE FIRST COMMAND &mdash; &sect;0.2, every single time.</strong> The
+        runbook's rule #1: nothing on screen is trusted until the process-identity table matches.
+        Re-print it with the one-liner in &sect;0.2 and check every PID is alive and
+        <code>loan-application started at:</code> is from this session. A previous cycle demoed a
+        stale JVM for four minutes before anyone noticed.</p>
+      <p><strong>DO:</strong> &sect;1 &mdash; <code>demo/scripts/drive-loan.sh happy</code>. Then
+        <code>localhost:8080/admin/workflows</code>, click the id, point at the event log.</p>
+      <p><strong>WATCH OUT:</strong> nobody approves this one. DTI 2.0 is below the 3.0
+        auto-approve line, so the desk decides it without a human &mdash; do not go looking in the
+        pending queue. FALLBACK if a provider is slow: switch to any earlier COMPLETED instance,
+        or <code>demo/scripts/drive-loan.sh events &lt;id&gt;</code>.</p>
+      <p><strong>IF ASKED about rows 13/14 or 16:</strong> the two
+        <code>SIDE_EFFECT $maestro:currentTime</code> rows are the <em>engine</em> memoising its
+        own clock to fix <code>collectSignals(&hellip;)</code>'s timeout deadline &mdash; that is
+        &sect;D5's material, arriving early. <code>SIGNAL_TIMEOUT</code> on
+        <code>application.withdrawn</code> is the withdrawal gate: a short await that nobody
+        signalled, so it timed out and the loan carried on. That is the &sect;4 path
+        <em>not</em> taken.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="II" data-act-name="Scenarios" data-id="scenario-2" data-title="Scenario 2 — kill -9">
+    <p class="eyebrow">Act II <span class="sep">/</span> scenario 2 <span class="sep">/</span> <em>&sect;2</em></p>
+    <h1><span class="mono rose" style="font-size:.8em">kill -9</span> mid-loan.<br>It resumes at the exact step.</h1>
+    <ol class="beats">
+      <li><span class="t">17 s</span><span class="b">the loan parks mid-flight, holding a lock</span></li>
+      <li class="kill"><span class="t">instant</span><span class="b"><code>kill -9</code> &mdash; no drain, no shutdown hook</span></li>
+      <li><span class="t">5 s</span><span class="b">restart the one process that died</span></li>
+      <li class="money"><span class="t">40 s</span><span class="b">FUNDED &mdash; nothing re-executed</span></li>
+    </ol>
+    <div class="cols cols-2">
+      <div class="card accent">
+        <h3>Proof 1 &mdash; the rows are byte-identical</h3>
+        <p>Phase 1 snapshots the event rows before the kill. Phase 3 re-reads them
+          after recovery and diffs. <strong>The diff is empty.</strong> Nothing was
+          rewritten, renumbered, or re-executed.</p>
+      </div>
+      <div class="card accent">
+        <h3>Proof 2 &mdash; duplicate sequence numbers: 0</h3>
+        <p>Every activity that ran before the crash has exactly one row. Both proofs
+          are assertions: if either fails the script exits non-zero and prints the
+          offending diff.</p>
+      </div>
+    </div>
+    <div class="notes">
+      <p><strong>SAY:</strong> No graceful shutdown. No drain. SIGKILL &mdash; the process cannot
+        run a shutdown hook even if it wanted to. Then we restart it and tell it to finish the
+        loan. It funds. And the proof is not my word: the rows recorded before the kill are
+        byte-identical afterwards, and there are zero duplicate sequence numbers.</p>
+      <p><strong>DO &mdash; stop before the fourth command.</strong> &sect;2 in order:
+        <code>demo/scripts/drive-loan.sh crash</code> (prints the id and the next two commands),
+        then <code>kill -9 $(cat demo/.run/loan-application-service.pid)</code>, then
+        <code>demo/scripts/restart-loan-app.sh</code>. <strong>Advance to the next slide, THEN
+        run</strong> <code>demo/scripts/drive-loan.sh finish &lt;id&gt;</code> &mdash; the 33 s
+        pause happens inside <code>finish</code>, and the next slide is the narration for it.
+        Run all four here and you have missed the window slide 8 exists for.</p>
+      <p><strong>WATCH OUT:</strong> not <code>start-services.sh</code> &mdash; it starts all four
+        JVMs and refuses to run while any port is taken, and 8092/8093/8080 are still healthy.
+        Read the row count off the screen rather than promising a number; it depends on how many
+        signals landed before the kill. Budget 90 s including what you say.</p>
+      <p><strong>FALLBACK:</strong> &ldquo;Recovery is on a poll interval and we have just caught it
+        between polls &mdash; the important artefact is the event log, which is unchanged by the
+        crash.&rdquo; Then <code>demo/scripts/drive-loan.sh events &lt;id&gt;</code> and point at the
+        contiguous sequence numbers. If the service will not restart:
+        <code>demo/scripts/reset.sh</code> and move to scenario 3 &mdash; do not retry the crash
+        live.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="II" data-act-name="Scenarios" data-id="the-pause" data-title="Scenario 2 — narrating the pause">
+    <p class="eyebrow">Act II <span class="sep">/</span> scenario 2 <span class="sep">/</span> <em>&sect;2</em> <span class="sep">/</span> the pause</p>
+    <h2>The silence is the engine deciding it is <em style="font-style:normal;color:var(--brass)">allowed</em> to resume.</h2>
+    <ol class="steps" style="grid-template-columns:minmax(0,1fr)">
+      <li><span class="n">01</span><span><span class="what">The lock expires</span> <span class="why">&mdash; the node that owned this workflow died holding it. Nobody can hand it over; nothing got the chance to release it.</span></span></li>
+      <li><span class="n">02</span><span><span class="what">A recovery poll notices the workflow is unowned</span> <span class="why">&mdash; the restarted process here, a surviving peer in a real cluster. Same mechanism either way.</span></span></li>
+      <li><span class="n">03</span><span><span class="what">The workflow method is re-invoked from its first line</span> <span class="why">&mdash; every completed activity returns its stored result out of Postgres. No HTTP call, no Kafka publish. Replay runs at memory speed.</span></span></li>
+      <li class="money"><span class="n">04</span><span><span class="what">Real work resumes at the first step with no stored result</span> <span class="why">&mdash; the resume itself is instantaneous.</span></span></li>
+    </ol>
+    <div class="cols cols-2" style="margin-top:1.2rem">
+      <div class="card">
+        <h3>How fast does it recover? Answer with the knob</h3>
+        <p>&ldquo;As fast as you configure it to notice.&rdquo; The demo sets the recovery
+          poll to <strong>5 s</strong> so it is watchable; the shipped default is
+          <strong>60 s</strong>, and at that default this same phase measured 250 s.</p>
+      </div>
+      <div class="card">
+        <h3>The residual 33 s is Kafka&rsquo;s, not Maestro&rsquo;s</h3>
+        <p>A <code>kill -9</code> leaves the broker believing the dead consumer is still
+          a live group member until <code>session.timeout.ms</code> (45 s, confirmed on this
+          broker) runs out. The restarted node cannot be assigned the decisions topic until the
+          group rebalances: measured <strong>37.2 s</strong> to rejoin after a <code>kill -9</code>,
+          against <strong>3.0 s</strong> after a <em>clean</em> restart.</p>
+      </div>
+    </div>
+    <div class="notes">
+      <p><strong>SAY</strong> (start the moment <code>waiting for the rate lock</code> appears &mdash;
+        do not stand quietly through this, it reads as a hang): Watch what has to happen before
+        that line appears. The node that owned this workflow died holding a lock, so first that
+        lock has to expire &mdash; nobody can hand it over, because nothing got a chance to
+        release it. Then a recovery poll has to notice the workflow is unowned and take it. Then
+        the workflow method is re-invoked from the very first line, and every activity that
+        already completed returns its stored result out of Postgres instantly. It runs the replay
+        at memory speed until it reaches the first step with no stored result, and only then does
+        real work happen again. Everything you are waiting for right now is the engine deciding
+        it is allowed to resume &mdash; the resume itself is instantaneous.</p>
+      <p><strong>SAY</strong> when the rate lock line lands: There it is. And the proof is on the
+        next screen &mdash; the rows recorded before the kill are byte-identical.</p>
+      <p><strong>DO:</strong> &sect;2, during <code>demo/scripts/drive-loan.sh finish</code>. Nothing to click:
+        this slide is what you say while the terminal is quiet.</p>
+      <p><strong>WATCH OUT:</strong> the honest answer if asked about the 33 s is that the recovery
+        mechanism was ready long before the message bus was. Do not let it read as Maestro being
+        slow, and do not quote a recovery number without the poll interval attached.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="II" data-act-name="Scenarios" data-id="scenario-3" data-title="Scenario 3 — the trace">
+    <p class="eyebrow">Act II <span class="sep">/</span> scenario 3 <span class="sep">/</span> <em>&sect;3</em></p>
+    <h2>One trace. Three services. A gap where nothing was running.</h2>
+    <div class="cols cols-3">
+      <div class="card">
+        <h3>It crosses process boundaries</h3>
+        <p>Three service colours in a single trace. The workflow leaves one JVM,
+          runs in another, and comes back &mdash; and the trace does not break.</p>
+      </div>
+      <div class="card accent">
+        <h3>The gap in the middle</h3>
+        <p>That silence is the workflow <strong>parked</strong>, durably, awaiting a
+          signal. Time passes inside one trace with no thread held open and nothing
+          in memory.</p>
+      </div>
+      <div class="card">
+        <h3>Nothing was hand-instrumented</h3>
+        <p>These are the engine&rsquo;s own spans plus Spring&rsquo;s. No demo-only
+          tracing was added to make this picture.</p>
+      </div>
+    </div>
+    <p class="mono small muted wide" style="margin-top:1.3rem">
+      archived example, uncrashed happy loan &nbsp; <span class="brass">0f99a173c6c6047e20e0357c254393f8</span> &nbsp; spans=31
+      <br>services: sample-loan-application-service &middot; sample-verification-gateway-service &middot; sample-underwriting-service
+    </p>
+    <div class="notes">
+      <p><strong>SAY</strong> during the 30 s flush: Give the collector a moment &mdash; three
+        separate JVMs are batching their spans independently. While it lands: nothing in this
+        trace was hand-instrumented for the demo. It is the engine&rsquo;s own spans plus
+        Spring&rsquo;s.</p>
+      <p><strong>DO:</strong> &sect;3, against an <strong>uncrashed</strong> loan &mdash; &sect;1's,
+        not &sect;2's &mdash; roughly 30 s after it completed. <code>open http://localhost:16686/search?service=sample-loan-application-service</code>.
+        Point at: the three service colours, the gap in the middle, then individual activity
+        span durations.</p>
+      <p><strong>WATCH OUT &mdash; two traps.</strong> (1) Do <em>not</em> point at the three
+        verification request spans as evidence of anything concurrent: the send fan-out looks
+        identical in v1 and v2 (offsets 24 / 36 / 46 ms in the archived v1 trace). What changes in
+        v2 is what the workflow <em>waits on</em>, not what it sends &mdash; that is D1&rsquo;s
+        material, not this slide&rsquo;s. (2) Any JVM restart splits the trace in two, so run this
+        against a loan that was <em>not</em> crashed, or say up front that a restarted workflow
+        produces two traces and show both.</p>
+      <p><strong>IF ASKED &ldquo;is the Kafka tracing real, or did you special-case it?&rdquo;</strong>
+        (&sect;Q, and it is the one hostile question this slide invites) &mdash; it is real, with one
+        honest caveat, filed as <strong>Issue 23</strong>: Maestro's <code>maestroKafkaTemplate</code>
+        suppresses Boot's, so <code>spring.kafka.template.observation-enabled</code> is inert for all
+        users, and <code>@MaestroSignalListener</code> does not extract trace context on domain
+        topics. The producer-side workaround is a <code>@Bean</code>
+        (<code>ObservedKafkaTemplateConfig</code>), <em>not</em> the property. A library defect with
+        a documented workaround, not a demo trick. Full wording: RUNBOOK &sect;Q.</p>
+      <p><strong>FALLBACK:</strong> &ldquo;The collector hasn&rsquo;t flushed yet &mdash; here is
+        the same trace from this morning&rsquo;s run.&rdquo; &rarr;
+        <code>demo/.evidence/task-2-jaeger-cross-service-trace.log</code>.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="II" data-act-name="Scenarios" data-id="scenario-4" data-title="Scenario 4 — saga compensation">
+    <p class="eyebrow">Act II <span class="sep">/</span> scenario 4 <span class="sep">/</span> <em>&sect;4</em></p>
+    <h2>The borrower pulls out after the rate lock. The money unwinds itself.</h2>
+    <ol class="beats" style="grid-template-columns:repeat(3,minmax(0,1fr))">
+      <li class="money"><span class="t">reserve</span><span class="b">&ldquo;Reserved rate lock at 5.25%&rdquo; &mdash; money is now committed</span></li>
+      <li class="kill"><span class="t">withdraw</span><span class="b">the withdrawal lands <em>after</em> that, at gate #2</span></li>
+      <li class="money"><span class="t">release</span><span class="b">&ldquo;COMPENSATION: released rate lock&rdquo; &mdash; automatically</span></li>
+    </ol>
+    <div class="cols cols-2">
+      <div class="card">
+        <h3>The author wrote no rollback path</h3>
+        <p>They annotated <code>reserveRateLock</code> with
+          <code>@Compensate("releaseRateLock")</code> and threw an exception. The engine
+          unwound the compensation stack <strong>LIFO</strong>. Had disbursement already
+          happened, it would have been reversed first, then the rate lock.</p>
+      </div>
+      <div class="card alarm">
+        <h3>The loan ends FAILED &mdash; and that is correct</h3>
+        <p>A withdrawn loan is not a completed loan. The instance is on
+          <code>/admin/failed</code>, and its event log shows the compensation that
+          ran. Failure is recorded, not swept up.</p>
+      </div>
+    </div>
+    <p class="small muted" style="margin-top:1.1rem">Measured 16 s end to end &mdash; verifications 8 s,
+      the underwriting round-trip, then the signature fan-in. Budget 45 s.</p>
+    <div class="notes">
+      <p><strong>SAY:</strong> The workflow author wrote no rollback path. They annotated
+        <code>reserveRateLock</code> with <code>@Compensate("releaseRateLock")</code> and threw an
+        exception. The engine unwound the compensation stack LIFO. If disbursement had already
+        happened it would have reversed that first, then the rate lock. This is the one a
+        non-engineer feels: nobody wrote the cleanup for this particular path, and the money-adjacent
+        step still came back out.</p>
+      <p><strong>DO:</strong> &sect;4 &mdash; <code>demo/scripts/drive-loan.sh withdraw</code>. This
+        one <em>does</em> queue for a human (DTI 4.0) and the script posts the approval for you.
+        Point at, in order: the <code>Reserved rate lock ... at 5.25%</code> line, the withdrawal
+        going in after it, the <code>COMPENSATION: released rate lock</code> line, then
+        <code>localhost:8080/admin/failed</code> and its event log.</p>
+      <p><strong>HONEST DETAIL if asked:</strong> <code>reverseDisbursement</code> is wired but
+        unreachable in this sample &mdash; <code>disburse</code> is the last step, so nothing fails
+        after it. It is there to show LIFO ordering, not because the sample exercises it.</p>
+      <p><strong>FALLBACK:</strong> &ldquo;The signature fan-in is what pushes it into the second
+        withdrawal gate and it hasn&rsquo;t landed yet &mdash; here is a completed compensation.&rdquo;
+        &rarr; <code>grep -a COMPENSATION demo/.run/loan-application-service.log</code>.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="II" data-act-name="Scenarios" data-id="scenario-5" data-title="Scenario 5 — parked costs nothing">
+    <p class="eyebrow">Act II <span class="sep">/</span> scenario 5 <span class="sep">/</span> <em>&sect;5</em></p>
+    <h2>It climbs, and it comes back to zero.</h2>
+    <p class="lede" style="max-width:44ch">Three loans at once. The parked count rises &mdash;
+      and parked workflows cost nothing. No threads, no timers, no memory.</p>
+    <table class="ledger">
+      <thead><tr><th style="width:38%">Panel</th><th>What to say</th></tr></thead>
+      <tbody>
+        <tr><td>Workflows started / completed / failed</td><td>started and completed track each other; failures are flat</td></tr>
+        <tr><td class="brass">Workflows parked</td><td class="brass">this is the number that matters &mdash; parked workflows cost nothing</td></tr>
+        <tr><td>Activity duration p50 / p95</td><td>the appraisal provider&rsquo;s 8 s latency is visible, and it is not the engine&rsquo;s</td></tr>
+        <tr><td>Recovery adoptions</td><td>non-zero only after scenario 2 or D6</td></tr>
+        <tr><td>Stand-downs by reason</td><td>flat at zero &mdash; no workflow hit an event it could not interpret</td></tr>
+      </tbody>
+    </table>
+    <p class="mono small muted wide" style="margin-top:1.1rem">
+      measured with three loans: peak <span class="brass">12</span> at ~t+6 s &nbsp;&middot;&nbsp;
+      back to <span class="brass">0</span> at ~t+18 s &nbsp;&middot;&nbsp; sampled every 3 s; Prometheus scrapes every 5 s, so give it two
+    </p>
+    <div class="notes">
+      <p><strong>SAY:</strong> Each loan parks a workflow in the loan service, one in
+        verification-gateway and one in underwriting &mdash; so the count climbs to roughly three
+        times the loans in flight, and then it comes back to zero. Promise the shape, not the
+        number: 9 is the arithmetic (3 loans &times; 3 workflows), the measured run read 12,
+        because the loans overlap and a workflow left parked from the previous scenario still
+        counts.</p>
+      <p><strong>DO:</strong> &sect;5 &mdash;
+        <code>for i in 1 2 3; do demo/scripts/drive-loan.sh happy "load-$i" &amp; sleep 1; done</code>,
+        then <code>open http://localhost:3000</code>. Five panels, three rows; parked sits beside
+        started/completed/failed on the top row.</p>
+      <p><strong>SAY BEFORE ANYONE ASKS &mdash; two things.</strong> (1) Stand-downs by reason reads
+        zero, and that is the correct answer: the panel carries a deliberate <code>vector(0)</code>
+        series so it draws a flat line instead of &ldquo;No data&rdquo;. Honest caveat: a misspelled
+        metric name would look exactly the same &mdash; these names were verified against a live
+        scrape. (2) maestro-admin is not on this dashboard and never will be: its jar carries no
+        Micrometer Prometheus registry, so its actuator returns 404. It is a dashboard, not a
+        scrape target.</p>
+      <p><strong>FALLBACK:</strong> &ldquo;Grafana reads Prometheus on a 5-second scrape and we are
+        inside the first interval.&rdquo; &rarr; <code>localhost:9090/targets</code> to show three
+        services UP, then query <code>maestro_workflows_parked</code> directly.</p>
+    </div>
+  </section>
+
+  <!-- =========================== ACT III ============================= -->
+
+  <section class="slide" data-act="III" data-act-name="Deep dives" data-id="d1" data-title="D1 — the rolling deploy">
+    <p class="eyebrow">Act III <span class="sep">/</span> deep dive 1 <span class="sep">/</span> <em>&sect;D1</em></p>
+    <h1>A deploy, under a loan that is already running.</h1>
+    <ol class="beats">
+      <li><span class="t">v1</span><span class="b">a loan starts and records a verification result</span></li>
+      <li class="kill"><span class="t">~7 s</span><span class="b">SIGTERM v1, start v2 on the same port and pid file</span></li>
+      <li><span class="t">in-flight</span><span class="b">the old loan finishes on the <strong>sequential</strong> path</span></li>
+      <li class="money"><span class="t">new</span><span class="b">a fresh loan takes the <strong>parallel</strong> path</span></li>
+    </ol>
+    <div class="cols cols-2">
+      <div class="card">
+        <h3>The in-flight loan never saw the new code</h3>
+        <p>It finishes with <strong>zero</strong> <code>VERSION_MARKER</code> rows and
+          zero events at sequence &ge; 1000. Not "it was careful" &mdash; it was never
+          offered the branch.</p>
+      </div>
+      <div class="card accent">
+        <h3>The new loan fans out</h3>
+        <p>One <code>VERSION_MARKER</code> row, and events in the branch bands. Same
+          class, same fully-qualified name, different jar.</p>
+      </div>
+    </div>
+    <p class="lede" style="max-width:none;margin:1.3rem 0 0;font-size:1.15rem">
+      The v2 change, said precisely: <span class="brass">documents now collect while the
+      verifications are still outstanding.</span></p>
+    <div class="notes">
+      <p><strong>SAY:</strong> This is a rolling deploy with work in flight &mdash; the case
+        everyone asks about and nobody demos. We stop v1 while a loan is mid-flight, start v2 on
+        the same port, and drive the old loan to completion. It keeps its original behaviour, and
+        the loan started after the deploy takes the new one. Neither of them knows the other
+        exists.</p>
+      <p><strong>DO:</strong> &sect;D1 &mdash; <code>demo/scripts/v1-to-v2-move.sh</code>.
+        Everything is scripted and every PIN asserts; a violated assertion exits non-zero and says
+        which. Point at PIN 0 (two jar SHAs, and the <code>parallel-verification</code> string
+        count: 0 in v1, non-zero in v2), PIN 3, PIN 4, then PIN 6's trace ids. Measured 32&ndash;36 s.</p>
+      <p><strong>SAY IT THIS WAY &mdash; two branches, not three.</strong> v2 runs verification
+        collection and document collection concurrently. It is <em>not</em> a three-way
+        verification fan-out: three concurrent branches awaiting the same signal name are
+        impossible on this engine, because the parking lot holds one waiter per
+        <code>workflowId:signal:name</code> key. The line is &ldquo;documents now collect while
+        the verifications are still outstanding.&rdquo;</p>
+      <p><strong>FALLBACK:</strong> &ldquo;The deploy assertion is strict and it has caught
+        something &mdash; which is the point of the assertion. Here is the recorded run.&rdquo; Open
+        <code>demo/.evidence/task-3-live-v1-to-v2-move.log</code>, then
+        <code>RESTORE_V1=1 demo/scripts/v1-to-v2-move.sh</code> before continuing.</p>
+      <p><strong>AFTER D1, ALWAYS &mdash; and the two options are not interchangeable.</strong>
+        Continuing into D2/D5 (the next two slides): <code>RESTORE_V1=1
+        demo/scripts/v1-to-v2-move.sh</code> (6 s), which swaps the jar back and leaves your
+        completed loans in place. Only if you are stopping or restarting the whole sequence:
+        <code>demo/scripts/reset.sh</code> (21-22 s) &mdash; it <em>truncates the Maestro tables</em>,
+        and D2 and D5 both read a completed loan out of that event log. Either way, do one: leaving
+        v2 running poisons every later event log with branch-band sequence numbers, and D2's
+        walk-through will not match what you say. Prerequisite: both jars must already exist
+        &mdash; the script does not build.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="III" data-act-name="Deep dives" data-id="d1-traces" data-title="D1 — the two trace shapes">
+    <p class="eyebrow">Act III <span class="sep">/</span> deep dive 1 <span class="sep">/</span> <em>&sect;D1</em> <span class="sep">/</span> the shapes</p>
+    <h2>Same workflow class. Two shapes.</h2>
+    <div class="cols cols-2">
+      <div class="trace">
+        <h3>v1 &mdash; sequential</h3>
+        <div class="row"><span class="lbl" style="left:0">verifications</span><span class="span" style="left:0;width:46%"></span></div>
+        <div class="row"><span class="lbl" style="left:48%">documents</span><span class="span" style="left:48%;width:22%"></span></div>
+        <div class="row"><span class="lbl" style="left:72%">underwriting</span><span class="span" style="left:72%;width:28%"></span></div>
+        <div class="axis"><span>b39b554f4c94c659f68468588295431c</span><span>spans=20</span></div>
+      </div>
+      <div class="trace">
+        <h3>v2 &mdash; two branches</h3>
+        <div class="row"><span class="lbl" style="left:0">verifications</span><span class="span accent" style="left:0;width:46%"></span></div>
+        <div class="row"><span class="lbl" style="left:6%">documents</span><span class="span accent" style="left:6%;width:22%"></span></div>
+        <div class="row"><span class="lbl" style="left:48%">underwriting</span><span class="span" style="left:48%;width:28%"></span></div>
+        <div class="axis"><span>5c79c33935721eb3afe5f9ae8ca742f5</span><span>spans=28</span></div>
+      </div>
+    </div>
+    <p class="mono small muted wide" style="margin-top:.7rem">schematic &mdash; the shape, not the timings</p>
+    <div class="cols cols-2" style="margin-top:1.2rem">
+      <div class="card">
+        <h3>The branch bands are visible in the event log</h3>
+        <p>Parallel branches partition the sequence space by
+          <code>p*1000 + (i+1)*1000</code>. With the fork at parent sequence 4:
+          branch 0 allocates from <span class="brass">5001</span>, branch 1 from
+          <span class="brass">6001</span>, and the parent resumes at
+          <span class="brass">7001</span>. See those bands and you are looking at v2.</p>
+      </div>
+      <div class="card">
+        <h3>Predict two traces before you open Jaeger</h3>
+        <p>Restarting the JVM ends the first trace. The in-flight loan appears as a
+          13-span fragment plus a 20-span continuation; the v2-native loan is a single
+          28-span trace. A presenter who promises one trace and finds two looks wrong.</p>
+      </div>
+    </div>
+    <div class="notes">
+      <p><strong>SAY:</strong> Same class, same fully-qualified name. On the left the workflow
+        waits for verifications and only then starts collecting documents. On the right those two
+        overlap &mdash; documents collect while the verifications are still outstanding. That is
+        the whole of the v2 change, and the in-flight loan on the left never got offered it.</p>
+      <p><strong>DO:</strong> &sect;D1 PIN 6 prints both loans' trace ids &mdash; open them side by
+        side. Archived reference:
+        <code>b39b554f4c94c659f68468588295431c spans=20</code> against
+        <code>5c79c33935721eb3afe5f9ae8ca742f5 spans=28</code>, plus the pre-swap fragment
+        <code>ec798a7ed25b754fae81371d77cdbcc1 spans=13</code>
+        (<code>demo/.evidence/task-3-jaeger-v1-vs-v2-traces.log</code>).</p>
+      <p><strong>WATCH OUT &mdash; two traps.</strong> (1) <strong>PIN 6's span counts are
+        undercounts; do not read them out.</strong> The script queries Jaeger the moment it
+        finishes, before the collector has flushed &mdash; the archived run reported the new loan
+        at 12 spans, and re-querying 30 s later gave 28. Wait, then re-run the &sect;3 query with the
+        printed loan id. (2) Never point at the three verification <em>request</em> spans: the
+        send fan-out is identical in v1 and v2 (offsets 24 / 36 / 46 ms). What changed is what the
+        workflow <em>waits on</em>.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="III" data-act-name="Deep dives" data-id="d1-code" data-title="D1 — the code that makes it safe">
+    <p class="eyebrow">Act III <span class="sep">/</span> deep dive 1 <span class="sep">/</span> <em>&sect;D1</em> <span class="sep">/</span> the diff</p>
+    <h2 style="max-width:none">One argument you must not get wrong.</h2>
+    <pre class="code"><span class="k">static final</span> <span class="t">String</span> PARALLEL_VERIFICATION = <span class="s">"parallel-verification"</span>;
+<span class="k">static final int</span> PARALLEL_VERIFICATION_VERSION = <span class="s">2</span>;
+
+<mark><span class="k">int</span> v = workflow.version(PARALLEL_VERIFICATION, <span class="t">WorkflowContext</span>.DEFAULT_VERSION,
+        PARALLEL_VERIFICATION_VERSION);</mark>
+<span class="c">// ... steps 1 and 2 are identical in both versions ...</span>
+
+<span class="k">if</span> (v &lt; PARALLEL_VERIFICATION_VERSION) {
+    awaitAllVerifications();                      <span class="c">// v1: fan in, THEN collect</span>
+    collectRequiredDocuments(application);
+} <span class="k">else</span> {
+    workflow.parallel(<span class="t">List</span>.&lt;<span class="t">Callable</span>&lt;<span class="t">String</span>&gt;&gt;of(
+            () -&gt; { awaitAllVerifications();              <span class="k">return</span> <span class="s">"verifications"</span>; },
+            () -&gt; { collectRequiredDocuments(application); <span class="k">return</span> <span class="s">"documents"</span>; }));
+}</pre>
+    <p class="codecap">maestro-samples/sample-loan-origination/loan-application-service/src/<span class="brass">v2</span>/java/&hellip;/workflow/LoanApplicationWorkflow.java
+      &nbsp;&middot;&nbsp; comments elided, lambda bodies folded onto one line</p>
+    <div class="cols cols-2" style="margin-top:1.2rem">
+      <div class="card alarm">
+        <h3>Never <code>version(changeId, 1, 2)</code></h3>
+        <p><code>DEFAULT_VERSION</code> is <strong>-1</strong>. A history that predates
+          the change resolves to it, so a literal <code>1</code> floor puts every
+          in-flight loan below the minimum &mdash; throwing
+          <code>UnsupportedWorkflowVersionException</code>, failing the loan and running
+          its saga compensations. That is a recorded RED test, not a hypothetical.</p>
+      </div>
+      <div class="card">
+        <h3>Why the gate sits before step 1</h3>
+        <p><code>version()</code> peeks the next sequence slot without consuming it.
+          Resolving here pins <strong>every loan that has already recorded its
+          application</strong>. Resolve it later and a loan parked at the very first
+          await would find an empty slot, record version 2, and switch paths
+          mid-flight.</p>
+      </div>
+    </div>
+    <div class="notes">
+      <p><strong>SAY:</strong> That is the entire change. A named change id &mdash; durable, never
+        renamed &mdash; a minimum, a maximum, and a branch. The engine writes the resolved version
+        into the event log as a <code>VERSION_MARKER</code> row the first time a workflow reaches
+        this line, and from then on that loan is pinned. Old loans keep the old path forever; new
+        loans get the new one. You delete the old branch when no pre-change loan can still be
+        running.</p>
+      <p><strong>SAY the second argument out loud:</strong> <code>WorkflowContext.DEFAULT_VERSION</code>,
+        not <code>1</code>. <code>DEFAULT_VERSION</code> is -1 and it means "this history predates
+        the change". Writing the literal <code>1</code> as the minimum fails every in-flight loan
+        &mdash; it inverts the entire point of the gate. Evidence:
+        <code>demo/.evidence/task-3-red-2-brief-literal-bounds-fail-inflight.log</code>.</p>
+      <p><strong>DO:</strong> &sect;D1. No commands on this slide &mdash; it is the code behind what
+        the script just proved.</p>
+      <p><strong>IF ASKED why the branches return a String:</strong> <code>parallel()</code>
+        collects results with <code>List.copyOf</code>, which rejects nulls, so a
+        <code>Callable&lt;Void&gt;</code> branch fails the workflow with a message-less NPE. And
+        both helpers call <code>WorkflowContext.current()</code> rather than closing over the
+        parent context, because inside <code>parallel()</code> the current context is the
+        <em>branch</em> context with its own partitioned sequence space.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="III" data-act-name="Deep dives" data-id="d2" data-title="D2 — how memoization works">
+    <p class="eyebrow">Act III <span class="sep">/</span> deep dive 2 <span class="sep">/</span> <em>&sect;D2</em></p>
+    <h2>The sequence number is the step&rsquo;s address.</h2>
+    <div class="cols cols-2" style="align-items:start">
+      <div>
+        <table class="eventlog">
+          <thead><tr><th>seq</th><th>type</th><th>detail</th></tr></thead>
+          <tbody>
+            <tr><td class="seq">1</td><td class="type">ACTIVITY_COMPLETED</td><td>LoanActivities.recordApplication</td></tr>
+            <tr><td class="seq">2</td><td class="type">ACTIVITY_COMPLETED</td><td>LoanMessagingActivities.requestVerifications</td></tr>
+            <tr><td class="seq">3</td><td class="type">SIGNAL_RECEIVED</td><td class="sig">$maestro:awaitSignal:verification.result</td></tr>
+            <tr class="dots"><td>&hellip;</td><td>&hellip;</td><td>&hellip;</td></tr>
+            <tr><td class="seq">12</td><td class="type">ACTIVITY_COMPLETED</td><td>FundingActivities.reserveRateLock</td></tr>
+            <tr><td class="seq">13</td><td class="type">SIDE_EFFECT</td><td class="sig">$maestro:currentTime</td></tr>
+            <tr><td class="seq">14</td><td class="type">SIDE_EFFECT</td><td class="sig">$maestro:currentTime</td></tr>
+            <tr><td class="seq">15</td><td class="type">SIGNAL_RECEIVED</td><td class="sig">$maestro:awaitSignal:package.signed</td></tr>
+            <tr><td class="seq">16</td><td class="type">SIGNAL_TIMEOUT</td><td class="sig">$maestro:awaitSignal:application.withdrawn</td></tr>
+            <tr><td class="seq">17</td><td class="type">ACTIVITY_COMPLETED</td><td>FundingActivities.disburse</td></tr>
+            <tr><td class="seq">18</td><td class="type">WORKFLOW_COMPLETED</td><td>&nbsp;</td></tr>
+          </tbody>
+        </table>
+        <p class="mono small muted" style="margin-top:.6rem">
+          a real v1 happy loan, 18 rows &mdash; 4&ndash;11 elided
+        </p>
+      </div>
+      <div>
+        <div class="card accent">
+          <h3>On recovery, the method runs from the top</h3>
+          <p>At each activity call the proxy asks Postgres: <em>is there a row at this
+            sequence number?</em> If yes, it returns the stored result and the activity
+            body never executes. If no, it executes, persists, returns.</p>
+        </div>
+        <div class="card" style="margin-top:.9rem">
+          <h3>There is no snapshot</h3>
+          <p>No serialised continuation, no thread state on disk. This table is the
+            whole of it. <code>SIDE_EFFECT</code> rows are
+            <code>workflow.currentTime()</code> and <code>workflow.randomUUID()</code>
+            &mdash; the non-deterministic bits, recorded once so replay sees the same
+            values. Rows 13&ndash;14 are the <em>engine&rsquo;s</em> own: nobody wrote
+            <code>currentTime()</code> here.</p>
+        </div>
+        <div class="card" style="margin-top:.9rem">
+          <h3>Two nodes cannot both win</h3>
+          <p><code>idx_wf_event_replay</code> is
+            <code>UNIQUE (workflow_instance_id, sequence_number)</code>. Racing nodes
+            cannot both persist a result for the same step.</p>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <p><strong>SAY:</strong> One row per step; the sequence number is the step&rsquo;s address.
+        On recovery the method is re-invoked from the top. At each activity call the proxy asks
+        Postgres whether there is a row at this sequence number. If yes it returns the stored
+        result and the activity body never executes; if no, it executes, persists, returns. There
+        is no snapshot, no serialised continuation, no thread state on disk &mdash; this table is
+        the whole of it.</p>
+      <p><strong>DO:</strong> &sect;D2 &mdash; <code>demo/scripts/drive-loan.sh events &lt;id&gt;</code>
+        against any completed loan. To show the uniqueness guarantee:
+        <code>docker exec maestro-demo-postgres-1 psql -U maestro -d loan_application -c '\d maestro_workflow_event'</code>.
+        No moving parts; this runs as long as you talk.</p>
+      <p><strong>WATCH OUT:</strong> if D1 has been run and not restored, the numbers will jump
+        into the branch bands (5001 / 6001 / 7001) and this walk-through will not match what you
+        say. That is why D1 ends with a restore.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="III" data-act-name="Deep dives" data-id="d3" data-title="D3 — the evidence">
+    <p class="eyebrow">Act III <span class="sep">/</span> deep dive 3 <span class="sep">/</span> <em>&sect;D3</em></p>
+    <h2>Why I am willing to run <span class="mono rose" style="font-size:.82em">kill -9</span> in front of you.</h2>
+    <ol class="beats">
+      <li><span class="t">2 h</span><span class="b">chaos window, verdict PASS</span></li>
+      <li><span class="t">2,376</span><span class="b">workflows driven</span></li>
+      <li class="money"><span class="t">0</span><span class="b">invariant violations</span></li>
+      <li class="money"><span class="t">0</span><span class="b">duplicate side effects</span></li>
+    </ol>
+    <div class="cols cols-2">
+      <div class="card">
+        <h3>What the harness does</h3>
+        <p>It kills nodes, partitions the lock backend and delays Kafka while
+          workflows run &mdash; then checks two invariants: no workflow ends in an
+          inconsistent state, and no side effect happens twice.</p>
+      </div>
+      <div class="card accent">
+        <h3>It found four engine defects &mdash; that is the point</h3>
+        <p>They are fixed. A harness that finds nothing is a harness that is not
+          looking. This is the difference between believing the engine is correct and
+          having evidence for it.</p>
+      </div>
+    </div>
+    <p class="mono small muted wide" style="margin-top:1.2rem">run id 20260801-214325--6973268155056049009 &nbsp;&middot;&nbsp; gitHead 7113e06
+      <br>primary record &mdash; .superpowers/sdd/multi-instance/evidence/task7/20260801-214325--6973268155056049009/run-summary.json</p>
+    <div class="notes">
+      <p><strong>SAY:</strong> The harness kills nodes, partitions the lock backend and delays
+        Kafka while workflows run, then checks two invariants: no workflow ends in an inconsistent
+        state, and no side effect happens twice. It found four engine defects. They are fixed.
+        That is why I am willing to run <code>kill -9</code> in front of you.</p>
+      <p><strong>IF PRESSED ON &ldquo;four&rdquo;:</strong> four were found across the whole
+        verification effort (Issues 17, 18, 19, 20); <strong>three</strong> of them by the chaos
+        harness itself &mdash; Issue 17, the cross-node timer wake, came out of the Phase 1
+        multi-process E2E. Say &ldquo;four defects, three of them by the chaos harness&rdquo;.</p>
+      <p><strong>DO:</strong> &sect;D3 &mdash; no live commands. <strong>Do not run the chaos
+        harness live.</strong> It is a two-hour job and it is out of scope for this demo by
+        design.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="III" data-act-name="Deep dives" data-id="d4" data-title="D4 — what you actually operate">
+    <p class="eyebrow">Act III <span class="sep">/</span> deep dive 4 <span class="sep">/</span> <em>&sect;D4</em></p>
+    <h2>Six containers are running. None of them is Maestro.</h2>
+    <table class="ledger">
+      <thead><tr><th style="width:34%">The claim</th><th>Why it holds</th></tr></thead>
+      <tbody>
+        <tr><td>There is no server</td><td>Maestro is a library on your classpath. No cluster to run, no control plane to upgrade, nothing to page anyone about at 3am</td></tr>
+        <tr><td>Three SPIs</td><td><code>WorkflowStore</code>, <code>WorkflowMessaging</code>, <code>DistributedLock</code> &mdash; here Postgres, Kafka and Valkey; the same code runs Postgres-only with zero external dependencies</td></tr>
+        <tr><td class="brass">Postgres is truth</td><td class="brass">Valkey is an optimisation. Every lock is best-effort; if one is lost the unique event index still prevents a duplicate <em>persisted</em> result &mdash; so activities must be idempotent</td></tr>
+        <tr><td>Orchestration within, choreography between</td><td>Each service owns its own workflows and its own database. What crosses the wire is domain events on Kafka</td></tr>
+      </tbody>
+    </table>
+    <p class="mono small muted wide" style="margin-top:1.2rem">
+      whole demo peaked at <span class="brass">2.42 GiB</span> &mdash; true simultaneous peak, 11 components, 5 host JVMs
+      &nbsp;&middot;&nbsp; each service runs <span class="brass">-Xmx256m</span> &nbsp;&middot;&nbsp; largest single consumer Kafka at <span class="brass">627.6 MiB</span>
+      <br>measured, 1213 samples &mdash; demo/.evidence/task-6-peak-memory.log
+    </p>
+    <div class="notes">
+      <p><strong>SAY &mdash; four sentences.</strong> One: there is no server; Maestro is a library
+        in your service. Two: three SPIs &mdash; <code>WorkflowStore</code>,
+        <code>WorkflowMessaging</code>, <code>DistributedLock</code>; this demo runs Postgres,
+        Kafka and Valkey, and the same code runs Postgres-only with zero external dependencies.
+        Three: Postgres is truth, Valkey is an optimisation; every lock is best-effort, and if a
+        lock is lost the unique event index still prevents a duplicate persisted result &mdash;
+        which is why activities must be idempotent, and why we say that out loud rather than
+        claiming exactly-once. Four: orchestration within a service, choreography between them.</p>
+      <p><strong>DO:</strong> &sect;D4 &mdash; no live commands needed, but the proof of sentence
+        one is one command: <code>docker compose -f demo/docker-compose.yml ps</code>. Six
+        containers, none of them Maestro &mdash; the compose file defines seven services, but
+        <code>kafka-init</code> created the eleven topics and exited, so it only appears under
+        <code>ps -a</code>. Say six; that is what the room can count. <code>docs/maestro-architecture.md</code> has the
+        diagram if someone wants it afterwards.</p>
+      <p><strong>THIS IS ALSO THE FILLER SLIDE.</strong> D6's adoption wait is up to 60 s of
+        nothing; these four sentences are what you say during it.</p>
+      <p><strong>IF ASKED &ldquo;exactly-once?&rdquo;</strong> No. At-least-once execution with
+        exactly-once <em>persisted results</em>. The unique index guarantees one stored result per
+        step; it cannot guarantee your payment provider was called once.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="III" data-act-name="Deep dives" data-id="d5" data-title="D5 — determinism">
+    <p class="eyebrow">Act III <span class="sep">/</span> deep dive 5 <span class="sep">/</span> <em>&sect;D5</em></p>
+    <h2>Code between activity calls re-runs on every recovery.</h2>
+    <p class="lede" style="max-width:46ch">So it has to be deterministic. That is the one
+      constraint Maestro puts on your code &mdash; and it is the same one every replay-based
+      engine puts on it.</p>
+    <div class="cols cols-2">
+      <div class="card alarm">
+        <h3>Will make a replay diverge</h3>
+        <p><code>Math.random()</code>, <code>LocalDateTime.now()</code>,
+          <code>UUID.randomUUID()</code>, or direct I/O in workflow code. Not because
+          they are banned &mdash; because the second run of the method would see
+          different values than the first.</p>
+      </div>
+      <div class="card accent">
+        <h3>Use these instead</h3>
+        <p><code>workflow.currentTime()</code> and <code>workflow.randomUUID()</code>.
+          They record their value as a <code>SIDE_EFFECT</code> row the first time and
+          return the recorded value on every replay.</p>
+      </div>
+    </div>
+    <p style="margin-top:1rem"><strong>Four of them are already on screen in D2</strong> &mdash;
+      <code class="mono">6, 7, 13, 14 &nbsp;SIDE_EFFECT &nbsp;$maestro:currentTime</code> &mdash;
+      and nobody wrote <code>currentTime()</code> in this workflow. The engine did, to fix
+      <code>collectSignals(&hellip;)</code>&rsquo;s timeout deadline. The rule applies to the
+      engine&rsquo;s own code too.</p>
+    <p style="margin-top:1.2rem"><strong>And if you get it wrong:</strong> the engine has a
+      <code>DeterminismChecker</code> that detects a replay diverging from the recorded history
+      and <strong>fails the run loudly</strong> rather than silently corrupting state.</p>
+    <div class="notes">
+      <p><strong>SAY:</strong> Code between activity calls re-runs on every recovery, so it must be
+        deterministic. <code>Math.random()</code>, <code>LocalDateTime.now()</code>,
+        <code>UUID.randomUUID()</code> or direct I/O in workflow code will make a replay diverge
+        from the original run. Maestro gives you <code>workflow.currentTime()</code> and
+        <code>workflow.randomUUID()</code>, which record their value as a <code>SIDE_EFFECT</code>
+        row the first time and return the recorded value on every replay.</p>
+      <p><strong>DO:</strong> &sect;D5 &mdash; no live commands in the demo stack; the
+        <code>DeterminismChecker</code> demo lives in the engine's own tests. Point at the four
+        <code>SIDE_EFFECT $maestro:currentTime</code> rows in D2's event log &mdash; sequence 6, 7,
+        13 and 14 on the &sect;1 happy loan (the &sect;2 crashed loan has six: 6/7/9 and 15/16/18,
+        because it collects two documents and two signatures instead of one). The workflow author
+        never calls <code>currentTime()</code>; the engine does, inside
+        <code>collectSignals(&hellip;)</code>, to fix that call's timeout deadline so a recovered
+        run does not recompute it an hour further out. Then contrast with an activity: the
+        <code>FundingActivities.reserveRateLock</code> row mints a random rate-lock id, which is
+        safe because it runs inside an activity &mdash; the id it returned is stored on that row
+        and a replay hands back that id instead of minting a new one.</p>
+      <p><strong>IF ASKED &ldquo;what happens if I get it wrong?&rdquo;</strong> The engine detects
+        a replay diverging from recorded history and fails the run loudly rather than silently
+        corrupting state.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="III" data-act-name="Deep dives" data-id="d6" data-title="D6 — multi-node adoption">
+    <p class="eyebrow">Act III <span class="sep">/</span> D6 <span class="sep">/</span> <em>&sect;D6</em> <span class="sep">/</span> off by default</p>
+    <h2>Kill the owner. Another node picks the workflow up.</h2>
+    <ol class="beats" style="grid-template-columns:repeat(3,minmax(0,1fr))">
+      <li class="kill"><span class="t">kill -9</span><span class="b">the node that owns the parked loan (usually A, on 8091)</span></li>
+      <li><span class="t">27 s</span><span class="b">to <code>Resuming workflow</code> in node B's log &mdash; the lock TTL has to lapse</span></li>
+      <li class="money"><span class="t">49 s</span><span class="b">the whole finish, driven through node B on 8094</span></li>
+    </ol>
+    <div class="cols cols-2">
+      <div class="card">
+        <h3>Nothing was reconfigured</h3>
+        <p>A fifth JVM writes a Prometheus file-SD target and a fourth scrape target
+          appears &mdash; then goes away again &mdash; without editing any config. The
+          Grafana <strong>recovery adoptions</strong> panel increments.</p>
+      </div>
+      <div class="card accent">
+        <h3>The wait is the lock TTL, and it cannot be shortened</h3>
+        <p>Nothing can release a lock held by a dead process, so it has to expire.
+          The measured 27 s is under 30 + 5 because the lock was already part-way
+          through its TTL when the owner died &mdash; what elapses is the
+          <em>remaining</em> TTL. Worst case is a full 30 s TTL plus one 5 s recovery
+          poll plus slack. Budget up to 60 s.</p>
+      </div>
+    </div>
+    <div class="notes">
+      <p><strong>SAY:</strong> Same mechanism as scenario 2 &mdash; only there the restarted
+        process adopted its own workflow, and here a completely different node does. Maestro does
+        not care which; there is no owner registry and no handover protocol. A lock lapses and
+        whoever polls next takes it.</p>
+      <p><strong>DO:</strong> &sect;D6, and <strong>decide before you start</strong> &mdash; it needs
+        a restart, <code>demo/scripts/stop-services.sh</code> first and then
+        <code>TWO_NODE=1 DEMO_SKIP_BUILD=1 demo/scripts/start-services.sh</code>, and adds 312 MiB.
+        Park a loan with <code>demo/scripts/drive-loan.sh crash</code>, confirm the owner with
+        <code>grep -l "Started workflow 'loan-&lt;id&gt;'" demo/.run/loan-application-service.log
+        demo/.run/loan-application-service-b.log</code>, kill it, then
+        <code>LOAN_URL=http://localhost:8094 demo/scripts/drive-loan.sh finish &lt;id&gt;</code>.</p>
+      <p><strong>WATCH OUT &mdash; three things.</strong> (1) The <code>LOAN_URL=</code> override is
+        not optional: <code>drive-loan.sh</code> talks to 8091 by default and 8091 is what you just
+        killed &mdash; forgetting it gives connection-refused, not an adoption failure. (2) Grep for
+        the START line, not the id: the id appears in both logs (measured 4 hits in the owner's log,
+        3 in the peer's), and only the node that ran it logs "Started workflow" &mdash; when the peer
+        adopts it, its line is "Resuming workflow". (3) Do not abandon early &mdash; 49 s is a
+        normal successful run here, so give it 120 s before calling it.</p>
+      <p><strong>CAVEAT to state:</strong> <code>GET /underwriting/pending</code> is a node-local
+        in-memory view, so in two-node mode a loan queued on one node may not appear on the other.
+        The <em>decision</em> endpoint is store-backed and works from either node &mdash; only the
+        read-side queue is local. And the same Kafka effect as &sect;2 applies: node B cannot receive
+        the decision until the group rebalances away from the SIGKILLed member.</p>
+      <p><strong>FILL THE WAIT FROM THIS SLIDE, not by jumping back to D4.</strong> D4 is two
+        slides behind you and its four sentences have already been said twice (slide 5 and slide 17).
+        You have ~60 s and two things on this slide the room has not heard: the <em>CAVEAT</em>
+        below (<code>/underwriting/pending</code> is node-local; the decision endpoint is
+        store-backed) and the Kafka rebalance &mdash; node B cannot receive the decision until the
+        group rebalances away from the SIGKILLed member, measured 37.2 s. Say those, in that order,
+        and the wait is covered.</p>
+      <p><strong>FALLBACK:</strong> &ldquo;Adoption is bounded by the lock TTL and we are inside it
+        &mdash; this is the one place in the demo where the honest answer is &lsquo;wait 30
+        seconds&rsquo;.&rdquo; Give it 120 s before you call it; only then
+        <code>demo/scripts/reset.sh</code> and move on.</p>
+      <p><strong>AFTER D6:</strong> <code>demo/scripts/stop-services.sh &amp;&amp; DEMO_SKIP_BUILD=1
+        demo/scripts/start-services.sh</code> to drop back to one node.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="III" data-act-name="Deep dives" data-id="authoring" data-title="What you actually write">
+    <p class="eyebrow">Act III <span class="sep">/</span> authoring <span class="sep">/</span> <em>a complete workflow</em></p>
+    <h2 style="max-width:none">This is the whole of it.</h2>
+    <div class="cols" style="align-items:start;gap:1.6rem;grid-template-columns:1.42fr 1fr">
+      <div>
+        <pre class="code" style="font-size:.68rem"><span class="a">@DurableWorkflow</span>(name = <span class="s">"document-approval"</span>, taskQueue = <span class="s">"documents"</span>)
+<span class="k">public class</span> <span class="t">DocumentApprovalWorkflow</span> {
+
+    <span class="a">@ActivityStub</span>(startToCloseTimeout = <span class="s">"PT30S"</span>,
+                  retryPolicy = <span class="a">@RetryPolicy</span>(maxAttempts = <span class="s">3</span>))
+    <span class="k">private</span> <span class="t">DocumentActivities</span> activities;
+
+    <span class="a">@WorkflowMethod</span>
+    <span class="k">public</span> <span class="t">DocumentResult</span> execute(<span class="t">DocumentInput</span> input) {
+        <span class="k">var</span> workflow = <span class="t">WorkflowContext</span>.current();
+
+        <span class="k">var</span> documentId = activities.validateAndStore(input);
+
+        <span class="t">ReviewDecision</span> decision;
+        <span class="k">try</span> {
+            <mark>decision = workflow.awaitSignal(<span class="s">"review.decision"</span>,
+                <span class="t">ReviewDecision</span>.<span class="k">class</span>, <span class="t">Duration</span>.ofDays(<span class="s">7</span>));</mark>
+        } <span class="k">catch</span> (<span class="t">SignalTimeoutException</span> e) {
+            activities.notifyRejection(documentId, input.authorId(), <span class="s">"..."</span>);
+            <span class="k">return</span> <span class="k">new</span> <span class="t">DocumentResult</span>(<span class="k">false</span>, documentId, <span class="s">"TIMED_OUT"</span>, <span class="s">"..."</span>);
+        }
+
+        <span class="k">if</span> (decision.approved()) {
+            activities.publishDocument(documentId);
+            <span class="k">return</span> <span class="k">new</span> <span class="t">DocumentResult</span>(<span class="k">true</span>, documentId, <span class="s">"PUBLISHED"</span>, <span class="k">null</span>);
+        }
+        <span class="c">// ... rejection path ...</span>
+    }
+}</pre>
+        <p class="codecap">maestro-samples/sample-postgres-only/src/main/java/&hellip;/workflow/DocumentApprovalWorkflow.java
+          &nbsp;&middot;&nbsp; 91 lines in full. Elided: comments, the <code>assignReviewer</code> call,
+          the <code>currentStep</code> field and its <code>@QueryMethod getStatus()</code>, three
+          <code>archiveAuditTrail</code> calls, and the rejection branch &mdash; all activity calls
+          and ordinary assignments, nothing of a different kind</p>
+      </div>
+      <div>
+        <div class="card accent">
+          <h3>Seven days, inside a try/catch</h3>
+          <p><code>Duration.ofDays(7)</code>. The process can restart any number of
+            times inside that wait. Nothing is held open &mdash; no thread, no timer
+            in memory, no scheduler entry. The timeout is a row, and so is the
+            workflow.</p>
+        </div>
+        <div class="card" style="margin-top:.9rem">
+          <h3>No engine in sight</h3>
+          <p>No state machine to declare, no YAML, no DSL, no callback graph. It is
+            an ordinary Java method that happens to be crash-proof. The
+            <code>try/catch</code> around a seven-day wait is real Java control flow,
+            and it behaves the way you would expect it to.</p>
+        </div>
+        <div class="card" style="margin-top:.9rem">
+          <h3>And this one has no Kafka and no Valkey</h3>
+          <p><code>sample-postgres-only</code> uses Postgres for store, messaging and
+            locking &mdash; zero external dependencies. Same annotations, same code,
+            different SPIs.</p>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <p><strong>SAY:</strong> This is a real workflow from the repository, 91 lines, trimmed to
+        fit the slide &mdash; and what came out is more of the same: three more activity calls, a
+        status field, and a rejection branch shaped exactly like the approval one. Nothing of a
+        different kind is hiding. Four annotations and an ordinary Java method. The interesting line
+        is the <code>awaitSignal</code> with a seven-day timeout sitting inside a
+        <code>try/catch</code>: the service can be restarted, redeployed and crashed any number of
+        times during those seven days, and this method resumes on the line after it with the value
+        that arrived. That is the entire pitch. Everything else you have seen today &mdash;
+        recovery, compensation, versioning &mdash; is the engine keeping that promise.</p>
+      <p><strong>DO:</strong> No commands. Closing slide. If they want to read it:
+        <code>maestro-samples/sample-postgres-only</code>.</p>
+      <p><strong>IF ASKED &ldquo;can I run this without Kafka?&rdquo;</strong> Yes &mdash; this
+        sample is the answer. Postgres for store, messaging and locking; zero external
+        dependencies.</p>
+    </div>
+  </section>
+
+  <p class="hint">&rarr; next &middot; g jump &middot; p presenter &middot; f fullscreen</p>
+</main>
+
+<div id="presenter">
+  <div class="pane">
+    <div class="p-meta">
+      <span class="clock" id="pClock">00:00</span>
+      <span id="pPos">1 / 1</span>
+      <span id="pTitle"></span>
+    </div>
+    <h4>Notes</h4>
+    <div class="p-notes" id="pNotes"></div>
+  </div>
+  <div class="pane right">
+    <h4>Next <span class="muted" id="pNextTitle"></span></h4>
+    <div class="preview" id="pPreview"><div class="preview-scaler" id="pScaler"></div></div>
+  </div>
+</div>
+
+<div id="jump" role="dialog" aria-label="Jump to slide">
+  <div class="jump-panel">
+    <input id="jumpInput" type="text" autocomplete="off" spellcheck="false"
+           placeholder="jump to slide — type a number, a title, or an act (D4, scenario 2)">
+    <ul id="jumpList"></ul>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // Scoped to direct children of #stage on purpose: the presenter preview holds
+  // a cloned .slide, and an unscoped query would pick the clone up as slide 21.
+  var slides   = Array.prototype.slice.call(document.querySelectorAll('#stage > .slide'));
+  var stage    = document.getElementById('stage');
+  var railTicks= document.getElementById('railTicks');
+  var railNum  = document.getElementById('railNum');
+  var railTotal= document.getElementById('railTotal');
+  var jump     = document.getElementById('jump');
+  var jumpInput= document.getElementById('jumpInput');
+  var jumpList = document.getElementById('jumpList');
+  var idx = 0;
+  var started = Date.now();
+  var popup = null;
+
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function titleOf(s) { return s.dataset.title || s.dataset.id || 'slide'; }
+
+  /* ---- auto-fit --------------------------------------------------------
+     Presenter view leaves a slide about a third less height, and
+     .slide{overflow:hidden} would clip the difference without saying so. Each
+     slide's content is wrapped once, then scaled down only when it would not
+     fit. Measured with offsetHeight/clientHeight, which are layout values and
+     so are unaffected by the transform this applies — including inside the
+     preview, which is itself scaled. */
+
+  function wrapContent(s) {
+    if (s.firstElementChild && s.firstElementChild.className === 'fit') { return; }
+    var fit = document.createElement('div');
+    fit.className = 'fit';
+    while (s.firstChild) { fit.appendChild(s.firstChild); }
+    s.appendChild(fit);
+  }
+
+  function fitSlide(s) {
+    if (!s) { return; }
+    var fit = s.firstElementChild;
+    if (!fit || fit.className !== 'fit') { return; }
+    fit.style.transform = '';
+    s.classList.remove('fitted');
+    var cs = getComputedStyle(s);
+    var avail = s.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    var h = fit.offsetHeight;
+    if (avail > 0 && h > avail) {
+      s.classList.add('fitted');
+      fit.style.transform = 'scale(' + (avail / h) + ')';
+    }
+  }
+
+  function fitActive() { fitSlide(slides[idx]); }
+
+  /* ---- ledger rail ---------------------------------------------------- */
+
+  function buildRail() {
+    var act = null, group = null;
+    slides.forEach(function (s, k) {
+      if (s.dataset.act !== act) {
+        act = s.dataset.act;
+        var wrap = document.createElement('div');
+        wrap.className = 'act';
+        wrap.dataset.act = act;
+        var label = document.createElement('span');
+        label.className = 'act-label';
+        label.textContent = act;
+        wrap.appendChild(label);
+        group = document.createElement('div');
+        group.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:.38rem';
+        wrap.appendChild(group);
+        railTicks.appendChild(wrap);
+      }
+      var t = document.createElement('button');
+      t.className = 'tick';
+      t.type = 'button';
+      t.dataset.i = k;
+      t.title = (k + 1) + '. ' + titleOf(s);
+      t.setAttribute('aria-label', t.title);
+      t.addEventListener('click', function () { show(k); });
+      group.appendChild(t);
+    });
+    railTotal.textContent = pad(slides.length);
+  }
+
+  function paintRail() {
+    var ticks = railTicks.querySelectorAll('.tick');
+    for (var k = 0; k < ticks.length; k++) {
+      ticks[k].classList.toggle('current', k === idx);
+      ticks[k].classList.toggle('seen', k < idx);
+    }
+    var acts = railTicks.querySelectorAll('.act');
+    for (var a = 0; a < acts.length; a++) {
+      acts[a].classList.toggle('current', acts[a].dataset.act === slides[idx].dataset.act);
+    }
+    railNum.textContent = pad(idx + 1);
+  }
+
+  /* ---- presenter ------------------------------------------------------ */
+
+  function scalePreview() {
+    var box = document.getElementById('pPreview');
+    var sc  = document.getElementById('pScaler');
+    if (!box || !sc) { return; }
+    var vw = Math.max(1, stage.clientWidth), vh = Math.max(1, stage.clientHeight);
+    var k = Math.min(box.clientWidth / vw, box.clientHeight / vh);
+    sc.style.width  = vw + 'px';
+    sc.style.height = vh + 'px';
+    sc.style.left   = ((box.clientWidth - vw * k) / 2) + 'px';
+    sc.style.top    = ((box.clientHeight - vh * k) / 2) + 'px';
+    sc.style.transform = 'scale(' + k + ')';
+  }
+
+  function renderPresenter() {
+    var cur = slides[idx];
+    var next = slides[idx + 1] || null;
+    var notes = cur.querySelector('.notes');
+    document.getElementById('pNotes').innerHTML = notes ? notes.innerHTML : '<p class="muted">No notes.</p>';
+    document.getElementById('pPos').textContent = (idx + 1) + ' / ' + slides.length;
+    document.getElementById('pTitle').textContent = titleOf(cur).toUpperCase();
+    document.getElementById('pNextTitle').textContent = next ? '— ' + titleOf(next) : '— end of deck';
+    var sc = document.getElementById('pScaler');
+    sc.innerHTML = '';
+    var clone = null;
+    if (next) {
+      clone = next.cloneNode(true);
+      clone.classList.add('active');
+      var n = clone.querySelector('.notes');
+      if (n) { n.parentNode.removeChild(n); }
+      sc.appendChild(clone);
+    }
+    scalePreview();
+    // After scalePreview, which is what gives the scaler its box.
+    if (clone) { fitSlide(clone); }
+    if (popup && !popup.closed) { renderPopup(); }
+  }
+
+  function tickClock() {
+    var s = Math.floor((Date.now() - started) / 1000);
+    var el = document.getElementById('pClock');
+    if (el) { el.textContent = pad(Math.floor(s / 60)) + ':' + pad(s % 60); }
+    if (popup && !popup.closed) {
+      var pc = popup.document.getElementById('clock');
+      if (pc) { pc.textContent = el ? el.textContent : ''; }
+    }
+  }
+
+  /* Second-window presenter view: same notes + next-slide title, no network. */
+  function openPopup() {
+    popup = window.open('', 'maestro-presenter', 'width=900,height=620');
+    if (!popup) { return; }
+    popup.document.open();
+    popup.document.write(
+      '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Presenter — Maestro</title>' +
+      '<style>' +
+      'body{margin:0;padding:1.6rem 2rem;background:#0e151d;color:#c3cddb;' +
+      'font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;line-height:1.55}' +
+      '.meta{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.75rem;' +
+      'letter-spacing:.12em;color:#7f8ea1;display:flex;gap:1.5rem;margin-bottom:1rem}' +
+      '.meta .c{color:#e0a83c}' +
+      'h1{font-family:ui-serif,Georgia,serif;font-weight:400;font-size:1.7rem;color:#eef2f7;margin:0 0 1rem}' +
+      '.notes p{margin:0 0 .8rem;max-width:70ch}' +
+      '.notes strong{color:#e0a83c;font-family:ui-monospace,Menlo,monospace;font-size:.8rem;letter-spacing:.12em}' +
+      'code{font-family:ui-monospace,Menlo,monospace;background:#141d27;border:1px solid #233040;' +
+      'border-radius:2px;padding:.05em .32em;font-size:.88em;color:#eef2f7}' +
+      '.next{margin-top:1.6rem;padding-top:.9rem;border-top:1px solid #233040;' +
+      'font-family:ui-monospace,Menlo,monospace;font-size:.78rem;color:#7f8ea1}' +
+      '</style></head><body>' +
+      '<div class="meta"><span class="c" id="clock">00:00</span><span id="pos"></span></div>' +
+      '<h1 id="title"></h1><div class="notes" id="notes"></div><div class="next" id="next"></div>' +
+      '</body></html>');
+    popup.document.close();
+    popup.addEventListener('keydown', onKey);
+    renderPopup();
+  }
+
+  function renderPopup() {
+    var d = popup.document;
+    var cur = slides[idx], next = slides[idx + 1] || null;
+    var notes = cur.querySelector('.notes');
+    d.getElementById('title').textContent = titleOf(cur);
+    d.getElementById('pos').textContent = (idx + 1) + ' / ' + slides.length;
+    d.getElementById('notes').innerHTML = notes ? notes.innerHTML : '<p>No notes.</p>';
+    d.getElementById('next').textContent = next ? 'NEXT — ' + titleOf(next) : 'END OF DECK';
+  }
+
+  /* ---- jump overlay --------------------------------------------------- */
+
+  var jumpSel = 0, jumpHits = [];
+
+  function openJump() {
+    jump.classList.add('open');
+    jumpInput.value = '';
+    filterJump('');
+    jumpInput.focus();
+  }
+  function closeJump() { jump.classList.remove('open'); jumpInput.blur(); }
+
+  function filterJump(q) {
+    var needle = q.trim().toLowerCase();
+    jumpHits = [];
+    slides.forEach(function (s, k) {
+      var hay = ((k + 1) + ' ' + titleOf(s) + ' ' + (s.dataset.id || '') + ' ' +
+                 (s.dataset.act || '') + ' ' + (s.dataset.actName || '')).toLowerCase();
+      if (!needle || hay.indexOf(needle) !== -1) { jumpHits.push(k); }
+    });
+    jumpSel = 0;
+    jumpList.innerHTML = '';
+    jumpHits.forEach(function (k, r) {
+      var li = document.createElement('li');
+      li.innerHTML = '<span class="num">' + pad(k + 1) + '</span>' +
+                     '<span class="title">' + titleOf(slides[k]) + '</span>' +
+                     '<span class="act-tag">' + (slides[k].dataset.actName || slides[k].dataset.act) + '</span>';
+      if (r === 0) { li.className = 'sel'; }
+      li.addEventListener('click', function () { closeJump(); show(k); });
+      jumpList.appendChild(li);
+    });
+  }
+
+  function moveJump(d) {
+    if (!jumpHits.length) { return; }
+    jumpSel = Math.max(0, Math.min(jumpHits.length - 1, jumpSel + d));
+    var items = jumpList.children;
+    for (var r = 0; r < items.length; r++) { items[r].classList.toggle('sel', r === jumpSel); }
+    if (items[jumpSel]) { items[jumpSel].scrollIntoView({ block: 'nearest' }); }
+  }
+
+  /* ---- navigation ----------------------------------------------------- */
+
+  function show(n) {
+    idx = Math.max(0, Math.min(slides.length - 1, n));
+    slides.forEach(function (s, k) { s.classList.toggle('active', k === idx); });
+    fitActive();
+    paintRail();
+    renderPresenter();
+    var id = slides[idx].dataset.id;
+    if (id) { history.replaceState(null, '', '#' + id); }
+  }
+
+  function resolveHash() {
+    var h = decodeURIComponent((location.hash || '').replace('#', '')).toLowerCase();
+    if (!h) { return 0; }
+    for (var k = 0; k < slides.length; k++) {
+      if ((slides[k].dataset.id || '').toLowerCase() === h) { return k; }
+    }
+    var n = parseInt(h, 10);
+    return isNaN(n) ? 0 : n - 1;
+  }
+
+  function onKey(e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) { return; }
+    if (jump.classList.contains('open')) {
+      if (e.key === 'Escape') { e.preventDefault(); closeJump(); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); moveJump(1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); moveJump(-1); }
+      else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (jumpHits.length) { var t = jumpHits[jumpSel]; closeJump(); show(t); }
+      }
+      return;
+    }
+    switch (e.key) {
+      case 'ArrowRight': case ' ': case 'PageDown': e.preventDefault(); show(idx + 1); break;
+      case 'ArrowLeft': case 'PageUp': case 'Backspace': e.preventDefault(); show(idx - 1); break;
+      case 'Home': e.preventDefault(); show(0); break;
+      case 'End': e.preventDefault(); show(slides.length - 1); break;
+      case 'g': case 'G': e.preventDefault(); openJump(); break;
+      case 'f': e.preventDefault();
+        if (document.fullscreenElement) { document.exitFullscreen(); }
+        else { document.documentElement.requestFullscreen(); }
+        break;
+      case 'p': e.preventDefault();
+        document.body.classList.toggle('presenting');
+        fitActive();
+        renderPresenter();
+        break;
+      case 'P': e.preventDefault(); openPopup(); break;
+      case 'n': e.preventDefault();
+        document.body.classList.toggle('notes-inline');
+        fitActive();
+        break;
+      case 'Escape': if (document.body.classList.contains('presenting')) {
+          e.preventDefault(); document.body.classList.remove('presenting');
+          fitActive();
+        }
+        break;
+    }
+  }
+
+  jumpInput.addEventListener('input', function () { filterJump(jumpInput.value); });
+  document.addEventListener('keydown', onKey);
+  window.addEventListener('resize', function () { fitActive(); scalePreview(); });
+  window.addEventListener('hashchange', function () { show(resolveHash()); });
+  // Click-to-advance, but a drag that selects text is not an advance: a
+  // presenter highlighting a trace id or a command mid-talk must not lose the
+  // slide out from under it.
+  var downAt = null;
+  stage.addEventListener('mousedown', function (e) { downAt = [e.clientX, e.clientY]; });
+  stage.addEventListener('click', function (e) {
+    if (e.target.closest('a, button, code')) { return; }
+    if (downAt && Math.abs(e.clientX - downAt[0]) + Math.abs(e.clientY - downAt[1]) > 6) { return; }
+    var sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.toString().trim()) { return; }
+    show(idx + 1);
+  });
+
+  slides.forEach(wrapContent);
+  buildRail();
+  show(resolveHash());
+  setInterval(tickClock, 1000);
+})();
+</script>
+</body>
+</html>

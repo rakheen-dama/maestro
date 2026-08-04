@@ -1,0 +1,100 @@
+=== IDENTITY ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+toplevel: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+HEAD: 25891fab6a42e5792c2d4355413e35e2edebff1e
+branch: worktree-demo
+timestamp: 2026-08-04T09:16:51Z
+purpose: RED #1 — the v2 pins run before any v2 class exists
+
+> Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :build-logic:generateExternalPluginSpecBuilders UP-TO-DATE
+> Task :build-logic:extractPrecompiledScriptPluginPlugins UP-TO-DATE
+> Task :build-logic:compilePluginsBlocks UP-TO-DATE
+> Task :build-logic:generatePrecompiledScriptPluginAccessors UP-TO-DATE
+> Task :build-logic:generateScriptPluginAdapters UP-TO-DATE
+
+> Task :build-logic:compileKotlin UP-TO-DATE
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :build-logic:compileJava NO-SOURCE
+> Task :build-logic:pluginDescriptors UP-TO-DATE
+> Task :build-logic:processResources UP-TO-DATE
+> Task :build-logic:classes UP-TO-DATE
+> Task :build-logic:jar UP-TO-DATE
+
+> Configure project :maestro-admin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :maestro-store-jdbc:processResources NO-SOURCE
+> Task :maestro-lock-valkey:processResources UP-TO-DATE
+> Task :maestro-messaging-kafka:processResources UP-TO-DATE
+> Task :maestro-spring-boot-starter:processResources UP-TO-DATE
+> Task :maestro-test:processResources NO-SOURCE
+> Task :maestro-lock-postgres:processResources UP-TO-DATE
+> Task :maestro-store-postgres:processResources UP-TO-DATE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:processResources UP-TO-DATE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:processTestResources NO-SOURCE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:processV2Resources NO-SOURCE
+> Task :maestro-core:compileJava UP-TO-DATE
+> Task :maestro-core:processResources NO-SOURCE
+> Task :maestro-core:classes UP-TO-DATE
+> Task :maestro-core:jar UP-TO-DATE
+> Task :maestro-store-jdbc:compileJava UP-TO-DATE
+> Task :maestro-store-jdbc:classes UP-TO-DATE
+> Task :maestro-store-jdbc:jar UP-TO-DATE
+> Task :maestro-test:compileJava UP-TO-DATE
+> Task :maestro-test:classes UP-TO-DATE
+> Task :maestro-test:jar UP-TO-DATE
+> Task :maestro-spring-boot-starter:compileJava UP-TO-DATE
+> Task :maestro-spring-boot-starter:classes UP-TO-DATE
+> Task :maestro-spring-boot-starter:jar UP-TO-DATE
+> Task :maestro-messaging-kafka:compileJava UP-TO-DATE
+> Task :maestro-messaging-kafka:classes UP-TO-DATE
+> Task :maestro-lock-postgres:compileJava UP-TO-DATE
+> Task :maestro-lock-postgres:classes UP-TO-DATE
+> Task :maestro-store-postgres:compileJava UP-TO-DATE
+> Task :maestro-store-postgres:classes UP-TO-DATE
+> Task :maestro-lock-postgres:jar UP-TO-DATE
+> Task :maestro-messaging-kafka:jar UP-TO-DATE
+> Task :maestro-store-postgres:jar UP-TO-DATE
+> Task :maestro-lock-valkey:compileJava UP-TO-DATE
+> Task :maestro-lock-valkey:classes UP-TO-DATE
+> Task :maestro-lock-valkey:jar UP-TO-DATE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:compileJava UP-TO-DATE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:classes UP-TO-DATE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:compileTestJava
+> Task :maestro-samples:sample-loan-origination:loan-application-service:testClasses
+> Task :maestro-samples:sample-loan-origination:loan-application-service:compileV2Java NO-SOURCE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:v2Classes UP-TO-DATE
+
+> Task :maestro-samples:sample-loan-origination:loan-application-service:test FAILED
+
+v2 (parallel verification) behind workflow.version() > a loan in flight when v2 is deployed replays the sequential path with an identical event log FAILED
+    java.lang.IllegalStateException at LoanApplicationWorkflowV2Test.java:411
+        Caused by: java.lang.ClassNotFoundException at LoanApplicationWorkflowV2Test.java:409
+
+v2 (parallel verification) behind workflow.version() > each branch allocates from parentSeq*1000 + (i+1)*1000 FAILED
+    java.lang.IllegalStateException at LoanApplicationWorkflowV2Test.java:411
+        Caused by: java.lang.ClassNotFoundException at LoanApplicationWorkflowV2Test.java:409
+
+v2 (parallel verification) behind workflow.version() > the v2 class is a genuinely different class at the same name FAILED
+    java.lang.IllegalStateException at LoanApplicationWorkflowV2Test.java:411
+        Caused by: java.lang.ClassNotFoundException at LoanApplicationWorkflowV2Test.java:409
+
+v2 (parallel verification) behind workflow.version() > a loan started on v2 records the marker and fans the three verifications out FAILED
+    java.lang.IllegalStateException at LoanApplicationWorkflowV2Test.java:411
+        Caused by: java.lang.ClassNotFoundException at LoanApplicationWorkflowV2Test.java:409
+
+4 tests completed, 4 failed
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':maestro-samples:sample-loan-origination:loan-application-service:test'.
+> There were failing tests. See the report at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/maestro-samples/sample-loan-origination/loan-application-service/build/reports/tests/test/index.html
+
+* Try:
+> Run with --scan to generate a Build Scan (powered by Develocity).
+
+BUILD FAILED in 6s
+34 actionable tasks: 2 executed, 32 up-to-date

@@ -1,0 +1,76 @@
+=== TASK 6 FIX B2 — SIDE_EFFECT rows restored to reality  2026-08-04T18:00:50Z ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+branch=worktree-demo HEAD=94cd829c4082422bae991da04acc6f8f031ac87b
+host=Darwin 25.5.0 arm64
+
+--- the real live event log this material is now copied from ---
+source: demo/.evidence/task-6-runbook-02-scenario1-happy.log (loan-happy-1785864697)
+[1m==> durable event log for loan-happy-1785864697  (this is the whole of the workflow's memory)[0m
+    1  ACTIVITY_COMPLETED            LoanActivities.recordApplication
+    2  ACTIVITY_COMPLETED            LoanMessagingActivities.requestVerifications
+    3  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    4  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    5  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    6  SIDE_EFFECT                   $maestro:currentTime
+    7  SIDE_EFFECT                   $maestro:currentTime
+    8  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+    9  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+   10  ACTIVITY_COMPLETED            LoanMessagingActivities.requestUnderwriting
+   11  SIGNAL_RECEIVED               $maestro:awaitSignal:underwriting.decision
+   12  ACTIVITY_COMPLETED            FundingActivities.reserveRateLock
+   13  SIDE_EFFECT                   $maestro:currentTime
+   14  SIDE_EFFECT                   $maestro:currentTime
+   15  SIGNAL_RECEIVED               $maestro:awaitSignal:package.signed
+   16  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+   17  ACTIVITY_COMPLETED            FundingActivities.disburse
+   18  WORKFLOW_COMPLETED            
+
+--- SIDE_EFFECT rows per archived scenario ---
+scenario1-happy : 4
+scenario2-crash (log printed twice, before + after recovery): 9
+
+--- mechanism, from the engine source (not reasoning) ---
+506:        // Use memoized currentTime() for deterministic deadline on replay
+507-        var deadline = currentTime().plus(timeout);
+508-
+509-        for (int i = 0; i < count; i++) {
+510-            var remaining = Duration.between(currentTime(), deadline);
+511-            if (remaining.isNegative() || remaining.isZero()) {
+512-                var ctx = WorkflowContext.current();
+513-                throw new SignalTimeoutException(ctx.workflowId(), signalName, timeout);
+514-            }
+--
+856:        // Use memoized currentTime() for deterministic deadline on replay
+857-        var deadline = currentTime().plus(options.maxDuration());
+
+workflow call sites that reach it:
+92:        workflow.collectSignals("document.uploaded", DocumentUploaded.class,
+194:            workflow.collectSignals("document.uploaded", DocumentUploaded.class,
+223:        var batch = workflow.collectSignals("package.signed", Signature.class,
+
+--- the false claim is gone from BOTH runbook and deck ---
+RUNBOOK  "There is no `SIDE_EFFECT` row to point at": 0
+DECK     "no <code>SIDE_EFFECT</code> row to point at": 0
+(QA reported the deck did not repeat the claim; it did, in slide 18's DO block. Both fixed.)
+
+--- deck now carries the real rows ---
+773:            <tr><td class="seq">13</td><td class="type">SIDE_EFFECT</td><td class="sig">$maestro:currentTime</td></tr>
+774:            <tr><td class="seq">14</td><td class="type">SIDE_EFFECT</td><td class="sig">$maestro:currentTime</td></tr>
+800:        <code>SIDE_EFFECT $maestro:currentTime</code> rows are the <em>engine</em> memoising its
+1220:            <tr><td class="seq">13</td><td class="type">SIDE_EFFECT</td><td class="sig">$maestro:currentTime</td></tr>
+1221:            <tr><td class="seq">14</td><td class="type">SIDE_EFFECT</td><td class="sig">$maestro:currentTime</td></tr>
+1368:      <code class="mono">6, 7, 13, 14 &nbsp;SIDE_EFFECT &nbsp;$maestro:currentTime</code> &mdash;
+1384:        <code>SIDE_EFFECT $maestro:currentTime</code> rows in D2's event log &mdash; sequence 6, 7,
+
+--- deck fit, Chromium 1440x900, presenter panel ON, all 20 slides walked ---
+{ presenting: true, count: 20, clipped: 0, bodyOverflowX: false,
+  nonUnitScales: [ d1-code=0.84, d2=0.9, d5=0.86, authoring=0.74 ] }
+Before this change QA measured: d1-code 0.84, d2 0.93, authoring 0.74, 0/20 clipped.
+After:  d2 0.93 -> 0.90 (three rows added), d5 1.00 -> 0.86 (new paragraph).
+Deepest scale in the deck is unchanged at 0.74 (#authoring). Still 0/20 clipped.
+
+--- deck still fully offline ---
+absolute URLs in index.html:
+http://localhost:16686/search
+http://localhost:3000
+http://localhost:8094

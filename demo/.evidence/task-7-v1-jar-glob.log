@@ -1,0 +1,22 @@
+=== F6 — v1-to-v2-move.sh resolves the v1 jar by glob, and RESTORE_V1 fails safely ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=a155a83828ba949d65b9f84eeb9962e3f38cf18e branch=worktree-demo
+timestamp-utc: 2026-08-04T18:46:01Z
+
+--- what is on disk ---
+    loan-application-service-0.3.0-SNAPSHOT-plain.jar
+    loan-application-service-0.3.0-SNAPSHOT.jar
+    loan-application-v2.jar
+
+--- the glob, run standalone: picks the boot jar, skips -plain, ignores the version ---
+    resolved: loan-application-service-0.3.0-SNAPSHOT.jar
+
+--- RESTORE_V1=1 with no v1 jar present: does the guard fire BEFORE stop_loan_jvm? ---
+    guard fires before stop_loan_jvm: "8091 has NOT been touched" — correct
+
+--- READING ---
+V1_JAR was the only jar path in the tree resolved by literal version
+(loan-application-service-0.3.0-SNAPSHOT.jar); start-services.sh jar_for() and
+restart-loan-app.sh both already globbed. After any version bump the forward move
+failed safely at PIN 0, but RESTORE_V1=1 SIGTERMed the running v1 FIRST and then
+java -jar'd a nonexistent path — 8091 down, and the health loop burned its full 120 s
+before the presenter was told. Now: glob, plus an existence check ahead of stop_loan_jvm.

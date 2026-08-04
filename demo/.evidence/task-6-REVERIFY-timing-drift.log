@@ -1,0 +1,20 @@
+=== RE-VERIFY: timing figures after the B1 gate  2026-08-04T18:12:22Z ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=fb29c9f2baa3711acf13bac642489c1d12bfc933
+
+--- reset.sh run 1 (RUNBOOK.md:153 and :591 both still say 'measured 17 s') ---
+    localhost:8080   health 200
+
+[1m==> clean slate in 21s — 0 workflow instances, all four JVMs healthy[0m
+  wall=21s
+
+--- reset.sh run 2 (confirm it is not a one-off) ---
+    localhost:8080   health 200
+
+[1m==> clean slate in 22s — 0 workflow instances, all four JVMs healthy[0m
+  wall=22s
+
+--- warm preflight, the exact command RUNBOOK.md:78 prescribes (line 84 claims 36 s) ---
+         loan-application started at:Tue Aug  4 20:13:18 2026      (if that is not from this minute, you are looking at a stale JVM)
+
+[32mPREFLIGHT PASSED in 42s.[0m Now run: demo/scripts/reset.sh
+  wall=48s

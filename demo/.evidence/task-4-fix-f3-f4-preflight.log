@@ -1,0 +1,63 @@
+=== EVIDENCE IDENTITY ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+git-root: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+branch: worktree-demo
+commit: cee2c7359210fb47c78ed15c95fe204d2186d413
+dirty: 2 uncommitted change(s)
+timestamp-utc: 2026-08-04T13:30:56Z
+run: F4 — re-run preflight.sh WITH the demo's own JVMs up (expected: hard fail).
+     F3 — then stop the JVMs and re-run it warm, for the real timing.
+==========================
+
+########## F4 — preflight.sh while the demo's JVMs are up ##########
+port 8080 health 200
+port 8091 health 200
+port 8092 health 200
+port 8093 health 200
+
+[1m==> 0/8 host tools[0m
+    [32mok[0m   docker, curl, jq, lsof, nc, shasum, unzip
+
+[1m==> 1/8 every demo port free (or already held by this demo's own containers)[0m
+java    21866 rakheendama   21u  IPv6 0xbcb7065380922cbf      0t0  TCP *:8080 (LISTEN)
+java    22421 rakheendama   61u  IPv6 0xe1bd45d90a834fd1      0t0  TCP *:8091 (LISTEN)
+java    21858 rakheendama   52u  IPv6 0xd8dc1c6b97efea70      0t0  TCP *:8092 (LISTEN)
+java    21862 rakheendama   55u  IPv6 0x960c86c881967e32      0t0  TCP *:8093 (LISTEN)
+
+[31mPREFLIGHT FAILED: ports held by something that is not this demo: 8080 8091 8092 8093
+       Host JVM ports (8080/8091/8092/8093):  demo/scripts/stop-services.sh
+       Container ports (3000/4318/5433/6380/9090/16686/29093):  docker compose -f /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/demo/docker-compose.yml down
+       The loan sample's own compose stack collides on 5433/6380/29093 — take it down first:
+         docker compose -f maestro-samples/sample-loan-origination/docker-compose.yml down[0m
+EXIT=1 after 2s   (non-zero = 'safe to re-run' is false)
+
+########## F3 — stop the JVMs, then preflight warm ##########
+15:31:03 [demo] Done. Infrastructure containers are untouched — tear them down with:
+15:31:03 [demo]   docker compose -f demo/docker-compose.yml down -v
+    underwriting-service             pid 22818
+    verification-gateway-service     pid 22814
+
+  Grafana        http://localhost:3000
+  Prometheus     http://localhost:9090
+  Jaeger UI      http://localhost:16686
+  maestro-admin  http://localhost:8080
+  loan-application     http://localhost:8091
+  verification-gateway http://localhost:8092
+  underwriting         http://localhost:8093
+    [32mok[0m   loan-application 8091, verification-gateway 8092, underwriting 8093, admin 8080
+
+[1m==> 7/8 throwaway loan end to end[0m
+    [32mok[0m   preflight-1785850279 COMPLETED (path is warm: JIT, connection pools, Kafka consumer groups)
+         clear it before the demo with: demo/scripts/reset.sh
+
+[1m==> 8/8 process identity — trust nothing on screen until this matches[0m
+    SERVICE                    PID      JAR-SHA256(12) JAR
+    loan-application-service   22810    0023c6f46fd8   loan-application-service-0.3.0-SNAPSHOT.jar
+    verification-gateway-service 22814    d24802d3bdcd   verification-gateway-service-0.3.0-SNAPSHOT.jar
+    underwriting-service       22818    822ace7902c6   underwriting-service-0.3.0-SNAPSHOT.jar
+    maestro-admin              22822    d549c7a85b02   maestro-admin-0.3.0-SNAPSHOT.jar
+         loan-application started at:Tue Aug  4 15:31:10 2026      (if that is not from this minute, you are looking at a stale JVM)
+
+[32mPREFLIGHT PASSED in 36s.[0m Now run: demo/scripts/reset.sh
+EXIT=0
+ELAPSED preflight warm (DEMO_SKIP_PULL=1, jars already built): 36s

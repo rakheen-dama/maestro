@@ -1,0 +1,63 @@
+=== EVIDENCE IDENTITY ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+git-root: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+branch: worktree-demo
+commit: cee2c7359210fb47c78ed15c95fe204d2186d413
+dirty: 1 uncommitted change(s)
+timestamp-utc: 2026-08-04T13:28:03Z
+run: F3 — measuring the four unevidenced runbook figures.
+     (a) scenario 1 'happy' wall clock   (b) §5 parked peak + decay
+     (c) RESTORE_V1=1 v1-to-v2-move.sh   (preflight measured separately)
+==========================
+
+########## back to single node ##########
+services up: 4
+ELAPSED single-node start: 10s
+==> clean slate in 15s — 0 workflow instances, all four JVMs healthy
+
+########## (a) SCENARIO 1 — drive-loan.sh happy ##########
+    3/3 verification.result signals recorded after 14s
+    s1-r1-152834 is COMPLETED after 2s
+{"applicationId":"s1-r1-152834","workflowId":"loan-s1-r1-152834","status":"COMPLETED","output":{"status":"FUNDED","rateLockId":"10259bc8-74df-4a64-ba33-14bbb3579bfd","applicationId":"s1-r1-152834","disbursementId":"3044dd9a-8fdd-444f-a1bf-606f517cba8b"}}
+ELAPSED scenario 1 run 1: 20s
+    3/3 verification.result signals recorded after 10s
+    s1-r2-152854 is COMPLETED after 2s
+{"applicationId":"s1-r2-152854","workflowId":"loan-s1-r2-152854","status":"COMPLETED","output":{"status":"FUNDED","rateLockId":"55de3a94-2f2c-47ee-88d0-7661870251d9","applicationId":"s1-r2-152854","disbursementId":"cbb43ee4-3624-46a4-b43a-25d37f6992ca"}}
+ELAPSED scenario 1 run 2: 14s
+
+########## (b) §5 — three loans at once, parked gauge ##########
+parked before launch: 1
+parked t+3  s = 3
+parked t+6  s = 12
+parked t+9  s = 8
+parked t+12 s = 8
+parked t+15 s = 3
+parked t+18 s = 0
+parked t+21 s = 0
+parked t+24 s = 0
+parked t+27 s = 0
+parked t+30 s = 0
+parked t+33 s = 0
+parked t+36 s = 0
+parked t+39 s = 0
+parked t+42 s = 0
+parked t+45 s = 0
+parked t+48 s = 0
+parked t+51 s = 0
+parked t+54 s = 0
+parked t+57 s = 0
+parked t+60 s = 0
+parked t+64 s = 0
+parked t+67 s = 0
+parked t+70 s = 0
+parked t+73 s = 0
+PARKED PEAK: 12 at t+6s;  back to 0 at t+18s
+(Prometheus scrape interval is 5s, so both are quantised to that.)
+
+########## (c) RESTORE_V1=1 v1-to-v2-move.sh ##########
+
+13:30:24 [move] RESTORE_V1=1 — putting the v1 jar back on 8091
+  pid 21854 exited on SIGTERM (a real rolling deploy, not kill -9)
+  started loan-application-service-0.3.0-SNAPSHOT.jar as pid 22421 (log: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/demo/.run/loan-application-service.log)
+  healthy on 8091
+ELAPSED RESTORE_V1: 6s

@@ -1,0 +1,24 @@
+=== DECK RE-VERIFICATION after the final fix wave ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=8852bbd0869566a0318653aa83f46759852d55a0 branch=worktree-demo
+timestamp-utc: 2026-08-04T18:55:01Z
+method: served demo/presentation/ over http and driven with Playwright (Chromium).
+
+--- structure ---
+    20 slides, 20 .notes blocks, 19 DO: blocks — identical to HEAD 0039863 before the wave
+    (both versions also expose one extra cloned 'problem' section in the DOM: pre-existing)
+    console errors: 1, and it is favicon.ico 404 from the throwaway http server. Nothing else.
+
+--- fitSlide: every slide at scale 1.000, no horizontal overflow ---
+    title problem flow pressure architecture scenario-1 scenario-2 the-pause scenario-3
+    scenario-4 scenario-5 d1 d1-traces d1-code d2 d3 d4 d5 d6 authoring   -> all 1.000
+    (the wave's edits are almost entirely inside .notes, which the scaler does not measure)
+
+--- the wave's deck changes, asserted in the rendered DOM ---
+    slide 6  references §0.2 process identity ............. true   (F18)
+    slide 7  DO: stops before finish, says advance first .. true   (F18)
+    slide 9  carries the Issue-23 / §Q caveat ............. true   (F18/F1)
+    slide 9  DO: no longer says 'or §2'; says uncrashed ... true   (F16)
+    slide 12 marks RESTORE_V1 vs reset.sh as distinct .... true   (F14)
+    slide 16 credits three defects to the chaos harness ... true   (F13)
+    slide 19 fills the D6 wait from D6's own material .... true   (F18)
+    slide 19 grep note: 3 peer hits, no fabricated log line true   (F9)

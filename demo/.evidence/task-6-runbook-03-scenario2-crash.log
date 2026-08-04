@@ -1,0 +1,114 @@
+=== §2 SCENARIO 2 PHASE 1 — demo/scripts/drive-loan.sh crash (typed verbatim) ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=461a70d9a9a6d711d1c4ab6dc449bb7de0e2c34f start=2026-08-04T17:32:56Z
+
+[1m==> SCENARIO 2 (crash), phase 1 — application crash-1785864776, $350,000 on $100,000 income, DTI 3.5[0m
+{"applicationId":"crash-1785864776"} [http 202]
+
+[1m==> waiting for all 3 verification results (credit 2s, employment 5s, appraisal 8s simulated)[0m
+    SAY: "nothing here is mocked out — three providers answer on their own schedule, in any order."
+    3/3 verification.result signals recorded after 12s
+    document.uploaded pay-stub by alice [http 202]
+    document.uploaded bank-statement by bob [http 202]
+
+[1m==> waiting for the underwriting desk to queue round 1[0m
+[{"loanId":"crash-1785864776","round":1,"dti":3.5,"escalated":false}]
+
+[1m==> durable event log for loan-crash-1785864776  (this is the whole of the workflow's memory)[0m
+    1  ACTIVITY_COMPLETED            LoanActivities.recordApplication
+    2  ACTIVITY_COMPLETED            LoanMessagingActivities.requestVerifications
+    3  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    4  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    5  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    6  SIDE_EFFECT                   $maestro:currentTime
+    7  SIDE_EFFECT                   $maestro:currentTime
+    8  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+    9  SIDE_EFFECT                   $maestro:currentTime
+   10  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+   11  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+   12  ACTIVITY_COMPLETED            LoanMessagingActivities.requestUnderwriting
+
+[1m==> PARKED. 12 durable events recorded. The workflow is holding nothing in memory that matters.[0m
+    snapshot of those 12 rows: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/demo/.run/crash-crash-1785864776-before-rows.txt
+
+  Now, on stage, in this order:
+
+    1.  kill -9 $(cat /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/demo/.run/loan-application-service.pid)              <- no graceful shutdown, no drain
+    2.  demo/scripts/restart-loan-app.sh      <- restarts ONLY the process you killed
+    3.  demo/scripts/drive-loan.sh finish crash-1785864776
+
+  (Step 2 is not start-services.sh: that starts all four JVMs and refuses to
+  run while 8092/8093/8080 are still healthy, which they are.)
+
+  Expected after step 3: the loan completes, and the 12 rows above are
+  byte-identical afterwards — they replayed from Postgres, they did not run
+  again.
+
+PHASE1_EXIT=0
+PHASE1_WALL_SECONDS=15
+
+=== §2 PHASE 2 (the moment) — typed verbatim from RUNBOOK.md:216 ===
+kill -9 $(cat demo/.run/loan-application-service.pid)   # pid=53341
+T0=2026-08-04T17:33:21.3NZ
+KILL_EXIT=0
+--- RUNBOOK.md:225 optional proof it is gone (expects 000) ---
+000
+
+=== §2 PHASE 3 — demo/scripts/restart-loan-app.sh (typed verbatim) ===
+19:33:23 [demo] pid 53341 is already gone (this is the kill -9 case)
+19:33:23 [demo] starting loan-application-service from loan-application-service-0.3.0-SNAPSHOT.jar
+19:33:27 [demo] loan-application-service is up — pid 54347, jar loan-application-service-0.3.0-SNAPSHOT.jar, sha256 0023c6f46fd8
+RESTART_EXIT=0
+RESTART_WALL_SECONDS=4
+
+=== §2 PHASE 3b — demo/scripts/drive-loan.sh finish crash-1785864776 (typed verbatim) ===
+
+[1m==> SCENARIO 2 (crash), phase 2 — resuming crash-1785864776 after the restart[0m
+    pre-crash snapshot: 12 durable events
+
+[1m==> waiting for the underwriting desk to queue round 1[0m
+[{"loanId":"crash-1785864776","round":1,"dti":3.5,"escalated":false}]
+{"workflowId":"underwriting-crash-1785864776-round1","signal":"underwriter.decision","verdict":"APPROVED"}
+
+[1m==> waiting for the rate lock[0m
+    the rate lock recorded after 34s
+    package.signed by alice [http 202]
+    package.signed by bob [http 202]
+
+[1m==> waiting for crash-1785864776 to reach COMPLETED[0m
+    crash-1785864776 is COMPLETED after 2s
+{"applicationId":"crash-1785864776","workflowId":"loan-crash-1785864776","status":"COMPLETED","output":{"status":"FUNDED","rateLockId":"a1c1b765-35f0-420f-af2e-18e1cd211b17","applicationId":"crash-1785864776","disbursementId":"ce2ec7c1-5af1-45ed-8d3d-26355a8d845a"}}
+
+[1m==> durable event log for loan-crash-1785864776  (this is the whole of the workflow's memory)[0m
+    1  ACTIVITY_COMPLETED            LoanActivities.recordApplication
+    2  ACTIVITY_COMPLETED            LoanMessagingActivities.requestVerifications
+    3  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    4  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    5  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    6  SIDE_EFFECT                   $maestro:currentTime
+    7  SIDE_EFFECT                   $maestro:currentTime
+    8  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+    9  SIDE_EFFECT                   $maestro:currentTime
+   10  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+   11  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+   12  ACTIVITY_COMPLETED            LoanMessagingActivities.requestUnderwriting
+   13  SIGNAL_RECEIVED               $maestro:awaitSignal:underwriting.decision
+   14  ACTIVITY_COMPLETED            FundingActivities.reserveRateLock
+   15  SIDE_EFFECT                   $maestro:currentTime
+   16  SIDE_EFFECT                   $maestro:currentTime
+   17  SIGNAL_RECEIVED               $maestro:awaitSignal:package.signed
+   18  SIDE_EFFECT                   $maestro:currentTime
+   19  SIGNAL_RECEIVED               $maestro:awaitSignal:package.signed
+   20  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+   21  ACTIVITY_COMPLETED            FundingActivities.disburse
+   22  WORKFLOW_COMPLETED            
+
+[1m==> PROOF 1 — the 12 rows recorded before the kill -9 are byte-identical now[0m
+    diff is empty. Nothing was rewritten, renumbered, or re-executed.
+
+[1m==> PROOF 2 — duplicate sequence numbers after the crash: 0  (must be 0)[0m
+
+[1m==> DONE — crash-1785864776 FUNDED across a kill -9. Nothing re-executed.[0m
+FINISH_EXIT=0
+FINISH_WALL_SECONDS=41
+TOTAL_FROM_KILL_SECONDS=47
+end=2026-08-04T17:34:08Z

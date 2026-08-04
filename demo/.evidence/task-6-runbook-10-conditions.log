@@ -1,0 +1,69 @@
+=== the one remaining drive-loan mode — 'conditions' (RUNBOOK.md:37 lists it; deliberately has no stage section) ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=2cc6c9e7e143010bafb3f3d115c84c5ffff16ce6 start=2026-08-04T17:41:30Z
+
+[1m==> SCENARIO (conditions) — application conditions-1785865290, $450,000 on $100,000 income, DTI 4.5[0m
+    DTI 4.5 sits in the 3.0-6.0 human band, so this one really does queue for an underwriter.
+{"applicationId":"conditions-1785865290"} [http 202]
+
+[1m==> waiting for all 3 verification results (credit 2s, employment 5s, appraisal 8s simulated)[0m
+    SAY: "nothing here is mocked out — three providers answer on their own schedule, in any order."
+    3/3 verification.result signals recorded after 12s
+    document.uploaded pay-stub by alice [http 202]
+    document.uploaded bank-statement by bob [http 202]
+
+[1m==> waiting for the underwriting desk to queue round 1[0m
+[{"loanId":"conditions-1785865290","round":1,"dti":4.5,"escalated":false}]
+
+[1m==> round 1: underwriter asks for a condition rather than approving[0m
+{"workflowId":"underwriting-conditions-1785865290-round1","verdict":"CONDITIONS","signal":"underwriter.decision"}
+
+[1m==> the workflow now waits for exactly one more document — the condition it was given[0m
+    document.uploaded proof-of-insurance by alice [http 202]
+
+[1m==> waiting for the underwriting desk to queue round 2[0m
+[{"loanId":"conditions-1785865290","round":2,"dti":4.5,"escalated":false}]
+
+[1m==> round 2: same workflow, same instance, round 2 of the loop[0m
+{"workflowId":"underwriting-conditions-1785865290-round2","verdict":"APPROVED","signal":"underwriter.decision"}
+
+[1m==> waiting for the rate lock[0m
+    the rate lock recorded after 0s
+    package.signed by alice [http 202]
+    package.signed by bob [http 202]
+
+[1m==> waiting for conditions-1785865290 to reach COMPLETED[0m
+    conditions-1785865290 is COMPLETED after 2s
+{"applicationId":"conditions-1785865290","workflowId":"loan-conditions-1785865290","status":"COMPLETED","output":{"status":"FUNDED","rateLockId":"3647e6ee-883c-46c0-b63d-2d4869fa2534","applicationId":"conditions-1785865290","disbursementId":"ab33e554-9ba2-4edd-90c8-e2756cf7aeb5"}}
+
+[1m==> durable event log for loan-conditions-1785865290  (this is the whole of the workflow's memory)[0m
+    1  ACTIVITY_COMPLETED            LoanActivities.recordApplication
+    2  ACTIVITY_COMPLETED            LoanMessagingActivities.requestVerifications
+    3  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    4  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    5  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    6  SIDE_EFFECT                   $maestro:currentTime
+    7  SIDE_EFFECT                   $maestro:currentTime
+    8  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+    9  SIDE_EFFECT                   $maestro:currentTime
+   10  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+   11  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+   12  ACTIVITY_COMPLETED            LoanMessagingActivities.requestUnderwriting
+   13  SIGNAL_RECEIVED               $maestro:awaitSignal:underwriting.decision
+   14  SIDE_EFFECT                   $maestro:currentTime
+   15  SIDE_EFFECT                   $maestro:currentTime
+   16  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+   17  ACTIVITY_COMPLETED            LoanMessagingActivities.requestUnderwriting
+   18  SIGNAL_RECEIVED               $maestro:awaitSignal:underwriting.decision
+   19  ACTIVITY_COMPLETED            FundingActivities.reserveRateLock
+   20  SIDE_EFFECT                   $maestro:currentTime
+   21  SIDE_EFFECT                   $maestro:currentTime
+   22  SIGNAL_RECEIVED               $maestro:awaitSignal:package.signed
+   23  SIDE_EFFECT                   $maestro:currentTime
+   24  SIGNAL_RECEIVED               $maestro:awaitSignal:package.signed
+   25  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+   26  ACTIVITY_COMPLETED            FundingActivities.disburse
+   27  WORKFLOW_COMPLETED            
+
+[1m==> DONE — conditions-1785865290 FUNDED after two underwriting rounds.[0m
+CONDITIONS_EXIT=0
+WALL_SECONDS=24

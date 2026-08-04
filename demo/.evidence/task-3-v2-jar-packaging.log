@@ -1,0 +1,38 @@
+=== IDENTITY ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+toplevel: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+HEAD: 1d0a0d2ce24dac323dca85d33e84a3a2c1075ef0
+branch: worktree-demo
+timestamp: 2026-08-04T09:55:35Z
+purpose: v2BootJar packages v2's LoanApplicationWorkflow (exactly once); main's bootJar still packages v1
+
+=== jars ===
+total 252608
+-rw-r--r--@ 1 rakheendama  staff     43339 Aug  4 09:15 loan-application-service-0.3.0-SNAPSHOT-plain.jar
+-rw-r--r--@ 1 rakheendama  staff  64217822 Aug  4 10:08 loan-application-service-0.3.0-SNAPSHOT.jar
+-rw-r--r--@ 1 rakheendama  staff  64272693 Aug  4 11:40 loan-application-v2.jar
+
+=== the workflow class entry in each boot jar (must appear exactly once) ===
+--- loan-application-service-0.3.0-SNAPSHOT.jar
+    10137  02-01-1980 00:00   BOOT-INF/classes/io/b2mash/maestro/samples/loan/application/workflow/LoanApplicationWorkflow.class
+--- loan-application-v2.jar
+    11643  02-01-1980 00:00   BOOT-INF/classes/io/b2mash/maestro/samples/loan/application/workflow/LoanApplicationWorkflow.class
+
+=== bytecode of the PACKAGED class ===
+--- loan-application-service-0.3.0-SNAPSHOT.jar -> v1
+    sha256                        : 70117aba5ac2343a8ccc3ab4777368d2bd6c8c547313953259f3ee00d0edb513
+    "parallel-verification" const : 0
+    WorkflowContext.version calls : 0
+    WorkflowContext.parallel calls: 0
+--- loan-application-v2.jar -> v2
+    sha256                        : c8caa962d45ec22797a5ce00e957f09de2a8f938b7965c0fd020f927db6a09fb
+    "parallel-verification" const : 2
+    WorkflowContext.version calls : 1
+    WorkflowContext.parallel calls: 1
+
+=== v2 jar: the version gate in the packaged bytecode (iconst_m1 = DEFAULT_VERSION, iconst_2 = maxSupported) ===
+         5: ldc           #21                 // String parallel-verification
+         7: iconst_m1
+         8: iconst_2
+         9: invokevirtual #23                 // Method io/b2mash/maestro/core/context/WorkflowContext.version:(Ljava/lang/String;II)I
+        12: istore_3

@@ -1,0 +1,70 @@
+=== identity ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+HEAD: ff2f4a5dc81336ce21141706aaa3944a6269d9bd
+branch: worktree-demo
+timestamp: 2026-08-04T08:09:54Z
+
+Loan driven through the demo stack: applicationId=demo-trace-1785830907 -> COMPLETED/FUNDED
+TRACE_ID=d055f5961a6028a5d24d329ff11bc896
+
+=== 1. traceparent on the wire (loans.underwriting.requests, last 2 records) ===
+NO_HEADERS	demo-trace-1785830662
+traceparent:00-d055f5961a6028a5d24d329ff11bc896-95230c42b06ffe29-01	demo-trace-1785830907
+
+=== 2. Jaeger knows all three services (GET /api/services) ===
+{
+    "data": [
+        "jaeger",
+        "sample-loan-application-service",
+        "sample-verification-gateway-service",
+        "sample-underwriting-service"
+    ],
+    "total": 4,
+    "limit": 0,
+    "offset": 0,
+    "errors": null
+}
+
+=== 3. span-count per service within trace d055f5961a6028a5d24d329ff11bc896 (GET /api/traces/d055f5961a6028a5d24d329ff11bc896) ===
+traceID: d055f5961a6028a5d24d329ff11bc896
+total spans: 31
+distinct services: 3
+  sample-loan-application-service: 27
+  sample-underwriting-service: 1
+  sample-verification-gateway-service: 3
+
+--- spans in start order ---
+sample-loan-application-service        maestro.workflow.run
+sample-loan-application-service        maestro.activity
+sample-loan-application-service        maestro.admin.events send
+sample-loan-application-service        maestro.admin.events send
+sample-loan-application-service        maestro.activity
+sample-loan-application-service        loans.verification.requests send
+sample-loan-application-service        loans.verification.requests send
+sample-loan-application-service        loans.verification.requests send
+sample-loan-application-service        maestro.admin.events send
+sample-verification-gateway-service    loans.verification.requests process
+sample-verification-gateway-service    loans.verification.requests process
+sample-verification-gateway-service    loans.verification.requests process
+sample-loan-application-service        maestro.workflow.run
+sample-loan-application-service        maestro.admin.events send
+sample-loan-application-service        maestro.workflow.run
+sample-loan-application-service        maestro.admin.events send
+sample-loan-application-service        maestro.workflow.run
+sample-loan-application-service        maestro.admin.events send
+sample-loan-application-service        maestro.activity
+sample-loan-application-service        loans.underwriting.requests send
+sample-loan-application-service        maestro.admin.events send
+sample-underwriting-service            loans.underwriting.requests process
+sample-loan-application-service        maestro.workflow.run
+sample-loan-application-service        maestro.admin.events send
+sample-loan-application-service        maestro.activity
+sample-loan-application-service        maestro.admin.events send
+sample-loan-application-service        maestro.admin.events send
+sample-loan-application-service        maestro.workflow.run
+sample-loan-application-service        maestro.admin.events send
+sample-loan-application-service        maestro.activity
+sample-loan-application-service        maestro.admin.events send
+
+=== 4. UI link ===
+http://localhost:16686/trace/d055f5961a6028a5d24d329ff11bc896

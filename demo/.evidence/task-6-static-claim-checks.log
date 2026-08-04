@@ -1,0 +1,40 @@
+=== STATIC RUNBOOK CLAIM CHECKS 2026-08-04T17:19:36Z ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=7205061a4fef315adcc02a85f1e07a0f4cb341a1
+
+--- RUNBOOK claims 11 Kafka topics; docker-compose kafka-init --topic count ---
+loans.underwriting.decisions
+loans.underwriting.requests
+loans.verification.requests
+loans.verification.results
+maestro.admin.events
+maestro.signals.loan-application
+maestro.signals.underwriting
+maestro.signals.verification-gateway
+maestro.tasks.loan-application
+maestro.tasks.underwriting
+maestro.tasks.verification-gateway
+      11
+
+--- RUNBOOK claims 11 ports; preflight PORTS array ---
+28:PORTS=(3000 4318 5433 6380 8080 8091 8092 8093 9090 16686 29093)
+
+--- RUNBOOK D4 claims SEVEN containers; compose services ---
+grafana
+jaeger
+kafka
+kafka-init
+postgres
+prometheus
+valkey
+       7
+
+--- RUNBOOK §5 claims FIVE panels; grafana dashboard titles ---
+timeseries	Workflows started / completed / failed
+stat	Workflows parked
+timeseries	Activity duration p50 / p95 by activity
+stat	Recovery adoptions
+timeseries	Stand-downs by reason
+panel count: 5
+
+--- RUNBOOK §D3 chaos figures vs tasks/todo.md ---
+26:- [x] Soak-of-record: 2h chaos window VERDICT PASS — 2376 workflows, 0 invariant violations, 0 duplicate side effects, checker 245/1/1, benchmark tail captured (run 20260801-214325--6973268155056049009)

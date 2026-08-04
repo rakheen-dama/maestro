@@ -1,0 +1,75 @@
+=== §D2 — demo/scripts/drive-loan.sh events <id> (typed verbatim, any completed loan) ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=195a07e44ae258e46f785299c4f9086505279975 at=2026-08-04T17:38:45Z
+
+[1m==> durable event log for loan-happy-1785864697  (this is the whole of the workflow's memory)[0m
+    1  ACTIVITY_COMPLETED            LoanActivities.recordApplication
+    2  ACTIVITY_COMPLETED            LoanMessagingActivities.requestVerifications
+    3  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    4  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    5  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    6  SIDE_EFFECT                   $maestro:currentTime
+    7  SIDE_EFFECT                   $maestro:currentTime
+    8  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+    9  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+   10  ACTIVITY_COMPLETED            LoanMessagingActivities.requestUnderwriting
+   11  SIGNAL_RECEIVED               $maestro:awaitSignal:underwriting.decision
+   12  ACTIVITY_COMPLETED            FundingActivities.reserveRateLock
+   13  SIDE_EFFECT                   $maestro:currentTime
+   14  SIDE_EFFECT                   $maestro:currentTime
+   15  SIGNAL_RECEIVED               $maestro:awaitSignal:package.signed
+   16  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+   17  ACTIVITY_COMPLETED            FundingActivities.disburse
+   18  WORKFLOW_COMPLETED            
+EVENTS_EXIT=0
+
+=== §D2 uniqueness guarantee — RUNBOOK.md:628 typed verbatim ===
+                      Table "public.maestro_workflow_event"
+        Column        |           Type           | Collation | Nullable | Default 
+----------------------+--------------------------+-----------+----------+---------
+ id                   | uuid                     |           | not null | 
+ workflow_instance_id | uuid                     |           | not null | 
+ sequence_number      | integer                  |           | not null | 
+ event_type           | character varying(50)    |           | not null | 
+ step_name            | character varying(255)   |           |          | 
+ payload              | jsonb                    |           |          | 
+ created_at           | timestamp with time zone |           | not null | 
+Indexes:
+    "maestro_workflow_event_pkey" PRIMARY KEY, btree (id)
+    "idx_wf_event_replay" UNIQUE, btree (workflow_instance_id, sequence_number)
+Foreign-key constraints:
+    "maestro_workflow_event_workflow_instance_id_fkey" FOREIGN KEY (workflow_instance_id) REFERENCES maestro_workflow_instance(id)
+
+PSQL_EXIT=0
+
+--- does idx_wf_event_replay really exist and is it UNIQUE(workflow_instance_id, sequence_number)? ---
+maestro_workflow_event_pkey :: CREATE UNIQUE INDEX maestro_workflow_event_pkey ON public.maestro_workflow_event USING btree (id)
+idx_wf_event_replay :: CREATE UNIQUE INDEX idx_wf_event_replay ON public.maestro_workflow_event USING btree (workflow_instance_id, sequence_number)
+
+=== §D4 — docker compose -f demo/docker-compose.yml ps (RUNBOOK.md:686-687 says SEVEN containers) ===
+NAME                        IMAGE                         COMMAND                  SERVICE      CREATED          STATUS                    PORTS
+maestro-demo-grafana-1      grafana/grafana:12.2.0        "/run.sh"                grafana      12 minutes ago   Up 12 minutes (healthy)   0.0.0.0:3000->3000/tcp, [::]:3000->3000/tcp
+maestro-demo-jaeger-1       jaegertracing/jaeger:2.11.0   "/cmd/jaeger/jaeger-…"   jaeger       12 minutes ago   Up 12 minutes             0.0.0.0:4317-4318->4317-4318/tcp, [::]:4317-4318->4317-4318/tcp, 0.0.0.0:16686->16686/tcp, [::]:16686->16686/tcp
+maestro-demo-kafka-1        apache/kafka:3.9.0            "/__cacert_entrypoin…"   kafka        12 minutes ago   Up 12 minutes (healthy)   0.0.0.0:29093->29093/tcp, [::]:29093->29093/tcp
+maestro-demo-postgres-1     postgres:16-alpine            "docker-entrypoint.s…"   postgres     12 minutes ago   Up 12 minutes (healthy)   0.0.0.0:5433->5432/tcp, [::]:5433->5432/tcp
+maestro-demo-prometheus-1   prom/prometheus:v3.6.0        "/bin/prometheus --c…"   prometheus   12 minutes ago   Up 12 minutes (healthy)   0.0.0.0:9090->9090/tcp, [::]:9090->9090/tcp
+maestro-demo-valkey-1       valkey/valkey:8-alpine        "docker-entrypoint.s…"   valkey       12 minutes ago   Up 12 minutes (healthy)   0.0.0.0:6380->6379/tcp, [::]:6380->6379/tcp
+rows shown by the command as the runbook types it: 6
+with -a:                                          7
+
+=== QA FINDING F3 (minor, presenter-facing) — §D4's 'seven containers' ===
+RUNBOOK.md:686-687 says: "Point at the running stack as proof of (1): docker compose -f
+demo/docker-compose.yml ps — seven containers, none of them Maestro."
+
+Typed exactly as written, that command prints SIX rows. kafka-init has run and exited, and
+plain 'ps' lists only running containers; it takes 'ps -a' to see seven.
+  docker compose -f demo/docker-compose.yml ps      -> 6 rows
+  docker compose -f demo/docker-compose.yml ps -a   -> 7 rows
+The compose file does define seven services (grafana jaeger kafka kafka-init postgres
+prometheus valkey) so the number is not wrong — the command shown under it does not produce it.
+A presenter says 'seven' while the room counts six on the projector.
+
+=== §D2 verdict: PASS ===
+idx_wf_event_replay :: CREATE UNIQUE INDEX ... USING btree (workflow_instance_id, sequence_number)
+— exactly the uniqueness guarantee RUNBOOK.md:623-625 claims, read live out of Postgres.
+The v1 event log the presenter walks matches the runbook's listing in order and step names,
+with the SIDE_EFFECT caveat recorded separately as finding F2.

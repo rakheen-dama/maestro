@@ -70,6 +70,8 @@ micrometer-core = { module = "io.micrometer:micrometer-core" }
 micrometer-tracing = { module = "io.micrometer:micrometer-tracing" }
 micrometer-tracing-test = { module = "io.micrometer:micrometer-tracing-test" }
 micrometer-tracing-bridge-otel = { module = "io.micrometer:micrometer-tracing-bridge-otel" }
+micrometer-registry-prometheus = { module = "io.micrometer:micrometer-registry-prometheus" }
+opentelemetry-exporter-otlp = { module = "io.opentelemetry:opentelemetry-exporter-otlp" }
 # Boot's own tracing auto-configuration — test-only, so the starter's
 # auto-configuration ordering can be proven against the real chain rather than
 # a `withBean` stub (task-4 fix round 1's lesson, applied to tracing).
