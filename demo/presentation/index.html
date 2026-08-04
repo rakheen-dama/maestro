@@ -1502,7 +1502,9 @@ body.presenting #presenter { display: grid; }
 (function () {
   'use strict';
 
-  var slides   = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  // Scoped to direct children of #stage on purpose: the presenter preview holds
+  // a cloned .slide, and an unscoped query would pick the clone up as slide 21.
+  var slides   = Array.prototype.slice.call(document.querySelectorAll('#stage > .slide'));
   var stage    = document.getElementById('stage');
   var railTicks= document.getElementById('railTicks');
   var railNum  = document.getElementById('railNum');

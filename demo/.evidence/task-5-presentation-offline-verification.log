@@ -1,0 +1,53 @@
+=== EVIDENCE IDENTITY ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+git-root: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+branch: worktree-demo
+commit: c6e1ddef9bd99bd8410f6804d5d5de2f817b5d79
+dirty: 2 uncommitted change(s)
+timestamp-utc: 2026-08-04T16:35:45Z
+run: Task 5 — offline verification of demo/presentation/index.html.
+     Loaded from a file:// URL in real Chrome with NO server running and
+     every non-deck request aborted at the browser level. Exercises all
+     20 slides, keyboard nav, Home/End, all deep-link slugs, presenter
+     view (notes + next-slide preview) and jump-to-slide.
+browser: Google Chrome 150.0.7871.187 
+deck-sha256: a21159ac503c5d03d54b30a83faa96ad8c659527338d4fb0935ae1592db4faf0
+==========================
+
+########## static check — external references ##########
+http(s):// URLs, src= attrs, @import rules in index.html: 3
+
+########## runtime check — file:// in Chrome, network blocked ##########
+slides discovered: 20
+ArrowRight walk through all 20 slides: OK
+Home -> title | End -> authoring
+deep-link slugs resolving on file://: 20/20
+presenter: display=grid notes=274 chars, preview slides=1, next="— The problem, in business terms", clock=00:02
+jump: typed "d4" -> 1 hit(s) ["17 D4 — what you actually operate Deep dives"] -> Enter landed on #d4
+requests blocked as non-deck (must be 0 or favicon only): 0
+subresources fetched by the document: 0 (none)
+page errors: none
+
+VERDICT: PASS
+
+########## slide inventory ##########
+     1	data-act="I" data-act-name="Opening" data-id="title" data-title="Maestro"
+     2	data-act="I" data-act-name="Opening" data-id="problem" data-title="The problem, in business terms"
+     3	data-act="I" data-act-name="Opening" data-id="flow" data-title="The flow — eight steps"
+     4	data-act="I" data-act-name="Opening" data-id="pressure" data-title="What the domain forces"
+     5	data-act="I" data-act-name="Opening" data-id="architecture" data-title="Architecture — there is no server"
+     6	data-act="II" data-act-name="Scenarios" data-id="scenario-1" data-title="Scenario 1 — one loan, three services"
+     7	data-act="II" data-act-name="Scenarios" data-id="scenario-2" data-title="Scenario 2 — kill -9"
+     8	data-act="II" data-act-name="Scenarios" data-id="the-pause" data-title="Scenario 2 — narrating the pause"
+     9	data-act="II" data-act-name="Scenarios" data-id="scenario-3" data-title="Scenario 3 — the trace"
+    10	data-act="II" data-act-name="Scenarios" data-id="scenario-4" data-title="Scenario 4 — saga compensation"
+    11	data-act="II" data-act-name="Scenarios" data-id="scenario-5" data-title="Scenario 5 — parked costs nothing"
+    12	data-act="III" data-act-name="Deep dives" data-id="d1" data-title="D1 — the rolling deploy"
+    13	data-act="III" data-act-name="Deep dives" data-id="d1-traces" data-title="D1 — the two trace shapes"
+    14	data-act="III" data-act-name="Deep dives" data-id="d1-code" data-title="D1 — the code that makes it safe"
+    15	data-act="III" data-act-name="Deep dives" data-id="d2" data-title="D2 — how memoization works"
+    16	data-act="III" data-act-name="Deep dives" data-id="d3" data-title="D3 — the evidence"
+    17	data-act="III" data-act-name="Deep dives" data-id="d4" data-title="D4 — what you actually operate"
+    18	data-act="III" data-act-name="Deep dives" data-id="d5" data-title="D5 — determinism"
+    19	data-act="III" data-act-name="Deep dives" data-id="d6" data-title="D6 — multi-node adoption"
+    20	data-act="III" data-act-name="Deep dives" data-id="authoring" data-title="What you actually write"
