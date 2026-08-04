@@ -1,0 +1,84 @@
+=== DIAGNOSIS of the cold-start preflight failure 2026-08-04T17:29:00Z ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=f182c512f9558339392c7299659ca1de4db24e78
+--- what the runbook told me to type next ---
+demo/scripts/drive-loan.sh happy preflight-1785864435
+
+--- application status right now ---
+{"applicationId":"preflight-1785864435","workflowId":"loan-preflight-1785864435","status":"WAITING_SIGNAL","output":null}
+
+--- workflow instance row ---
+ERROR:  column "created_at" does not exist
+LINE 1: select workflow_id,status,created_at from maestro_workflow_i...
+                                  ^
+HINT:  Perhaps you meant to reference the column "maestro_workflow_instance.updated_at".
+
+--- its event log ---
+ sequence_number |     event_type     |                  step_name                   
+-----------------+--------------------+----------------------------------------------
+               1 | ACTIVITY_COMPLETED | LoanActivities.recordApplication
+               2 | ACTIVITY_COMPLETED | LoanMessagingActivities.requestVerifications
+(2 rows)
+
+
+--- verification_gateway workflow instances ---
+ workflow_id | status 
+-------------+--------
+(0 rows)
+
+
+--- verification-gateway log: errors/warnings ---
+2026-08-04T19:27:09.585+02:00  WARN 50836 --- [sample-verification-gateway-service] [           main] [                                                 ] trationDelegate$BeanPostProcessorChecker : Bean 'io.b2mash.maestro.spring.config.MaestroAutoConfiguration' of type [io.b2mash.maestro.spring.config.MaestroAutoConfiguration] is not eligible for getting processed by all BeanPostProcessors (for example: not eligible for auto-proxying). The currently created BeanPostProcessor [maestroActivityStubBeanPostProcessor] is declared through a non-static factory method on that class; consider declaring it as static instead.
+2026-08-04T19:27:09.700+02:00  WARN 50836 --- [sample-verification-gateway-service] [           main] [                                                 ] trationDelegate$BeanPostProcessorChecker : Bean 'io.b2mash.maestro.messaging.kafka.config.KafkaMessagingAutoConfiguration' of type [io.b2mash.maestro.messaging.kafka.config.KafkaMessagingAutoConfiguration] is not eligible for getting processed by all BeanPostProcessors (for example: not eligible for auto-proxying). The currently created BeanPostProcessor [maestroSignalListenerBeanPostProcessor] is declared through a non-static factory method on that class; consider declaring it as static instead.
+2026-08-04T19:27:10.865+02:00  WARN 50836 --- [sample-verification-gateway-service] [           main] [                                                 ] i.n.r.d.DnsServerAddressStreamProviders  : Can not find io.netty.resolver.dns.macos.MacOSDnsServerAddressStreamProvider in the classpath, fallback to system defaults. This may result in incorrect DNS resolutions on MacOS. Check whether you have a dependency on 'io.netty:netty-resolver-dns-native-macos'
+
+--- loan-application log: errors/warnings ---
+2026-08-04T19:27:09.477+02:00  WARN 50829 --- [sample-loan-application-service] [           main] [                                                 ] trationDelegate$BeanPostProcessorChecker : Bean 'io.b2mash.maestro.spring.config.MaestroAutoConfiguration' of type [io.b2mash.maestro.spring.config.MaestroAutoConfiguration] is not eligible for getting processed by all BeanPostProcessors (for example: not eligible for auto-proxying). The currently created BeanPostProcessor [maestroActivityStubBeanPostProcessor] is declared through a non-static factory method on that class; consider declaring it as static instead.
+2026-08-04T19:27:09.586+02:00  WARN 50829 --- [sample-loan-application-service] [           main] [                                                 ] trationDelegate$BeanPostProcessorChecker : Bean 'io.b2mash.maestro.messaging.kafka.config.KafkaMessagingAutoConfiguration' of type [io.b2mash.maestro.messaging.kafka.config.KafkaMessagingAutoConfiguration] is not eligible for getting processed by all BeanPostProcessors (for example: not eligible for auto-proxying). The currently created BeanPostProcessor [maestroSignalListenerBeanPostProcessor] is declared through a non-static factory method on that class; consider declaring it as static instead.
+2026-08-04T19:27:10.691+02:00  WARN 50829 --- [sample-loan-application-service] [           main] [                                                 ] i.n.r.d.DnsServerAddressStreamProviders  : Can not find io.netty.resolver.dns.macos.MacOSDnsServerAddressStreamProvider in the classpath, fallback to system defaults. This may result in incorrect DNS resolutions on MacOS. Check whether you have a dependency on 'io.netty:netty-resolver-dns-native-macos'
+
+--- ROOT CAUSE probe: did verification-gateway's listener ever join before the request was published? ---
+loan-application published requestVerifications (event seq 2). verification_gateway has 0 instances.
+
+--- verification-gateway: consumer group join timeline ---
+2026-08-04T19:27:18.238+02:00  INFO 50836 --- [sample-verification-gateway-service] [anNameSet-0-C-1] [                                                 ] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-maestro-verification-gateway-2, groupId=maestro-verification-gateway] Successfully joined group with generation Generation{generationId=1, memberId='consumer-maestro-verification-gateway-2-8593dfbc-3cba-4a6f-bb40-7164caeff700', protocol='range'}
+2026-08-04T19:27:18.238+02:00  INFO 50836 --- [sample-verification-gateway-service] [ntainer#0-0-C-1] [                                                 ] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-verification-gateway-1, groupId=verification-gateway] Successfully joined group with generation Generation{generationId=1, memberId='consumer-verification-gateway-1-a52e300d-c755-44f1-9e1b-c1a8be4e0e55', protocol='range'}
+2026-08-04T19:27:18.257+02:00  INFO 50836 --- [sample-verification-gateway-service] [anNameSet-0-C-1] [                                                 ] k.c.c.i.ConsumerRebalanceListenerInvoker : [Consumer clientId=consumer-maestro-verification-gateway-2, groupId=maestro-verification-gateway] Adding newly assigned partitions: [maestro.signals.verification-gateway-0, maestro.signals.verification-gateway-1, maestro.signals.verification-gateway-2]
+2026-08-04T19:27:18.257+02:00  INFO 50836 --- [sample-verification-gateway-service] [anNameSet-0-C-1] [                                                 ] s.k.l.ConcurrentMessageListenerContainer : maestro-verification-gateway: partitions assigned: [maestro.signals.verification-gateway-0, maestro.signals.verification-gateway-1, maestro.signals.verification-gateway-2]
+2026-08-04T19:27:18.257+02:00  INFO 50836 --- [sample-verification-gateway-service] [ntainer#0-0-C-1] [                                                 ] k.c.c.i.ConsumerRebalanceListenerInvoker : [Consumer clientId=consumer-verification-gateway-1, groupId=verification-gateway] Adding newly assigned partitions: [loans.verification.requests-0, loans.verification.requests-1, loans.verification.requests-2]
+2026-08-04T19:27:18.284+02:00  INFO 50836 --- [sample-verification-gateway-service] [ntainer#0-0-C-1] [                                                 ] o.s.k.l.KafkaMessageListenerContainer    : verification-gateway: partitions assigned: [loans.verification.requests-0, loans.verification.requests-1, loans.verification.requests-2]
+
+--- when was the throwaway loan created? (preflight step 7 started after all four health-200s at 19:27:15) ---
+2026-08-04T19:27:16.078+02:00  INFO 50829 --- [sample-loan-application-service] [nio-8091-exec-4] [8090b2fe00b71f17b207204dc845d2e9-6955ba8f26ed69ec] i.b.m.core.engine.WorkflowExecutor       : Started workflow 'loan-preflight-1785864435' (type=loan-application, id=95f25305-3a05-43ad-8648-956dca36a369)
+
+--- auto-offset-reset in effect for the sample's domain-topic listeners ---
+	auto.offset.reset = latest
+	auto.offset.reset = earliest
+
+=== ROOT CAUSE (QA FINDING F1) ===
+preflight declares the services ready on /actuator/health==200 and immediately drives the
+throwaway loan. On a COLD Kafka the sample's domain-topic listener has not joined its consumer
+group yet, and that listener runs auto.offset.reset=latest, so the verification request is
+published into a partition nobody is assigned to and is never delivered.
+
+TIMELINE, all from the archived logs above:
+  19:27:15        preflight: all four services HTTP 200 on /actuator/health
+  19:27:16.078    loan-application: Started workflow 'loan-preflight-1785864435'
+                  -> publishes loans.verification.requests (event seq 2 = requestVerifications)
+  19:27:18.284    verification-gateway: 'verification-gateway: partitions assigned:
+                  [loans.verification.requests-0,-1,-2]'   <-- 2.2 SECONDS TOO LATE
+  auto.offset.reset = latest for that group -> the record is skipped, forever.
+
+RESULT: loan-preflight-1785864435 is stuck WAITING_SIGNAL with exactly 2 events
+        (recordApplication, requestVerifications); verification_gateway DB has 0 instances;
+        preflight exits 1 at step 7/8.
+
+WHY NO EARLIER REHEARSAL SAW IT: every previous run reused a warm Kafka whose consumer group
+already had committed offsets, so auto.offset.reset never applied. It only bites after
+'docker compose -f demo/docker-compose.yml down -v' — i.e. exactly the documented cold start
+(RUNBOOK.md 'T' section calls down -v 'the CORRECT way to get a truly clean start').
+
+--- ATTRIBUTION of auto.offset.reset to the right group (grepped from the log) ---
+ConsumerConfig block at log line 40 (19:27:14.224):  group.id = verification-gateway   auto.offset.reset = latest
+  ^ this is the SAMPLE's own @KafkaListener on loans.verification.requests — the one that missed the record
+ConsumerConfig block further down:                  group.id = maestro-verification-gateway   auto.offset.reset = earliest
+  ^ Maestro's OWN signals topic is safe; it is the sample's domain topics that are not.

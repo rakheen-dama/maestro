@@ -1,0 +1,117 @@
+=== COLD RUNBOOK RUN — §0.1 PREFLIGHT (typed verbatim: demo/scripts/preflight.sh) ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=f182c512f9558339392c7299659ca1de4db24e78 branch=worktree-demo
+start 2026-08-04T17:26:30Z
+PRECONDITION: docker compose -f demo/docker-compose.yml down -v had been run (see task-6-cold-teardown.log); 0 maestro containers, 0 demo volumes.
+
+
+[1m==> 0/8 host tools[0m
+    [32mok[0m   docker, curl, jq, lsof, nc, shasum, unzip
+
+[1m==> 1/8 every demo port free (or already held by this demo's own containers)[0m
+    [32mok[0m   11 of 11 ports free, none held by a foreign process
+
+[1m==> 2/8 pull images[0m
+ kafka Skipped - Image is already being pulled by kafka-init 
+ kafka-init Pulling 
+ jaeger Pulling 
+ prometheus Pulling 
+ valkey Pulling 
+ postgres Pulling 
+ grafana Pulling 
+ kafka-init Pulled 
+ jaeger Pulled 
+ grafana Pulled 
+ prometheus Pulled 
+ valkey Pulled 
+ postgres Pulled 
+    [32mok[0m   images present
+
+[1m==> 3/8 build jars (including v2)[0m
+    [32mok[0m   bootJar + v2BootJar
+    [32mok[0m   loan-application-v2.jar present
+
+[1m==> 4/8 containers up and healthy[0m
+ Network maestro-demo_default  Creating
+ Network maestro-demo_default  Created
+ Volume maestro-demo_demo-pgdata  Creating
+ Volume maestro-demo_demo-pgdata  Created
+ Container maestro-demo-valkey-1  Creating
+ Container maestro-demo-jaeger-1  Creating
+ Container maestro-demo-kafka-1  Creating
+ Container maestro-demo-prometheus-1  Creating
+ Container maestro-demo-postgres-1  Creating
+ Container maestro-demo-postgres-1  Created
+ Container maestro-demo-valkey-1  Created
+ Container maestro-demo-jaeger-1  Created
+ Container maestro-demo-prometheus-1  Created
+ Container maestro-demo-grafana-1  Creating
+ Container maestro-demo-kafka-1  Created
+ Container maestro-demo-kafka-init-1  Creating
+ Container maestro-demo-grafana-1  Created
+ Container maestro-demo-kafka-init-1  Created
+ Container maestro-demo-postgres-1  Starting
+ Container maestro-demo-kafka-1  Starting
+ Container maestro-demo-valkey-1  Starting
+ Container maestro-demo-jaeger-1  Starting
+ Container maestro-demo-prometheus-1  Starting
+ Container maestro-demo-kafka-1  Started
+ Container maestro-demo-kafka-1  Waiting
+ Container maestro-demo-jaeger-1  Started
+ Container maestro-demo-valkey-1  Started
+ Container maestro-demo-prometheus-1  Started
+ Container maestro-demo-grafana-1  Starting
+ Container maestro-demo-postgres-1  Started
+ Container maestro-demo-grafana-1  Started
+ Container maestro-demo-kafka-1  Healthy
+ Container maestro-demo-kafka-init-1  Starting
+ Container maestro-demo-kafka-init-1  Started
+    [32mok[0m   postgres healthy
+    [32mok[0m   valkey healthy
+    [32mok[0m   kafka healthy
+    [32mok[0m   prometheus healthy
+    [32mok[0m   grafana healthy
+    [32mok[0m   jaeger http://localhost:16686/ answers (200)
+    [32mok[0m   jaeger http://localhost:4318/v1/traces answers (405)
+    [32mok[0m   kafka-init exited 0
+
+[1m==> 5/8 Kafka topics (never auto-created)[0m
+    [32mok[0m   11 topics present
+
+[1m==> 6/8 start host JVMs[0m
+19:27:05 [demo] Postgres reachable at localhost:5433
+19:27:05 [demo] Valkey reachable at localhost:6380
+19:27:05 [demo] Kafka reachable at localhost:29093
+19:27:05 [demo] Jaeger-OTLP reachable at localhost:4318
+19:27:05 [demo] Waiting for 11 Kafka topics to exist...
+19:27:06 [demo] All Kafka topics present
+19:27:06 [demo] All service ports are free
+19:27:06 [demo] DEMO_SKIP_BUILD=1 — reusing existing boot jars
+19:27:07 [demo] Starting loan-application-service on port 8091...
+19:27:07 [demo] Starting verification-gateway-service on port 8092...
+19:27:07 [demo] Starting underwriting-service on port 8093...
+19:27:07 [demo] Starting maestro-admin on port 8080...
+19:27:14 [demo] loan-application-service is up (HTTP 200 from http://localhost:8091/actuator/health)
+19:27:15 [demo] verification-gateway-service is up (HTTP 200 from http://localhost:8092/actuator/health)
+19:27:15 [demo] underwriting-service is up (HTTP 200 from http://localhost:8093/actuator/health)
+19:27:15 [demo] maestro-admin is up (HTTP 200 from http://localhost:8080/actuator/health)
+19:27:15 [demo] All demo services are up. PID files in /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/demo/.run:
+    loan-application-service         pid 50829
+    maestro-admin                    pid 50844
+    underwriting-service             pid 50840
+    verification-gateway-service     pid 50836
+
+  Grafana        http://localhost:3000
+  Prometheus     http://localhost:9090
+  Jaeger UI      http://localhost:16686
+  maestro-admin  http://localhost:8080
+  loan-application     http://localhost:8091
+  verification-gateway http://localhost:8092
+  underwriting         http://localhost:8093
+    [32mok[0m   loan-application 8091, verification-gateway 8092, underwriting 8093, admin 8080
+
+[1m==> 7/8 throwaway loan end to end[0m
+
+[31mPREFLIGHT FAILED: the throwaway loan did not complete. Re-run by hand to see why:
+       demo/scripts/drive-loan.sh happy preflight-1785864435[0m
+PREFLIGHT_EXIT=1
+end 2026-08-04T17:28:50Z
