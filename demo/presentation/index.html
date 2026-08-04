@@ -1268,6 +1268,133 @@ body.presenting #presenter { display: grid; }
     </div>
   </section>
 
+  <section class="slide" data-act="III" data-act-name="Deep dives" data-id="d4" data-title="D4 — what you actually operate">
+    <p class="eyebrow">Act III <span class="sep">/</span> deep dive 4 <span class="sep">/</span> <em>&sect;D4</em></p>
+    <h2>Seven containers are running. None of them is Maestro.</h2>
+    <table class="ledger">
+      <thead><tr><th style="width:34%">The claim</th><th>Why it holds</th></tr></thead>
+      <tbody>
+        <tr><td>There is no server</td><td>Maestro is a library on your classpath. No cluster to run, no control plane to upgrade, nothing to page anyone about at 3am</td></tr>
+        <tr><td>Three SPIs</td><td><code>WorkflowStore</code>, <code>WorkflowMessaging</code>, <code>DistributedLock</code> &mdash; here Postgres, Kafka and Valkey; the same code runs Postgres-only with zero external dependencies</td></tr>
+        <tr><td class="brass">Postgres is truth</td><td class="brass">Valkey is an optimisation. Every lock is best-effort; if one is lost the unique event index still prevents a duplicate <em>persisted</em> result &mdash; so activities must be idempotent</td></tr>
+        <tr><td>Orchestration within, choreography between</td><td>Each service owns its own workflows and its own database. What crosses the wire is domain events on Kafka</td></tr>
+      </tbody>
+    </table>
+    <p class="mono small muted wide" style="margin-top:1.2rem">
+      whole demo peaked at <span class="brass">2.27 GiB</span> across 7 containers + 4 host JVMs
+      &nbsp;&middot;&nbsp; each service runs <span class="brass">-Xmx256m</span>
+    </p>
+    <div class="notes">
+      <p><strong>SAY &mdash; four sentences.</strong> One: there is no server; Maestro is a library
+        in your service. Two: three SPIs &mdash; <code>WorkflowStore</code>,
+        <code>WorkflowMessaging</code>, <code>DistributedLock</code>; this demo runs Postgres,
+        Kafka and Valkey, and the same code runs Postgres-only with zero external dependencies.
+        Three: Postgres is truth, Valkey is an optimisation; every lock is best-effort, and if a
+        lock is lost the unique event index still prevents a duplicate persisted result &mdash;
+        which is why activities must be idempotent, and why we say that out loud rather than
+        claiming exactly-once. Four: orchestration within a service, choreography between them.</p>
+      <p><strong>DO:</strong> &sect;D4 &mdash; no live commands needed, but the proof of sentence
+        one is one command: <code>docker compose -f demo/docker-compose.yml ps</code>. Seven
+        containers, none of them Maestro. <code>docs/maestro-architecture.md</code> has the
+        diagram if someone wants it afterwards.</p>
+      <p><strong>THIS IS ALSO THE FILLER SLIDE.</strong> D6's adoption wait is up to 60 s of
+        nothing; these four sentences are what you say during it.</p>
+      <p><strong>IF ASKED &ldquo;exactly-once?&rdquo;</strong> No. At-least-once execution with
+        exactly-once <em>persisted results</em>. The unique index guarantees one stored result per
+        step; it cannot guarantee your payment provider was called once.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="III" data-act-name="Deep dives" data-id="d5" data-title="D5 — determinism">
+    <p class="eyebrow">Act III <span class="sep">/</span> deep dive 5 <span class="sep">/</span> <em>&sect;D5</em></p>
+    <h2>Code between activity calls re-runs on every recovery.</h2>
+    <p class="lede" style="max-width:46ch">So it has to be deterministic. That is the one
+      constraint Maestro puts on your code &mdash; and it is the same one every replay-based
+      engine puts on it.</p>
+    <div class="cols cols-2">
+      <div class="card alarm">
+        <h3>Will make a replay diverge</h3>
+        <p><code>Math.random()</code>, <code>LocalDateTime.now()</code>,
+          <code>UUID.randomUUID()</code>, or direct I/O in workflow code. Not because
+          they are banned &mdash; because the second run of the method would see
+          different values than the first.</p>
+      </div>
+      <div class="card accent">
+        <h3>Use these instead</h3>
+        <p><code>workflow.currentTime()</code> and <code>workflow.randomUUID()</code>.
+          They record their value as a <code>SIDE_EFFECT</code> row the first time and
+          return the recorded value on every replay.</p>
+      </div>
+    </div>
+    <p style="margin-top:1.2rem"><strong>And if you get it wrong:</strong> the engine has a
+      <code>DeterminismChecker</code> that detects a replay diverging from the recorded history
+      and <strong>fails the run loudly</strong> rather than silently corrupting state.</p>
+    <div class="notes">
+      <p><strong>SAY:</strong> Code between activity calls re-runs on every recovery, so it must be
+        deterministic. <code>Math.random()</code>, <code>LocalDateTime.now()</code>,
+        <code>UUID.randomUUID()</code> or direct I/O in workflow code will make a replay diverge
+        from the original run. Maestro gives you <code>workflow.currentTime()</code> and
+        <code>workflow.randomUUID()</code>, which record their value as a <code>SIDE_EFFECT</code>
+        row the first time and return the recorded value on every replay.</p>
+      <p><strong>DO:</strong> &sect;D5 &mdash; no live commands in the demo stack; the
+        <code>DeterminismChecker</code> demo lives in the engine's own tests. Point instead at the
+        <code>SIDE_EFFECT</code> rows in D2's event log &mdash; <code>$maestro:currentTime</code>
+        &mdash; and say: that row exists so the second run of this method sees the same clock the
+        first run saw.</p>
+      <p><strong>IF ASKED &ldquo;what happens if I get it wrong?&rdquo;</strong> The engine detects
+        a replay diverging from recorded history and fails the run loudly rather than silently
+        corrupting state.</p>
+    </div>
+  </section>
+
+  <section class="slide" data-act="III" data-act-name="Deep dives" data-id="d6" data-title="D6 — multi-node adoption">
+    <p class="eyebrow">Act III <span class="sep">/</span> D6 <span class="sep">/</span> <em>&sect;D6</em> <span class="sep">/</span> off by default</p>
+    <h2>Kill the owner. Another node picks the workflow up.</h2>
+    <ol class="beats" style="grid-template-columns:repeat(3,minmax(0,1fr))">
+      <li class="kill"><span class="t">kill -9</span><span class="b">the node that owns the parked loan (usually A, on 8091)</span></li>
+      <li><span class="t">27 s</span><span class="b">to <code>Resuming workflow</code> in node B's log &mdash; the lock TTL has to lapse</span></li>
+      <li class="money"><span class="t">49 s</span><span class="b">the whole finish, driven through node B on 8094</span></li>
+    </ol>
+    <div class="cols cols-2">
+      <div class="card">
+        <h3>Nothing was reconfigured</h3>
+        <p>A fifth JVM writes a Prometheus file-SD target and a fourth scrape target
+          appears &mdash; then goes away again &mdash; without editing any config. The
+          Grafana <strong>recovery adoptions</strong> panel increments.</p>
+      </div>
+      <div class="card accent">
+        <h3>The wait is the lock TTL, and it cannot be shortened</h3>
+        <p>Nothing can release a lock held by a dead process, so it has to expire.
+          The bound is the 30 s instance-lock TTL plus one 5 s recovery poll plus
+          slack. Budget up to 60 s and fill it with D4.</p>
+      </div>
+    </div>
+    <div class="notes">
+      <p><strong>SAY:</strong> Same mechanism as scenario 2 &mdash; only there the restarted
+        process adopted its own workflow, and here a completely different node does. Maestro does
+        not care which; there is no owner registry and no handover protocol. A lock lapses and
+        whoever polls next takes it.</p>
+      <p><strong>DO:</strong> &sect;D6, and <strong>decide before you start</strong> &mdash; it needs
+        a restart with <code>TWO_NODE=1 DEMO_SKIP_BUILD=1 demo/scripts/start-services.sh</code> and
+        adds ~360 MiB. Park a loan with <code>drive-loan.sh crash</code>, confirm the owner with
+        <code>grep -l "Started workflow 'loan-&lt;id&gt;'"</code> across both logs, kill it, then
+        <code>LOAN_URL=http://localhost:8094 demo/scripts/drive-loan.sh finish &lt;id&gt;</code>.</p>
+      <p><strong>WATCH OUT &mdash; three things.</strong> (1) The <code>LOAN_URL=</code> override is
+        not optional: <code>drive-loan.sh</code> talks to 8091 by default and 8091 is what you just
+        killed &mdash; forgetting it gives connection-refused, not an adoption failure. (2) Grep for
+        the START line, not the id: the id appears in both logs because the non-owner logs "instance
+        lock is held by another node" on every poll. (3) Do not abandon early &mdash; 49 s is a
+        normal successful run here, so give it 120 s before calling it.</p>
+      <p><strong>CAVEAT to state:</strong> <code>GET /underwriting/pending</code> is a node-local
+        in-memory view, so in two-node mode a loan queued on one node may not appear on the other.
+        The <em>decision</em> endpoint is store-backed and works from either node &mdash; only the
+        read-side queue is local. And the same Kafka effect as &sect;2 applies: node B cannot receive
+        the decision until the group rebalances away from the SIGKILLed member.</p>
+      <p><strong>AFTER D6:</strong> <code>demo/scripts/stop-services.sh &amp;&amp; DEMO_SKIP_BUILD=1
+        demo/scripts/start-services.sh</code> to drop back to one node.</p>
+    </div>
+  </section>
+
   <p class="hint">&rarr; next &middot; g jump &middot; p presenter &middot; f fullscreen</p>
 </main>
 
