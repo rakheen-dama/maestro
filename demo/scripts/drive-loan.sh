@@ -131,12 +131,16 @@ wait_step_event() { # id stepLike label [timeout]
   die "$label never recorded after ${timeout}s."
 }
 
-print_events() { # id
-  say "durable event log for loan-$1  (this is the whole of the workflow's memory)"
-  psql_q "select lpad(e.sequence_number::text,5,' ') || '  ' || rpad(e.event_type,20,' ') || '  ' || coalesce(e.step_name,'')
+event_rows() { # id — the event log with no decoration, for diffing
+  psql_q "select lpad(e.sequence_number::text,5,' ') || '  ' || rpad(e.event_type,24,' ') || '  ' || coalesce(e.step_name,'')
             from maestro_workflow_event e
             join maestro_workflow_instance i on i.id = e.workflow_instance_id
            where i.workflow_id = 'loan-$1' order by e.sequence_number"
+}
+
+print_events() { # id
+  say "durable event log for loan-$1  (this is the whole of the workflow's memory)"
+  event_rows "$1"
 }
 
 # ------------------------------------------------------------------ scenarios
@@ -167,8 +171,8 @@ scenario_conditions() { # DTI 4.5 -> HUMAN_REVIEW, round 1 CONDITIONS, round 2 A
   wait_pending_review "$id" 1
   say "round 1: underwriter asks for a condition rather than approving"
   post_decision "$id" 1 CONDITIONS '["proof-of-insurance"]'
-  wait_step_event "$id" '%requestUnderwriting%' "the condition to be recorded" 60
-  sleep 2
+  say "the workflow now waits for exactly one more document — the condition it was given"
+  sleep 3
   upload_doc "$id" proof-of-insurance alice
   wait_pending_review "$id" 2
   say "round 2: same workflow, same instance, round 2 of the loop"
@@ -218,23 +222,27 @@ scenario_crash() { # park a loan mid-flight and hand the kill -9 to the presente
   upload_doc "$id" bank-statement bob
   wait_pending_review "$id" 1
   mkdir -p "$RUN_DIR"
-  print_events "$id" | tee "$RUN_DIR/crash-$id-before.txt"
+  print_events "$id"
+  event_rows "$id" > "$RUN_DIR/crash-$id-before-rows.txt"
   echo "$id" > "$RUN_DIR/crash-last-id"
   local before
-  before=$(count_events "$id" '%')
-  echo "$before" > "$RUN_DIR/crash-$id-before-count"
+  before=$(wc -l < "$RUN_DIR/crash-$id-before-rows.txt" | tr -d ' ')
   say "PARKED. $before durable events recorded. The workflow is holding nothing in memory that matters."
+  info "snapshot of those $before rows: $RUN_DIR/crash-$id-before-rows.txt"
   cat <<EOF
 
   Now, on stage, in this order:
 
-    1.  kill -9 \$(cat $pidfile)          <- no graceful shutdown, no drain
-    2.  demo/scripts/start-services.sh   <- restart (DEMO_SKIP_BUILD=1 for speed)
+    1.  kill -9 \$(cat $pidfile)              <- no graceful shutdown, no drain
+    2.  demo/scripts/restart-loan-app.sh      <- restarts ONLY the process you killed
     3.  demo/scripts/drive-loan.sh finish $id
 
-  Expected after step 3: the loan completes, and the event count for the
-  activities recorded before the crash is unchanged — they replayed from
-  Postgres, they did not run again.
+  (Step 2 is not start-services.sh: that starts all four JVMs and refuses to
+  run while 8092/8093/8080 are still healthy, which they are.)
+
+  Expected after step 3: the loan completes, and the $before rows above are
+  byte-identical afterwards — they replayed from Postgres, they did not run
+  again.
 
 EOF
 }
@@ -243,13 +251,11 @@ scenario_finish() { # resume the parked loan after the restart
   local id="${1:-}"
   [ -n "$id" ] || id="$(cat "$RUN_DIR/crash-last-id" 2>/dev/null || true)"
   [ -n "$id" ] || die "usage: drive-loan.sh finish <applicationId>"
-  local beforefile="$RUN_DIR/crash-$id-before-count" before=0
-  [ -f "$beforefile" ] && before=$(cat "$beforefile")
+  local beforefile="$RUN_DIR/crash-$id-before-rows.txt" before=0
+  [ -f "$beforefile" ] || die "no pre-crash snapshot for $id — run 'drive-loan.sh crash' first"
+  before=$(wc -l < "$beforefile" | tr -d ' ')
   say "SCENARIO 2 (crash), phase 2 — resuming $id after the restart"
-  info "pre-crash event count: $before"
-  local pre_activities
-  pre_activities=$(count_events "$id" 'LoanActivities.%')
-  info "activities recorded before the crash and still recorded now: $pre_activities"
+  info "pre-crash snapshot: $before durable events"
   wait_pending_review "$id" 1 120
   post_decision "$id" 1 APPROVED '[]'
   wait_step_event "$id" '%reserveRateLock' "the rate lock"
@@ -259,13 +265,21 @@ scenario_finish() { # resume the parked loan after the restart
   wait_status "$id" COMPLETED
   app_json "$id"
   print_events "$id"
+  say "PROOF 1 — the $before rows recorded before the kill -9 are byte-identical now"
+  if event_rows "$id" | head -n "$before" | diff -u "$beforefile" - > "$RUN_DIR/crash-$id-diff.txt"; then
+    info "diff is empty. Nothing was rewritten, renumbered, or re-executed."
+  else
+    cat "$RUN_DIR/crash-$id-diff.txt"
+    die "the pre-crash event rows changed — that would be an engine bug, not a demo bug."
+  fi
+
   local dupes
   dupes=$(psql_q "select count(*) from (
                     select e.sequence_number from maestro_workflow_event e
                       join maestro_workflow_instance i on i.id = e.workflow_instance_id
                      where i.workflow_id = 'loan-$id'
                      group by e.sequence_number having count(*) > 1) d" | tr -d '[:space:]')
-  say "duplicate sequence numbers after the crash: $dupes  (must be 0)"
+  say "PROOF 2 — duplicate sequence numbers after the crash: $dupes  (must be 0)"
   [ "$dupes" = "0" ] || die "duplicate sequence numbers found — that would be an engine bug, not a demo bug."
   say "DONE — $id FUNDED across a kill -9. Nothing re-executed."
 }
