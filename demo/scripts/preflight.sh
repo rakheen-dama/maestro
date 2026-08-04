@@ -11,7 +11,9 @@
 #   3  build all jars, including loan-application-v2.jar
 #   4  docker compose up -d, wait for every container healthy
 #   5  verify all 11 Kafka topics exist   (they are never auto-created)
-#   6  start the four host JVMs
+#   6  start the four host JVMs, and wait for the sample's two domain-topic
+#      Kafka listeners to have their partitions assigned (health 200 is not
+#      group membership; see start-services.sh's DOMAIN_LISTENER_GROUPS note)
 #   7  drive one throwaway loan end to end
 #   8  print PID + build fingerprint of every running service
 #
@@ -121,9 +123,10 @@ while :; do
   sleep 3
 done
 
-step "6/8 start host JVMs"
+step "6/8 start host JVMs (and wait for their Kafka partitions, not just health 200)"
 DEMO_SKIP_BUILD=1 "$DEMO_DIR/scripts/start-services.sh" || die "start-services.sh failed — see $DEMO_DIR/.run/*.log"
 ok "loan-application 8091, verification-gateway 8092, underwriting 8093, admin 8080"
+ok "consumer groups verification-gateway + underwriting Stable — safe to publish"
 
 step "7/8 throwaway loan end to end"
 THROWAWAY="preflight-$(date +%s)"

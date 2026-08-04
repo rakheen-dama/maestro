@@ -62,8 +62,23 @@ demo/scripts/preflight.sh
 **What it does, in order:** checks host tools → checks all 11 ports are free
 *before starting anything* → pulls images → builds every jar **including
 `loan-application-v2.jar`** → `compose up -d` and waits for each container
-healthy → verifies all 11 Kafka topics exist → starts the four host JVMs →
-drives one throwaway loan end to end → prints the process-identity table.
+healthy → verifies all 11 Kafka topics exist → starts the four host JVMs **and
+waits for the two domain-topic consumer groups to go Stable** → drives one
+throwaway loan end to end → prints the process-identity table.
+
+**Why that consumer-group wait is a step and not a detail.** A service
+answering `/actuator/health` with 200 has *not* necessarily joined its Kafka
+consumer group. The sample's two domain-topic listeners
+(`verification-gateway` on `loans.verification.requests`, `underwriting` on
+`loans.underwriting.requests`) are plain `@KafkaListener` beans running Spring
+Boot's default `auto.offset.reset=latest`. On a **cold** broker — straight
+after `down -v`, no committed offsets — anything published before their
+partitions are assigned is skipped and never delivered. Measured on two cold
+starts, the assignment landed **2.2 s after** the throwaway loan had already
+published, so preflight failed at step 7/8 every time. `start-services.sh` now
+blocks until both groups report `Stable`, which is why a first cold preflight
+passes. (Maestro's own consumers set `auto.offset.reset=earliest` and were
+never at risk.)
 
 **Timing:** 3–6 minutes on a truly cold machine (the image pull dominates).
 **Measured warm, with `DEMO_SKIP_PULL=1`: 36 s**, including a full Gradle
@@ -97,6 +112,7 @@ failed. Fix it now, not on stage.
 | `ports held by something that is not this demo: 8091 8092 8093 8080` | `demo/scripts/stop-services.sh` |
 | `topics still missing after 120s` | `docker compose -f demo/docker-compose.yml logs kafka-init`. Topics are **never** auto-created (`KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"`); a missing topic makes `startWorkflow` hang, not fail. |
 | `loan-application-v2.jar missing` | `./gradlew :maestro-samples:sample-loan-origination:loan-application-service:v2BootJar`. Deep dive D1 cannot run without it. |
+| `Kafka consumer group 'verification-gateway' did not become Stable` (or `'underwriting'`) | That service started but never joined its group, so it would silently skip every request published to it. Read `demo/.run/verification-gateway-service.log` (or `underwriting-service.log`) — usually the broker went away underneath it. `docker compose -f demo/docker-compose.yml ps kafka`, then re-run preflight. |
 
 ### 0.2 Process identity — do this every single time
 

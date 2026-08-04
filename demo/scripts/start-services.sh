@@ -22,6 +22,11 @@
 # starts anything, so a forgotten `compose up` fails here rather than as a
 # confusing Spring context failure 30 seconds later.
 #
+# It also does not return until the sample's two domain-topic Kafka listeners
+# have their partitions assigned, so the caller can publish immediately without
+# the first request being silently dropped on a cold broker — see the note
+# above DOMAIN_LISTENER_GROUPS.
+#
 # Usage:
 #   demo/scripts/start-services.sh              # build jars, start four JVMs
 #   DEMO_SKIP_BUILD=1 demo/scripts/start-services.sh   # reuse existing jars
@@ -118,6 +123,81 @@ require_kafka_topics() {
     printf '%s\n' "$missing" | while read -r t; do [[ -n "$t" ]] && err "    $t"; done
     err "kafka-init may have failed. Check:  docker compose -f demo/docker-compose.yml logs kafka-init"
     return 1
+}
+
+# ── Kafka consumer-group readiness (post-start) ──────────────────────────
+#
+# `/actuator/health` returning 200 does NOT mean this service can receive
+# anything. The two sample services each own a plain `@KafkaListener` on a
+# DOMAIN topic:
+#
+#   verification-gateway  loans.verification.requests   (VerificationRequestListener)
+#   underwriting          loans.underwriting.requests   (UnderwritingRequestListener)
+#
+# Those beans use Spring Boot's default `auto.offset.reset=latest`. On a COLD
+# Kafka — i.e. straight after `docker compose down -v`, with no committed
+# offsets for the group — "latest" means: everything published before the
+# partitions are assigned is skipped and never delivered.
+#
+# Measured on two independent cold starts, the assignment landed 2.21 s and
+# 2.13 s AFTER preflight's throwaway loan had already published its
+# verification requests, so the loan parked forever and preflight failed at
+# step 7/8, deterministically, both times
+# (demo/.evidence/task-6-F1-reproduction-cold-run-2.log).
+#
+# It never bit on a warm stack because a group with committed offsets never
+# consults auto.offset.reset at all — which is exactly why only a presenter
+# doing a genuine cold T-30 setup would ever have seen it.
+#
+# Maestro's own consumers are NOT affected: KafkaMessagingAutoConfiguration
+# sets `auto.offset.reset=earliest` explicitly, so the `maestro-*` groups
+# cannot lose a record this way. Only these two sample-owned groups can.
+#
+# The loan sample's own e2e harness gates on the same two groups for the same
+# reason (maestro-samples/sample-loan-origination/e2e/run-e2e.sh); this is that
+# gate, brought to the demo's start path so preflight, reset.sh and a manual
+# start all get it.
+DOMAIN_LISTENER_GROUPS=(verification-gateway underwriting)
+
+# consumer_group_members <group> — the group's member count while it is
+# Stable; 0 when the group does not exist yet or is mid-rebalance. The
+# `--state` output's last column is #MEMBERS.
+consumer_group_members() {
+    local group="$1" line
+    line="$(docker compose -f "$DEMO_DIR/docker-compose.yml" exec -T kafka \
+              /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
+              --describe --group "$group" --state 2>/dev/null \
+            | tr -d '\r' | grep Stable || true)"
+    if [[ -n "$line" ]]; then awk '{print $NF}' <<<"$line"; else echo 0; fi
+}
+
+# wait_for_consumer_group <group> <timeout> — block until the group is Stable
+# with at least one member, i.e. until its partitions are assigned and anything
+# published from now on is guaranteed to be delivered.
+wait_for_consumer_group() {
+    local group="$1" timeout="$2" deadline=$((SECONDS + $2)) members=0
+    while (( SECONDS < deadline )); do
+        members="$(consumer_group_members "$group")"
+        if [[ "$members" =~ ^[0-9]+$ ]] && (( members >= 1 )); then
+            log "Kafka consumer group '$group' is stable ($members member(s)) — its partitions are assigned"
+            return 0
+        fi
+        sleep 2
+    done
+    err "Kafka consumer group '$group' did not become Stable within ${timeout}s (last member count: ${members:-0})."
+    err "Until it is, that listener silently skips anything published to its topic"
+    err "(the sample's @KafkaListener beans run auto.offset.reset=latest)."
+    err "Check the owning service's log under $RUN_DIR/ and:"
+    err "    docker compose -f $DEMO_DIR/docker-compose.yml exec -T kafka \\"
+    err "      /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --group $group --state"
+    return 1
+}
+
+wait_for_domain_listeners() {
+    local g
+    for g in "${DOMAIN_LISTENER_GROUPS[@]}"; do
+        wait_for_consumer_group "$g" 90 || return 1
+    done
 }
 
 preflight() {
@@ -301,6 +381,11 @@ main() {
     if [[ "$TWO_NODE" == "1" ]]; then
         wait_for_http loan-application-service-b http://localhost:8094/actuator/health 120
     fi
+
+    # HTTP health is not consumer-group membership — see the long note above
+    # DOMAIN_LISTENER_GROUPS. Nothing may publish to a domain topic until the
+    # listener that owns it has its partitions.
+    wait_for_domain_listeners || return 1
 
     STARTUP_COMPLETE=1
     log "All demo services are up. PID files in $RUN_DIR:"
