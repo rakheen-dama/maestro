@@ -34,7 +34,7 @@ reference these numbers.
 |---|---|
 | `preflight.sh` | Once, T-30. Cold start plus every gate. |
 | `reset.sh` | Between rehearsals. Also un-does the v1→v2 move. |
-| `drive-loan.sh <scenario>` | Every scenario. `happy`, `conditions`, `withdraw`, `crash`, `finish <id>`, `events <id>`. |
+| `drive-loan.sh <scenario>` | Every scenario. `happy` (§1), `withdraw` (§4), `crash` + `finish <id>` (§2), `events <id>`. Also `conditions` — a two-round human-review path with **no section in this runbook**; it works, but do not improvise it on stage. |
 | `restart-loan-app.sh` | After scenario 2's `kill -9`, when only loan-application died. |
 | `start-services.sh` / `stop-services.sh` | All four JVMs at once. Only when *none* of them is running. |
 | `v1-to-v2-move.sh` | Deep dive D1. `RESTORE_V1=1` puts v1 back on 8091 alone. |
@@ -232,15 +232,15 @@ exactly the process that died, and tolerates a pid file pointing at a corpse.
 **POINT AT**
 
 - Phase 1 snapshotted the event rows to
-  `demo/.run/crash-<id>-before-rows.txt`. Phase 2 re-reads the same rows after
-  recovery and **diffs them**. An empty diff is the proof.
+  `demo/.run/crash-<id>-before-rows.txt`. Phase 3 (`finish`) re-reads the same
+  rows after recovery and **diffs them**. An empty diff is the proof.
 - The final event log: sequence numbers are contiguous and unique, and every
   activity that ran before the crash has exactly one row.
 
 **SHOULD APPEAR**
 
 ```
-==> PROOF 1 — the 12 rows recorded before the kill -9 are byte-identical now
+==> PROOF 1 — the <n> rows recorded before the kill -9 are byte-identical now
     diff is empty. Nothing was rewritten, renumbered, or re-executed.
 
 ==> PROOF 2 — duplicate sequence numbers after the crash: 0  (must be 0)
@@ -248,8 +248,10 @@ exactly the process that died, and tolerates a pid file pointing at a corpse.
 ==> DONE — <id> FUNDED across a kill -9. Nothing re-executed.
 ```
 
-Both proofs are assertions: if either fails the script exits non-zero and
-prints the offending diff.
+`<n>` is whatever phase 1 happened to park at — 12 in every rehearsal so far,
+but it depends on how many signals landed before the kill, so read it off the
+screen rather than promising it. Both proofs are assertions: if either fails
+the script exits non-zero and prints the offending diff.
 
 **TIMING:** measured — phase 1 **17 s** (allow up to 35 s; it waits on three
 simulated providers and on the underwriting desk), the kill is instant,
@@ -428,7 +430,9 @@ open http://localhost:3000
 (The dashboard is the Grafana home dashboard — no navigation needed. Direct
 link: <http://localhost:3000/d/maestro-demo>.)
 
-**POINT AT** — five panels, top to bottom:
+**POINT AT** — five panels in three rows. The dashboard is two-column, so
+**parked sits beside** started/completed/failed on the top row, and
+stand-downs beside recovery adoptions on the bottom one:
 
 | Panel | What it shows | What to say |
 |---|---|---|
@@ -512,7 +516,7 @@ assertion exits non-zero and says which.
 
 **PIN 6's span counts are undercounts — do not read them out.** The script
 queries Jaeger the moment it finishes, before the collector has flushed. In a
-rehearsal PIN 6 reported the v2 loan at 12 spans; re-querying 35 s later gave
+rehearsal PIN 6 reported the v2 loan at 11 spans; re-querying 35 s later gave
 **28**, which is exactly the archived reference. Wait, then re-run the query
 from §3 with the loan id the script printed.
 
