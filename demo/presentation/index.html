@@ -1436,8 +1436,9 @@ body.presenting #presenter { display: grid; }
       <p><strong>WATCH OUT &mdash; three things.</strong> (1) The <code>LOAN_URL=</code> override is
         not optional: <code>drive-loan.sh</code> talks to 8091 by default and 8091 is what you just
         killed &mdash; forgetting it gives connection-refused, not an adoption failure. (2) Grep for
-        the START line, not the id: the id appears in both logs because the non-owner logs "instance
-        lock is held by another node" on every poll. (3) Do not abandon early &mdash; 49 s is a
+        the START line, not the id: the id appears in both logs (measured 4 hits in the owner's log,
+        3 in the peer's), and only the node that ran it logs "Started workflow" &mdash; when the peer
+        adopts it, its line is "Resuming workflow". (3) Do not abandon early &mdash; 49 s is a
         normal successful run here, so give it 120 s before calling it.</p>
       <p><strong>CAVEAT to state:</strong> <code>GET /underwriting/pending</code> is a node-local
         in-memory view, so in two-node mode a loan queued on one node may not appear on the other.

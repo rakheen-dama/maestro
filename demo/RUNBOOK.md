@@ -815,9 +815,11 @@ Then:
 demo/scripts/drive-loan.sh crash                       # park a loan; note the id it prints
 
 # confirm which node owns it before you kill anything.
-# Grep for the START line, not for the id: the id appears in BOTH logs, because
-# the non-owner logs "instance lock is held by another node" on every poll
-# (measured: 4 hits in the owner's log, 25 in the peer's).
+# Grep for the START line, not for the id: the id appears in BOTH logs
+# (measured: 4 hits in the owner's log, 3 in the peer's). Only the node that
+# actually ran it logs "Started workflow"; when the peer later adopts it, its
+# line is "Resuming workflow" — which is exactly why this grep discriminates
+# (demo/.evidence/task-6-runbook-09-D6-two-node.log:88-97,164-165).
 grep -l "Started workflow 'loan-<id>'" demo/.run/loan-application-service.log demo/.run/loan-application-service-b.log
 
 kill -9 $(cat demo/.run/loan-application-service.pid)  # kill the owner (usually node A)
