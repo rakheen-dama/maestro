@@ -1,0 +1,69 @@
+=== EVIDENCE IDENTITY ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+git-root: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+branch: worktree-demo
+commit: 8a120a3e7cffcac76c32a965811105209c6e623a
+dirty: 2 uncommitted change(s)
+timestamp-utc: 2026-08-04T11:08:56Z
+in-flight loan (started under v1, finished under v2): loan-inflight-1785841603
+new loan (started under v2):                          loan-newloan-1785841603
+==========================
+
+Jaeger service list (GET /api/services):
+["sample-loan-application-service","sample-verification-gateway-service","sample-underwriting-service","jaeger"]
+
+=== traces tagged maestro.workflow.id=loan-inflight-1785841603 (oldest first) ===
+ec798a7ed25b754fae81371d77cdbcc1  spans=13
+b39b554f4c94c659f68468588295431c  spans=20
+
+=== traces tagged maestro.workflow.id=loan-newloan-1785841603 ===
+5c79c33935721eb3afe5f9ae8ca742f5  spans=28
+
+=== GET /api/traces/ec798a7ed25b754fae81371d77cdbcc1 — spans in start order, offset from trace start, admin.events elided ===
+      0ms  dur=85ms  sample-loan-application-service  maestro.workflow.run 
+      0ms  dur=13ms  sample-loan-application-service  maestro.activity LoanActivities.recordApplication
+     23ms  dur=39ms  sample-loan-application-service  maestro.activity LoanMessagingActivities.requestVerifications
+     24ms  dur=12ms  sample-loan-application-service  loans.verification.requests send 
+     36ms  dur=9ms  sample-loan-application-service  loans.verification.requests send 
+     37ms  dur=16ms  sample-verification-gateway-service  loans.verification.requests process 
+     46ms  dur=9ms  sample-loan-application-service  loans.verification.requests send 
+     56ms  dur=5ms  sample-verification-gateway-service  loans.verification.requests process 
+     65ms  dur=4ms  sample-verification-gateway-service  loans.verification.requests process 
+   2173ms  dur=8ms  sample-loan-application-service  maestro.workflow.run verification.result
+
+=== GET /api/traces/b39b554f4c94c659f68468588295431c — spans in start order, offset from trace start, admin.events elided ===
+      0ms  dur=11ms  sample-loan-application-service  maestro.workflow.run verification.result
+    427ms  dur=13ms  sample-loan-application-service  maestro.workflow.run verification.result
+   1125ms  dur=9ms  sample-loan-application-service  maestro.workflow.run document.uploaded
+   1144ms  dur=6ms  sample-loan-application-service  maestro.workflow.run document.uploaded
+   2172ms  dur=38ms  sample-loan-application-service  maestro.workflow.run 
+   2179ms  dur=21ms  sample-loan-application-service  maestro.activity LoanMessagingActivities.requestUnderwriting
+   2183ms  dur=13ms  sample-loan-application-service  loans.underwriting.requests send 
+   2199ms  dur=9ms  sample-underwriting-service  loans.underwriting.requests process 
+   2230ms  dur=14ms  sample-loan-application-service  maestro.workflow.run underwriting.decision
+   2234ms  dur=3ms  sample-loan-application-service  maestro.activity FundingActivities.reserveRateLock
+   2447ms  dur=6ms  sample-loan-application-service  maestro.workflow.run package.signed
+   2980ms  dur=10ms  sample-loan-application-service  maestro.workflow.run package.signed
+   4004ms  dur=15ms  sample-loan-application-service  maestro.workflow.run 
+   4007ms  dur=4ms  sample-loan-application-service  maestro.activity FundingActivities.disburse
+
+=== GET /api/traces/5c79c33935721eb3afe5f9ae8ca742f5 — spans in start order, offset from trace start, admin.events elided ===
+      0ms  dur=10770ms  sample-loan-application-service  maestro.workflow.run 
+      0ms  dur=2ms  sample-loan-application-service  maestro.activity LoanActivities.recordApplication
+      5ms  dur=29ms  sample-loan-application-service  maestro.activity LoanMessagingActivities.requestVerifications
+      6ms  dur=6ms  sample-loan-application-service  loans.verification.requests send 
+     13ms  dur=7ms  sample-verification-gateway-service  loans.verification.requests process 
+     13ms  dur=8ms  sample-loan-application-service  loans.verification.requests send 
+     22ms  dur=7ms  sample-loan-application-service  loans.verification.requests send 
+     23ms  dur=9ms  sample-verification-gateway-service  loans.verification.requests process 
+     36ms  dur=4ms  sample-verification-gateway-service  loans.verification.requests process 
+  11781ms  dur=22ms  sample-loan-application-service  maestro.workflow.run 
+  11784ms  dur=13ms  sample-loan-application-service  maestro.activity LoanMessagingActivities.requestUnderwriting
+  11784ms  dur=9ms  sample-loan-application-service  loans.underwriting.requests send 
+  11794ms  dur=6ms  sample-underwriting-service  loans.underwriting.requests process 
+  11822ms  dur=14ms  sample-loan-application-service  maestro.workflow.run underwriting.decision
+  11827ms  dur=1ms  sample-loan-application-service  maestro.activity FundingActivities.reserveRateLock
+  12582ms  dur=6ms  sample-loan-application-service  maestro.workflow.run package.signed
+  13122ms  dur=6ms  sample-loan-application-service  maestro.workflow.run package.signed
+  14143ms  dur=9ms  sample-loan-application-service  maestro.workflow.run 
+  14145ms  dur=3ms  sample-loan-application-service  maestro.activity FundingActivities.disburse
