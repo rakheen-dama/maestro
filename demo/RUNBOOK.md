@@ -57,8 +57,18 @@ drives one throwaway loan end to end → prints the process-identity table.
 
 **Timing:** 3–6 minutes on a truly cold machine (the image pull dominates).
 **Measured warm, with `DEMO_SKIP_PULL=1`: 36 s**, including a full Gradle
-build (`demo/.evidence/task-4-fix-f3-f4-preflight.log`). It is safe to re-run: ports already published by this demo's own
-containers are accepted, only a foreign listener fails it.
+build (`demo/.evidence/task-4-fix-f3-f4-preflight.log`).
+
+**Re-running it needs the host JVMs stopped first.** The port check accepts
+ports published by this demo's own *containers*, but nothing else — so with
+the four demo JVMs up it fails on 8080/8091/8092/8093 in about 2 seconds,
+naming them. That is the check working, not a bug. To re-run:
+
+```bash
+demo/scripts/stop-services.sh && DEMO_SKIP_PULL=1 demo/scripts/preflight.sh
+```
+
+The containers can stay up; preflight adopts them.
 
 **Should appear:** the last line is
 
