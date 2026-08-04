@@ -1,0 +1,98 @@
+=== IDENTITY ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+toplevel: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+HEAD: 25891fab6a42e5792c2d4355413e35e2edebff1e
+branch: worktree-demo
+timestamp: 2026-08-04T09:37:31Z
+purpose: GREEN — v1 suite (8) + v2 suite (5) for the loan-application-service module
+
+> Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :build-logic:generateExternalPluginSpecBuilders
+> Task :build-logic:extractPrecompiledScriptPluginPlugins
+> Task :build-logic:generateScriptPluginAdapters
+> Task :build-logic:pluginDescriptors
+> Task :build-logic:processResources
+> Task :build-logic:compilePluginsBlocks
+> Task :build-logic:generatePrecompiledScriptPluginAccessors
+
+> Configure project :maestro-admin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :build-logic:compileKotlin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+w: [33m[1m⚠️ Inconsistent JVM Target Compatibility Between Java and Kotlin Tasks[0m[0m
+Inconsistent JVM-target compatibility detected for tasks 'compileJava' (25) and 'compileKotlin' (24).
+This will become an error in Gradle 8.0.
+[32m[1mSolution:[0m[0m
+[32m[3mConsider using JVM Toolchain: https://kotl.in/gradle/jvm/toolchain[0m[0m
+[36mLearn more about JVM-target validation: [0m[34mhttps://kotl.in/gradle/jvm/target-validation[0m[36m[0m
+
+
+> Task :build-logic:compileJava NO-SOURCE
+> Task :build-logic:classes
+> Task :build-logic:jar
+> Task :maestro-test:processResources NO-SOURCE
+> Task :maestro-store-jdbc:processResources NO-SOURCE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:processResources
+> Task :maestro-messaging-kafka:processResources
+> Task :maestro-samples:sample-loan-origination:loan-application-service:processTestResources NO-SOURCE
+> Task :maestro-lock-valkey:processResources
+> Task :maestro-samples:sample-loan-origination:loan-application-service:processV2Resources NO-SOURCE
+> Task :maestro-spring-boot-starter:processResources
+> Task :maestro-lock-postgres:processResources
+> Task :maestro-store-postgres:processResources
+> Task :maestro-core:compileJava
+> Task :maestro-core:processResources NO-SOURCE
+> Task :maestro-core:classes
+> Task :maestro-core:jar
+> Task :maestro-store-jdbc:compileJava
+> Task :maestro-store-jdbc:classes
+> Task :maestro-store-jdbc:jar
+> Task :maestro-test:compileJava
+> Task :maestro-test:classes
+> Task :maestro-test:jar
+> Task :maestro-spring-boot-starter:compileJava
+> Task :maestro-spring-boot-starter:classes
+> Task :maestro-spring-boot-starter:jar
+> Task :maestro-store-postgres:compileJava
+> Task :maestro-store-postgres:classes
+> Task :maestro-store-postgres:jar
+> Task :maestro-lock-postgres:compileJava
+> Task :maestro-lock-postgres:classes
+> Task :maestro-lock-postgres:jar
+> Task :maestro-lock-valkey:compileJava
+> Task :maestro-lock-valkey:classes
+> Task :maestro-lock-valkey:jar
+
+> Task :maestro-messaging-kafka:compileJava
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/maestro-messaging-kafka/src/main/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagation.java:156: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = tracer.withSpan(span)) {
+                 ^
+1 warning
+
+> Task :maestro-messaging-kafka:classes
+> Task :maestro-messaging-kafka:jar
+> Task :maestro-samples:sample-loan-origination:loan-application-service:compileJava
+> Task :maestro-samples:sample-loan-origination:loan-application-service:classes
+> Task :maestro-samples:sample-loan-origination:loan-application-service:compileTestJava
+> Task :maestro-samples:sample-loan-origination:loan-application-service:testClasses
+> Task :maestro-samples:sample-loan-origination:loan-application-service:compileV2Java
+> Task :maestro-samples:sample-loan-origination:loan-application-service:v2Classes
+> Task :maestro-samples:sample-loan-origination:loan-application-service:test
+
+[Incubating] Problems report is available at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo/build/reports/problems/problems-report.html
+
+BUILD SUCCESSFUL in 13s
+35 actionable tasks: 35 executed
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.2.0/userguide/configuration_cache_enabling.html
+
+=== JUNIT SUMMARY ===
+<testsuite name="v2 (parallel verification) behind workflow.version()" tests="5" skipped="0" failures="0" errors="0"
+<testsuite name="io.b2mash.maestro.samples.loan.application.workflow.LoanApplicationWorkflowTest" tests="8" skipped="0" failures="0" errors="0"
+
+=== EVENT SEQUENCES (stdout captured in the JUnit XML) ===
+v1-only reference event log: [1:ACTIVITY_COMPLETED:LoanActivities.recordApplication, 2:ACTIVITY_COMPLETED:LoanMessagingActivities.requestVerifications, 3:SIGNAL_RECEIVED:$maestro:awaitSignal:verification.result, 4:SIGNAL_RECEIVED:$maestro:awaitSignal:verification.result, 5:SIGNAL_RECEIVED:$maestro:awaitSignal:verification.result, 6:SIDE_EFFECT:$maestro:currentTime, 7:SIDE_EFFECT:$maestro:currentTime, 8:SIGNAL_RECEIVED:$maestro:awaitSignal:document.uploaded, 9:SIDE_EFFECT:$maestro:currentTime, 10:SIGNAL_RECEIVED:$maestro:awaitSignal:document.uploaded, 11:SIGNAL_TIMEOUT:$maestro:awaitSignal:application.withdrawn, 12:ACTIVITY_COMPLETED:LoanMessagingActivities.requestUnderwriting, 13:SIGNAL_RECEIVED:$maestro:awaitSignal:underwriting.decision, 14:ACTIVITY_COMPLETED:FundingActivities.reserveRateLock, 15:SIDE_EFFECT:$maestro:currentTime, 16:SIDE_EFFECT:$maestro:currentTime, 17:SIGNAL_RECEIVED:$maestro:awaitSignal:package.signed, 18:SIDE_EFFECT:$maestro:currentTime, 19:SIGNAL_RECEIVED:$maestro:awaitSignal:package.signed, 20:SIGNAL_TIMEOUT:$maestro:awaitSignal:application.withdrawn, 21:ACTIVITY_COMPLETED:FundingActivities.disburse, 22:WORKFLOW_COMPLETED:null]
+in-flight-across-v2 event log: [1:ACTIVITY_COMPLETED:LoanActivities.recordApplication, 2:ACTIVITY_COMPLETED:LoanMessagingActivities.requestVerifications, 3:SIGNAL_RECEIVED:$maestro:awaitSignal:verification.result, 4:SIGNAL_RECEIVED:$maestro:awaitSignal:verification.result, 5:SIGNAL_RECEIVED:$maestro:awaitSignal:verification.result, 6:SIDE_EFFECT:$maestro:currentTime, 7:SIDE_EFFECT:$maestro:currentTime, 8:SIGNAL_RECEIVED:$maestro:awaitSignal:document.uploaded, 9:SIDE_EFFECT:$maestro:currentTime, 10:SIGNAL_RECEIVED:$maestro:awaitSignal:document.uploaded, 11:SIGNAL_TIMEOUT:$maestro:awaitSignal:application.withdrawn, 12:ACTIVITY_COMPLETED:LoanMessagingActivities.requestUnderwriting, 13:SIGNAL_RECEIVED:$maestro:awaitSignal:underwriting.decision, 14:ACTIVITY_COMPLETED:FundingActivities.reserveRateLock, 15:SIDE_EFFECT:$maestro:currentTime, 16:SIDE_EFFECT:$maestro:currentTime, 17:SIGNAL_RECEIVED:$maestro:awaitSignal:package.signed, 18:SIDE_EFFECT:$maestro:currentTime, 19:SIGNAL_RECEIVED:$maestro:awaitSignal:package.signed, 20:SIGNAL_TIMEOUT:$maestro:awaitSignal:application.withdrawn, 21:ACTIVITY_COMPLETED:FundingActivities.disburse, 22:WORKFLOW_COMPLETED:null]
+fresh-v2 event log: [1:VERSION_MARKER:$maestro:version:parallel-verification, 2:ACTIVITY_COMPLETED:LoanActivities.recordApplication, 3:ACTIVITY_COMPLETED:LoanMessagingActivities.requestVerifications, 4:SIDE_EFFECT:$maestro:parallel, 5001:SIGNAL_RECEIVED:$maestro:awaitSignal:verification.result, 5002:SIGNAL_RECEIVED:$maestro:awaitSignal:verification.result, 5003:SIGNAL_RECEIVED:$maestro:awaitSignal:verification.result, 6001:SIDE_EFFECT:$maestro:currentTime, 6002:SIDE_EFFECT:$maestro:currentTime, 6003:SIGNAL_RECEIVED:$maestro:awaitSignal:document.uploaded, 6004:SIDE_EFFECT:$maestro:currentTime, 6005:SIGNAL_RECEIVED:$maestro:awaitSignal:document.uploaded, 7001:SIGNAL_TIMEOUT:$maestro:awaitSignal:application.withdrawn, 7002:ACTIVITY_COMPLETED:LoanMessagingActivities.requestUnderwriting, 7003:SIGNAL_RECEIVED:$maestro:awaitSignal:underwriting.decision, 7004:ACTIVITY_COMPLETED:FundingActivities.reserveRateLock, 7005:SIDE_EFFECT:$maestro:currentTime, 7006:SIDE_EFFECT:$maestro:currentTime, 7007:SIGNAL_RECEIVED:$maestro:awaitSignal:package.signed, 7008:SIDE_EFFECT:$maestro:currentTime, 7009:SIGNAL_RECEIVED:$maestro:awaitSignal:package.signed, 7010:SIGNAL_TIMEOUT:$maestro:awaitSignal:application.withdrawn, 7011:ACTIVITY_COMPLETED:FundingActivities.disburse, 7012:WORKFLOW_COMPLETED:null]
+parallel fork at parent seq 4; verification branch [5001, 5002, 5003]; document branch [6003, 6005]
+same-signal-name branch outcomes: ["SignalTimeoutException: Signal 'dup' timed out after PT2S for workflow 'same-name-1'","IllegalStateException: Parking key 'same-name-1:signal:dup' already occupied — duplicate park call would orphan the existing waiter"]
