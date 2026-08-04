@@ -80,9 +80,39 @@ export MAESTRO_ADMIN_EVENTS_ENABLED="${MAESTRO_ADMIN_EVENTS_ENABLED:-true}"
 # so no other timer's cardinality changes.
 ACTIVITY_HISTOGRAM_PROP="-Dmanagement.metrics.distribution.percentiles-histogram.maestro.activity.duration=true"
 
+# WHAT MAKES THE CROSS-SERVICE TRACE ONE TRACE.
+#
+# Maestro's own KafkaTracePropagation injects/extracts W3C `traceparent` on the
+# `maestro.tasks.*` / `maestro.signals.*` topics it owns. But the three loan
+# services talk to each other over the SAMPLE's OWN domain topics —
+# loans.verification.{requests,results}, loans.underwriting.{requests,decisions}
+# — published with a plain Spring `KafkaTemplate` and consumed with plain
+# `@KafkaListener` (KafkaLoanMessagingActivities, UnderwritingRequestListener,
+# VerificationRequestListener). Maestro never sees those records, so the header
+# has to come from Spring Kafka's own observation instrumentation.
+#
+# Both flags default to FALSE in Spring Boot 4.0.5 (verified against
+# spring-boot-kafka-4.0.5's spring-configuration-metadata.json). With them off,
+# records go out with NO_HEADERS, each service starts a fresh root trace, and
+# Jaeger shows three unrelated single-service traces that look superficially
+# fine — which is exactly what this demo must not show.
+#
+#   template.observation-enabled  → producer side: writes `traceparent`,
+#                                   parented to the active maestro.activity span
+#   listener.observation-enabled  → consumer side: reads it back and continues
+#                                   the trace instead of starting a new one
+#
+# Set here as JVM system properties rather than in the samples' application.yml
+# on purpose: this is demo wiring, and the samples' committed config stays the
+# config their e2e suite runs against.
+KAFKA_OBSERVATION_PROPS=(
+    -Dspring.kafka.template.observation-enabled=true
+    -Dspring.kafka.listener.observation-enabled=true
+)
+
 # Every JVM is capped at 256m of heap: four of these plus seven containers has
 # to fit on a laptop.
-JVM_OPTS=(-Xmx256m -XX:+UseSerialGC "$ACTIVITY_HISTOGRAM_PROP")
+JVM_OPTS=(-Xmx256m -XX:+UseSerialGC "$ACTIVITY_HISTOGRAM_PROP" "${KAFKA_OBSERVATION_PROPS[@]}")
 
 log() { printf '%s [demo] %s\n' "$(date +%H:%M:%S)" "$*"; }
 err() { printf '%s [demo] ERROR: %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
