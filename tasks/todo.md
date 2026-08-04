@@ -1,3 +1,19 @@
+# Milestone: Demo — runbook, observability stack, live versioning story
+
+Spec: `docs/superpowers/specs/2026-08-03-maestro-demo-design.md`. Plan: `docs/superpowers/plans/2026-08-04-maestro-demo.md`. Domain: `demo/DOMAIN-BRIEF.md`. Branch: `worktree-demo` off main @ 945ccb4. 95+ commits, 107 files.
+
+- [x] Task 1 — actuator + Prometheus + OTLP on the three loan services. Caught a Boot 3.x property name that would have shipped the trace exporter silently inert
+- [x] Task 2 — 7-container stack (Prometheus/Grafana/Jaeger) + host-JVM scripts. Trace `d055f596…` proven across 3 services. **Found library Issue 23** (Critical): `maestroKafkaTemplate` suppresses Boot's, inerting `spring.kafka.*` for every user
+- [x] Task 3 — v2 source set: `parallel()` behind `workflow.version()`. In-flight loan keeps its path across a live deploy, proven with both trace shapes. Caught that the plan's `(changeId, 1, 2)` bounds would have **failed every in-flight loan on stage**
+- [x] Task 4 — 751-line rehearsed runbook + scripts. Rehearsal found the `kill -9` scenario couldn't recover as written; headline timing fixed at its cause, 250 s → ~62 s
+- [x] Task 5 — 20-slide self-contained deck, offline-verified. Review caught an invented event-log table and clipping in presenter mode (14/20 at 720p)
+- [x] Task 6 — cold-machine QA gate: FAIL then PASS. Found the first preflight on a clean machine always failed (consumer-group race), fixed at the cause
+- [x] Final whole-branch review: SHIP after a documentation-only fix wave (0 Critical); all 18 findings closed and re-verified
+
+**Peak 2.42 GiB across 7 containers + 4 host JVMs. Constraints held throughout: `maestro-core`, the loan `e2e/`, and the chaos harness are zero-diff.**
+
+Product issues raised, not patched: Issue 23 (Kafka template hijack), Issue 24 (redelivery/DLT topic gap).
+
 # Milestone: Release Hardening (RabbitMQ removal, Observability, Versioning)
 
 Spec: `docs/release-hardening-spec.md`. Plan: `tasks/release-hardening-plan.md`. Branch: `worktree-release-hardening` off main @ 7bfedbe. 68 commits, 238 files.
