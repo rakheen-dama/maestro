@@ -1,0 +1,66 @@
+=== DECK AUDIT 2026-08-04T17:15:16Z ===
+pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo HEAD=12675649e87d975528538a5dd771be4047010960 branch=worktree-demo
+file: demo/presentation/index.html sha256=123fad82e15388edf18b8a8e6422fb3d8feb6db9a32a25b208226b92e25b65fd
+
+--- any external/network reference at all (must be empty) ---
+(none)
+
+--- localhost refs (fine: they are the demo stack, opened deliberately) ---
+http://localhost:16686/search?service=sample-loan-application-service
+http://localhost:3000
+http://localhost:8094
+
+--- url() in CSS (must all be data: or none) ---
+
+--- font-family stacks (must be local) ---
+font-family: var(--mono)
+font-family: var(--sans)
+font-family: var(--serif)
+font-family:ui-monospace,Menlo,monospace
+font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace
+font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif
+font-family:ui-serif,Georgia,serif
+
+--- DO: blocks and the runbook sections they name ---
+   7 §D1
+   7 §2
+   5 §1
+   4 §D4
+   3 §D6
+   3 §4
+   3 §3
+   2 §D5
+   2 §D3
+   2 §D2
+   2 §5
+   1 §0
+
+--- sections that ACTUALLY exist as headings in demo/RUNBOOK.md ---
+54:## §0 — T-30 pre-flight
+146:## §1 — Scenario 1: start a loan, follow it across three services
+200:## §2 — Scenario 2: `kill -9` and recover
+324:## §3 — Scenario 3: the Jaeger trace
+387:## §4 — Scenario 4: withdrawal after rate lock → saga compensation
+432:## §5 — Scenario 5: Grafana under load
+490:## §D1 — Deep dive: rolling deploy, v1 → v2, with loans in flight
+588:## §D2 — Deep dive: how memoization works
+644:## §D3 — Deep dive: the evidence
+666:## §D4 — Deep dive: architecture
+698:## §D5 — Deep dive: determinism
+724:## §D6 — Deep dive: multi-node adoption
+798:## §Q — Questions you should not have to improvise
+824:## §T — Teardown
+
+--- cross-check: every deck-referenced section resolves? ---
+OK      §0 -> heading present
+OK      §1 -> heading present
+OK      §2 -> heading present
+OK      §3 -> heading present
+OK      §4 -> heading present
+OK      §5 -> heading present
+OK      §D1 -> heading present
+OK      §D2 -> heading present
+OK      §D3 -> heading present
+OK      §D4 -> heading present
+OK      §D5 -> heading present
+OK      §D6 -> heading present

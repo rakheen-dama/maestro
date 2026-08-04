@@ -1,0 +1,88 @@
+=== QA TASK 6 IDENTITY ===
+pwd: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/demo
+git rev-parse HEAD: 12675649e87d975528538a5dd771be4047010960
+branch: worktree-demo
+timestamp: 2026-08-04T17:12:40Z (UTC) / Tue Aug  4 19:12:40 SAST 2026
+uname: Darwin Rakheens-MacBook-Pro.local 25.5.0 Darwin Kernel Version 25.5.0: Tue Jun  9 22:18:58 PDT 2026; root:xnu-12377.121.10~1/RELEASE_ARM64_T6000 arm64
+docker: Docker version 28.5.1, build e180ab8
+java: openjdk version "25.0.1" 2025-10-21 LTS
+
+=== CONSTRAINT: zero-diff vs main ===
+--- git diff main...HEAD -- maestro-core ---
+(exit=0; empty above means zero-diff)
+--- git diff main...HEAD -- maestro-samples/sample-loan-origination/e2e ---
+(exit=0; empty above means zero-diff)
+--- chaos harness paths ---
+.superpowers/sdd/multi-instance/evidence/task7/20260801-214325--6973268155056049009/chaos-actions.jsonl
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/ChaosCluster.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/ChaosConfig.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/ChaosController.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/ChaosControllerInterruptTest.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/ChaosGoldenRunE2EIT.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/ChaosMode.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/ChaosPrGateE2EIT.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/ChaosRun.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/ChaosSoakE2EIT.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/ChaosSuiteSelectionTest.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/ClusterBootSmokeIT.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/EvidenceWriter.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/InvariantChecker.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/InvariantCheckerBlindnessTest.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/LedgerEntry.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/LoanPath.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/LogTailScannerTest.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/MetricsSampler.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/NodeAmbassador.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/NodeRole.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/PartitionReachabilityIT.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/PeriodicChecker.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/RunIdentity.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/SideEffectCensus.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/WorkloadDriver.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/WorkloadDriverBackPressureTest.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/WorkloadDriverPacingTest.java
+maestro-integration-tests/src/test/resources/chaos/init-loan-dbs.sh
+--- git diff main...HEAD --stat -- maestro-integration-tests (chaos harness lives here) ---
+(empty above == zero-diff)
+
+--- FULL branch diff stat vs main (what the demo DID touch) ---
+ demo/.evidence/task-4-fix-f3-f4-preflight.log      |   63 +
+ .../task-4-fix-f3-unevidenced-figures.log          |   63 +
+ demo/.evidence/task-4-fix-jvm-env-shared-lib.log   |   96 +
+ demo/.evidence/task-4-runbook-rehearsal.log        |  268 +++
+ .../task-5-presentation-offline-verification.log   |   91 +
+ demo/.gitignore                                    |    4 +
+ demo/RUNBOOK.md                                    |  845 +++++++++
+ demo/docker-compose.yml                            |  216 +++
+ demo/docker/init-demo-dbs.sh                       |   22 +
+ demo/grafana/dashboards/maestro.json               |  440 +++++
+ .../grafana/provisioning/dashboards/dashboards.yml |   19 +
+ .../provisioning/datasources/prometheus.yml        |   24 +
+ demo/presentation/index.html                       | 1849 ++++++++++++++++++++
+ demo/prometheus.yml                                |   68 +
+ demo/scripts/drive-loan.sh                         |  297 ++++
+ demo/scripts/lib/jvm-env.sh                        |  107 ++
+ demo/scripts/preflight.sh                          |  153 ++
+ demo/scripts/reset.sh                              |   75 +
+ demo/scripts/restart-loan-app.sh                   |   75 +
+ demo/scripts/start-services.sh                     |  323 ++++
+ demo/scripts/stop-services.sh                      |  100 ++
+ demo/scripts/v1-to-v2-move.sh                      |  312 ++++
+ demo/targets/.gitignore                            |    1 +
+ demo/targets/README.md                             |    6 +
+ docs/observability.md                              |   54 +
+ docs/open-issues.md                                |  158 +-
+ docs/superpowers/plans/2026-08-04-maestro-demo.md  |  148 ++
+ gradle/libs.versions.toml                          |    2 +
+ .../loan-application-service/build.gradle.kts      |   71 +
+ .../config/ObservedKafkaTemplateConfig.java        |   72 +
+ .../src/main/resources/application.yml             |   27 +
+ .../workflow/LoanApplicationWorkflowV2Test.java    |  699 ++++++++
+ .../workflow/LoanApplicationWorkflow.java          |  355 ++++
+ .../underwriting-service/build.gradle.kts          |   12 +
+ .../config/ObservedKafkaTemplateConfig.java        |   72 +
+ .../src/main/resources/application.yml             |   27 +
+ .../verification-gateway-service/build.gradle.kts  |   12 +
+ .../config/ObservedKafkaTemplateConfig.java        |   72 +
+ .../src/main/resources/application.yml             |   27 +
+ 74 files changed, 11375 insertions(+), 1 deletion(-)
