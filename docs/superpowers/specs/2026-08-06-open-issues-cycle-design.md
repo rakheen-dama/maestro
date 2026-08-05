@@ -47,12 +47,18 @@ invariants above, which Maestro always overrides.* This makes `ssl.*`,
 engine — today Maestro cannot talk to a secured cluster without a full bean
 override (F1/F2).
 
-`KafkaAutoConfiguration` must be declared in `afterName` so Boot's
-`KafkaProperties`/`KafkaConnectionDetails` beans exist when Maestro's
-auto-config evaluates (today ordering is alphabetical-accidental; F1).
-Boot's own template/factories remain suppressed by type — that is now
-*deliberate and documented*, not accidental, and the property surface no
-longer lies.
+Ordering correction (planning-time finding): Maestro's auto-config must be
+pinned **before** Boot's `KafkaAutoConfiguration` (`beforeName`), not after —
+ordering after would let Boot's type-conditional beans register alongside
+Maestro's and cause the ambiguity crashes the rejected "stop shadowing"
+direction was rejected for. Today's suppression relies on accidental
+alphabetical order; `beforeName` makes it deliberate and stable. Maestro's
+config declares `@EnableConfigurationProperties(KafkaProperties.class)` itself
+and consumes `KafkaConnectionDetails` via `ObjectProvider` — bean
+*instantiation* is dependency-driven, so evaluation order does not prevent
+either from being injected. Boot's own template/factories remain suppressed by
+type — now *deliberate and documented*, and the property surface no longer
+lies.
 
 **Template observation.** `maestroKafkaTemplate` calls
 `setObservationEnabled(true)` when `spring.kafka.template.observation-enabled`
