@@ -50,6 +50,30 @@ retrying consumer, at the worst possible moment to discover the gap.
   other broker) adapter implementing the three-method SPI remains possible; it
   is simply no longer shipped or verified in this repository.
 
+### Fixed — A terminate racing saga compensation could no longer run compensations, but could before
+
+`SagaManager.transitionToCompensating` re-reads the instance and re-checks for
+`TERMINATED` before writing `COMPENSATING`, but the read and the write are not
+atomic — a cross-node `WorkflowExecutor.terminateWorkflow` could land in that
+gap, making the write lose its optimistic-lock check. That lost
+compare-and-set was silently swallowed, and the failing run's compensations
+ran anyway: refunds issued, reservations released, for a workflow an operator
+had explicitly asked to stop.
+
+- The lost compare-and-set is now retried against a **fresh read**, with the
+  `TERMINATED`/other-terminal guard re-evaluated on **every** attempt (not
+  just the first) — the same bounded-retry idiom (`STATUS_WRITE_ATTEMPTS = 5`,
+  immediate, no backoff) `InstanceStatusWriter.write` already uses for the
+  sibling conflict on the same row. A `TERMINATED` observed on any attempt now
+  throws `WorkflowTerminatedException`, propagating out of `compensate()`
+  uncaught, and no compensation runs.
+- **Exhaustion policy differs deliberately from `InstanceStatusWriter`:** this
+  write gates entry into the compensation phase, so on exhaustion the method
+  logs an error and rethrows the last `OptimisticLockException` instead of
+  standing down and proceeding — nothing terminal is written, the instance
+  stays active, and recovery retries the transition with a fresh read.
+- **Was:** [Issue 22](open-issues.md#issue-22).
+
 ### Fixed — Kafka client configuration now honours `spring.kafka.*`, and Kafka observation/tracing default on
 
 **Behaviour change for every Maestro + Kafka application** — no config

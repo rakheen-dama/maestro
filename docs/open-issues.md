@@ -264,7 +264,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [19](#issue-19) | Timed-out awaits replay nondeterministically (late signal consumed at the gap) | Library defect | High | **Resolved** |
 | [20](#issue-20) | A transient store outage during a parked wake-recheck fails a healthy workflow | Library defect | High | **Resolved** |
 | [21](#issue-21) | Two `parallel()` branches parking at once fail the workflow and run compensations | Library defect | High | **Resolved** |
-| [22](#issue-22) | Compensations can run on an operator-terminated workflow | Library defect | Medium | Open |
+| [22](#issue-22) | Compensations can run on an operator-terminated workflow | Library defect | Medium | **Resolved** |
 | [23](#issue-23) | Maestro's Kafka beans silently disable `spring.kafka.*`; `@MaestroSignalListener` drops trace context | Library defect | Critical | Open |
 | [24](#issue-24) | Redelivery is always on and always dead-letters, but nothing documents or creates the `.DLT` topics | Library gap — docs + config | Medium | Resolved |
 
@@ -1774,11 +1774,23 @@ that had **enshrined this defect as "an engine-level limitation"**.
 
 ### Issue 22 — Compensations can run on an operator-terminated workflow {#issue-22}
 
-> **Open.** Narrow and pre-existing; found by the review of Issue 21's fix,
-> which closed the same read-modify-write race in the sibling writer. Not
-> fixed in the release-hardening cycle because it is out of that cycle's
-> scope, and it is filed here so it is a known behaviour rather than a
-> surprise.
+> **Resolved.** `SagaManager.transitionToCompensating`'s single-attempt
+> swallow is now the same **bounded retry against a fresh read**
+> (`InstanceStatusWriter.STATUS_WRITE_ATTEMPTS = 5`, immediate, no backoff,
+> widened to `public` so the saga package can share it) that Issue 21 shipped
+> for the sibling writer, with the terminal guard re-evaluated on **every**
+> attempt — not just the first — so a `TERMINATED` landing between attempts
+> is still caught before compensation starts, and
+> `WorkflowTerminatedException` propagates. Exhaustion policy deliberately
+> differs from Issue 21's: this write gates entry into an active phase, so on
+> exhaustion the method logs an error and **rethrows** the last
+> `OptimisticLockException` — abandoning the local run without compensating —
+> rather than standing down and proceeding. Pinned by
+> `SagaManagerTerminateRaceTest` (a `TerminateInterposingStore` that injects
+> the cross-node `TERMINATED` write between the guard's read and the CAS,
+> deterministically, no latches or sleeps), with a mutation round confirming
+> all three load-bearing details: the retry itself, the in-loop (not just
+> pre-loop) terminal re-check, and the exhaustion rethrow.
 
 **Kind:** Library defect. **Severity:** Medium (narrow window, but the
 outcome contradicts a documented guarantee).
