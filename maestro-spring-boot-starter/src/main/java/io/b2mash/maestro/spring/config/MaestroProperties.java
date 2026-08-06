@@ -401,6 +401,19 @@ public class MaestroProperties {
     /**
      * Default retry policy applied to activities without explicit configuration.
      *
+     * <p>Consumed by {@code ActivityStubBeanPostProcessor} for any
+     * {@code @ActivityStub} whose {@code retryPolicy} is left at the
+     * {@link io.b2mash.maestro.core.annotation.RetryPolicy} annotation's own
+     * defaults (all six attributes: {@code maxAttempts = 3},
+     * {@code initialInterval = "PT1S"}, {@code maxInterval = "PT1M"},
+     * {@code backoffMultiplier = 2.0}, and empty exception filter lists). An
+     * annotation cannot express "unset" — every attribute always carries a
+     * value — so that all-defaults shape is treated as "not configured" and
+     * resolves to the policy built from these four properties instead. An
+     * {@code @ActivityStub} that customizes even one attribute of
+     * {@code retryPolicy} is exempt from this block entirely; its own
+     * annotation values apply regardless of what is configured here.
+     *
      * @param defaultMaxAttempts       maximum retry attempts (including initial)
      * @param defaultInitialInterval   initial backoff delay
      * @param defaultMaxInterval       maximum backoff delay

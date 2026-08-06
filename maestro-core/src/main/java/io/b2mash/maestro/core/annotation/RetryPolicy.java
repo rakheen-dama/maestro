@@ -24,6 +24,19 @@ import java.lang.annotation.Target;
  * is non-empty, those types immediately fail without retry. If both are
  * empty, all exceptions are retried.
  *
+ * <h2>Interaction with {@code maestro.retry.*}</h2>
+ * <p>An annotation attribute always carries a value, so this type cannot
+ * distinguish "the author left {@code retryPolicy} unset" from "the author
+ * explicitly chose exactly these default values." The Spring Boot starter's
+ * {@code ActivityStubBeanPostProcessor} resolves that ambiguity with one
+ * rule: if <b>every</b> attribute here still equals its declared default
+ * (the values shown above), the stub is treated as unconfigured and its
+ * policy is built from the bound {@code maestro.retry.default-*} properties
+ * instead of these defaults. Customizing even a single attribute opts the
+ * whole policy out of {@code maestro.retry.*} — the values declared here are
+ * used exactly as written. See {@code MaestroProperties.RetryProperties} and
+ * {@code docs/configuration.md#retry-configuration}.
+ *
  * @see ActivityStub
  * @see io.b2mash.maestro.core.retry.RetryPolicy
  */

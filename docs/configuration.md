@@ -387,7 +387,9 @@ lock — both honour the same configured prefix.
 ## Retry Configuration
 
 Properties under `maestro.retry.*` define the default retry policy applied to
-activities that do not specify their own `@RetryPolicy` annotation.
+an `@ActivityStub` whose `retryPolicy` is left at the `@RetryPolicy`
+annotation's own defaults (`maxAttempts = 3`, `initialInterval = "PT1S"`,
+`maxInterval = "PT1M"`, `backoffMultiplier = 2.0`, no exception filters).
 
 | Property                                  | Type       | Default | Description                                                                        |
 |-------------------------------------------|------------|---------|------------------------------------------------------------------------------------|
@@ -396,8 +398,16 @@ activities that do not specify their own `@RetryPolicy` annotation.
 | `maestro.retry.default-max-interval`      | `Duration` | `60s`   | Upper bound on the backoff delay. The interval will never exceed this value.        |
 | `maestro.retry.default-backoff-multiplier`| `double`   | `2.0`   | Multiplier applied to the interval after each failed attempt.                      |
 
-These defaults apply globally. Individual activities can override them using the
-`@RetryPolicy` annotation on the activity method.
+These defaults apply globally, to every `@ActivityStub` that leaves
+`retryPolicy` unset. An annotation cannot distinguish "left unset" from
+"explicitly set to these same values" — annotation attributes always carry a
+value — so the rule Maestro applies is: if **every** attribute of
+`retryPolicy` equals the `@RetryPolicy` annotation's own default, the stub is
+treated as unconfigured and gets the policy built from the properties above.
+Customizing **any single attribute** (e.g. just `@ActivityStub(retryPolicy =
+@RetryPolicy(maxAttempts = 5))`) opts the whole policy out of these
+properties — the annotation's values are used as declared, and
+`maestro.retry.*` no longer applies to that stub.
 
 **How backoff works:**
 
