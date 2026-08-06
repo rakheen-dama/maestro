@@ -501,6 +501,39 @@ via `maestro.messaging.consumer-group`. This means each service automatically
 gets its own consumer group, ensuring that every service instance in a cluster
 receives its share of messages.
 
+### Kafka Client Configuration
+
+Maestro's engine producer and consumer (`maestroKafkaProducerFactory` /
+`maestroKafkaConsumerFactory`) are built from Spring Boot's bound
+`spring.kafka.*` properties (`KafkaProperties`), the same properties any other
+Spring Kafka client in the service honours — `spring.kafka.bootstrap-servers`,
+`spring.kafka.producer.*` (compression, batching, retries, arbitrary
+`spring.kafka.producer.properties.*` entries), `spring.kafka.consumer.*`, and
+SSL/security settings. A `KafkaConnectionDetails` bean (e.g. from a
+service-connection Testcontainers setup) overrides the bootstrap servers when
+present.
+
+A small set of wire-format invariants the engine's own protocol depends on are
+forced **last**, after `spring.kafka.*` is applied, so no user property can
+silently corrupt engine topics:
+
+| Invariant                          | Forced value                    |
+|-------------------------------------|----------------------------------|
+| Producer/consumer key (de)serializer | `StringSerializer`/`StringDeserializer` |
+| Producer/consumer value (de)serializer | `ByteArraySerializer`/`ByteArrayDeserializer` |
+| Producer `acks`                     | `all`                            |
+| Consumer `group.id`                 | `maestro-{serviceName}` (or `maestro.messaging.consumer-group`) |
+
+`spring.kafka.consumer.auto-offset-reset` is **not** an invariant — Maestro
+only supplies a default of `earliest` when the property is unset; an explicit
+value wins.
+
+Boot's own `kafkaTemplate`/`kafkaProducerFactory`/`kafkaConsumerFactory` beans
+are deliberately suppressed in favor of Maestro's byte[]-typed engine beans —
+this is intentional, not a bug, so a service that also needs a general-purpose
+`KafkaTemplate` for its own topics should define one under a different bean
+name.
+
 ### Pre-creating Topics
 
 Create topics before starting your service. Example using the Kafka CLI:
