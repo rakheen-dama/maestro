@@ -32,11 +32,11 @@ import java.time.Instant;
  * <ul>
  *   <li>{@code TERMINATED} throws {@link WorkflowTerminatedException} — the run
  *       must stop now, without compensation — terminate never <em>starts</em> a
- *       compensation, though one open race in the sibling writer can let an
- *       already-starting one continue (a terminate landing between
- *       {@code SagaManager.transitionToCompensating}'s terminal-status check
- *       and its own status write; {@code docs/open-issues.md} Issue 22) — and
- *       the {@code Error} type keeps a
+ *       compensation. The sibling writer,
+ *       {@code SagaManager.transitionToCompensating}, applies the identical
+ *       guard-inside-a-bounded-retry treatment to a terminate landing between
+ *       its own terminal-status check and its status write, formerly a narrow
+ *       swallow (Issue 22, now fixed) — and the {@code Error} type keeps a
  *       workflow's own {@code catch (Exception)} from swallowing it.</li>
  *   <li>{@code COMPLETED} / {@code FAILED} log and stand down, preserving the
  *       existing "another runner finalised it first" convergence: that outcome
@@ -84,8 +84,14 @@ import java.time.Instant;
  * <p><b>Thread safety:</b> stateless; safe for concurrent use, including from
  * several branch threads of one {@code parallel()} fork writing the same
  * instance row at once — which is exactly what the retry loop exists for.
+ *
+ * <p>The class itself is {@code public} only so
+ * {@link #STATUS_WRITE_ATTEMPTS} is visible to
+ * {@code io.b2mash.maestro.core.saga.SagaManager} in another package; the
+ * {@link #write} method stays package-private — nothing outside
+ * {@code core.engine} calls it directly.
  */
-final class InstanceStatusWriter {
+public final class InstanceStatusWriter {
 
     private static final Logger logger = LoggerFactory.getLogger(InstanceStatusWriter.class);
 
@@ -94,8 +100,14 @@ final class InstanceStatusWriter {
      * before this stands down. Matches {@code WorkflowExecutor}'s
      * {@code TERMINAL_TRANSITION_ATTEMPTS}; deliberately the same number,
      * because it bounds the same conflict on the same row.
+     *
+     * <p>Public because {@code io.b2mash.maestro.core.saga.SagaManager}'s
+     * {@code transitionToCompensating} shares this exact budget for the same
+     * conflict on the same row (a cross-package reference, {@code SagaManager}
+     * being in {@code core.saga} rather than {@code core.engine}) — see its
+     * Javadoc for why its policy on exhaustion differs from this class's.
      */
-    static final int STATUS_WRITE_ATTEMPTS = 5;
+    public static final int STATUS_WRITE_ATTEMPTS = 5;
 
     private InstanceStatusWriter() {
     }
