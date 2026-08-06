@@ -88,11 +88,71 @@ dead-letter destination rather than dropping it or looping on it forever.
 
 | Property                                          | Type       | Default                 | Description                                                                 |
 |---------------------------------------------------|------------|-------------------------|-----------------------------------------------------------------------------|
+| `maestro.messaging.redelivery.enabled`            | `boolean`  | `true`                  | Whether handler-failure redelivery and dead-lettering are active at all. Both transports. |
 | `maestro.messaging.redelivery.max-attempts`       | `int`      | `10`                    | Total delivery attempts, including the first. Both transports.               |
 | `maestro.messaging.redelivery.initial-interval`   | `Duration` | `1s`                    | Backoff before the second attempt. Both transports.                          |
 | `maestro.messaging.redelivery.multiplier`         | `double`   | `2.0`                   | Factor applied to the backoff after each failure. Both transports.           |
 | `maestro.messaging.redelivery.max-interval`       | `Duration` | `30s`                   | Ceiling for the computed backoff. Both transports.                           |
 | `maestro.messaging.redelivery.dead-letter-suffix` | `String`   | `".DLT"`                | Appended to a topic to name its dead-letter topic. **Kafka only.**          |
+
+**Disabling redelivery.** Setting `maestro.messaging.redelivery.enabled=false`
+is the operator's explicit opt-out of everything below, on both transports —
+it is not a recommended default, and defaults to `true`:
+
+- **Kafka:** the listener container gets a `DefaultErrorHandler` backed by a
+  zero-length `FixedBackOff` instead of `KafkaRedeliveryErrorHandlers.deadLettering(...)`.
+  A failing record gets **zero retries** and **no `DeadLetterPublishingRecoverer`** —
+  it is logged and skipped, restoring plain at-most-once handler semantics. The
+  [dead-letter-topic startup probe](#kafka-dead-letter-topic-check) below is
+  skipped entirely, since nothing will ever publish to a `.DLT` topic.
+- **Postgres:** a failing row is marked `FAILED` after exactly **one** attempt
+  — no backoff, no `DEAD_LETTER` parking. This is the pre-redelivery behaviour
+  (see the `FAILED` rescue statement below); `max-attempts` and the backoff
+  properties are ignored while the flag is off.
+
+### Kafka Dead-Letter-Topic Check
+
+Maestro never creates topics, `.DLT` companions included (see below) — an
+operator who forgets to pre-create one does not find out until a handler's
+attempt budget is first exhausted, and the failure then shows up as a stalled,
+noisily-retrying consumer rather than a clear message while the gap could
+still be fixed for free.
+
+`KafkaDeadLetterTopicCheck` closes that gap: at every point Maestro subscribes
+to a topic — `KafkaWorkflowMessaging.subscribe`/`subscribeSignals` (the engine's
+own tasks/signals channels) and `MaestroSignalListenerBeanPostProcessor`'s
+container activation (every `@MaestroSignalListener` topic) — it probes whether
+`<topic><dead-letter-suffix>` exists and logs:
+
+```
+WARN Dead-letter topic '<topic>.DLT' does not exist — redelivery for '<topic>' will
+     exhaust its attempts and then fail to publish; pre-create it or set
+     maestro.messaging.redelivery.enabled=false
+```
+
+The probe is **warn-only**: it never fails startup, is bounded to 5 seconds,
+and its own failure (an unreachable broker, for instance) is logged at `DEBUG`
+and otherwise ignored — a diagnostic, not a gate. It is skipped entirely when
+`maestro.messaging.redelivery.enabled=false`, since nothing will ever publish
+to a dead-letter topic in that mode.
+
+**`.DLT` pre-creation checklist.** Before deploying a service with Kafka
+messaging and redelivery enabled (the default), pre-create a `.DLT` companion
+for every topic **a Maestro consumer subscribes to**:
+
+- [ ] The engine's task-dispatch topic: `maestro.tasks.{taskQueue}.DLT` for
+      every task queue this service has workers on (or the fixed override
+      `maestro.messaging.topics.tasks` + suffix).
+- [ ] The engine's inbound signal topic: `maestro.signals.{serviceName}.DLT`
+      (or the fixed override `maestro.messaging.topics.signals` + suffix).
+- [ ] Every `@MaestroSignalListener(topic = "...")` topic this service
+      declares.
+
+Plain `@KafkaListener`-consumed topics are **not** in scope — they run outside
+Maestro's redelivery path entirely and get no dead-lettering error handler, so
+they need no `.DLT` companion. The admin-events topic is publish-only from a
+workflow service's perspective (only `maestro-admin` consumes it, over its own
+listener, not this mechanism) and is likewise out of scope.
 
 The delay before the attempt following the *n*-th failure is
 `min(initial-interval × multiplier^(n-1), max-interval)`. The defaults give

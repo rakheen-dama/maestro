@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### Added — `maestro.messaging.redelivery.enabled` flag, and a startup check for missing `.DLT` topics
+
+The dead-lettering error handler installed on every Maestro-managed consumer
+container ran unconditionally, with nothing to create — or even check for —
+the `.DLT` topics it depends on. A missing dead-letter topic surfaced only
+once a handler's attempt budget was first exhausted, as a stalled, noisily
+retrying consumer, at the worst possible moment to discover the gap.
+
+- **`maestro.messaging.redelivery.enabled`** (default `true`) is a new, first
+  field of the `maestro.messaging.redelivery.*` block, gating both
+  transports. Set to `false` to restore at-most-once handler semantics: on
+  Kafka, the listener container gets a zero-retry `DefaultErrorHandler` with
+  no `DeadLetterPublishingRecoverer`; on Postgres, a failing row is marked
+  `FAILED` after exactly one attempt instead of being retried and
+  dead-lettered. This is the operator's explicit opt-out, not a recommended
+  default.
+- **`KafkaDeadLetterTopicCheck`** is a new warn-only startup probe, wired at
+  every point Maestro subscribes to a topic — the engine's own
+  `subscribe`/`subscribeSignals` and every `@MaestroSignalListener`
+  container's activation. It WARNs by name when a topic's `.DLT` companion
+  does not exist, is bounded to 5 seconds, never fails startup, and is
+  skipped entirely when redelivery is disabled. Full contract and the
+  `.DLT` pre-creation checklist: [`docs/configuration.md` § Kafka
+  Dead-Letter-Topic Check](configuration.md#kafka-dead-letter-topic-check).
+- **`sample-loan-origination`'s and `demo`'s compose stacks now pre-create
+  `.DLT` companions** for every topic they were missing one for — the six
+  engine tasks/signals topics and the two `@MaestroSignalListener` business
+  topics (`loans.verification.results`, `loans.underwriting.decisions`) —
+  closing the exact gap the new check now warns about.
+- **Was:** [Issue 24](open-issues.md#issue-24).
+
 ### Removed
 
 - **RabbitMQ messaging support has been removed** — the `maestro-messaging-rabbitmq`

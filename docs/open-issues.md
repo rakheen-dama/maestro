@@ -266,7 +266,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [21](#issue-21) | Two `parallel()` branches parking at once fail the workflow and run compensations | Library defect | High | **Resolved** |
 | [22](#issue-22) | Compensations can run on an operator-terminated workflow | Library defect | Medium | Open |
 | [23](#issue-23) | Maestro's Kafka beans silently disable `spring.kafka.*`; `@MaestroSignalListener` drops trace context | Library defect | Critical | Open |
-| [24](#issue-24) | Redelivery is always on and always dead-letters, but nothing documents or creates the `.DLT` topics | Library gap — docs + config | Medium | Open |
+| [24](#issue-24) | Redelivery is always on and always dead-letters, but nothing documents or creates the `.DLT` topics | Library gap — docs + config | Medium | Resolved |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -2002,11 +2002,25 @@ producer and consumer services.
 
 ### Issue 24 — Redelivery always dead-letters, but nothing creates or documents the `.DLT` topics {#issue-24}
 
-> **Open.** Found by the final whole-branch review of the demo cycle (`demo/`),
-> triaged there as *Minor for the demo* and filed here because it is not a demo
-> defect at all: the demo's compose file faithfully mirrors the loan sample's
-> own, and neither pre-creates dead-letter topics. It sits next to Issue 23 as
-> another "the config looks right and nothing fires" case.
+> **Resolved**, all three ruled measures. **(1) Document:**
+> `docs/configuration.md` § Redelivery and Dead-Letter Properties now has a
+> `.DLT` pre-creation checklist scoped to what actually needs one — the
+> engine's tasks/signals topics and `@MaestroSignalListener` topics, not
+> plain `@KafkaListener` topics or admin-events. **(2) Detect:**
+> `KafkaDeadLetterTopicCheck`, a bounded (5s), warn-only startup probe wired
+> at `KafkaWorkflowMessaging.subscribe`/`subscribeSignals` and
+> `MaestroSignalListenerBeanPostProcessor` container activation; never throws,
+> its own probe failure logs at DEBUG. **(3) Off switch:**
+> `maestro.messaging.redelivery.enabled` (default `true`), gating both
+> transports — Kafka falls back to a zero-retry `DefaultErrorHandler` with no
+> `DeadLetterPublishingRecoverer`; Postgres marks a failing row `FAILED`
+> after one attempt instead of retrying and dead-lettering. Both compose
+> stacks (`sample-loan-origination` and `demo`) now pre-create every `.DLT`
+> companion the check would otherwise warn about. Pinned by
+> `KafkaDeadLetterTopicCheckTest`, `KafkaAckOnFailureIT`,
+> `MaestroSignalListenerContainerConfigTest`, `PostgresWorkflowMessagingTest`,
+> `MaestroPropertiesBindingTest`. The rest of this section is kept as the
+> record of the defect.
 
 **Kind:** Library gap — configuration and documentation, not code.
 **Severity:** Medium. Nothing is lost; the failure mode is a long silence
