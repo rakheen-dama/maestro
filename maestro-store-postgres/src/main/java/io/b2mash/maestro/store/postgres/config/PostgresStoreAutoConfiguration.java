@@ -49,6 +49,12 @@ import javax.sql.DataSource;
         afterName = "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration")
 @ConditionalOnClass(name = "org.postgresql.Driver")
 @ConditionalOnBean(DataSource.class)
+// Audit F8: maestro.enabled=false is documented as the master kill-switch
+// (see MaestroAutoConfiguration), but this class previously had no direct
+// gate on it — it kept registering a real WorkflowStore whenever a
+// DataSource was present. See
+// PostgresStoreAutoConfigurationMaestroDisabledTest.
+@ConditionalOnProperty(prefix = "maestro", name = "enabled", havingValue = "true", matchIfMissing = true)
 @ConditionalOnProperty(prefix = "maestro.store", name = "type", havingValue = "postgres", matchIfMissing = true)
 public class PostgresStoreAutoConfiguration {
 
