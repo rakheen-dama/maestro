@@ -66,6 +66,7 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
     private @Nullable PayloadSerializer serializer;
     private @Nullable RetryExecutor retryExecutor;
     private @Nullable String lockKeyPrefix;
+    private MaestroProperties.@Nullable RetryProperties retryDefaults;
     private EngineObserver observer = EngineObserver.NOOP;
 
     @Override
@@ -100,6 +101,7 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
         retryExecutor = ctx.getBean(RetryExecutor.class);
         var properties = ctx.getBean(MaestroProperties.class);
         lockKeyPrefix = properties.getLock().keyPrefix();
+        retryDefaults = properties.getRetry();
 
         // Optional SPIs — null when not available
         distributedLock = ctx.getBeanProvider(DistributedLock.class).getIfAvailable();
@@ -150,8 +152,10 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
             // Resolve the Spring bean implementing the activity interface
             var activityImpl = ctx.getBean(activityInterface);
 
-            // Build RetryPolicy from the annotation
-            var retryPolicy = RetryPolicy.fromAnnotation(stub.retryPolicy());
+            // Build RetryPolicy from the annotation, or from maestro.retry.default-*
+            // when the annotation was left at its defaults (see resolveRetryPolicy).
+            var retryPolicy = resolveRetryPolicy(stub.retryPolicy(),
+                    Objects.requireNonNull(retryDefaults));
             var timeout = Duration.parse(stub.startToCloseTimeout());
 
             // Create memoizing proxy
@@ -189,6 +193,53 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
             logger.info("Processed @DurableWorkflow bean '{}': injected {} activity proxy(ies)",
                     beanName, injectedCount);
         }
+    }
+
+    /**
+     * Resolves the {@link RetryPolicy} for an {@code @ActivityStub} field.
+     *
+     * <p>The {@link io.b2mash.maestro.core.annotation.RetryPolicy} annotation
+     * cannot distinguish "the author left this at its defaults" from "the
+     * author explicitly chose these exact values" — annotation attributes
+     * always carry a value. So the rule is: if every attribute of {@code
+     * annotation} equals the annotation's own declared default (see {@link
+     * #isAnnotationDefault}), this activity gets the policy built from {@code
+     * maestro.retry.default-*} ({@code defaults}) instead of the engine's
+     * hardcoded {@link RetryPolicy#defaultPolicy()}. Any deviation — even a
+     * single attribute — means the author configured this stub explicitly,
+     * and {@link RetryPolicy#fromAnnotation} applies as before, unaffected by
+     * {@code maestro.retry.*}.
+     *
+     * @param annotation the {@code @ActivityStub}'s {@code retryPolicy()} attribute
+     * @param defaults   the bound {@code maestro.retry.*} properties
+     * @return the retry policy to use for this activity stub
+     */
+    private static RetryPolicy resolveRetryPolicy(
+            io.b2mash.maestro.core.annotation.RetryPolicy annotation,
+            MaestroProperties.RetryProperties defaults) {
+        if (isAnnotationDefault(annotation)) {
+            return new RetryPolicy(
+                    defaults.defaultMaxAttempts(),
+                    defaults.defaultInitialInterval(),
+                    defaults.defaultMaxInterval(),
+                    defaults.defaultBackoffMultiplier(),
+                    List.of(), List.of());
+        }
+        return RetryPolicy.fromAnnotation(annotation);
+    }
+
+    /**
+     * Returns {@code true} if every attribute of {@code a} equals the
+     * declared default of {@link io.b2mash.maestro.core.annotation.RetryPolicy}
+     * — i.e. the {@code @ActivityStub} did not customize its retry policy.
+     */
+    private static boolean isAnnotationDefault(io.b2mash.maestro.core.annotation.RetryPolicy a) {
+        return a.maxAttempts() == 3
+                && "PT1S".equals(a.initialInterval())
+                && "PT1M".equals(a.maxInterval())
+                && a.backoffMultiplier() == 2.0
+                && a.retryableExceptions().length == 0
+                && a.nonRetryableExceptions().length == 0;
     }
 
     /**
