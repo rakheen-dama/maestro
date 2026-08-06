@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 import java.time.Duration;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 /**
  * Manages per-workflow-instance distributed locks
@@ -65,6 +66,17 @@ final class WorkflowInstanceLockManager {
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private volatile @Nullable Thread renewerThread;
 
+    /**
+     * Test seam: builds the (not-yet-started) renewer thread. Package-private
+     * and non-final so a test can replace it with a throwing factory to
+     * exercise the renewer-start failure path from {@link #tryAcquire}
+     * without touching real threads. Defaults to production behaviour — a
+     * virtual thread running {@link #renewLoop} — assigned in the
+     * constructor (after {@code serviceName} is set) rather than as a field
+     * initializer.
+     */
+    Supplier<Thread> renewerThreadStarter;
+
     WorkflowInstanceLockManager(@Nullable DistributedLock distributedLock, String serviceName) {
         this(distributedLock, serviceName, DEFAULT_KEY_PREFIX, DEFAULT_LOCK_TTL, DEFAULT_RENEW_INTERVAL);
     }
@@ -117,6 +129,9 @@ final class WorkflowInstanceLockManager {
         this.ttl = ttl;
         this.renewInterval = renewInterval;
         this.observer = observer;
+        this.renewerThreadStarter = () -> Thread.ofVirtual()
+                .name("maestro-instance-lock-renewer-" + this.serviceName)
+                .unstarted(this::renewLoop);
     }
 
     /**
@@ -202,9 +217,7 @@ final class WorkflowInstanceLockManager {
             return;
         }
         if (renewerStarted.compareAndSet(false, true)) {
-            var thread = Thread.ofVirtual()
-                    .name("maestro-instance-lock-renewer-" + serviceName)
-                    .unstarted(this::renewLoop);
+            var thread = renewerThreadStarter.get();
             renewerThread = thread;
             thread.start();
         }
