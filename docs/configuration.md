@@ -528,11 +528,34 @@ silently corrupt engine topics:
 only supplies a default of `earliest` when the property is unset; an explicit
 value wins.
 
-Boot's own `kafkaTemplate`/`kafkaProducerFactory`/`kafkaConsumerFactory` beans
-are deliberately suppressed in favor of Maestro's byte[]-typed engine beans —
-this is intentional, not a bug, so a service that also needs a general-purpose
-`KafkaTemplate` for its own topics should define one under a different bean
-name.
+Boot's own `kafkaTemplate` / `kafkaProducerFactory` / `kafkaConsumerFactory`
+beans are **deliberately suppressed**: `KafkaMessagingAutoConfiguration`
+registers before `KafkaAutoConfiguration` and satisfies
+`ConditionalOnMissingBean(KafkaTemplate.class)`, so Boot's typed,
+`Object`-valued beans never get created. This is intentional, not a bug —
+Maestro needs exactly one `String`/`byte[]`-typed producer/consumer pair for
+its own topics, and letting Boot's beans coexist would leave two
+`KafkaTemplate`s of overlapping type in the context.
+
+A service that also needs Kafka for its own application traffic has two
+options:
+
+- **Different value type (the common case).** Define your own `KafkaTemplate`
+  bean under a bean name other than `maestroKafkaTemplate` — e.g. one typed
+  `KafkaTemplate<String, YourDto>` with its own `ProducerFactory`. It still
+  reads `spring.kafka.producer.*` for its own settings; only the engine's
+  forced invariants above are specific to `maestroKafkaTemplate`.
+- **Same `byte[]` traffic.** Inject and reuse `maestroKafkaTemplate` /
+  `maestroKafkaProducerFactory` directly rather than standing up a second
+  client.
+
+Observation (Micrometer spans on send/receive) on `maestroKafkaTemplate` and
+the `@MaestroSignalListener` consumer containers defaults **on** when a
+`Tracer` bean is present and **off** otherwise; an explicit
+`spring.kafka.template.observation-enabled` / `.listener.observation-enabled`
+value always wins over that default. See
+[`docs/observability.md` § Cross-service trace propagation (Kafka)](observability.md#cross-service-trace-propagation-kafka)
+for the full contract.
 
 ### Pre-creating Topics
 
