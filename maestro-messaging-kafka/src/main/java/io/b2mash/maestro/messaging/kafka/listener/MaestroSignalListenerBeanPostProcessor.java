@@ -2,6 +2,7 @@ package io.b2mash.maestro.messaging.kafka.listener;
 
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.messaging.kafka.KafkaRedeliveryErrorHandlers;
+import io.b2mash.maestro.messaging.kafka.KafkaTracePropagation;
 import io.b2mash.maestro.spring.annotation.MaestroSignalListener;
 import io.b2mash.maestro.spring.annotation.SignalRouting;
 import io.b2mash.maestro.spring.config.MaestroProperties;
@@ -133,18 +134,21 @@ public class MaestroSignalListenerBeanPostProcessor
         var ctx = Objects.requireNonNull(applicationContext,
                 "ApplicationContext not set — was setApplicationContext() called?");
 
-        var consumerFactory = (ConsumerFactory<String, byte[]>) ctx.getBean(ConsumerFactory.class);
+        var consumerFactory = resolveConsumerFactory(ctx);
         var executor = ctx.getBean(WorkflowExecutor.class);
         var objectMapper = ctx.getBean(ObjectMapper.class);
         var baseGroup = resolveBaseConsumerGroup(ctx);
         var kafkaTemplate = resolveKafkaTemplate(ctx);
         var redelivery = ctx.getBean(MaestroProperties.class).getMessaging().redelivery();
+        var tracePropagation = ctx.getBeanProvider(KafkaTracePropagation.class).getIfAvailable();
+        var listenerObservation = ctx.getEnvironment()
+                .getProperty("spring.kafka.listener.observation-enabled", Boolean.class);
 
         logger.info("Activating {} @MaestroSignalListener registration(s)", registrations.size());
 
         for (var reg : registrations) {
-            var container = createListenerContainer(
-                    reg, consumerFactory, executor, objectMapper, baseGroup, kafkaTemplate, redelivery);
+            var container = createListenerContainer(reg, consumerFactory, executor, objectMapper, baseGroup,
+                    kafkaTemplate, redelivery, tracePropagation, listenerObservation);
             containers.add(container);
             container.start();
 
@@ -173,6 +177,19 @@ public class MaestroSignalListenerBeanPostProcessor
             }
         }
         containers.clear();
+    }
+
+    /**
+     * The consumer containers started by {@link #afterSingletonsInstantiated()}.
+     *
+     * <p>Package-visible for {@code MaestroSignalListenerContainerConfigTest} —
+     * no production caller needs container-level access, so this is
+     * deliberately not public API.
+     *
+     * @return an immutable snapshot of the active containers
+     */
+    List<ConcurrentMessageListenerContainer<String, byte[]>> containersForTesting() {
+        return List.copyOf(containers);
     }
 
     // ── Internal helpers ─────────────────────────���───────────────────────
@@ -204,7 +221,9 @@ public class MaestroSignalListenerBeanPostProcessor
             ObjectMapper objectMapper,
             String baseGroup,
             KafkaOperations<String, byte[]> kafkaTemplate,
-            MaestroProperties.RedeliveryProperties redelivery
+            MaestroProperties.RedeliveryProperties redelivery,
+            @Nullable KafkaTracePropagation tracePropagation,
+            @Nullable Boolean listenerObservation
     ) {
         var groupId = reg.groupIdSuffix().isEmpty()
                 ? baseGroup
@@ -213,8 +232,21 @@ public class MaestroSignalListenerBeanPostProcessor
         var containerProps = new ContainerProperties(reg.topic());
         containerProps.setGroupId(groupId);
         containerProps.setAckMode(ContainerProperties.AckMode.RECORD);
-        containerProps.setMessageListener(
-                (MessageListener<String, byte[]>) record -> handleMessage(record.value(), reg, executor, objectMapper));
+        // Same rule as KafkaMessagingAutoConfiguration.observationEnabled — an
+        // explicit spring.kafka.listener.observation-enabled always wins,
+        // otherwise observation defaults on exactly when tracing is wired.
+        // Duplicated rather than shared across packages: see that method's
+        // Javadoc for why.
+        containerProps.setObservationEnabled(
+                listenerObservation != null ? listenerObservation : tracePropagation != null);
+        containerProps.setMessageListener((MessageListener<String, byte[]>) record -> {
+            if (tracePropagation != null) {
+                tracePropagation.runWithExtractedContext(record.headers(),
+                        () -> handleMessage(record.value(), reg, executor, objectMapper));
+            } else {
+                handleMessage(record.value(), reg, executor, objectMapper);
+            }
+        });
 
         var container = new ConcurrentMessageListenerContainer<>(consumerFactory, containerProps);
         // Without this the default error handler logs and skips once its
@@ -244,6 +276,23 @@ public class MaestroSignalListenerBeanPostProcessor
             return (KafkaOperations<String, byte[]>) ctx.getBean("maestroKafkaTemplate", KafkaOperations.class);
         }
         return (KafkaOperations<String, byte[]>) ctx.getBean(KafkaTemplate.class);
+    }
+
+    /**
+     * Resolves the consumer factory used to build listener containers.
+     *
+     * <p>Maestro's own factory is looked up by name first (finding F3), so an
+     * application that defines additional {@code ConsumerFactory} beans of its
+     * own does not make the by-type lookup ambiguous — mirroring
+     * {@link #resolveKafkaTemplate}.
+     */
+    @SuppressWarnings("unchecked")
+    private static ConsumerFactory<String, byte[]> resolveConsumerFactory(ApplicationContext ctx) {
+        if (ctx.containsBean("maestroKafkaConsumerFactory")) {
+            return (ConsumerFactory<String, byte[]>)
+                    ctx.getBean("maestroKafkaConsumerFactory", ConsumerFactory.class);
+        }
+        return (ConsumerFactory<String, byte[]>) ctx.getBean(ConsumerFactory.class);
     }
 
     private void handleMessage(
