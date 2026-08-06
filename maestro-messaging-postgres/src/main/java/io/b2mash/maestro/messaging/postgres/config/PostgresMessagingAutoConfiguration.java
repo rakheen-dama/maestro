@@ -48,6 +48,15 @@ import java.time.Duration;
 @NullMarked
 @AutoConfiguration(after = MaestroAutoConfiguration.class)
 @ConditionalOnClass(name = "org.postgresql.PGConnection")
+// Audit F8: maestro.enabled=false is documented as the master kill-switch
+// (see MaestroAutoConfiguration), but this class previously had no direct
+// gate on it — it kept wiring a real PostgresNotificationListener (a live
+// LISTEN/NOTIFY connection) and crashed resolving MaestroProperties (a bean
+// only MaestroAutoConfiguration registers) once the engine itself had
+// backed off. See PostgresMessagingAutoConfigurationMaestroDisabledTest.
+// (Boot 4's @ConditionalOnProperty is @Repeatable — see OnPropertyCondition
+// — so stacking it here composes as AND with the property gate below.)
+@ConditionalOnProperty(prefix = "maestro", name = "enabled", havingValue = "true", matchIfMissing = true)
 @ConditionalOnProperty(prefix = "maestro.messaging", name = "type", havingValue = "postgres")
 public class PostgresMessagingAutoConfiguration {
 
