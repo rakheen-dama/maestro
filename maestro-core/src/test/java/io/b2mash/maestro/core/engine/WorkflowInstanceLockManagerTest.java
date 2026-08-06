@@ -117,6 +117,29 @@ class WorkflowInstanceLockManagerTest {
     }
 
     @Test
+    @DisplayName("renewer-start failure does not misreport ACQUIRED as NO_BACKEND — lock is already held")
+    void renewerStartFailureStillReportsAcquired() {
+        var lock = new RecordingLock();
+        manager = new WorkflowInstanceLockManager(lock, "svc", SHORT_TTL, SHORT_RENEW);
+        manager.renewerThreadStarter = () -> {
+            throw new RuntimeException("simulated renewer-start failure");
+        };
+
+        var result = manager.tryAcquire("order-1");
+
+        assertTrue(manager.isHeld("order-1"),
+                "the lock IS held locally regardless of what tryAcquire reports — "
+                        + "reporting NO_BACKEND here would make the caller skip release()");
+        assertEquals(Acquisition.ACQUIRED, result,
+                "a renewer-start failure must not be reported as NO_BACKEND while the lock is held");
+
+        // release must still work end-to-end after a renewer-start failure.
+        manager.release("order-1");
+        assertFalse(manager.isHeld("order-1"));
+        assertEquals(1, lock.released.size());
+    }
+
+    @Test
     @DisplayName("release removes the handle and releases at the backend")
     void releaseRemovesAndCallsBackend() {
         var lock = new RecordingLock();

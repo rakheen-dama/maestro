@@ -156,17 +156,23 @@ final class WorkflowInstanceLockManager {
                 return Acquisition.HELD_ELSEWHERE;
             }
             heldLocks.put(workflowId, handle.get());
-            startRenewerIfNeeded();
         } catch (Exception e) {
             logger.warn("Instance lock backend unavailable for workflow '{}' — proceeding unlocked: {}",
                     workflowId, e.getMessage());
             return Acquisition.NO_BACKEND;
         }
         // Deliberately outside the backend try: the lock IS held from the
-        // heldLocks.put() above, so a throwing observer must never be reported
-        // as NO_BACKEND — the caller would then skip release() and this node
-        // would renew a lock nobody releases, making the workflowId
-        // permanently unacquirable here and blocked cluster-wide.
+        // heldLocks.put() above, so neither a renewer-start failure nor a
+        // throwing observer may be reported as NO_BACKEND — the caller would
+        // then skip release() and this node would renew a lock nobody
+        // releases, making the workflowId permanently unacquirable here and
+        // blocked cluster-wide.
+        try {
+            startRenewerIfNeeded();
+        } catch (Exception e) {
+            logger.error("Instance lock renewer failed to start for '{}' — lock will expire via TTL: {}",
+                    workflowId, e.getMessage(), e);
+        }
         emit("instanceLockAcquired", workflowId, () -> observer.instanceLockAcquired(workflowId));
         return Acquisition.ACQUIRED;
     }
