@@ -100,6 +100,11 @@ extensions).
 (F6/F8/F10 entries + renewer note added; Issue 22/23/24/Valkey entries
 verified present, no duplicates).
 
+## Follow-ups from open-issues cycle final review
+
+- [ ] **L1:** Wire-level IT asserting `traceparent` header on records published through the observed `maestroKafkaTemplate` (configuration-level pin exists; extraction/persistence half is wire-pinned by `SignalListenerTraceContextIT`).
+- [ ] **L3:** Issue-22 exhaustion rethrow path escapes `executeWorkflow` without `emitRunAbandoned`; align with F4 every-run-emits-terminal-observation convention on this rare (5-consecutive-lost-CAS) path.
+
 # Milestone: Demo — runbook, observability stack, live versioning story
 
 Spec: `docs/superpowers/specs/2026-08-03-maestro-demo-design.md`. Plan: `docs/superpowers/plans/2026-08-04-maestro-demo.md`. Domain: `demo/DOMAIN-BRIEF.md`. Branch: `worktree-demo` off main @ 945ccb4. 95+ commits, 107 files.

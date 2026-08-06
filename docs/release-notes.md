@@ -220,6 +220,17 @@ sites so the two cannot drift apart unnoticed again.
   configured instead of the deprecated-alias default.
 - **Was:** audit finding F10.
 
+### Fixed — PostgresStoreAutoConfiguration now orders after JNDI and XA DataSource auto-configurations
+
+The store bean definition must be contributed before `MaestroAutoConfiguration` runs (the engine is guarded with `@ConditionalOnBean(WorkflowStore.class)`). Previously it was ordered only relative to the base `DataSourceAutoConfiguration`, so a deployment using JNDI or XA DataSources (which have separate, later auto-configurations) could find itself without a store bean — the engine would silently back off, appearing fully configured but completely inactive.
+
+- `PostgresStoreAutoConfiguration` now orders after
+  `JndiDataSourceAutoConfiguration` and `XADataSourceAutoConfiguration` as
+  well, ensuring the store activates regardless of how the `DataSource` is
+  configured. No action required; the fix is purely ordinal and touches no
+  runtime code paths.
+- **Was:** audit finding F9.
+
 ### Added — Observability: Micrometer meters and OpenTelemetry tracing
 
 Full reference: [`docs/observability.md`](observability.md).
