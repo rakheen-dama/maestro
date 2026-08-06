@@ -11,6 +11,95 @@ Branch: `worktree-open-issues-cycle`. SDD: `.superpowers/sdd/2026-08-06-open-iss
   uses the fixed, version-independent name `loan-application-v2.jar`. The
   handover text describing this as still-hardcoded was stale.
 
+## Cycle summary (2026-08-06)
+
+**Issues closed this cycle:**
+- [x] Issue 23 (Critical) — Kafka bean shadowing + missing trace context, both
+  parts fixed: engine producer/consumer factories now built from
+  `spring.kafka.*` (`a4606ec`, explicit `beforeName = KafkaAutoConfiguration`
+  ordering), Kafka observation defaults on when a `Tracer` + `Propagator`
+  both exist and tracing is enabled (`2ccbe49`), `@MaestroSignalListener`
+  containers extract inbound `traceparent` + resolve `ConsumerFactory` by
+  name (`472e87d`, closes audit F3 too). Sample-level
+  `ObservedKafkaTemplateConfig` workaround deleted (`dc434ea`);
+  `docs/observability.md`'s scope-limit paragraph retracted (`0486212`,
+  `c60cfd7`). Resolved callout + property-table `ConsumerFactory` row added
+  in `docs/open-issues.md` §Issue 23.
+- [x] Issue 24 (Medium) — redelivery/`.DLT` gap: docs checklist, warn-only
+  `KafkaDeadLetterTopicCheck` startup probe, `maestro.messaging.redelivery.enabled`
+  off switch. Callout verified accurate against current wiring (already
+  added by a prior task this cycle); dedup refactor into
+  `KafkaDeadLetterTopicCheck.warnOnMissing(ConsumerFactory, ...)` confirmed
+  current.
+- [x] Issue 22 (Medium) — terminate-racing-compensation: `SagaManager
+  .transitionToCompensating` now a bounded retry against a fresh read with
+  the terminal guard re-evaluated every attempt, rethrowing on exhaustion
+  instead of swallowing. Callout verified accurate (already added by a
+  prior task); body historicized per the Task-6 routed minor (past tense,
+  pre-fix line numbers marked as such, "How it was tackled" reconciled with
+  the shipped exhaustion policy).
+- [x] Issue 16 (Medium) — verified the 2026-08-06 ruling callout is present
+  and accurate (guard is the supported behaviour, no relaunch direction
+  planned); §4 index row updated from "Open, guarded" to "Open — ruled,
+  guard is the supported behaviour".
+
+**New issues filed:**
+- [x] Issue 25 (Medium, open) — `maestro.worker.*` documented, bound
+  (`MaestroProperties.java:343-362`), zero consumers (audit F7). Interim fix
+  landed this cycle: `docs/configuration.md` §Worker Configuration now opens
+  with a "not yet implemented" warning. Product decision (implement
+  task-queue concurrency vs. retract the docs) left open.
+- [x] Issue 26 (Medium, open) — terminal instance-status write
+  (`WorkflowExecutor.java:1812`) and terminal event append
+  (`WorkflowExecutor.java:1911`) are two non-transactional store calls.
+  Proposed `WorkflowStore.finaliseInstance(instance, terminalEvent)`
+  both-or-neither SPI contract. Explicit warning against the
+  append-then-status reordering trap: it would move a crash window from
+  "log incomplete" (current, safe — `getRecoverableInstances()` excludes a
+  terminal-status row) to "workflow re-invoked" (worse — the row would stay
+  `isActive()` and a second runner would resume and re-execute it).
+  Deferred item from the demo-cycle handover, now has a tracked issue.
+
+**Audit fixes landed (`tasks/audit-2026-08-05-inert-config.md`):**
+- [x] F3 — `MaestroSignalListenerBeanPostProcessor` `ConsumerFactory` lookup
+  now resolves by name first (`472e87d`)
+- [x] F5 — Valkey lock honours `spring.data.redis.host/port/password/username/ssl.enabled/database`
+  (`a441e68` fix, `859d4bf` docs)
+- [x] F6 — `maestro.retry.default-*` now wired into `@ActivityStub`'s
+  default retry policy (`9aa0eeb` fix, `dc0e043` docs); release note added
+- [x] F8 — `maestro.enabled=false` now gates every Maestro auto-configuration
+  (`9bcf8b3`, `c4ad311`, `18ee94a`, `b1d3b61`, `93f08d6`, `0d8ac6a`,
+  `f5e55f8`); release note + `docs/configuration.md` cross-module note added
+- [x] F9 — `PostgresStoreAutoConfiguration` orders after JNDI/XA DataSource
+  auto-configs too (`b4810eb`)
+- [x] F10 — `maestro-admin-client` honours the canonical
+  `maestro.messaging.topics.admin-events` property, not just the deprecated
+  alias (`7adb8b7` fix, `eea7d8d` docs); release note added
+- [x] `maestro.workflow-packages` documented in `docs/configuration.md`
+  Root Properties (was consumed but undocumented, F11 doc gap)
+
+**Inherited fix (not from the audit):**
+- [x] Lock renewer-start failure no longer misreported as `NO_BACKEND` with
+  the lock held (`09ec6de`), and no longer permanently latches renewer
+  startup off after one failure (`280c96c`) — one-line release note added
+  (internal resilience, no config/API surface change).
+
+**Pins added this cycle:** `KafkaMessagingAutoConfigurationPropertiesTest`
+(beforeName ordering, `spring.kafka.*` precedence, auto-offset-reset vs
+engine `group.id`), `SignalListenerTraceContextIT` (real-broker traceparent
+survival), `SagaManagerTerminateRaceTest` (Issue 22, deterministic
+interposed-store race), `KafkaDeadLetterTopicCheckTest`,
+`MaestroSignalListenerContainerConfigTest`, plus the audit fixes' own
+behavioural pins (`MaestroAutoConfigurationConfigSeamsTest` for F6,
+per-module disabled-context tests for F8, `MaestroPropertiesBindingTest`
+extensions).
+
+**Docs updated:** `docs/open-issues.md` (§4 index, Issues 16/22/23/24/25/26),
+`docs/configuration.md` (worker warning, `maestro.workflow-packages` row,
+`maestro.enabled` cross-module note), `docs/release-notes.md` Unreleased
+(F6/F8/F10 entries + renewer note added; Issue 22/23/24/Valkey entries
+verified present, no duplicates).
+
 # Milestone: Demo — runbook, observability stack, live versioning story
 
 Spec: `docs/superpowers/specs/2026-08-03-maestro-demo-design.md`. Plan: `docs/superpowers/plans/2026-08-04-maestro-demo.md`. Domain: `demo/DOMAIN-BRIEF.md`. Branch: `worktree-demo` off main @ 945ccb4. 95+ commits, 107 files.
