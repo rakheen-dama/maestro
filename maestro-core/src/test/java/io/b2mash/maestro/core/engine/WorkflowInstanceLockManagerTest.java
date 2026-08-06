@@ -140,6 +140,34 @@ class WorkflowInstanceLockManagerTest {
     }
 
     @Test
+    @DisplayName("renewer-start failure resets the latch so the next acquisition retries starting the renewer")
+    void renewerStartFailureResetsLatchForNextAcquisition() {
+        var lock = new RecordingLock();
+        manager = new WorkflowInstanceLockManager(lock, "svc", SHORT_TTL, SHORT_RENEW);
+        // Capture the real (production) starter before overwriting it, so it
+        // can be swapped back in below.
+        var workingStarter = manager.renewerThreadStarter;
+
+        manager.renewerThreadStarter = () -> {
+            throw new RuntimeException("simulated renewer-start failure");
+        };
+        assertEquals(Acquisition.ACQUIRED, manager.tryAcquire("order-1"));
+        assertTrue(manager.isHeld("order-1"));
+
+        // Swap back to a working starter and acquire a second, independent
+        // lock. If startRenewerIfNeeded() left its latch burned after the
+        // first failure, compareAndSet(false, true) here would still see
+        // renewerStarted == true, the working starter would never even run,
+        // and no lock on this node would ever be renewed again for the
+        // life of the process.
+        manager.renewerThreadStarter = workingStarter;
+        assertEquals(Acquisition.ACQUIRED, manager.tryAcquire("order-2"));
+
+        await().atMost(Duration.ofSeconds(2)).until(() ->
+                lock.renewCounts.getOrDefault("maestro:lock:workflow:order-2", new AtomicInteger()).get() >= 1);
+    }
+
+    @Test
     @DisplayName("release removes the handle and releases at the backend")
     void releaseRemovesAndCallsBackend() {
         var lock = new RecordingLock();
