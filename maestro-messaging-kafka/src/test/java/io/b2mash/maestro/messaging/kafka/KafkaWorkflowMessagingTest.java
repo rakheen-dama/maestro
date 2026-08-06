@@ -9,9 +9,15 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
+import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
+import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.util.backoff.FixedBackOff;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -306,6 +312,56 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
                             "Message sent after failure should still be processed — consumer must still be running"));
 
             messaging.destroy();
+        }
+    }
+
+    // ── Redelivery flag (engine channel) ────────────────────────────────
+
+    @Nested
+    @DisplayName("maestro.messaging.redelivery.enabled=false (engine channel)")
+    class RedeliveryFlagTests {
+
+        @Test
+        @DisplayName("installs a zero-retry handler with no dead-letter recoverer")
+        void redeliveryDisabled_installsZeroRetryHandlerWithNoDeadLetterRecoverer() throws Exception {
+            var disabledConfig = new KafkaMessagingConfig(
+                    null, "flagoff-" + testSuffix, "maestro.admin.events." + testSuffix,
+                    "test-group-flagoff-" + testSuffix,
+                    2, Duration.ofMillis(50), 2.0, Duration.ofMillis(200), ".DLT",
+                    false); // redeliveryEnabled
+            var disabledMessaging = new KafkaWorkflowMessaging(
+                    kafkaTemplate, consumerFactory, objectMapper, disabledConfig);
+
+            try {
+                disabledMessaging.subscribeSignals("svc-flagoff-" + testSuffix, message -> { });
+
+                @SuppressWarnings("unchecked")
+                var containers = (List<ConcurrentMessageListenerContainer<String, byte[]>>)
+                        ReflectionTestUtils.getField(disabledMessaging, "containers");
+                assertEquals(1, containers.size());
+
+                var handler = containers.get(0).getCommonErrorHandler();
+                assertInstanceOf(DefaultErrorHandler.class, handler);
+
+                // FailedRecordProcessor (DefaultErrorHandler's superclass) has no public
+                // getter for its tracker's recoverer/backOff — reflection is the only way
+                // to pin the actual handler shape from outside the package. Mirrors
+                // MaestroSignalListenerContainerConfigTest's equivalent pin for the
+                // @MaestroSignalListener path.
+                var tracker = ReflectionTestUtils.getField(handler, "failureTracker");
+                var recoverer = ReflectionTestUtils.getField(tracker, "recoverer");
+                assertFalse(recoverer instanceof DeadLetterPublishingRecoverer,
+                        "redelivery disabled must not install a DeadLetterPublishingRecoverer — "
+                                + "nothing should ever try to publish to a .DLT topic");
+
+                var backOff = ReflectionTestUtils.getField(tracker, "backOff");
+                assertInstanceOf(FixedBackOff.class, backOff);
+                var fixedBackOff = (FixedBackOff) backOff;
+                assertEquals(0L, fixedBackOff.getInterval());
+                assertEquals(0L, fixedBackOff.getMaxAttempts());
+            } finally {
+                disabledMessaging.destroy();
+            }
         }
     }
 
