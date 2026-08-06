@@ -47,6 +47,12 @@ import org.springframework.core.env.Environment;
  */
 @AutoConfiguration(after = MaestroAutoConfiguration.class)
 @ConditionalOnClass(RedisClient.class)
+// Audit F8: maestro.enabled=false is documented as the master kill-switch
+// (see MaestroAutoConfiguration), but this class previously had no direct
+// gate on it — it kept wiring a real RedisClient and opening live Valkey
+// connections regardless of the flag. See
+// ValkeyLockAutoConfigurationMaestroDisabledTest.
+@ConditionalOnProperty(prefix = "maestro", name = "enabled", havingValue = "true", matchIfMissing = true)
 @ConditionalOnProperty(prefix = "maestro.lock", name = "type", havingValue = "valkey", matchIfMissing = true)
 public class ValkeyLockAutoConfiguration {
 
