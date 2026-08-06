@@ -275,59 +275,32 @@ consumes it, B's parked workflow resumes and runs activities — renders as **on
 connected trace**. The contract is pinned by tests, not inherited from transport
 defaults.
 
-> ### Scope limit — read this before relying on it
->
-> **That promise holds for the `maestro.tasks.*` and `maestro.signals.*` topics
-> the engine itself owns. It does not hold for your own domain topics**, and
-> most cross-service applications route their business events over their own
-> topics.
->
-> `KafkaTracePropagation` is wired into `KafkaWorkflowMessaging`, which only
-> handles the engine's topics. If your service publishes with an injected
-> `KafkaTemplate` and consumes with `@KafkaListener` — or with
-> `@MaestroSignalListener` on a topic of your own — nothing injects
-> `traceparent` for you today, and each service opens a **fresh root trace**.
-> The symptom is deceptive: every service reports to your tracing backend and
-> shows plenty of traces, but no trace ever spans more than one service.
->
-> Two separate causes, both tracked as
-> [Issue 23](open-issues.md#issue-23):
->
-> 1. **Producer.** The obvious lever,
->    `spring.kafka.template.observation-enabled`, is **inert in every Maestro +
->    Kafka application**. Boot's `kafkaTemplate` bean is
->    `@ConditionalOnMissingBean(KafkaTemplate.class)`, and Maestro's
->    `maestroKafkaTemplate` shadows it by type, so the property binds and does
->    nothing. The same is true of `spring.kafka.producer.*`.
-> 2. **Consumer.** `@MaestroSignalListener` hand-builds its container and passes
->    only the record's value to the handler, so an inbound `traceparent` is
->    never extracted and the signal row is persisted with `trace_context = NULL`
->    — even on the engine's own topics.
->
-> **What to do today.** Define your own bean *named* `maestroKafkaTemplate`
-> with observation enabled; Maestro's is
-> `@ConditionalOnMissingBean(name = "maestroKafkaTemplate")`, so yours wins and
-> engine and application traffic share one observed template:
->
-> ```java
-> @Bean
-> public KafkaTemplate<String, byte[]> maestroKafkaTemplate(
->         ProducerFactory<String, byte[]> maestroKafkaProducerFactory) {
->     var template = new KafkaTemplate<>(maestroKafkaProducerFactory);
->     template.setObservationEnabled(true);
->     return template;
-> }
-> ```
->
-> Also set `spring.kafka.listener.observation-enabled=true` so plain
-> `@KafkaListener` consumers continue the trace rather than starting a new one.
-> Worked example:
-> `maestro-samples/sample-loan-origination/*/src/main/java/.../config/ObservedKafkaTemplateConfig.java`.
-> This fixes the producer side; cause 2 has no user-side workaround, so
-> `trace_context` stays NULL until Issue 23 is fixed.
->
-> For how services are meant to be composed in the first place, see
-> [cross-service.md](cross-service.md).
+The promise now covers Kafka traffic generally, not only the engine's own
+`maestro.tasks.*` / `maestro.signals.*` topics — see the contract below and
+[Issue 23](open-issues.md#issue-23) for the history (it was previously scoped
+narrower than this).
+
+**Producer side.** `maestroKafkaTemplate` observation is **on by default
+whenever a `Tracer` bean is present** — no per-service config needed. An
+explicit `spring.kafka.template.observation-enabled` value always overrides the
+default in either direction. Set it to `false` to opt out (e.g. no tracing
+backend is wired but a `Tracer` no-op bean still exists). See
+[`docs/configuration.md` § Kafka client configuration](configuration.md#kafka-client-configuration)
+for how `maestroKafkaTemplate` is built and how to add your own `KafkaTemplate`
+for application traffic with different value types.
+
+**Consumer side.** `@MaestroSignalListener` extracts the inbound `traceparent`
+(plus `tracestate` / `baggage`) from record headers on every message via
+`KafkaTracePropagation`, independent of whether the container's own Micrometer
+observation is enabled — so the signal row's `trace_context` is populated even
+when `spring.kafka.listener.observation-enabled=false`. The container's
+*own* observation span (`ConcurrentMessageListenerContainer`'s spring-kafka
+instrumentation, separate from the header extraction above) follows the same
+on-by-default-with-a-`Tracer` rule as the producer side, and
+`spring.kafka.listener.observation-enabled` overrides it the same way.
+
+For how services are meant to be composed in the first place, see
+[cross-service.md](cross-service.md).
 
 ### Wire contract
 
