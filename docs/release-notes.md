@@ -125,12 +125,24 @@ working now do:
 - **The sample-level observed-template workaround is gone.** The three
   identical bean-shadowing config classes previously shipped in
   `sample-loan-origination`'s services (a hand-rolled `maestroKafkaTemplate`
-  bean with observation forced on), and the explicit
-  `spring.kafka.producer.*-serializer` / `spring.kafka.consumer.*-deserializer`
-  entries in the Kafka samples' `application.yml` files, are removed — the
-  engine now applies both without any per-service code. If your own service
-  copied that pattern, you can delete it too: a bean named
-  `maestroKafkaTemplate` still wins by
+  bean with observation forced on) are removed — the engine now applies
+  observation defaults without any per-service code. The explicit
+  `spring.kafka.producer.*-serializer` entries are also removed from every
+  Kafka sample's `application.yml`, since all producer traffic in these
+  samples goes through the one `KafkaTemplate<String, byte[]>` in the context
+  (Maestro's own), which forces those regardless. The
+  `spring.kafka.consumer.*-deserializer` entries are removed only where a
+  service's *only* Kafka consumer is `@MaestroSignalListener`
+  (`sample-order-service`, `loan-application-service`) — that path always
+  resolves Maestro's own `maestroKafkaConsumerFactory`, which forces the same
+  invariants. Services that also have a plain `@KafkaListener`
+  (`underwriting-service`, `verification-gateway-service`,
+  `sample-payment-gateway`) keep their `spring.kafka.consumer.*-deserializer`
+  entries — those back Boot's own `kafkaListenerContainerFactory`, which
+  Maestro's forced invariants do not reach, so removing them broke that
+  listener outright (caught by the loan sample's end-to-end suite). If your
+  own service copied the workaround pattern, you can delete it too: a bean
+  named `maestroKafkaTemplate` still wins by
   `@ConditionalOnMissingBean(name = "maestroKafkaTemplate")` if you keep one,
   but it is no longer necessary to get a connected trace.
 - **Was:** [Issue 23](open-issues.md#issue-23).
