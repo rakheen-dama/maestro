@@ -53,7 +53,8 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
                 Duration.ofMillis(50),
                 2.0,
                 Duration.ofMillis(200),
-                ".DLT"
+                ".DLT",
+                true
         );
     }
 

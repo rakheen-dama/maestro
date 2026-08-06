@@ -17,8 +17,11 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.core.ConsumerFactory;
+import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.MessageListener;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.util.backoff.FixedBackOff;
 import tools.jackson.databind.ObjectMapper;
 
 import java.nio.charset.StandardCharsets;
@@ -149,6 +152,37 @@ class MaestroSignalListenerContainerConfigTest {
                     // not just that runWithExtractedContext was called.
                     var executor = ctx.getBean(WorkflowExecutor.class);
                     verify(executor).deliverSignal(eq("wf-hello"), eq("test.signal"), any());
+                });
+    }
+
+    @Test
+    @DisplayName("maestro.messaging.redelivery.enabled=false installs a zero-retry handler with no dead-letter recoverer")
+    void redeliveryDisabled_installsZeroRetryHandlerWithNoDeadLetterRecoverer() {
+        runner.withPropertyValues("maestro.messaging.redelivery.enabled=false")
+                .run(ctx -> {
+                    assertThat(ctx).hasNotFailed();
+                    var bpp = ctx.getBean(MaestroSignalListenerBeanPostProcessor.class);
+                    var containers = bpp.containersForTesting();
+                    assertThat(containers).hasSize(1);
+
+                    var handler = containers.get(0).getCommonErrorHandler();
+                    assertThat(handler).isInstanceOf(DefaultErrorHandler.class);
+
+                    // FailedRecordProcessor (DefaultErrorHandler's superclass) has no public
+                    // getter for its tracker's recoverer/backOff — reflection is the only way
+                    // to pin the actual handler shape from outside the package.
+                    var tracker = ReflectionTestUtils.getField(handler, "failureTracker");
+                    var recoverer = ReflectionTestUtils.getField(tracker, "recoverer");
+                    assertThat(recoverer)
+                            .as("redelivery disabled must not install a DeadLetterPublishingRecoverer — "
+                                    + "nothing should ever try to publish to a .DLT topic")
+                            .isNotInstanceOf(DeadLetterPublishingRecoverer.class);
+
+                    var backOff = ReflectionTestUtils.getField(tracker, "backOff");
+                    assertThat(backOff).isInstanceOf(FixedBackOff.class);
+                    var fixedBackOff = (FixedBackOff) backOff;
+                    assertThat(fixedBackOff.getInterval()).isZero();
+                    assertThat(fixedBackOff.getMaxAttempts()).isZero();
                 });
     }
 

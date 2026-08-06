@@ -1,11 +1,15 @@
 package io.b2mash.maestro.messaging.kafka.listener;
 
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
+import io.b2mash.maestro.messaging.kafka.KafkaDeadLetterTopicCheck;
 import io.b2mash.maestro.messaging.kafka.KafkaRedeliveryErrorHandlers;
 import io.b2mash.maestro.messaging.kafka.KafkaTracePropagation;
 import io.b2mash.maestro.spring.annotation.MaestroSignalListener;
 import io.b2mash.maestro.spring.annotation.SignalRouting;
 import io.b2mash.maestro.spring.config.MaestroProperties;
+import org.apache.kafka.clients.admin.Admin;
+import org.apache.kafka.clients.admin.AdminClientConfig;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,12 +26,15 @@ import org.springframework.kafka.core.KafkaOperations;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
 import org.springframework.kafka.listener.ContainerProperties;
+import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.listener.MessageListener;
+import org.springframework.util.backoff.FixedBackOff;
 import tools.jackson.databind.ObjectMapper;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -62,7 +69,11 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * record with exponential backoff and, once the attempt budget is spent,
  * publishes it to {@code <topic>} + the configured dead-letter suffix. A signal
  * is therefore never acknowledged unprocessed, and a poison record is parked
- * rather than skipped or looped on forever.
+ * rather than skipped or looped on forever. Setting
+ * {@code maestro.messaging.redelivery.enabled=false} is the operator's
+ * explicit opt-out of all of that: the container gets a zero-retry error
+ * handler with no dead-letter publishing instead, restoring at-most-once
+ * handler semantics, and the dead-letter-topic startup probe below is skipped.
  *
  * <h2>Thread Safety</h2>
  * <p>Scanning happens on the Spring initialization thread. Consumer containers
@@ -249,18 +260,52 @@ public class MaestroSignalListenerBeanPostProcessor
         });
 
         var container = new ConcurrentMessageListenerContainer<>(consumerFactory, containerProps);
-        // Without this the default error handler logs and skips once its
-        // retries are exhausted — the offset is committed and the signal is
-        // gone. A poison record must be parked on the dead-letter topic
-        // instead, where it stays inspectable and replayable.
-        container.setCommonErrorHandler(KafkaRedeliveryErrorHandlers.deadLettering(
-                kafkaTemplate,
-                redelivery.maxAttempts(),
-                redelivery.initialInterval(),
-                redelivery.multiplier(),
-                redelivery.maxInterval(),
-                redelivery.deadLetterSuffix()));
+        if (redelivery.enabled()) {
+            // Without this the default error handler logs and skips once its
+            // retries are exhausted — the offset is committed and the signal is
+            // gone. A poison record must be parked on the dead-letter topic
+            // instead, where it stays inspectable and replayable.
+            container.setCommonErrorHandler(KafkaRedeliveryErrorHandlers.deadLettering(
+                    kafkaTemplate,
+                    redelivery.maxAttempts(),
+                    redelivery.initialInterval(),
+                    redelivery.multiplier(),
+                    redelivery.maxInterval(),
+                    redelivery.deadLetterSuffix()));
+            checkDeadLetterTopic(consumerFactory, reg.topic(), redelivery.deadLetterSuffix());
+        } else {
+            // maestro.messaging.redelivery.enabled=false: the operator's explicit
+            // choice to restore at-most-once handler semantics — zero retries, no
+            // DeadLetterPublishingRecoverer, a failing record is logged and skipped.
+            container.setCommonErrorHandler(new DefaultErrorHandler(new FixedBackOff(0L, 0L)));
+        }
         return container;
+    }
+
+    /**
+     * Warns at activation time if this listener's dead-letter companion does
+     * not exist. See {@link KafkaDeadLetterTopicCheck} for the full contract;
+     * never throws.
+     *
+     * @param consumerFactory  the factory whose bootstrap servers the probe's
+     *                         {@link Admin} client is built from
+     * @param topic            the source topic the listener consumes
+     * @param deadLetterSuffix appended to {@code topic} to name its
+     *                         dead-letter companion
+     */
+    private void checkDeadLetterTopic(
+            ConsumerFactory<String, byte[]> consumerFactory, String topic, String deadLetterSuffix
+    ) {
+        var props = new HashMap<String, Object>();
+        var bootstrapServers = consumerFactory.getConfigurationProperties().get(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG);
+        if (bootstrapServers != null) {
+            props.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        }
+        try (var admin = Admin.create(props)) {
+            KafkaDeadLetterTopicCheck.warnOnMissing(admin, List.of(topic), deadLetterSuffix);
+        } catch (Exception e) {
+            logger.debug("Dead-letter topic check for '{}' could not run: {}", topic, e.getMessage(), e);
+        }
     }
 
     /**

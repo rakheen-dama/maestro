@@ -218,7 +218,8 @@ public class KafkaMessagingAutoConfiguration {
                 redelivery.initialInterval(),
                 redelivery.multiplier(),
                 redelivery.maxInterval(),
-                redelivery.deadLetterSuffix()
+                redelivery.deadLetterSuffix(),
+                redelivery.enabled()
         );
     }
 

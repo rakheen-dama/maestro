@@ -85,7 +85,7 @@ class KafkaTracePropagationContractTest extends KafkaTestSupport {
                 null, null,
                 "maestro.admin.events." + testSuffix,
                 "trace-group-" + testSuffix,
-                2, Duration.ofMillis(50), 2.0, Duration.ofMillis(200), ".DLT");
+                2, Duration.ofMillis(50), 2.0, Duration.ofMillis(200), ".DLT", true);
     }
 
     // ── Injection (design §4.1, §4.2) ─────────────────────────────────
