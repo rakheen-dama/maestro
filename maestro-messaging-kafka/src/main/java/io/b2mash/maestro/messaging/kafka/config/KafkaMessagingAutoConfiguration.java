@@ -234,6 +234,13 @@ public class KafkaMessagingAutoConfiguration {
      * Resolves the admin-events topic, honouring the deprecated
      * {@code maestro.admin.events.topic} alias.
      *
+     * <p>Twin of {@code AdminClientAutoConfiguration.resolveTopic} in
+     * {@code maestro-admin-client} — that module cannot depend on this
+     * starter (see module Javadoc / CLAUDE.md) or reuse
+     * {@link MaestroProperties}, so it re-derives the same precedence
+     * directly from {@code Environment}. Keep the two in sync if this rule
+     * ever changes.
+     *
      * <p>{@code maestro.messaging.topics.admin-events} is the canonical
      * property. {@code maestro.admin.events.topic} is kept as an alias for
      * deployments that only ever touched the admin block. Both properties

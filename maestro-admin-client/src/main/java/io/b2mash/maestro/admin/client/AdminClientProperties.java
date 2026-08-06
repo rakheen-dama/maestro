@@ -11,8 +11,11 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *   admin:
  *     events:
  *       enabled: true
- *       topic: maestro.admin.events
  * }</pre>
+ *
+ * <p>The Kafka topic itself is normally set via the canonical
+ * {@code maestro.messaging.topics.admin-events} property (see
+ * {@link #getTopic()}), not under this block.
  *
  * @see AdminClientAutoConfiguration
  */
@@ -25,7 +28,14 @@ public class AdminClientProperties {
     private boolean enabled = true;
 
     /**
-     * Kafka topic for admin dashboard lifecycle events.
+     * Deprecated alias for the Kafka topic used to publish admin dashboard
+     * lifecycle events.
+     *
+     * <p>The canonical property is {@code maestro.messaging.topics.admin-events}.
+     * This alias ({@code maestro.admin.events.topic}) is only honoured when
+     * the canonical property is left at its default; if both are set to
+     * different values, the canonical property wins and a WARN is logged.
+     * See {@link AdminClientAutoConfiguration#resolveTopic}.
      */
     private String topic = "maestro.admin.events";
 
