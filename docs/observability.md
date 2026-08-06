@@ -280,11 +280,15 @@ The promise now covers Kafka traffic generally, not only the engine's own
 [Issue 23](open-issues.md#issue-23) for the history (it was previously scoped
 narrower than this).
 
-**Producer side.** `maestroKafkaTemplate` observation is **on by default
-whenever a `Tracer` bean is present** — no per-service config needed. An
-explicit `spring.kafka.template.observation-enabled` value always overrides the
-default in either direction. Set it to `false` to opt out (e.g. no tracing
-backend is wired but a `Tracer` no-op bean still exists). See
+**Producer side.** `maestroKafkaTemplate` observation is **on by default when
+Micrometer tracing is active** — a `Tracer` *and* a `Propagator` bean both
+exist and `maestro.observability.tracing.enabled` is not `false`, i.e. exactly
+the condition under which Maestro's own `KafkaTracePropagation` bean is
+registered (see the gating table under [Configuration](#configuration)). No
+per-service config needed in that case. An explicit
+`spring.kafka.template.observation-enabled` value always overrides the default
+in either direction — set it to `false` to opt out even while tracing is fully
+wired, or to `true` to force it on without a `Tracer`. See
 [`docs/configuration.md` § Kafka client configuration](configuration.md#kafka-client-configuration)
 for how `maestroKafkaTemplate` is built and how to add your own `KafkaTemplate`
 for application traffic with different value types.
@@ -296,7 +300,7 @@ observation is enabled — so the signal row's `trace_context` is populated even
 when `spring.kafka.listener.observation-enabled=false`. The container's
 *own* observation span (`ConcurrentMessageListenerContainer`'s spring-kafka
 instrumentation, separate from the header extraction above) follows the same
-on-by-default-with-a-`Tracer` rule as the producer side, and
+on-by-default-when-tracing-is-active rule as the producer side, and
 `spring.kafka.listener.observation-enabled` overrides it the same way.
 
 For how services are meant to be composed in the first place, see

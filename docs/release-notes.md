@@ -38,11 +38,14 @@ working now do:
   table: [`docs/configuration.md` § Kafka client
   configuration](configuration.md#kafka-client-configuration).
 - **Kafka observation (and therefore cross-service tracing) is on by default
-  whenever a `Tracer` bean is present.** `maestroKafkaTemplate` and the
-  `@MaestroSignalListener` consumer containers now default
-  `observation-enabled` to `true` when tracing is wired, instead of requiring
-  a hand-written `maestroKafkaTemplate` bean override to get a connected
-  trace across services. `@MaestroSignalListener` also now extracts the
+  when Micrometer tracing is active** — a `Tracer` *and* a `Propagator` bean
+  both exist and `maestro.observability.tracing.enabled` is not `false`, the
+  same condition that activates Maestro's own `KafkaTracePropagation` bean
+  (Spring Boot's unconditional no-op `Tracer` alone does not trigger this).
+  `maestroKafkaTemplate` and the `@MaestroSignalListener` consumer containers
+  now default `observation-enabled` to `true` under that condition, instead of
+  requiring a hand-written `maestroKafkaTemplate` bean override to get a
+  connected trace across services. `@MaestroSignalListener` also now extracts the
   inbound `traceparent` (and `tracestate`/`baggage`) from every record,
   independent of container observation, so `trace_context` is populated on
   the signal row rather than staying `NULL`. Set

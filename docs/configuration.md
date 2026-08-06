@@ -550,10 +550,14 @@ options:
   client.
 
 Observation (Micrometer spans on send/receive) on `maestroKafkaTemplate` and
-the `@MaestroSignalListener` consumer containers defaults **on** when a
-`Tracer` bean is present and **off** otherwise; an explicit
-`spring.kafka.template.observation-enabled` / `.listener.observation-enabled`
-value always wins over that default. See
+the `@MaestroSignalListener` consumer containers defaults **on** when
+Micrometer tracing is active — a `Tracer` *and* a `Propagator` bean both exist
+and `maestro.observability.tracing.enabled` is not `false`, exactly the
+condition that activates Maestro's own `KafkaTracePropagation` bean — and
+**off** otherwise. Note that Spring Boot registers a no-op `Tracer` by
+default, so a `Tracer` bean being present is not by itself the gate; an
+explicit `spring.kafka.template.observation-enabled` /
+`.listener.observation-enabled` value always wins over that default. See
 [`docs/observability.md` § Cross-service trace propagation (Kafka)](observability.md#cross-service-trace-propagation-kafka)
 for the full contract.
 
