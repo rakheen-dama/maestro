@@ -46,7 +46,11 @@ import javax.sql.DataSource;
  */
 @AutoConfiguration(
         before = MaestroAutoConfiguration.class,
-        afterName = "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration")
+        afterName = {
+                "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration",
+                "org.springframework.boot.jdbc.autoconfigure.JndiDataSourceAutoConfiguration",
+                "org.springframework.boot.jdbc.autoconfigure.XADataSourceAutoConfiguration"
+        })
 @ConditionalOnClass(name = "org.postgresql.Driver")
 @ConditionalOnBean(DataSource.class)
 // Audit F8: maestro.enabled=false is documented as the master kill-switch
