@@ -4,9 +4,6 @@ import io.b2mash.maestro.core.spi.SignalMessage;
 import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
-import org.apache.kafka.clients.admin.Admin;
-import org.apache.kafka.clients.admin.AdminClientConfig;
-import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -21,7 +18,6 @@ import org.springframework.kafka.listener.MessageListener;
 import org.springframework.util.backoff.FixedBackOff;
 import tools.jackson.databind.ObjectMapper;
 
-import java.util.HashMap;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
@@ -160,7 +156,9 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
     @Override
     public void subscribe(String taskQueue, Consumer<TaskMessage> handler) {
         var topic = resolveTaskTopic(taskQueue);
-        checkDeadLetterTopic(topic);
+        if (config.redeliveryEnabled()) {
+            KafkaDeadLetterTopicCheck.warnOnMissing(consumerFactory, topic, config.deadLetterSuffix());
+        }
         // Nothing is caught here on purpose: a handler failure — or an
         // undeserializable record — must reach the container's error handler so
         // the offset is not committed. See the class Javadoc.
@@ -180,7 +178,9 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
     @Override
     public void subscribeSignals(String serviceName, Consumer<SignalMessage> handler) {
         var topic = resolveSignalTopic(serviceName);
-        checkDeadLetterTopic(topic);
+        if (config.redeliveryEnabled()) {
+            KafkaDeadLetterTopicCheck.warnOnMissing(consumerFactory, topic, config.deadLetterSuffix());
+        }
         // The only place the raw ConsumerRecord — and therefore its W3C
         // headers — is visible before the payload-typed handler runs.
         var container = createContainer(topic, record -> {
@@ -264,33 +264,6 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
                 // DeadLetterPublishingRecoverer, a failing record is logged and skipped.
                 : new DefaultErrorHandler(new FixedBackOff(0L, 0L)));
         return container;
-    }
-
-    /**
-     * Warns at subscription time if this topic's dead-letter companion does not
-     * exist, so a redelivery budget that will eventually exhaust does not fail
-     * silently at that point. Skipped entirely when redelivery is disabled — no
-     * record will ever reach the recoverer, so a missing topic is immaterial.
-     *
-     * <p>Never throws: a probe failure only prevents the warning, it never
-     * prevents the subscription it is guarding.
-     *
-     * @param topic the source topic about to be subscribed to
-     */
-    private void checkDeadLetterTopic(String topic) {
-        if (!config.redeliveryEnabled()) {
-            return;
-        }
-        var props = new HashMap<String, Object>();
-        var bootstrapServers = consumerFactory.getConfigurationProperties().get(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG);
-        if (bootstrapServers != null) {
-            props.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
-        }
-        try (var admin = Admin.create(props)) {
-            KafkaDeadLetterTopicCheck.warnOnMissing(admin, List.of(topic), config.deadLetterSuffix());
-        } catch (Exception e) {
-            logger.debug("Dead-letter topic check for '{}' could not run: {}", topic, e.getMessage(), e);
-        }
     }
 
     private byte[] serialize(Object value) {

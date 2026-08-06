@@ -7,9 +7,6 @@ import io.b2mash.maestro.messaging.kafka.KafkaTracePropagation;
 import io.b2mash.maestro.spring.annotation.MaestroSignalListener;
 import io.b2mash.maestro.spring.annotation.SignalRouting;
 import io.b2mash.maestro.spring.config.MaestroProperties;
-import org.apache.kafka.clients.admin.Admin;
-import org.apache.kafka.clients.admin.AdminClientConfig;
-import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,7 +31,6 @@ import tools.jackson.databind.ObjectMapper;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -272,7 +268,8 @@ public class MaestroSignalListenerBeanPostProcessor
                     redelivery.multiplier(),
                     redelivery.maxInterval(),
                     redelivery.deadLetterSuffix()));
-            checkDeadLetterTopic(consumerFactory, reg.topic(), redelivery.deadLetterSuffix());
+            // See KafkaDeadLetterTopicCheck for the full contract; never throws.
+            KafkaDeadLetterTopicCheck.warnOnMissing(consumerFactory, reg.topic(), redelivery.deadLetterSuffix());
         } else {
             // maestro.messaging.redelivery.enabled=false: the operator's explicit
             // choice to restore at-most-once handler semantics — zero retries, no
@@ -280,32 +277,6 @@ public class MaestroSignalListenerBeanPostProcessor
             container.setCommonErrorHandler(new DefaultErrorHandler(new FixedBackOff(0L, 0L)));
         }
         return container;
-    }
-
-    /**
-     * Warns at activation time if this listener's dead-letter companion does
-     * not exist. See {@link KafkaDeadLetterTopicCheck} for the full contract;
-     * never throws.
-     *
-     * @param consumerFactory  the factory whose bootstrap servers the probe's
-     *                         {@link Admin} client is built from
-     * @param topic            the source topic the listener consumes
-     * @param deadLetterSuffix appended to {@code topic} to name its
-     *                         dead-letter companion
-     */
-    private void checkDeadLetterTopic(
-            ConsumerFactory<String, byte[]> consumerFactory, String topic, String deadLetterSuffix
-    ) {
-        var props = new HashMap<String, Object>();
-        var bootstrapServers = consumerFactory.getConfigurationProperties().get(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG);
-        if (bootstrapServers != null) {
-            props.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
-        }
-        try (var admin = Admin.create(props)) {
-            KafkaDeadLetterTopicCheck.warnOnMissing(admin, List.of(topic), deadLetterSuffix);
-        } catch (Exception e) {
-            logger.debug("Dead-letter topic check for '{}' could not run: {}", topic, e.getMessage(), e);
-        }
     }
 
     /**
