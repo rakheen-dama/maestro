@@ -19,6 +19,48 @@
   other broker) adapter implementing the three-method SPI remains possible; it
   is simply no longer shipped or verified in this repository.
 
+### Fixed — Kafka client configuration now honours `spring.kafka.*`, and Kafka observation/tracing default on
+
+**Behaviour change for every Maestro + Kafka application** — no config
+migration is required, but two things you may not have noticed silently not
+working now do:
+
+- **`spring.kafka.*` reaches Maestro's engine producer/consumer.**
+  `maestroKafkaProducerFactory` / `maestroKafkaConsumerFactory` are now built
+  from Spring Boot's bound `KafkaProperties` — bootstrap servers, compression,
+  batching, retries, SSL/security settings, arbitrary
+  `spring.kafka.producer.properties.*` / `spring.kafka.consumer.properties.*`
+  entries, all of it. Previously these beans ignored `spring.kafka.*` entirely
+  and only ever used a hardcoded bootstrap-servers value. A small set of wire
+  invariants the engine's protocol depends on (`String`/`byte[]`
+  (de)serializers, `acks=all`, the engine's `group.id`) are still forced
+  **last**, so no user property can corrupt engine topics. Full precedence
+  table: [`docs/configuration.md` § Kafka client
+  configuration](configuration.md#kafka-client-configuration).
+- **Kafka observation (and therefore cross-service tracing) is on by default
+  whenever a `Tracer` bean is present.** `maestroKafkaTemplate` and the
+  `@MaestroSignalListener` consumer containers now default
+  `observation-enabled` to `true` when tracing is wired, instead of requiring
+  a hand-written `maestroKafkaTemplate` bean override to get a connected
+  trace across services. `@MaestroSignalListener` also now extracts the
+  inbound `traceparent` (and `tracestate`/`baggage`) from every record,
+  independent of container observation, so `trace_context` is populated on
+  the signal row rather than staying `NULL`. Set
+  `spring.kafka.template.observation-enabled=false` /
+  `spring.kafka.listener.observation-enabled=false` to opt out. Full contract:
+  [`docs/observability.md` § Cross-service trace propagation
+  (Kafka)](observability.md#cross-service-trace-propagation-kafka).
+- **The sample-level `ObservedKafkaTemplateConfig` workaround is gone.** The
+  three identical classes in `sample-loan-origination`'s services, and the
+  explicit `spring.kafka.producer.*-serializer` /
+  `spring.kafka.consumer.*-deserializer` entries in the Kafka samples'
+  `application.yml` files, are removed — the engine now applies both without
+  any per-service code. If your own service copied that pattern, you can
+  delete it too: a bean named `maestroKafkaTemplate` still wins by
+  `@ConditionalOnMissingBean(name = "maestroKafkaTemplate")` if you keep one,
+  but it is no longer necessary to get a connected trace.
+- **Was:** [Issue 23](open-issues.md#issue-23).
+
 ### Added — Observability: Micrometer meters and OpenTelemetry tracing
 
 Full reference: [`docs/observability.md`](observability.md).
