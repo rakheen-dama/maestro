@@ -211,8 +211,9 @@ UPDATE maestro_signal_queue
 ```
 
 `DEAD_LETTER` rows are never removed by `PostgresMessageCleaner` — they are the
-inspectable destination. Rows stranded as `FAILED` by versions before
-redelivery existed can be rescued once, deliberately:
+inspectable destination. Rows stranded as `FAILED` — either by versions before
+redelivery existed, or by `maestro.messaging.redelivery.enabled=false` since
+(see above) — can be rescued once, deliberately:
 
 ```sql
 UPDATE maestro_signal_queue SET status = 'PENDING', next_attempt_at = now() WHERE status = 'FAILED';
