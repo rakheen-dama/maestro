@@ -27,6 +27,14 @@ import tools.jackson.databind.ObjectMapper;
  */
 @AutoConfiguration
 @ConditionalOnClass(KafkaTemplate.class)
+// Audit F8: maestro.enabled=false is documented as the master kill-switch
+// (see MaestroAutoConfiguration), but this class was previously gated only
+// on maestro.admin.events.enabled — the top-level flag had no effect on it
+// at all. Both properties are now required (Boot 4's @ConditionalOnProperty
+// is @Repeatable — see OnPropertyCondition — so stacking two occurrences
+// composes as AND: both must independently match). See
+// AdminClientAutoConfigurationMaestroDisabledTest.
+@ConditionalOnProperty(prefix = "maestro", name = "enabled", havingValue = "true", matchIfMissing = true)
 @ConditionalOnProperty(prefix = "maestro.admin.events", name = "enabled", havingValue = "true", matchIfMissing = true)
 @EnableConfigurationProperties(AdminClientProperties.class)
 public class AdminClientAutoConfiguration {
