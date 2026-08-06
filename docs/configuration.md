@@ -250,6 +250,23 @@ The TTL value represents a trade-off: shorter values enable faster recovery afte
 a crash, but require more frequent renewal. The default of 30 seconds is suitable
 for most workloads.
 
+### Valkey Connection Resolution
+
+When `maestro.lock.type: valkey` (the default), `ValkeyLockAutoConfiguration`
+resolves the Redis/Valkey connection URI by checking the following properties
+in order, using the first one that is set:
+
+| Order | Property                        | Type      | Description                                                                                     |
+|-------|----------------------------------|-----------|---------------------------------------------------------------------------------------------------|
+| 1     | `spring.data.redis.url`          | `String`  | Standard Spring Data Redis connection URI (e.g. `redis://user:pass@host:6379/1`). Takes priority over everything below. |
+| 2     | `maestro.lock.valkey.uri`        | `String`  | Maestro-specific override, for when you don't want to set the standard Spring property. |
+| 3     | `spring.data.redis.host`         | `String`  | If set (and neither property above is), a URI is built from the standard Spring Data Redis host/port/credential properties: `spring.data.redis.port` (default `6379`), `spring.data.redis.password`, `spring.data.redis.username` (only applied if a password is also set), `spring.data.redis.ssl.enabled` (default `false`), and `spring.data.redis.database` (default `0`). |
+| 4     | *(none set)*                     | —         | Falls back to the default `redis://localhost:6379`.                                              |
+
+Only one source is used — properties from lower-priority steps are ignored
+once a higher-priority one is set. For example, if `spring.data.redis.url` is
+set, `spring.data.redis.host`/`port`/`password` are not consulted at all.
+
 ---
 
 ### Postgres Locking

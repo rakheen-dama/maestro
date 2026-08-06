@@ -33,6 +33,20 @@ retrying consumer, at the worst possible moment to discover the gap.
   closing the exact gap the new check now warns about.
 - **Was:** [Issue 24](open-issues.md#issue-24).
 
+### Fixed — Valkey lock honours `spring.data.redis.host`/`port`/`password`/`username`/`ssl.enabled`/`database`
+
+The Valkey lock's connection URI was previously resolved from only
+`spring.data.redis.url` and `maestro.lock.valkey.uri` — the individual
+`spring.data.redis.host`/`port`/credential properties (which
+`docs/configuration.md`'s own Complete Example configured) were silently
+ignored, and the lock connected to `redis://localhost:6379` regardless.
+A third resolution step now builds the URI from
+`spring.data.redis.host` + `port`/`password`/`username`/`ssl.enabled`/`database`
+when neither URI property is set. **Behaviour change:** a deployment that set
+`spring.data.redis.host` expecting it to apply now genuinely connects there
+instead of falling back to localhost. The full resolution order is documented
+in [`docs/configuration.md` § Valkey Connection Resolution](configuration.md#valkey-connection-resolution).
+
 ### Removed
 
 - **RabbitMQ messaging support has been removed** — the `maestro-messaging-rabbitmq`
