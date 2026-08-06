@@ -135,6 +135,79 @@ working now do:
   but it is no longer necessary to get a connected trace.
 - **Was:** [Issue 23](open-issues.md#issue-23).
 
+### Fixed — `maestro.enabled=false` now disables every Maestro auto-configuration, not just the core engine
+
+Previously, only the core `MaestroAutoConfiguration` (and, transitively, most
+things that required its beans) backed off under `maestro.enabled=false`.
+`maestro-messaging-kafka` and `maestro-messaging-postgres` had no gate at
+all: with the engine flag off, they still built a real Kafka
+producer/consumer or opened a real Postgres `LISTEN/NOTIFY` connection, then
+crashed resolving `MaestroProperties` — a bean only `MaestroAutoConfiguration`
+registers. `maestro-lock-valkey` had no gate either, and — because it needs
+no `MaestroProperties` bean — it *succeeded*, silently opening live Valkey
+connections (`RedisClient`, the lock connection, the pub/sub signal notifier)
+for an engine the operator believed was fully off.
+
+- `maestro-messaging-kafka`, `maestro-messaging-postgres`,
+  `maestro-lock-valkey`, `maestro-lock-postgres`, `maestro-store-postgres`,
+  and `maestro-admin-client` now all carry the same
+  `@ConditionalOnProperty(prefix = "maestro", name = "enabled", matchIfMissing = true)`
+  gate `MaestroAutoConfiguration` uses. `MaestroHealthAutoConfiguration`
+  gets the same gate directly as defense in depth (it was already
+  transitively off via `@ConditionalOnBean(WorkflowExecutor.class)` in a
+  real application, but the check is now not dependent on that indirection).
+- **Migration note:** if you set `maestro.enabled=false` expecting a clean,
+  fully-disabled Maestro and previously either saw a startup crash (Kafka or
+  Postgres messaging on the classpath) or unexpectedly-live Valkey
+  connections (Valkey lock on the classpath), both are fixed — the flag now
+  does what its documentation always said.
+- **Was:** audit finding F8 (`tasks/audit-2026-08-05-inert-config.md`).
+
+### Fixed — `maestro.retry.default-*` now provides the default `@ActivityStub` retry policy
+
+`ActivityStubBeanPostProcessor` previously built every `@ActivityStub`'s
+retry policy via `RetryPolicy.fromAnnotation()` unconditionally, so the four
+`maestro.retry.default-*` properties bound and validated but were never
+read — every stub got the hardcoded `RetryPolicy.defaultPolicy()` (3
+attempts, 1s→60s backoff, 2× multiplier) regardless of configuration. The
+values happened to coincide with the annotation's own declared defaults,
+which is why this went unnoticed.
+
+- `maestro.retry.default-max-attempts`, `.default-initial-interval`,
+  `.default-max-interval`, and `.default-backoff-multiplier` now supply the
+  policy for any `@ActivityStub` whose `retryPolicy` is left at the
+  `@RetryPolicy` annotation's own defaults (all six attributes unchanged).
+  Customizing even a single attribute still opts that stub out of these
+  properties entirely — the annotation's explicit values are honoured as
+  written. Full precedence rule:
+  [`docs/configuration.md` § Retry Configuration](configuration.md#retry-configuration).
+- **Migration note:** if you previously set `maestro.retry.default-*` to
+  anything other than the annotation's own defaults (3 attempts, 1s, 60s,
+  2.0×) believing it applied, it now genuinely does — activity retry timing
+  for unconfigured stubs may change.
+- **Was:** audit finding F6.
+
+### Fixed — `maestro-admin-client` now honours the canonical `maestro.messaging.topics.admin-events` property
+
+`AdminEventPublisher` read only the deprecated
+`maestro.admin.events.topic` property; a service that followed
+`CLAUDE.md`'s own guidance and set only the canonical
+`maestro.messaging.topics.admin-events` had its admin-client lifecycle
+events published to the wrong topic, while the engine's own publisher (in
+`maestro-messaging-kafka`) correctly used the canonical property. Since
+`maestro-admin-client` cannot depend on the starter module,
+`AdminClientAutoConfiguration.resolveTopic` now mirrors
+`KafkaMessagingAutoConfiguration.resolveAdminEventsTopic`'s precedence
+directly against `Environment`, with cross-referencing comments at both
+sites so the two cannot drift apart unnoticed again.
+
+- **Migration note:** if a service using `maestro-admin-client` set only
+  `maestro.messaging.topics.admin-events` (the documented canonical
+  property) and not the deprecated `maestro.admin.events.topic` alias,
+  admin-client lifecycle events now publish to the topic you actually
+  configured instead of the deprecated-alias default.
+- **Was:** audit finding F10.
+
 ### Added — Observability: Micrometer meters and OpenTelemetry tracing
 
 Full reference: [`docs/observability.md`](observability.md).
@@ -466,6 +539,14 @@ guarantees against.
   timer-cancel and terminate latency as well as signal latency), so a
   remote fire or cancel takes effect within one interval. Single-node
   behaviour is unchanged: a local fire still unparks instantly.
+
+- **Internal resilience fix:** a lock-renewer thread that failed to start no
+  longer leaves the instance lock reported as `NO_BACKEND` while it is
+  actually held (which skipped `release()` and blocked the workflow ID
+  cluster-wide), and a renewer-start failure no longer permanently disables
+  renewer-starting for every future lock acquisition on the node — both are
+  internal `WorkflowInstanceLockManager` robustness fixes with no
+  configuration or API surface change.
 
 ---
 
