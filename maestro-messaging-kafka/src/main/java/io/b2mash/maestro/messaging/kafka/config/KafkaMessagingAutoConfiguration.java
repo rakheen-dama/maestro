@@ -23,9 +23,11 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.kafka.autoconfigure.KafkaConnectionDetails;
+import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.env.Environment;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
@@ -34,7 +36,6 @@ import org.springframework.kafka.core.ProducerFactory;
 import tools.jackson.databind.ObjectMapper;
 
 import java.util.HashMap;
-import java.util.Map;
 
 /**
  * Auto-configuration for Kafka-based workflow messaging.
@@ -56,8 +57,16 @@ import java.util.Map;
  *       only when Micrometer Tracing is present and enabled</li>
  * </ul>
  *
- * <p>Kafka bootstrap servers are resolved from {@code spring.kafka.bootstrap-servers}
- * (standard Spring Kafka property), falling back to {@code localhost:9092}.
+ * <p>The engine's producer and consumer factories are built from Boot's bound
+ * {@link KafkaProperties} — every {@code spring.kafka.producer.*} and
+ * {@code spring.kafka.consumer.*} property (compression, batching, SSL,
+ * arbitrary {@code properties.*} entries, and any {@link KafkaConnectionDetails}
+ * bean, e.g. from a service-connection Testcontainers setup) reaches these
+ * clients. A small set of wire-format invariants the engine's own protocol
+ * depends on — key/value (de)serializer classes and producer {@code acks=all}
+ * — are then forced on top, last, so no user property can silently corrupt
+ * engine topics. See {@code docs/configuration.md} § Kafka client
+ * configuration for the full precedence table.
  *
  * <p>All beans are guarded with {@link ConditionalOnMissingBean} to allow
  * user overrides.
@@ -81,20 +90,41 @@ import java.util.Map;
                 "org.springframework.boot.micrometer.tracing.autoconfigure.NoopTracerAutoConfiguration",
                 "org.springframework.boot.micrometer.tracing.opentelemetry.autoconfigure.OpenTelemetryTracingAutoConfiguration",
                 "org.springframework.boot.micrometer.tracing.brave.autoconfigure.BraveAutoConfiguration"
-        })
+        },
+        // Maestro's typed producer/consumer factory beans must register before
+        // Boot's KafkaAutoConfiguration evaluates its own @ConditionalOnMissingBean
+        // (ProducerFactory/ConsumerFactory) conditions, so Boot's type-conditioned
+        // beans back off in favour of Maestro's engine-owned ones — a suppression
+        // that used to work only by alphabetical accident between the two package
+        // names, now pinned explicitly. This is deliberate, not a bug: Maestro
+        // needs a single byte[]-valued producer/consumer pair for its own topics,
+        // not Boot's Object-typed general-purpose ones. Do NOT add `afterName` on
+        // KafkaAutoConfiguration instead — that would let Boot's typed beans
+        // register too and the context would fail with
+        // NoUniqueBeanDefinitionException. Boot's bound KafkaProperties is
+        // consumed at *instantiation* time (as a constructor-injected parameter),
+        // which this declaration ordering does not affect.
+        beforeName = "org.springframework.boot.kafka.autoconfigure.KafkaAutoConfiguration")
 @ConditionalOnClass(KafkaTemplate.class)
 @ConditionalOnProperty(prefix = "maestro.messaging", name = "type", havingValue = "kafka", matchIfMissing = true)
+@EnableConfigurationProperties(KafkaProperties.class)
 public class KafkaMessagingAutoConfiguration {
 
     private static final Logger logger = LoggerFactory.getLogger(KafkaMessagingAutoConfiguration.class);
 
-    private static final String DEFAULT_BOOTSTRAP_SERVERS = "localhost:9092";
-
     @Bean
     @ConditionalOnMissingBean(name = "maestroKafkaProducerFactory")
-    public ProducerFactory<String, byte[]> maestroKafkaProducerFactory(Environment env) {
-        var props = new HashMap<String, Object>();
-        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, resolveBootstrapServers(env));
+    public ProducerFactory<String, byte[]> maestroKafkaProducerFactory(
+            KafkaProperties kafkaProperties,
+            ObjectProvider<KafkaConnectionDetails> connectionDetails
+    ) {
+        var props = new HashMap<String, Object>(kafkaProperties.buildProducerProperties());
+        var details = connectionDetails.getIfAvailable();
+        if (details != null) {
+            props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, details.getProducer().getBootstrapServers());
+        }
+        // Engine wire-format invariants — forced LAST, overriding any user value.
+        // Documented precedence: docs/configuration.md § Kafka client configuration.
         props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
         props.put(ProducerConfig.ACKS_CONFIG, "all");
@@ -112,15 +142,25 @@ public class KafkaMessagingAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(name = "maestroKafkaConsumerFactory")
     public ConsumerFactory<String, byte[]> maestroKafkaConsumerFactory(
-            Environment env, KafkaMessagingConfig messagingConfig
+            KafkaProperties kafkaProperties,
+            ObjectProvider<KafkaConnectionDetails> connectionDetails,
+            KafkaMessagingConfig messagingConfig
     ) {
-        var props = new HashMap<String, Object>();
-        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, resolveBootstrapServers(env));
+        var props = new HashMap<String, Object>(kafkaProperties.buildConsumerProperties());
+        var details = connectionDetails.getIfAvailable();
+        if (details != null) {
+            props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, details.getConsumer().getBootstrapServers());
+        }
+        // Engine wire-format invariants — forced LAST, overriding any user value.
+        // Documented precedence: docs/configuration.md § Kafka client configuration.
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class);
-        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        // Not a wire-format invariant — a user's explicit
+        // spring.kafka.consumer.auto-offset-reset wins.
+        props.putIfAbsent(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         // Default group ID — overridden per-container, but prevents confusing
-        // errors if this factory is accidentally used outside container scope
+        // errors if this factory is accidentally used outside container scope.
+        // Engine-owned, so it is forced rather than putIfAbsent.
         props.put(ConsumerConfig.GROUP_ID_CONFIG, messagingConfig.consumerGroup());
         return new DefaultKafkaConsumerFactory<>(props);
     }
@@ -249,9 +289,5 @@ public class KafkaMessagingAutoConfiguration {
     @ConditionalOnMissingBean
     public MaestroSignalListenerBeanPostProcessor maestroSignalListenerBeanPostProcessor() {
         return new MaestroSignalListenerBeanPostProcessor();
-    }
-
-    private static String resolveBootstrapServers(Environment env) {
-        return env.getProperty("spring.kafka.bootstrap-servers", DEFAULT_BOOTSTRAP_SERVERS);
     }
 }
