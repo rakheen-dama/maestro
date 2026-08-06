@@ -15,6 +15,7 @@ import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -28,6 +29,7 @@ import org.springframework.boot.kafka.autoconfigure.KafkaConnectionDetails;
 import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
@@ -134,9 +136,36 @@ public class KafkaMessagingAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(name = "maestroKafkaTemplate")
     public KafkaTemplate<String, byte[]> maestroKafkaTemplate(
-            ProducerFactory<String, byte[]> maestroKafkaProducerFactory
+            ProducerFactory<String, byte[]> maestroKafkaProducerFactory,
+            ObjectProvider<KafkaTracePropagation> tracePropagation,
+            Environment env
     ) {
-        return new KafkaTemplate<>(maestroKafkaProducerFactory);
+        var template = new KafkaTemplate<>(maestroKafkaProducerFactory);
+        var configured = env.getProperty("spring.kafka.template.observation-enabled", Boolean.class);
+        template.setObservationEnabled(observationEnabled(configured, tracePropagation.getIfAvailable() != null));
+        return template;
+    }
+
+    /**
+     * The observation-enablement rule shared by {@code maestroKafkaTemplate}
+     * and the {@code @MaestroSignalListener} consumer containers (Issue 23 part
+     * 2): an explicit {@code spring.kafka.template.observation-enabled} /
+     * {@code spring.kafka.listener.observation-enabled} value always wins;
+     * absent that, observation defaults on exactly when tracing is actually
+     * wired (a {@link KafkaTracePropagation} collaborator exists).
+     *
+     * <p>Package-visible so {@code KafkaTemplateObservationTest} in this
+     * package can pin it directly. The listener side
+     * ({@code MaestroSignalListenerBeanPostProcessor}, a different package)
+     * cannot call this method — it duplicates the one-line rule inline with a
+     * comment pointing back here, rather than making this a public API.
+     *
+     * @param configured    the raw property value, or {@code null} when unset
+     * @param tracerPresent whether a {@link KafkaTracePropagation} bean exists
+     * @return whether observation should be enabled
+     */
+    static boolean observationEnabled(@Nullable Boolean configured, boolean tracerPresent) {
+        return configured != null ? configured : tracerPresent;
     }
 
     @Bean
