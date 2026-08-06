@@ -81,3 +81,15 @@ a backgrounded run dies silently when the agent turn ends.
 - **Duplicated launch options silently rot.** Extracting the shared JVM environment revealed a *third* copy missing the flag that fixes the above — running one deep dive would have quietly restored the 250 s failure.
 - **Config that reads correctly and does nothing** appeared three times in one cycle: a Boot 3.x OTLP property name under Boot 4, Maestro's `maestroKafkaTemplate` suppressing Boot's and inerting `spring.kafka.*` (Issue 23), and version bounds of `(changeId, 1, 2)` where `DEFAULT_VERSION` is `-1`. Prove features fire at runtime; never infer it from configuration.
 - **Under repeated transient agent deaths** (fourteen this cycle, none from defective work): write the skeleton and commit *before* exploring, put briefs on disk and keep dispatches short, and commit per item rather than per task. Small and committed beats complete and lost.
+
+## Port cleanup: identify the holder in one step, kill in the next (2026-08-06)
+Clearing stale JVMs from a dead demo session, a compound command re-checked
+port 8080 and force-killed whatever held it — which by then was Docker
+Desktop's backend (the first kill had already freed the port; the backend
+was transiently rebinding it). Docker went down for a minute and every
+running container with it; recovery was `open -a Docker` + restart policies.
+Rules: (1) lsof/inspect and kill are two separate commands — read the
+process identity before signalling it, every time, even mid-cleanup;
+(2) never kill -9 a pid you haven't printed and matched against the process
+you think it is; (3) after killing a port's holder, a re-listen by a
+DIFFERENT process is information, not a target.
