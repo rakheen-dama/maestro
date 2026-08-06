@@ -108,6 +108,13 @@ import java.util.HashMap;
         // which this declaration ordering does not affect.
         beforeName = "org.springframework.boot.kafka.autoconfigure.KafkaAutoConfiguration")
 @ConditionalOnClass(KafkaTemplate.class)
+// Audit F8: maestro.enabled=false is documented as the master kill-switch
+// (see MaestroAutoConfiguration), but this class previously had no direct
+// gate on it — it kept wiring a real KafkaTemplate/producer/consumer
+// factories and crashed resolving MaestroProperties (a bean only
+// MaestroAutoConfiguration registers) once the engine itself had backed
+// off. See KafkaMessagingAutoConfigurationMaestroDisabledTest.
+@ConditionalOnProperty(prefix = "maestro", name = "enabled", havingValue = "true", matchIfMissing = true)
 @ConditionalOnProperty(prefix = "maestro.messaging", name = "type", havingValue = "kafka", matchIfMissing = true)
 @EnableConfigurationProperties(KafkaProperties.class)
 public class KafkaMessagingAutoConfiguration {
