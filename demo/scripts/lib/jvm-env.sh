@@ -81,32 +81,47 @@ _recovery_poll_prop="-Dmaestro.recovery.poll-interval=${DEMO_RECOVERY_POLL_INTER
 # has to come from Spring Kafka's own observation instrumentation.
 #
 # Both flags default to FALSE in Spring Boot 4.0.5 (verified against
-# spring-boot-kafka-4.0.5's spring-configuration-metadata.json). With them off,
-# records go out with NO_HEADERS, each service starts a fresh root trace, and
-# Jaeger shows three unrelated single-service traces that look superficially
-# fine — which is exactly what this demo must not show.
+# spring-boot-kafka-4.0.5's spring-configuration-metadata.json). With them off
+# AND with no Tracer/Propagator wired, records go out with NO_HEADERS, each
+# service starts a fresh root trace, and Jaeger shows three unrelated
+# single-service traces that look superficially fine — which is exactly what
+# this demo must not show.
+#
+# UPDATE (Issue 23 fixed, Task 1-3 of the open-issues cycle): both properties
+# are now live, and Maestro's own maestroKafkaTemplate / @MaestroSignalListener
+# containers default observation ON without either flag, whenever Micrometer
+# tracing is actually wired (a Tracer AND a Propagator bean exist, and
+# maestro.observability.tracing.enabled is not false — this demo satisfies
+# that via the OTLP wiring below). See docs/observability.md § Cross-service
+# trace propagation (Kafka) for the full contract. Both flags are kept here
+# explicitly anyway, so the demo's tracing does not depend on that default:
 #
 #   listener.observation-enabled  → consumer side: reads `traceparent` back and
 #                                   continues the trace instead of starting a
-#                                   new one. THIS FLAG IS THE ONE DOING WORK —
-#                                   Boot's listener-container factory is not
-#                                   shadowed, so the property reaches it.
+#                                   new one, for the sample's own plain
+#                                   `@KafkaListener` beans (UnderwritingRequestListener,
+#                                   VerificationRequestListener) — Boot's
+#                                   listener-container factory is not shadowed,
+#                                   so the property reaches it directly.
 #
-#   template.observation-enabled  → INERT. It configures Boot's auto-configured
-#                                   `kafkaTemplate`, which never exists in a
-#                                   Maestro+Kafka app: Boot declares it
-#                                   @ConditionalOnMissingBean(KafkaTemplate.class)
-#                                   and Maestro contributes maestroKafkaTemplate
-#                                   unconditionally (Issue 23; evidence in
-#                                   demo/.evidence/task-2-kafka-template-library-defect.log).
-#                                   Kept only so the pair reads symmetrically.
+#   template.observation-enabled  → producer side. Reaches `maestroKafkaTemplate`
+#                                   directly, which is also what the domain
+#                                   activities (KafkaLoanMessagingActivities et
+#                                   al.) inject — there is only one
+#                                   `KafkaTemplate<String, byte[]>` bean in the
+#                                   context. Previously this property was inert
+#                                   (it configured Boot's never-created
+#                                   `kafkaTemplate` bean); that is fixed in the
+#                                   library now, not merely worked around.
 #
-# THE PRODUCER SIDE IS A BEAN, NOT THIS FLAG. Each of the three services
-# declares ObservedKafkaTemplateConfig in src/main/java/.../config/ — a
-# @Bean NAMED maestroKafkaTemplate that calls setObservationEnabled(true) and
-# wins because Maestro's own is @ConditionalOnMissingBean(name =
-# "maestroKafkaTemplate"). DELETING THAT CLASS BREAKS THE CROSS-SERVICE TRACE
-# INTO THREE UNRELATED ONES, and no flag here will save you.
+# THE PER-SERVICE OBSERVATION WORKAROUND IS GONE. Each of the three services
+# used to declare a config class with a @Bean NAMED maestroKafkaTemplate that
+# force-enabled observation, winning via Maestro's own
+# @ConditionalOnMissingBean(name = "maestroKafkaTemplate") extension point —
+# because the property above was inert. That class has been deleted: the
+# library now honours `template.observation-enabled` (and defaults
+# observation on with tracing active) without any per-service code, so its
+# absence does not break the cross-service trace.
 _kafka_observation_props=(
     -Dspring.kafka.template.observation-enabled=true
     -Dspring.kafka.listener.observation-enabled=true
