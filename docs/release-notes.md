@@ -50,13 +50,15 @@ working now do:
   `spring.kafka.listener.observation-enabled=false` to opt out. Full contract:
   [`docs/observability.md` § Cross-service trace propagation
   (Kafka)](observability.md#cross-service-trace-propagation-kafka).
-- **The sample-level `ObservedKafkaTemplateConfig` workaround is gone.** The
-  three identical classes in `sample-loan-origination`'s services, and the
-  explicit `spring.kafka.producer.*-serializer` /
-  `spring.kafka.consumer.*-deserializer` entries in the Kafka samples'
-  `application.yml` files, are removed — the engine now applies both without
-  any per-service code. If your own service copied that pattern, you can
-  delete it too: a bean named `maestroKafkaTemplate` still wins by
+- **The sample-level observed-template workaround is gone.** The three
+  identical bean-shadowing config classes previously shipped in
+  `sample-loan-origination`'s services (a hand-rolled `maestroKafkaTemplate`
+  bean with observation forced on), and the explicit
+  `spring.kafka.producer.*-serializer` / `spring.kafka.consumer.*-deserializer`
+  entries in the Kafka samples' `application.yml` files, are removed — the
+  engine now applies both without any per-service code. If your own service
+  copied that pattern, you can delete it too: a bean named
+  `maestroKafkaTemplate` still wins by
   `@ConditionalOnMissingBean(name = "maestroKafkaTemplate")` if you keep one,
   but it is no longer necessary to get a connected trace.
 - **Was:** [Issue 23](open-issues.md#issue-23).
