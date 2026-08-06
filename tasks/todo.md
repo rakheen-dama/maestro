@@ -1,3 +1,16 @@
+# Milestone: Open Issues Cycle (2026-08-06)
+
+Branch: `worktree-open-issues-cycle`. SDD: `.superpowers/sdd/2026-08-06-open-issues-cycle/`.
+
+**Inherited items from the demo-cycle handover (`tasks/next-cycle-handover-prompt.md`):**
+- [x] `demo/scripts/v1-to-v2-move.sh` "hardcodes a versioned jar name" —
+  verified-closed, not re-fixed: `bash -n` clean, `grep -n
+  'loan-application-service-[0-9]' demo/scripts/*.sh demo/scripts/lib/*.sh`
+  returns zero hits. The demo cycle's final wave already replaced the
+  literal version with a glob at `v1-to-v2-move.sh:69` (`V1_JAR`); `V2_JAR`
+  uses the fixed, version-independent name `loan-application-v2.jar`. The
+  handover text describing this as still-hardcoded was stale.
+
 # Milestone: Demo — runbook, observability stack, live versioning story
 
 Spec: `docs/superpowers/specs/2026-08-03-maestro-demo-design.md`. Plan: `docs/superpowers/plans/2026-08-04-maestro-demo.md`. Domain: `demo/DOMAIN-BRIEF.md`. Branch: `worktree-demo` off main @ 945ccb4. 95+ commits, 107 files.

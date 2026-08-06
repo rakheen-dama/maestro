@@ -267,6 +267,17 @@ remainder or stands down as a no-op:
 No-op outcomes are logged and the command is acknowledged — they are
 deterministic non-actions, so retrying delivery of them can never help.
 
+**Operator path: retry says `COMPENSATED_NOT_RETRYABLE`.** There is no
+in-place recovery for this case, and none is planned — see the ruling on
+[Issue 16](open-issues.md#issue-16). The supported path is to start a
+**new** workflow instance — a new `workflowId` carrying the same business
+inputs — rather than retrying the old one. The old instance stays
+`FAILED` (or `TERMINATED`, if it was also terminated) as the audit record
+of the compensated run: its event log is the durable trail of what ran,
+what failed, and what was compensated, and it is left exactly as-is. Do
+not attempt to resurrect the old id — the retry command refuses it every
+time via the `COMPENSATION_STARTED` check above, by design.
+
 **One caveat on "no compensation".** Terminate marks and stops; it never
 unwinds a saga itself. There is one known exception, open and narrow: if a
 terminate issued from another node lands between the saga's terminal-status

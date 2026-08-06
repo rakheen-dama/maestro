@@ -1337,6 +1337,12 @@ end-to-end test, not just a controller-layer smoke test.
 > promising the opposite. The rest of this section is kept as the record of
 > the underlying defect this guard prevents.
 
+> **Ruling (2026-08-06):** the guard is the supported behaviour.
+> Retry-after-compensation stays unsupported; the operator path is a new
+> instance (`docs/admin.md` §Admin Actions, "Operator path: retry says
+> `COMPENSATED_NOT_RETRYABLE`"). Neither relaunch direction below is
+> planned.
+
 **What's wrong.** Issue 15's `retryWorkflow` only deletes a `FAILED`
 instance's `ACTIVITY_FAILED`/`WORKFLOW_FAILED` memos before relaunching in
 replay mode. If the workflow's saga already ran compensations before it
