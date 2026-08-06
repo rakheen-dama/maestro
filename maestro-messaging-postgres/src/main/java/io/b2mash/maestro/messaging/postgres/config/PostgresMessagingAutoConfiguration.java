@@ -78,6 +78,7 @@ public class PostgresMessagingAutoConfiguration {
                 objectMapper,
                 maestroPostgresNotificationListener,
                 new PostgresRedeliveryConfig(
+                        redelivery.enabled(),
                         redelivery.maxAttempts(),
                         redelivery.initialInterval(),
                         redelivery.multiplier(),

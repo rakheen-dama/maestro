@@ -18,8 +18,15 @@ import java.time.Duration;
  * {@code min(initialInterval × multiplier^(n-1), maxInterval)};
  * {@code maxAttempts} counts the initial attempt.
  *
+ * <p>Setting {@code enabled} to {@code false} is the operator's explicit
+ * opt-out: a failing row is marked {@code FAILED} after exactly one attempt —
+ * no backoff, no {@code DEAD_LETTER} parking — restoring the pre-redelivery,
+ * at-most-once behaviour. See {@code PostgresWorkflowMessaging.recordFailure}.
+ *
  * <p><b>Thread safety:</b> This record is immutable and therefore thread-safe.
  *
+ * @param enabled         whether handler-failure redelivery and
+ *                        dead-lettering are active at all
  * @param maxAttempts     total delivery attempts, including the first
  * @param initialInterval backoff before the second attempt
  * @param multiplier      factor applied to the backoff after each failure
@@ -27,6 +34,7 @@ import java.time.Duration;
  */
 @NullMarked
 public record PostgresRedeliveryConfig(
+        boolean enabled,
         int maxAttempts,
         Duration initialInterval,
         double multiplier,
@@ -52,7 +60,7 @@ public record PostgresRedeliveryConfig(
 
     /** @return the defaults documented on {@code maestro.messaging.redelivery.*} */
     public static PostgresRedeliveryConfig defaults() {
-        return new PostgresRedeliveryConfig(10, Duration.ofSeconds(1), 2.0, Duration.ofSeconds(30));
+        return new PostgresRedeliveryConfig(true, 10, Duration.ofSeconds(1), 2.0, Duration.ofSeconds(30));
     }
 
     /**
