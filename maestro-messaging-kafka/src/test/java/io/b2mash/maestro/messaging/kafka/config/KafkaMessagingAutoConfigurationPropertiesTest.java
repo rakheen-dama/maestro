@@ -84,6 +84,26 @@ class KafkaMessagingAutoConfigurationPropertiesTest {
     }
 
     @Test
+    void consumerAutoOffsetResetIsOverridableButGroupIdStaysEngineOwned() {
+        runner.withPropertyValues(
+                        "spring.kafka.consumer.auto-offset-reset=latest",
+                        "spring.kafka.consumer.group-id=user-group")
+                .run(ctx -> {
+                    var cf = (DefaultKafkaConsumerFactory<?, ?>)
+                            ctx.getBean("maestroKafkaConsumerFactory");
+                    var cfg = cf.getConfigurationProperties();
+                    assertThat(cfg)
+                            .as("a user's explicit spring.kafka.consumer.auto-offset-reset must win "
+                                    + "over Maestro's earliest default")
+                            .containsEntry(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
+                    assertThat(cfg)
+                            .as("group.id stays engine-owned (maestro.messaging.consumer-group / "
+                                    + "maestro-{serviceName}) — spring.kafka.consumer.group-id must not win")
+                            .containsEntry(ConsumerConfig.GROUP_ID_CONFIG, "maestro-props-test");
+                });
+    }
+
+    @Test
     void bootsOwnTemplateStaysSuppressed_deliberately() {
         runner.run(ctx -> {
             assertThat(ctx).hasBean("maestroKafkaTemplate");
