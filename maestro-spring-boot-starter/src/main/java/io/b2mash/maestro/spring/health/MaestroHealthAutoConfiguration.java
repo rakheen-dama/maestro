@@ -8,6 +8,7 @@ import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.health.contributor.HealthIndicator;
 import org.springframework.context.annotation.Bean;
 
@@ -31,6 +32,13 @@ import org.springframework.context.annotation.Bean;
  */
 @AutoConfiguration(after = MaestroAutoConfiguration.class)
 @ConditionalOnClass(HealthIndicator.class)
+// Audit F8: maestro.enabled=false is documented as the master kill-switch
+// (see MaestroAutoConfiguration), matched here explicitly rather than
+// relying solely on the transitive absence of a WorkflowExecutor bean below
+// — defense in depth, so this class's own activation is directly governed
+// by the documented flag. See
+// MaestroHealthAutoConfigurationMaestroDisabledTest.
+@ConditionalOnProperty(prefix = "maestro", name = "enabled", havingValue = "true", matchIfMissing = true)
 @ConditionalOnBean(WorkflowExecutor.class)
 public class MaestroHealthAutoConfiguration {
 
