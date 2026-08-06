@@ -20,10 +20,20 @@ sensible defaults and can be left unset for local development.
 
 ## Root Properties
 
-| Property              | Type      | Default | Description                                                                                                  |
-|-----------------------|-----------|---------|--------------------------------------------------------------------------------------------------------------|
-| `maestro.enabled`     | `boolean` | `true`  | Master switch for Maestro auto-configuration. Set to `false` to disable the engine entirely.                 |
-| `maestro.service-name`| `String`  | --      | **Required.** Logical name of the owning service. Used for Kafka consumer groups, lock key prefixes, and lifecycle event attribution. Auto-configuration will fail if not set. |
+| Property                    | Type       | Default | Description                                                                                                  |
+|-----------------------------|------------|---------|--------------------------------------------------------------------------------------------------------------|
+| `maestro.enabled`           | `boolean`  | `true`  | Master switch for Maestro auto-configuration. Set to `false` to disable the engine entirely.                 |
+| `maestro.service-name`      | `String`   | --      | **Required.** Logical name of the owning service. Used for Kafka consumer groups, lock key prefixes, and lifecycle event attribution. Auto-configuration will fail if not set. |
+| `maestro.workflow-packages` | `String[]` | --      | Comma-separated base packages to scan for `@DurableWorkflow` classes. Optional in a `@SpringBootApplication` context, where the application's own auto-configuration package is scanned automatically; set this explicitly in tests or other non-Boot-application contexts. Consumed by `DurableWorkflowBeanRegistrar`. |
+
+**`maestro.enabled=false` disables every Maestro auto-configuration in the
+application**, not just the core engine: `maestro-messaging-kafka`,
+`maestro-messaging-postgres`, `maestro-lock-valkey`, `maestro-lock-postgres`,
+`maestro-store-postgres`, `maestro-admin-client`, and the health/observability
+auto-configurations all carry the same `@ConditionalOnProperty(maestro.enabled)`
+gate as the core `MaestroAutoConfiguration`, so flipping this one flag backs
+every module off cleanly rather than leaving, say, a live Valkey connection
+or Kafka consumer running for an engine that is otherwise off.
 
 ---
 
@@ -293,6 +303,18 @@ implementation("io.b2mash.maestro:maestro-lock-postgres")
 ---
 
 ## Worker Configuration
+
+> **Not yet implemented.** `maestro.worker.*` binds without error and shows
+> up in `/actuator/configprops`, but nothing in the engine reads
+> `concurrency` or `activity-concurrency` — no queue is registered, no
+> execution is capped. Setting these properties today has **no effect
+> whatsoever**: every workflow and activity in the service runs with no
+> queue-level concurrency limit, regardless of what you configure below.
+> This includes the minimal-configuration example further down this page,
+> which is a no-op block end to end. Tracked as
+> [Issue 25](open-issues.md#issue-25) pending a product decision to either
+> implement task-queue concurrency or remove this section. Do not rely on
+> this configuration to bound load.
 
 Properties under `maestro.worker.*` configure the task queue workers that execute
 workflows and activities.
