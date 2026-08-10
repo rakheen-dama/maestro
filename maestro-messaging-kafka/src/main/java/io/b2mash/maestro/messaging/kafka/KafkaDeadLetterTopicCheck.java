@@ -3,7 +3,6 @@ package io.b2mash.maestro.messaging.kafka;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.DescribeTopicsOptions;
-import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
 import org.jspecify.annotations.NullMarked;
 import org.slf4j.Logger;
@@ -58,26 +57,53 @@ public final class KafkaDeadLetterTopicCheck {
      * {@code KafkaWorkflowMessaging.subscribe}/{@code subscribeSignals} and
      * {@code MaestroSignalListenerBeanPostProcessor}'s container activation.
      * Builds a throwaway {@link Admin} client from the consumer factory's
-     * bootstrap servers, runs the single-topic probe, and closes it —
-     * never throws, exactly like {@link #warnOnMissing(Admin, Collection, String)}.
+     * full configuration (see {@link #adminConfigFrom}), runs the single-topic
+     * probe, and closes it — never throws, exactly like
+     * {@link #warnOnMissing(Admin, Collection, String)}.
      *
-     * @param consumerFactory the factory whose bootstrap servers the probe's
-     *                        {@link Admin} client is built from
+     * @param consumerFactory the factory whose configuration the probe's
+     *                        {@link Admin} client is derived from
      * @param topic           the source topic about to be subscribed to
      * @param suffix          appended to {@code topic} to name its
      *                        dead-letter companion
      */
     public static void warnOnMissing(ConsumerFactory<String, byte[]> consumerFactory, String topic, String suffix) {
-        var props = new HashMap<String, Object>();
-        var bootstrapServers = consumerFactory.getConfigurationProperties().get(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG);
-        if (bootstrapServers != null) {
-            props.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
-        }
-        try (var admin = Admin.create(props)) {
+        try (var admin = Admin.create(adminConfigFrom(consumerFactory))) {
             warnOnMissing(admin, List.of(topic), suffix);
         } catch (Exception e) {
             logger.debug("Dead-letter topic check for '{}' could not run: {}", topic, e.getMessage(), e);
         }
+    }
+
+    /**
+     * Derives an {@link Admin} client config from a consumer factory's full
+     * configuration, keeping only the keys {@link AdminClientConfig} accepts.
+     *
+     * <p>Copying only {@code bootstrap.servers} (the prior behaviour) silently
+     * drops every connection-security setting — {@code security.protocol},
+     * {@code sasl.*}, {@code ssl.*} — so on a SASL/SSL-secured cluster
+     * {@code Admin.create} would fail every time and this whole probe would be
+     * permanently, silently dead (its caller catches everything at
+     * {@code DEBUG} per this class's warn-only contract). Filtering the
+     * consumer factory's <em>entire</em> configuration through
+     * {@link AdminClientConfig#configNames()} instead carries those security
+     * settings over automatically, while still excluding consumer-only keys
+     * {@code AdminClientConfig} does not recognise — {@code group.id}, the key/
+     * value deserializers, {@code auto.offset.reset}, etc. — which
+     * {@link Admin#create} would otherwise reject or ignore.
+     *
+     * @param consumerFactory the factory whose configuration to filter
+     * @return the Admin-accepted subset of the consumer factory's configuration
+     */
+    static Map<String, Object> adminConfigFrom(ConsumerFactory<?, ?> consumerFactory) {
+        var adminConfigNames = AdminClientConfig.configNames();
+        var props = new HashMap<String, Object>();
+        for (var entry : consumerFactory.getConfigurationProperties().entrySet()) {
+            if (adminConfigNames.contains(entry.getKey())) {
+                props.put(entry.getKey(), entry.getValue());
+            }
+        }
+        return props;
     }
 
     /**
