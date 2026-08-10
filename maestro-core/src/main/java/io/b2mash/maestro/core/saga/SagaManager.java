@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.context.WorkflowMDC;
 import io.b2mash.maestro.core.exception.CompensationException;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
+import io.b2mash.maestro.core.exception.InvalidStateTransitionException;
 import io.b2mash.maestro.core.exception.MaestroControlFlowError;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
@@ -551,10 +552,24 @@ public final class SagaManager {
      *       recording a failure.</li>
      *   <li>A freshly-read {@code COMPLETED}/{@code FAILED} means another
      *       runner already finalised the instance; this run has nothing to add
-     *       and returns without writing.</li>
+     *       and throws {@link InvalidStateTransitionException} rather than
+     *       returning normally — a stale run must never proceed to compensate
+     *       a workflow a peer already finished (that peer's own failure path
+     *       ran, or skipped, compensations per its own outcome).</li>
      *   <li>A lost compare-and-set ({@link OptimisticLockException}) is
      *       retried against a fresh read, up to the shared budget.</li>
      * </ul>
+     *
+     * <p><b>Every exit is either a confirmed write or a throw — never a
+     * silent return.</b> {@link #compensate} calls this method and, on
+     * normal return, proceeds straight to running compensations; it does not
+     * (and must not need to) inspect any outcome value. That is safe only
+     * because every branch that must not let compensation start throws
+     * instead of returning: this method returns normally if and only if
+     * {@code store.updateInstance} actually persisted the {@code COMPENSATING}
+     * row (including the recovery re-entry case, where the row already reads
+     * {@code COMPENSATING} from a prior crash and the write is a genuine,
+     * confirmed no-op transition to the same status with a bumped version).
      *
      * <p><b>Exhaustion policy (deliberately different from
      * {@code InstanceStatusWriter}).</b> {@code InstanceStatusWriter} stands
@@ -564,18 +579,19 @@ public final class SagaManager {
      * to compensate against a row this run could not read-confirm is exactly
      * the defect being fixed, since the unconfirmed writer might be a
      * terminate. So on exhaustion this logs an error and rethrows the last
-     * {@link OptimisticLockException} instead of falling through to compensate.
-     * Nothing terminal is written; the instance keeps its prior active status,
-     * so recovery re-runs this workflow, replays up to this point, and
+     * {@link OptimisticLockException} — thrown directly from inside the retry
+     * loop's last iteration, not stashed in a nullable local for a
+     * post-loop throw — instead of falling through to compensate. Nothing
+     * terminal is written; the instance keeps its prior active status, so
+     * recovery re-runs this workflow, replays up to this point, and
      * re-attempts the transition with a fresh read.
      *
-     * <p>A non-{@code OptimisticLockException} store failure keeps its
-     * pre-existing behaviour: logged at {@code WARN} and treated as
-     * non-retryable, so the method returns without writing rather than
-     * proceeding to compensate against an unconfirmed status.
+     * <p>A non-{@code OptimisticLockException} store failure (a store outage,
+     * not a lost CAS) is treated the same way: logged at {@code ERROR} and
+     * rethrown, so the method never returns without a confirmed write and
+     * {@link #compensate} can never proceed against an unconfirmed status.
      */
     private void transitionToCompensating(WorkflowContext ctx, WorkflowInstance instance) {
-        OptimisticLockException lastConflict = null;
         for (var attempt = 1; attempt <= InstanceStatusWriter.STATUS_WRITE_ATTEMPTS; attempt++) {
             var latest = store.getInstance(ctx.workflowId()).orElse(instance);
             if (latest.status() == WorkflowStatus.TERMINATED) {
@@ -585,9 +601,10 @@ public final class SagaManager {
             }
             if (latest.status().isTerminal()) {
                 logger.warn("Workflow '{}' is already {} — another runner finalised it first; "
-                                + "not transitioning to COMPENSATING",
+                                + "abandoning this stale run without compensating",
                         ctx.workflowId(), latest.status());
-                return;
+                throw new InvalidStateTransitionException(
+                        ctx.workflowId(), latest.status(), WorkflowStatus.COMPENSATING);
             }
             try {
                 var compensating = latest.toBuilder()
@@ -598,26 +615,29 @@ public final class SagaManager {
                 store.updateInstance(compensating);
                 return;
             } catch (OptimisticLockException e) {
-                lastConflict = e;
+                if (attempt == InstanceStatusWriter.STATUS_WRITE_ATTEMPTS) {
+                    // Exhaustion: this write gates ENTRY into the compensation
+                    // phase, so unlike InstanceStatusWriter we must not proceed
+                    // against a row we could not read-confirm — the row is
+                    // being written by someone whose intent we keep missing,
+                    // and that someone may be a terminate. Abandon the local
+                    // run: nothing terminal was written, the instance stays
+                    // active, and recovery re-attempts compensation from a
+                    // fresh read.
+                    logger.error("Could not transition workflow '{}' to COMPENSATING after {} attempts — "
+                                    + "abandoning this run without compensating; recovery will retry",
+                            ctx.workflowId(), InstanceStatusWriter.STATUS_WRITE_ATTEMPTS);
+                    throw e;
+                }
                 logger.debug("Lost COMPENSATING CAS for workflow '{}' (attempt {}/{}) — re-reading",
                         ctx.workflowId(), attempt, InstanceStatusWriter.STATUS_WRITE_ATTEMPTS);
             } catch (Exception e) {
-                logger.warn("Failed to update workflow '{}' status to COMPENSATING",
+                logger.error("Failed to update workflow '{}' status to COMPENSATING — "
+                                + "abandoning this run without compensating against an unconfirmed status",
                         ctx.workflowId(), e);
-                return;
+                throw e;
             }
         }
-        // Exhaustion: this write gates ENTRY into the compensation phase, so
-        // unlike InstanceStatusWriter we must not proceed against a row we
-        // could not read-confirm — the row is being written by someone whose
-        // intent we keep missing, and that someone may be a terminate.
-        // Abandon the local run: nothing terminal was written, the instance
-        // stays active, and recovery re-attempts compensation from a fresh
-        // read.
-        logger.error("Could not transition workflow '{}' to COMPENSATING after {} attempts — "
-                        + "abandoning this run without compensating; recovery will retry",
-                ctx.workflowId(), InstanceStatusWriter.STATUS_WRITE_ATTEMPTS);
-        throw lastConflict;
     }
 
     /**
