@@ -107,9 +107,23 @@ public class AdminClientAutoConfiguration {
      * @param env        the environment to read {@code maestro.messaging.topics.admin-events} from
      * @param properties the bound admin-client configuration
      * @return the topic to publish admin lifecycle events on
+     * @throws IllegalArgumentException if {@code maestro.messaging.topics.admin-events}
+     *                                  is explicitly set to a blank value —
+     *                                  {@link Environment#getProperty(String, String)}
+     *                                  only falls back to the default when the
+     *                                  property is <em>absent</em>, not when it is
+     *                                  present but blank, so an unvalidated blank
+     *                                  value would otherwise flow through to
+     *                                  {@link AdminEventPublisher} and fail later,
+     *                                  opaquely, at first publish. Mirrors
+     *                                  {@link AdminClientProperties#setTopic} for
+     *                                  the deprecated alias.
      */
     static String resolveTopic(Environment env, AdminClientProperties properties) {
         var messagingTopic = env.getProperty("maestro.messaging.topics.admin-events", DEFAULT_TOPIC);
+        if (messagingTopic.isBlank()) {
+            throw new IllegalArgumentException("maestro.messaging.topics.admin-events must not be blank");
+        }
         var aliasTopic = properties.getTopic();
         var messagingCustomized = !messagingTopic.equals(DEFAULT_TOPIC);
         var aliasCustomized = !aliasTopic.equals(DEFAULT_TOPIC);

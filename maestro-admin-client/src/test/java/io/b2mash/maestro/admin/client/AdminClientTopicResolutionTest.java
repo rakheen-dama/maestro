@@ -115,6 +115,25 @@ class AdminClientTopicResolutionTest {
                         .contains("legacy.admin.topic"));
     }
 
+    // ── Pin (CR-7): a blank canonical topic is rejected at startup ──────
+
+    @Test
+    @DisplayName("a blank maestro.messaging.topics.admin-events is rejected at startup, "
+            + "not silently defaulted")
+    void blankMessagingTopic_rejectedAtStartup() {
+        // Environment#getProperty(key, default) only falls back to the default
+        // when the property is ABSENT — a present-but-blank value flows
+        // through unvalidated unless resolveTopic rejects it explicitly.
+        runner.withPropertyValues("maestro.messaging.topics.admin-events=")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasRootCauseInstanceOf(IllegalArgumentException.class)
+                            .rootCause()
+                            .hasMessageContaining("maestro.messaging.topics.admin-events");
+                });
+    }
+
     // ── Log capture helpers ─────────────────────────────────────────────
 
     private static ch.qos.logback.classic.Logger logbackLogger() {

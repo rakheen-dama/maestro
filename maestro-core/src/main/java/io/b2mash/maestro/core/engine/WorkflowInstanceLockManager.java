@@ -74,8 +74,17 @@ final class WorkflowInstanceLockManager {
      * virtual thread running {@link #renewLoop} — assigned in the
      * constructor (after {@code serviceName} is set) rather than as a field
      * initializer.
+     *
+     * <p>{@code volatile}: every other piece of mutable state this class
+     * shares across threads is already safe for it ({@code heldLocks} is a
+     * {@link ConcurrentHashMap}, {@code renewerStarted}/{@code closed} are
+     * {@link AtomicBoolean}, {@code renewerThread} is {@code volatile}) — this
+     * field was the odd one out, assigned in the constructor and read from
+     * {@link #startRenewerIfNeeded()} with no happens-before edge guaranteeing
+     * visibility across the many workflow threads that call {@link #tryAcquire}
+     * concurrently.
      */
-    Supplier<Thread> renewerThreadStarter;
+    volatile Supplier<Thread> renewerThreadStarter;
 
     WorkflowInstanceLockManager(@Nullable DistributedLock distributedLock, String serviceName) {
         this(distributedLock, serviceName, DEFAULT_KEY_PREFIX, DEFAULT_LOCK_TTL, DEFAULT_RENEW_INTERVAL);
