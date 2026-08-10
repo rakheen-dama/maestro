@@ -205,7 +205,7 @@ Operators can take the following actions from the workflow detail page. Each act
 | Action | Endpoint | Description | Use Case |
 |---|---|---|---|
 | **Retry** | `POST /admin/workflows/{id}/retry` | Sends a `$maestro:retry` signal. The workflow resumes from its last failed step — unless its saga already compensated, in which case retry is refused as a safe no-op (see below). | Transient failures resolved, external API outage ended. |
-| **Terminate** | `POST /admin/workflows/{id}/terminate` | Sends a `$maestro:terminate` signal. The workflow stops immediately, and terminate itself never starts a compensation — but a narrow open race can let an *already-starting* compensation continue on the terminated workflow ([Issue 22](open-issues.md#issue-22)). | Stuck workflows, bad data, manual intervention needed. |
+| **Terminate** | `POST /admin/workflows/{id}/terminate` | Sends a `$maestro:terminate` signal. The workflow stops immediately, and terminate itself never starts a compensation; a compensation that is racing to start on the same workflow re-checks the terminal status on every retry attempt and stands down rather than continuing (formerly a narrow open race, [Issue 22](open-issues.md#issue-22), now resolved). | Stuck workflows, bad data, manual intervention needed. |
 | **Send Signal** | `POST /admin/workflows/{id}/signal` | Sends an application-level signal with a name and optional JSON payload. | Missing Kafka events, manual approval flows, testing. |
 
 All actions produce a flash message confirming success or reporting failure, then redirect back to the workflow detail page.
@@ -260,20 +260,34 @@ remainder or stands down as a no-op:
 | Retry | `RUNNING` / `WAITING_*` / `COMPENSATING` | No-op (not failed) |
 | Retry | `COMPLETED` / `TERMINATED` | No-op (not failed) |
 | Retry | unknown workflow ID | No-op (not found) |
-| Terminate | any active state (incl. `COMPENSATING`) | `TERMINATED`, no compensation started by the terminate itself, local eviction if this node owns it — except in the race of [Issue 22](open-issues.md#issue-22) |
+| Terminate | any active state (incl. `COMPENSATING`) | `TERMINATED`, no compensation started by the terminate itself, local eviction if this node owns it — a racing compensation attempt observes `TERMINATED` on its own retried read and stands down instead of proceeding ([Issue 22](open-issues.md#issue-22), resolved) |
 | Terminate | `COMPLETED` / `FAILED` / `TERMINATED` | No-op (already terminal) |
 | Terminate | unknown workflow ID | No-op (not found) |
 
 No-op outcomes are logged and the command is acknowledged — they are
 deterministic non-actions, so retrying delivery of them can never help.
 
-**One caveat on "no compensation".** Terminate marks and stops; it never
-unwinds a saga itself. There is one known exception, open and narrow: if a
-terminate issued from another node lands between the saga's terminal-status
-check and its own status write, the resulting conflict is swallowed and a
-compensation that was just starting runs to completion on a workflow now
-marked `TERMINATED`. See [`docs/open-issues.md` Issue 22](open-issues.md#issue-22)
-for the mechanism and the planned fix.
+**Operator path: retry says `COMPENSATED_NOT_RETRYABLE`.** There is no
+in-place recovery for this case, and none is planned — see the ruling on
+[Issue 16](open-issues.md#issue-16). The supported path is to start a
+**new** workflow instance — a new `workflowId` carrying the same business
+inputs — rather than retrying the old one. The old instance stays
+`FAILED` (or `TERMINATED`, if it was also terminated) as the audit record
+of the compensated run: its event log is the durable trail of what ran,
+what failed, and what was compensated, and it is left exactly as-is. Do
+not attempt to resurrect the old id — the retry command refuses it every
+time via the `COMPENSATION_STARTED` check above, by design.
+
+**"No compensation" holds even against a terminate landing mid-transition.**
+Terminate marks and stops; it never unwinds a saga itself. A terminate issued
+from another node can still land between a compensating run's terminal-status
+check and its own `COMPENSATING` status write — that write then loses its
+optimistic-lock check — but the write is retried against a fresh read (up to
+a bounded budget) with the terminal check re-evaluated on **every** attempt,
+so a `TERMINATED` appearing between attempts is caught before any compensation
+runs, and the run abandons itself rather than proceeding. This was formerly
+[Issue 22](open-issues.md#issue-22), a narrow open race; it is now resolved —
+see `SagaManager.transitionToCompensating`'s Javadoc for the mechanism.
 
 **Security posture:** there is no authentication, authorization, or
 provenance check on the admin-command path — anyone who can publish to

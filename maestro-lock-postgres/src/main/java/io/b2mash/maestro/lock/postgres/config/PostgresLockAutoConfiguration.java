@@ -38,6 +38,10 @@ import javax.sql.DataSource;
  */
 @AutoConfiguration(after = MaestroAutoConfiguration.class)
 @ConditionalOnClass(name = "org.postgresql.Driver")
+// Audit F8: maestro.enabled=false is documented as the master kill-switch
+// (see MaestroAutoConfiguration), but this class previously had no direct
+// gate on it. See PostgresLockAutoConfigurationMaestroDisabledTest.
+@ConditionalOnProperty(prefix = "maestro", name = "enabled", havingValue = "true", matchIfMissing = true)
 @ConditionalOnProperty(prefix = "maestro.lock", name = "type", havingValue = "postgres")
 public class PostgresLockAutoConfiguration {
 

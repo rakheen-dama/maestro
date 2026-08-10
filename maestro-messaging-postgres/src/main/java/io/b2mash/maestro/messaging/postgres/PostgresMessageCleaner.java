@@ -21,8 +21,11 @@ import java.time.Duration;
  * them up would reintroduce the very message loss that dead-lettering exists to
  * prevent. Retire them by replaying them
  * ({@link PostgresWorkflowMessaging#replaySignal}) or by deleting them
- * explicitly once triaged. {@code FAILED} is only written by versions before
- * redelivery existed.
+ * explicitly once triaged. {@code FAILED} is written by versions before
+ * redelivery existed, and — deliberately, on every version since —
+ * whenever {@code maestro.messaging.redelivery.enabled=false}: a row in
+ * that status was never retried and never dead-lettered, only ever given
+ * its single configured attempt.
  *
  * <h2>Usage</h2>
  * <p>Typically scheduled as a periodic task (e.g., via Spring's

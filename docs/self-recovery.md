@@ -22,7 +22,7 @@ Maestro eliminates all of this. Every signal is persisted to Postgres the moment
 
 ## The Core Guarantee
 
-**Signals are never lost.** Once a signal is persisted to Postgres, it will be delivered to its target workflow regardless of timing. Three cases cover every possible ordering between signal delivery and workflow execution:
+**Signals are never lost.** Once a signal is persisted to Postgres, it will be delivered to its target workflow regardless of timing — unless the operator has explicitly disabled redelivery (`maestro.messaging.redelivery.enabled=false`), which restores at-most-once handler semantics; see `docs/configuration.md`. Three cases cover every possible ordering between signal delivery and workflow execution:
 
 | Case | Scenario | Resolution |
 |------|----------|------------|
@@ -258,7 +258,7 @@ Understanding Maestro's guarantees helps you design workflows correctly.
 
 **Activities: At-least-once.** An activity may execute more than once if a crash occurs after execution but before the result is persisted. Design activities to be idempotent: use database constraints, idempotency keys, or conditional operations to ensure repeated execution produces the same outcome.
 
-**Signals: At-least-once delivery.** A signal may be delivered more than once (e.g., Kafka redelivery after a consumer crash). The `consumed` flag in the `maestro_workflow_signal` table prevents double-processing within the workflow. Duplicate signals are persisted but ignored when the workflow has already consumed a matching signal.
+**Signals: At-least-once delivery.** A signal may be delivered more than once (e.g., Kafka redelivery after a consumer crash). The `consumed` flag in the `maestro_workflow_signal` table prevents double-processing within the workflow. Duplicate signals are persisted but ignored when the workflow has already consumed a matching signal. (This becomes at-most-once if the operator has set `maestro.messaging.redelivery.enabled=false` — see `docs/configuration.md`.)
 
 **Timers: At-least-once firing.** A timer may fire slightly after its scheduled time, depending on the poll interval (`maestro.timer.poll-interval`, default 5 seconds). Timer fires are also at-least-once -- the timer poller uses `SELECT ... FOR UPDATE SKIP LOCKED` with leader election to prevent duplicate processing, but a crash between firing and marking can cause a re-fire.
 

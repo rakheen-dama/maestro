@@ -36,6 +36,8 @@ import org.springframework.core.env.Environment;
  * <ol>
  *   <li>{@code spring.data.redis.url} (standard Spring property)</li>
  *   <li>{@code maestro.lock.valkey.uri} (Maestro-specific)</li>
+ *   <li>{@code spring.data.redis.host} (+ optional {@code port}, {@code password},
+ *       {@code username}, {@code ssl.enabled}, {@code database}) — built into a URI</li>
  *   <li>{@code redis://localhost:6379} (default)</li>
  * </ol>
  *
@@ -47,6 +49,12 @@ import org.springframework.core.env.Environment;
  */
 @AutoConfiguration(after = MaestroAutoConfiguration.class)
 @ConditionalOnClass(RedisClient.class)
+// Audit F8: maestro.enabled=false is documented as the master kill-switch
+// (see MaestroAutoConfiguration), but this class previously had no direct
+// gate on it — it kept wiring a real RedisClient and opening live Valkey
+// connections regardless of the flag. See
+// ValkeyLockAutoConfigurationMaestroDisabledTest.
+@ConditionalOnProperty(prefix = "maestro", name = "enabled", havingValue = "true", matchIfMissing = true)
 @ConditionalOnProperty(prefix = "maestro.lock", name = "type", havingValue = "valkey", matchIfMissing = true)
 public class ValkeyLockAutoConfiguration {
 
@@ -81,7 +89,7 @@ public class ValkeyLockAutoConfiguration {
         return new ValkeySignalNotifier(pubSubConnection, publishConnection);
     }
 
-    private static String resolveRedisUri(Environment env) {
+    static String resolveRedisUri(Environment env) {
         // 1. Standard Spring Data Redis property
         var standard = env.getProperty("spring.data.redis.url");
         if (standard != null && !standard.isBlank()) {
@@ -92,7 +100,27 @@ public class ValkeyLockAutoConfiguration {
         if (custom != null && !custom.isBlank()) {
             return custom;
         }
-        // 3. Default
+        // 3. Standard Spring Data Redis host/port (+ password/ssl/database) — the
+        // properties docs/configuration.md's Complete Example configures.
+        var host = env.getProperty("spring.data.redis.host");
+        if (host != null && !host.isBlank()) {
+            var builder = RedisURI.builder()
+                    .withHost(host)
+                    .withPort(env.getProperty("spring.data.redis.port", Integer.class, 6379))
+                    .withSsl(env.getProperty("spring.data.redis.ssl.enabled", Boolean.class, false))
+                    .withDatabase(env.getProperty("spring.data.redis.database", Integer.class, 0));
+            var password = env.getProperty("spring.data.redis.password");
+            if (password != null && !password.isBlank()) {
+                var username = env.getProperty("spring.data.redis.username");
+                if (username != null && !username.isBlank()) {
+                    builder.withAuthentication(username, (CharSequence) password);
+                } else {
+                    builder.withPassword((CharSequence) password);
+                }
+            }
+            return builder.build().toURI().toString();
+        }
+        // 4. Default
         return ValkeyLockConfig.DEFAULT_REDIS_URI;
     }
 }

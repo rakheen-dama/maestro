@@ -262,6 +262,22 @@ public class MaestroProperties {
      * operator like every other topic. The Postgres transport needs nothing
      * created (it parks rows in {@code DEAD_LETTER} status).
      *
+     * <p>Setting {@code enabled} to {@code false} is the operator's explicit
+     * opt-out of all of the above, on both transports. On Kafka a failing
+     * record gets a {@code DefaultErrorHandler} with a zero-length
+     * {@code FixedBackOff}: no redelivery, no {@code DeadLetterPublishingRecoverer}
+     * — the record is logged and skipped, restoring at-most-once handler
+     * semantics (and the Kafka dead-letter-topic startup probe is skipped
+     * entirely, since nothing will ever publish to a dead-letter topic). On
+     * Postgres a failing row is marked {@code FAILED}
+     * after exactly one attempt instead of being retried and eventually
+     * dead-lettered — the pre-redelivery behaviour. This trades the
+     * durability the rest of this record buys for simpler, at-most-once
+     * semantics; it is not a recommended default and defaults to {@code true}.
+     *
+     * @param enabled            whether handler-failure redelivery and
+     *                           dead-lettering are active at all, on both
+     *                           transports
      * @param maxAttempts        total delivery attempts, including the first
      * @param initialInterval    backoff before the second attempt
      * @param multiplier         factor applied to the backoff after each failure
@@ -269,6 +285,7 @@ public class MaestroProperties {
      * @param deadLetterSuffix   Kafka only — suffix appended to the source topic
      */
     public record RedeliveryProperties(
+            @DefaultValue("true") boolean enabled,
             @DefaultValue("10") int maxAttempts,
             @DefaultValue("1s") Duration initialInterval,
             @DefaultValue("2.0") double multiplier,
@@ -277,7 +294,7 @@ public class MaestroProperties {
     ) {
         /** @return the defaults documented above */
         public static RedeliveryProperties defaults() {
-            return new RedeliveryProperties(10, Duration.ofSeconds(1), 2.0,
+            return new RedeliveryProperties(true, 10, Duration.ofSeconds(1), 2.0,
                     Duration.ofSeconds(30), ".DLT");
         }
     }
@@ -383,6 +400,19 @@ public class MaestroProperties {
 
     /**
      * Default retry policy applied to activities without explicit configuration.
+     *
+     * <p>Consumed by {@code ActivityStubBeanPostProcessor} for any
+     * {@code @ActivityStub} whose {@code retryPolicy} is left at the
+     * {@link io.b2mash.maestro.core.annotation.RetryPolicy} annotation's own
+     * defaults (all six attributes: {@code maxAttempts = 3},
+     * {@code initialInterval = "PT1S"}, {@code maxInterval = "PT1M"},
+     * {@code backoffMultiplier = 2.0}, and empty exception filter lists). An
+     * annotation cannot express "unset" — every attribute always carries a
+     * value — so that all-defaults shape is treated as "not configured" and
+     * resolves to the policy built from these four properties instead. An
+     * {@code @ActivityStub} that customizes even one attribute of
+     * {@code retryPolicy} is exempt from this block entirely; its own
+     * annotation values apply regardless of what is configured here.
      *
      * @param defaultMaxAttempts       maximum retry attempts (including initial)
      * @param defaultInitialInterval   initial backoff delay

@@ -56,6 +56,11 @@ spring-boot-starter-thymeleaf = { module = "org.springframework.boot:spring-boot
 spring-boot-autoconfigure = { module = "org.springframework.boot:spring-boot-autoconfigure" }
 spring-boot-configuration-processor = { module = "org.springframework.boot:spring-boot-configuration-processor" }
 spring-kafka = { module = "org.springframework.kafka:spring-kafka" }
+# Boot's Kafka autoconfigure jar (KafkaProperties, KafkaConnectionDetails,
+# KafkaAutoConfiguration) — separate artifact from spring-boot-starter-kafka
+# since 4.0. Needed directly because KafkaMessagingAutoConfiguration binds
+# Boot's KafkaProperties instead of hand-rolling config maps.
+spring-boot-kafka = { module = "org.springframework.boot:spring-boot-kafka" }
 
 # Testing — Spring (versions managed by Spring Boot BOM)
 spring-boot-starter-test = { module = "org.springframework.boot:spring-boot-starter-test" }

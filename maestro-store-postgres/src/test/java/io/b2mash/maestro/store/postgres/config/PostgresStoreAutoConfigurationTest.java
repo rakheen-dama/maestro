@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.Mockito.mock;
 
 /**
@@ -113,6 +114,21 @@ class PostgresStoreAutoConfigurationTest {
                     assertThat(context).hasSingleBean(WorkflowStore.class);
                     assertThat(context).hasSingleBean(MaestroClient.class);
                 });
+    }
+
+    @Test
+    void afterNameCoversAllBootDataSourceAutoConfigs() {
+        var afterNames = PostgresStoreAutoConfiguration.class
+                .getAnnotation(AutoConfiguration.class).afterName();
+        assertThat(afterNames).contains(
+                "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration",
+                "org.springframework.boot.jdbc.autoconfigure.JndiDataSourceAutoConfiguration",
+                "org.springframework.boot.jdbc.autoconfigure.XADataSourceAutoConfiguration");
+        // Guard against typos: every named class must exist on the test classpath.
+        for (var name : afterNames) {
+            assertThatCode(() -> Class.forName(name, false, getClass().getClassLoader()))
+                    .as("afterName entry %s must be a real class", name).doesNotThrowAnyException();
+        }
     }
 
     // ── helpers ─────────────────────────────────────────────────────

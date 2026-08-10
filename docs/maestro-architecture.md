@@ -355,7 +355,10 @@ threw**: it redelivers with exponential backoff
 attempt budget is spent, parks the message where it stays inspectable and
 replayable — a `.DLT` topic on Kafka, `DEAD_LETTER` status on the Postgres
 queue tables. A signal is never discarded; the worst case is that it needs
-an operator to replay it.
+an operator to replay it — unless the operator has explicitly disabled
+redelivery (`maestro.messaging.redelivery.enabled=false`), which restores
+at-most-once handler semantics and trades this guarantee away on purpose;
+see `docs/configuration.md`.
 
 ### 5.1 Signal Arrives Before Workflow Reaches Await
 
@@ -664,6 +667,8 @@ failed compensation step.
 - **Workflow progression:** Exactly-once (at-least-once activities, at-most-once result storage).
 - **Activities:** At-least-once. Should be idempotent.
 - **Signals:** At-least-once delivery. `consumed` flag prevents double-processing.
+  (At-most-once if the operator has set `maestro.messaging.redelivery.enabled=false` —
+  see `docs/configuration.md`.)
 - **Timers:** At-least-once. Slight delay possible based on poll interval.
 
 **Measured, multi-instance version of this table:** `docs/operations.md`

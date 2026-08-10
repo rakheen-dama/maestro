@@ -58,6 +58,7 @@ class MaestroPropertiesBindingTest {
     void redeliveryBlockBinds() {
         runner.withPropertyValues(
                         "maestro.service-name=binding-test",
+                        "maestro.messaging.redelivery.enabled=false",
                         "maestro.messaging.redelivery.max-attempts=4",
                         "maestro.messaging.redelivery.initial-interval=250ms",
                         "maestro.messaging.redelivery.multiplier=3.5",
@@ -65,11 +66,22 @@ class MaestroPropertiesBindingTest {
                         "maestro.messaging.redelivery.dead-letter-suffix=.dead")
                 .run(context -> {
                     var redelivery = context.getBean(MaestroProperties.class).getMessaging().redelivery();
+                    assertThat(redelivery.enabled()).isFalse();
                     assertThat(redelivery.maxAttempts()).isEqualTo(4);
                     assertThat(redelivery.initialInterval()).isEqualTo(Duration.ofMillis(250));
                     assertThat(redelivery.multiplier()).isEqualTo(3.5);
                     assertThat(redelivery.maxInterval()).isEqualTo(Duration.ofSeconds(90));
                     assertThat(redelivery.deadLetterSuffix()).isEqualTo(".dead");
+                });
+    }
+
+    @Test
+    @DisplayName("redelivery.enabled defaults to true when unset")
+    void redeliveryEnabledDefaultsTrue() {
+        runner.withPropertyValues("maestro.service-name=binding-test")
+                .run(context -> {
+                    var redelivery = context.getBean(MaestroProperties.class).getMessaging().redelivery();
+                    assertThat(redelivery.enabled()).isTrue();
                 });
     }
 
@@ -135,6 +147,7 @@ class MaestroPropertiesBindingTest {
             assertThat(properties.getMessaging().topics().tasks()).isNull();
             assertThat(properties.getMessaging().topics().adminEvents()).isEqualTo("maestro.admin.events");
             var redelivery = properties.getMessaging().redelivery();
+            assertThat(redelivery.enabled()).isTrue();
             assertThat(redelivery.maxAttempts()).isEqualTo(10);
             assertThat(redelivery.initialInterval()).isEqualTo(Duration.ofSeconds(1));
             assertThat(redelivery.multiplier()).isEqualTo(2.0);

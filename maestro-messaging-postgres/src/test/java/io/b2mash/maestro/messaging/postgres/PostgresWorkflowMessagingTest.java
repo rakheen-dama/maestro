@@ -186,7 +186,7 @@ class PostgresWorkflowMessagingTest extends PostgresMessagingTestSupport {
             var attempts = new AtomicInteger();
 
             try (var tight = newMessaging(new PostgresRedeliveryConfig(
-                    3, Duration.ofMillis(100), 2.0, Duration.ofMillis(200)))) {
+                    true, 3, Duration.ofMillis(100), 2.0, Duration.ofMillis(200)))) {
                 tight.subscribeSignals(service, m -> {
                     attempts.incrementAndGet();
                     throw new IllegalStateException("poison signal — this handler can never process it");
@@ -216,7 +216,7 @@ class PostgresWorkflowMessagingTest extends PostgresMessagingTestSupport {
             var delivered = new AtomicInteger();
 
             try (var tight = newMessaging(new PostgresRedeliveryConfig(
-                    2, Duration.ofMillis(100), 2.0, Duration.ofMillis(200)))) {
+                    true, 2, Duration.ofMillis(100), 2.0, Duration.ofMillis(200)))) {
                 tight.subscribeSignals(service, m -> {
                     if (handlerFails.get()) {
                         throw new IllegalStateException("store unavailable");
@@ -264,6 +264,35 @@ class PostgresWorkflowMessagingTest extends PostgresMessagingTestSupport {
             await().atMost(BOUND).until(() -> attempts.get() >= 2);
             await().atMost(BOUND).until(
                     () -> "COMPLETED".equals(statusOf("maestro_task_queue", "wf-task-redeliver")));
+        }
+
+        @Test
+        @DisplayName("maestro.messaging.redelivery.enabled=false: a failing signal is marked FAILED after exactly one attempt, not retried")
+        void redeliveryDisabled_marksFailedAfterOneAttempt() throws Exception {
+            var service = "svc-flag-off-" + unique();
+            var attempts = new AtomicInteger();
+
+            try (var disabled = newMessaging(new PostgresRedeliveryConfig(
+                    false, 10, Duration.ofMillis(100), 2.0, Duration.ofSeconds(30)))) {
+                disabled.subscribeSignals(service, m -> {
+                    attempts.incrementAndGet();
+                    throw new IllegalStateException("handler always fails");
+                });
+
+                disabled.publishSignal(service, new SignalMessage("wf-sig-flag-off", "approval", null));
+
+                await().atMost(BOUND).until(
+                        () -> "FAILED".equals(statusOf("maestro_signal_queue", "wf-sig-flag-off")));
+                assertEquals(1, intColumnOf("maestro_signal_queue", "attempts", "wf-sig-flag-off"),
+                        "redelivery disabled must mean exactly one attempt, not the configured budget");
+                assertNotNull(columnOf("maestro_signal_queue", "last_error", "wf-sig-flag-off"),
+                        "a FAILED row must still record why it failed");
+
+                // Positive values: with the configured budget of 10, the row must
+                // never get a second try while the poller keeps running.
+                await().during(Duration.ofSeconds(3)).atMost(Duration.ofSeconds(8))
+                        .until(() -> attempts.get() == 1);
+            }
         }
 
         @Test

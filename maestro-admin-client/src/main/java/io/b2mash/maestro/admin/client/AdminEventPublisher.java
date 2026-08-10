@@ -52,6 +52,17 @@ public class AdminEventPublisher {
     }
 
     /**
+     * The Kafka topic this publisher sends events to.
+     *
+     * <p>Package-private: exists so tests can assert on the topic the
+     * publisher actually resolved to, rather than re-deriving it from
+     * configuration properties.
+     */
+    String topic() {
+        return topic;
+    }
+
+    /**
      * Publishes a workflow lifecycle event to the admin events Kafka topic.
      *
      * <p>The event is serialized to JSON bytes and sent with {@code event.workflowId()}

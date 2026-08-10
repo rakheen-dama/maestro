@@ -278,4 +278,4 @@ the tracing flag gates the Kafka W3C header injection too — see
 - **Never break `(workflow_instance_id, sequence_number)` uniqueness.**
 - **Never auto-create Kafka topics** — pre-created, declared in config.
 - **Never use `com.fasterxml.jackson`** — Jackson 3 uses `tools.jackson`.
-- **Never use `javax.*`** — Spring Boot 4 is Jakarta EE 11 (`jakarta.*`).
+- **Never use a Jakarta EE `javax.*` namespace** (`javax.servlet`, `javax.persistence`, `javax.annotation`, etc.) — Spring Boot 4 is Jakarta EE 11, so these are `jakarta.*` now. This does **not** cover Java SE's own `javax.*` packages, which never moved and have no `jakarta.*` equivalent — `javax.sql.DataSource`, `javax.crypto.*`, and similar are correct and required as-is.

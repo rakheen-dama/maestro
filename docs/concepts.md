@@ -236,7 +236,7 @@ Signals are persisted to Postgres immediately on delivery. This means:
 - **Signal arrives before the workflow even starts:** Stored with a null instance ID, adopted when the workflow starts.
 - **Signal arrives while the service is down:** Persisted, found during recovery.
 
-Signals are never lost. See [Self-Recovery](self-recovery.md) for the full durability model.
+Signals are never lost — unless the operator has explicitly disabled redelivery (`maestro.messaging.redelivery.enabled=false`), which restores at-most-once handler semantics; see [Configuration Reference](configuration.md). See [Self-Recovery](self-recovery.md) for the full durability model.
 
 ---
 

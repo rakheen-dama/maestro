@@ -48,7 +48,10 @@ import java.util.function.Consumer;
  * attempt budget is exhausted it is parked in {@code DEAD_LETTER} — durable and
  * inspectable via {@link #listDeadLetterSignals}/{@link #listDeadLetterTasks},
  * replayable via {@link #replaySignal}/{@link #replayTask}. A message is never
- * dropped, and a poison message never becomes a hot loop.
+ * dropped, and a poison message never becomes a hot loop. With
+ * {@code maestro.messaging.redelivery.enabled=false} none of that applies: a
+ * failing row is marked {@code FAILED} after its single attempt instead —
+ * the operator's explicit choice of at-most-once handler semantics.
  *
  * <h2>Thread Safety</h2>
  * <p>This class is thread-safe. Publishing uses pooled connections with
@@ -441,9 +444,18 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
      * the fault we are surviving — the row is left {@code PROCESSING} and the
      * five-minute stale reclaim in the poll loop picks it up. Either way the
      * message is not lost.
+     *
+     * <p>When {@code maestro.messaging.redelivery.enabled=false}, this skips
+     * straight to marking the row {@code FAILED} after its single attempt — see
+     * {@link #recordSingleAttemptFailure}.
      */
     private void recordFailure(String table, UUID rowId, int previousAttempts,
                                String workflowId, Exception failure) {
+        if (!redelivery.enabled()) {
+            recordSingleAttemptFailure(table, rowId, previousAttempts, workflowId, failure);
+            return;
+        }
+
         var attempts = previousAttempts + 1;
         var exhausted = attempts >= redelivery.maxAttempts();
         var backoffMillis = exhausted ? 0L : redelivery.backoffAfter(attempts).toMillis();
@@ -470,6 +482,39 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
             stmt.setLong(3, backoffMillis);
             stmt.setString(4, describe(failure));
             stmt.setObject(5, rowId);
+            stmt.executeUpdate();
+        } catch (SQLException e) {
+            // The row stays PROCESSING and the stale reclaim recovers it.
+            logger.warn("Failed to record delivery failure for row {} in {} — "
+                            + "leaving it PROCESSING for the stale reclaim: {}",
+                    rowId, table, e.getMessage(), e);
+        }
+    }
+
+    /**
+     * The {@code maestro.messaging.redelivery.enabled=false} path: no backoff,
+     * no {@code DEAD_LETTER} — the row is marked {@code FAILED} after exactly
+     * one attempt, the pre-redelivery behaviour, and the operator's explicit
+     * choice. A {@code FAILED} row is excluded from both the claim query's
+     * {@code PENDING} branch and its stale-{@code PROCESSING} reclaim branch,
+     * so it is never picked up again on its own; an operator restores it with
+     * the same rescue statement documented for legacy {@code FAILED} rows in
+     * {@code docs/configuration.md}.
+     */
+    private void recordSingleAttemptFailure(String table, UUID rowId, int previousAttempts,
+                                            String workflowId, Exception failure) {
+        var attempts = previousAttempts + 1;
+        logger.error("Message {} for workflow '{}' in {} failed on its only attempt "
+                        + "(redelivery disabled) — marking FAILED: {}",
+                rowId, workflowId, table, failure.getMessage(), failure);
+
+        var sql = "UPDATE " + table + " SET status = 'FAILED', attempts = ?, "
+                + "last_error = ?, processed_at = now() WHERE id = ?";
+        try (var conn = dataSource.getConnection();
+             var stmt = conn.prepareStatement(sql)) {
+            stmt.setInt(1, attempts);
+            stmt.setString(2, describe(failure));
+            stmt.setObject(3, rowId);
             stmt.executeUpdate();
         } catch (SQLException e) {
             // The row stays PROCESSING and the stale reclaim recovers it.

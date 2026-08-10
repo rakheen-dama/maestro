@@ -949,13 +949,13 @@ body.presenting #presenter { display: grid; }
         against a loan that was <em>not</em> crashed, or say up front that a restarted workflow
         produces two traces and show both.</p>
       <p><strong>IF ASKED &ldquo;is the Kafka tracing real, or did you special-case it?&rdquo;</strong>
-        (&sect;Q, and it is the one hostile question this slide invites) &mdash; it is real, with one
-        honest caveat, filed as <strong>Issue 23</strong>: Maestro's <code>maestroKafkaTemplate</code>
-        suppresses Boot's, so <code>spring.kafka.template.observation-enabled</code> is inert for all
-        users, and <code>@MaestroSignalListener</code> does not extract trace context on domain
-        topics. The producer-side workaround is a <code>@Bean</code>
-        (<code>ObservedKafkaTemplateConfig</code>), <em>not</em> the property. A library defect with
-        a documented workaround, not a demo trick. Full wording: RUNBOOK &sect;Q.</p>
+        (&sect;Q, and it is the one hostile question this slide invites) &mdash; it is real, and it is
+        library behaviour now, not a sample workaround: filed as <strong>Issue 23</strong> and fixed
+        in this cycle, <code>maestroKafkaTemplate</code> honours
+        <code>spring.kafka.template.observation-enabled</code> directly and defaults it on whenever
+        Micrometer tracing is wired, and <code>@MaestroSignalListener</code> now extracts trace
+        context on every record. No per-service <code>@Bean</code> is needed. Full wording: RUNBOOK
+        &sect;Q.</p>
       <p><strong>FALLBACK:</strong> &ldquo;The collector hasn&rsquo;t flushed yet &mdash; here is
         the same trace from this morning&rsquo;s run.&rdquo; &rarr;
         <code>demo/.evidence/task-2-jaeger-cross-service-trace.log</code>.</p>

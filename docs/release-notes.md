@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+### Added — `maestro.messaging.redelivery.enabled` flag, and a startup check for missing `.DLT` topics
+
+The dead-lettering error handler installed on every Maestro-managed consumer
+container ran unconditionally, with nothing to create — or even check for —
+the `.DLT` topics it depends on. A missing dead-letter topic surfaced only
+once a handler's attempt budget was first exhausted, as a stalled, noisily
+retrying consumer, at the worst possible moment to discover the gap.
+
+- **`maestro.messaging.redelivery.enabled`** (default `true`) is a new, first
+  field of the `maestro.messaging.redelivery.*` block, gating both
+  transports. Set to `false` to restore at-most-once handler semantics: on
+  Kafka, the listener container gets a zero-retry `DefaultErrorHandler` with
+  no `DeadLetterPublishingRecoverer`; on Postgres, a failing row is marked
+  `FAILED` after exactly one attempt instead of being retried and
+  dead-lettered. This is the operator's explicit opt-out, not a recommended
+  default.
+- **`KafkaDeadLetterTopicCheck`** is a new warn-only startup probe, wired at
+  every point Maestro subscribes to a topic — the engine's own
+  `subscribe`/`subscribeSignals` and every `@MaestroSignalListener`
+  container's activation. It WARNs by name when a topic's `.DLT` companion
+  does not exist, is bounded to 5 seconds, never fails startup, and is
+  skipped entirely when redelivery is disabled. Full contract and the
+  `.DLT` pre-creation checklist: [`docs/configuration.md` § Kafka
+  Dead-Letter-Topic Check](configuration.md#kafka-dead-letter-topic-check).
+- **`sample-loan-origination`'s and `demo`'s compose stacks now pre-create
+  `.DLT` companions** for every topic they were missing one for — the six
+  engine tasks/signals topics and the two `@MaestroSignalListener` business
+  topics (`loans.verification.results`, `loans.underwriting.decisions`) —
+  closing the exact gap the new check now warns about.
+- **Was:** [Issue 24](open-issues.md#issue-24).
+
+### Fixed — Valkey lock honours `spring.data.redis.host`/`port`/`password`/`username`/`ssl.enabled`/`database`
+
+The Valkey lock's connection URI was previously resolved from only
+`spring.data.redis.url` and `maestro.lock.valkey.uri` — the individual
+`spring.data.redis.host`/`port`/credential properties (which
+`docs/configuration.md`'s own Complete Example configured) were silently
+ignored, and the lock connected to `redis://localhost:6379` regardless.
+A third resolution step now builds the URI from
+`spring.data.redis.host` + `port`/`password`/`username`/`ssl.enabled`/`database`
+when neither URI property is set. **Behaviour change:** a deployment that set
+`spring.data.redis.host` expecting it to apply now genuinely connects there
+instead of falling back to localhost. The full resolution order is documented
+in [`docs/configuration.md` § Valkey Connection Resolution](configuration.md#valkey-connection-resolution).
+
 ### Removed
 
 - **RabbitMQ messaging support has been removed** — the `maestro-messaging-rabbitmq`
@@ -18,6 +63,173 @@
   remains transport-agnostic — a community `maestro-messaging-rabbitmq` (or any
   other broker) adapter implementing the three-method SPI remains possible; it
   is simply no longer shipped or verified in this repository.
+
+### Fixed — A terminate racing saga compensation could no longer run compensations, but could before
+
+`SagaManager.transitionToCompensating` re-reads the instance and re-checks for
+`TERMINATED` before writing `COMPENSATING`, but the read and the write are not
+atomic — a cross-node `WorkflowExecutor.terminateWorkflow` could land in that
+gap, making the write lose its optimistic-lock check. That lost
+compare-and-set was silently swallowed, and the failing run's compensations
+ran anyway: refunds issued, reservations released, for a workflow an operator
+had explicitly asked to stop.
+
+- The lost compare-and-set is now retried against a **fresh read**, with the
+  `TERMINATED`/other-terminal guard re-evaluated on **every** attempt (not
+  just the first) — the same bounded-retry idiom (`STATUS_WRITE_ATTEMPTS = 5`,
+  immediate, no backoff) `InstanceStatusWriter.write` already uses for the
+  sibling conflict on the same row. A `TERMINATED` observed on any attempt now
+  throws `WorkflowTerminatedException`, propagating out of `compensate()`
+  uncaught, and no compensation runs.
+- **Exhaustion policy differs deliberately from `InstanceStatusWriter`:** this
+  write gates entry into the compensation phase, so on exhaustion the method
+  logs an error and rethrows the last `OptimisticLockException` instead of
+  standing down and proceeding — nothing terminal is written, the instance
+  stays active, and recovery retries the transition with a fresh read.
+- **Was:** [Issue 22](open-issues.md#issue-22).
+
+### Fixed — Kafka client configuration now honours `spring.kafka.*`, and Kafka observation/tracing default on
+
+**Behaviour change for every Maestro + Kafka application** — no config
+migration is required, but two things you may not have noticed silently not
+working now do:
+
+- **`spring.kafka.*` reaches Maestro's engine producer/consumer.**
+  `maestroKafkaProducerFactory` / `maestroKafkaConsumerFactory` are now built
+  from Spring Boot's bound `KafkaProperties` — bootstrap servers, compression,
+  batching, retries, SSL/security settings, arbitrary
+  `spring.kafka.producer.properties.*` / `spring.kafka.consumer.properties.*`
+  entries, all of it. Previously these beans ignored `spring.kafka.*` entirely
+  and only ever used a hardcoded bootstrap-servers value. A small set of wire
+  invariants the engine's protocol depends on (`String`/`byte[]`
+  (de)serializers, `acks=all`, the engine's `group.id`) are still forced
+  **last**, so no user property can corrupt engine topics. Full precedence
+  table: [`docs/configuration.md` § Kafka client
+  configuration](configuration.md#kafka-client-configuration).
+- **Kafka observation (and therefore cross-service tracing) is on by default
+  when Micrometer tracing is active** — a `Tracer` *and* a `Propagator` bean
+  both exist and `maestro.observability.tracing.enabled` is not `false`, the
+  same condition that activates Maestro's own `KafkaTracePropagation` bean
+  (Spring Boot's unconditional no-op `Tracer` alone does not trigger this).
+  `maestroKafkaTemplate` and the `@MaestroSignalListener` consumer containers
+  now default `observation-enabled` to `true` under that condition, instead of
+  requiring a hand-written `maestroKafkaTemplate` bean override to get a
+  connected trace across services. `@MaestroSignalListener` also now extracts the
+  inbound `traceparent` (and `tracestate`/`baggage`) from every record,
+  independent of container observation, so `trace_context` is populated on
+  the signal row rather than staying `NULL`. Set
+  `spring.kafka.template.observation-enabled=false` /
+  `spring.kafka.listener.observation-enabled=false` to opt out. Full contract:
+  [`docs/observability.md` § Cross-service trace propagation
+  (Kafka)](observability.md#cross-service-trace-propagation-kafka).
+- **The sample-level observed-template workaround is gone.** The three
+  identical bean-shadowing config classes previously shipped in
+  `sample-loan-origination`'s services (a hand-rolled `maestroKafkaTemplate`
+  bean with observation forced on) are removed — the engine now applies
+  observation defaults without any per-service code. The explicit
+  `spring.kafka.producer.*-serializer` entries are also removed from every
+  Kafka sample's `application.yml`, since all producer traffic in these
+  samples goes through the one `KafkaTemplate<String, byte[]>` in the context
+  (Maestro's own), which forces those regardless. The
+  `spring.kafka.consumer.*-deserializer` entries are removed only where a
+  service's *only* Kafka consumer is `@MaestroSignalListener`
+  (`sample-order-service`, `loan-application-service`) — that path always
+  resolves Maestro's own `maestroKafkaConsumerFactory`, which forces the same
+  invariants. Services that also have a plain `@KafkaListener`
+  (`underwriting-service`, `verification-gateway-service`,
+  `sample-payment-gateway`) keep their `spring.kafka.consumer.*-deserializer`
+  entries — those back Boot's own `kafkaListenerContainerFactory`, which
+  Maestro's forced invariants do not reach, so removing them broke that
+  listener outright (caught by the loan sample's end-to-end suite). If your
+  own service copied the workaround pattern, you can delete it too: a bean
+  named `maestroKafkaTemplate` still wins by
+  `@ConditionalOnMissingBean(name = "maestroKafkaTemplate")` if you keep one,
+  but it is no longer necessary to get a connected trace.
+- **Was:** [Issue 23](open-issues.md#issue-23).
+
+### Fixed — `maestro.enabled=false` now disables every Maestro auto-configuration, not just the core engine
+
+Previously, only the core `MaestroAutoConfiguration` (and, transitively, most
+things that required its beans) backed off under `maestro.enabled=false`.
+`maestro-messaging-kafka` and `maestro-messaging-postgres` had no gate at
+all: with the engine flag off, they still built a real Kafka
+producer/consumer or opened a real Postgres `LISTEN/NOTIFY` connection, then
+crashed resolving `MaestroProperties` — a bean only `MaestroAutoConfiguration`
+registers. `maestro-lock-valkey` had no gate either, and — because it needs
+no `MaestroProperties` bean — it *succeeded*, silently opening live Valkey
+connections (`RedisClient`, the lock connection, the pub/sub signal notifier)
+for an engine the operator believed was fully off.
+
+- `maestro-messaging-kafka`, `maestro-messaging-postgres`,
+  `maestro-lock-valkey`, `maestro-lock-postgres`, `maestro-store-postgres`,
+  and `maestro-admin-client` now all carry the same
+  `@ConditionalOnProperty(prefix = "maestro", name = "enabled", matchIfMissing = true)`
+  gate `MaestroAutoConfiguration` uses. `MaestroHealthAutoConfiguration`
+  gets the same gate directly as defense in depth (it was already
+  transitively off via `@ConditionalOnBean(WorkflowExecutor.class)` in a
+  real application, but the check is now not dependent on that indirection).
+- **Migration note:** if you set `maestro.enabled=false` expecting a clean,
+  fully-disabled Maestro and previously either saw a startup crash (Kafka or
+  Postgres messaging on the classpath) or unexpectedly-live Valkey
+  connections (Valkey lock on the classpath), both are fixed — the flag now
+  does what its documentation always said.
+- **Was:** audit finding F8 (`tasks/audit-2026-08-05-inert-config.md`).
+
+### Fixed — `maestro.retry.default-*` now provides the default `@ActivityStub` retry policy
+
+`ActivityStubBeanPostProcessor` previously built every `@ActivityStub`'s
+retry policy via `RetryPolicy.fromAnnotation()` unconditionally, so the four
+`maestro.retry.default-*` properties bound and validated but were never
+read — every stub got the hardcoded `RetryPolicy.defaultPolicy()` (3
+attempts, 1s→60s backoff, 2× multiplier) regardless of configuration. The
+values happened to coincide with the annotation's own declared defaults,
+which is why this went unnoticed.
+
+- `maestro.retry.default-max-attempts`, `.default-initial-interval`,
+  `.default-max-interval`, and `.default-backoff-multiplier` now supply the
+  policy for any `@ActivityStub` whose `retryPolicy` is left at the
+  `@RetryPolicy` annotation's own defaults (all six attributes unchanged).
+  Customizing even a single attribute still opts that stub out of these
+  properties entirely — the annotation's explicit values are honoured as
+  written. Full precedence rule:
+  [`docs/configuration.md` § Retry Configuration](configuration.md#retry-configuration).
+- **Migration note:** if you previously set `maestro.retry.default-*` to
+  anything other than the annotation's own defaults (3 attempts, 1s, 60s,
+  2.0×) believing it applied, it now genuinely does — activity retry timing
+  for unconfigured stubs may change.
+- **Was:** audit finding F6.
+
+### Fixed — `maestro-admin-client` now honours the canonical `maestro.messaging.topics.admin-events` property
+
+`AdminEventPublisher` read only the deprecated
+`maestro.admin.events.topic` property; a service that followed
+`CLAUDE.md`'s own guidance and set only the canonical
+`maestro.messaging.topics.admin-events` had its admin-client lifecycle
+events published to the wrong topic, while the engine's own publisher (in
+`maestro-messaging-kafka`) correctly used the canonical property. Since
+`maestro-admin-client` cannot depend on the starter module,
+`AdminClientAutoConfiguration.resolveTopic` now mirrors
+`KafkaMessagingAutoConfiguration.resolveAdminEventsTopic`'s precedence
+directly against `Environment`, with cross-referencing comments at both
+sites so the two cannot drift apart unnoticed again.
+
+- **Migration note:** if a service using `maestro-admin-client` set only
+  `maestro.messaging.topics.admin-events` (the documented canonical
+  property) and not the deprecated `maestro.admin.events.topic` alias,
+  admin-client lifecycle events now publish to the topic you actually
+  configured instead of the deprecated-alias default.
+- **Was:** audit finding F10.
+
+### Fixed — PostgresStoreAutoConfiguration now orders after JNDI and XA DataSource auto-configurations
+
+The store bean definition must be contributed before `MaestroAutoConfiguration` runs (the engine is guarded with `@ConditionalOnBean(WorkflowStore.class)`). Previously it was ordered only relative to the base `DataSourceAutoConfiguration`, so a deployment using JNDI or XA DataSources (which have separate, later auto-configurations) could find itself without a store bean — the engine would silently back off, appearing fully configured but completely inactive.
+
+- `PostgresStoreAutoConfiguration` now orders after
+  `JndiDataSourceAutoConfiguration` and `XADataSourceAutoConfiguration` as
+  well, ensuring the store activates regardless of how the `DataSource` is
+  configured. No action required; the fix is purely ordinal and touches no
+  runtime code paths.
+- **Was:** audit finding F9.
 
 ### Added — Observability: Micrometer meters and OpenTelemetry tracing
 
@@ -350,6 +562,14 @@ guarantees against.
   timer-cancel and terminate latency as well as signal latency), so a
   remote fire or cancel takes effect within one interval. Single-node
   behaviour is unchanged: a local fire still unparks instantly.
+
+- **Internal resilience fix:** a lock-renewer thread that failed to start no
+  longer leaves the instance lock reported as `NO_BACKEND` while it is
+  actually held (which skipped `release()` and blocked the workflow ID
+  cluster-wide), and a renewer-start failure no longer permanently disables
+  renewer-starting for every future lock acquisition on the node — both are
+  internal `WorkflowInstanceLockManager` robustness fixes with no
+  configuration or API surface change.
 
 ---
 

@@ -26,15 +26,16 @@ import org.jspecify.annotations.Nullable;
  * does not unwind a saga), and the instance lock is released as the thread
  * unwinds.
  *
- * <p><b>One documented exception to "no compensation runs".</b> The guarantee
- * holds on this exception's own path — wherever it propagates, nothing is
- * unwound. It does not yet hold against one narrow race:
+ * <p><b>"No compensation runs" against a terminate landing mid-transition.</b>
  * {@code SagaManager.transitionToCompensating} re-reads the instance and
  * throws this exception on a {@code TERMINATED} status, but that read and its
- * status write are not atomic, and a terminate landing between them makes the
- * write lose its optimistic-lock check — a conflict currently swallowed, after
- * which the compensations run on the terminated workflow. Open; see
- * {@code docs/open-issues.md} Issue 22 for the mechanism and the planned fix.
+ * status write are not atomic: a terminate can land between them, making the
+ * write lose its optimistic-lock check. That lost compare-and-set is retried
+ * against a fresh read — with the terminal guard re-evaluated on every
+ * attempt — so a {@code TERMINATED} that appears between attempts is still
+ * caught before any compensation runs (formerly Issue 22, now fixed; see
+ * {@code SagaManager.transitionToCompensating}'s Javadoc for the retry and its
+ * exhaustion policy).
  *
  * <h2>Why this extends {@code Error}, not {@code MaestroException}</h2>
  * <p>For exactly the reason {@link ExecutorShutdownException} does. Both are

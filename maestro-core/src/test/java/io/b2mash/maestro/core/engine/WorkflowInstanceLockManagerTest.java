@@ -13,8 +13,11 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -114,6 +117,113 @@ class WorkflowInstanceLockManagerTest {
 
         assertEquals(Acquisition.NO_BACKEND, manager.tryAcquire("order-1"));
         assertFalse(manager.isHeld("order-1"));
+    }
+
+    @Test
+    @DisplayName("renewer-start failure does not misreport ACQUIRED as NO_BACKEND — lock is already held")
+    void renewerStartFailureStillReportsAcquired() {
+        var lock = new RecordingLock();
+        manager = new WorkflowInstanceLockManager(lock, "svc", SHORT_TTL, SHORT_RENEW);
+        manager.renewerThreadStarter = () -> {
+            throw new RuntimeException("simulated renewer-start failure");
+        };
+
+        var result = manager.tryAcquire("order-1");
+
+        assertTrue(manager.isHeld("order-1"),
+                "the lock IS held locally regardless of what tryAcquire reports — "
+                        + "reporting NO_BACKEND here would make the caller skip release()");
+        assertEquals(Acquisition.ACQUIRED, result,
+                "a renewer-start failure must not be reported as NO_BACKEND while the lock is held");
+
+        // release must still work end-to-end after a renewer-start failure.
+        manager.release("order-1");
+        assertFalse(manager.isHeld("order-1"));
+        assertEquals(1, lock.released.size());
+    }
+
+    @Test
+    @DisplayName("renewer-start failure resets the latch so the next acquisition retries starting the renewer")
+    void renewerStartFailureResetsLatchForNextAcquisition() {
+        var lock = new RecordingLock();
+        manager = new WorkflowInstanceLockManager(lock, "svc", SHORT_TTL, SHORT_RENEW);
+        // Capture the real (production) starter before overwriting it, so it
+        // can be swapped back in below.
+        var workingStarter = manager.renewerThreadStarter;
+
+        manager.renewerThreadStarter = () -> {
+            throw new RuntimeException("simulated renewer-start failure");
+        };
+        assertEquals(Acquisition.ACQUIRED, manager.tryAcquire("order-1"));
+        assertTrue(manager.isHeld("order-1"));
+
+        // Swap back to a working starter and acquire a second, independent
+        // lock. If startRenewerIfNeeded() left its latch burned after the
+        // first failure, compareAndSet(false, true) here would still see
+        // renewerStarted == true, the working starter would never even run,
+        // and no lock on this node would ever be renewed again for the
+        // life of the process.
+        manager.renewerThreadStarter = workingStarter;
+        assertEquals(Acquisition.ACQUIRED, manager.tryAcquire("order-2"));
+
+        await().atMost(Duration.ofSeconds(2)).until(() ->
+                lock.renewCounts.getOrDefault("maestro:lock:workflow:order-2", new AtomicInteger()).get() >= 1);
+    }
+
+    @Test
+    @DisplayName("two genuinely concurrent tryAcquire calls racing a throwing starter: "
+            + "neither hangs, the CAS-loser still acquires its own lock, and the latch resets "
+            + "so the next acquisition retries starting the renewer")
+    void concurrentTryAcquireRaceAgainstThrowingStarter_noHangAndLatchResets() throws InterruptedException {
+        var lock = new RecordingLock();
+        manager = new WorkflowInstanceLockManager(lock, "svc", SHORT_TTL, SHORT_RENEW);
+        var workingStarter = manager.renewerThreadStarter;
+
+        // T1 will win the renewerStarted CAS and block inside the starter
+        // until released — modelling the window in which T1 is "starting"
+        // the renewer and T2 must take the (currently silent) CAS-loser
+        // branch, per the engineering review's two-thread race.
+        var starterEntered = new CountDownLatch(1);
+        var releaseStarter = new CountDownLatch(1);
+        manager.renewerThreadStarter = () -> {
+            starterEntered.countDown();
+            try {
+                assertTrue(releaseStarter.await(5, TimeUnit.SECONDS), "test itself must release T1 promptly");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            throw new RuntimeException("simulated renewer-start failure");
+        };
+
+        var t1Result = new AtomicReference<Acquisition>();
+        var t1 = Thread.ofVirtual().start(() -> t1Result.set(manager.tryAcquire("order-1")));
+
+        assertTrue(starterEntered.await(5, TimeUnit.SECONDS),
+                "T1 must have won the CAS and entered the starter before T2 races it");
+
+        // T2 races a DIFFERENT workflowId while T1 is still stuck inside the
+        // starter — its own lock acquisition must complete without waiting
+        // for T1's throw (the CAS-loser branch is a no-op, not a wait).
+        var t2Result = new AtomicReference<Acquisition>();
+        var t2 = Thread.ofVirtual().start(() -> t2Result.set(manager.tryAcquire("order-2")));
+        assertTrue(t2.join(Duration.ofSeconds(5)), "the CAS-loser must not hang waiting for the CAS-winner");
+
+        assertEquals(Acquisition.ACQUIRED, t2Result.get(),
+                "T2's own lock is genuinely held regardless of the shared renewer's start outcome");
+        assertTrue(manager.isHeld("order-2"));
+
+        // Release T1 to fail and reset the latch.
+        releaseStarter.countDown();
+        assertTrue(t1.join(Duration.ofSeconds(5)), "T1 must not hang after its starter throws");
+        assertEquals(Acquisition.ACQUIRED, t1Result.get());
+        assertTrue(manager.isHeld("order-1"));
+
+        // The latch must have reset: swapping in a working starter and
+        // acquiring a third, independent lock must actually start renewing.
+        manager.renewerThreadStarter = workingStarter;
+        assertEquals(Acquisition.ACQUIRED, manager.tryAcquire("order-3"));
+        await().atMost(Duration.ofSeconds(2)).until(() ->
+                lock.renewCounts.getOrDefault("maestro:lock:workflow:order-3", new AtomicInteger()).get() >= 1);
     }
 
     @Test

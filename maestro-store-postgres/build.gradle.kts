@@ -19,6 +19,7 @@ dependencies {
     runtimeOnly(libs.flyway.postgres)
 
     testImplementation(libs.spring.boot.starter.test)
+    testImplementation(libs.spring.boot.starter.jdbc)
     testImplementation(libs.testcontainers.junit5)
     testImplementation(libs.testcontainers.postgresql)
 }

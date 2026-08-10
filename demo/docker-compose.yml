@@ -141,6 +141,26 @@ services:
         $$KAFKA --create --if-not-exists --topic loans.verification.results     --partitions 3 --replication-factor 1
         $$KAFKA --create --if-not-exists --topic loans.underwriting.requests    --partitions 3 --replication-factor 1
         $$KAFKA --create --if-not-exists --topic loans.underwriting.decisions   --partitions 3 --replication-factor 1
+
+        # .DLT companions (Issue 24): Maestro's redelivery/dead-letter error
+        # handler is installed on every topic a Maestro consumer subscribes to
+        # (the six engine tasks/signals topics above) and on every
+        # @MaestroSignalListener topic (the two business-event topics
+        # loan-application actually *consumes* — the *.requests topics are
+        # consumed by plain @KafkaListeners, outside Maestro's redelivery
+        # path, so they get no companion). Without these, KafkaDeadLetterTopicCheck
+        # WARNs at subscribe time and, once a handler's attempt budget is
+        # first exhausted, the recoverer's publish fails and consumption
+        # stalls noisily instead of parking the record. See
+        # docs/configuration.md § Redelivery and Dead-Letter Properties.
+        $$KAFKA --create --if-not-exists --topic maestro.tasks.loan-application.DLT      --partitions 3 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic maestro.tasks.verification-gateway.DLT  --partitions 3 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic maestro.tasks.underwriting.DLT          --partitions 3 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic maestro.signals.loan-application.DLT     --partitions 3 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic maestro.signals.verification-gateway.DLT --partitions 3 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic maestro.signals.underwriting.DLT         --partitions 3 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic loans.verification.results.DLT     --partitions 3 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic loans.underwriting.decisions.DLT   --partitions 3 --replication-factor 1
         echo "All Kafka topics created successfully."
 
   # ── Observability ──────────────────────────────────────────────────

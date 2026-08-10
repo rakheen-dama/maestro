@@ -24,15 +24,19 @@ import java.time.Duration;
  *
  * <p><b>Thread safety:</b> This record is immutable and therefore thread-safe.
  *
- * @param tasksTopic       fixed task topic, or {@code null} for dynamic naming
- * @param signalsTopic     fixed signal topic, or {@code null} for dynamic naming
- * @param adminEventsTopic topic for admin lifecycle events
- * @param consumerGroup    Kafka consumer group ID
- * @param maxAttempts      total delivery attempts, including the first
- * @param initialInterval  backoff before the second attempt
- * @param multiplier       factor applied to the backoff after each failure
- * @param maxInterval      ceiling for the computed backoff
- * @param deadLetterSuffix suffix appended to a topic to name its dead-letter topic
+ * @param tasksTopic        fixed task topic, or {@code null} for dynamic naming
+ * @param signalsTopic      fixed signal topic, or {@code null} for dynamic naming
+ * @param adminEventsTopic  topic for admin lifecycle events
+ * @param consumerGroup     Kafka consumer group ID
+ * @param maxAttempts       total delivery attempts, including the first
+ * @param initialInterval   backoff before the second attempt
+ * @param multiplier        factor applied to the backoff after each failure
+ * @param maxInterval       ceiling for the computed backoff
+ * @param deadLetterSuffix  suffix appended to a topic to name its dead-letter topic
+ * @param redeliveryEnabled whether handler-failure redelivery and
+ *                          dead-lettering are active; {@code false} installs a
+ *                          zero-retry, no-dead-letter error handler instead
+ *                          and skips the dead-letter-topic startup probe
  */
 public record KafkaMessagingConfig(
         @Nullable String tasksTopic,
@@ -43,7 +47,8 @@ public record KafkaMessagingConfig(
         Duration initialInterval,
         double multiplier,
         Duration maxInterval,
-        String deadLetterSuffix
+        String deadLetterSuffix,
+        boolean redeliveryEnabled
 ) {
 
     /**

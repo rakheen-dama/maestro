@@ -3,6 +3,7 @@ package io.b2mash.maestro.spring.config;
 import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.ActivityStub;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
+import io.b2mash.maestro.core.annotation.RetryPolicy;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
@@ -30,26 +31,31 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 /**
- * Pins that three configuration seams actually reach the engine through the
- * real auto-configuration chain (Issues 7 + 9):
+ * Pins that configuration seams actually reach the engine through the
+ * real auto-configuration chain (Issues 7 + 9, audit finding F6):
  * {@code maestro.shutdown.timeout}, {@code maestro.signal.wake-recheck-interval},
- * and {@code maestro.lock.key-prefix} for the per-activity lock (in addition
- * to the instance lock, which already honoured it).
+ * {@code maestro.lock.key-prefix} for the per-activity lock (in addition
+ * to the instance lock, which already honoured it), and
+ * {@code maestro.retry.default-*} for the default {@code @ActivityStub}
+ * retry policy.
  *
- * <p>Before this fix, all three had a hardcoded 30-second (or {@code maestro:lock:})
- * value baked into {@link WorkflowExecutor} / {@code ActivityInvocationHandler}
+ * <p>Before this fix, all four had a hardcoded value baked into
+ * {@link WorkflowExecutor} / {@code ActivityInvocationHandler} /
+ * {@code ActivityStubBeanPostProcessor} — 30 seconds, {@code maestro:lock:},
+ * or {@code RetryPolicy.defaultPolicy()} (3 attempts, 1s/60s/2x backoff) —
  * with no property to override it. These tests drive the real
  * {@link MaestroAutoConfiguration} chain over the in-memory SPIs — the same
  * pattern {@link MaestroAutoConfigurationLifecycleEventsTest} uses — so the
  * wiring from {@link MaestroProperties} into the engine is covered, not just
  * the property binding.
  */
-@DisplayName("shutdown timeout, wake-recheck-interval and activity lock prefix reach the engine")
+@DisplayName("shutdown timeout, wake-recheck-interval, activity lock prefix and default retry policy reach the engine")
 class MaestroAutoConfigurationConfigSeamsTest {
 
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
@@ -141,6 +147,67 @@ class MaestroAutoConfigurationConfigSeamsTest {
                                     + "not the hardcoded maestro:lock: default — acquired keys were "
                                     + lock.acquiredKeys)
                             .containsExactly("custom:prefix:activity:lock-prefix-1:1");
+                });
+    }
+
+    @Test
+    @DisplayName("maestro.retry.default-max-attempts provides the default @ActivityStub retry policy (audit F6)")
+    void defaultMaxAttemptsReachesDefaultActivityStubRetryPolicy() {
+        var activity = new AlwaysFailingActivitiesImpl();
+        runner.withBean(AlwaysFailingActivities.class, () -> activity)
+                .withBean(DefaultRetryWorkflow.class, DefaultRetryWorkflow::new)
+                .withPropertyValues("maestro.retry.default-max-attempts=1")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    var client = context.getBean(MaestroClient.class);
+                    var store = context.getBean(WorkflowStore.class);
+
+                    client.newWorkflow(DefaultRetryWorkflow.class, options("default-retry-1"))
+                            .startAsync(null);
+
+                    await("the workflow must fail once the configured single attempt is exhausted")
+                            .atMost(Duration.ofSeconds(10))
+                            .until(() -> store.getInstance("default-retry-1")
+                                    .map(i -> i.status() == WorkflowStatus.FAILED)
+                                    .orElse(false));
+
+                    assertThat(activity.invocationCount.get())
+                            .as("maestro.retry.default-max-attempts=1 must bound the default "
+                                    + "@ActivityStub retry policy to a single attempt, not the "
+                                    + "hardcoded RetryPolicy.defaultPolicy() 3-attempt default")
+                            .isEqualTo(1);
+                });
+    }
+
+    @Test
+    @DisplayName("an @ActivityStub with an explicit retryPolicy keeps its own attempt count "
+            + "even when maestro.retry.default-max-attempts differs")
+    void explicitRetryPolicyOverridesConfiguredDefault() {
+        var activity = new AlwaysFailingActivitiesImpl();
+        runner.withBean(AlwaysFailingActivities.class, () -> activity)
+                .withBean(CustomRetryWorkflow.class, CustomRetryWorkflow::new)
+                .withPropertyValues("maestro.retry.default-max-attempts=1")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    var client = context.getBean(MaestroClient.class);
+                    var store = context.getBean(WorkflowStore.class);
+
+                    client.newWorkflow(CustomRetryWorkflow.class, options("custom-retry-1"))
+                            .startAsync(null);
+
+                    // 5 attempts at the annotation's default backoff (1s, 2s, 4s, 8s
+                    // between attempts) take ~15s — well above the other seams' budget.
+                    await("the workflow must fail once the annotation's 5 attempts are exhausted")
+                            .atMost(Duration.ofSeconds(25))
+                            .until(() -> store.getInstance("custom-retry-1")
+                                    .map(i -> i.status() == WorkflowStatus.FAILED)
+                                    .orElse(false));
+
+                    assertThat(activity.invocationCount.get())
+                            .as("@ActivityStub(retryPolicy = @RetryPolicy(maxAttempts = 5)) must win over "
+                                    + "maestro.retry.default-max-attempts=1 — the annotation was explicitly "
+                                    + "customized, so it must not resolve to the configured default")
+                            .isEqualTo(5);
                 });
     }
 
@@ -248,6 +315,62 @@ class MaestroAutoConfigurationConfigSeamsTest {
         @Override
         public void doWork() {
             // no-op
+        }
+    }
+
+    /** Calls a single always-failing activity with the default (unset) {@code @ActivityStub} retry policy. */
+    @DurableWorkflow(name = "ConfigSeamsDefaultRetryWorkflow")
+    public static class DefaultRetryWorkflow {
+
+        @ActivityStub
+        private AlwaysFailingActivities activities;
+
+        /**
+         * @param input ignored
+         * @return never returns — the activity always throws and retries are exhausted
+         */
+        @WorkflowMethod
+        public String run(String input) {
+            activities.call();
+            return "unreachable";
+        }
+    }
+
+    /** Calls a single always-failing activity with an explicit, non-default retry policy. */
+    @DurableWorkflow(name = "ConfigSeamsCustomRetryWorkflow")
+    public static class CustomRetryWorkflow {
+
+        @ActivityStub(retryPolicy = @RetryPolicy(maxAttempts = 5))
+        private AlwaysFailingActivities activities;
+
+        /**
+         * @param input ignored
+         * @return never returns — the activity always throws and retries are exhausted
+         */
+        @WorkflowMethod
+        public String run(String input) {
+            activities.call();
+            return "unreachable";
+        }
+    }
+
+    /** Single-method activity interface whose implementation always throws. */
+    @Activity(name = "AlwaysFailingActivities")
+    public interface AlwaysFailingActivities {
+        /** Always throws. */
+        void call();
+    }
+
+    /** Counts invocations and always throws — pins the effective retry attempt count. */
+    public static class AlwaysFailingActivitiesImpl implements AlwaysFailingActivities {
+
+        /** Number of times {@link #call()} has actually been invoked. */
+        final AtomicInteger invocationCount = new AtomicInteger();
+
+        @Override
+        public void call() {
+            invocationCount.incrementAndGet();
+            throw new RuntimeException("always fails");
         }
     }
 

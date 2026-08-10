@@ -943,28 +943,32 @@ move on.
 ## §Q — Questions you should not have to improvise
 
 **"Is the tracing across Kafka real, or did you special-case it?"**
-It is real, and there is one honest caveat. Maestro's `maestroKafkaTemplate`
-suppresses Boot's auto-configured `kafkaTemplate`
+It is real, and it is now real *in the library*, not through a sample-level
+workaround. When this demo was first built, Maestro's `maestroKafkaTemplate`
+suppressed Boot's auto-configured `kafkaTemplate`
 (`@ConditionalOnMissingBean(KafkaTemplate.class)`), so
-`spring.kafka.template.observation-enabled` configures a bean that is never
-created — it is **inert for all users**. And `@MaestroSignalListener` builds
-its container by hand, so it does not extract trace context on domain topics
-either. Both are filed as **Issue 23 in `docs/open-issues.md`**.
+`spring.kafka.template.observation-enabled` configured a bean that was never
+created — it was inert for every Maestro + Kafka user. And
+`@MaestroSignalListener` built its container by hand, so it never extracted
+trace context on inbound records at all. Both were filed as **Issue 23 in
+`docs/open-issues.md`** and have since been fixed in the library (the
+open-issues cycle's Tasks 1-3): `maestroKafkaTemplate` now honours
+`spring.kafka.template.observation-enabled` directly, and defaults it **on**
+whenever Micrometer tracing is actually wired (a `Tracer` *and* a
+`Propagator` bean present, `maestro.observability.tracing.enabled` not
+`false`) — no per-service bean required. `@MaestroSignalListener` now
+extracts the inbound `traceparent` on every record, independent of container
+observation. Full contract: `docs/observability.md` § Cross-service trace
+propagation (Kafka).
 
-The producer-side workaround is therefore **not** a property: each sample
-declares an `ObservedKafkaTemplateConfig` `@Bean` named `maestroKafkaTemplate`
-(`src/main/java/.../config/`) that calls `setObservationEnabled(true)`. It wins
-because Maestro declares its own template
-`@ConditionalOnMissingBean(name = "maestroKafkaTemplate")` — a real extension
-point, used as intended. That bean is what puts `traceparent` on the wire, with
-or without any `-D` flag.
-
-The `-Dspring.kafka.template.observation-enabled=true` you will see on the JVM
-command line is the *inert half* of a pair, kept only so the pairing reads
-symmetrically; its sibling
-`-Dspring.kafka.listener.observation-enabled=true` **is** effective, because
-Boot's listener-container factory is not shadowed. It is a library defect with
-a documented workaround, not a demo trick.
+The `-Dspring.kafka.template.observation-enabled=true` and
+`-Dspring.kafka.listener.observation-enabled=true` flags you will see on the
+JVM command line are both effective now — the first reaches
+`maestroKafkaTemplate` (which the domain activities also inject, since it is
+the only `KafkaTemplate<String, byte[]>` bean in the context), the second
+reaches Boot's listener-container factory as it always did. Kept explicit
+here so the demo's tracing does not depend on the tracing-active default;
+this is a documented library contract now, not a demo trick.
 
 **"Exactly-once?"** No. At-least-once execution with exactly-once *persisted
 results*. The unique index on `(workflow_instance_id, sequence_number)`

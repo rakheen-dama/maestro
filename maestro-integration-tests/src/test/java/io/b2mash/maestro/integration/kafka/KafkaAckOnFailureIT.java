@@ -1,7 +1,10 @@
 package io.b2mash.maestro.integration.kafka;
 
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.spi.SignalMessage;
+import io.b2mash.maestro.messaging.kafka.KafkaDeadLetterTopicCheck;
 import io.b2mash.maestro.messaging.kafka.KafkaMessagingConfig;
 import io.b2mash.maestro.messaging.kafka.KafkaWorkflowMessaging;
 import io.b2mash.maestro.spring.annotation.MaestroSignalListener;
@@ -13,6 +16,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -91,6 +95,13 @@ class KafkaAckOnFailureIT extends KafkaSpringIntegrationSupport {
     /** Where the engine channel parks a record it can never process. */
     static final String POISON_CHANNEL_DLT = POISON_CHANNEL_TOPIC + ".DLT";
 
+    /**
+     * A source topic that exists but whose {@code .DLT} companion is
+     * deliberately never pre-created — the missing-dead-letter-topic WARN test
+     * needs exactly this gap.
+     */
+    static final String MISSING_DLT_CHANNEL_TOPIC = "it.ack.channel.missing-dlt";
+
     static final String ADMIN_TOPIC = "it.ack.admin";
 
     /** Payload that makes the router fail on every attempt. */
@@ -110,8 +121,10 @@ class KafkaAckOnFailureIT extends KafkaSpringIntegrationSupport {
      */
     @BeforeAll
     static void createAckTopics() throws ExecutionException, InterruptedException {
+        // MISSING_DLT_CHANNEL_TOPIC itself is created; its .DLT companion
+        // deliberately is not — see its Javadoc.
         createTopics(EVENT_TOPIC, DLT_TOPIC, CHANNEL_TOPIC, POISON_CHANNEL_TOPIC, POISON_CHANNEL_DLT,
-                ADMIN_TOPIC, "maestro.signals." + SERVICE);
+                MISSING_DLT_CHANNEL_TOPIC, ADMIN_TOPIC, "maestro.signals." + SERVICE);
     }
 
     @BeforeEach
@@ -174,6 +187,35 @@ class KafkaAckOnFailureIT extends KafkaSpringIntegrationSupport {
                                     + "attempts=" + attempts.get()));
             assertTrue(attempts.get() >= 3, "expected redelivery, saw " + attempts.get() + " attempt(s)");
         } finally {
+            messaging.destroy();
+        }
+    }
+
+    @Test
+    @DisplayName("subscribing to a topic with no pre-created .DLT companion logs a WARN naming it")
+    void missingDeadLetterTopic_logsWarnAtSubscribeTime() {
+        var config = channelConfig(MISSING_DLT_CHANNEL_TOPIC, 3);
+        var messaging = new KafkaWorkflowMessaging(
+                producer(), consumerFactory(config.consumerGroup()), objectMapper, config);
+
+        var logAppender = new ListAppender<ILoggingEvent>();
+        logAppender.start();
+        var checkLogger = (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(KafkaDeadLetterTopicCheck.class);
+        checkLogger.addAppender(logAppender);
+
+        try {
+            // Container startup — subscribeSignals runs the dead-letter-topic
+            // probe synchronously before the container is created.
+            messaging.subscribeSignals(SERVICE, message -> { });
+
+            var expectedDlt = MISSING_DLT_CHANNEL_TOPIC + ".DLT";
+            assertTrue(logAppender.list.stream().anyMatch(event ->
+                            "WARN".equals(event.getLevel().toString())
+                                    && event.getFormattedMessage().contains(expectedDlt)),
+                    "expected a WARN naming '" + expectedDlt + "', saw: "
+                            + logAppender.list.stream().map(ILoggingEvent::getFormattedMessage).toList());
+        } finally {
+            checkLogger.detachAppender(logAppender);
             messaging.destroy();
         }
     }
@@ -251,7 +293,7 @@ class KafkaAckOnFailureIT extends KafkaSpringIntegrationSupport {
     private static KafkaMessagingConfig channelConfig(String signalsTopic, int maxAttempts) {
         return new KafkaMessagingConfig(
                 null, signalsTopic, ADMIN_TOPIC, "ack-channel-" + UUID.randomUUID(),
-                maxAttempts, Duration.ofMillis(250), 2.0, Duration.ofSeconds(1), ".DLT");
+                maxAttempts, Duration.ofMillis(250), 2.0, Duration.ofSeconds(1), ".DLT", true);
     }
 
     /** Registers this suite's router; see {@code KafkaSignalListenerRoundTripIT}. */

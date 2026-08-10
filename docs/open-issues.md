@@ -206,9 +206,11 @@ outcome, commit references, and pinning tests). Issues 11 and 12 remain open
 by deliberate decision — see "Known limitations" at the end of §5. Three new
 issues (13–15), found while doing this work, were opened along the way and
 are **now resolved too** (see each section below). A fourth (16), found
-during the final whole-branch review of 13–15, is **guarded off, not
-resolved** — see its section for why. A fifth (17), found on day one of the
-multi-instance verification cycle (running every service at two instances),
+during the final whole-branch review of 13–15, is **guarded off — ruled
+(2026-08-06) to be the supported behaviour**, not a defect awaiting a code
+fix — see its section for the ruling and the operator path. A fifth (17),
+found on day one of the multi-instance verification cycle (running every
+service at two instances),
 is **now resolved** — see its section. A sixth (18), found by the chaos
 harness's first live run (the mandated Issue 11 split-brain trigger), is
 **now resolved** — see its section. A seventh (19), found by the chaos
@@ -219,13 +221,18 @@ parked wake-recheck probe), is **now resolved** — see its section. A ninth
 (21), found while building a tracing fixture during the release-hardening
 cycle and triaged as release-blocking, is **now resolved** — see its section.
 A tenth (22), found by the review of 21's fix in the same class of
-read-modify-write race, is **open**: narrow, pre-existing, and behavioural
-rather than cosmetic. An eleventh (23), found while building the demo stack —
-where it surfaced as a cross-service trace that would not join up — is
-**open** and the highest-severity thing on this list: Maestro's Kafka beans
-shadow Spring Boot's by type, silently voiding `spring.kafka.producer.*` and
-`spring.kafka.template.*` for every user, and `@MaestroSignalListener` never
-extracts the inbound `traceparent`.
+read-modify-write race, is **now resolved** — see its section. An eleventh
+(23), found while building the demo stack — where it surfaced as a
+cross-service trace that would not join up — was the highest-severity thing
+on this list: Maestro's Kafka beans shadowed Spring Boot's by type, silently
+voiding `spring.kafka.producer.*` and `spring.kafka.template.*` for every
+user, and `@MaestroSignalListener` never extracted the inbound `traceparent`.
+It is **now resolved** — see its section. A twelfth (24), found alongside 23
+while auditing the same Kafka path, is **now resolved** too — see its
+section. Three more (25, 26, 27), found by the open-issues cycle's own
+inert-config audit (`tasks/audit-2026-08-05-inert-config.md`), by a deferred
+item from the demo cycle, and by an external review of PR #34 respectively,
+are filed **open** — see their sections.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -258,15 +265,18 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [13](#issue-13) | `CANCELLED` timers can strand a replaying workflow | Library defect | Medium | **Resolved** |
 | [14](#issue-14) | `SagaManager` re-appends `COMPENSATION_STARTED` on replay | Library gap | Low | **Resolved** |
 | [15](#issue-15) | Admin dashboard retry/terminate signals are unconsumed | Library gap | Medium | **Resolved** |
-| [16](#issue-16) | Retrying a compensated saga is guarded off, not supported | Library gap | Medium | Open, guarded |
+| [16](#issue-16) | Retrying a compensated saga is guarded off, not supported | Library gap | Medium | Open — ruled, guard is the supported behaviour |
 | [17](#issue-17) | Cross-node timer fires never wake the sleeping workflow | Library defect | High | **Resolved** |
 | [18](#issue-18) | A stale run's duplicate append is recorded as workflow failure | Library defect | High | **Resolved** |
 | [19](#issue-19) | Timed-out awaits replay nondeterministically (late signal consumed at the gap) | Library defect | High | **Resolved** |
 | [20](#issue-20) | A transient store outage during a parked wake-recheck fails a healthy workflow | Library defect | High | **Resolved** |
 | [21](#issue-21) | Two `parallel()` branches parking at once fail the workflow and run compensations | Library defect | High | **Resolved** |
-| [22](#issue-22) | Compensations can run on an operator-terminated workflow | Library defect | Medium | Open |
-| [23](#issue-23) | Maestro's Kafka beans silently disable `spring.kafka.*`; `@MaestroSignalListener` drops trace context | Library defect | Critical | Open |
-| [24](#issue-24) | Redelivery is always on and always dead-letters, but nothing documents or creates the `.DLT` topics | Library gap — docs + config | Medium | Open |
+| [22](#issue-22) | Compensations can run on an operator-terminated workflow | Library defect | Medium | **Resolved** |
+| [23](#issue-23) | Maestro's Kafka beans silently disable `spring.kafka.*`; `@MaestroSignalListener` drops trace context | Library defect | Critical | **Resolved** |
+| [24](#issue-24) | Redelivery is always on and always dead-letters, but nothing documents or creates the `.DLT` topics | Library gap — docs + config | Medium | **Resolved** |
+| [25](#issue-25) | `maestro.worker.*` is documented but wholly unimplemented | Library gap — docs + config | Medium | Open |
+| [26](#issue-26) | Terminal instance write and terminal event append are two non-transactional writes | Library gap — durability contract | Medium | Open |
+| [27](#issue-27) | A redelivery status-write failure can let a disabled-redelivery row be reclaimed and reprocessed | Library gap — durability contract | Medium | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -1337,6 +1347,12 @@ end-to-end test, not just a controller-layer smoke test.
 > promising the opposite. The rest of this section is kept as the record of
 > the underlying defect this guard prevents.
 
+> **Ruling (2026-08-06):** the guard is the supported behaviour.
+> Retry-after-compensation stays unsupported; the operator path is a new
+> instance (`docs/admin.md` §Admin Actions, "Operator path: retry says
+> `COMPENSATED_NOT_RETRYABLE`"). Neither relaunch direction below is
+> planned.
+
 **What's wrong.** Issue 15's `retryWorkflow` only deletes a `FAILED`
 instance's `ACTIVITY_FAILED`/`WORKFLOW_FAILED` memos before relaunching in
 replay mode. If the workflow's saga already ran compensations before it
@@ -1774,18 +1790,35 @@ that had **enshrined this defect as "an engine-level limitation"**.
 
 ### Issue 22 — Compensations can run on an operator-terminated workflow {#issue-22}
 
-> **Open.** Narrow and pre-existing; found by the review of Issue 21's fix,
-> which closed the same read-modify-write race in the sibling writer. Not
-> fixed in the release-hardening cycle because it is out of that cycle's
-> scope, and it is filed here so it is a known behaviour rather than a
-> surprise.
+> **Resolved.** `SagaManager.transitionToCompensating`'s single-attempt
+> swallow is now the same **bounded retry against a fresh read**
+> (`InstanceStatusWriter.STATUS_WRITE_ATTEMPTS = 5`, immediate, no backoff,
+> widened to `public` so the saga package can share it) that Issue 21 shipped
+> for the sibling writer, with the terminal guard re-evaluated on **every**
+> attempt — not just the first — so a `TERMINATED` landing between attempts
+> is still caught before compensation starts, and
+> `WorkflowTerminatedException` propagates. Exhaustion policy deliberately
+> differs from Issue 21's: this write gates entry into an active phase, so on
+> exhaustion the method logs an error and **rethrows** the last
+> `OptimisticLockException` — abandoning the local run without compensating —
+> rather than standing down and proceeding. Pinned by
+> `SagaManagerTerminateRaceTest` (a `TerminateInterposingStore` that injects
+> the cross-node `TERMINATED` write between the guard's read and the CAS,
+> deterministically, no latches or sleeps), with a mutation round confirming
+> all three load-bearing details: the retry itself, the in-loop (not just
+> pre-loop) terminal re-check, and the exhaustion rethrow. The rest of this
+> section is kept as the record of the defect; line numbers below are where
+> the guard and the swallow lived **before** the fix and are no longer
+> current — see `SagaManager.transitionToCompensating`'s Javadoc for the
+> present-day mechanism.
 
 **Kind:** Library defect. **Severity:** Medium (narrow window, but the
-outcome contradicts a documented guarantee).
+outcome contradicted a documented guarantee).
 
-**What's wrong.** `SagaManager.transitionToCompensating`
-(`maestro-core/src/main/java/.../saga/SagaManager.java`, the guard at line 542
-and the swallow at line 560) has the right guard and the wrong failure mode:
+**What was wrong.** `SagaManager.transitionToCompensating`
+(`maestro-core/src/main/java/.../saga/SagaManager.java`, the guard at
+pre-fix line 542 and the swallow at pre-fix line 560) had the right guard
+and the wrong failure mode:
 
 ```java
 var latest = store.getInstance(ctx.workflowId()).orElse(instance);
@@ -1801,70 +1834,118 @@ try {
 }
 ```
 
-The read and the compare-and-set are not atomic. Sequence:
+The read and the compare-and-set were not atomic. Sequence:
 
-1. The guard reads a **non-terminal** status and passes.
-2. A cross-node `WorkflowExecutor.terminateWorkflow` writes `TERMINATED`,
+1. The guard read a **non-terminal** status and passed.
+2. A cross-node `WorkflowExecutor.terminateWorkflow` wrote `TERMINATED`,
    bumping the row version.
-3. The compare-and-set loses.
-4. The conflict is **swallowed** (`debug`, "continuing") and the method
-   returns normally.
-5. `compensate()` carries on and **the compensations run**.
+3. The compare-and-set lost.
+4. The conflict was **swallowed** (`debug`, "continuing") and the method
+   returned normally.
+5. `compensate()` carried on and **the compensations ran**.
 
-**Why it matters.** This contradicts the engine's own documented contract.
+**Why it mattered.** This contradicted the engine's own documented contract.
 `InstanceStatusWriter`'s Javadoc — and the `WorkflowTerminatedException`
-throw fifteen lines above the swallow (`:545` vs `:560`) — state that
-`TERMINATED` means "the run must stop now, **without compensation**". Here an operator terminates a
-workflow and the engine unwinds it anyway: refunds issued, reservations
+throw a few lines above the swallow — stated that `TERMINATED` means "the run
+must stop now, **without compensation**". Here an operator could terminate a
+workflow and the engine would unwind it anyway: refunds issued, reservations
 released, for a workflow an operator explicitly asked to stop. The guard was
-written to prevent exactly this and prevents it only when the terminate lands
-*before* the read.
+written to prevent exactly this and prevented it only when the terminate
+landed *before* the read.
 
-The window is narrow — the terminate has to land between the guard's read and
-the compare-and-set, on a workflow that is entering its compensation phase —
-and it is pre-existing, not introduced by this cycle. But it is a behavioural
-defect, not a cosmetic one: the observable outcome is wrong.
+The window was narrow — the terminate had to land between the guard's read
+and the compare-and-set, on a workflow that was entering its compensation
+phase — and it was pre-existing, not introduced by the cycle that found it.
+But it was a behavioural defect, not a cosmetic one: the observable outcome
+was wrong.
 
 **Where.** `maestro-core/src/main/java/.../saga/SagaManager.java`
-`transitionToCompensating` — the guard at `:542`, the `OptimisticLockException`
-catch at `:560`.
+`transitionToCompensating` — the guard and the `OptimisticLockException`
+catch this fix replaced (pre-fix line numbers `:542`/`:560`; both now live
+inside the bounded-retry loop the callout above describes).
 
-**How to tackle it.** The fix is the one Issue 21 already shipped for the
+**How it was tackled.** The fix is the one Issue 21 already shipped for the
 sibling writer, and the idiom is now proven twice in the codebase
 (`WorkflowExecutor.transitionToTerminal`, `InstanceStatusWriter.write`):
 replace the swallow with a **bounded retry against a fresh read**, with the
 terminal guard **re-evaluated inside the loop** — so a `TERMINATED` that
 appears between attempts throws `WorkflowTerminatedException` rather than
-being lost. Note that the exhaustion policy differs from Issue 21's: this
-write is a transition *into* an active phase, so on exhaustion the safe answer
-is still to stand down (leaving the instance in its existing recoverable
-state) rather than to compensate against an unread row.
+being lost. The exhaustion policy deliberately differs from Issue 21's: this
+write is a transition *into* an active phase, so on exhaustion the shipped
+behaviour is to **rethrow** the last `OptimisticLockException` — abandoning
+the local run without compensating — rather than to stand down and proceed;
+nothing terminal is written, the instance stays active, and recovery
+re-attempts the transition against a fresh read. (An earlier draft of this
+write-up proposed "stand down" without specifying rethrow-vs-return; the
+shipped mechanism is the rethrow described above and in the callout.)
 
-**Done when.** A RED pin proves the current behaviour — a `TERMINATED` written
-between the guard's read and the compare-and-set produces at least one
-`COMPENSATION_STARTED` / compensation invocation — and the same pin shows zero
-compensations after the fix, with `WorkflowTerminatedException` propagating.
-Pin the mechanism the way Issue 21's fix was pinned: assert the store write
-ledger and the compensation invocations, not merely that the workflow ended up
-`TERMINATED`.
+**Done when.** A RED pin proves the pre-fix behaviour — a `TERMINATED`
+written between the guard's read and the compare-and-set produces at least
+one `COMPENSATION_STARTED` / compensation invocation — and the same pin
+shows zero compensations after the fix, with `WorkflowTerminatedException`
+propagating. Pin the mechanism the way Issue 21's fix was pinned: assert the
+store write ledger and the compensation invocations, not merely that the
+workflow ended up `TERMINATED`. **Met** — see `SagaManagerTerminateRaceTest`
+in the callout above.
 
 ---
 
 ### Issue 23 — Maestro's Kafka beans silently disable Spring Boot's `spring.kafka.*` configuration, and `@MaestroSignalListener` drops trace context {#issue-23}
 
-> **Open.** Found while building the demo stack (`demo/`), where it presented
-> as "Jaeger shows three unrelated single-service traces". Filed rather than
-> fixed: the demo cycle's remit was the stack, and the fix changes shipped
-> behaviour for every Maestro + Kafka user, so it wants its own cycle with
-> pinning tests. A sample-level stopgap is in place — see "Today's
-> workaround".
+> **Resolved** (open-issues cycle, 2026-08-06). Both parts fixed, plus an
+> audit-found sibling. **Part 1 (bean shadowing).**
+> `maestroKafkaProducerFactory`/`maestroKafkaConsumerFactory` now bind
+> Boot's `KafkaProperties` (`@EnableConfigurationProperties`) and build from
+> `kafkaProperties.buildProducerProperties()`/`buildConsumerProperties()`,
+> applying an `ObjectProvider<KafkaConnectionDetails>` override when
+> present, with the engine's wire-format invariants (`String`/`byte[]`
+> (de)serializers, `acks=all`, the engine-owned `group.id`) forced **last**
+> — the precedence rule — so no user property can corrupt engine topics.
+> The suppression of Boot's typed `ProducerFactory`/`ConsumerFactory` beans
+> is now an explicit `beforeName = KafkaAutoConfiguration` ordering
+> decision instead of an alphabetical-package-name accident; `afterName`
+> was deliberately rejected, since it would resurrect Boot's beans
+> alongside Maestro's and break the context with
+> `NoUniqueBeanDefinitionException`. **Part 2 (trace context).**
+> `maestroKafkaTemplate` and every `@MaestroSignalListener` container now
+> default Micrometer observation **on** when a `Tracer` *and* a
+> `Propagator` bean both exist and `maestro.observability.tracing.enabled`
+> is not `false` — the same condition `KafkaTracePropagation` already used
+> (an earlier draft of this fix gated on "a `Tracer` alone" and was
+> corrected before merge, commit `c60cfd7`). Listener containers now run
+> the handler through `KafkaTracePropagation.runWithExtractedContext` on
+> the record's headers before invoking it, so an inbound `traceparent`
+> reaches `trace_context` on the persisted signal row instead of `NULL`.
+> **F3 (audit sibling, fixed alongside).**
+> `MaestroSignalListenerBeanPostProcessor`'s `ConsumerFactory` lookup now
+> resolves `maestroKafkaConsumerFactory` by name first, mirroring
+> `resolveKafkaTemplate`'s existing pattern, closing the
+> `NoUniqueBeanDefinitionException` an application-defined `ConsumerFactory`
+> bean used to cause. The sample-level `ObservedKafkaTemplateConfig`
+> workaround (all three loan services) and the redundant
+> `spring.kafka.producer/consumer.*` serializer overrides that only ever
+> coincided with Maestro's hardcoded values are deleted — see "Today's
+> workaround" below for what used to be necessary.
+> `docs/observability.md`'s scope-limit paragraph (added when this issue
+> was filed, warning the cross-service trace was known-broken) is
+> retracted and replaced with the working contract. Commits `a4606ec`
+> (producer/consumer factories, pt 1), `2ccbe49` (template observation
+> default, pt 2), `472e87d` (listener trace extraction + observation + F3
+> named lookup, pt 2), `dc434ea` (workaround removal), `0486212`/`c60cfd7`
+> (`docs/observability.md` correction). Pinned by
+> `KafkaMessagingAutoConfigurationPropertiesTest` (beforeName ordering,
+> `spring.kafka.*` precedence, and the auto-offset-reset-override-vs-
+> engine-owned-`group.id` boundary) and `SignalListenerTraceContextIT`
+> (real broker: an inbound `traceparent` on a signal-topic record survives
+> to the persisted `trace_context` column). The rest of this section is
+> kept as the record of the defect.
 
 **Kind:** Library defect (plus a documentation gap — corrected in
 `docs/observability.md` §"Cross-service trace propagation (Kafka)", whose
-"one connected trace" promise now carries an explicit scope limit).
+"one connected trace" promise no longer carries a scope limit).
 **Severity:** Critical as a
-product issue: it silently voids a whole family of documented Spring Boot
-properties, and it breaks the cross-service trace that `docs/cross-service.md`
+product issue: it silently voided a whole family of documented Spring Boot
+properties, and it broke the cross-service trace that `docs/cross-service.md`
 and `docs/observability.md` both promise.
 
 Evidence for everything below:
@@ -1900,7 +1981,8 @@ property they are responsible for reading is silently inert:
 | `spring.kafka.template.observation-enabled` | Ignored — no producer spans, no `traceparent` on user-published records |
 | `spring.kafka.template.default-topic` | Ignored |
 | `spring.kafka.producer.*` (serializers, `acks`, `compression-type`, `batch-size`, `properties.*`, …) | Ignored — `maestroKafkaProducerFactory` builds its own map with hardcoded `String`/`byte[]` serializers and `acks=all` |
-| `spring.kafka.producer.transaction-id-prefix` | Ignored — no `KafkaTransactionManager` |
+| `spring.kafka.producer.transaction-id-prefix` | Ignored — no `KafkaTransactionManager`; Boot's `kafkaTransactionManager` (conditional on this property) would inject a `ProducerFactory` that resolves to Maestro's, which has no transaction ID — Kafka transactions are broken, not merely unconfigured |
+| Boot's `kafkaConsumerFactory` bean / any `ConsumerFactory` injected by type | Shadowed the same way, by `maestroKafkaConsumerFactory` (`KafkaMessagingAutoConfiguration.java:112-126`, COMB on the bean *name*) — any app code injecting `ConsumerFactory<K,V>` by type got Maestro's `String`/`byte[]`-only factory. **Not** as broad as it sounds: Boot's `kafkaListenerContainerFactory` is name-conditioned and injects an `ObjectProvider<ConsumerFactory<Object,Object>>`, and Maestro's typed factory doesn't satisfy that generic signature — the provider falls back to building its own from `spring.kafka.consumer.*`, so plain `@KafkaListener` users kept their consumer properties. The loss was confined to Boot's own `kafkaConsumerFactory` bean and anything injecting `ConsumerFactory` directly (audit finding F1/F3, `tasks/audit-2026-08-05-inert-config.md`) |
 
 The failure mode is the bad kind: the property binds without complaint,
 `/actuator/configprops` shows the value you set, and nothing happens.
@@ -1973,10 +2055,12 @@ absent exactly where the engine's value proposition lives.
    swallowing a documented Spring Boot property surface is the worst of the
    three options.
 
-**Today's workaround** (what the demo does, and what users hitting this should
-do until it is fixed): define your own bean **named `maestroKafkaTemplate`**
-with observation enabled. Maestro's `@ConditionalOnMissingBean(name = …)` then
-backs off and engine and application traffic share one observed template:
+**Today's workaround, as filed** (kept for the historical record — no longer
+necessary; see the callout above). What the demo did, and what users hitting
+this were told to do until it was fixed: define your own bean **named
+`maestroKafkaTemplate`** with observation enabled. Maestro's
+`@ConditionalOnMissingBean(name = …)` then backed off and engine and
+application traffic shared one observed template:
 
 ```java
 @Bean
@@ -1988,25 +2072,43 @@ public KafkaTemplate<String, byte[]> maestroKafkaTemplate(
 }
 ```
 
-See `maestro-samples/sample-loan-origination/*/src/main/java/.../config/ObservedKafkaTemplateConfig.java`.
-This fixes the producer side only; part 2 has no user-side workaround.
+This class (`maestro-samples/sample-loan-origination/*/src/main/java/.../config/ObservedKafkaTemplateConfig.java`)
+is deleted as of commit `dc434ea` — observation now defaults on for every
+Maestro + Kafka user without any per-service code. It fixed the producer side
+only; part 2 had no user-side workaround, which is why it stayed open
+alongside part 1 rather than being downgraded.
 
 **Done when.** A RED pin shows (a) `spring.kafka.template.observation-enabled=true`
 produces no `traceparent` on a record published through the injected
 `KafkaTemplate`, and (b) a record delivered to an `@MaestroSignalListener`
 topic **with** a valid `traceparent` persists `trace_context = NULL`. Both go
 green after the fix, and a cross-service test asserts one trace id spans
-producer and consumer services.
+producer and consumer services. **Met** — see `SignalListenerTraceContextIT`
+in the callout above.
 
 ---
 
 ### Issue 24 — Redelivery always dead-letters, but nothing creates or documents the `.DLT` topics {#issue-24}
 
-> **Open.** Found by the final whole-branch review of the demo cycle (`demo/`),
-> triaged there as *Minor for the demo* and filed here because it is not a demo
-> defect at all: the demo's compose file faithfully mirrors the loan sample's
-> own, and neither pre-creates dead-letter topics. It sits next to Issue 23 as
-> another "the config looks right and nothing fires" case.
+> **Resolved**, all three ruled measures. **(1) Document:**
+> `docs/configuration.md` § Redelivery and Dead-Letter Properties now has a
+> `.DLT` pre-creation checklist scoped to what actually needs one — the
+> engine's tasks/signals topics and `@MaestroSignalListener` topics, not
+> plain `@KafkaListener` topics or admin-events. **(2) Detect:**
+> `KafkaDeadLetterTopicCheck`, a bounded (5s), warn-only startup probe wired
+> at `KafkaWorkflowMessaging.subscribe`/`subscribeSignals` and
+> `MaestroSignalListenerBeanPostProcessor` container activation; never throws,
+> its own probe failure logs at DEBUG. **(3) Off switch:**
+> `maestro.messaging.redelivery.enabled` (default `true`), gating both
+> transports — Kafka falls back to a zero-retry `DefaultErrorHandler` with no
+> `DeadLetterPublishingRecoverer`; Postgres marks a failing row `FAILED`
+> after one attempt instead of retrying and dead-lettering. Both compose
+> stacks (`sample-loan-origination` and `demo`) now pre-create every `.DLT`
+> companion the check would otherwise warn about. Pinned by
+> `KafkaDeadLetterTopicCheckTest`, `KafkaAckOnFailureIT`,
+> `MaestroSignalListenerContainerConfigTest`, `PostgresWorkflowMessagingTest`,
+> `MaestroPropertiesBindingTest`. The rest of this section is kept as the
+> record of the defect.
 
 **Kind:** Library gap — configuration and documentation, not code.
 **Severity:** Medium. Nothing is lost; the failure mode is a long silence
@@ -2047,6 +2149,260 @@ decision, not an edit:
 documentation, and a test asserts that a handler failing `maxAttempts` times on
 a stack with no `.DLT` topic produces a diagnosable error rather than a silent
 stall.
+
+---
+
+### Issue 25 — `maestro.worker.*` is documented but wholly unimplemented {#issue-25}
+
+> **Open.** Found by the open-issues cycle's own inert-config audit
+> (`tasks/audit-2026-08-05-inert-config.md` finding F7). Filed rather than
+> fixed: whether to implement task-queue concurrency or retract the docs is
+> a product decision, not a quick patch — see "How to tackle it." The one
+> part of this that could not wait, and was done in this same cycle, is the
+> interim documentation warning below.
+
+**Kind:** Library gap — an entire documented configuration section binds and
+does nothing. **Severity:** Medium. Nobody loses data, but every operator who
+sets `maestro.worker.task-queues[].concurrency` to cap load — including
+everyone who copies the docs' own "minimal configuration" example — believes
+they have a limit that does not exist.
+
+**What's wrong.** `MaestroProperties.WorkerProperties` and
+`TaskQueueProperties` (`maestro-spring-boot-starter/src/main/java/io/b2mash/maestro/spring/config/MaestroProperties.java:343-362`,
+bound via `getWorker()`/`setWorker()` at `:125-131`) declare `name`
+(**required**), `concurrency` (default `10`), and `activity-concurrency`
+(default `20`) per task queue. `getWorker()` has **zero callers in any
+`main` source set** — the only references anywhere in the repository are
+`MaestroPropertiesBindingTest`, which just asserts the binding round-trips.
+Nothing registers a task queue, nothing creates a semaphore, nothing reads
+`concurrency` or `activity-concurrency` to bound anything. The property
+binds cleanly, shows up in `/actuator/configprops`, and every workflow and
+activity in the service runs with **no queue-level concurrency limit at
+all** — the property is a placebo.
+
+This is not a narrow corner of the docs. `docs/configuration.md` documents
+the block in full at §"Worker Configuration" (`:305-341`), and `worker.task-queues`
+appears in **every** example in the file, including the "Postgres-Only
+Example" (`:560-573`) and, worst of all, the file's own **minimal
+configuration** example (`docs/configuration.md:577-583`) — the one a new
+user is steered toward for "relying on defaults" — which is a no-op block
+end to end.
+
+**Where.**
+- `maestro-spring-boot-starter/src/main/java/io/b2mash/maestro/spring/config/MaestroProperties.java:343-362`
+  (`WorkerProperties`, `TaskQueueProperties`, bound but never read)
+- `docs/configuration.md:305-341` (§"Worker Configuration"), `:560-573` and
+  `:577-583` (examples, including the minimal one)
+
+**Interim step taken this cycle.** Retracting or fixing the behaviour is a
+product decision (see below), but leaving the docs as they stood — silently
+teaching a no-op — could not wait for that decision. `docs/configuration.md`'s
+Worker Configuration section now opens with an explicit "not yet
+implemented" warning (commit in this same cycle).
+
+**How to tackle it.** Two directions, and this issue exists to force the
+choice rather than let the config keep binding silently:
+1. **Implement it.** Register a bounded executor (or semaphore) per task
+   queue, wire `concurrency` to cap concurrent workflow *starts*/resumes on
+   that queue and `activity-concurrency` to cap concurrent activity
+   invocations, and route `@DurableWorkflow`/`@ActivityStub` dispatch
+   through it. This is a real feature (queue registration, backpressure
+   behaviour when a queue is full, metrics) — not a one-line fix.
+2. **Retract the docs.** If per-queue concurrency isn't planned, delete the
+   `maestro.worker.*` section and every example's `worker:` block, and
+   remove the properties (or mark them `@Deprecated` with a binding-only
+   warning) rather than leave a configuration surface that reads correctly
+   and does nothing.
+
+**Done when.** Either `maestro.worker.task-queues[].concurrency` and
+`.activity-concurrency` measurably bound concurrent execution (a test drives
+more than `concurrency` workflows through one queue and asserts the excess
+wait), or the property and its documentation section are gone. Until one of
+those lands, the section carries the warning added this cycle.
+
+---
+
+### Issue 26 — Terminal instance write and terminal event append are two non-transactional writes {#issue-26}
+
+> **Open.** Deferred from the demo-cycle handover
+> (`tasks/next-cycle-handover-prompt.md`) rather than a new finding — the gap
+> is already documented as an *observable symptom* in `docs/testing.md:195`
+> and `docs/release-notes.md`'s "Changed — `maestro-test` waits for the
+> terminal event, not the terminal status" entry, but has no tracked issue
+> and no proposed store-level fix. Filed here so the durability gap and its
+> proposed contract have a home.
+
+**Kind:** Library gap — durability contract. **Severity:** Medium (the
+window is real and already partially documented, but no reproduction in
+this repository has driven a live double-execution through it; the current
+status-first ordering fails toward a merely incomplete log rather than
+toward re-invocation — see "Why the current ordering is the safer of the
+two" below).
+
+**What's wrong.** A workflow's terminal transition is two separate,
+non-atomic calls to the store, and a crash (or any interleaving with a
+second runner) between them is possible:
+
+1. `WorkflowExecutor.transitionToTerminal` writes the instance row's status
+   to `COMPLETED`/`FAILED` via `store.updateInstance(updated)`
+   (`maestro-core/src/main/java/io/b2mash/maestro/core/engine/WorkflowExecutor.java:1790-1830`,
+   the write itself at `:1812`).
+2. Only if that call returns `true` does the caller separately append the
+   terminal event (`WORKFLOW_COMPLETED` at `:1438`, `WORKFLOW_FAILED` at
+   `:1739`) via `WorkflowExecutor.appendEvent`
+   (`:1899-1915`, the write itself at `:1911`) — a **second**, independent
+   store call, with its own `catch (Exception e)` that just logs a warning
+   on failure (`:1912-1914`) rather than propagating.
+
+There is no transaction spanning the two, and no compensating action if the
+process dies (or the append itself fails) between them.
+
+**Why it matters.** `docs/testing.md:195` and `docs/release-notes.md`
+already document the direct consequence: "the engine finalises a run with
+two separate, non-transactional writes and the instance row goes first" —
+so there is a real interval in which `getInstance(...).status()` reads
+`COMPLETED` while `WORKFLOW_COMPLETED` has not yet been appended. That was
+observable enough that `maestro-test`'s `TestWorkflowHandle.awaitCompletion`/
+`getResult` had to be changed to wait for the *event*, not the status, to
+avoid handing callers a log one event short. That fix treats the symptom in
+one client; the two-call write itself is still unfixed at the source.
+
+**Why the current ordering is the safer of the two orders, and why a naive
+fix is a trap.** `WorkflowStore.getRecoverableInstances()`
+(`maestro-core/src/main/java/io/b2mash/maestro/core/spi/WorkflowStore.java:71-81`)
+filters on `WorkflowStatus.isActive()` — a `COMPLETED`/`FAILED` row is
+**not** recoverable. Writing status first means a crash in the gap leaves
+the instance non-recoverable: the log is incomplete (missing its terminal
+event forever, which is the `docs/testing.md:195` gap above), but no runner
+will ever pick the workflow up again and re-invoke workflow code. **Do not
+"fix" this by reordering to append-the-event-then-write-status.** That
+ordering moves the crash window somewhere worse: a crash after the event
+append but before the status write leaves the row `RUNNING`/`WAITING_*` —
+still `isActive()` — so `getRecoverableInstances()` keeps returning it. A
+second runner (this node restarting, or a genuinely concurrent node in a
+multi-instance deployment) then resumes it, replays every memoized step
+including the just-appended terminal event's sequence slot, and drives
+`transitionToTerminal` a **second time** against a row whose status was
+never actually finalized — re-invoking workflow code that already ran to
+completion once. That is a materially worse failure mode (re-execution, not
+merely a short log) than the one this issue documents. Any fix must close
+the gap, not relocate it to the recoverable side of the status filter.
+
+**Where.**
+- `maestro-core/src/main/java/io/b2mash/maestro/core/engine/WorkflowExecutor.java:1425,1438`
+  (the `COMPLETED` call site: `transitionToTerminal` then `appendEvent`)
+- `maestro-core/src/main/java/io/b2mash/maestro/core/engine/WorkflowExecutor.java:1731,1739`
+  (the `FAILED` call site, same shape)
+- `maestro-core/src/main/java/io/b2mash/maestro/core/engine/WorkflowExecutor.java:1790-1830`
+  (`transitionToTerminal`) and `:1899-1913` (`appendEvent`)
+- `maestro-core/src/main/java/io/b2mash/maestro/core/spi/WorkflowStore.java:71-81`
+  (`getRecoverableInstances`, the `isActive()` filter this issue's safety
+  argument depends on)
+
+**Proposed fix.** Add a single SPI method that makes the two writes
+both-or-neither:
+
+```java
+/**
+ * Atomically writes the instance's terminal status and appends its
+ * terminal event. Implementations must guarantee both writes land or
+ * neither does — no caller may observe a terminal status with the
+ * terminal event missing, or vice versa.
+ */
+WorkflowInstance finaliseInstance(WorkflowInstance instance, WorkflowEvent terminalEvent);
+```
+
+On a relational store this is one transaction wrapping the existing
+`UPDATE`/`INSERT`. `WorkflowExecutor.transitionToTerminal` and the
+`appendEvent` calls at its two call sites collapse into one call to
+`finaliseInstance`; the CAS/retry semantics `transitionToTerminal` already
+has (fresh-read retry, terminal-guard re-check, stand-down on exhaustion —
+see Issue 21) carry over unchanged, they just wrap the combined write
+instead of the status write alone. This is a **breaking SPI change** for
+any third-party `WorkflowStore` implementation and needs a release note
+with a migration path (a default method that calls the two existing SPI
+operations non-atomically, so old implementations keep compiling with the
+pre-existing behaviour, is one way to land it without forcing every
+implementer to migrate before upgrading).
+
+**Done when.** A test crashes (or fault-injects) the store between the
+status write and the event append and asserts one of two outcomes holds
+after the fix, never today's third: either both the status and the event
+are visible, or neither is — specifically, a `COMPLETED`/`FAILED` status is
+never observed with a missing terminal event, and a workflow whose terminal
+event exists is never re-entered by `getRecoverableInstances()`.
+`maestro-test`'s in-memory store and the Postgres store both need the same
+guarantee, and `AbstractJdbcWorkflowStore`'s default implementation (once
+one exists) should be exercised by a shared contract test so custom stores
+inherit the same proof obligation.
+
+---
+
+### Issue 27 — A redelivery status-write failure can let a disabled-redelivery row be reclaimed and reprocessed {#issue-27}
+
+> **Open.** Filed from a PR #34 external review finding (CodeRabbit,
+> deferred rather than fixed in that PR — the fix needs a unified redesign
+> touching three sibling code paths together, not a scoped patch to one of
+> them). Verified against source, not assumed from the review's claim.
+
+**Kind:** Library gap — durability contract. **Severity:** Medium (real, but
+requires a double fault — a handler failure or success *and* a subsequent
+store write failure in the same window — to trigger; not a single-fault
+regression).
+
+**What's wrong.** `PostgresWorkflowMessaging.recordSingleAttemptFailure`
+(`maestro-messaging-postgres/src/main/java/io/b2mash/maestro/messaging/postgres/PostgresWorkflowMessaging.java:494-524`)
+is the `maestro.messaging.redelivery.enabled=false` path: mark a row
+`FAILED` after exactly one attempt, no backoff, no `DEAD_LETTER` — the
+operator's explicit choice to trade durable redelivery for at-most-once
+handling (see Issue 1's `.DLT`/redelivery work and `docs/configuration.md`).
+If the method's own `UPDATE ... SET status = 'FAILED' ...` throws
+`SQLException`, the `catch` block leaves the row exactly as it was —
+`PROCESSING` — with a comment noting "the stale reclaim recovers it." That
+reclaim (a 5-minute stale-`PROCESSING` timeout) then re-invokes the
+handler — a **second** attempt despite the flag's documented "exactly one
+attempt" contract.
+
+**Why it isn't scoped to just this path.** The identical fallback — leave
+the row `PROCESSING`, let the stale reclaim recover it — is used by every
+persistence-failure path in this class, including the **success** path:
+`updateStatus(table, rowId, "COMPLETED")`
+(`PostgresWorkflowMessaging.java:424-434`) has no `catch` behaviour beyond a
+WARN log, so a store write failure right after a handler *succeeds* carries
+the same theoretical double-invocation risk. The enabled-redelivery failure
+path (`recordFailureAndReschedule`, `PostgresWorkflowMessaging.java:~474-490`)
+documents this explicitly as deliberate: "If this update itself fails... the
+row is left `PROCESSING` and the five-minute stale reclaim... picks it up.
+Either way the message is not lost." — the whole module trades rare
+double-delivery (under a double fault) for never silently losing a message,
+consistent with `CLAUDE.md`'s "activities must be idempotent" framing
+elsewhere. A fix scoped only to `recordSingleAttemptFailure` would leave the
+identical gap on the `COMPLETED` path and the enabled-redelivery
+`FAILED`/`PENDING` path, producing an inconsistent guarantee across three
+near-identical code paths for no real gain.
+
+**Where.**
+- `maestro-messaging-postgres/src/main/java/io/b2mash/maestro/messaging/postgres/PostgresWorkflowMessaging.java:494-524`
+  (`recordSingleAttemptFailure` — the disabled-redelivery path this issue
+  was raised against)
+- `maestro-messaging-postgres/src/main/java/io/b2mash/maestro/messaging/postgres/PostgresWorkflowMessaging.java:424-434`
+  (`updateStatus` — the success path, same fallback, same risk)
+- `maestro-messaging-postgres/src/main/java/io/b2mash/maestro/messaging/postgres/PostgresWorkflowMessaging.java:~474-490`
+  (`recordFailureAndReschedule` — the enabled-redelivery failure path,
+  already documents the trade explicitly)
+
+**Proposed fix (sketch, not committed to).** A unified claim/finalize state
+machine: a genuinely no-retry-eligible terminal claim state (distinct from
+`PROCESSING`) that the stale reclaim's query excludes once a status-write
+attempt has begun, so a crash mid-write cannot be mistaken for a still-live
+in-flight claim. Needs to cover all three call sites uniformly, which is why
+this is filed rather than patched inline in PR #34.
+
+**Done when.** A fault-injection test crashes the store exactly on each of
+the three status-write calls above and asserts the same, chosen guarantee
+holds uniformly across all three — either the row is provably claimed
+exactly once end-to-end, or the double-delivery risk is documented as
+identical and acceptable on all three, not just two of them.
 
 ---
 

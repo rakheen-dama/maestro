@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 import java.time.Duration;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 /**
  * Manages per-workflow-instance distributed locks
@@ -65,6 +66,26 @@ final class WorkflowInstanceLockManager {
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private volatile @Nullable Thread renewerThread;
 
+    /**
+     * Test seam: builds the (not-yet-started) renewer thread. Package-private
+     * and non-final so a test can replace it with a throwing factory to
+     * exercise the renewer-start failure path from {@link #tryAcquire}
+     * without touching real threads. Defaults to production behaviour — a
+     * virtual thread running {@link #renewLoop} — assigned in the
+     * constructor (after {@code serviceName} is set) rather than as a field
+     * initializer.
+     *
+     * <p>{@code volatile}: every other piece of mutable state this class
+     * shares across threads is already safe for it ({@code heldLocks} is a
+     * {@link ConcurrentHashMap}, {@code renewerStarted}/{@code closed} are
+     * {@link AtomicBoolean}, {@code renewerThread} is {@code volatile}) — this
+     * field was the odd one out, assigned in the constructor and read from
+     * {@link #startRenewerIfNeeded()} with no happens-before edge guaranteeing
+     * visibility across the many workflow threads that call {@link #tryAcquire}
+     * concurrently.
+     */
+    volatile Supplier<Thread> renewerThreadStarter;
+
     WorkflowInstanceLockManager(@Nullable DistributedLock distributedLock, String serviceName) {
         this(distributedLock, serviceName, DEFAULT_KEY_PREFIX, DEFAULT_LOCK_TTL, DEFAULT_RENEW_INTERVAL);
     }
@@ -117,6 +138,9 @@ final class WorkflowInstanceLockManager {
         this.ttl = ttl;
         this.renewInterval = renewInterval;
         this.observer = observer;
+        this.renewerThreadStarter = () -> Thread.ofVirtual()
+                .name("maestro-instance-lock-renewer-" + this.serviceName)
+                .unstarted(this::renewLoop);
     }
 
     /**
@@ -141,17 +165,30 @@ final class WorkflowInstanceLockManager {
                 return Acquisition.HELD_ELSEWHERE;
             }
             heldLocks.put(workflowId, handle.get());
-            startRenewerIfNeeded();
         } catch (Exception e) {
             logger.warn("Instance lock backend unavailable for workflow '{}' — proceeding unlocked: {}",
                     workflowId, e.getMessage());
             return Acquisition.NO_BACKEND;
         }
         // Deliberately outside the backend try: the lock IS held from the
-        // heldLocks.put() above, so a throwing observer must never be reported
-        // as NO_BACKEND — the caller would then skip release() and this node
-        // would renew a lock nobody releases, making the workflowId
-        // permanently unacquirable here and blocked cluster-wide.
+        // heldLocks.put() above, so neither a renewer-start failure nor a
+        // throwing observer may be reported as NO_BACKEND — the caller would
+        // then skip release() and this node would renew a lock nobody
+        // releases, making the workflowId permanently unacquirable here and
+        // blocked cluster-wide.
+        try {
+            startRenewerIfNeeded();
+        } catch (Exception e) {
+            // Node-total, not per-lock: no held lock on this node is being
+            // renewed right now (all will expire via TTL unless renewal is
+            // restarted). startRenewerIfNeeded() resets its latch on
+            // failure, so the very next tryAcquire — for this or any other
+            // workflowId — retries starting the renewer.
+            logger.error("Instance lock renewer failed to start for '{}' — no locks on this node are "
+                            + "being renewed until the next acquisition retries the renewer start; "
+                            + "until then they expire via TTL: {}",
+                    workflowId, e.getMessage(), e);
+        }
         emit("instanceLockAcquired", workflowId, () -> observer.instanceLockAcquired(workflowId));
         return Acquisition.ACQUIRED;
     }
@@ -202,11 +239,21 @@ final class WorkflowInstanceLockManager {
             return;
         }
         if (renewerStarted.compareAndSet(false, true)) {
-            var thread = Thread.ofVirtual()
-                    .name("maestro-instance-lock-renewer-" + serviceName)
-                    .unstarted(this::renewLoop);
-            renewerThread = thread;
-            thread.start();
+            try {
+                var thread = renewerThreadStarter.get();
+                renewerThread = thread;
+                thread.start();
+            } catch (Exception e) {
+                // Un-latch: if we left renewerStarted=true here, the CAS
+                // above would stay burned for the rest of the process's
+                // life — every future tryAcquire, for every workflowId,
+                // would silently skip starting the renewer, and every lock
+                // held on this node (not just this one) would expire via
+                // TTL while its workflow kept running. Resetting it lets
+                // the next successful acquisition retry the start.
+                renewerStarted.set(false);
+                throw e;
+            }
         }
     }
 

@@ -13,7 +13,9 @@ import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
 import org.springframework.kafka.listener.ContainerProperties;
+import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.listener.MessageListener;
+import org.springframework.util.backoff.FixedBackOff;
 import tools.jackson.databind.ObjectMapper;
 
 import java.util.List;
@@ -154,6 +156,9 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
     @Override
     public void subscribe(String taskQueue, Consumer<TaskMessage> handler) {
         var topic = resolveTaskTopic(taskQueue);
+        if (config.redeliveryEnabled()) {
+            KafkaDeadLetterTopicCheck.warnOnMissing(consumerFactory, topic, config.deadLetterSuffix());
+        }
         // Nothing is caught here on purpose: a handler failure — or an
         // undeserializable record — must reach the container's error handler so
         // the offset is not committed. See the class Javadoc.
@@ -173,6 +178,9 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
     @Override
     public void subscribeSignals(String serviceName, Consumer<SignalMessage> handler) {
         var topic = resolveSignalTopic(serviceName);
+        if (config.redeliveryEnabled()) {
+            KafkaDeadLetterTopicCheck.warnOnMissing(consumerFactory, topic, config.deadLetterSuffix());
+        }
         // The only place the raw ConsumerRecord — and therefore its W3C
         // headers — is visible before the payload-typed handler runs.
         var container = createContainer(topic, record -> {
@@ -243,13 +251,18 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
         containerProps.setMessageListener(listener);
         containerProps.setAckMode(ContainerProperties.AckMode.RECORD);
         var container = new ConcurrentMessageListenerContainer<>(consumerFactory, containerProps);
-        container.setCommonErrorHandler(KafkaRedeliveryErrorHandlers.deadLettering(
-                kafkaTemplate,
-                config.maxAttempts(),
-                config.initialInterval(),
-                config.multiplier(),
-                config.maxInterval(),
-                config.deadLetterSuffix()));
+        container.setCommonErrorHandler(config.redeliveryEnabled()
+                ? KafkaRedeliveryErrorHandlers.deadLettering(
+                        kafkaTemplate,
+                        config.maxAttempts(),
+                        config.initialInterval(),
+                        config.multiplier(),
+                        config.maxInterval(),
+                        config.deadLetterSuffix())
+                // maestro.messaging.redelivery.enabled=false: the operator's explicit
+                // choice to restore at-most-once handler semantics — zero retries, no
+                // DeadLetterPublishingRecoverer, a failing record is logged and skipped.
+                : new DefaultErrorHandler(new FixedBackOff(0L, 0L)));
         return container;
     }
 

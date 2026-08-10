@@ -20,10 +20,20 @@ sensible defaults and can be left unset for local development.
 
 ## Root Properties
 
-| Property              | Type      | Default | Description                                                                                                  |
-|-----------------------|-----------|---------|--------------------------------------------------------------------------------------------------------------|
-| `maestro.enabled`     | `boolean` | `true`  | Master switch for Maestro auto-configuration. Set to `false` to disable the engine entirely.                 |
-| `maestro.service-name`| `String`  | --      | **Required.** Logical name of the owning service. Used for Kafka consumer groups, lock key prefixes, and lifecycle event attribution. Auto-configuration will fail if not set. |
+| Property                    | Type       | Default | Description                                                                                                  |
+|-----------------------------|------------|---------|--------------------------------------------------------------------------------------------------------------|
+| `maestro.enabled`           | `boolean`  | `true`  | Master switch for Maestro auto-configuration. Set to `false` to disable the engine entirely.                 |
+| `maestro.service-name`      | `String`   | --      | **Required.** Logical name of the owning service. Used for Kafka consumer groups, lock key prefixes, and lifecycle event attribution. Auto-configuration will fail if not set. |
+| `maestro.workflow-packages` | `String[]` | --      | Comma-separated base packages to scan for `@DurableWorkflow` classes. Optional in a `@SpringBootApplication` context, where the application's own auto-configuration package is scanned automatically; set this explicitly in tests or other non-Boot-application contexts. Consumed by `DurableWorkflowBeanRegistrar`. |
+
+**`maestro.enabled=false` disables every Maestro auto-configuration in the
+application**, not just the core engine: `maestro-messaging-kafka`,
+`maestro-messaging-postgres`, `maestro-lock-valkey`, `maestro-lock-postgres`,
+`maestro-store-postgres`, `maestro-admin-client`, and the health/observability
+auto-configurations all carry the same `@ConditionalOnProperty(maestro.enabled)`
+gate as the core `MaestroAutoConfiguration`, so flipping this one flag backs
+every module off cleanly rather than leaving, say, a live Valkey connection
+or Kafka consumer running for an engine that is otherwise off.
 
 ---
 
@@ -88,11 +98,71 @@ dead-letter destination rather than dropping it or looping on it forever.
 
 | Property                                          | Type       | Default                 | Description                                                                 |
 |---------------------------------------------------|------------|-------------------------|-----------------------------------------------------------------------------|
+| `maestro.messaging.redelivery.enabled`            | `boolean`  | `true`                  | Whether handler-failure redelivery and dead-lettering are active at all. Both transports. |
 | `maestro.messaging.redelivery.max-attempts`       | `int`      | `10`                    | Total delivery attempts, including the first. Both transports.               |
 | `maestro.messaging.redelivery.initial-interval`   | `Duration` | `1s`                    | Backoff before the second attempt. Both transports.                          |
 | `maestro.messaging.redelivery.multiplier`         | `double`   | `2.0`                   | Factor applied to the backoff after each failure. Both transports.           |
 | `maestro.messaging.redelivery.max-interval`       | `Duration` | `30s`                   | Ceiling for the computed backoff. Both transports.                           |
 | `maestro.messaging.redelivery.dead-letter-suffix` | `String`   | `".DLT"`                | Appended to a topic to name its dead-letter topic. **Kafka only.**          |
+
+**Disabling redelivery.** Setting `maestro.messaging.redelivery.enabled=false`
+is the operator's explicit opt-out of everything below, on both transports —
+it is not a recommended default, and defaults to `true`:
+
+- **Kafka:** the listener container gets a `DefaultErrorHandler` backed by a
+  zero-length `FixedBackOff` instead of `KafkaRedeliveryErrorHandlers.deadLettering(...)`.
+  A failing record gets **zero retries** and **no `DeadLetterPublishingRecoverer`** —
+  it is logged and skipped, restoring plain at-most-once handler semantics. The
+  [dead-letter-topic startup probe](#kafka-dead-letter-topic-check) below is
+  skipped entirely, since nothing will ever publish to a `.DLT` topic.
+- **Postgres:** a failing row is marked `FAILED` after exactly **one** attempt
+  — no backoff, no `DEAD_LETTER` parking. This is the pre-redelivery behaviour
+  (see the `FAILED` rescue statement below); `max-attempts` and the backoff
+  properties are ignored while the flag is off.
+
+### Kafka Dead-Letter-Topic Check
+
+Maestro never creates topics, `.DLT` companions included (see below) — an
+operator who forgets to pre-create one does not find out until a handler's
+attempt budget is first exhausted, and the failure then shows up as a stalled,
+noisily-retrying consumer rather than a clear message while the gap could
+still be fixed for free.
+
+`KafkaDeadLetterTopicCheck` closes that gap: at every point Maestro subscribes
+to a topic — `KafkaWorkflowMessaging.subscribe`/`subscribeSignals` (the engine's
+own tasks/signals channels) and `MaestroSignalListenerBeanPostProcessor`'s
+container activation (every `@MaestroSignalListener` topic) — it probes whether
+`<topic><dead-letter-suffix>` exists and logs:
+
+```text
+WARN Dead-letter topic '<topic>.DLT' does not exist — redelivery for '<topic>' will
+     exhaust its attempts and then fail to publish; pre-create it or set
+     maestro.messaging.redelivery.enabled=false
+```
+
+The probe is **warn-only**: it never fails startup, is bounded to 5 seconds,
+and its own failure (an unreachable broker, for instance) is logged at `DEBUG`
+and otherwise ignored — a diagnostic, not a gate. It is skipped entirely when
+`maestro.messaging.redelivery.enabled=false`, since nothing will ever publish
+to a dead-letter topic in that mode.
+
+**`.DLT` pre-creation checklist.** Before deploying a service with Kafka
+messaging and redelivery enabled (the default), pre-create a `.DLT` companion
+for every topic **a Maestro consumer subscribes to**:
+
+- [ ] The engine's task-dispatch topic: `maestro.tasks.{taskQueue}.DLT` for
+      every task queue this service has workers on (or the fixed override
+      `maestro.messaging.topics.tasks` + suffix).
+- [ ] The engine's inbound signal topic: `maestro.signals.{serviceName}.DLT`
+      (or the fixed override `maestro.messaging.topics.signals` + suffix).
+- [ ] Every `@MaestroSignalListener(topic = "...")` topic this service
+      declares.
+
+Plain `@KafkaListener`-consumed topics are **not** in scope — they run outside
+Maestro's redelivery path entirely and get no dead-lettering error handler, so
+they need no `.DLT` companion. The admin-events topic is publish-only from a
+workflow service's perspective (only `maestro-admin` consumes it, over its own
+listener, not this mechanism) and is likewise out of scope.
 
 The delay before the attempt following the *n*-th failure is
 `min(initial-interval × multiplier^(n-1), max-interval)`. The defaults give
@@ -151,8 +221,9 @@ UPDATE maestro_signal_queue
 ```
 
 `DEAD_LETTER` rows are never removed by `PostgresMessageCleaner` — they are the
-inspectable destination. Rows stranded as `FAILED` by versions before
-redelivery existed can be rescued once, deliberately:
+inspectable destination. Rows stranded as `FAILED` — either by versions before
+redelivery existed, or by `maestro.messaging.redelivery.enabled=false` since
+(see above) — can be rescued once, deliberately:
 
 ```sql
 UPDATE maestro_signal_queue SET status = 'PENDING', next_attempt_at = now() WHERE status = 'FAILED';
@@ -189,6 +260,23 @@ The TTL value represents a trade-off: shorter values enable faster recovery afte
 a crash, but require more frequent renewal. The default of 30 seconds is suitable
 for most workloads.
 
+### Valkey Connection Resolution
+
+When `maestro.lock.type: valkey` (the default), `ValkeyLockAutoConfiguration`
+resolves the Redis/Valkey connection URI by checking the following properties
+in order, using the first one that is set:
+
+| Order | Property                        | Type      | Description                                                                                     |
+|-------|----------------------------------|-----------|---------------------------------------------------------------------------------------------------|
+| 1     | `spring.data.redis.url`          | `String`  | Standard Spring Data Redis connection URI (e.g. `redis://user:pass@host:6379/1`). Takes priority over everything below. |
+| 2     | `maestro.lock.valkey.uri`        | `String`  | Maestro-specific override, for when you don't want to set the standard Spring property. |
+| 3     | `spring.data.redis.host`         | `String`  | If set (and neither property above is), a URI is built from the standard Spring Data Redis host/port/credential properties: `spring.data.redis.port` (default `6379`), `spring.data.redis.password`, `spring.data.redis.username` (only applied if a password is also set), `spring.data.redis.ssl.enabled` (default `false`), and `spring.data.redis.database` (default `0`). |
+| 4     | *(none set)*                     | —         | Falls back to the default `redis://localhost:6379`.                                              |
+
+Only one source is used — properties from lower-priority steps are ignored
+once a higher-priority one is set. For example, if `spring.data.redis.url` is
+set, `spring.data.redis.host`/`port`/`password` are not consulted at all.
+
 ---
 
 ### Postgres Locking
@@ -215,6 +303,18 @@ implementation("io.b2mash.maestro:maestro-lock-postgres")
 ---
 
 ## Worker Configuration
+
+> **Not yet implemented.** `maestro.worker.*` binds without error and shows
+> up in `/actuator/configprops`, but nothing in the engine reads
+> `concurrency` or `activity-concurrency` — no queue is registered, no
+> execution is capped. Setting these properties today has **no effect
+> whatsoever**: every workflow and activity in the service runs with no
+> queue-level concurrency limit, regardless of what you configure below.
+> This includes the minimal-configuration example further down this page,
+> which is a no-op block end to end. Tracked as
+> [Issue 25](open-issues.md#issue-25) pending a product decision to either
+> implement task-queue concurrency or remove this section. Do not rely on
+> this configuration to bound load.
 
 Properties under `maestro.worker.*` configure the task queue workers that execute
 workflows and activities.
@@ -309,7 +409,9 @@ lock — both honour the same configured prefix.
 ## Retry Configuration
 
 Properties under `maestro.retry.*` define the default retry policy applied to
-activities that do not specify their own `@RetryPolicy` annotation.
+an `@ActivityStub` whose `retryPolicy` is left at the `@RetryPolicy`
+annotation's own defaults (`maxAttempts = 3`, `initialInterval = "PT1S"`,
+`maxInterval = "PT1M"`, `backoffMultiplier = 2.0`, no exception filters).
 
 | Property                                  | Type       | Default | Description                                                                        |
 |-------------------------------------------|------------|---------|------------------------------------------------------------------------------------|
@@ -318,8 +420,16 @@ activities that do not specify their own `@RetryPolicy` annotation.
 | `maestro.retry.default-max-interval`      | `Duration` | `60s`   | Upper bound on the backoff delay. The interval will never exceed this value.        |
 | `maestro.retry.default-backoff-multiplier`| `double`   | `2.0`   | Multiplier applied to the interval after each failed attempt.                      |
 
-These defaults apply globally. Individual activities can override them using the
-`@RetryPolicy` annotation on the activity method.
+These defaults apply globally, to every `@ActivityStub` that leaves
+`retryPolicy` unset. An annotation cannot distinguish "left unset" from
+"explicitly set to these same values" — annotation attributes always carry a
+value — so the rule Maestro applies is: if **every** attribute of
+`retryPolicy` equals the `@RetryPolicy` annotation's own default, the stub is
+treated as unconfigured and gets the policy built from the properties above.
+Customizing **any single attribute** (e.g. just `@ActivityStub(retryPolicy =
+@RetryPolicy(maxAttempts = 5))`) opts the whole policy out of these
+properties — the annotation's values are used as declared, and
+`maestro.retry.*` no longer applies to that stub.
 
 **How backoff works:**
 
@@ -500,6 +610,96 @@ Consumer groups default to `maestro-{serviceName}` unless explicitly overridden
 via `maestro.messaging.consumer-group`. This means each service automatically
 gets its own consumer group, ensuring that every service instance in a cluster
 receives its share of messages.
+
+### Kafka Client Configuration
+
+Maestro's engine producer and consumer (`maestroKafkaProducerFactory` /
+`maestroKafkaConsumerFactory`) are built from Spring Boot's bound
+`spring.kafka.*` properties (`KafkaProperties`), the same properties any other
+Spring Kafka client in the service honours — `spring.kafka.bootstrap-servers`,
+`spring.kafka.producer.*` (compression, batching, retries, arbitrary
+`spring.kafka.producer.properties.*` entries), `spring.kafka.consumer.*`, and
+SSL/security settings. A `KafkaConnectionDetails` bean (e.g. from a
+service-connection Testcontainers setup) overrides the bootstrap servers when
+present.
+
+A small set of wire-format invariants the engine's own protocol depends on are
+forced **last**, after `spring.kafka.*` is applied, so no user property can
+silently corrupt engine topics:
+
+| Invariant                          | Forced value                    |
+|-------------------------------------|----------------------------------|
+| Producer/consumer key (de)serializer | `StringSerializer`/`StringDeserializer` |
+| Producer/consumer value (de)serializer | `ByteArraySerializer`/`ByteArrayDeserializer` |
+| Producer `acks`                     | `all`                            |
+| Consumer `group.id`                 | `maestro-{serviceName}` (or `maestro.messaging.consumer-group`) |
+
+`spring.kafka.consumer.auto-offset-reset` is **not** an invariant — Maestro
+only supplies a default of `earliest` when the property is unset; an explicit
+value wins.
+
+Boot's own `kafkaTemplate` / `kafkaProducerFactory` / `kafkaConsumerFactory`
+beans are **deliberately suppressed**: `KafkaMessagingAutoConfiguration`
+registers before `KafkaAutoConfiguration` and satisfies
+`ConditionalOnMissingBean(KafkaTemplate.class)`, so Boot's typed,
+`Object`-valued beans never get created. This is intentional, not a bug —
+Maestro needs exactly one `String`/`byte[]`-typed producer/consumer pair for
+its own topics, and letting Boot's beans coexist would leave two
+`KafkaTemplate`s of overlapping type in the context.
+
+A service that also needs Kafka for its own application traffic has two
+options:
+
+- **Different value type (the common case).** Define your own `KafkaTemplate`
+  bean under a bean name other than `maestroKafkaTemplate` — e.g. one typed
+  `KafkaTemplate<String, YourDto>` with its own `ProducerFactory`. It still
+  reads `spring.kafka.producer.*` for its own settings; only the engine's
+  forced invariants above are specific to `maestroKafkaTemplate`.
+- **Same `byte[]` traffic.** Inject and reuse `maestroKafkaTemplate` /
+  `maestroKafkaProducerFactory` directly rather than standing up a second
+  client.
+
+**Plain `@KafkaListener` consumers.** The suppression above only removes
+Boot's *typed* `String`/`byte[]` beans — it does not touch Boot's own
+`kafkaListenerContainerFactory`, which stays name-conditioned and is never
+suppressed. A plain `@KafkaListener` method with no explicit
+`containerFactory` rides that factory, built from `spring.kafka.consumer.*`
+the ordinary Boot way. Maestro's engine-forced invariants (key/value
+(de)serializer, `group.id`) apply **only** to `maestroKafkaConsumerFactory`
+and never reach this factory — so a plain `@KafkaListener` must declare its
+own `spring.kafka.consumer.key-deserializer` /
+`spring.kafka.consumer.value-deserializer` explicitly, exactly as it would in
+a Maestro-free Boot application. Injecting `ConsumerFactory` by type resolves
+Maestro's `byte[]` factory instead; inject by bean name
+(`maestroKafkaConsumerFactory`) or define your own if that is not what you
+want. This is the rule the `sample-payment-gateway`, `underwriting-service`,
+and `verification-gateway-service` samples follow — each keeps its plain
+`@KafkaListener`'s `spring.kafka.consumer.*-deserializer` properties in its
+`application.yml`, with a comment explaining why removing them (on the
+mistaken belief that Maestro's invariants cover them) breaks that listener.
+
+**Two `spring.kafka.template.*` properties that read but do nothing for
+Maestro's own template.** `spring.kafka.template.default-topic` binds and
+appears in `/actuator/configprops`, but `maestroKafkaTemplate`'s send calls
+always name an explicit topic, so it is never consulted. Kafka producer
+transactions (`spring.kafka.producer.transaction-id-prefix` and friends) are
+also quietly unsupported — Boot's `kafkaTransactionManager` never exists in a
+Maestro context, since `maestroKafkaProducerFactory` is not
+transaction-capable. Both are ordinary, honoured settings for a *second*,
+user-defined `KafkaTemplate` (the "different value type" option above); only
+`maestroKafkaTemplate` ignores them.
+
+Observation (Micrometer spans on send/receive) on `maestroKafkaTemplate` and
+the `@MaestroSignalListener` consumer containers defaults **on** when
+Micrometer tracing is active — a `Tracer` *and* a `Propagator` bean both exist
+and `maestro.observability.tracing.enabled` is not `false`, exactly the
+condition that activates Maestro's own `KafkaTracePropagation` bean — and
+**off** otherwise. Note that Spring Boot registers a no-op `Tracer` by
+default, so a `Tracer` bean being present is not by itself the gate; an
+explicit `spring.kafka.template.observation-enabled` /
+`.listener.observation-enabled` value always wins over that default. See
+[`docs/observability.md` § Cross-service trace propagation (Kafka)](observability.md#cross-service-trace-propagation-kafka)
+for the full contract.
 
 ### Pre-creating Topics
 

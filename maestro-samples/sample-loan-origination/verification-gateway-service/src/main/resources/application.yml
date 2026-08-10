@@ -9,9 +9,10 @@ spring:
 
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:29093}
-    producer:
-      key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
+    # Consumer deserializers stay explicit: Boot's OWN kafkaListenerContainerFactory
+    # (built from spring.kafka.consumer.*) backs plain @KafkaListener beans
+    # (VerificationRequestListener), which Maestro's engine-forced invariants do
+    # not reach — only maestroKafkaConsumerFactory gets those. Do not remove.
     consumer:
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer

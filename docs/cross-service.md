@@ -109,7 +109,8 @@ sequenceDiagram
    instance, the signal notifier (Valkey pub/sub or Postgres LISTEN/NOTIFY)
    wakes it. If notification fails or no notifier is configured, the parked
    workflow finds the persisted signal via its periodic store re-check (every
-   30 seconds) — it is never lost. The workflow continues with shipment and
+   30 seconds) — it is never lost (unless the operator has explicitly disabled
+   redelivery; see the note below). The workflow continues with shipment and
    notification activities.
 
 The key insight: neither service knows it is talking to another Maestro workflow.
@@ -150,7 +151,8 @@ public SignalRouting routePaymentResult(PaymentResultEvent event) {
    publishes a notification (Valkey pub/sub or Postgres LISTEN/NOTIFY) to wake
    it if it is parked on another instance. If notification fails or no notifier
    is configured, the workflow picks up the persisted signal via its periodic
-   store re-check (every 30 seconds). Either way, the signal is never lost.
+   store re-check (every 30 seconds). Either way, the signal is never lost
+   (unless the operator has explicitly disabled redelivery; see the note below).
 
 **Design principle:** The listener method should be a thin routing layer. Extract
 the workflow ID, map the payload, and return. Business logic belongs in the
@@ -167,7 +169,10 @@ predictable.
 | Signal arrives while service is down | Persisted by the _sending_ service's Kafka publish; consumed on restart |
 
 Maestro never discards a signal. This is the foundation of its self-recovery
-model.
+model — unless the operator has explicitly disabled redelivery
+(`maestro.messaging.redelivery.enabled=false`), which restores at-most-once
+handler semantics and trades this guarantee away on purpose; see
+`docs/configuration.md`.
 
 ---
 
