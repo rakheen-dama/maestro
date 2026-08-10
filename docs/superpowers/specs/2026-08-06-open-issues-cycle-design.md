@@ -138,10 +138,12 @@ Release-note + configuration-doc entries.
 replace the `OptimisticLockException` swallow with the proven Issue-21 idiom —
 **bounded retry against a fresh read, terminal guard re-evaluated inside the
 loop**. `TERMINATED` observed on any attempt → throw
-`WorkflowTerminatedException` (no compensation). On exhaustion: **stand down**
-— leave the instance in its existing recoverable state; never proceed to
-compensate against an unread row (this differs from Issue 21's exhaustion
-policy, deliberately: this write transitions *into* an active phase).
+`WorkflowTerminatedException` (no compensation). On exhaustion: log ERROR and
+**rethrow** the final `OptimisticLockException` — abandon the run without
+compensating, leaving the instance in its existing recoverable state; never
+proceed to compensate against an unread row (this differs from Issue 21's
+exhaustion policy, deliberately: this write transitions *into* an active
+phase).
 
 **Pins:** RED pin drives a `TERMINATED` write between the guard's read and
 the CAS (store fixture hook) and asserts ≥1 `COMPENSATION_STARTED`/

@@ -229,9 +229,10 @@ voiding `spring.kafka.producer.*` and `spring.kafka.template.*` for every
 user, and `@MaestroSignalListener` never extracted the inbound `traceparent`.
 It is **now resolved** — see its section. A twelfth (24), found alongside 23
 while auditing the same Kafka path, is **now resolved** too — see its
-section. Two more (25, 26), found by the open-issues cycle's own inert-config
-audit (`tasks/audit-2026-08-05-inert-config.md`) and by a deferred item from
-the demo cycle respectively, are filed **open** — see their sections.
+section. Three more (25, 26, 27), found by the open-issues cycle's own
+inert-config audit (`tasks/audit-2026-08-05-inert-config.md`), by a deferred
+item from the demo cycle, and by an external review of PR #34 respectively,
+are filed **open** — see their sections.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -275,6 +276,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [24](#issue-24) | Redelivery is always on and always dead-letters, but nothing documents or creates the `.DLT` topics | Library gap — docs + config | Medium | **Resolved** |
 | [25](#issue-25) | `maestro.worker.*` is documented but wholly unimplemented | Library gap — docs + config | Medium | Open |
 | [26](#issue-26) | Terminal instance write and terminal event append are two non-transactional writes | Library gap — durability contract | Medium | Open |
+| [27](#issue-27) | A redelivery status-write failure can let a disabled-redelivery row be reclaimed and reprocessed | Library gap — durability contract | Medium | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -2333,6 +2335,74 @@ event exists is never re-entered by `getRecoverableInstances()`.
 guarantee, and `AbstractJdbcWorkflowStore`'s default implementation (once
 one exists) should be exercised by a shared contract test so custom stores
 inherit the same proof obligation.
+
+---
+
+### Issue 27 — A redelivery status-write failure can let a disabled-redelivery row be reclaimed and reprocessed {#issue-27}
+
+> **Open.** Filed from a PR #34 external review finding (CodeRabbit,
+> deferred rather than fixed in that PR — the fix needs a unified redesign
+> touching three sibling code paths together, not a scoped patch to one of
+> them). Verified against source, not assumed from the review's claim.
+
+**Kind:** Library gap — durability contract. **Severity:** Medium (real, but
+requires a double fault — a handler failure or success *and* a subsequent
+store write failure in the same window — to trigger; not a single-fault
+regression).
+
+**What's wrong.** `PostgresWorkflowMessaging.recordSingleAttemptFailure`
+(`maestro-messaging-postgres/src/main/java/io/b2mash/maestro/messaging/postgres/PostgresWorkflowMessaging.java:494-524`)
+is the `maestro.messaging.redelivery.enabled=false` path: mark a row
+`FAILED` after exactly one attempt, no backoff, no `DEAD_LETTER` — the
+operator's explicit choice to trade durable redelivery for at-most-once
+handling (see Issue 1's `.DLT`/redelivery work and `docs/configuration.md`).
+If the method's own `UPDATE ... SET status = 'FAILED' ...` throws
+`SQLException`, the `catch` block leaves the row exactly as it was —
+`PROCESSING` — with a comment noting "the stale reclaim recovers it." That
+reclaim (a 5-minute stale-`PROCESSING` timeout) then re-invokes the
+handler — a **second** attempt despite the flag's documented "exactly one
+attempt" contract.
+
+**Why it isn't scoped to just this path.** The identical fallback — leave
+the row `PROCESSING`, let the stale reclaim recover it — is used by every
+persistence-failure path in this class, including the **success** path:
+`updateStatus(table, rowId, "COMPLETED")`
+(`PostgresWorkflowMessaging.java:424-434`) has no `catch` behaviour beyond a
+WARN log, so a store write failure right after a handler *succeeds* carries
+the same theoretical double-invocation risk. The enabled-redelivery failure
+path (`recordFailureAndReschedule`, `PostgresWorkflowMessaging.java:~474-490`)
+documents this explicitly as deliberate: "If this update itself fails... the
+row is left `PROCESSING` and the five-minute stale reclaim... picks it up.
+Either way the message is not lost." — the whole module trades rare
+double-delivery (under a double fault) for never silently losing a message,
+consistent with `CLAUDE.md`'s "activities must be idempotent" framing
+elsewhere. A fix scoped only to `recordSingleAttemptFailure` would leave the
+identical gap on the `COMPLETED` path and the enabled-redelivery
+`FAILED`/`PENDING` path, producing an inconsistent guarantee across three
+near-identical code paths for no real gain.
+
+**Where.**
+- `maestro-messaging-postgres/src/main/java/io/b2mash/maestro/messaging/postgres/PostgresWorkflowMessaging.java:494-524`
+  (`recordSingleAttemptFailure` — the disabled-redelivery path this issue
+  was raised against)
+- `maestro-messaging-postgres/src/main/java/io/b2mash/maestro/messaging/postgres/PostgresWorkflowMessaging.java:424-434`
+  (`updateStatus` — the success path, same fallback, same risk)
+- `maestro-messaging-postgres/src/main/java/io/b2mash/maestro/messaging/postgres/PostgresWorkflowMessaging.java:~474-490`
+  (`recordFailureAndReschedule` — the enabled-redelivery failure path,
+  already documents the trade explicitly)
+
+**Proposed fix (sketch, not committed to).** A unified claim/finalize state
+machine: a genuinely no-retry-eligible terminal claim state (distinct from
+`PROCESSING`) that the stale reclaim's query excludes once a status-write
+attempt has begun, so a crash mid-write cannot be mistaken for a still-live
+in-flight claim. Needs to cover all three call sites uniformly, which is why
+this is filed rather than patched inline in PR #34.
+
+**Done when.** A fault-injection test crashes the store exactly on each of
+the three status-write calls above and asserts the same, chosen guarantee
+holds uniformly across all three — either the row is provably claimed
+exactly once end-to-end, or the double-delivery risk is documented as
+identical and acceptable on all three, not just two of them.
 
 ---
 

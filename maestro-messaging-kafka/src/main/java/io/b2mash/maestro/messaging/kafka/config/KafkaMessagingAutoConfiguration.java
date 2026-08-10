@@ -73,6 +73,12 @@ import java.util.HashMap;
  * <p>All beans are guarded with {@link ConditionalOnMissingBean} to allow
  * user overrides.
  *
+ * <h2>Thread Safety</h2>
+ * <p>This class holds no mutable instance state — every {@code @Bean} method
+ * is a pure function of its injected arguments, and the bean factory methods
+ * run once, on the Spring context-refresh thread. Nothing here needs
+ * synchronization.
+ *
  * @see KafkaWorkflowMessaging
  * @see MaestroSignalListenerBeanPostProcessor
  */

@@ -14,8 +14,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * }</pre>
  *
  * <p>The Kafka topic itself is normally set via the canonical
- * {@code maestro.messaging.topics.admin-events} property (see
- * {@link #getTopic()}), not under this block.
+ * {@code maestro.messaging.topics.admin-events} property, resolved (with
+ * this class's deprecated {@link #getTopic()} alias) by
+ * {@link AdminClientAutoConfiguration#resolveTopic}, not set under this block.
  *
  * @see AdminClientAutoConfiguration
  */

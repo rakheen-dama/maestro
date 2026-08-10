@@ -105,6 +105,11 @@ verified present, no duplicates).
 - [ ] **L1:** Wire-level IT asserting `traceparent` header on records published through the observed `maestroKafkaTemplate` (configuration-level pin exists; extraction/persistence half is wire-pinned by `SignalListenerTraceContextIT`).
 - [ ] **L3:** Issue-22 exhaustion rethrow path escapes `executeWorkflow` without `emitRunAbandoned`; align with F4 every-run-emits-terminal-observation convention on this rare (5-consecutive-lost-CAS) path.
 
+## Follow-ups from PR #34 review wave (architecture review A4/A6)
+
+- [ ] **A6 — Boot-compatibility context pin for the plain-`@KafkaListener` boundary.** A context test in `maestro-messaging-kafka` running `KafkaMessagingAutoConfiguration` alongside Boot's real `KafkaAutoConfiguration` (+ annotation-driven config), asserting `kafkaListenerContainerFactory` exists and a container it builds honours an explicit `spring.kafka.consumer.value-deserializer` — i.e. Maestro's engine-forced invariants do not leak across to plain application consumers. This currently works only because Boot's `kafkaListenerContainerFactory`'s `ObjectProvider<ConsumerFactory<Object,Object>>` fails to generic-match Maestro's `<String, byte[]>` factory and falls back to building its own from properties — a load-bearing Boot internal with no library-level pin today (`d883c26` shows this class of regression is only caught by sample E2E).
+- [ ] **A4 — Classpath-walking pin for the `maestro.enabled` gate.** A test in `maestro-integration-tests` (already depends on every module) that enumerates every `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports` entry on the classpath, loads each listed class, and asserts a `@ConditionalOnProperty` on `maestro.enabled` is present (directly or via meta-annotation). Converts the F8 convention (currently: remember to add the annotation AND a per-module `*MaestroDisabledTest`) into a structural guard that fails for a 9th module that forgets it.
+
 # Milestone: Demo — runbook, observability stack, live versioning story
 
 Spec: `docs/superpowers/specs/2026-08-03-maestro-demo-design.md`. Plan: `docs/superpowers/plans/2026-08-04-maestro-demo.md`. Domain: `demo/DOMAIN-BRIEF.md`. Branch: `worktree-demo` off main @ 945ccb4. 95+ commits, 107 files.

@@ -19,12 +19,13 @@ import static org.mockito.Mockito.mock;
  * anything {@code MaestroAutoConfiguration} would otherwise supply).
  *
  * <p>The fix adds {@code maestro.enabled} as a <em>second</em>, independently
- * required property via the array form of {@code @ConditionalOnProperty}
- * (multiple {@code @ConditionalOnProperty} annotations cannot repeat on one
- * class/method — see class Javadoc): "If multiple names are specified, all
- * of the properties have to pass the test for the condition to match."
- * (Boot 4.0.5 {@code ConditionalOnProperty} Javadoc) — i.e. AND semantics,
- * exactly what's needed here. Both gates are exercised independently below.
+ * required property by stacking a second {@code @ConditionalOnProperty}
+ * annotation on the class — Boot 4's {@code @ConditionalOnProperty} is
+ * {@code @Repeatable} (see {@link AdminClientAutoConfiguration}'s own class
+ * Javadoc), so two occurrences compose as AND: "If multiple names are
+ * specified, all of the properties have to pass the test for the condition
+ * to match." (Boot 4.0.5 {@code ConditionalOnProperty} Javadoc) — exactly
+ * what's needed here. Both gates are exercised independently below.
  */
 @DisplayName("AdminClientAutoConfiguration — maestro.enabled=false (audit F8)")
 class AdminClientAutoConfigurationMaestroDisabledTest {

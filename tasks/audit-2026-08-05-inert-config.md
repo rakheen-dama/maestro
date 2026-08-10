@@ -1,6 +1,6 @@
 # Maestro Audit — "Configuration That Reads Correctly and Does Nothing"
 
-Scope: main tree of `/Users/rakheendama/Projects/2026/maestro` (the `.claude/worktrees/*` copies were excluded; `maestro-messaging-rabbitmq` has **no sources on main** — no entry in `settings.gradle.kts` includes, only stale `build/`/`target/` dirs — its source exists only in the `multi-instance-verification` worktree and is covered in F14).
+Scope: main tree of repository root (the `.claude/worktrees/*` copies were excluded; `maestro-messaging-rabbitmq` has **no sources on main** — no entry in `settings.gradle.kts` includes, only stale `build/`/`target/` dirs — its source exists only in the `multi-instance-verification` worktree and is covered in F14).
 
 Spring Boot bytecode verified against the actual Gradle-cache jars (all 4.0.5): `spring-boot-kafka`, `spring-boot-jdbc`, `spring-boot-micrometer-metrics`, `spring-boot-micrometer-tracing{,-brave,-opentelemetry}`, `spring-boot-jackson`.
 

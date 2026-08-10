@@ -464,7 +464,7 @@ Expected: green — proves the samples compile and their tests pass without the 
 
 ---
 
-### Task 6: Issue 22 — terminate racing `transitionToCompensating` (bounded retry + stand-down)
+### Task 6: Issue 22 — terminate racing `transitionToCompensating` (bounded retry + exhaustion rethrow)
 
 **Files:**
 - Modify: `maestro-core/src/main/java/io/b2mash/maestro/core/saga/SagaManager.java` — `transitionToCompensating` (`:540`)

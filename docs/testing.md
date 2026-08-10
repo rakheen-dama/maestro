@@ -262,7 +262,7 @@ clock.advance(Duration.ofHours(2));
 
 ## Self-Recovery Testing
 
-Maestro guarantees that signals are never lost, even if they arrive before the workflow starts. The `preDeliverSignal` method lets you test this path:
+Maestro guarantees that signals are never lost, even if they arrive before the workflow starts (unless the operator has explicitly disabled redelivery — see `maestro.messaging.redelivery.enabled` in `docs/configuration.md` — which restores at-most-once handler semantics). The `preDeliverSignal` method lets you test this path:
 
 ```java
 @Test

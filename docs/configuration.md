@@ -134,7 +134,7 @@ own tasks/signals channels) and `MaestroSignalListenerBeanPostProcessor`'s
 container activation (every `@MaestroSignalListener` topic) — it probes whether
 `<topic><dead-letter-suffix>` exists and logs:
 
-```
+```text
 WARN Dead-letter topic '<topic>.DLT' does not exist — redelivery for '<topic>' will
      exhaust its attempts and then fail to publish; pre-create it or set
      maestro.messaging.redelivery.enabled=false
@@ -658,6 +658,36 @@ options:
 - **Same `byte[]` traffic.** Inject and reuse `maestroKafkaTemplate` /
   `maestroKafkaProducerFactory` directly rather than standing up a second
   client.
+
+**Plain `@KafkaListener` consumers.** The suppression above only removes
+Boot's *typed* `String`/`byte[]` beans — it does not touch Boot's own
+`kafkaListenerContainerFactory`, which stays name-conditioned and is never
+suppressed. A plain `@KafkaListener` method with no explicit
+`containerFactory` rides that factory, built from `spring.kafka.consumer.*`
+the ordinary Boot way. Maestro's engine-forced invariants (key/value
+(de)serializer, `group.id`) apply **only** to `maestroKafkaConsumerFactory`
+and never reach this factory — so a plain `@KafkaListener` must declare its
+own `spring.kafka.consumer.key-deserializer` /
+`spring.kafka.consumer.value-deserializer` explicitly, exactly as it would in
+a Maestro-free Boot application. Injecting `ConsumerFactory` by type resolves
+Maestro's `byte[]` factory instead; inject by bean name
+(`maestroKafkaConsumerFactory`) or define your own if that is not what you
+want. This is the rule the `sample-payment-gateway`, `underwriting-service`,
+and `verification-gateway-service` samples follow — each keeps its plain
+`@KafkaListener`'s `spring.kafka.consumer.*-deserializer` properties in its
+`application.yml`, with a comment explaining why removing them (on the
+mistaken belief that Maestro's invariants cover them) breaks that listener.
+
+**Two `spring.kafka.template.*` properties that read but do nothing for
+Maestro's own template.** `spring.kafka.template.default-topic` binds and
+appears in `/actuator/configprops`, but `maestroKafkaTemplate`'s send calls
+always name an explicit topic, so it is never consulted. Kafka producer
+transactions (`spring.kafka.producer.transaction-id-prefix` and friends) are
+also quietly unsupported — Boot's `kafkaTransactionManager` never exists in a
+Maestro context, since `maestroKafkaProducerFactory` is not
+transaction-capable. Both are ordinary, honoured settings for a *second*,
+user-defined `KafkaTemplate` (the "different value type" option above); only
+`maestroKafkaTemplate` ignores them.
 
 Observation (Micrometer spans on send/receive) on `maestroKafkaTemplate` and
 the `@MaestroSignalListener` consumer containers defaults **on** when
