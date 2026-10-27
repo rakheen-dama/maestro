@@ -234,11 +234,15 @@ indicator audit; admin-command end-to-end once implemented; RabbitMQ suite
 if that backend is kept.
 
 ### CI wiring
-- `test` = U only (fast). New `integrationTest` source set/tag for P0–P3
-  (Testcontainers; runs on every PR). P4 e2e tag nightly + pre-release.
-- Coverage gate: every `maestro-*` module with production code must have
-  ≥1 test class (fails today for lock-postgres, messaging-postgres,
-  messaging-rabbitmq, admin, admin-client).
+- `test` runs the unit and `@Tag("integration")` suites on every PR; `e2eTest`
+  is excluded from `build`
+  (`build-logic/src/main/kotlin/maestro.integration-test-conventions.gradle.kts:18-39`).
+- The nightly/weekly schedule lives in `e2e-nightly.yml`. GitHub disables every
+  scheduled workflow in a repository with no commits for 60 days
+  (`disabled_inactivity`); `build-test.yml`'s `keep-nightly-enabled` job
+  re-enables it on every push to `main`. `gh workflow list --all` (not plain
+  `gh workflow list`) shows disabled workflows.
+- <!-- Task 5 --> Coverage gate: to be rewritten by Task 5 Step 6.
 
 ---
 
