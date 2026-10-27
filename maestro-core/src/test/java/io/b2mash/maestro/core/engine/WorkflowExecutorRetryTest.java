@@ -483,11 +483,21 @@ class WorkflowExecutorRetryTest {
         return store.getEvents(instanceId).stream().anyMatch(e -> e.eventType() == type);
     }
 
+    /**
+     * Seeds an event as a real run would have recorded it. Activity outcomes at
+     * seq 1-3 carry the step name {@code ThreeStepWorkflow}'s proxy records
+     * there — replay checks the step name (C10), so a placeholder name would
+     * read as an ungated code change and stand the run down.
+     */
     private io.b2mash.maestro.core.model.WorkflowEvent activityEvent(
             UUID instanceId, int seq, EventType type, String stepValue) {
         var payload = stepValue != null ? serializer.serialize(stepValue) : null;
+        var isActivityOutcome = type == EventType.ACTIVITY_COMPLETED || type == EventType.ACTIVITY_FAILED;
+        var stepName = isActivityOutcome && seq >= 1 && seq <= 3
+                ? "FlakyThreeStepActivities." + List.of("stepOne", "stepTwo", "stepThree").get(seq - 1)
+                : "step-" + seq;
         return new io.b2mash.maestro.core.model.WorkflowEvent(
-                UUID.randomUUID(), instanceId, seq, type, "step-" + seq, payload, Instant.now());
+                UUID.randomUUID(), instanceId, seq, type, stepName, payload, Instant.now());
     }
 
     private List<WorkflowLifecycleEvent> lifecycleEvents(LifecycleEventType type) {

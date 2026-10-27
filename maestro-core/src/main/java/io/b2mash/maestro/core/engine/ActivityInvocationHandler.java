@@ -216,9 +216,13 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             if (storedEvent.isPresent()) {
                 // A type this build does not know means a newer node wrote this
                 // history: stand the run down BEFORE deciding replay-vs-live.
-                // (handleReplay's `default ->` guard stays — it still catches a
-                // known-but-wrong type, e.g. a TIMER_SCHEDULED at an activity slot.)
                 UnknownHistoryGuard.requireKnown(storedEvent.get(), ctx.workflowId());
+                // Then the slot must hold THIS step's outcome (C10): a renamed or
+                // reordered activity, or any other operation's event at this
+                // sequence, stands down here — before the impl could run and
+                // before another step's payload could be returned.
+                ReplayGuard.requireMatch(storedEvent.get(), ctx.workflowId(), stepName,
+                        EventType.ACTIVITY_COMPLETED, EventType.ACTIVITY_FAILED);
                 var info = new ActivityInfo(ctx.workflowId(), ctx.workflowType(), stepName, seq);
                 if (storedEvent.get().eventType() == EventType.ACTIVITY_FAILED) {
                     // handleReplay throws for a memoized failure — observe it
@@ -273,8 +277,12 @@ public final class ActivityInvocationHandler implements InvocationHandler {
                 logger.debug("Replaying failed activity '{}' at seq {}", stepName, seq);
                 throw reconstructFailure(event, stepName, ctx.workflowId());
             }
+            // Unreachable: ReplayGuard.requireMatch admits only ACTIVITY_COMPLETED
+            // and ACTIVITY_FAILED before handleReplay is called. Kept so the
+            // switch stays total without a silent fall-through.
             default -> throw new IllegalStateException(
-                    "Unexpected event type %s at seq %d for activity '%s' in workflow '%s'"
+                    ("Unreachable: event type %s at seq %d for activity '%s' in workflow '%s' "
+                            + "should have been rejected by ReplayGuard")
                             .formatted(event.eventType(), seq, stepName, ctx.workflowId()));
         };
     }

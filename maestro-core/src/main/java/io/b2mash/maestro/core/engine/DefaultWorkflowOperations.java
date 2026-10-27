@@ -651,7 +651,11 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         // Replay check
         var storedEvent = UnknownHistoryGuard.requireKnown(
                 store.getEventBySequence(ctx.workflowInstanceId(), seq), ctx.workflowId());
-        if (storedEvent.isPresent() && storedEvent.get().eventType() == EventType.SIDE_EFFECT) {
+        if (storedEvent.isPresent()) {
+            // Any present event that is not this side effect is drift (C10):
+            // stand down before the live append below could collide with it.
+            ReplayGuard.requireMatch(storedEvent.get(), ctx.workflowId(), "$maestro:currentTime",
+                    EventType.SIDE_EFFECT);
             return UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), seq,
                     "memoized currentTime()",
                     () -> serializer.deserialize(storedEvent.get().payload(), Instant.class));
@@ -674,7 +678,11 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         // Replay check
         var storedEvent = UnknownHistoryGuard.requireKnown(
                 store.getEventBySequence(ctx.workflowInstanceId(), seq), ctx.workflowId());
-        if (storedEvent.isPresent() && storedEvent.get().eventType() == EventType.SIDE_EFFECT) {
+        if (storedEvent.isPresent()) {
+            // Any present event that is not this side effect is drift (C10):
+            // stand down before the live append below could collide with it.
+            ReplayGuard.requireMatch(storedEvent.get(), ctx.workflowId(), "$maestro:randomUUID",
+                    EventType.SIDE_EFFECT);
             return UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), seq,
                     "memoized randomUUID()",
                     () -> serializer.deserialize(storedEvent.get().payload(), String.class));

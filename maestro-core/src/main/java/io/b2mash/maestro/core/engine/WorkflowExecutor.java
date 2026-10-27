@@ -1665,14 +1665,15 @@ public final class WorkflowExecutor {
                         + "via recovery",
                 ctx.workflowId(), e.sequenceNumber(), e.getMessage(), status);
         emit("standDown", ctx.workflowId(), () ->
-                observer.standDown(standDownReason(e.kind()), ctx.workflowId(),
-                        "seq=" + e.sequenceNumber()));
+                observer.standDown(standDownReason(e.kind()), ctx.workflowId(), e.detail()));
     }
 
     private static StandDownReason standDownReason(UnknownWorkflowHistoryException.Kind kind) {
-        return kind == UnknownWorkflowHistoryException.Kind.UNKNOWN_EVENT_TYPE
-                ? StandDownReason.UNKNOWN_EVENT_TYPE
-                : StandDownReason.UNKNOWN_EVENT_PAYLOAD;
+        return switch (kind) {
+            case UNKNOWN_EVENT_TYPE -> StandDownReason.UNKNOWN_EVENT_TYPE;
+            case UNKNOWN_EVENT_PAYLOAD -> StandDownReason.UNKNOWN_EVENT_PAYLOAD;
+            case NONDETERMINISTIC_HISTORY -> StandDownReason.NONDETERMINISTIC_HISTORY;
+        };
     }
 
     // ── Internal: failure handling ─────────────────────────────────────
