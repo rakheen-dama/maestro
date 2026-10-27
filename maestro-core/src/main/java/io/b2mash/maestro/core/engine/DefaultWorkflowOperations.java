@@ -558,7 +558,8 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         // The advance runs in finally so a branch failure leaves the counter past
         // the branch space — SagaManager.compensate() anchors from ctx.nextSequence(),
         // and anchoring at p+1 would make entry i's block coincide with branch i+1's
-        // base (C1).
+        // base (C1). Applies to the forked path (n >= 2); the empty and single-task
+        // fast paths return before any sequence is consumed.
         try {
             // Replay check: look for existing parallel fork event at this sequence.
             // Guarded first: an unknown type here would otherwise fail the SIDE_EFFECT
