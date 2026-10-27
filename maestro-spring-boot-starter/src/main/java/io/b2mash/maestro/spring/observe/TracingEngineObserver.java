@@ -135,7 +135,7 @@ public final class TracingEngineObserver implements EngineObserver {
      *
      * <p>The engine partitions the sequence space so that branch <i>i</i> of a
      * fork at parent sequence <i>p</i> allocates from
-     * {@code p * 1000 + (i + 1) * 1000}, with at most 999 steps per branch. A
+     * {@code p * 1000 + (i + 1) * 1000}, with at most 999 sequence slots per branch. A
      * step at or above 1000 is therefore inside a branch.
      *
      * <p>A second, belt-and-braces branch detector alongside the inherited

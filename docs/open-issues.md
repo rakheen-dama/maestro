@@ -2429,11 +2429,30 @@ two plain steps, a 3-branch fork at seq 3 → counter 7000, a 2-branch fork at
 7001 → counter 7,004,000, anchor 7,004,001; with 2-branch forks from seq 1 it
 is 4,004,001) — the anchor × 1000 block arithmetic overflows `int`, so
 **compensation cannot run**: the workflow finishes `FAILED` with an `ERROR`
-log saying so, and the operator compensates by hand. A third sequential or
-nested `parallel()` fails the same way before any sequence is consumed.
+log naming the steps that could not run, and the operator compensates by
+hand. A third sequential `parallel()`, or a third level on any one branch's
+path, fails the same way before any sequence is consumed. *Parent-line* levels
+(sequential `parallel()` calls and the compensation phase) compound with each
+other; a nested `parallel()` compounds only within its own branch — it never
+moves the parent counter — so a nested fork plus compensation fits (anchor
+4001), as does a nested fork plus a second sequential fork.
 Enforced by `SequenceSpace.nextParentSeq` (sub-plan 01, Task 3) and pinned by
 `SequenceSpaceExhaustionTest` and
 `EnginePostgresParallelSagaIT.sequenceSpaceExhaustion_isALoudFailureNotAZombie`.
+
+- **A compensation that forks after a forward `parallel()` fails that
+  compensation step, not the pre-check.** The compensation phase is already
+  the second level (anchor 4001, entry block 4,002,000), so the entry's own
+  `parallel()` at 4,002,001 throws `SequenceSpaceExhaustedException`, which is
+  recorded as that entry's `COMPENSATION_STEP_FAILED`; the remaining entries
+  still run and the workflow ends `FAILED`. Pinned by
+  `CompensationWithParallelTest.forkInsideCompensationAfterForwardFork_failsThatStepOnly`
+  and `EnginePostgresParallelSagaIT.forkInsideCompensationAfterForwardFork_failsThatStepOnly`.
+- **Parallel-compensation branches cannot fork at all.** Under
+  `@Saga(parallelCompensation = true)` each branch runs with no workflow
+  operations (by design: no `sleep()`, `awaitSignal()` or `parallel()`), so a
+  compensation that calls `parallel()` fails that step with
+  `IllegalStateException` whatever the depth.
 
 **How to tackle it.** Two candidate redesigns for a future cycle:
 
@@ -2460,15 +2479,25 @@ redesign is chosen:
   plain steps wrap silently - the same class of silent wrap C4 removed for
   block arithmetic.
 - When compensation is skipped because of `SequenceSpaceExhaustedException`,
-  the only durable record is the executor's `ERROR` log: no event or observer
-  callback says compensation was skipped, so an operator looking only at the
-  dashboard cannot tell.
-- Sequential saga compensation entries each get a 1000-slot block on the
-  shared, unbounded parent context (`SagaManager.executeSequential` sets the
-  sequence to the entry's block base), so an entry that consumes 1000 or more
-  internal sequences spills into the next entry's guard slot - the same class
-  as C3, deferred because bounding it means rebinding the scoped
-  `WorkflowContext` per entry.
+  the only record is the `ERROR` logs (`SagaManager` lists the skipped steps'
+  names, the executor says nothing ran): no event or observer callback says
+  compensation was skipped, so an operator looking only at the dashboard
+  cannot tell.
+- A nested fork near the end of a branch's block rebases that branch's
+  counter into space that can collide with a sibling's *nested* blocks: e.g.
+  branch 0 (base 2000) forking 2 ways at slot 2999 puts its inner blocks at
+  3,000,000 and 3,001,000 and rebases branch 0 to 3,002,000 — exactly where
+  sibling branch 1 (base 3000) puts its own nested fork's first block if it
+  forks at 3001. The bound only covers a branch's *direct* steps: post-rebase
+  steps are unbounded, so branch 0's post-join steps would land in branch 1's
+  nested block.
+- ~~Sequential saga compensation entries each get a 1000-slot block on the
+  shared, unbounded parent context, so an entry that consumes 1000 or more
+  internal sequences spills into the next entry's guard slot.~~ **Fixed** by
+  the sub-plan 01 final review (I1): each entry's action now runs under
+  `WorkflowContext.bounded(...)`, so the 1000th slot is recorded as that
+  entry's `COMPENSATION_STEP_FAILED` (`BranchSequenceExhaustedException`)
+  and the next entry still runs.
 
 **Done when.** A workflow with three sequential 3-branch `parallel()` calls
 followed by a failing step compensates fully on real Postgres, and
