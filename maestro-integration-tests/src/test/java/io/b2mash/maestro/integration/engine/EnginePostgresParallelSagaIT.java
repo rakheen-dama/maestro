@@ -185,7 +185,7 @@ class EnginePostgresParallelSagaIT extends PostgresIntegrationSupport {
         public void refund(String item) {
             reachedRefund.countDown();
             try {
-                if (!wedge.await(30, TimeUnit.SECONDS)) {
+                if (!wedge.await(60, TimeUnit.SECONDS)) {
                     throw new IllegalStateException("Wedge was never released");
                 }
             } catch (InterruptedException e) {

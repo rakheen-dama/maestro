@@ -2451,6 +2451,25 @@ phase) — which removes compounding entirely, but changes event ordering, the
 unique index, and how the dashboard displays and sorts history; a schema and
 SPI change, not a patch.
 
+Related residual gaps found while closing C1-C4, to fold into whichever
+redesign is chosen:
+
+- Linear `nextSequence()` increments on the parent context are still an
+  unguarded `int` increment, so after a fork that lands near
+  `Integer.MAX_VALUE` (legal per `SequenceSpaceTest`) a few hundred further
+  plain steps wrap silently - the same class of silent wrap C4 removed for
+  block arithmetic.
+- When compensation is skipped because of `SequenceSpaceExhaustedException`,
+  the only durable record is the executor's `ERROR` log: no event or observer
+  callback says compensation was skipped, so an operator looking only at the
+  dashboard cannot tell.
+- Sequential saga compensation entries each get a 1000-slot block on the
+  shared, unbounded parent context (`SagaManager.executeSequential` sets the
+  sequence to the entry's block base), so an entry that consumes 1000 or more
+  internal sequences spills into the next entry's guard slot - the same class
+  as C3, deferred because bounding it means rebinding the scoped
+  `WorkflowContext` per entry.
+
 **Done when.** A workflow with three sequential 3-branch `parallel()` calls
 followed by a failing step compensates fully on real Postgres, and
 `SequenceSpaceExhaustedException` is either unreachable for realistic depth or

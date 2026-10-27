@@ -558,6 +558,38 @@ class SagaManagerTest {
         assertEquals(0, countEvents(EventType.COMPENSATION_STARTED));
     }
 
+    @Test
+    @DisplayName("Boundary: anchor 2_147_480 with 2 entries fits sequentially but the parallel arm's extra fork slot overflows")
+    void compensationPreCheck_sequentialFitsAtBoundary() {
+        var stack = new CompensationStack();
+        stack.push("step-A", () -> { });
+        stack.push("step-B", () -> { });
+        var boundaryCtx = new WorkflowContext(instance.id(), "test-workflow", instance.runId(),
+                "TestWorkflow", "default", "test-service", 2_147_479, false);
+
+        sagaManager.compensate(boundaryCtx, instance, stack, false);
+
+        assertEquals(1, countEvents(EventType.COMPENSATION_STARTED));
+    }
+
+    @Test
+    @DisplayName("Boundary: the same anchor and stack with parallelCompensation=true throws before COMPENSATION_STARTED")
+    void compensationPreCheck_parallelArmOverflowsAtBoundary() {
+        var invocations = new AtomicInteger();
+        var stack = new CompensationStack();
+        stack.push("step-A", invocations::incrementAndGet);
+        stack.push("step-B", invocations::incrementAndGet);
+        var boundaryCtx = new WorkflowContext(instance.id(), "test-workflow", instance.runId(),
+                "TestWorkflow", "default", "test-service", 2_147_479, false);
+
+        var e = org.junit.jupiter.api.Assertions.assertThrows(SequenceSpaceExhaustedException.class,
+                () -> sagaManager.compensate(boundaryCtx, instance, stack, true));
+        assertEquals(2_147_481, e.parentSeq());
+        assertEquals(0, invocations.get());
+        assertEquals(WorkflowStatus.RUNNING, store.getInstance("test-workflow").orElseThrow().status());
+        assertEquals(0, countEvents(EventType.COMPENSATION_STARTED));
+    }
+
     private long countEvents(EventType type) {
         return store.getEvents(instance.id()).stream().filter(e -> e.eventType() == type).count();
     }
