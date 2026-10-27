@@ -162,10 +162,20 @@ It deliberately does **not** implement:
   `signalPersisted`, `timerScheduled`, `timerCancelled`,
   `instanceLockAcquired` — no meter in the catalog needs them.
 - **`runAbandoned`** — this fires when a run stops because the node is shutting
-  down, an operator terminated the workflow, or another writer finalised the row
-  first. Counting it would double-count: `workflowTerminated` already fires
-  exactly once per terminate. It exists for the tracing adapter, which needs a
-  callback on the workflow's own thread to close its span.
+  down, an operator terminated the workflow, another writer finalised the row
+  first, the terminal status write failed, or a node-level `Error` escaped the
+  workflow method (`NODE_ERROR`). Counting it would double-count:
+  `workflowTerminated` already fires exactly once per terminate. It exists for
+  the tracing adapter, which needs a callback on the workflow's own thread to
+  close its span. `NODE_ERROR` — a `LinkageError` (`NoClassDefFoundError`,
+  `ExceptionInInitializerError`, ...) or a `VirtualMachineError` other than
+  `StackOverflowError` (`OutOfMemoryError`, `InternalError`, ...) — is the one
+  reason that is not routine: it is a bad deploy or resource exhaustion on that
+  node, the instance stays `RUNNING` and recoverable, and nothing is recorded as
+  a workflow failure. It is visible as the segment attribute
+  `maestro.abandon.reason=NODE_ERROR` and as an `ERROR` log line under the
+  workflow MDC (`... abandoned its local run on a node-level error (<class>)
+  ...`); alert on either.
 
 Every `EngineObserver` method is a `default` no-op, so a custom observer
 implements only what it cares about.
@@ -230,7 +240,7 @@ activity spans nested underneath.
 | `maestro.timer.id` | segment | See [span events](#span-events-and-their-attributes-ruling-8) below |
 | `maestro.error.type` | activity, segment | Exception type on `activityFailed` / `workflowFailed` |
 | `maestro.standdown.reason` | segment | The `StandDownReason` constant name |
-| `maestro.abandon.reason` | segment | The `AbandonReason` constant name (`SHUTDOWN`, `TERMINATED`, `CONVERGED`) |
+| `maestro.abandon.reason` | segment | The `AbandonReason` constant name (`SHUTDOWN`, `TERMINATED`, `CONVERGED`, `TERMINAL_WRITE_FAILED`, `NODE_ERROR`) |
 
 The three MDC keys Maestro logs with (`workflowId`, `runId`, `activityName`)
 appear here as `maestro.workflow.id`, `maestro.run.id`, and
@@ -532,7 +542,7 @@ The callback surface, grouped:
 | Instance lock | `instanceLockAcquired`, `instanceLockRenewFailed`, `instanceLockLost` |
 | Recovery | `recoveryPass(scanned, adopted)` |
 | Stand-down | `standDown(StandDownReason, workflowId, detail)` |
-| Run abandonment | `runAbandoned(w, AbandonReason)` — `SHUTDOWN`, `TERMINATED`, `CONVERGED` |
+| Run abandonment | `runAbandoned(w, AbandonReason)` — `SHUTDOWN`, `TERMINATED`, `CONVERGED`, `TERMINAL_WRITE_FAILED`, `NODE_ERROR` |
 
 Rules for implementers:
 

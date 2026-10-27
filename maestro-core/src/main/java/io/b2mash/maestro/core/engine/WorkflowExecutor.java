@@ -1516,12 +1516,23 @@ public final class WorkflowExecutor {
         } catch (Error e) {
             // Sits after the control-flow arms above and before catch (Exception e):
             // an Error that is NOT one of the three MaestroControlFlowError signals
-            // (StackOverflowError, AssertionError, ExceptionInInitializerError, ...)
+            // and NOT a node-level error (StackOverflowError, AssertionError, ...)
             // is a workflow failure. Before this arm it unwound through finally,
             // released the lock and left the row RUNNING, so the recovery poller
             // re-adopted it every pass forever — no log, no workflowFailed callback.
             if (e instanceof MaestroControlFlowError) throw e; // owned by the arms above
-            failAndCompensate(ctx, instance, e, compensationStack, parallelCompensation);
+            if (isNodeError(e)) {
+                // R20: a LinkageError (bad deploy: NoClassDefFoundError,
+                // ExceptionInInitializerError...) or a VirtualMachineError other
+                // than StackOverflowError (OutOfMemoryError, InternalError...) is
+                // this NODE's problem, not the workflow's. Recording FAILED would
+                // compensate real work that never failed; a rollback or a healthy
+                // node heals it. Loud, but non-terminal: write nothing, leave the
+                // instance recoverable, release the lock in finally below.
+                handleNodeError(ctx, e);
+            } else {
+                failAndCompensate(ctx, instance, e, compensationStack, parallelCompensation);
+            }
         } catch (Exception e) {
             failAndCompensate(ctx, instance, e, compensationStack, parallelCompensation);
         } finally {
@@ -1614,6 +1625,45 @@ public final class WorkflowExecutor {
         // thread, inside terminateWorkflow — so it cannot release anything this
         // workflow thread holds. This emission is what closes that gap.
         emitRunAbandoned(ctx, AbandonReason.TERMINATED);
+    }
+
+    // ── Internal: node-level Error (R20) ────────────────────────────────
+
+    /**
+     * Whether an escaping non-control-flow {@link Error} is a <em>node</em>
+     * failure rather than a workflow failure: any {@link LinkageError}, and any
+     * {@link VirtualMachineError} except {@link StackOverflowError}.
+     *
+     * <p>{@code StackOverflowError} stays a workflow failure: unbounded
+     * recursion is a property of the workflow's code and recurs identically on
+     * every node, so re-adopting it forever would heal nothing.
+     * {@code AssertionError} and every other {@code Error} stay failures for the
+     * same reason (spec C8).
+     */
+    static boolean isNodeError(Error e) {
+        if (e instanceof StackOverflowError) {
+            return false;
+        }
+        return e instanceof LinkageError || e instanceof VirtualMachineError;
+    }
+
+    /**
+     * Ends a local run on a node-level {@link Error} without recording an
+     * outcome: an {@code ERROR} log (under the workflow MDC, which this thread
+     * already carries) naming the error class, and
+     * {@link EngineObserver#runAbandoned} with {@link AbandonReason#NODE_ERROR}.
+     * Writes nothing and runs no compensation; the instance keeps its
+     * recoverable status and {@code executeWorkflow}'s {@code finally} releases
+     * the lock, so the recovery poller re-adopts it — on this node once the
+     * cause clears, or on a healthy one.
+     */
+    private void handleNodeError(WorkflowContext ctx, Error e) {
+        logger.error("Workflow '{}' abandoned its local run on a node-level error ({}) — NOT recorded as "
+                        + "a workflow failure, no compensation run; the instance stays recoverable. This is "
+                        + "a bad deploy or resource exhaustion on this node: fix or roll back the node, "
+                        + "or terminate the workflow if it cannot be healed",
+                ctx.workflowId(), e.getClass().getName(), e);
+        emitRunAbandoned(ctx, AbandonReason.NODE_ERROR);
     }
 
     // ── Internal: stale-run stand-down (Issue 18) ──────────────────────

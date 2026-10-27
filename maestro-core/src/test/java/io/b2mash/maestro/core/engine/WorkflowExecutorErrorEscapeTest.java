@@ -7,6 +7,7 @@ import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.AbandonReason;
 import io.b2mash.maestro.core.observe.RecordingEngineObserver;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -16,6 +17,7 @@ import tools.jackson.databind.json.JsonMapper;
 
 import java.lang.reflect.Method;
 import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
@@ -98,6 +100,50 @@ class WorkflowExecutorErrorEscapeTest {
                         failedEvents.getFirst().payload().path("exceptionType").asString()),
                 () -> assertEquals(1, observer.failed().size()),
                 () -> assertEquals("java.lang.StackOverflowError", observer.failed().getFirst().exceptionType()));
+    }
+
+    // ── R20: node-level Errors abandon the run, they do not fail the workflow ──
+
+    @Test
+    @DisplayName("NoClassDefFoundError (a bad deploy): stays RUNNING, nothing written, nothing "
+            + "compensated, abandoned as NODE_ERROR, still recoverable")
+    void noClassDefFoundError_abandonsAsNodeError() {
+        assertNodeErrorAbandons("error-ncdfe", () -> new NoClassDefFoundError("com/acme/Missing"));
+    }
+
+    @Test
+    @DisplayName("OutOfMemoryError (resource exhaustion): stays RUNNING, nothing written, nothing "
+            + "compensated, abandoned as NODE_ERROR, still recoverable")
+    void outOfMemoryError_abandonsAsNodeError() {
+        // A fresh instance thrown from the body — memory is never actually exhausted.
+        assertNodeErrorAbandons("error-oom", () -> new OutOfMemoryError("Java heap space"));
+    }
+
+    @Test
+    @DisplayName("ExceptionInInitializerError (a LinkageError): abandoned as NODE_ERROR")
+    void exceptionInInitializerError_abandonsAsNodeError() {
+        assertNodeErrorAbandons("error-eiie",
+                () -> new ExceptionInInitializerError(new IllegalStateException("static init")));
+    }
+
+    private void assertNodeErrorAbandons(String workflowId, Supplier<? extends Throwable> toThrow) {
+        var compensations = new AtomicInteger();
+        var instanceId = start(workflowId, compensations, toThrow);
+        await().atMost(BOUND).until(() -> !executor.isRunning(workflowId));
+        await().atMost(BOUND).until(() -> !observer.abandoned().isEmpty() || !observer.failed().isEmpty());
+
+        assertAll(
+                () -> assertEquals(WorkflowStatus.RUNNING, store.getInstance(workflowId).orElseThrow().status(),
+                        "a node problem must not be recorded as a workflow outcome"),
+                () -> assertEquals(0, countOfType(instanceId, EventType.WORKFLOW_FAILED)),
+                () -> assertEquals(1, store.getEvents(instanceId).size(), "only the seq-1 step — nothing written"),
+                () -> assertEquals(0, compensations.get(), "no compensation for work that never failed"),
+                () -> assertTrue(observer.failed().isEmpty()),
+                () -> assertTrue(observer.standDowns().isEmpty()),
+                () -> assertEquals(List.of(AbandonReason.NODE_ERROR), observer.abandonReasons()),
+                () -> assertTrue(store.getRecoverableInstances().stream()
+                                .anyMatch(i -> i.workflowId().equals(workflowId)),
+                        "a healthy (or rolled-back) node must be able to adopt it"));
     }
 
     @Test

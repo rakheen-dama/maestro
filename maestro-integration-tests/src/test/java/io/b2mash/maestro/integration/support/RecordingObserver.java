@@ -1,5 +1,6 @@
 package io.b2mash.maestro.integration.support;
 
+import io.b2mash.maestro.core.observe.AbandonReason;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.StandDownReason;
 import io.b2mash.maestro.core.observe.WorkflowInfo;
@@ -12,8 +13,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * Records the {@link EngineObserver} callbacks the integration suites assert
  * on, in arrival order.
  *
- * <p>Deliberately narrow: the callbacks a stand-down must fire, and the three
- * outcome callbacks it must <em>not</em>. A wider recorder would invite tests
+ * <p>Deliberately narrow: the callbacks a stand-down or abandonment must fire,
+ * and the three outcome callbacks it must <em>not</em>. A wider recorder would invite tests
  * to assert on incidental traffic.
  *
  * <h2>Thread Safety</h2>
@@ -31,6 +32,7 @@ public final class RecordingObserver implements EngineObserver {
     private final List<String> failed = new CopyOnWriteArrayList<>();
     private final List<String> compensating = new CopyOnWriteArrayList<>();
     private final List<String> completed = new CopyOnWriteArrayList<>();
+    private final List<AbandonReason> abandoned = new CopyOnWriteArrayList<>();
 
     @Override
     public void standDown(StandDownReason reason, String workflowId, @Nullable String detail) {
@@ -54,6 +56,17 @@ public final class RecordingObserver implements EngineObserver {
     public void workflowCompleted(WorkflowInfo w) {
         callbackNames.add("workflowCompleted");
         completed.add(w.workflowId());
+    }
+
+    @Override
+    public void runAbandoned(WorkflowInfo w, AbandonReason reason) {
+        callbackNames.add("runAbandoned");
+        abandoned.add(reason);
+    }
+
+    /** @return every recorded {@code runAbandoned} reason, in arrival order */
+    public List<AbandonReason> abandoned() {
+        return List.copyOf(abandoned);
     }
 
     /** @return every recorded stand-down, in arrival order */

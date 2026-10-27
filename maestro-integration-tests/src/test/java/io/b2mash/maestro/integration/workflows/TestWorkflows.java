@@ -71,6 +71,28 @@ public final class TestWorkflows {
     }
 
     /**
+     * Runs one activity, then throws a {@link NoClassDefFoundError} — the
+     * fixture for R20: a bad deploy (a class missing from this node's
+     * classpath) is a node error, not a workflow failure.
+     */
+    @DurableWorkflow(name = "NodeErrorWorkflow")
+    public static class NodeErrorWorkflow {
+
+        @ActivityStub
+        ChainActivities activities;
+
+        /**
+         * @param input the seed value
+         * @return never returns normally
+         */
+        @WorkflowMethod
+        public String run(String input) {
+            activities.stepOne(input);
+            throw new NoClassDefFoundError("com/acme/RemovedDependency");
+        }
+    }
+
+    /**
      * Runs one activity, parks until a signal arrives, then runs another —
      * the fixture for park/wake, pre-arrived signals and orphan adoption.
      */

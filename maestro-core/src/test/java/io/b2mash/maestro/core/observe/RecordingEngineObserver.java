@@ -216,6 +216,7 @@ public final class RecordingEngineObserver implements EngineObserver {
     public List<RecoveryPassCall> recoveryPasses() { return List.copyOf(recoveryPasses); }
     public List<StandDownCall> standDowns() { return List.copyOf(standDowns); }
     public List<AbandonCall> abandoned() { return List.copyOf(abandoned); }
+    public List<AbandonReason> abandonReasons() { return abandoned.stream().map(AbandonCall::reason).toList(); }
 
     /** Completions of one named activity filtered by the replayed flag. */
     public List<ActivityCompletion> completionsOf(String activityName, boolean replayed) {

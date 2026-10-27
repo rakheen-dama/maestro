@@ -139,7 +139,9 @@ public interface EngineObserver {
 
     /**
      * A workflow's local run ended <b>on the workflow's own thread</b> without
-     * this node recording a terminal outcome, for a routine reason.
+     * this node recording a terminal outcome, for a reason that is not the
+     * workflow's — routine in every case but {@link AbandonReason#NODE_ERROR}
+     * (a broken node: alert on it).
      *
      * <p>Deliberately distinct from {@link #standDown}. A stand-down means
      * another runner's durable state governs this workflow; abandonment means
