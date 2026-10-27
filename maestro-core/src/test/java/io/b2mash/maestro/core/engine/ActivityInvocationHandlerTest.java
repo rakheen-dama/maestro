@@ -129,6 +129,8 @@ class ActivityInvocationHandlerTest {
 
             var ex = assertThrows(ActivityExecutionException.class, () -> proxy.greet("World"));
             assertTrue(ex.getMessage().contains("Simulated failure"));
+            assertInstanceOf(RuntimeException.class, ex.getCause());
+            assertEquals(RuntimeException.class, ex.getCause().getClass());
         });
     }
 

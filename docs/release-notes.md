@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed — Replayed activity failures never degrade to a bare `RuntimeException`
+
+- **Before:** a memoized activity failure was rebuilt by reflection — a `(String)` constructor, else a no-arg one (dropping the message), else a bare `RuntimeException` — so workflow code's `catch (MyDomainException)` behaved differently live and on replay.
+- **Now:** the original type is re-created only through a **public** `(String)` constructor; otherwise the cause is a `ReconstructedActivityFailure` (a `RuntimeException`, deliberately not a `MaestroException`) carrying the original message and `originalClassName()`. This also covers a class missing from the classpath, a missing recorded type (`"unknown"`), and a recorded engine control-flow signal name, which is never instantiated. The matching contract is documented on `ActivityExecutionException`: catch it and branch on `getCause()`'s class or on `originalClassName()`; do not rely on `catch (MyDomainException)` alone. Spec C15.
+
 ### Changed — `unknown_event_payload` stand-downs name the deserialization cause
 
 - **Before:** the stand-down detail was only `seq=N` and the WARN said "could not deserialize the stored ..." — an operator could not tell a newer node's payload from their own refactor without a debugger.

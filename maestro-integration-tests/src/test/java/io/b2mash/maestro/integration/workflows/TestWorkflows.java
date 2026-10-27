@@ -103,6 +103,50 @@ public final class TestWorkflows {
     }
 
     /**
+     * Catches an activity failure, records what the cause looks like, then parks:
+     * the fixture for comparing the live and replayed view of a failure (C15).
+     */
+    @DurableWorkflow(name = "FailureReplayWorkflow")
+    public static class FailureReplayWorkflow {
+
+        @ActivityStub(retryPolicy = @io.b2mash.maestro.core.annotation.RetryPolicy(maxAttempts = 1))
+        CountingActivities.FailingActivities failing;
+
+        private final List<String> observations;
+        private final CountDownLatch parked;
+
+        /**
+         * @param observations receives one entry per run (live, then replay)
+         * @param parked       counted down once the workflow reaches its await point
+         */
+        public FailureReplayWorkflow(List<String> observations, CountDownLatch parked) {
+            this.observations = observations;
+            this.parked = parked;
+        }
+
+        /**
+         * @param input the seed value
+         * @return the observed cause description
+         */
+        @WorkflowMethod
+        public String run(String input) {
+            String seen;
+            try {
+                failing.explode(input);
+                seen = "no-failure";
+            } catch (io.b2mash.maestro.core.exception.ActivityExecutionException e) {
+                seen = e.getCause().getClass().getName() + "|" + e.getCause().getMessage()
+                        + (e.getCause() instanceof io.b2mash.maestro.core.exception.ReconstructedActivityFailure r
+                        ? "|" + r.originalClassName() : "");
+            }
+            observations.add(seen);
+            parked.countDown();
+            WorkflowContext.current().awaitSignal("go", String.class, Duration.ofSeconds(30));
+            return seen;
+        }
+    }
+
+    /**
      * Collects N signals before proceeding — the fixture for {@code collectSignals}
      * FIFO ordering on a real store.
      */

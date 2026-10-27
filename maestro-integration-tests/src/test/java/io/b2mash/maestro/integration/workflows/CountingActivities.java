@@ -54,6 +54,46 @@ public final class CountingActivities {
         String attempt(String input);
     }
 
+    /** Activity interface for the failure-replay fixtures (C15). */
+    @Activity(name = "failing")
+    public interface FailingActivities {
+        String explode(String input);
+    }
+
+    /** Exception type with a public {@code (String)} constructor: replays as itself. */
+    public static final class DomainFailure extends RuntimeException {
+        /** @param m the message */
+        public DomainFailure(String m) {
+            super(m);
+        }
+    }
+
+    /** Exception type without a {@code (String)} constructor: replays as a reconstructed failure. */
+    public static final class NoCtorFailure extends RuntimeException {
+        /**
+         * @param m    the message
+         * @param code an unused code
+         */
+        public NoCtorFailure(String m, int code) {
+            super(m);
+        }
+    }
+
+    /** Always throws the exception its supplier produces. */
+    public static final class ThrowingFailingActivities implements FailingActivities {
+        private final java.util.function.Supplier<RuntimeException> thrown;
+
+        /** @param thrown produces the exception to throw on each call */
+        public ThrowingFailingActivities(java.util.function.Supplier<RuntimeException> thrown) {
+            this.thrown = thrown;
+        }
+
+        @Override
+        public String explode(String input) {
+            throw thrown.get();
+        }
+    }
+
     /**
      * Records every invocation so tests can assert exact call counts per step.
      *

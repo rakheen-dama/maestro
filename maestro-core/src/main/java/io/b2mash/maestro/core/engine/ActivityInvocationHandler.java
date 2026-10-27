@@ -300,9 +300,9 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     /**
      * Reconstructs an {@link ActivityExecutionException} from a stored failure event.
      *
-     * <p>Attempts to reconstruct the original exception type via reflection so that
-     * workflow code catching specific exception types behaves consistently between
-     * live execution and replay.
+     * <p>The cause is rebuilt by {@link FailureReconstruction#reconstruct}: the
+     * original type only via a public {@code (String)} constructor, otherwise a
+     * {@code ReconstructedActivityFailure} naming the original class.
      */
     private ActivityExecutionException reconstructFailure(
             WorkflowEvent event, String stepName, String workflowId
@@ -322,40 +322,8 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             }
         }
 
-        var cause = tryInstantiateException(exceptionType, message);
+        var cause = FailureReconstruction.reconstruct(exceptionType, message);
         return new ActivityExecutionException(workflowId, stepName, cause);
-    }
-
-    /**
-     * Attempts to reconstruct an exception by its class name. Falls back to
-     * {@link RuntimeException} if the type cannot be instantiated.
-     */
-    private static Throwable tryInstantiateException(
-            @Nullable String exceptionType, String message
-    ) {
-        if (exceptionType != null) {
-            try {
-                var clazz = Class.forName(exceptionType);
-                if (Throwable.class.isAssignableFrom(clazz)) {
-                    // Try (String) constructor first, then no-arg
-                    try {
-                        var ctor = clazz.getDeclaredConstructor(String.class);
-                        return (Throwable) ctor.newInstance(message);
-                    } catch (NoSuchMethodException ignored) {
-                        try {
-                            var ctor = clazz.getDeclaredConstructor();
-                            return (Throwable) ctor.newInstance();
-                        } catch (NoSuchMethodException alsoIgnored) {
-                            // Fall through to default
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                logger.debug("Could not reconstruct exception type '{}', falling back to RuntimeException",
-                        exceptionType, e);
-            }
-        }
-        return new RuntimeException(message);
     }
 
     // ── Live execution path ───────────────────────────────────────────
