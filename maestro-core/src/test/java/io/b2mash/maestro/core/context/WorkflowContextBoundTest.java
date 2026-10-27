@@ -49,6 +49,24 @@ class WorkflowContextBoundTest {
         assertEquals(2_005_001, branch.nextSequence());
     }
 
+    /**
+     * The four-argument overload inherits the parent's operations. WorkflowOperations is sealed,
+     * so the "has operations" half is pinned at engine level ({@code CompensationWithParallelTest},
+     * whose compensation entry calls {@code parallel()} through the inherited delegate); here we
+     * pin the bound and the "parent has none" half.
+     */
+    @Test
+    void fourArgBounded_inheritsTheParentsOperationsAndIsBounded() {
+        var child = WorkflowContext.bounded(parent, 1, 3000, 4000);
+
+        assertEquals(3000, child.currentSequence());
+        assertThrows(IllegalStateException.class, child::randomUUID,
+                "a parent without operations yields a child without operations");
+        child.setSequence(3999);
+        var e = assertThrows(BranchSequenceExhaustedException.class, child::nextSequence);
+        assertEquals(1, e.branchIndex());
+    }
+
     @Test
     void unboundedContext_neverThrows() {
         parent.setSequence(2999);

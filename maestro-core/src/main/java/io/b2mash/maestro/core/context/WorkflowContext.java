@@ -178,13 +178,42 @@ public final class WorkflowContext {
     }
 
     /**
+     * Creates a bounded context for one sequence block that runs with the
+     * parent's own {@link WorkflowOperations} — used by sequential saga
+     * compensation, whose entries run on the workflow thread and may call
+     * {@code sleep()}, {@code awaitSignal()}, {@code parallel()},
+     * {@code currentTime()} and {@code randomUUID()} exactly as the forward
+     * path can.
+     *
+     * <p>Equivalent to {@link #bounded(WorkflowContext, int, int, int, WorkflowOperations)}
+     * with the parent's operations delegate ({@code null} if the parent has
+     * none). Use the five-argument factory when the block must run with
+     * different (or no) operations, as parallel compensation branches do.
+     *
+     * @param parent         the context to copy identity, replay flag and operations from
+     * @param branchIndex    zero-based index of the block (entry or branch) within its fork
+     * @param baseSeq        the block's base sequence number (never handed out)
+     * @param limitExclusive the first sequence number outside the block
+     * @return a bounded context sharing {@code parent}'s operations
+     * @see #bounded(WorkflowContext, int, int, int, WorkflowOperations)
+     */
+    public static WorkflowContext bounded(
+            WorkflowContext parent,
+            int branchIndex,
+            int baseSeq,
+            int limitExclusive
+    ) {
+        return bounded(parent, branchIndex, baseSeq, limitExclusive, parent.operations);
+    }
+
+    /**
      * Creates a branch context for one branch of a {@code parallel()} fork or
      * a parallel saga compensation, bounded to the sequence block
      * {@code [baseSeq, limitExclusive)}.
      *
      * <p>Identity fields and the replay flag are copied from {@code parent};
      * the counter starts at {@code baseSeq}. The branch may take at most
-     * {@code limitExclusive - baseSeq - 1} memoized steps: its
+     * {@code limitExclusive - baseSeq - 1} sequence slots: its
      * {@link #nextSequence()} throws {@link BranchSequenceExhaustedException}
      * on the 1000th direct step instead of spilling into the sibling's block.
      *

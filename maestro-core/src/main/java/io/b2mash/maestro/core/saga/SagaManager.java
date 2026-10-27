@@ -268,6 +268,14 @@ public final class SagaManager {
      * {@code @Compensate} activity call nested inside a manually-registered
      * compensation) — the next entry's block base is always deterministic.
      *
+     * <p>The action runs under {@link WorkflowContext#bounded(WorkflowContext, int, int, int)}
+     * — a child context limited to the entry's block and sharing {@code ctx}'s
+     * operations — so an entry may take at most 999 sequence slots; the 1000th
+     * throws {@link io.b2mash.maestro.core.exception.BranchSequenceExhaustedException},
+     * which fails that entry ({@code COMPENSATION_STEP_FAILED}) instead of
+     * spilling into the next entry's guard slot and silently skipping it. The
+     * per-entry outcome events are written through {@code ctx} at the block base.
+     *
      * @param ctx       the workflow context
      * @param entries   the compensation entries, in LIFO execution order
      * @param anchorSeq the {@code COMPENSATION_STARTED} event's own sequence
@@ -298,12 +306,21 @@ public final class SagaManager {
                 continue;
             }
 
-            // Live path: enter this entry's reserved block so any sequence
-            // numbers the action consumes internally (e.g. a nested
-            // @Compensate activity call) land inside it, not on the next
-            // entry's guard sequence.
+            // Live path: run the action under a context bounded to this
+            // entry's reserved block, so any sequence numbers it consumes
+            // internally (e.g. a nested @Compensate activity call) are
+            // numbered from stepBaseSeq + 1 and can never reach the next
+            // entry's guard sequence: the 1000th throws
+            // BranchSequenceExhaustedException, recorded below as this
+            // entry's COMPENSATION_STEP_FAILED — exactly how executeParallel's
+            // branches behave. Unbounded, a 1000th call landed on entry i+1's
+            // guard slot and entry i+1 was silently skipped as "already done".
+            // The child shares ctx's operations (the action runs on the
+            // workflow thread, so sleep/awaitSignal/parallel stay available);
+            // the outcome events below are still written through ctx.
             ctx.setReplaying(false);
-            ctx.setSequence(stepBaseSeq);
+            var entryCtx = WorkflowContext.bounded(ctx, i, stepBaseSeq,
+                    stepBaseSeq + SequenceSpace.BRANCH_MULTIPLIER);
 
             try {
                 // catch (Exception e) deliberately does not catch the engine's
@@ -321,7 +338,7 @@ public final class SagaManager {
                 // Any entry already recorded COMPLETED earlier in this same
                 // call (i.e. before the entry that threw) stays durable —
                 // its append already happened, in an earlier loop iteration.
-                entry.action().run();
+                ScopedValue.where(WorkflowContext.scopedValue(), entryCtx).run(entry.action());
                 logger.debug("Compensation {} '{}' completed for workflow '{}'",
                         i, entry.stepName(), ctx.workflowId());
                 appendEvent(ctx, stepBaseSeq, EventType.COMPENSATION_STEP_COMPLETED, entry.stepName(), null);

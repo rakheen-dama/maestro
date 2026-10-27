@@ -5,7 +5,9 @@ import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.Saga;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.exception.BranchSequenceExhaustedException;
 import io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException;
+import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.integration.support.MaestroEngineHarness;
 import io.b2mash.maestro.integration.support.PostgresIntegrationSupport;
@@ -148,6 +150,35 @@ class EnginePostgresParallelSagaIT extends PostgresIntegrationSupport {
             WorkflowContext.current().addCompensation("undoFanOut", () ->
                     WorkflowContext.current().parallel(List.<Callable<String>>of(
                             () -> chain.stepTwo(input), () -> chain.stepThree(input))));
+            throw new IllegalStateException("boom");
+        }
+    }
+
+    /**
+     * Registers an ordinary compensation, then one that takes 1000 sequence slots, then fails.
+     * LIFO puts the greedy entry first (block 2000), so its 1000th slot would be the ordinary
+     * entry's guard slot (3000) if sequential entries were unbounded (final review I1).
+     */
+    @DurableWorkflow(name = "GreedyCompensationWorkflow")
+    public static class GreedyCompensationWorkflow {
+
+        @ActivityStub
+        ChainActivities chain;
+
+        /**
+         * @param input the seed value
+         * @return never; the workflow always fails
+         */
+        @Saga
+        @WorkflowMethod
+        public String run(String input) {
+            var workflow = WorkflowContext.current();
+            workflow.addCompensation("undoOrdinary", () -> chain.stepTwo(input));
+            workflow.addCompensation("undoGreedy", () -> {
+                for (int i = 0; i < 1000; i++) {
+                    WorkflowContext.current().randomUUID();
+                }
+            });
             throw new IllegalStateException("boom");
         }
     }
@@ -320,6 +351,36 @@ class EnginePostgresParallelSagaIT extends PostgresIntegrationSupport {
                 "3002001:ACTIVITY_COMPLETED:chain.stepTwo",
                 "3003001:ACTIVITY_COMPLETED:chain.stepThree"),
                 describe(handle));
+        assertEquals(List.of(), observer.standDowns());
+    }
+
+    @Test
+    @DisplayName("a sequential compensation that takes 1000 slots fails its own step with BranchSequenceExhaustedException; the next entry still runs")
+    void greedySequentialCompensation_failsItsStepAndTheNextEntryRuns() {
+        var recorder = new CountingActivities.Recorder();
+        var observer = new RecordingObserver();
+        harness = MaestroEngineHarness.builder(store, objectMapper).serviceName("greedy-comp").lock(newLock())
+                .observer(observer).build();
+        harness.registerActivities(ChainActivities.class, new CountingActivities.RecordingChainActivities(recorder));
+        harness.registerWorkflow(new GreedyCompensationWorkflow());
+        var handle = harness.start(MaestroEngineHarness.uniqueWorkflowId("greedy-comp"),
+                GreedyCompensationWorkflow.class, "in");
+
+        assertEquals(WorkflowStatus.FAILED, handle.awaitTerminal(Duration.ofSeconds(30)));
+        assertEquals(1, recorder.count("stepTwo"), "the ordinary entry must not be skipped as already done");
+        var failed = store.getEventBySequence(handle.instanceId(), 2000).orElseThrow();
+        assertEquals(EventType.COMPENSATION_STEP_FAILED, failed.eventType());
+        assertEquals("undoGreedy", failed.stepName());
+        assertEquals(BranchSequenceExhaustedException.class.getName(),
+                failed.payload().get("exceptionType").stringValue());
+        var ordinary = store.getEventBySequence(handle.instanceId(), 3000).orElseThrow();
+        assertEquals(EventType.COMPENSATION_STEP_COMPLETED, ordinary.eventType());
+        assertEquals("undoOrdinary", ordinary.stepName());
+        assertEquals("chain.stepTwo", store.getEventBySequence(handle.instanceId(), 3001).orElseThrow().stepName());
+        assertEquals(999, handle.events().stream().filter(e -> "$maestro:randomUUID".equals(e.stepName())).count(),
+                "999 slots fit the entry's block; the 1000th throws before writing");
+        assertEquals(EventType.COMPENSATION_COMPLETED,
+                store.getEventBySequence(handle.instanceId(), 4001).orElseThrow().eventType());
         assertEquals(List.of(), observer.standDowns());
     }
 

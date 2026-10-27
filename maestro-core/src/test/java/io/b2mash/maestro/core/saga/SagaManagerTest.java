@@ -278,6 +278,57 @@ class SagaManagerTest {
         assertEquals(BranchSequenceExhaustedException.class.getName(), failed.payload().get("exceptionType").asText());
     }
 
+    // ── Final review I1: sequential entries are bounded to their block ───
+    //
+    // ctx starts at 5, so COMPENSATION_STARTED takes 6 and the per-entry
+    // blocks are 7000 (entry 0, A) and 8000 (entry 1, B); COMPENSATION_COMPLETED
+    // lands one past nextParentSeq(6, 2) = 9000. compensate() runs with ctx
+    // bound in a scope, exactly as on the engine's workflow thread.
+
+    @Test
+    @DisplayName("Sequential compensation: an entry that exhausts its 1000-slot block is recorded COMPENSATION_STEP_FAILED with the typed cause, and the next entry still runs")
+    void sequentialEntryExhaustingItsBlock_isRecordedFailedAndTheNextEntryRuns() {
+        var bInvocations = new AtomicInteger();
+        var stack = new CompensationStack();
+        stack.push("step-B", bInvocations::incrementAndGet);
+        stack.push("step-A", () -> { for (int i = 0; i < 1000; i++) WorkflowContext.current().nextSequence(); });
+
+        org.junit.jupiter.api.Assertions.assertThrows(CompensationException.class,
+                () -> ScopedValue.where(WorkflowContext.scopedValue(), ctx)
+                        .run(() -> sagaManager.compensate(ctx, instance, stack, false)));
+
+        var failed = store.getEventBySequence(instance.id(), 7000).orElseThrow();
+        assertEquals(EventType.COMPENSATION_STEP_FAILED, failed.eventType());
+        assertEquals("step-A", failed.stepName());
+        assertEquals(BranchSequenceExhaustedException.class.getName(), failed.payload().get("exceptionType").asText());
+        assertEquals(1, bInvocations.get(), "entry B must not be skipped by A spilling into its guard slot");
+        var completed = store.getEventBySequence(instance.id(), 8000).orElseThrow();
+        assertEquals(EventType.COMPENSATION_STEP_COMPLETED, completed.eventType());
+        assertEquals("step-B", completed.stepName());
+        assertEquals(EventType.COMPENSATION_COMPLETED,
+                store.getEventBySequence(instance.id(), 9001).orElseThrow().eventType(),
+                "the parent counter is still rebased past every entry block");
+    }
+
+    @Test
+    @DisplayName("Sequential compensation: an entry that takes exactly 999 slots fits its block and both entries complete")
+    void sequentialEntryWith999Steps_fitsAndBothComplete() {
+        var bInvocations = new AtomicInteger();
+        var stack = new CompensationStack();
+        stack.push("step-B", bInvocations::incrementAndGet);
+        stack.push("step-A", () -> { for (int i = 0; i < 999; i++) WorkflowContext.current().nextSequence(); });
+
+        ScopedValue.where(WorkflowContext.scopedValue(), ctx)
+                .run(() -> sagaManager.compensate(ctx, instance, stack, false));
+
+        assertEquals(1, bInvocations.get());
+        assertEquals(EventType.COMPENSATION_STEP_COMPLETED,
+                store.getEventBySequence(instance.id(), 7000).orElseThrow().eventType());
+        assertEquals(EventType.COMPENSATION_STEP_COMPLETED,
+                store.getEventBySequence(instance.id(), 8000).orElseThrow().eventType());
+        assertEquals(0, countEvents(EventType.COMPENSATION_STEP_FAILED));
+    }
+
     // ── Issue 14: replay-skip guard ─────────────────────────────────────
     //
     // Simulates a shutdown-interrupted compensation without needing real
