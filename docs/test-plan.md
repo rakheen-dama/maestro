@@ -88,7 +88,7 @@ entire integration seams unverified. This plan makes those seams explicit.
 | Queries (@QueryMethod, in-memory only) | ✅ | — | — | Documented single-node limitation |
 | Instance lock (acquire/release/renew, NO_BACKEND, HELD_ELSEWHERE, lost-lock, TTL validation) | ✅ | ✅ | ✅ | `MultiNodeLockContentionIT`, `MultiNodeOwnerDeathIT`, `PostgresDistributedLockContractTest` (24) |
 | Graceful shutdown | ✅ | ✅ | — | **BUG6 FIXED.** `WorkflowExecutorShutdownTest` (7) + `ShutdownContractIT` (6): parked workflows stay WAITING_*, no compensation, recoverable by a fresh node |
-| Determinism guardrails | — | — | — | Nothing detects nondeterministic workflow code; replay divergence is silent |
+| Determinism guardrails | ✅ | ✅ | — | Replay drift (step name/type/fork arity) stands down as `nondeterministic_history`; value-level nondeterminism with an unchanged step sequence is still only caught by `DeterminismChecker`. `ReplayDriftStandDownTest`, `ReplayGuardTest`, `SagaManagerTest`, `ReplayDriftStandDownIT` |
 
 ### Spring Boot starter (3 test classes)
 
@@ -394,8 +394,10 @@ recollection. "Unverified" below means no test asserts the behaviour either way.
 
 18. **`DeterminismChecker` catches only between-run nondeterminism** — randomness,
     clock reads, mutable static state. A value that is stable for a JVM's
-    lifetime but changes across restarts or code edits still slips through, and
-    replay divergence against a *stored* event log is not detected at all.
+    lifetime but changes across restarts or code edits still slips through.
+    Replay drift (step name/type/fork arity) against a *stored* event log now
+    stands down as `nondeterministic_history`; value-level nondeterminism with
+    an unchanged step sequence is still only caught by `DeterminismChecker`.
 
 19. **Five hand-rolled `WorkflowStore` fakes and three lock fakes** live across
     `maestro-core`'s tests. Every SPI change ripples through all of them, and

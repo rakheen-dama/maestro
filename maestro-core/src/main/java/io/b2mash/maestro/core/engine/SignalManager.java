@@ -286,6 +286,15 @@ final class SignalManager {
         // Replay check: look for SIGNAL_RECEIVED at this sequence
         var storedEvent = UnknownHistoryGuard.requireKnown(
                 store.getEventBySequence(ctx.workflowInstanceId(), seq), ctx.workflowId());
+        if (storedEvent.isPresent()) {
+            // Drift (C10): the slot must hold THIS await's outcome. Matching on
+            // type alone returned a renamed await's recorded payload as the
+            // answer to the new name; any other foreign event fell through to
+            // the live path and could consume a waiting signal. Both are
+            // unreachable once this throws.
+            ReplayGuard.requireMatch(storedEvent.get(), ctx.workflowId(), stepName,
+                    EventType.SIGNAL_RECEIVED, EventType.SIGNAL_TIMEOUT);
+        }
         if (storedEvent.isPresent() && storedEvent.get().eventType() == EventType.SIGNAL_RECEIVED) {
             logger.debug("Replaying signal '{}' at seq {}", signalName, seq);
             observer.signalConsumed(

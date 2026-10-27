@@ -451,17 +451,21 @@ instead of failing:
   adopt it via recovery
   ```
 
+  For `nondeterministic_history` the closing clause reads instead `roll back
+  the deploy or gate the change behind workflow.version()` (§10.7).
+
 An upgraded node then adopts and finishes the workflow through the ordinary
 lock-TTL / recovery-poller machinery, unchanged. Nothing special is needed.
 
-There are two unknown-history reasons and **they mean different things**:
+There are three history reasons and **they mean different things**:
 
 | `reason` tag | What it means |
 |---|---|
 | `unknown_event_type` | An `event_type` string this build's enum does not define. Only a **newer** build can have written it. |
 | `unknown_event_payload` | A stored payload this build could not deserialize while replaying. A newer build *or* an incompatible payload change. |
+| `nondeterministic_history` | The current code performs a different operation at this sequence than the one recorded (step renamed/reordered, `parallel()` arity changed). Only a code change can cause it. See §10.7. |
 
-(A third value, `stale_run`, is unrelated to versioning — it is Issue 18's
+(A fourth value, `stale_run`, is unrelated to versioning — it is Issue 18's
 duplicate-append convergence.)
 
 ### 10.4 The alarm that matters: `unknown_event_payload` on a homogeneous fleet
@@ -559,6 +563,68 @@ smoke test that never delivers a signal.
 
 Default-prefix deployments need no action: Flyway applies `V4` at startup like
 `V1`–`V3`.
+
+### 10.7 Replay drift: `nondeterministic_history`
+
+**What it means.** Recovery replays the workflow method against the current
+code and matches each step to the recorded event at the same sequence number.
+A `nondeterministic_history` stand-down means the event recorded there was
+written by a *different* operation than the one the code now performs: an
+activity was renamed or reordered, a `sleep()`/`awaitSignal()`/side effect now
+sits where something else ran, an awaited signal was renamed, a `parallel()`
+now forks a different number of branches, a saga compensation entry was
+renamed or reordered, or `@Saga(parallelCompensation)` was flipped. In every
+case the workflow was edited without a `workflow.version()` gate (§10.2) while
+instances were in flight. It is checked at every replay read **before** any
+side effect at that slot — no activity runs, no timer row is saved, no signal
+is consumed, no branch or compensation is started. The `version()` peek itself
+is not a drift check: a non-marker event there means "this history predates
+the change", by design.
+
+**Why it stands down rather than fails.** The history is fine; the code is the
+problem, and rolling the code back is the fix. Recording `FAILED` here would run
+compensations for work that never failed — the same argument as §10.3. Before
+this check existed the drift was silent: a renamed step returned the old step's
+recorded payload and the run carried on with it, a renamed signal await
+returned the other signal's payload, and a `sleep()` landing on an occupied slot
+inserted a `PENDING` timer row before colliding on the append — one leaked row
+per recovery pass, misreported as `stale_run`.
+
+**What you see.** The WARN of §10.3, ending `roll back the deploy or gate the
+change behind workflow.version()`, and an observer detail of the form
+
+```
+seq=<n> expected=<step the code performs> stored=<step recorded> type=<EVENT_TYPE>
+```
+
+(for a `parallel()` arity change: `seq=<n> expected=$maestro:parallel
+branches=<code> stored=$maestro:parallel branches=<recorded>`). The instance
+keeps its status (`RUNNING`, `WAITING_*` or `COMPENSATING`) and stays
+recoverable.
+
+**The two remedies.**
+
+1. **Redeploy the previous build**, so the recorded path is runnable again.
+   The next recovery pass adopts the instance and it finishes normally.
+2. **Gate the change behind `workflow.version()`** (§10.2) — the old path for
+   histories that predate it, the new one for new instances — and redeploy.
+
+**Alert.** `rate(maestro.standdown{reason="nondeterministic_history"}) > 0` →
+"an ungated workflow edit shipped; roll back". Unlike `unknown_event_type` it
+does not go away when a deploy finishes — it *is* the deploy.
+
+**Churn is by design.** Until one of the remedies ships, every recovery pass
+adopts the instance, stands down again, and emits one WARN plus one counter
+increment — exactly the §10.3 behaviour, and the reason the alert above is a
+rate.
+
+**One known false positive.** Compensations registered from *inside*
+`parallel()` branches are pushed onto the saga stack in whatever order the
+branches happen to finish, which a recovery replay need not reproduce. A saga
+that crashes mid-compensation and is recovered with a different registration
+order stands down at the first mismatched entry rather than (as before) silently
+skipping the wrong entry. Register compensations on the workflow's main line,
+after the `parallel()` join, to avoid it.
 
 ---
 

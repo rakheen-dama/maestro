@@ -589,6 +589,114 @@ class SagaManagerTest {
         assertEquals(0, countEvents(EventType.COMPENSATION_COMPLETED));
     }
 
+    // ── Replay drift during compensation (C10, ruling R4) ──────────────────
+    //
+    // Every guard slot read here used to treat ANY present event as "this
+    // entry already ran": a renamed or reordered compensation entry skipped the
+    // wrong entry (never compensating it), a fork marker recording a different
+    // entry count was reused as-is, and flipping @Saga(parallelCompensation)
+    // between runs re-invoked work that had already been reversed. Each now
+    // stands down as NONDETERMINISTIC_HISTORY before any action runs or any
+    // event is appended. ctx is seeded at 5, so COMPENSATION_STARTED is 6.
+
+    private void plant(int seq, EventType type, String stepName, String payloadJson) {
+        store.appendEvent(new WorkflowEvent(UUID.randomUUID(), instance.id(), seq, type, stepName,
+                payloadJson == null ? null : new ObjectMapper().readTree(payloadJson), Instant.now()));
+    }
+
+    private UnknownWorkflowHistoryException assertDriftStandDown(CompensationStack stack, boolean parallel,
+                                                                 String expectedDetail) {
+        var eventsBefore = store.getEvents(instance.id()).size();
+        var thrown = org.junit.jupiter.api.Assertions.assertThrows(UnknownWorkflowHistoryException.class,
+                () -> sagaManager.compensate(ctx, instance, stack, parallel));
+        org.junit.jupiter.api.Assertions.assertAll(
+                () -> assertEquals(UnknownWorkflowHistoryException.Kind.NONDETERMINISTIC_HISTORY, thrown.kind()),
+                () -> assertEquals(expectedDetail, thrown.detail()),
+                () -> assertEquals(eventsBefore, store.getEvents(instance.id()).size(),
+                        "a drift stand-down appends nothing"));
+        return thrown;
+    }
+
+    @Test
+    @DisplayName("Drift: a sequential entry whose guard slot records a different step name stands "
+            + "down — nothing invoked, nothing appended")
+    void sequentialRenamedEntry_standsDown() {
+        var invocations = new AtomicInteger();
+        var stack = new CompensationStack();
+        stack.push("step-A", invocations::incrementAndGet);
+        plant(6, EventType.COMPENSATION_STARTED, "$maestro:compensation", null);
+        plant(7000, EventType.COMPENSATION_STEP_COMPLETED, "step-A-old", null);
+
+        assertDriftStandDown(stack, false,
+                "seq=7000 expected=step-A stored=step-A-old type=COMPENSATION_STEP_COMPLETED");
+        assertEquals(0, invocations.get());
+    }
+
+    @Test
+    @DisplayName("Drift: a parallel branch whose guard slot records a different step name stands "
+            + "down before any branch is spawned")
+    void parallelRenamedBranch_standsDown() {
+        var invocations = new AtomicInteger();
+        var stack = new CompensationStack();
+        stack.push("branch-B", invocations::incrementAndGet);
+        stack.push("branch-A", invocations::incrementAndGet);   // unwinds first → branch 0
+        plant(6, EventType.COMPENSATION_STARTED, "$maestro:compensation", null);
+        plant(7, EventType.SIDE_EFFECT, "$maestro:parallel-compensation", "{\"branchCount\":2}");
+        plant(9000, EventType.COMPENSATION_STEP_COMPLETED, "branch-B-old", null);   // branch 1's slot
+
+        assertDriftStandDown(stack, true,
+                "seq=9000 expected=branch-B stored=branch-B-old type=COMPENSATION_STEP_COMPLETED");
+        assertEquals(0, invocations.get(), "branch 0's slot is empty, but it must not be spawned either");
+    }
+
+    @Test
+    @DisplayName("Drift: a parallel-compensation fork marker recording a different entry count stands down")
+    void parallelForkMarkerEntryCountMismatch_standsDown() {
+        var invocations = new AtomicInteger();
+        var stack = new CompensationStack();
+        stack.push("branch-B", invocations::incrementAndGet);
+        stack.push("branch-A", invocations::incrementAndGet);
+        plant(6, EventType.COMPENSATION_STARTED, "$maestro:compensation", null);
+        plant(7, EventType.SIDE_EFFECT, "$maestro:parallel-compensation", "{\"branchCount\":3}");
+
+        assertDriftStandDown(stack, true, "seq=7 expected=$maestro:parallel-compensation branches=2 "
+                + "stored=$maestro:parallel-compensation branches=3");
+        assertEquals(0, invocations.get());
+    }
+
+    @Test
+    @DisplayName("Drift: flipping parallelCompensation false→true stands down — the entry the "
+            + "sequential run already reversed is not re-invoked")
+    void sequentialHistoryRecoveredInParallelMode_standsDown() {
+        var invocations = new AtomicInteger();
+        var stack = new CompensationStack();
+        stack.push("step-A", invocations::incrementAndGet);
+        // A sequential run reversed step-A at its entry block, then crashed
+        // before COMPENSATION_COMPLETED.
+        plant(6, EventType.COMPENSATION_STARTED, "$maestro:compensation", null);
+        plant(7000, EventType.COMPENSATION_STEP_COMPLETED, "step-A", null);
+
+        assertDriftStandDown(stack, true, "seq=7000 expected=$maestro:parallel-compensation "
+                + "stored=step-A type=COMPENSATION_STEP_COMPLETED");
+        assertEquals(0, invocations.get());
+    }
+
+    @Test
+    @DisplayName("Drift: flipping parallelCompensation true→false stands down at the recorded fork "
+            + "marker — no entry runs")
+    void parallelHistoryRecoveredInSequentialMode_standsDown() {
+        var invocations = new AtomicInteger();
+        var stack = new CompensationStack();
+        stack.push("step-A", invocations::incrementAndGet);
+        // A parallel run recorded its fork marker, then crashed before the branch finished.
+        plant(6, EventType.COMPENSATION_STARTED, "$maestro:compensation", null);
+        plant(7, EventType.SIDE_EFFECT, "$maestro:parallel-compensation", "{\"branchCount\":1}");
+
+        assertDriftStandDown(stack, false, "seq=7 expected=$maestro:sequential-compensation "
+                + "stored=$maestro:parallel-compensation type=SIDE_EFFECT");
+        assertEquals(0, invocations.get());
+    }
+
     @Test
     @DisplayName("Compensation whose block arithmetic would overflow throws before transitioning or running anything")
     void compensationBlockOverflow_failsBeforeAnyActionRuns() {

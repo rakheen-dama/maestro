@@ -1661,11 +1661,22 @@ public final class WorkflowExecutor {
                 .map(WorkflowInstance::status)
                 .orElse(null);
         logger.warn("Workflow '{}' stood down at sequence {}: {} (instance status still {}) — no "
-                        + "failure recorded, no compensation run; an upgraded node will adopt it "
-                        + "via recovery",
-                ctx.workflowId(), e.sequenceNumber(), e.getMessage(), status);
+                        + "failure recorded, no compensation run; {}",
+                ctx.workflowId(), e.sequenceNumber(), e.getMessage(), status, standDownRemedy(e.kind()));
         emit("standDown", ctx.workflowId(), () ->
                 observer.standDown(standDownReason(e.kind()), ctx.workflowId(), e.detail()));
+    }
+
+    /**
+     * The closing clause of {@link #handleUnknownHistoryStandDown}'s WARN — what
+     * an operator should expect or do next for this kind of stand-down.
+     * Package-private so the wording is pinned without an SLF4J binding.
+     */
+    static String standDownRemedy(UnknownWorkflowHistoryException.Kind kind) {
+        return switch (kind) {
+            case UNKNOWN_EVENT_TYPE, UNKNOWN_EVENT_PAYLOAD -> "an upgraded node will adopt it via recovery";
+            case NONDETERMINISTIC_HISTORY -> "roll back the deploy or gate the change behind workflow.version()";
+        };
     }
 
     private static StandDownReason standDownReason(UnknownWorkflowHistoryException.Kind kind) {

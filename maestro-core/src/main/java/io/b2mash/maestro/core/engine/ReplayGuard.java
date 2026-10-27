@@ -5,6 +5,7 @@ import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 
 import java.util.Arrays;
+import java.util.Optional;
 
 /**
  * The single place the engine turns "the persisted event at this sequence is
@@ -73,12 +74,33 @@ public final class ReplayGuard {
         if (typeMatches && expectedStepName.equals(stored.stepName())) {
             return stored;
         }
-        var seq = stored.sequenceNumber();
-        throw nondeterministic(workflowId, seq,
-                "the current code performs '%s' but the history recorded '%s' (%s)"
-                        .formatted(expectedStepName, stored.stepName(), stored.eventType()),
-                "seq=%d expected=%s stored=%s type=%s"
-                        .formatted(seq, expectedStepName, stored.stepName(), stored.eventType()));
+        throw mismatch(stored, workflowId, expectedStepName);
+    }
+
+    /**
+     * Stands the run down if {@code stored} holds an event: the current code
+     * records nothing at this slot, so anything there was written by a
+     * different shape of the same operation.
+     *
+     * <p>Used where one operation has two layouts that never share a slot —
+     * sequential vs parallel saga compensation — to detect a history written by
+     * the other layout before any action runs. The detail names
+     * {@code expectedOperation} where {@link #requireMatch} would name a step.
+     *
+     * @param stored            the (possibly empty) read of the slot — already
+     *                          admitted by {@link UnknownHistoryGuard#requireKnown}
+     * @param workflowId        the workflow being replayed, for the message
+     * @param expectedOperation the operation the current code performs, which
+     *                          leaves this slot empty
+     * @throws UnknownWorkflowHistoryException with
+     *         {@link UnknownWorkflowHistoryException.Kind#NONDETERMINISTIC_HISTORY}
+     *         if {@code stored} is present
+     */
+    public static void requireAbsent(Optional<WorkflowEvent> stored, String workflowId,
+                                     String expectedOperation) {
+        if (stored.isPresent()) {
+            throw mismatch(stored.get(), workflowId, expectedOperation);
+        }
     }
 
     /**
@@ -122,6 +144,16 @@ public final class ReplayGuard {
                 "seq=%d expected=%s branches=%d stored=%s branches=%d"
                         .formatted(seq, stored.stepName(), expectedBranchCount,
                                 stored.stepName(), actual));
+    }
+
+    private static UnknownWorkflowHistoryException mismatch(WorkflowEvent stored, String workflowId,
+                                                            String expectedStepName) {
+        var seq = stored.sequenceNumber();
+        return nondeterministic(workflowId, seq,
+                "the current code performs '%s' but the history recorded '%s' (%s)"
+                        .formatted(expectedStepName, stored.stepName(), stored.eventType()),
+                "seq=%d expected=%s stored=%s type=%s"
+                        .formatted(seq, expectedStepName, stored.stepName(), stored.eventType()));
     }
 
     private static UnknownWorkflowHistoryException nondeterministic(String workflowId, int seq,

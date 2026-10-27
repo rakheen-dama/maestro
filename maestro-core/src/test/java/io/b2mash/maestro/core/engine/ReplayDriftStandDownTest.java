@@ -6,7 +6,9 @@ import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.model.EventType;
+import io.b2mash.maestro.core.exception.UnknownWorkflowHistoryException;
 import io.b2mash.maestro.core.model.WorkflowEvent;
+import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.observe.RecordingEngineObserver;
 import io.b2mash.maestro.core.observe.StandDownReason;
@@ -24,18 +26,22 @@ import tools.jackson.databind.json.JsonMapper;
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -155,6 +161,155 @@ class ReplayDriftStandDownTest {
                 () -> assertTrue(observer.standDowns().isEmpty()));
     }
 
+    @Test
+    @DisplayName("randomUUID() on a currentTime slot stands down — the ISO instant is never "
+            + "returned as the UUID")
+    void randomUuidOnCurrentTimeSlot_standsDown() {
+        var returned = new AtomicReference<String>();
+        startAndPlant("drift-uuid", () -> returned.set(WorkflowContext.current().randomUUID()),
+                plantAt(2, EventType.SIDE_EFFECT, "$maestro:currentTime",
+                        json("\"2026-10-27T10:15:30Z\"")));
+
+        awaitRunEnded("drift-uuid");
+
+        var downs = observer.standDowns();
+        assertEquals(1, downs.size(), "exactly one stand-down; got " + downs);
+        var call = downs.getFirst();
+        assertAll(
+                () -> assertEquals(StandDownReason.NONDETERMINISTIC_HISTORY, call.reason()),
+                () -> assertEquals("seq=2 expected=$maestro:randomUUID stored=$maestro:currentTime "
+                        + "type=SIDE_EFFECT", call.detail()),
+                () -> assertNull(returned.get(),
+                        "the recorded instant string must never be handed back as the UUID"),
+                () -> assertEquals(1, store.appendAttempts()),
+                () -> assertEquals(WorkflowStatus.RUNNING,
+                        store.getInstance("drift-uuid").orElseThrow().status()));
+    }
+
+    @Test
+    @DisplayName("sleep() on a slot another operation recorded stands down BEFORE saving a timer row")
+    void sleepOnOccupiedSlot_standsDownWithoutSavingATimer() {
+        startAndPlant("drift-sleep", () -> WorkflowContext.current().sleep(Duration.ofHours(1)),
+                plantAt(2, EventType.ACTIVITY_COMPLETED, "Acts.oldName", json("\"stale\"")));
+
+        awaitRunEnded("drift-sleep");
+
+        var downs = observer.standDowns();
+        assertEquals(1, downs.size(), "exactly one stand-down; got " + downs);
+        var call = downs.getFirst();
+        assertAll(
+                () -> assertEquals(StandDownReason.NONDETERMINISTIC_HISTORY, call.reason()),
+                () -> assertEquals("seq=2 expected=$maestro:sleep stored=Acts.oldName type=ACTIVITY_COMPLETED",
+                        call.detail()),
+                () -> assertTrue(store.getDueTimers(Instant.now().plus(Duration.ofDays(2)), 100).isEmpty(),
+                        "the pre-fix symptom: a PENDING timer row saved before the duplicate append "
+                                + "— one leaked row per recovery pass"),
+                () -> assertEquals(1, store.appendAttempts()),
+                () -> assertEquals(WorkflowStatus.RUNNING,
+                        store.getInstance("drift-sleep").orElseThrow().status()));
+    }
+
+    @Test
+    @DisplayName("awaitSignal() of a renamed signal stands down — the old signal's payload is never "
+            + "returned and the waiting signal is never consumed")
+    void awaitSignalRenamed_standsDownWithoutConsuming() {   // Review Focus 2
+        var returned = new AtomicReference<String>();
+        // a signal for the NEW name is already waiting — the live path would consume it
+        startAndPlant("drift-signal",
+                () -> returned.set(WorkflowContext.current().awaitSignal("rejected", String.class,
+                        Duration.ofSeconds(30))),
+                plantAt(2, EventType.SIGNAL_RECEIVED, "$maestro:awaitSignal:approved", json("\"yes\"")),
+                instanceId -> store.saveSignal(new WorkflowSignal(UUID.randomUUID(), instanceId,
+                        "drift-signal", "rejected", json("\"no\""), false, Instant.now(), null)));
+
+        awaitRunEnded("drift-signal");
+
+        var downs = observer.standDowns();
+        assertEquals(1, downs.size(), "exactly one stand-down; got " + downs
+                + " (awaitSignal returned " + returned.get() + ", status "
+                + store.getInstance("drift-signal").orElseThrow().status() + ")");
+        var call = downs.getFirst();
+        assertAll(
+                () -> assertEquals(StandDownReason.NONDETERMINISTIC_HISTORY, call.reason()),
+                () -> assertEquals("seq=2 expected=$maestro:awaitSignal:rejected "
+                        + "stored=$maestro:awaitSignal:approved type=SIGNAL_RECEIVED", call.detail()),
+                () -> assertNull(returned.get(), "the 'approved' payload must never be returned"),
+                () -> assertEquals(1, store.getUnconsumedSignals("drift-signal", "rejected").size(),
+                        "never consumed, never discarded"),
+                () -> assertTrue(observer.signalConsumed().isEmpty()),
+                () -> assertEquals(1, store.appendAttempts()),
+                () -> assertEquals(WorkflowStatus.RUNNING,
+                        store.getInstance("drift-signal").orElseThrow().status()));
+    }
+
+    @Test
+    @DisplayName("parallel() whose branch count differs from the recorded fork stands down before "
+            + "any branch starts")
+    void parallelBranchCountMismatch_standsDownBeforeForking() {
+        var branchRuns = new AtomicInteger();
+        Callable<String> task = () -> {
+            branchRuns.incrementAndGet();
+            return "b";
+        };
+        startAndPlant("drift-parallel", () -> WorkflowContext.current().parallel(List.of(task, task)),
+                plantAt(2, EventType.SIDE_EFFECT, "$maestro:parallel", json("{\"branchCount\":3}")));
+
+        awaitRunEnded("drift-parallel");
+
+        var downs = observer.standDowns();
+        assertEquals(1, downs.size(), "exactly one stand-down; got " + downs
+                + " (branches run: " + branchRuns.get() + ", status "
+                + store.getInstance("drift-parallel").orElseThrow().status() + ")");
+        var call = downs.getFirst();
+        assertAll(
+                () -> assertEquals(StandDownReason.NONDETERMINISTIC_HISTORY, call.reason()),
+                () -> assertEquals("seq=2 expected=$maestro:parallel branches=2 "
+                        + "stored=$maestro:parallel branches=3", call.detail()),
+                () -> assertEquals(0, branchRuns.get(), "no branch may start"),
+                () -> assertEquals(1, store.appendAttempts()),
+                () -> assertEquals(WorkflowStatus.RUNNING,
+                        store.getInstance("drift-parallel").orElseThrow().status()));
+    }
+
+    @Test
+    @DisplayName("version() peeking over a non-marker event is 'predates the change', never drift")
+    void versionPeekOverForeignEvent_isNotDrift() {   // Review Focus 1
+        var resolved = new AtomicInteger(-2);
+        var result = new AtomicReference<String>();
+        // minSupported must admit DEFAULT_VERSION, or guardVersion rejects the
+        // (correct) predates-the-change resolution as unsupported.
+        startAndPlant("drift-version", () -> {
+            resolved.set(WorkflowContext.current().version("c", WorkflowContext.DEFAULT_VERSION, 1));
+            result.set(acts.newName());
+        }, plantAt(2, EventType.ACTIVITY_COMPLETED, "Acts.newName", json("\"memo\"")));
+
+        TestTerminalWait.awaitTerminal(store, "drift-version", BOUND);
+
+        assertAll(
+                () -> assertEquals(WorkflowStatus.COMPLETED,
+                        store.getInstance("drift-version").orElseThrow().status()),
+                () -> assertEquals(WorkflowContext.DEFAULT_VERSION, resolved.get(),
+                        "a non-marker at the peek slot means 'predates the change'"),
+                () -> assertEquals("memo", result.get()),
+                () -> assertTrue(observer.standDowns().isEmpty()));
+    }
+
+    @Test
+    @DisplayName("the stand-down WARN's remedy clause matches the kind — drift says roll back, not "
+            + "'an upgraded node will adopt it'")
+    void standDownRemedy_dependsOnKind() {
+        assertAll(
+                () -> assertEquals("an upgraded node will adopt it via recovery",
+                        WorkflowExecutor.standDownRemedy(
+                                UnknownWorkflowHistoryException.Kind.UNKNOWN_EVENT_TYPE)),
+                () -> assertEquals("an upgraded node will adopt it via recovery",
+                        WorkflowExecutor.standDownRemedy(
+                                UnknownWorkflowHistoryException.Kind.UNKNOWN_EVENT_PAYLOAD)),
+                () -> assertEquals("roll back the deploy or gate the change behind workflow.version()",
+                        WorkflowExecutor.standDownRemedy(
+                                UnknownWorkflowHistoryException.Kind.NONDETERMINISTIC_HISTORY)));
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────
 
     private record Run(UUID instanceId, CountDownLatch gate) {}
@@ -167,12 +322,22 @@ class ReplayDriftStandDownTest {
      */
     private Run startAndPlant(String workflowId, Runnable secondOp,
                               Function<UUID, WorkflowEvent> plant) {
+        return startAndPlant(workflowId, secondOp, plant, _ -> { });
+    }
+
+    /**
+     * As {@link #startAndPlant(String, Runnable, Function)}, then runs
+     * {@code alsoPlant} (e.g. saving a waiting signal) before the gate opens.
+     */
+    private Run startAndPlant(String workflowId, Runnable secondOp,
+                              Function<UUID, WorkflowEvent> plant, Consumer<UUID> alsoPlant) {
         var gate = new CountDownLatch(1);
         var instanceId = executor.startWorkflow(workflowId, "DriftWorkflow", "default", null,
                 new DriftWorkflow(gate, secondOp), workflowMethod());
         await().atMost(BOUND)
                 .until(() -> store.getEventBySequence(instanceId, 1).isPresent());
         store.injectRawEvent(plant.apply(instanceId));
+        alsoPlant.accept(instanceId);
         gate.countDown();
         return new Run(instanceId, gate);
     }

@@ -197,74 +197,79 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         var storedEvent = UnknownHistoryGuard.requireKnown(
                 store.getEventBySequence(ctx.workflowInstanceId(), seq), ctx.workflowId());
         if (storedEvent.isPresent()) {
-            if (storedEvent.get().eventType() == EventType.TIMER_SCHEDULED) {
-                var timerId = extractTimerId(storedEvent.get().payload());
-                // The scheduling is memoized history — re-observed with
-                // replayed=true so counting adapters can skip it.
-                observer.timerScheduled(observedTimer(ctx, timerId), true);
-                // Check whether the outcome at the next sequence is already
-                // memoized. Pure deterministic re-derivation from the event
-                // log — no writes, no timer-row read — for both terminal outcomes.
-                var nextSeq = seq + 1;
-                var nextEvent = UnknownHistoryGuard.requireKnown(
-                        store.getEventBySequence(ctx.workflowInstanceId(), nextSeq),
-                        ctx.workflowId());
-                if (nextEvent.isPresent() && nextEvent.get().eventType() == EventType.TIMER_FIRED) {
-                    // Both events exist — skip the sleep entirely
-                    ctx.nextSequence(); // advance past TIMER_FIRED
-                    observer.timerFired(observedTimer(ctx, timerId), true);
-                    logger.debug("Replaying completed sleep at seq {} (skipped)", seq);
-                    return;
-                }
-                if (nextEvent.isPresent() && nextEvent.get().eventType() == EventType.TIMER_CANCELLED) {
-                    ctx.nextSequence(); // advance past TIMER_CANCELLED
-                    observer.timerCancelled(observedTimer(ctx, timerId), true);
-                    logger.debug("Replaying cancelled sleep at seq {} (skipped)", seq);
-                    throw new TimerCancelledException(ctx.workflowId(), timerId);
-                }
-                // TIMER_SCHEDULED exists but no terminal event does yet. Either
-                // the timer really is still pending, or the node that owned
-                // this workflow died inside the window between the timer row
-                // transitioning and this thread appending the terminal event.
-                // The durable row is what tells the two apart: only a PENDING
-                // timer will ever be handed to a poller again, so re-parking
-                // on a FIRED or CANCELLED one would wait forever.
-                var rowStatus = store.findTimer(ctx.workflowInstanceId(), timerId)
-                        .map(WorkflowTimer::status)
-                        .orElse(null);
-
-                if (rowStatus == TimerStatus.CANCELLED) {
-                    logger.debug("Replaying sleep at seq {} whose timer '{}' was cancelled — "
-                            + "healing the missing TIMER_CANCELLED event instead of re-parking",
-                            seq, timerId);
-                    recordTimerCancelled(ctx, timerId);
-                    updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
-                    publishLifecycleEvent(ctx, stepName, LifecycleEventType.TIMER_CANCELLED);
-                    throw new TimerCancelledException(ctx.workflowId(), timerId);
-                }
-
-                if (rowStatus == TimerStatus.FIRED) {
-                    logger.debug("Replaying sleep at seq {} whose timer '{}' already fired — "
-                            + "healing the missing TIMER_FIRED event instead of re-parking",
-                            seq, timerId);
-                } else {
-                    logger.debug("Replaying pending sleep at seq {} — re-parking", seq);
-                    observer.workflowParked(observed(ctx), ParkKind.TIMER);
-                    parkForTimer(ctx, timerId);
-                    observer.workflowUnparked(observed(ctx), ParkKind.TIMER);
-                    // The wake that ends the re-park can be a fire or a
-                    // cancel racing in after this node came back up — the row
-                    // decides, exactly as it does on the live path below.
-                    recordWakeOutcome(ctx, stepName, timerId);
-                    return;
-                }
-                // Timer fired — record the TIMER_FIRED event
-                recordTimerFired(ctx, timerId);
-                // Restore RUNNING status (matches the live path)
-                updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
-                publishLifecycleEvent(ctx, stepName, LifecycleEventType.TIMER_FIRED);
+            // Any present event that is not this sleep's TIMER_SCHEDULED is
+            // drift (C10): stand down HERE, before the live path's
+            // store.saveTimer below. Falling through used to insert a PENDING
+            // timer row and only then collide on the append — one leaked row
+            // per recovery pass, misreported as STALE_RUN.
+            ReplayGuard.requireMatch(storedEvent.get(), ctx.workflowId(), stepName,
+                    EventType.TIMER_SCHEDULED);
+            var timerId = extractTimerId(storedEvent.get().payload());
+            // The scheduling is memoized history — re-observed with
+            // replayed=true so counting adapters can skip it.
+            observer.timerScheduled(observedTimer(ctx, timerId), true);
+            // Check whether the outcome at the next sequence is already
+            // memoized. Pure deterministic re-derivation from the event
+            // log — no writes, no timer-row read — for both terminal outcomes.
+            var nextSeq = seq + 1;
+            var nextEvent = UnknownHistoryGuard.requireKnown(
+                    store.getEventBySequence(ctx.workflowInstanceId(), nextSeq),
+                    ctx.workflowId());
+            if (nextEvent.isPresent() && nextEvent.get().eventType() == EventType.TIMER_FIRED) {
+                // Both events exist — skip the sleep entirely
+                ctx.nextSequence(); // advance past TIMER_FIRED
+                observer.timerFired(observedTimer(ctx, timerId), true);
+                logger.debug("Replaying completed sleep at seq {} (skipped)", seq);
                 return;
             }
+            if (nextEvent.isPresent() && nextEvent.get().eventType() == EventType.TIMER_CANCELLED) {
+                ctx.nextSequence(); // advance past TIMER_CANCELLED
+                observer.timerCancelled(observedTimer(ctx, timerId), true);
+                logger.debug("Replaying cancelled sleep at seq {} (skipped)", seq);
+                throw new TimerCancelledException(ctx.workflowId(), timerId);
+            }
+            // TIMER_SCHEDULED exists but no terminal event does yet. Either
+            // the timer really is still pending, or the node that owned
+            // this workflow died inside the window between the timer row
+            // transitioning and this thread appending the terminal event.
+            // The durable row is what tells the two apart: only a PENDING
+            // timer will ever be handed to a poller again, so re-parking
+            // on a FIRED or CANCELLED one would wait forever.
+            var rowStatus = store.findTimer(ctx.workflowInstanceId(), timerId)
+                    .map(WorkflowTimer::status)
+                    .orElse(null);
+
+            if (rowStatus == TimerStatus.CANCELLED) {
+                logger.debug("Replaying sleep at seq {} whose timer '{}' was cancelled — "
+                        + "healing the missing TIMER_CANCELLED event instead of re-parking",
+                        seq, timerId);
+                recordTimerCancelled(ctx, timerId);
+                updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
+                publishLifecycleEvent(ctx, stepName, LifecycleEventType.TIMER_CANCELLED);
+                throw new TimerCancelledException(ctx.workflowId(), timerId);
+            }
+
+            if (rowStatus == TimerStatus.FIRED) {
+                logger.debug("Replaying sleep at seq {} whose timer '{}' already fired — "
+                        + "healing the missing TIMER_FIRED event instead of re-parking",
+                        seq, timerId);
+            } else {
+                logger.debug("Replaying pending sleep at seq {} — re-parking", seq);
+                observer.workflowParked(observed(ctx), ParkKind.TIMER);
+                parkForTimer(ctx, timerId);
+                observer.workflowUnparked(observed(ctx), ParkKind.TIMER);
+                // The wake that ends the re-park can be a fire or a
+                // cancel racing in after this node came back up — the row
+                // decides, exactly as it does on the live path below.
+                recordWakeOutcome(ctx, stepName, timerId);
+                return;
+            }
+            // Timer fired — record the TIMER_FIRED event
+            recordTimerFired(ctx, timerId);
+            // Restore RUNNING status (matches the live path)
+            updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
+            publishLifecycleEvent(ctx, stepName, LifecycleEventType.TIMER_FIRED);
+            return;
         }
 
         // Live path: create and persist the timer
@@ -557,7 +562,16 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             // branches have already touched the outside world.
             var storedEvent = UnknownHistoryGuard.requireKnown(
                     store.getEventBySequence(ctx.workflowInstanceId(), parentSeq), ctx.workflowId());
-            if (storedEvent.isEmpty() || storedEvent.get().eventType() != EventType.SIDE_EFFECT) {
+            if (storedEvent.isPresent()) {
+                // Drift (C10): a present event must be this fork's marker AND
+                // record the same arity — checked before any branch thread is
+                // spawned. A different count means the recorded branch blocks
+                // belong to a different fork shape; forking anyway would replay
+                // the wrong blocks (or run new branches live).
+                ReplayGuard.requireMatch(storedEvent.get(), ctx.workflowId(), "$maestro:parallel",
+                        EventType.SIDE_EFFECT);
+                ReplayGuard.requireBranchCount(storedEvent.get(), ctx.workflowId(), branchCount);
+            } else {
                 // Live path: record the parallel fork point
                 ctx.setReplaying(false);
                 appendEvent(ctx, parentSeq, EventType.SIDE_EFFECT, "$maestro:parallel",
@@ -728,6 +742,9 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         // PEEK — read the slot without consuming it. A non-matching event there
         // means this history predates the change, and consuming the slot would
         // shift every later replay lookup by one and corrupt the run.
+        // Deliberately NOT ReplayGuard-checked: a non-marker event at the peek is
+        // "this history predates the change" by design, not drift
+        // (ReplayDriftStandDownTest.versionPeekOverForeignEvent_isNotDrift pins it).
         var peekSeq = ctx.currentSequence() + 1;
         // Guarded BEFORE the predates-the-change classification below: an event
         // of a type this build does not know is not evidence that the history

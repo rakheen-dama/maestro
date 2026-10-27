@@ -91,18 +91,19 @@ timer ID. `workflowFailed`'s exception type is deliberately *not* a tag either
 | `maestro.recovery.scanned` | *(none)* | — | Incremented by the number of instances a recovery pass scanned |
 | `maestro.recovery.adopted` | *(none)* | — | Incremented by the number of instances that pass adopted |
 | `maestro.lock.renew.failures` | `outcome` | `error`, `lost` | Instance-lock renewal errored (`error`) or the lock was found gone (`lost`) |
-| `maestro.standdown` | `reason` | `unknown_event_type`, `unknown_event_payload`, `stale_run` | A local run stood down without recording a workflow outcome |
+| `maestro.standdown` | `reason` | `unknown_event_type`, `unknown_event_payload`, `nondeterministic_history`, `stale_run` | A local run stood down without recording a workflow outcome |
 
 `maestro.recovery.scanned` and `maestro.recovery.adopted` are `increment(n)`
 calls, not `increment()` — one recovery pass moves them by the pass's counts.
 
-The `reason` tag value set is closed at three, mapped from
+The `reason` tag value set is closed at four, mapped from
 `io.b2mash.maestro.core.observe.StandDownReason`:
 
 | `reason` | Meaning |
 |---|---|
 | `unknown_event_type` | A persisted `event_type` string this build's `EventType` enum does not define — written by a **newer** node |
 | `unknown_event_payload` | A stored payload this build could not deserialize while replaying |
+| `nondeterministic_history` | C10 — the recorded event at a replayed sequence was written by a different operation than the current code performs there (an ungated workflow edit; roll back — see [Operations §10.7](operations.md#107-replay-drift-nondeterministic_history)) |
 | `stale_run` | Issue 18 — an event append collided with a concurrent runner's history |
 
 See [Operations §10](operations.md#10-versioning-and-mixed-version-deploys) for
