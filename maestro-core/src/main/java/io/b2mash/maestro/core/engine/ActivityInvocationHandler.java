@@ -356,7 +356,8 @@ public final class ActivityInvocationHandler implements InvocationHandler {
                         retryPolicy,
                         () -> invokeActivity(method, args),
                         stepName,
-                        ctx.workflowId()
+                        ctx.workflowId(),
+                        ctx.cancellation()
                 );
             } catch (ActivityExecutionException e) {
                 var elapsed = Duration.ofNanos(System.nanoTime() - startNanos);

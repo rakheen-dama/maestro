@@ -34,6 +34,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static io.b2mash.maestro.core.TestEventLogs.removeFailureEvents;
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -491,6 +492,27 @@ class WorkflowExecutorShutdownTest {
     }
 
     @Test
+    @DisplayName("Shutdown while a retried activity is in backoff abandons the wait and leaves the workflow RUNNING and recoverable")
+    void shutdown_duringRetryBackoff_abandonsBackoffAndLeavesItRecoverable() throws Exception {
+        var invocations = new AtomicInteger();
+        var workflow = new WorkflowExecutorTerminateTest.BackoffWorkflow(failingProxy(invocations));
+        executor.startWorkflow("shutdown-backoff", "BackoffWorkflow", "default", null, workflow,
+                WorkflowExecutorTerminateTest.BackoffWorkflow.class.getMethod("run"));
+        await().atMost(Duration.ofSeconds(5)).until(() -> invocations.get() == 1);
+
+        var start = Instant.now();
+        executor.shutdown();
+
+        assertTrue(Duration.between(start, Instant.now()).compareTo(Duration.ofSeconds(10)) < 0,
+                "shutdown must not wait out a 30s backoff");
+        assertEquals(1, invocations.get());
+        var instance = store.getInstance("shutdown-backoff").orElseThrow();
+        assertEquals(WorkflowStatus.RUNNING, instance.status(), "nothing is written — the run is recoverable");
+        assertFalse(hasEvent("shutdown-backoff", EventType.ACTIVITY_FAILED));
+        assertTrue(store.getRecoverableInstances().stream().anyMatch(i -> i.workflowId().equals("shutdown-backoff")));
+    }
+
+    @Test
     @DisplayName("A configured shutdown timeout bounds the drain wait instead of the 30s default")
     void shutdown_withConfiguredTimeout_returnsAfterTheConfiguredWaitNotTheDefault() throws Exception {
         executor.shutdown(); // discard the default, 30s-timeout executor from setUp
@@ -591,6 +613,10 @@ class WorkflowExecutorShutdownTest {
      */
     private void awaitStatus(String workflowId, WorkflowStatus expected) {
         TestTerminalWait.awaitStatus(store, workflowId, expected, Duration.ofSeconds(15));
+    }
+
+    private WorkflowExecutorTerminateTest.FailingActivity failingProxy(AtomicInteger invocations) {
+        return WorkflowExecutorTerminateTest.failingProxy(store, serializer, invocations);
     }
 
     private boolean hasEvent(String workflowId, EventType type) {

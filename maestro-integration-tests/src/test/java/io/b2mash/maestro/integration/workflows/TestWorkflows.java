@@ -316,4 +316,25 @@ public final class TestWorkflows {
             return activities.attempt(input);
         }
     }
+
+    /**
+     * {@link RetryWorkflow} with a backoff longer than any test bound — for
+     * terminate/shutdown-during-backoff pins.
+     */
+    @DurableWorkflow(name = "SlowRetryWorkflow")
+    public static class SlowRetryWorkflow {
+
+        @ActivityStub(retryPolicy = @io.b2mash.maestro.core.annotation.RetryPolicy(
+                maxAttempts = 5, initialInterval = "PT30S", maxInterval = "PT30S"))
+        FlakyActivities activities;
+
+        /**
+         * @param input the seed value
+         * @return the eventual successful result
+         */
+        @WorkflowMethod
+        public String run(String input) {
+            return activities.attempt(input);
+        }
+    }
 }

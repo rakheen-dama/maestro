@@ -82,6 +82,7 @@ public final class WorkflowContext {
     private volatile boolean replaying;
     private final @Nullable WorkflowOperations operations;
     private final @Nullable BranchBound bound;
+    private final RunCancellation cancellation;
 
     /**
      * The sequence block a bounded branch context may draw from.
@@ -150,7 +151,42 @@ public final class WorkflowContext {
             @Nullable WorkflowOperations operations
     ) {
         this(workflowInstanceId, workflowId, runId, workflowType, taskQueue,
-                serviceName, initialSequence, replaying, operations, null);
+                serviceName, initialSequence, replaying, operations, new RunCancellation());
+    }
+
+    /**
+     * Creates a new workflow context with workflow operations support and the
+     * run's {@link RunCancellation}.
+     *
+     * <p>Used by the {@code WorkflowExecutor}, which keeps the same
+     * {@code cancellation} on its record of the running workflow so that
+     * {@code terminateWorkflow} and {@code shutdown()} can reach the run.
+     *
+     * @param workflowInstanceId the workflow instance UUID (primary key)
+     * @param workflowId         the business workflow ID (e.g., {@code "order-abc"})
+     * @param runId              the current run ID (changes on manual retry)
+     * @param workflowType       the workflow type name
+     * @param taskQueue          the task queue name
+     * @param serviceName        the owning service name
+     * @param initialSequence    the starting sequence number (0 for new, higher for resumed)
+     * @param replaying          whether this execution is replaying stored events
+     * @param operations         the workflow operations delegate, or {@code null} for test contexts
+     * @param cancellation       the run's cancellation latch, shared with every branch context
+     */
+    public WorkflowContext(
+            UUID workflowInstanceId,
+            String workflowId,
+            UUID runId,
+            String workflowType,
+            String taskQueue,
+            String serviceName,
+            int initialSequence,
+            boolean replaying,
+            @Nullable WorkflowOperations operations,
+            RunCancellation cancellation
+    ) {
+        this(workflowInstanceId, workflowId, runId, workflowType, taskQueue,
+                serviceName, initialSequence, replaying, operations, null, cancellation);
     }
 
     private WorkflowContext(
@@ -163,9 +199,11 @@ public final class WorkflowContext {
             int initialSequence,
             boolean replaying,
             @Nullable WorkflowOperations operations,
-            @Nullable BranchBound bound
+            @Nullable BranchBound bound,
+            RunCancellation cancellation
     ) {
         this.bound = bound;
+        this.cancellation = cancellation;
         this.workflowInstanceId = workflowInstanceId;
         this.workflowId = workflowId;
         this.runId = runId;
@@ -190,7 +228,8 @@ public final class WorkflowContext {
      * none). Use the five-argument factory when the block must run with
      * different (or no) operations, as parallel compensation branches do.
      *
-     * @param parent         the context to copy identity, replay flag and operations from
+     * @param parent         the context to copy identity, replay flag, operations and
+     *                       {@link RunCancellation} from
      * @param branchIndex    zero-based index of the block (entry or branch) within its fork
      * @param baseSeq        the block's base sequence number (never handed out)
      * @param limitExclusive the first sequence number outside the block
@@ -212,8 +251,10 @@ public final class WorkflowContext {
      * a parallel saga compensation, bounded to the sequence block
      * {@code [baseSeq, limitExclusive)}.
      *
-     * <p>Identity fields and the replay flag are copied from {@code parent};
-     * the counter starts at {@code baseSeq}. The branch may take at most
+     * <p>Identity fields, the replay flag and the run's {@link RunCancellation}
+     * are copied from {@code parent} — so a terminate or shutdown requested on
+     * the run reaches every branch — and the counter starts at
+     * {@code baseSeq}. The branch may take at most
      * {@code limitExclusive - baseSeq - 1} sequence slots: its
      * {@link #nextSequence()} throws {@link BranchSequenceExhaustedException}
      * on the 1000th direct step instead of spilling into the sibling's block.
@@ -247,7 +288,7 @@ public final class WorkflowContext {
                 parent.workflowInstanceId, parent.workflowId, parent.runId,
                 parent.workflowType, parent.taskQueue, parent.serviceName,
                 baseSeq, parent.replaying, operations,
-                new BranchBound(branchIndex, baseSeq, limitExclusive));
+                new BranchBound(branchIndex, baseSeq, limitExclusive), parent.cancellation);
     }
 
     // ── ScopedValue management ─────────────────────────────────────────
@@ -372,6 +413,20 @@ public final class WorkflowContext {
     /** Returns the owning service name. */
     public String serviceName() {
         return serviceName;
+    }
+
+    /**
+     * Returns this run's cancellation latch — the same instance for the root
+     * context and every branch context of the run.
+     *
+     * <p>Engine-internal; workflow code has no reason to call it. The activity
+     * proxy passes it to the retry executor, which checks it before every
+     * attempt and during every backoff wait.
+     *
+     * @return the run's {@link RunCancellation}, never {@code null}
+     */
+    public RunCancellation cancellation() {
+        return cancellation;
     }
 
     /**

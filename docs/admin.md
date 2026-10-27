@@ -237,10 +237,14 @@ All actions produce a flash message confirming success or reporting failure, the
 - **Terminate** applies to any active workflow, including one currently
   compensating. It durably marks the instance `TERMINATED` and stops it —
   **without running any compensation** and **without interrupting an
-  in-flight activity** (consistent with a graceful shutdown; the activity's
-  result is still memoized if it completes, but the run stands down at its
-  next checkpoint instead of continuing). A parked thread (waiting on a
-  signal or timer) is unwound promptly wherever it happens to be running.
+  in-flight activity attempt**. The attempt that is executing finishes and
+  memoizes its result (harmless); but no further attempt starts, a retry
+  backoff in progress is abandoned, and no later activity goes live — the
+  run stands down at its next live activity, retry, park or status write.
+  (That attempt-level stop applies when the node processing the command owns
+  the workflow; a remote owner converges via the guards described below.) A
+  parked thread (waiting on a signal or timer) is unwound promptly wherever
+  it happens to be running.
   Terminate is safe to call from any node: an optimistic version check, not
   the instance lock, is the arbiter, so the command need not reach the node
   that owns the workflow. The instance row is updated immediately regardless

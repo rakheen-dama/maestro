@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.retry;
 
+import io.b2mash.maestro.core.context.RunCancellation;
 import io.b2mash.maestro.core.exception.ActivityExecutionException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
@@ -10,7 +11,10 @@ import java.lang.reflect.InvocationTargetException;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -330,5 +334,104 @@ class RetryExecutorTest {
                 () -> executor.executeWithRetry(fastDefault, task, "check", "wf-9"));
 
         assertEquals(3, counter.get(), "Default policy should attempt exactly 3 times");
+    }
+
+    // ── RunCancellation (C6, C11c) ───────────────────────────────────────
+
+    /** A 30-second backoff — far longer than any bound these tests wait. */
+    private static RetryPolicy slowPolicy() {
+        return RetryPolicy.builder().maxAttempts(5)
+                .initialInterval(Duration.ofSeconds(30)).maxInterval(Duration.ofSeconds(30)).build();
+    }
+
+    /** The worker running a slow-policy retry, and what it observed. */
+    private record BackoffRun(Thread worker, AtomicInteger calls, AtomicReference<Throwable> outcome) {}
+
+    /**
+     * Starts a virtual thread retrying an always-failing task under
+     * {@link #slowPolicy()} and returns once the first attempt has failed —
+     * i.e. once the worker is (about to be) in its 30-second backoff.
+     */
+    private BackoffRun startInBackoff(String workflowId, RunCancellation cancellation) throws Exception {
+        var calls = new AtomicInteger();
+        var firstAttemptFailed = new CountDownLatch(1);
+        Callable<String> task = () -> {
+            calls.incrementAndGet();
+            firstAttemptFailed.countDown();
+            throw new IllegalStateException("boom");
+        };
+        var outcome = new AtomicReference<Throwable>();
+        var worker = Thread.ofVirtual().start(() -> {
+            try {
+                executor.executeWithRetry(slowPolicy(), task, "a", workflowId, cancellation);
+            } catch (Throwable t) {
+                outcome.set(t);
+            }
+        });
+        assertTrue(firstAttemptFailed.await(5, TimeUnit.SECONDS));
+        return new BackoffRun(worker, calls, outcome);
+    }
+
+    @Test
+    @DisplayName("a termination requested before an attempt throws WorkflowTerminatedException without calling the task")
+    void terminationBeforeAttempt_isNotAttempted() {
+        var calls = new AtomicInteger();
+        var cancellation = new RunCancellation();
+        cancellation.requestTermination("operator");
+        var thrown = assertThrows(WorkflowTerminatedException.class, () -> executor.executeWithRetry(
+                fastPolicy(3), () -> calls.incrementAndGet(), "a", "wf-t1", cancellation));
+        assertEquals(0, calls.get());
+        assertEquals("wf-t1", thrown.workflowId());
+        assertEquals("operator", thrown.reason());
+    }
+
+    @Test
+    @DisplayName("a termination requested during the backoff wait abandons it; no further attempt runs")
+    void terminationDuringBackoff_abandonsTheWait() throws Exception {
+        var cancellation = new RunCancellation();
+        var run = startInBackoff("wf-t2", cancellation);
+
+        cancellation.requestTermination(null);
+
+        assertTrue(run.worker().join(Duration.ofSeconds(5)), "the 30s backoff must be abandoned promptly");
+        assertInstanceOf(WorkflowTerminatedException.class, run.outcome().get());
+        assertEquals(1, run.calls().get(), "no attempt may run after the terminate");
+    }
+
+    @Test
+    @DisplayName("a shutdown requested during the backoff wait abandons it with ExecutorShutdownException")
+    void shutdownDuringBackoff_abandonsTheWaitAsShutdown() throws Exception {
+        var cancellation = new RunCancellation();
+        var run = startInBackoff("wf-t3", cancellation);
+
+        cancellation.requestShutdown();
+
+        assertTrue(run.worker().join(Duration.ofSeconds(5)), "the 30s backoff must be abandoned promptly");
+        assertInstanceOf(ExecutorShutdownException.class, run.outcome().get());
+        assertEquals(1, run.calls().get(), "no attempt may run after the shutdown");
+    }
+
+    @Test
+    @DisplayName("shutdown is NOT checked before the first attempt — in-flight work drains")
+    void shutdownBeforeFirstAttempt_stillAttemptsOnce() throws Exception {
+        var calls = new AtomicInteger();
+        var cancellation = new RunCancellation();
+        cancellation.requestShutdown();
+        assertEquals("ok", executor.executeWithRetry(fastPolicy(3), () -> { calls.incrementAndGet(); return "ok"; },
+                "a", "wf-t4", cancellation));
+        assertEquals(1, calls.get());
+    }
+
+    @Test
+    @DisplayName("a foreign interrupt during backoff, with nothing requested, is still an activity failure")
+    void foreignInterruptDuringBackoff_isAnActivityFailure() throws Exception {
+        var run = startInBackoff("wf-t5", new RunCancellation());
+
+        run.worker().interrupt();
+
+        assertTrue(run.worker().join(Duration.ofSeconds(5)));
+        var aee = assertInstanceOf(ActivityExecutionException.class, run.outcome().get());
+        assertInstanceOf(InterruptedException.class, aee.getCause().getCause());
+        assertEquals(1, run.calls().get());
     }
 }

@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.annotation.Saga;
+import io.b2mash.maestro.core.context.RunCancellation;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.context.WorkflowMDC;
 import io.b2mash.maestro.core.exception.CompensationException;
@@ -697,10 +698,13 @@ public final class WorkflowExecutor {
      *       check and its own status write — can let a compensation that was
      *       already starting run to completion on the terminated workflow. See
      *       {@code docs/open-issues.md} Issue 22.</li>
-     *   <li><b>No interruption of an in-flight activity.</b> Consistent with
-     *       {@link #shutdown()}: the activity finishes and memoizes its result
-     *       (harmless), and the run stands down at its next park or at its
-     *       final transition.</li>
+     *   <li><b>No interruption of an in-flight activity attempt.</b> The
+     *       attempt that is executing finishes and memoizes its result
+     *       (harmless); but no further attempt starts, a retry backoff in
+     *       progress is abandoned, and no later activity goes live — the run
+     *       stands down at its next live activity, retry, park or status write
+     *       ({@link RunCancellation}). This applies when this node owns the
+     *       run; a remote owner converges via the guards described above.</li>
      *   <li><b>No memoization-log event.</b> Appending one from outside the
      *       workflow's own thread would race that thread's sequence counter
      *       against the {@code (workflow_instance_id, sequence_number)} unique
@@ -773,7 +777,12 @@ public final class WorkflowExecutor {
 
             // Best-effort local eviction. Only this node's threads can be
             // abandoned; a remote owner converges via the terminal-status guard.
-            if (runningWorkflows.containsKey(workflowId)) {
+            // Flag first, then parks: the flag stops the next live activity
+            // attempt and abandons a retry backoff; abandoning the parks
+            // unblocks a thread waiting on a signal or timer.
+            var running = runningWorkflows.get(workflowId);
+            if (running != null) {
+                running.cancellation().requestTermination(reason);
                 parkingLot.abandonWorkflow(workflowId, reason);
             }
 
@@ -1096,7 +1105,10 @@ public final class WorkflowExecutor {
      *
      * <p>Workflows still executing an activity are <em>not</em> interrupted;
      * they drain up to the shutdown timeout. Any that overrun it are left
-     * running, and their instance locks expire by TTL.
+     * running, and their instance locks expire by TTL. A retry backoff in
+     * progress is abandoned too, with {@link ExecutorShutdownException},
+     * leaving the instance {@code RUNNING} and recoverable; the attempt counter
+     * restarts on the next node.
      */
     public void shutdown() {
         if (!shuttingDown.compareAndSet(false, true)) {
@@ -1122,6 +1134,9 @@ public final class WorkflowExecutor {
         // keep the WAITING_* status they parked in and stay recoverable —
         // a park abandoned this way is not a workflow failure.
         parkingLot.shutdown();
+        // Abandon every retry backoff the same way. Shutdown is not checked
+        // before an activity attempt, so in-flight work still drains.
+        runningWorkflows.values().forEach(r -> r.cancellation().requestShutdown());
 
         // Wait for in-flight workflows with a deadline
         var deadline = Instant.now().plus(shutdownTimeout);
@@ -1360,6 +1375,7 @@ public final class WorkflowExecutor {
                 store, distributedLock, messaging, serializer, parkingLot, compensationStack,
                 signalManager, wakeRecheckInterval, observer);
 
+        var cancellation = new RunCancellation();
         var ctx = new WorkflowContext(
                 instance.id(),
                 instance.workflowId(),
@@ -1369,7 +1385,8 @@ public final class WorkflowExecutor {
                 serviceName,
                 0,
                 replaying,
-                operations
+                operations,
+                cancellation
         );
 
         // Detect @Saga on the workflow method
@@ -1391,7 +1408,8 @@ public final class WorkflowExecutor {
 
         // Register before starting to prevent the race where a fast workflow
         // finishes and removes itself before the put() below executes
-        var running = new RunningWorkflow(thread, instance, instance.workflowType(), workflowImpl);
+        var running = new RunningWorkflow(thread, instance, instance.workflowType(), workflowImpl,
+                cancellation);
         runningWorkflows.put(instance.workflowId(), running);
         try {
             thread.start();
@@ -2054,10 +2072,12 @@ public final class WorkflowExecutor {
     // ── Internal records ───────────────────────────────────────────────
 
     /**
-     * Tracks a currently running workflow for shutdown coordination and query dispatch.
+     * Tracks a currently running workflow for shutdown coordination, query
+     * dispatch, and — through {@code cancellation}, the same instance the run's
+     * {@link WorkflowContext} holds — terminate/shutdown requests to the run.
      */
     record RunningWorkflow(Thread thread, WorkflowInstance instance, String workflowType,
-                           Object workflowImpl) {}
+                           Object workflowImpl, RunCancellation cancellation) {}
 
     /**
      * Error detail stored in the workflow output on failure.

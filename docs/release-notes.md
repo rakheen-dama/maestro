@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed — Terminate now stops live work: no further activity attempt, retry backoff abandoned; shutdown abandons a retry backoff
+
+- **Before:** terminate was only observed at a park (`sleep`/`awaitSignal`) or a status write. A workflow inside a live activity's retry loop kept going: the backoff was an uninterruptible `Thread.sleep`, after which the next attempt — a real side effect — ran on a workflow an operator had terminated, and every later activity went live too until the run reached its next park or final transition. Shutdown likewise waited out a backoff in progress (up to the shutdown timeout) instead of handing the workflow to another node.
+- **Now:** each local run carries an in-memory `RunCancellation` latch, shared by its root `WorkflowContext` and every branch context (`parallel()` branches, parallel- and sequential-compensation contexts). `WorkflowExecutor.terminateWorkflow` sets it **only on the node that owns the run** (the admin command lands on an arbitrary node; a non-owner's terminate still writes `TERMINATED` durably, and the owner converges via its terminal-status guards as before). The retry executor checks for a termination **before every attempt, including the first**, and the backoff wait is now a timed wait on the latch that returns as soon as a terminate or a shutdown is requested, raising the existing `WorkflowTerminatedException` / `ExecutorShutdownException` control-flow `Error`s — no `ACTIVITY_FAILED` or `WORKFLOW_FAILED` is recorded for an abandoned backoff. Neither path uses `Thread.interrupt()`, mirroring how parks are unblocked; a foreign interrupt during a backoff is still reported as an activity failure, as before.
+- **Still not interrupted:** the activity attempt that is already executing. It finishes and memoizes its result (harmless), exactly as under shutdown; the run then stands down before anything further goes live.
+- **Shutdown behaviour change:** shutdown is deliberately *not* checked before an attempt, so in-flight work still drains. But a run sitting in a retry backoff is no longer waited for: the backoff is abandoned, the instance is left `RUNNING` and recoverable, and the in-memory attempt counter restarts on the node that recovers it. Spec rows C6, C11.
+
 ### Fixed — Activity failures: explicit catch contract, payment sample no longer retries a declined card 30×
 
 - **Before:** the PRD and the payment sample did `catch (PaymentDeclinedException e)`, which could never match because activity exceptions reach workflow code wrapped in `ActivityExecutionException`; the decline was also not non-retryable, so a declined card was retried up to 30 times with up-to-10-minute backoff.

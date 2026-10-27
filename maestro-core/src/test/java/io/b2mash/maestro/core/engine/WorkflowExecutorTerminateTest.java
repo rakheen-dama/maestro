@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.Saga;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
@@ -14,6 +15,7 @@ import io.b2mash.maestro.core.spi.SignalMessage;
 import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
+import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -21,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -225,8 +228,10 @@ class WorkflowExecutorTerminateTest {
         assertEquals(WorkflowStatus.TERMINATED,
                 store.getInstance("term-activity").orElseThrow().status());
 
-        // Not interrupted: the body runs to its own end, exactly as it does
-        // under shutdown. It is the final transition that stands down.
+        // The executing attempt is not interrupted: the body runs to its own
+        // end, exactly as it does under shutdown. It is the final transition
+        // that stands down (an activity attempt after this point would never
+        // start — see terminateDuringLiveActivity_runsNoFurtherLiveActivity).
         workflow.release.countDown();
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
                 assertFalse(executor.isRunning("term-activity")));
@@ -274,6 +279,68 @@ class WorkflowExecutorTerminateTest {
         assertTrue(events(instance.id(), EventType.ACTIVITY_FAILED).isEmpty(),
                 "must not be recorded as an exhausted-retries activity failure");
         assertTrue(events(instance.id(), EventType.WORKFLOW_FAILED).isEmpty());
+    }
+
+    // ── Live activities and retry backoff (C6, C11c) ───────────────────
+
+    @Test
+    @DisplayName("terminate while a live activity is in retry backoff abandons the backoff; no further attempt runs")
+    void terminateDuringRetryBackoff_abandonsBackoffAndRunsNoFurtherAttempt() throws Exception {
+        var invocations = new AtomicInteger();
+        var workflow = new BackoffWorkflow(failingProxy(invocations));
+        executor.startWorkflow("term-backoff", "BackoffWorkflow", "default", null, workflow,
+                BackoffWorkflow.class.getMethod("run"));
+        await().atMost(Duration.ofSeconds(5)).until(() -> invocations.get() == 1);   // attempt 1 failed; in backoff
+
+        var terminatedAt = Instant.now();
+        assertEquals(WorkflowExecutor.TerminateOutcome.TERMINATED,
+                executor.terminateWorkflow("term-backoff", "mid-backoff"));
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> assertFalse(executor.isRunning("term-backoff")));
+
+        assertTrue(Duration.between(terminatedAt, Instant.now()).compareTo(Duration.ofSeconds(10)) < 0,
+                "the 30s backoff must be abandoned, not slept through");
+        assertEquals(1, invocations.get(), "no further attempt may run after terminate");
+        var instance = store.getInstance("term-backoff").orElseThrow();
+        assertEquals(WorkflowStatus.TERMINATED, instance.status());
+        assertTrue(events(instance.id(), EventType.ACTIVITY_FAILED).isEmpty(),
+                "an abandoned backoff is not an exhausted-retries failure");
+        assertTrue(events(instance.id(), EventType.WORKFLOW_FAILED).isEmpty());
+    }
+
+    @Test
+    @DisplayName("terminate while one activity is in flight stops the next live activity from starting")
+    void terminateDuringLiveActivity_runsNoFurtherLiveActivity() throws Exception {
+        var gated = new GatedActivityImpl();
+        var workflow = new TwoStepWorkflow(gatedProxy(gated));
+        executor.startWorkflow("term-next", "TwoStepWorkflow", "default", null, workflow,
+                TwoStepWorkflow.class.getMethod("run"));
+        assertTrue(gated.entered.await(5, TimeUnit.SECONDS));
+
+        executor.terminateWorkflow("term-next", "stop");
+        gated.release.countDown();                      // the in-flight attempt is NOT interrupted; it finishes
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> assertFalse(executor.isRunning("term-next")));
+        assertEquals(0, gated.secondCalls.get(), "the second live activity must never start");
+        var instance = store.getInstance("term-next").orElseThrow();
+        assertEquals(WorkflowStatus.TERMINATED, instance.status());
+        assertEquals(1, events(instance.id(), EventType.ACTIVITY_COMPLETED).size(),
+                "the finished first attempt is still memoized (harmless, as before)");
+    }
+
+    @Test
+    @DisplayName("terminate while parallel() branches are in retry backoff abandons every branch")
+    void terminateDuringParallelBranchBackoff_abandonsEveryBranch() throws Exception {
+        var invocations = new AtomicInteger();
+        var workflow = new ParallelBackoffWorkflow(failingProxy(invocations));
+        executor.startWorkflow("term-par", "ParallelBackoffWorkflow", "default", null, workflow,
+                ParallelBackoffWorkflow.class.getMethod("run"));
+        await().atMost(Duration.ofSeconds(5)).until(() -> invocations.get() == 2);
+
+        executor.terminateWorkflow("term-par", "stop");
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> assertFalse(executor.isRunning("term-par")));
+        assertEquals(2, invocations.get(), "neither branch may attempt again — branch contexts share the run's cancellation");
+        assertEquals(WorkflowStatus.TERMINATED, store.getInstance("term-par").orElseThrow().status());
     }
 
     // ── Idempotency and validation ─────────────────────────────────────
@@ -389,7 +456,133 @@ class WorkflowExecutorTerminateTest {
                 .map(e -> e.eventType()).filter(t -> t == type).toList();
     }
 
+    private FailingActivity failingProxy(AtomicInteger invocations) {
+        return failingProxy(store, serializer, invocations);
+    }
+
+    /**
+     * A full activity proxy over an always-failing activity, retried under
+     * {@link #SLOW_RETRY} — so the first failure leaves the run in a 30-second
+     * backoff. Shared with {@code WorkflowExecutorShutdownTest}.
+     */
+    static FailingActivity failingProxy(WorkflowStore store, PayloadSerializer serializer,
+                                        AtomicInteger invocations) {
+        return new ActivityProxyFactory().createProxy(
+                FailingActivity.class, new FailingActivityImpl(invocations), store, null, null,
+                SLOW_RETRY, Duration.ofSeconds(30), serializer, new RetryExecutor());
+    }
+
+    private GatedActivity gatedProxy(GatedActivityImpl impl) {
+        return new ActivityProxyFactory().createProxy(
+                GatedActivity.class, impl, store, null, null,
+                SLOW_RETRY, Duration.ofSeconds(30), serializer, new RetryExecutor());
+    }
+
     // ── Fixtures ───────────────────────────────────────────────────────
+
+    /** A backoff longer than any bound these tests wait — attempt 2 never starts on its own. */
+    static final RetryPolicy SLOW_RETRY = RetryPolicy.builder().maxAttempts(5)
+            .initialInterval(Duration.ofSeconds(30)).maxInterval(Duration.ofSeconds(30)).build();
+
+    /** An activity that always fails, so every attempt is followed by a backoff. */
+    @Activity
+    interface FailingActivity {
+        /** @return never — always throws */
+        String fail();
+    }
+
+    /** Counts invocations and always throws {@link IllegalStateException}. */
+    static final class FailingActivityImpl implements FailingActivity {
+        private final AtomicInteger invocations;
+
+        FailingActivityImpl(AtomicInteger invocations) {
+            this.invocations = invocations;
+        }
+
+        @Override
+        public String fail() {
+            invocations.incrementAndGet();
+            throw new IllegalStateException("always fails");
+        }
+    }
+
+    /** Two activities; the first blocks until released. */
+    @Activity
+    interface GatedActivity {
+        /** @return a fixed value once released */
+        String first();
+
+        /** @return a fixed value */
+        String second();
+    }
+
+    /** {@code first()} blocks on {@link #release}; {@code second()} is counted. */
+    static final class GatedActivityImpl implements GatedActivity {
+        final CountDownLatch entered = new CountDownLatch(1);
+        final CountDownLatch release = new CountDownLatch(1);
+        final AtomicInteger secondCalls = new AtomicInteger();
+
+        @Override
+        public String first() {
+            entered.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(e);
+            }
+            return "first";
+        }
+
+        @Override
+        public String second() {
+            secondCalls.incrementAndGet();
+            return "second";
+        }
+    }
+
+    /** Calls one always-failing activity — the run sits in its retry backoff. */
+    static final class BackoffWorkflow {
+        private final FailingActivity proxy;
+
+        BackoffWorkflow(FailingActivity proxy) {
+            this.proxy = proxy;
+        }
+
+        /** @return never — the activity always fails */
+        public String run() {
+            return proxy.fail();
+        }
+    }
+
+    /** Calls {@code first()} then {@code second()}. */
+    static final class TwoStepWorkflow {
+        private final GatedActivity proxy;
+
+        TwoStepWorkflow(GatedActivity proxy) {
+            this.proxy = proxy;
+        }
+
+        /** @return the second activity's value */
+        public String run() {
+            proxy.first();
+            return proxy.second();
+        }
+    }
+
+    /** Forks two branches that each call an always-failing activity. */
+    static final class ParallelBackoffWorkflow {
+        private final FailingActivity proxy;
+
+        ParallelBackoffWorkflow(FailingActivity proxy) {
+            this.proxy = proxy;
+        }
+
+        /** @return never — both branches always fail */
+        public List<String> run() {
+            return WorkflowContext.workflow().parallel(List.of(proxy::fail, proxy::fail));
+        }
+    }
 
     /** Parks on a signal with a compensation registered, so "no compensation ran" is provable. */
     @DurableWorkflow(name = "CompensatingAwaitWorkflow")
