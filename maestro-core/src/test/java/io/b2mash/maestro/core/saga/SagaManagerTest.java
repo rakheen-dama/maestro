@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.exception.CompensationException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
+import io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException;
 import io.b2mash.maestro.core.exception.UnknownWorkflowHistoryException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
@@ -520,6 +521,26 @@ class SagaManagerTest {
         assertEquals(0, countEvents(EventType.COMPENSATION_STEP_FAILED),
                 "no branch failed; one of them could not read the history");
         assertEquals(0, countEvents(EventType.COMPENSATION_COMPLETED));
+    }
+
+    @Test
+    @DisplayName("Compensation whose block arithmetic would overflow throws before transitioning or running anything")
+    void compensationBlockOverflow_failsBeforeAnyActionRuns() {
+        var invocations = new AtomicInteger();
+        var stack = new CompensationStack();
+        stack.push("step-A", invocations::incrementAndGet);
+        stack.push("step-B", invocations::incrementAndGet);
+        // anchor 2_147_481; (anchor*1000 + 3*1000) > Integer.MAX_VALUE
+        var highCtx = new WorkflowContext(instance.id(), "test-workflow", instance.runId(),
+                "TestWorkflow", "default", "test-service", 2_147_480, false);
+
+        var e = org.junit.jupiter.api.Assertions.assertThrows(SequenceSpaceExhaustedException.class,
+                () -> sagaManager.compensate(highCtx, instance, stack, false));
+        assertEquals(2_147_481, e.parentSeq());
+        assertEquals(0, invocations.get());
+        assertEquals(WorkflowStatus.RUNNING, store.getInstance("test-workflow").orElseThrow().status(),
+                "pre-check runs before transitionToCompensating");
+        assertEquals(0, countEvents(EventType.COMPENSATION_STARTED));
     }
 
     private long countEvents(EventType type) {

@@ -5,6 +5,7 @@ import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.Saga;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.integration.support.MaestroEngineHarness;
 import io.b2mash.maestro.integration.support.PostgresIntegrationSupport;
@@ -24,9 +25,11 @@ import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -97,6 +100,28 @@ class EnginePostgresParallelSagaIT extends PostgresIntegrationSupport {
             activities.reserve(item);
             activities.charge(item);
             return activities.ship(item);
+        }
+    }
+
+    /** Registers one compensation, then forks three times — the third fork cannot be sequenced (C4). */
+    @DurableWorkflow(name = "TripleForkWorkflow")
+    public static class TripleForkWorkflow {
+
+        final AtomicBoolean undone = new AtomicBoolean();
+
+        /**
+         * @param input echoed back if the workflow ever completed (it cannot)
+         * @return {@code input}
+         */
+        @Saga
+        @WorkflowMethod
+        public String run(String input) {
+            var workflow = WorkflowContext.current();
+            workflow.addCompensation("undo", () -> undone.set(true));
+            workflow.parallel(List.<Callable<String>>of(() -> "a", () -> "b"));
+            workflow.parallel(List.<Callable<String>>of(() -> "a", () -> "b"));
+            workflow.parallel(List.<Callable<String>>of(() -> "a", () -> "b"));
+            return input;
         }
     }
 
@@ -218,6 +243,28 @@ class EnginePostgresParallelSagaIT extends PostgresIntegrationSupport {
                 "8001:COMPENSATION_COMPLETED:$maestro:compensation",
                 "8002:WORKFLOW_FAILED:null"),
                 describe(instance.id()));
+    }
+
+    @Test
+    @DisplayName("a workflow that exhausts the sequence space finishes FAILED with no compensation and no stand-down")
+    void sequenceSpaceExhaustion_isALoudFailureNotAZombie() {
+        var observer = new RecordingObserver();
+        var workflow = new TripleForkWorkflow();
+        harness = MaestroEngineHarness.builder(store, objectMapper).serviceName("triple-fork").lock(newLock())
+                .observer(observer).build();
+        harness.registerWorkflow(workflow);
+        var handle = harness.start(MaestroEngineHarness.uniqueWorkflowId("triple-fork"), TripleForkWorkflow.class, "in");
+
+        assertEquals(WorkflowStatus.FAILED, handle.awaitTerminal(Duration.ofSeconds(15)));
+        assertEquals(SequenceSpaceExhaustedException.class.getName(),
+                handle.instance().output().get("exceptionType").stringValue());
+        assertFalse(workflow.undone.get(), "no compensation may run at a wrapped sequence");
+        assertEquals(List.of(), observer.standDowns());
+        assertEquals(List.of(
+                "1:SIDE_EFFECT:$maestro:parallel",
+                "4001:SIDE_EFFECT:$maestro:parallel",
+                "4004001:WORKFLOW_FAILED:null"),
+                describe(handle));
     }
 
     // ── helpers ───────────────────────────────────────────────────────────

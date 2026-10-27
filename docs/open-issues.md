@@ -277,6 +277,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [25](#issue-25) | `maestro.worker.*` is documented but wholly unimplemented | Library gap — docs + config | Medium | Open |
 | [26](#issue-26) | Terminal instance write and terminal event append are two non-transactional writes | Library gap — durability contract | Medium | Open |
 | [27](#issue-27) | A redelivery status-write failure can let a disabled-redelivery row be reclaimed and reprocessed | Library gap — durability contract | Medium | Open |
+| [28](#issue-28) | ×1000 sequence partitioning bounds sequential/nested `parallel()` and compensation depth | Structural limitation | Medium | **Open by design** |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -2403,6 +2404,57 @@ the three status-write calls above and asserts the same, chosen guarantee
 holds uniformly across all three — either the row is provably claimed
 exactly once end-to-end, or the double-delivery risk is documented as
 identical and acceptable on all three, not just two of them.
+
+---
+
+### Issue 28 — ×1000 sequence partitioning bounds sequential/nested `parallel()` and compensation depth {#issue-28}
+
+> **Open by design (structural).** Filed by the 2026-10-24 bug-fix cycle
+> while closing C1–C4 (`docs/superpowers/plans/2026-10-24-bugfix-cycle/`).
+> The cycle deliberately chose a loud failure
+> (`SequenceSpaceExhaustedException`, `FAILED`, `ERROR` log) over the
+> previous behaviour of silently wrapping `int` and running compensations at
+> garbage sequence numbers.
+
+**Kind:** Structural limitation — sequence-space design. **Severity:** Medium
+(deterministic and loud, but it makes a whole class of workflow shape
+unusable with sagas).
+
+**What's wrong.** Every fork level multiplies the parent sequence by 1000 and
+the sequence is a 32-bit `int`, so depth compounds. Concrete limits once C1
+lands (the counter now sits *past* the branch space after any `parallel()`):
+one `parallel()` plus compensation fits; **two sequential `parallel()` calls
+at a low parent sequence put the compensation anchor at ≈ 7,004,001** (e.g.
+two plain steps, a 3-branch fork at seq 3 → counter 7000, a 2-branch fork at
+7001 → counter 7,004,000, anchor 7,004,001; with 2-branch forks from seq 1 it
+is 4,004,001) — the anchor × 1000 block arithmetic overflows `int`, so
+**compensation cannot run**: the workflow finishes `FAILED` with an `ERROR`
+log saying so, and the operator compensates by hand. A third sequential or
+nested `parallel()` fails the same way before any sequence is consumed.
+Enforced by `SequenceSpace.nextParentSeq` (sub-plan 01, Task 3) and pinned by
+`SequenceSpaceExhaustionTest` and
+`EnginePostgresParallelSagaIT.sequenceSpaceExhaustion_isALoudFailureNotAZombie`.
+
+**How to tackle it.** Two candidate redesigns for a future cycle:
+
+(a) **Widen `sequence_number` to `BIGINT`/`long`** across the SPI
+(`WorkflowStore.getEventBySequence`), model (`WorkflowEvent`,
+`WorkflowInstance.eventSequence`), both stores (new Flyway migrations in the
+store band), `maestro-test` fakes and the admin dashboard — mechanical, no
+change to ordering or display, but only raises the ceiling to roughly three
+sequential `parallel()` calls plus compensation; the compounding stays.
+
+(b) **Replace the single integer line with a structured event identity** — a
+path such as `"7.1.3"` (fork seq, branch, step), or a reserved non-colliding
+compensation space (e.g. negative sequence numbers for the compensation
+phase) — which removes compounding entirely, but changes event ordering, the
+unique index, and how the dashboard displays and sorts history; a schema and
+SPI change, not a patch.
+
+**Done when.** A workflow with three sequential 3-branch `parallel()` calls
+followed by a failing step compensates fully on real Postgres, and
+`SequenceSpaceExhaustedException` is either unreachable for realistic depth or
+removed.
 
 ---
 

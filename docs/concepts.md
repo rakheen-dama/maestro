@@ -419,6 +419,10 @@ When parallel execution forks at sequence step `5`, each branch is allocated its
 - On replay, each branch replays its own stored events regardless of original execution order.
 - Results are returned in the same order as the input task list.
 
+### Depth limit
+
+Every fork level multiplies the sequence by 1000, and the sequence is a 32-bit `int`, so from a parent sequence below ~2,000 a workflow has room for **two** fork levels — two sequential `parallel()` calls, or one `parallel()` and the compensation phase that follows a failure, or one `parallel()` nested inside another. A third level fails the workflow with `SequenceSpaceExhaustedException` *before* any sequence is consumed. Saga compensation is a fork level too, so **a saga that has already made two sequential `parallel()` calls cannot compensate at all**: its compensation anchor is ≈ 4,004,001–7,005,001 depending on branch counts, and the anchor × 1000 block arithmetic overflows `int`. The workflow is still finished `FAILED`, but **no compensation runs** — the engine logs at `ERROR` that the registered compensations could not run, and the operator must compensate manually. This is a known structural limitation; see [Issue 28](open-issues.md#issue-28).
+
 ---
 
 ## Retry Until

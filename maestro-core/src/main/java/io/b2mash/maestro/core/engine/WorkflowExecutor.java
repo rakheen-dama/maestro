@@ -8,6 +8,7 @@ import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.QueryNotDefinedException;
+import io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException;
 import io.b2mash.maestro.core.exception.UnknownWorkflowHistoryException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowExecutionException;
@@ -1719,6 +1720,17 @@ public final class WorkflowExecutor {
                 // (COMPENSATION_STEP_FAILED events) by the SagaManager.
                 logger.warn("Partial compensation failure for workflow '{}': {}",
                         ctx.workflowId(), e.failedCompensations());
+            } catch (SequenceSpaceExhaustedException noRoom) {
+                // C4: compensate() pre-checks its block arithmetic before
+                // anything durable changes, so nothing ran and nothing was
+                // written — the instance status is untouched. Swallowing here
+                // and falling through to the FAILED transition is deliberate:
+                // letting it escape would leave an active zombie that every
+                // recovery re-drives into the same overflow. The stack is
+                // already drained, so no count is logged.
+                logger.error("Workflow '{}' failed and its registered compensations could NOT run — the "
+                                + "sequence space is exhausted ({}). Finishing as FAILED; compensate manually.",
+                        ctx.workflowId(), noRoom.getMessage(), noRoom);
             }
         }
 

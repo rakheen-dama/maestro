@@ -42,7 +42,8 @@ public sealed class MaestroException extends RuntimeException
                 CompensationException,
                 QueryException,
                 AdminCommandException,
-                UnsupportedWorkflowVersionException {
+                UnsupportedWorkflowVersionException,
+                SequenceSpaceExhaustedException {
 
     /**
      * Creates a new exception with the given message.

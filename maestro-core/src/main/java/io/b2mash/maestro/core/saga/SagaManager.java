@@ -20,6 +20,7 @@ import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.core.engine.InstanceStatusWriter;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
+import io.b2mash.maestro.core.engine.SequenceSpace;
 import io.b2mash.maestro.core.engine.UnknownHistoryGuard;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -56,7 +57,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * (via {@code workflow.addCompensation(Runnable)}) is <b>not</b> memoized
  * that way, so {@code compensate()} gives every compensation entry — both
  * kinds, in both the sequential and parallel loops — its own reserved
- * sequence block (mirroring the {@code BRANCH_MULTIPLIER} isolation already
+ * sequence block (the same {@link SequenceSpace} partitioning already
  * used for {@code parallel()} branches). Before invoking an entry's action,
  * the block's guard sequence is checked against the store; if an event
  * already exists there, the action is <b>not</b> re-invoked — its outcome
@@ -142,10 +143,23 @@ public final class SagaManager {
      * {@link EventType#COMPENSATION_STEP_FAILED} event, but remaining
      * compensations continue.
      *
+     * <p>Before anything durable changes — before the {@code COMPENSATING}
+     * transition and before {@code COMPENSATION_STARTED} — the per-entry
+     * block arithmetic is pre-checked with {@link SequenceSpace#nextParentSeq}.
+     * If the blocks cannot fit in the 32-bit sequence space (typically a
+     * workflow that already forked twice), compensation cannot be sequenced at
+     * all, and running it anyway would place actions at int-wrapped sequence
+     * numbers. The stack is already drained at that point; the caller
+     * ({@code WorkflowExecutor.handleWorkflowFailure}) logs at {@code ERROR}
+     * that no compensation ran and still finishes the workflow {@code FAILED}.
+     *
      * @param ctx                   the workflow context
      * @param instance              the workflow instance
      * @param stack                 the compensation stack to unwind
      * @param parallelCompensation  whether to run compensations in parallel
+     * @throws io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException
+     *         if the compensation blocks would overflow the sequence space;
+     *         thrown before any status write, event append or action
      */
     public void compensate(
             WorkflowContext ctx,
@@ -157,6 +171,17 @@ public final class SagaManager {
         if (entries.isEmpty()) {
             return;
         }
+
+        // Sequence-space pre-check (C4), deliberately BEFORE the COMPENSATING
+        // transition: if the per-entry block arithmetic cannot fit in the int
+        // sequence space, nothing durable may change — no status write, no
+        // COMPENSATION_STARTED, no action run at a wrapped (negative) sequence.
+        // The anchor is the seq COMPENSATION_STARTED will consume; parallel
+        // compensation forks one seq later. WorkflowExecutor.handleWorkflowFailure
+        // turns the throw into a loud FAILED with an ERROR log that no
+        // compensation ran.
+        var anchor = ctx.currentSequence() + 1;
+        SequenceSpace.nextParentSeq(ctx.workflowId(), parallelCompensation ? anchor + 1 : anchor, entries.size());
 
         logger.info("Running {} compensation(s) for workflow '{}' (parallel={})",
                 entries.size(), ctx.workflowId(), parallelCompensation);
@@ -231,8 +256,8 @@ public final class SagaManager {
     /**
      * Runs compensations one at a time, in LIFO order.
      *
-     * <p>Each entry gets its own reserved sequence block — {@code anchorSeq *
-     * BRANCH_MULTIPLIER + (i+1) * BRANCH_MULTIPLIER} — the same isolation
+     * <p>Each entry gets its own reserved sequence block —
+     * {@code SequenceSpace.branchBase(anchorSeq, i)} — the same isolation
      * scheme {@code executeParallel} uses for branches. The block's base
      * (the guard sequence) is checked against the store before the entry's
      * action runs; if an event already exists there, the entry already ran
@@ -254,7 +279,7 @@ public final class SagaManager {
 
         for (int i = 0; i < entries.size(); i++) {
             var entry = entries.get(i);
-            var stepBaseSeq = anchorSeq * BRANCH_MULTIPLIER + (i + 1) * BRANCH_MULTIPLIER;
+            var stepBaseSeq = SequenceSpace.branchBase(anchorSeq, i);
 
             // Replay-skip guard: don't re-invoke an action whose outcome is
             // already durable. A manually-registered compensation isn't
@@ -326,19 +351,12 @@ public final class SagaManager {
         // Advance past every entry's reserved block so COMPENSATION_COMPLETED
         // gets a deterministic sequence, independent of how many internal
         // sequence numbers each entry's action actually consumed.
-        ctx.setSequence(anchorSeq * BRANCH_MULTIPLIER + (entries.size() + 1) * BRANCH_MULTIPLIER);
+        ctx.setSequence(SequenceSpace.nextParentSeq(ctx.workflowId(), anchorSeq, entries.size()));
 
         return failures;
     }
 
     // ── Parallel execution ────────────────────────────────────────────
-
-    /**
-     * Branch multiplier for parallel compensation sequence isolation.
-     * Matches {@code DefaultWorkflowOperations.BRANCH_MULTIPLIER}.
-     * Each branch gets up to {@code BRANCH_MULTIPLIER - 1} sequence slots.
-     */
-    private static final int BRANCH_MULTIPLIER = 1000;
 
     /**
      * Runs all compensations concurrently, one virtual thread per branch.
@@ -388,7 +406,7 @@ public final class SagaManager {
             var entry = entries.get(i);
 
             // Each branch gets its own isolated sequence space
-            var branchBaseSeq = parentSeq * BRANCH_MULTIPLIER + (index + 1) * BRANCH_MULTIPLIER;
+            var branchBaseSeq = SequenceSpace.branchBase(parentSeq, index);
 
             // Replay-skip guard: a manually-registered compensation isn't
             // memoized the way an activity call is, so without this check a
@@ -471,7 +489,7 @@ public final class SagaManager {
         }
 
         // Advance parent sequence past all branch spaces
-        var nextParentSeq = parentSeq * BRANCH_MULTIPLIER + (entries.size() + 1) * BRANCH_MULTIPLIER;
+        var nextParentSeq = SequenceSpace.nextParentSeq(ctx.workflowId(), parentSeq, entries.size());
         ctx.setSequence(nextParentSeq);
 
         // A shutdown in any branch takes priority over recording outcomes: the
@@ -516,7 +534,7 @@ public final class SagaManager {
             var error = errors.get(i).get();
             if (error != null) {
                 var entry = entries.get(i);
-                var branchBaseSeq = parentSeq * BRANCH_MULTIPLIER + (i + 1) * BRANCH_MULTIPLIER;
+                var branchBaseSeq = SequenceSpace.branchBase(parentSeq, i);
                 logger.error("Compensation {} '{}' failed for workflow '{}': {}",
                         i, entry.stepName(), ctx.workflowId(), error.getMessage(), error);
                 recordStepFailure(ctx, branchBaseSeq, entry.stepName(),

@@ -65,13 +65,6 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
 
     private static final Logger logger = LoggerFactory.getLogger(DefaultWorkflowOperations.class);
 
-    /**
-     * Multiplier for computing branch sequence bases during parallel execution.
-     * Branch {@code i} gets sequences starting at {@code parentSeq * BRANCH_MULTIPLIER + (i+1) * BRANCH_MULTIPLIER}.
-     * This gives each branch up to {@code BRANCH_MULTIPLIER - 1} sequence slots.
-     */
-    static final int BRANCH_MULTIPLIER = 1000;
-
     /** Step-name prefix recorded on {@link EventType#VERSION_MARKER} events. */
     private static final String VERSION_STEP_PREFIX = "$maestro:version:";
 
@@ -537,20 +530,16 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
 
         var ctx = WorkflowContext.current();
 
-        // Validate that branch sequence ranges won't overflow Integer.MAX_VALUE
-        var peekParentSeq = ctx.currentSequence() + 1;
-        long maxBranchBase = (long) peekParentSeq * BRANCH_MULTIPLIER
-                + (long) (tasks.size() + 1) * BRANCH_MULTIPLIER;
-        if (maxBranchBase > Integer.MAX_VALUE) {
-            throw new IllegalStateException(
-                    "Parallel execution at sequence %d with %d branches would overflow the integer sequence space. "
-                            .formatted(peekParentSeq, tasks.size())
-                            + "Reduce nesting depth or number of branches.");
-        }
+        // Pre-check before any sequence is consumed: a fork whose branch blocks
+        // would not fit in the int sequence space fails the workflow with a
+        // typed SequenceSpaceExhaustedException and leaves the counter (and the
+        // event log) untouched. The result is discarded — the real value is
+        // computed from the consumed parentSeq below.
+        SequenceSpace.nextParentSeq(ctx.workflowId(), ctx.currentSequence() + 1, tasks.size());
 
         var parentSeq = ctx.nextSequence();
         var branchCount = tasks.size();
-        var nextParentSeq = parentSeq * BRANCH_MULTIPLIER + (branchCount + 1) * BRANCH_MULTIPLIER;
+        var nextParentSeq = SequenceSpace.nextParentSeq(ctx.workflowId(), parentSeq, branchCount);
 
         var results = new ArrayList<AtomicReference<T>>(branchCount);
         var errors = new ArrayList<AtomicReference<Throwable>>(branchCount);
@@ -587,7 +576,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                 var task = tasks.get(i);
 
                 // Each branch gets its own sequence space
-                var branchBaseSeq = parentSeq * BRANCH_MULTIPLIER + (branchIndex + 1) * BRANCH_MULTIPLIER;
+                var branchBaseSeq = SequenceSpace.branchBase(parentSeq, branchIndex);
 
                 Thread.ofVirtual()
                         .name("maestro-workflow-%s-%s-branch-%d".formatted(
