@@ -204,6 +204,13 @@ public sealed interface WorkflowOperations permits DefaultWorkflowOperations {
      * (most recent first) to undo completed activities. The stack is
      * rebuilt during replay as the workflow re-executes.
      *
+     * <p><b>Inside a {@code parallel()} branch</b> the action is not pushed
+     * immediately: it is buffered per branch and pushed when the fork joins, in
+     * branch-index order (not finish order), whether the fork returns or
+     * throws. So until the enclosing {@code parallel()} returns, the action is
+     * not yet on the stack; and if the fork's join is interrupted it is
+     * dropped (with a WARN naming it).
+     *
      * @param compensation the compensation action to register
      */
     void addCompensation(Runnable compensation);
@@ -214,6 +221,10 @@ public sealed interface WorkflowOperations permits DefaultWorkflowOperations {
      * <p>The step name is used for logging and event recording. This
      * overload is used by the {@code @Compensate} integration in the
      * activity proxy.
+     *
+     * <p>The same branch-buffering caveat as {@link #addCompensation(Runnable)}
+     * applies inside a {@code parallel()} branch: pushed at the fork's join, in
+     * branch-index order.
      *
      * @param stepName     the compensation step name for logging and events
      * @param compensation the compensation action to register

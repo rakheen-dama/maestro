@@ -156,13 +156,17 @@ public final class ReplayGuard {
                         .formatted(seq, expectedStepName, stored.stepName(), stored.eventType()));
     }
 
+    /**
+     * The message deliberately carries no remedy: the executor's stand-down
+     * WARN appends exactly one ({@code WorkflowExecutor.standDownRemedy}).
+     */
     private static UnknownWorkflowHistoryException nondeterministic(String workflowId, int seq,
                                                                     String what, String detail) {
         return new UnknownWorkflowHistoryException(workflowId, seq,
                 UnknownWorkflowHistoryException.Kind.NONDETERMINISTIC_HISTORY,
                 ("Workflow '%s' replay diverged from its history at sequence %d: %s — the "
                         + "workflow code changed without a workflow.version() gate; standing "
-                        + "this run down without recording a failure (roll back the deploy)")
+                        + "this run down without recording a failure")
                         .formatted(workflowId, seq, what),
                 detail);
     }

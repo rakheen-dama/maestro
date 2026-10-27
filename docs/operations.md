@@ -689,6 +689,20 @@ adopts the instance, stands down again, and emits one WARN plus one counter
 increment — exactly the §10.3 behaviour, and the reason the alert above is a
 rate.
 
+**An admin Retry can surface as drift.** Retry deletes *every*
+`ACTIVITY_FAILED` memo of the instance (plus `WORKFLOW_FAILED`), including one
+the workflow **caught** and recovered from (`try { a.x(); } catch (ActivityExecutionException e) { b.fallback(); }`).
+On the retried run that activity has no memo, so it executes live; if it now
+succeeds, the workflow takes the success path, and the next recorded step — the
+fallback the original run took — no longer matches. That run stands down as
+`nondeterministic_history` instead of continuing. Before this check the same
+retry was *silent corruption*: the success path replayed the fallback's
+recorded payload as its own. No code change or rollback heals it — the history
+genuinely records a path the retried run no longer takes. **Remedy:**
+terminate the instance and complete its business outcome by hand (or start a
+fresh instance); avoid admin Retry on workflows that catch activity failures
+and branch on them.
+
 **Compensations registered inside `parallel()` branches are not drift.** They
 reach the saga stack in branch-index order, not finish order (see
 `docs/concepts.md` → Compensation ordering), so a saga recovered

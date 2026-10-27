@@ -108,6 +108,18 @@ class ReplayGuardTest {
                         + "stored=$maestro:parallel-compensation type=SIDE_EFFECT", ex.detail()));
     }
 
+    @Test
+    void driftMessage_carriesNoRemedy_theWarnAddsExactlyOne() {
+        // The executor's WARN appends standDownRemedy(NONDETERMINISTIC_HISTORY);
+        // a remedy in the message too printed "(roll back the deploy) — ...;
+        // roll back the deploy or gate the change behind workflow.version()".
+        var ex = assertThrows(UnknownWorkflowHistoryException.class, () ->
+                ReplayGuard.requireMatch(event(2, EventType.ACTIVITY_COMPLETED, "Acts.old"), "wf",
+                        "Acts.new", EventType.ACTIVITY_COMPLETED));
+        var warn = ex.getMessage() + "; " + WorkflowExecutor.standDownRemedy(ex.kind());
+        assertEquals(1, warn.split("roll back", -1).length - 1, warn);
+    }
+
     private static WorkflowEvent event(int seq, EventType type, @Nullable String stepName) {
         return new WorkflowEvent(UUID.randomUUID(), UUID.randomUUID(), seq, type, stepName, null,
                 Instant.now());

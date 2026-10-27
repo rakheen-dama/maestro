@@ -2,6 +2,7 @@ package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.context.WorkflowMDC;
+import io.b2mash.maestro.core.exception.MaestroControlFlowError;
 import io.b2mash.maestro.core.exception.RetryExhaustedException;
 import io.b2mash.maestro.core.exception.SignalTimeoutException;
 import io.b2mash.maestro.core.exception.TimerCancelledException;
@@ -32,9 +33,11 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.StringJoiner;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -629,7 +632,10 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             for (int i = 0; i < branchCount; i++) {
                 results.add(new AtomicReference<>());
                 errors.add(new AtomicReference<>());
-                compensationBuffers.add(new ArrayList<>());
+                // Copy-on-write: written only by its own branch thread, but read
+                // by describeDropped() while that thread may still be running
+                // when the join was interrupted.
+                compensationBuffers.add(new CopyOnWriteArrayList<>());
             }
 
             for (int i = 0; i < branchCount; i++) {
@@ -675,14 +681,22 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             }
             joined = true;
 
-            // Check for errors — fail fast with first error. Every engine
-            // control-flow signal (MaestroControlFlowError: shutdown, terminate,
-            // unknown-history stand-down) is an Error, not a RuntimeException, and
-            // is rethrown as-is by the `instanceof Error` arm below: wrapping one
-            // here would hide it inside a plain RuntimeException that
-            // executeWorkflow's dedicated catch arms no longer recognise, turning a
-            // routine deploy — or a mixed-version window — into a recorded failure
-            // with compensations.
+            // Control-flow first (CLAUDE.md): an engine control-flow signal
+            // (MaestroControlFlowError: shutdown, terminate, unknown-history
+            // stand-down) in ANY branch outranks a plain failure in an earlier
+            // one. The index-order loop below would otherwise rethrow branch 0's
+            // exception and turn a routine deploy — or a mixed-version window —
+            // into a recorded failure with compensations.
+            for (int i = 0; i < branchCount; i++) {
+                if (errors.get(i).get() instanceof MaestroControlFlowError signal) {
+                    throw signal;
+                }
+            }
+
+            // Otherwise fail fast with the first error, in branch-index order.
+            // Any other Error is rethrown as-is too: wrapping it in a plain
+            // RuntimeException would change what executeWorkflow's Error arm
+            // sees (e.g. a node-level error recorded as a workflow failure).
             for (int i = 0; i < branchCount; i++) {
                 var error = errors.get(i).get();
                 if (error != null) {
@@ -707,6 +721,17 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                     for (var buffered : buffer) {
                         register(buffered.stepName(), buffered.action());
                     }
+                }
+            } else {
+                // Not silently: these compensations will not be on the stack if
+                // this run goes on to fail. (Empty when the fork threw before
+                // spawning any branch — e.g. a drift stand-down — so no WARN.)
+                var dropped = describeDropped(compensationBuffers);
+                if (!dropped.isEmpty()) {
+                    logger.warn("Workflow '{}': parallel() at seq {} did not join (interrupted) — "
+                                    + "dropping the compensations its branches registered so far, "
+                                    + "which will NOT run if this run fails: {}",
+                            ctx.workflowId(), parentSeq, dropped);
                 }
             }
         }
@@ -1049,8 +1074,31 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
     private record TimerDetail(String timerId, String duration) {}
     private record ParallelDetail(int branchCount) {}
 
-    /** A compensation registered inside a {@code parallel()} branch, held until the fork joins. */
-    private record BufferedCompensation(@Nullable String stepName, Runnable action) {}
+    /**
+     * A compensation registered inside a {@code parallel()} branch, held until
+     * the fork joins. Package-private only so the dropped-registration WARN's
+     * wording ({@link #describeDropped}) can be pinned.
+     */
+    record BufferedCompensation(@Nullable String stepName, Runnable action) {}
+
+    /**
+     * Names the registrations a {@code parallel()} drops when it cannot flush
+     * (its join was interrupted), grouped by branch index; branches with none
+     * are omitted. Package-private so the wording is pinned without an SLF4J
+     * binding.
+     */
+    static String describeDropped(List<? extends List<BufferedCompensation>> buffers) {
+        var out = new StringJoiner("; ");
+        for (int i = 0; i < buffers.size(); i++) {
+            var names = List.copyOf(buffers.get(i)).stream()
+                    .map(b -> b.stepName() != null ? b.stepName() : "<unnamed>")
+                    .toList();
+            if (!names.isEmpty()) {
+                out.add("branch " + i + ": " + names);
+            }
+        }
+        return out.toString();
+    }
 
     /** Payload of a {@link EventType#VERSION_MARKER} event. */
     private record VersionDetail(String changeId, int version) {}
