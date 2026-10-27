@@ -9,6 +9,8 @@ import tools.jackson.databind.DatabindException;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Instant;
+import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -48,14 +50,52 @@ class UnknownHistoryGuardTest {
                         () -> serializer.deserialize(payload, Shaped.class)));
         assertAll(
                 () -> assertEquals(UnknownWorkflowHistoryException.Kind.UNKNOWN_EVENT_PAYLOAD, ex.kind()),
-                () -> assertEquals("seq=2 cause=" + root.getClass().getName() + " at "
-                                + ((DatabindException) root).getPathReference(),
-                        ex.detail()),
-                () -> assertTrue(ex.detail().endsWith("[\"amount\"]"),
-                        "the field path, never the value: " + ex.detail()),
+                () -> assertEquals("seq=2 cause=" + root.getClass().getName() + " at amount",
+                        ex.detail(), "the structural field path, never the value or the class"),
                 () -> assertFalse(ex.detail().contains(MARKER), ex.detail()),
                 () -> assertFalse(ex.getMessage().contains(MARKER), ex.getMessage()),
                 () -> assertInstanceOf(SerializationException.class, ex.getCause()));
+    }
+
+    /** A payload keyed by user data — e.g. a customer id. */
+    record ByCustomer(Map<String, Shaped> byCustomer, List<Shaped> history) {}
+
+    @Test
+    void requireReadablePayload_mapKeysAreNeverRendered() {
+        // Security follow-up to R17: Jackson's getPathReference() renders map
+        // KEYS (and the parent class name), and a map key can be customer data.
+        var serializer = new PayloadSerializer(JsonMapper.builder().build());
+        var payload = JsonMapper.builder().build().readTree(
+                "{\"byCustomer\":{\"" + MARKER + "\":{\"amount\":\"not-a-number\"}},\"history\":[]}");
+        SerializationException expected = assertThrows(SerializationException.class,
+                () -> serializer.deserialize(payload, ByCustomer.class));
+        var root = (DatabindException) expected.getCause();
+        assertTrue(root.getPathReference().contains(MARKER),
+                "precondition: Jackson's own path reference renders the key: " + root.getPathReference());
+
+        var ex = assertThrows(UnknownWorkflowHistoryException.class, () ->
+                UnknownHistoryGuard.requireReadablePayload("wf", 4, "activity result",
+                        () -> serializer.deserialize(payload, ByCustomer.class)));
+        assertAll(
+                () -> assertEquals("seq=4 cause=" + root.getClass().getName() + " at byCustomer[<key>].amount",
+                        ex.detail()),
+                () -> assertFalse(ex.detail().contains(MARKER), ex.detail()),
+                () -> assertFalse(ex.getMessage().contains(MARKER), ex.getMessage()),
+                () -> assertFalse(ex.detail().contains("ByCustomer"),
+                        "no class name from the path either: " + ex.detail()));
+    }
+
+    @Test
+    void requireReadablePayload_listIndexesAreRendered() {
+        var serializer = new PayloadSerializer(JsonMapper.builder().build());
+        var payload = JsonMapper.builder().build().readTree(
+                "{\"byCustomer\":{},\"history\":[{\"amount\":1},{\"amount\":\"" + MARKER + "\"}]}");
+        var ex = assertThrows(UnknownWorkflowHistoryException.class, () ->
+                UnknownHistoryGuard.requireReadablePayload("wf", 4, "activity result",
+                        () -> serializer.deserialize(payload, ByCustomer.class)));
+        assertAll(
+                () -> assertTrue(ex.detail().endsWith(" at history[1].amount"), ex.detail()),
+                () -> assertFalse(ex.detail().contains(MARKER), ex.detail()));
     }
 
     @Test

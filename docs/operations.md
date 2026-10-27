@@ -508,8 +508,10 @@ The WARN and the `standDown` observer detail carry the deserializer's root
 cause as **the exception class and the JSON path of the offending field**:
 `seq=N cause=<class> at <path>` — for example
 `seq=3 cause=tools.jackson.databind.exc.InvalidFormatException at
-com.acme.Order["status"]` — or just `seq=N cause=<class>` when the failure has
-no field path (a root-level shape mismatch, or a stream-level error). That is
+lines[2].status` — or just `seq=N cause=<class>` when the failure has no field
+path (a root-level shape mismatch, or a stream-level error). The path is
+structural only: property names, list indexes, and `[<key>]` in place of any
+map key (`byCustomer[<key>].amount`), because map keys are often user data. That is
 what distinguishes "a newer node wrote this" from "my own refactor broke this"
 on a fleet you know to be homogeneous. The deserializer's own message is
 deliberately left out: Jackson quotes the stored *values* (and, for stream

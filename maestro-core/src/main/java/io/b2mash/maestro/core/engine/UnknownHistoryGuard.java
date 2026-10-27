@@ -4,8 +4,12 @@ import io.b2mash.maestro.core.exception.SerializationException;
 import io.b2mash.maestro.core.exception.UnknownWorkflowHistoryException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
+import org.jspecify.annotations.Nullable;
+import tools.jackson.core.JacksonException;
 import tools.jackson.databind.DatabindException;
 
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 
@@ -123,20 +127,53 @@ public final class UnknownHistoryGuard {
      * reaches a WARN line and the observer's {@code detail} (both commonly
      * shipped to log/metric backends with weaker access controls than the
      * database). So only the exception class and — for a
-     * {@link DatabindException} — the JSON path of the offending field
-     * ({@link DatabindException#getPathReference()}: type and property names,
-     * never values) are kept. The raw message stays on the attached cause,
-     * logged at DEBUG only.
+     * {@link DatabindException} — the <em>structural</em> JSON path of the
+     * offending field are kept (see {@link #structuralPath}). The raw message
+     * stays on the attached cause, logged at DEBUG only.
      */
     private static String redactedCause(Throwable root) {
         var name = root.getClass().getName();
         if (root instanceof DatabindException databind) {
-            var path = databind.getPathReference();
-            if (path != null && !path.isEmpty()) {
+            var path = structuralPath(databind.getPath());
+            if (!path.isEmpty()) {
                 return name + " at " + path;
             }
         }
         return name;
+    }
+
+    /**
+     * Renders a Jackson path from its structure alone: a bean/record property
+     * by name ({@code .amount}), a list/array element by index ({@code [1]}),
+     * and a map entry as the placeholder {@code [<key>]}.
+     *
+     * <p>Deliberately <em>not</em> {@link DatabindException#getPathReference()}:
+     * that renders map <b>keys</b>, which are routinely user data (a
+     * {@code Map<String, Order>} keyed by customer id), and the parent class
+     * names. Neither is needed to locate the reshaped field.
+     */
+    private static String structuralPath(List<JacksonException.Reference> path) {
+        var out = new StringBuilder();
+        for (var ref : path) {
+            if (isMap(ref.from())) {
+                out.append("[<key>]");
+            } else if (ref.getIndex() >= 0) {
+                out.append('[').append(ref.getIndex()).append(']');
+            } else if (ref.getPropertyName() != null) {
+                if (!out.isEmpty()) {
+                    out.append('.');
+                }
+                out.append(ref.getPropertyName());
+            } else {
+                out.append("[?]");
+            }
+        }
+        return out.toString();
+    }
+
+    private static boolean isMap(@Nullable Object from) {
+        return from instanceof Map<?, ?>
+                || (from instanceof Class<?> type && Map.class.isAssignableFrom(type));
     }
 
     /**
