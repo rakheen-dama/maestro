@@ -45,6 +45,7 @@ class ActivityFailureReplayIT extends PostgresIntegrationSupport {
         assertEquals(DomainFailure.class.getName() + "|boom", run.live().getFirst());
         assertEquals(run.live().getFirst(), run.replay().getFirst());
         assertEquals(run.live().getFirst(), run.result());
+        assertEquals(1, run.failedEvents(), "replay re-executed nothing");
     }
 
     @Test

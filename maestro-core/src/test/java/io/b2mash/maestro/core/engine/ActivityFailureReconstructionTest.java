@@ -124,6 +124,24 @@ class ActivityFailureReconstructionTest {
                 () -> assertEquals("boom", replayed.getCause().getMessage()));
     }
 
+    @Test
+    void storedNonThrowableName_isNotInitialised() {
+        var cause = replayFailure(InitProbe.class.getName(), "boom").getCause();
+        assertInstanceOf(ReconstructedActivityFailure.class, cause);
+        assertFalse(PROBE_INITIALISED.get(), "resolving a stored type name must not run its static initialiser");
+    }
+
+    /** Held outside the probe: reading a field of {@link InitProbe} would itself initialise it. */
+    private static final java.util.concurrent.atomic.AtomicBoolean PROBE_INITIALISED =
+            new java.util.concurrent.atomic.AtomicBoolean();
+
+    /** A non-Throwable whose static initialiser must never run during reconstruction. */
+    public static class InitProbe {
+        static {
+            PROBE_INITIALISED.set(true);
+        }
+    }
+
     interface ExplodingActivities {
         String explode();
     }

@@ -11,12 +11,14 @@ package io.b2mash.maestro.core.exception;
  *
  * <h2>Matching the cause</h2>
  * <p>On the live path {@code getCause()} is the exception the activity threw.
- * On replay it is the same type <b>only if</b> that type has a public
- * {@code (String)} constructor; otherwise it is a
+ * On replay it is the same type <b>only if</b> that type is an accessible
+ * public class with a public {@code (String)} constructor that does not throw;
+ * otherwise (package-private or private nested class, abstract class, no such
+ * constructor, throwing constructor, class missing from the classpath, or an
+ * engine control-flow signal name) it is a
  * {@link ReconstructedActivityFailure} whose
  * {@link ReconstructedActivityFailure#originalClassName() originalClassName()}
- * is the thrown type's fully-qualified name (the same holds for a type missing
- * from the classpath or an engine control-flow signal name). Workflow code must
+ * is the thrown type's fully-qualified name. Workflow code must
  * therefore catch {@code ActivityExecutionException} and branch on
  * {@code getCause()}'s class <em>or</em> on {@code originalClassName()}; it
  * must never rely on {@code catch (MyDomainException)} alone.
@@ -57,8 +59,9 @@ public final class ActivityExecutionException extends MaestroException {
      * the cause is a {@link ReconstructedActivityFailure} whose
      * {@link ReconstructedActivityFailure#originalClassName() originalClassName()}
      * names {@code type} or a subtype of it. The name is resolved with
-     * {@code Class.forName(name, false, Thread.currentThread().getContextClassLoader())};
-     * if the class cannot be loaded, only exact name equality counts. This
+     * {@link ExceptionTypeResolver#resolve(String)} (context class loader, then
+     * the library loader, never initialising the class); if the class cannot be
+     * loaded, only exact name equality counts. This
      * makes the check behave identically on the live path and on replay.
      *
      * <p>Canonical pattern:
@@ -82,12 +85,8 @@ public final class ActivityExecutionException extends MaestroException {
             if (type.getName().equals(name)) {
                 return true;
             }
-            try {
-                var original = Class.forName(name, false, Thread.currentThread().getContextClassLoader());
-                return type.isAssignableFrom(original);
-            } catch (ClassNotFoundException | LinkageError e) {
-                return false;
-            }
+            var original = ExceptionTypeResolver.resolve(name);
+            return original != null && type.isAssignableFrom(original);
         }
         return false;
     }

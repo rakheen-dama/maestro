@@ -5,6 +5,8 @@ import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.Saga;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.exception.ActivityExecutionException;
+import io.b2mash.maestro.core.exception.ReconstructedActivityFailure;
 import io.b2mash.maestro.core.exception.TimerCancelledException;
 import io.b2mash.maestro.integration.workflows.CountingActivities.ChainActivities;
 import io.b2mash.maestro.integration.workflows.CountingActivities.FlakyActivities;
@@ -134,9 +136,9 @@ public final class TestWorkflows {
             try {
                 failing.explode(input);
                 seen = "no-failure";
-            } catch (io.b2mash.maestro.core.exception.ActivityExecutionException e) {
+            } catch (ActivityExecutionException e) {
                 seen = e.getCause().getClass().getName() + "|" + e.getCause().getMessage()
-                        + (e.getCause() instanceof io.b2mash.maestro.core.exception.ReconstructedActivityFailure r
+                        + (e.getCause() instanceof ReconstructedActivityFailure r
                         ? "|" + r.originalClassName() : "");
             }
             observations.add(seen);

@@ -2,23 +2,25 @@ package io.b2mash.maestro.core.exception;
 
 import org.jspecify.annotations.Nullable;
 
+import java.util.Objects;
+
 /**
  * Stands in, on replay, for an activity exception whose original type cannot be
  * safely re-created from the persisted failure record.
  *
  * <p>It is produced as the {@link ActivityExecutionException#getCause() cause}
- * of a replayed {@link ActivityExecutionException} in exactly three cases:
- * <ul>
- *   <li>the original type has no <em>public</em> {@code (String)} constructor;</li>
- *   <li>the original class is not on this node's classpath (or no type was
- *       recorded, reported as {@code "unknown"});</li>
- *   <li>the recorded type names an engine control-flow signal
- *       ({@link MaestroControlFlowError} subtype), which must never be
- *       instantiated from stored data.</li>
- * </ul>
- * The original message is preserved and {@link #originalClassName()} names the
- * type the activity actually threw, so workflow code can branch on it
- * identically on the live and replay paths.
+ * of a replayed {@link ActivityExecutionException} whenever the original type
+ * cannot be re-created: it is not an accessible public class with a public
+ * {@code (String)} constructor that completes normally (package-private or
+ * private nested classes, abstract classes, a missing constructor and a
+ * throwing constructor all qualify); the class is not on this node's
+ * classpath; no type was recorded (reported as {@code "unknown"}); or the
+ * recorded type names an engine control-flow signal
+ * ({@link MaestroControlFlowError} subtype), which is never instantiated from
+ * stored data. {@link #originalClassName()} names the type the activity
+ * actually threw, so workflow code can branch on it identically live and on
+ * replay. The message is the recorded one, except that a null or empty
+ * recorded message replays as {@code "Replayed failure"}.
  *
  * <p>Deliberately <b>not</b> a {@link MaestroException}: it represents the
  * <em>user's</em> exception, and {@code catch (MaestroException)} must keep
@@ -39,7 +41,7 @@ public final class ReconstructedActivityFailure extends RuntimeException {
      */
     public ReconstructedActivityFailure(String originalClassName, @Nullable String message) {
         super(message);
-        this.originalClassName = originalClassName;
+        this.originalClassName = Objects.requireNonNull(originalClassName, "originalClassName");
     }
 
     /** Returns the fully-qualified class name of the exception the activity originally threw. */

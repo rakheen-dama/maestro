@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 /**
  * Activity fixtures whose invocations are counted.
@@ -81,10 +82,10 @@ public final class CountingActivities {
 
     /** Always throws the exception its supplier produces. */
     public static final class ThrowingFailingActivities implements FailingActivities {
-        private final java.util.function.Supplier<RuntimeException> thrown;
+        private final Supplier<RuntimeException> thrown;
 
         /** @param thrown produces the exception to throw on each call */
-        public ThrowingFailingActivities(java.util.function.Supplier<RuntimeException> thrown) {
+        public ThrowingFailingActivities(Supplier<RuntimeException> thrown) {
             this.thrown = thrown;
         }
 
