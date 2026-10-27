@@ -33,7 +33,7 @@ Maestro is an open-source durable workflow engine delivered as a Spring Boot Sta
 - **Parallel Execution** -- Execute multiple activities or awaits concurrently on virtual threads. Each branch is independently memoized.
 - **Durable Timers** -- `workflow.sleep(Duration.ofDays(30))` creates a persistent timer. The service doesn't need to stay alive.
 - **Queries** -- Read live workflow state without affecting execution.
-- **Durable Retries** -- Activities retry with exponential backoff. Retries survive JVM restarts.
+- **Durable Retries** -- Activities retry with exponential backoff, each attempt bounded by `startToCloseTimeout`. A completed attempt is never re-executed after a crash; the attempt counter itself is in-memory, so a crash mid-retry restarts the schedule at attempt 1.
 - **Admin Dashboard** -- Standalone monitoring UI with workflow list, event timelines, signal monitor, and one-click retry.
 - **Workflow Versioning** -- `workflow.version()` gates a code change behind a durable, memoized decision, so in-flight instances keep replaying the branch they recorded.
 - **Observability** -- Micrometer meters and OpenTelemetry spans out of the box, including W3C trace propagation through Kafka so a cross-service flow renders as one connected trace. Replayed steps are never counted or traced.

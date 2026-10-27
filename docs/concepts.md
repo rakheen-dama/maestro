@@ -135,6 +135,10 @@ The `@RetryPolicy` annotation configures automatic retries for failed activity i
 
 Backoff formula: `delay = min(initialInterval * backoffMultiplier^attempt, maxInterval)`.
 
+**Timeouts.** `@ActivityStub(startToCloseTimeout = ...)` (default `PT30S`) bounds each *attempt* on the wall clock, from invocation to return; every retry gets the full timeout afresh, and backoff waits do not count against it. Each attempt runs on its own virtual thread; one still running at the timeout is cancelled — its thread is interrupted — and fails with `ActivityTimeoutException`. The workflow does not wait for it to stop, and anything it returns afterwards is discarded, never memoized, so an activity that ignores interruption keeps running in the background with no effect on the workflow. `ActivityTimeoutException` is an ordinary failure under the retry policy: retried by default, and listing it in `nonRetryableExceptions` makes a timeout terminal. Detect it with `e.causedBy(ActivityTimeoutException.class)`, which also holds on replay.
+
+**What survives a crash.** The attempt counter is in-memory; after a crash the activity restarts at attempt 1 with the full backoff schedule; the durable guarantee is that a *completed* attempt is never re-executed.
+
 ### Handling activity failures in workflow code
 
 An activity's exception **always** reaches the workflow method wrapped in `ActivityExecutionException`, both live and on replay. The original exception is available as `getCause()` and is tested with `causedBy(Class)`:

@@ -233,7 +233,7 @@ The `maestro-samples` directory contains a working two-service demo:
 The two services coordinate entirely through Kafka:
 
 1. Order Service publishes a `PaymentRequest` to `payments.requests`
-2. Payment Gateway consumes it, processes the payment with durable retries
+2. Payment Gateway consumes it, processes the payment with retries
 3. Payment Gateway publishes a `PaymentResult` to `payments.results`
 4. Order Service's `@MaestroSignalListener` routes the result to the waiting
    `OrderFulfilmentWorkflow`

@@ -56,7 +56,8 @@ public final class ActivityProxyFactory {
      * @param distributedLock     optional distributed lock for dedup optimization
      * @param messaging           optional messaging for lifecycle events
      * @param retryPolicy         retry policy for failed invocations
-     * @param startToCloseTimeout timeout used as lock TTL hint
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
+     *                            base of the per-activity lock TTL
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live invocations
      * @return a proxy instance that implements {@code activityInterface}
@@ -89,7 +90,8 @@ public final class ActivityProxyFactory {
      * @param distributedLock     optional distributed lock for dedup optimization
      * @param messaging           optional messaging for lifecycle events
      * @param retryPolicy         retry policy for failed invocations
-     * @param startToCloseTimeout timeout used as lock TTL hint
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
+     *                            base of the per-activity lock TTL
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live invocations
      * @param lockKeyPrefix       prefix for the per-activity distributed lock key
@@ -127,7 +129,8 @@ public final class ActivityProxyFactory {
      * @param distributedLock     optional distributed lock for dedup optimization
      * @param messaging           optional messaging for lifecycle events
      * @param retryPolicy         retry policy for failed invocations
-     * @param startToCloseTimeout timeout used as lock TTL hint
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
+     *                            base of the per-activity lock TTL
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live invocations
      * @param lockKeyPrefix       prefix for the per-activity distributed lock key

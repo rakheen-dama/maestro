@@ -359,4 +359,47 @@ public final class TestWorkflows {
             return activities.attempt(input);
         }
     }
+
+    /**
+     * {@link RetryWorkflow} with a short {@code startToCloseTimeout} and one
+     * retry — a timed-out first attempt is retried (C11).
+     */
+    @DurableWorkflow(name = "TimeoutRetryWorkflow")
+    public static class TimeoutRetryWorkflow {
+
+        @ActivityStub(startToCloseTimeout = "PT0.3S",
+                retryPolicy = @io.b2mash.maestro.core.annotation.RetryPolicy(
+                        maxAttempts = 2, initialInterval = "PT0.1S", maxInterval = "PT0.1S"))
+        FlakyActivities activities;
+
+        /**
+         * @param input the seed value
+         * @return the result of the attempt that finished within the timeout
+         */
+        @WorkflowMethod
+        public String run(String input) {
+            return activities.attempt(input);
+        }
+    }
+
+    /**
+     * {@link RetryWorkflow} with a short {@code startToCloseTimeout} and no
+     * retry — a timed-out attempt fails the activity (C11).
+     */
+    @DurableWorkflow(name = "TimeoutNoRetryWorkflow")
+    public static class TimeoutNoRetryWorkflow {
+
+        @ActivityStub(startToCloseTimeout = "PT0.3S",
+                retryPolicy = @io.b2mash.maestro.core.annotation.RetryPolicy(maxAttempts = 1))
+        FlakyActivities activities;
+
+        /**
+         * @param input the seed value
+         * @return never returns normally against a slow first attempt
+         */
+        @WorkflowMethod
+        public String run(String input) {
+            return activities.attempt(input);
+        }
+    }
 }

@@ -653,8 +653,8 @@ failed compensation step.
 | Scenario | Behaviour |
 |---|---|
 | **JVM crash** | Recovery replays from Postgres. At-least-once activities. |
-| **Activity timeout** | Retry with backoff. Exhausted → saga or fail. |
-| **External API down** | Activity retries durably (configurable: attempts, backoff, max interval). Service can restart during retries. |
+| **Activity timeout** | Each attempt is bounded by `startToCloseTimeout` on its own virtual thread; a timed-out attempt is interrupted and counts as a retryable failure (`ActivityTimeoutException`). Exhausted → saga or fail. |
+| **External API down** | Activity retries with backoff (configurable: attempts, backoff, max interval). The attempt counter is in-memory: after a restart the activity restarts at attempt 1 with the full schedule; a completed attempt is never re-executed. |
 | **Kafka rebalance** | In-progress workflows continue. New tasks reroute. |
 | **Postgres lost** | Execution blocks until restored. No activity without persistence. |
 | **Valkey down** | Workflows proceed unlocked (unique event index is the backstop; or use `maestro-lock-postgres`). Poll-based signals. |

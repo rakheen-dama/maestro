@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Changed — startToCloseTimeout is now enforced per attempt (ActivityTimeoutException); retry-durability docs corrected
+
+- **Before:** `@ActivityStub(startToCloseTimeout)` was only the TTL hint for the per-activity distributed lock; nothing bounded an attempt, so a hung activity held its workflow indefinitely. The README and architecture doc also claimed retries were durable ("Retries survive JVM restarts"), but the attempt counter has only ever lived in memory.
+- **Now:** each live attempt runs on its own virtual thread (with the caller's MDC and `WorkflowContext`) and the workflow thread waits at most `startToCloseTimeout` for it. An attempt still running at the deadline is cancelled — its thread is interrupted — and fails with the new `ActivityTimeoutException` (a `MaestroException`). It is retried under the activity's `RetryPolicy` like any other failure (list it in `nonRetryableExceptions` to make a timeout terminal); exhausted, it is persisted as `ACTIVITY_FAILED` with `exceptionType = io.b2mash.maestro.core.exception.ActivityTimeoutException`, and `ActivityExecutionException.causedBy(ActivityTimeoutException.class)` matches both live and on replay. A value an attempt produces after its deadline (one that ignored the interrupt) is discarded and never memoized. Terminate still does not interrupt a running attempt; only the timeout does.
+- **Docs:** README "Durable Retries", `docs/concepts.md` (Retry policy → Timeouts, What survives a crash) and the architecture failure-modes table now say what is true: the attempt counter is in-memory, a crash mid-retry restarts the schedule at attempt 1, and the durable guarantee is that a *completed* attempt is never re-executed.
+- **Behaviour change:** an activity whose attempt used to run past its declared timeout — including any that relied on the `PT30S` default while taking longer — now fails that attempt. Raise `startToCloseTimeout` on such stubs before upgrading. Spec row C11.
+
 ### Fixed — Terminate now stops live work: no further activity attempt, retry backoff abandoned; shutdown abandons a retry backoff
 
 - **Before:** terminate was only observed at a park (`sleep`/`awaitSignal`) or a status write. A workflow inside a live activity's retry loop kept going: the backoff was an uninterruptible `Thread.sleep`, after which the next attempt — a real side effect — ran on a workflow an operator had terminated, and every later activity went live too until the run reached its next park or final transition. Shutdown likewise waited out a backoff in progress (up to the shutdown timeout) instead of handing the workflow to another node.

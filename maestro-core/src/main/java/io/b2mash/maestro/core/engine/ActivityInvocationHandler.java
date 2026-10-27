@@ -3,6 +3,7 @@ package io.b2mash.maestro.core.engine;
 import io.b2mash.maestro.core.annotation.Compensate;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.ActivityExecutionException;
+import io.b2mash.maestro.core.exception.ActivityTimeoutException;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.SerializationException;
 import io.b2mash.maestro.core.model.EventType;
@@ -29,6 +30,10 @@ import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * JDK dynamic proxy {@link InvocationHandler} that implements hybrid memoization
@@ -54,6 +59,21 @@ import java.util.UUID;
  * <p>The distributed lock is an optimization to prevent duplicate execution, not
  * a correctness requirement. If the lock backend is unavailable, the handler
  * proceeds without the lock — the Postgres unique constraint prevents corruption.
+ *
+ * <h2>Timeouts</h2>
+ * <p>{@code startToCloseTimeout} bounds each live <em>attempt</em> on the wall
+ * clock. Every attempt runs on its own virtual thread — carrying a copy of the
+ * caller's MDC and its {@link WorkflowContext} binding, but no other
+ * thread-local state of the workflow thread — while the workflow thread waits
+ * at most the timeout for it. An attempt that overruns is cancelled — its
+ * thread is interrupted — and fails with an {@link ActivityTimeoutException},
+ * which the {@link RetryPolicy} treats like any other failure: retried by
+ * default, terminal if listed in {@code nonRetryableExceptions}. The workflow
+ * thread does not wait for a cancelled attempt to stop, and a value it
+ * produces after the deadline is discarded, never memoized. Replays are never
+ * bounded: nothing executes. The attempt counter is in-memory; a crash
+ * mid-retry restarts the schedule at attempt 1, and the durable guarantee is
+ * only that a <em>completed</em> attempt is never re-executed.
  *
  * <h2>Thread Safety</h2>
  * <p>Each handler instance is associated with one activity interface but may be
@@ -90,7 +110,8 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * @param distributedLock     optional distributed lock for dedup optimization
      * @param messaging           optional messaging for lifecycle event publishing
      * @param retryPolicy         retry policy for failed activity invocations
-     * @param startToCloseTimeout timeout used as lock TTL hint
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
+     *                            base of the per-activity lock TTL
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live activity invocations
      */
@@ -119,7 +140,8 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * @param distributedLock     optional distributed lock for dedup optimization
      * @param messaging           optional messaging for lifecycle event publishing
      * @param retryPolicy         retry policy for failed activity invocations
-     * @param startToCloseTimeout timeout used as lock TTL hint
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
+     *                            base of the per-activity lock TTL
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live activity invocations
      * @param lockKeyPrefix       prefix for the per-activity distributed lock key
@@ -154,7 +176,8 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * @param distributedLock     optional distributed lock for dedup optimization
      * @param messaging           optional messaging for lifecycle event publishing
      * @param retryPolicy         retry policy for failed activity invocations
-     * @param startToCloseTimeout timeout used as lock TTL hint
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
+     *                            base of the per-activity lock TTL
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live activity invocations
      * @param lockKeyPrefix       prefix for the per-activity distributed lock key
@@ -336,6 +359,13 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             Method method, @Nullable Object @Nullable [] args,
             WorkflowContext ctx, int seq, String stepName
     ) throws Throwable {
+        // A terminated run stops here — before the lock, the ACTIVITY_STARTED
+        // lifecycle event and observer.activityStarted — so it never opens an
+        // activity span (or publishes a start) that no completion would close.
+        // RetryExecutor repeats the check before every attempt; this one only
+        // moves the first check ahead of the side effects.
+        ctx.cancellation().throwIfTerminated(ctx.workflowId());
+
         LockHandle lockHandle = null;
         var info = new ActivityInfo(ctx.workflowId(), ctx.workflowType(), stepName, seq);
 
@@ -354,7 +384,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             try {
                 result = retryExecutor.executeWithRetry(
                         retryPolicy,
-                        () -> invokeActivity(method, args),
+                        () -> invokeActivityBounded(method, args, ctx, stepName),
                         stepName,
                         ctx.workflowId(),
                         ctx.cancellation()
@@ -403,6 +433,94 @@ public final class ActivityInvocationHandler implements InvocationHandler {
 
         } finally {
             releaseLock(lockHandle, stepName, seq);
+        }
+    }
+
+    /**
+     * Runs one attempt of the activity on its own virtual thread, bounded by
+     * {@link #startToCloseTimeout} (C11).
+     *
+     * <p>The attempt thread gets a copy of the caller's MDC, so the activity
+     * logs under the same {@code workflowId}/{@code runId}/{@code activityName}
+     * keys it did when it ran on the workflow thread, and the caller's
+     * {@link WorkflowContext} is re-bound for the attempt's duration.
+     *
+     * <p>On timeout the attempt is cancelled with {@code cancel(true)} (its
+     * thread is interrupted) and an {@link ActivityTimeoutException} is thrown
+     * at once, without waiting for the attempt to stop. The attempt's result
+     * only ever reaches the memoization log by being returned from here (the
+     * workflow thread persists it), so a late value from an attempt that
+     * ignored the interrupt is discarded with its {@code FutureTask} and can
+     * never be memoized. The timeout wins even if the attempt completes in the
+     * instant between the deadline and the cancel — the deadline is the
+     * contract, and an activity must be idempotent anyway.
+     *
+     * <p>An attempt that fails is unwrapped in the same order as
+     * {@link #invokeActivity}: an {@link Error} (a control-flow signal among
+     * them) is rethrown first and intact, then an {@link Exception}; anything
+     * else is wrapped in a {@code RuntimeException}.
+     */
+    private @Nullable Object invokeActivityBounded(
+            Method method, @Nullable Object @Nullable [] args,
+            WorkflowContext ctx, String stepName
+    ) throws Exception {
+        var callerMdc = MDC.getCopyOfContextMap();
+        var attempt = new FutureTask<@Nullable Object>(() -> {
+            if (callerMdc != null) {
+                MDC.setContextMap(callerMdc);
+            }
+            try {
+                // Re-bind the caller's WorkflowContext: before C11 the activity
+                // ran on the workflow thread and could see it, and code reached
+                // through it (a nested proxy, a park that a shutdown or terminate
+                // unwinds) must keep behaving as it did. The workflow thread is
+                // blocked in get() meanwhile, so the context is never used from
+                // two live threads — except by an attempt that ignores the
+                // timeout's interrupt, whose result is discarded regardless.
+                return ScopedValue.where(WorkflowContext.scopedValue(), ctx)
+                        .call(() -> invokeActivity(method, args));
+            } finally {
+                MDC.clear();
+            }
+        });
+        Thread.ofVirtual()
+                .name("maestro-activity-" + ctx.workflowId() + "-" + stepName)
+                .start(attempt);
+
+        try {
+            return attempt.get(saturatedNanos(startToCloseTimeout), TimeUnit.NANOSECONDS);
+        } catch (TimeoutException e) {
+            attempt.cancel(true);
+            logger.warn("Activity '{}' in workflow '{}' exceeded its startToCloseTimeout of {}; "
+                    + "attempt cancelled", stepName, ctx.workflowId(), startToCloseTimeout);
+            throw new ActivityTimeoutException(ctx.workflowId(), stepName, startToCloseTimeout);
+        } catch (ExecutionException e) {
+            var cause = e.getCause();
+            // Error first — see invokeActivity(): a control-flow signal must not
+            // be re-wrapped into a catchable, retryable RuntimeException.
+            if (cause instanceof Error err) {
+                throw err;
+            }
+            if (cause instanceof Exception ex) {
+                throw ex;
+            }
+            throw new RuntimeException(cause);
+        } catch (InterruptedException e) {
+            // The engine never interrupts a workflow thread; a foreign interrupt
+            // used to reach the activity itself (it ran on this thread), so pass
+            // it on to the attempt and restore the flag, as before.
+            attempt.cancel(true);
+            Thread.currentThread().interrupt();
+            throw e;
+        }
+    }
+
+    /** {@code d} in nanoseconds, saturating at {@code Long.MAX_VALUE} for a practically-infinite timeout. */
+    private static long saturatedNanos(Duration d) {
+        try {
+            return d.toNanos();
+        } catch (ArithmeticException overflow) {
+            return Long.MAX_VALUE;
         }
     }
 
