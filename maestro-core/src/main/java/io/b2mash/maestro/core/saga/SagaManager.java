@@ -435,17 +435,9 @@ public final class SagaManager {
                     .start(() -> {
                         // Create a branch context with its own sequence counter
                         // for deterministic replay
-                        var branchCtx = new WorkflowContext(
-                                ctx.workflowInstanceId(),
-                                ctx.workflowId(),
-                                ctx.runId(),
-                                ctx.workflowType(),
-                                ctx.taskQueue(),
-                                ctx.serviceName(),
-                                branchBaseSeq,
-                                ctx.isReplaying(),
-                                null // no operations needed — compensations call through proxy directly
-                        );
+                        var branchCtx = WorkflowContext.bounded(ctx, index, branchBaseSeq,
+                                branchBaseSeq + SequenceSpace.BRANCH_MULTIPLIER,
+                                null); // no operations needed — compensations call through proxy directly
                         WorkflowMDC.populate(branchCtx);
                         try {
                             ScopedValue.where(WorkflowContext.scopedValue(), branchCtx)

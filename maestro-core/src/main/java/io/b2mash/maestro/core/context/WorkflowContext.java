@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.context;
 
 import io.b2mash.maestro.core.engine.WorkflowOperations;
+import io.b2mash.maestro.core.exception.BranchSequenceExhaustedException;
 import io.b2mash.maestro.core.retry.RetryUntilOptions;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -80,6 +81,16 @@ public final class WorkflowContext {
     private final AtomicInteger sequenceCounter;
     private volatile boolean replaying;
     private final @Nullable WorkflowOperations operations;
+    private final @Nullable BranchBound bound;
+
+    /**
+     * The sequence block a bounded branch context may draw from.
+     *
+     * @param branchIndex    zero-based branch index within its fork
+     * @param baseSeq        the branch's base sequence (never handed out)
+     * @param limitExclusive the first sequence number outside the block
+     */
+    private record BranchBound(int branchIndex, int baseSeq, int limitExclusive) {}
 
     /**
      * Creates a new workflow context without workflow operations.
@@ -138,6 +149,23 @@ public final class WorkflowContext {
             boolean replaying,
             @Nullable WorkflowOperations operations
     ) {
+        this(workflowInstanceId, workflowId, runId, workflowType, taskQueue,
+                serviceName, initialSequence, replaying, operations, null);
+    }
+
+    private WorkflowContext(
+            UUID workflowInstanceId,
+            String workflowId,
+            UUID runId,
+            String workflowType,
+            String taskQueue,
+            String serviceName,
+            int initialSequence,
+            boolean replaying,
+            @Nullable WorkflowOperations operations,
+            @Nullable BranchBound bound
+    ) {
+        this.bound = bound;
         this.workflowInstanceId = workflowInstanceId;
         this.workflowId = workflowId;
         this.runId = runId;
@@ -147,6 +175,42 @@ public final class WorkflowContext {
         this.sequenceCounter = new AtomicInteger(initialSequence);
         this.replaying = replaying;
         this.operations = operations;
+    }
+
+    /**
+     * Creates a branch context for one branch of a {@code parallel()} fork or
+     * a parallel saga compensation, bounded to the sequence block
+     * {@code [baseSeq, limitExclusive)}.
+     *
+     * <p>Identity fields and the replay flag are copied from {@code parent};
+     * the counter starts at {@code baseSeq}. The branch may take at most
+     * {@code limitExclusive - baseSeq - 1} memoized steps: its
+     * {@link #nextSequence()} throws {@link BranchSequenceExhaustedException}
+     * on the 1000th direct step instead of spilling into the sibling's block.
+     *
+     * <p><b>Thread safety:</b> the returned context is used by exactly one
+     * virtual thread (the branch), which is what makes the bound's
+     * compare-then-increment safe.
+     *
+     * @param parent         the forking context to copy identity from
+     * @param branchIndex    zero-based index of the branch within its fork
+     * @param baseSeq        the branch's base sequence number
+     * @param limitExclusive the first sequence number outside the branch's block
+     * @param operations     the operations delegate for the branch, or {@code null}
+     * @return a bounded branch context
+     */
+    public static WorkflowContext bounded(
+            WorkflowContext parent,
+            int branchIndex,
+            int baseSeq,
+            int limitExclusive,
+            @Nullable WorkflowOperations operations
+    ) {
+        return new WorkflowContext(
+                parent.workflowInstanceId, parent.workflowId, parent.runId,
+                parent.workflowType, parent.taskQueue, parent.serviceName,
+                baseSeq, parent.replaying, operations,
+                new BranchBound(branchIndex, baseSeq, limitExclusive));
     }
 
     // ── ScopedValue management ─────────────────────────────────────────
@@ -186,9 +250,26 @@ public final class WorkflowContext {
      * <p>Called once per activity invocation. The returned value is used
      * as the memoization key: {@code (workflowInstanceId, sequence)}.
      *
+     * <p><b>Bounded branch contexts</b> (see {@link #bounded}): the rule is
+     * "the 1000th direct step throws" — if the counter currently stands at
+     * {@code limitExclusive - 1} the call throws
+     * {@link BranchSequenceExhaustedException} and leaves the counter
+     * untouched. {@link #setSequence(int)} is deliberately not bounded: a
+     * nested {@code parallel()} join rebases the counter past the block on
+     * purpose, and a rebased counter never equals {@code limitExclusive - 1},
+     * so nesting keeps working. The compare-then-increment is not atomic, which
+     * is safe because a branch context is used by a single virtual thread.
+     *
      * @return the next sequence number (1-based: first call returns 1)
+     * @throws BranchSequenceExhaustedException if this is a bounded branch
+     *         context whose block is full
      */
     public int nextSequence() {
+        var b = bound;
+        if (b != null && sequenceCounter.get() == b.limitExclusive() - 1) {
+            throw new BranchSequenceExhaustedException(
+                    workflowId, b.branchIndex(), b.baseSeq(), b.limitExclusive());
+        }
         return sequenceCounter.incrementAndGet();
     }
 

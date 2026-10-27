@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed — The 999-step-per-branch limit is enforced
+
+A parallel branch owns a 1000-number sequence block, so it can take at most 999 memoized steps. Previously step 1000 silently read or wrote the next branch's slots (replaying a sibling's result or colliding on the unique index). A branch context is now bounded: the 1000th direct step throws `BranchSequenceExhaustedException` (a `MaestroException`), failing the branch and therefore the workflow, and registered compensations run. The bound applies to `parallel()` branches and parallel-compensation branches alike (a compensation branch that exhausts its block is recorded `COMPENSATION_STEP_FAILED` with the typed cause). A nested `parallel()` inside a branch is unaffected. See docs/concepts.md § Parallel Execution.
+
 ### Changed — Sequence-space overflow is now a typed failure; compensation arithmetic is guarded too
 
 `parallel()` used to throw a bare `IllegalStateException` when a fork's ×1000 branch blocks would not fit in the 32-bit sequence space; it now throws `SequenceSpaceExhaustedException` (a `MaestroException`), still before any sequence is consumed. Saga compensation used the same block arithmetic with no guard at all: once the compensation anchor was large enough (for example after two sequential `parallel()` calls), the `int` math wrapped silently and compensations ran at garbage, negative sequence numbers. Both now go through one overflow-checked `SequenceSpace` utility, and `SagaManager.compensate()` pre-checks its blocks before the `COMPENSATING` transition — so nothing durable changes — and the executor finishes the workflow `FAILED` with an `ERROR` log stating that no compensation ran; the operator compensates manually. Code that caught `IllegalStateException` around `parallel()` should catch `SequenceSpaceExhaustedException` instead. See docs/concepts.md § Parallel Execution → Depth limit and [Issue 28](open-issues.md#issue-28).

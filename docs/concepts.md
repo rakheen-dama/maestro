@@ -413,7 +413,7 @@ List<ShipmentConfirmation> shipments = workflow.parallel(List.of(
 
 ### Branch sequence blocks
 
-When parallel execution forks at sequence step `5`, each branch is allocated its own block of sequence numbers: branch *i* starts at `5*1000 + (i+1)*1000` (bases `6000`, `7000`, `8000`), with up to 999 steps per branch. This means:
+When parallel execution forks at sequence step `5`, each branch is allocated its own block of sequence numbers: branch *i* starts at `5*1000 + (i+1)*1000` (bases `6000`, `7000`, `8000`), with up to 999 memoized steps per branch — **the 1000th step throws `BranchSequenceExhaustedException`, failing the branch and therefore the workflow (its registered compensations run)**; the counter never spills into the sibling's block. This means:
 
 - Each branch is independently memoized.
 - On replay, each branch replays its own stored events regardless of original execution order.

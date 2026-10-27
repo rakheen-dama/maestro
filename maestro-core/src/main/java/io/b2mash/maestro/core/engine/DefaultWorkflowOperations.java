@@ -585,17 +585,9 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                             // Create a branch context with its own sequence counter
                             // but sharing the same operations instance so branches
                             // can call sleep/awaitSignal if needed
-                            var branchCtx = new WorkflowContext(
-                                    ctx.workflowInstanceId(),
-                                    ctx.workflowId(),
-                                    ctx.runId(),
-                                    ctx.workflowType(),
-                                    ctx.taskQueue(),
-                                    ctx.serviceName(),
-                                    branchBaseSeq,
-                                    ctx.isReplaying(),
-                                    DefaultWorkflowOperations.this
-                            );
+                            var branchCtx = WorkflowContext.bounded(ctx, branchIndex, branchBaseSeq,
+                                    branchBaseSeq + SequenceSpace.BRANCH_MULTIPLIER,
+                                    DefaultWorkflowOperations.this);
                             WorkflowMDC.populate(branchCtx);
                             try {
                                 ScopedValue.where(WorkflowContext.scopedValue(), branchCtx)

@@ -2,6 +2,7 @@ package io.b2mash.maestro.core.saga;
 
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
+import io.b2mash.maestro.core.exception.BranchSequenceExhaustedException;
 import io.b2mash.maestro.core.exception.CompensationException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException;
@@ -261,6 +262,20 @@ class SagaManagerTest {
                 .filter(e -> e.eventType() == EventType.COMPENSATION_STEP_FAILED)
                 .toList();
         assertEquals(1, failedEvents.size());
+    }
+
+    @Test
+    @DisplayName("Parallel compensation: a branch that exhausts its block is recorded COMPENSATION_STEP_FAILED with the typed cause")
+    void parallelCompensationBranchExhaustingItsBlock_isRecordedFailed() {
+        var stack = new CompensationStack();
+        stack.push("greedy", () -> { for (int i = 0; i < 1000; i++) WorkflowContext.current().nextSequence(); });
+
+        org.junit.jupiter.api.Assertions.assertThrows(CompensationException.class,
+                () -> sagaManager.compensate(ctx, instance, stack, true));
+
+        var failed = store.getEventBySequence(instance.id(), 8000).orElseThrow();
+        assertEquals(EventType.COMPENSATION_STEP_FAILED, failed.eventType());
+        assertEquals(BranchSequenceExhaustedException.class.getName(), failed.payload().get("exceptionType").asText());
     }
 
     // ── Issue 14: replay-skip guard ─────────────────────────────────────
