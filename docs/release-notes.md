@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed — `unknown_event_payload` stand-downs name the deserialization cause
+
+- **Before:** the stand-down detail was only `seq=N` and the WARN said "could not deserialize the stored ..." — an operator could not tell a newer node's payload from their own refactor without a debugger.
+- **Now:** the observer detail and the WARN carry the deserializer's root cause, `seq=N cause=<class>: <message>` (shape mismatches: `seq=N cause=<phrase>`). The reason tag and metric are unchanged. [Operations §10.4](operations.md#104-the-alarm-that-matters-unknown_event_payload-on-a-homogeneous-fleet) now documents the roll-back and terminate remedies alongside `workflow.version()`, and an alert row for `unknown_event_payload` plus `nondeterministic_history` rising together. Spec C9.
+
 ### Changed — Replay drift is detected and stands down as `nondeterministic_history`
 
 - **Before:** memoization matched a recorded event to a step by sequence number (at some sites, by event type) only, so a workflow edited without a `workflow.version()` gate replayed silently wrong: a renamed activity returned the old step's recorded payload; a renamed `awaitSignal()` returned the other signal's recorded payload; a `parallel()` whose branch count changed forked anyway over the recorded branch blocks; a renamed, reordered or mode-flipped (`@Saga(parallelCompensation)`) saga compensation entry was skipped as "already done" on another entry's record — never compensated — or re-run; and `sleep()` on a slot another operation had recorded inserted a `PENDING` timer row before colliding on the append — one leaked timer row per recovery pass, stood down as `stale_run`.

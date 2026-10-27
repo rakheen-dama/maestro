@@ -490,6 +490,21 @@ means **"an incompatible payload change needs `workflow.version()`"** — not
 parameter type, or workflow input shape; gate the change behind
 `workflow.version()` so in-flight instances keep the old shape; redeploy.
 
+Two other remedies exist, and neither needs a code change:
+
+- **Roll back** to the build that wrote the payload. The stand-down loop ends
+  immediately and nothing needs repairing — a stand-down writes nothing.
+- **Terminate** the instance from the admin dashboard when it is not worth
+  finishing. Stand-down never terminates on its own, because it cannot tell a
+  transient skew from a permanent refactor.
+
+The WARN and the `standDown` observer detail carry the deserializer's root
+cause: `seq=N cause=<class>: <message>` (for a removed enum constant this is
+Jackson's "not one of the values accepted for Enum class" message). That is what
+distinguishes "a newer node wrote this" from "my own refactor broke this" on a
+fleet you know to be homogeneous. The original exception is also attached as the
+cause, so the stack trace carries the full Jackson detail.
+
 `unknown_event_type` keeps the "wait for the deploy" reading, because a type
 this build does not define really can only come from a newer build. That is
 precisely why the two are distinct enum constants and distinct tag values rather
@@ -502,6 +517,7 @@ than one.
 | `rate(maestro.standdown{reason="unknown_event_type"})` > 0 **during** a rolling deploy | Expected. Should return to zero once every node is upgraded. |
 | the same, **after** the deploy completes | Not expected — a node was missed, or a stale replica is still running. |
 | `rate(maestro.standdown{reason="unknown_event_payload"})` > 0 on a homogeneous fleet | **An incompatible payload change. Use `workflow.version()`.** |
+| `unknown_event_payload` **and** `nondeterministic_history` both rising on a homogeneous fleet | One deploy shipped both an ungated code change and an incompatible payload change; roll it back. |
 | `maestro.workflows.running` / `maestro.workflows.parked` flat at zero on a node with traffic | That node is adopting nothing — check the lock backend and the recovery poller. |
 
 Remember that both gauges are **node-local, in-JVM** values: dashboard them per

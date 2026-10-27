@@ -99,8 +99,12 @@ public final class UnknownHistoryGuard {
         try {
             return deserialize.get();
         } catch (SerializationException e) {
+            var root = e.getCause() != null ? e.getCause() : e;
             var standDown = payloadStandDown(workflowId, sequenceNumber,
-                    "could not deserialize the stored %s".formatted(what));
+                    "could not deserialize the stored %s: %s: %s".formatted(what,
+                            root.getClass().getName(), root.getMessage()),
+                    "seq=%d cause=%s: %s".formatted(sequenceNumber, root.getClass().getName(),
+                            root.getMessage()));
             standDown.initCause(e);
             throw standDown;
         }
@@ -123,11 +127,20 @@ public final class UnknownHistoryGuard {
     public static UnknownWorkflowHistoryException payloadStandDown(String workflowId,
                                                                    int sequenceNumber,
                                                                    String detail) {
+        return payloadStandDown(workflowId, sequenceNumber, detail,
+                "seq=%d cause=%s".formatted(sequenceNumber, detail));
+    }
+
+    private static UnknownWorkflowHistoryException payloadStandDown(String workflowId,
+                                                                    int sequenceNumber,
+                                                                    String detail,
+                                                                    String structuredDetail) {
         return new UnknownWorkflowHistoryException(workflowId, sequenceNumber,
                 UnknownWorkflowHistoryException.Kind.UNKNOWN_EVENT_PAYLOAD,
                 ("Workflow '%s' has an event at sequence %d whose stored payload this build "
                         + "cannot interpret (%s) — likely written by a newer node; standing this "
                         + "run down without recording a failure")
-                        .formatted(workflowId, sequenceNumber, detail));
+                        .formatted(workflowId, sequenceNumber, detail),
+                structuredDetail);
     }
 }

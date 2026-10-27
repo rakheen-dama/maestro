@@ -204,7 +204,7 @@ class UnknownHistoryStandDownTest {
                         "an operator reading maestro.standdown{reason} must be able to tell a "
                                 + "type this build lacks from a payload it cannot parse — they "
                                 + "point at different things to look at in the newer build"),
-                () -> assertEquals("seq=2", call.detail()),
+                () -> assertTrue(call.detail().startsWith("seq=2 cause="), call.detail()),
                 () -> assertEquals(WorkflowStatus.RUNNING,
                         store.getInstance(workflowId).orElseThrow().status(),
                         "the payload flavour writes no status either"),

@@ -192,7 +192,7 @@ class ForeignPayloadStandDownTest {
                                 .anyMatch(i -> i.workflowId().equals(workflowId)),
                         "an upgraded node must still be able to adopt it"),
                 () -> assertEquals(List.of(StandDownReason.UNKNOWN_EVENT_PAYLOAD), reasons()),
-                () -> assertEquals("seq=0", observer.standDowns().getFirst().detail(),
+                () -> assertTrue(observer.standDowns().getFirst().detail().startsWith("seq=0 cause="),
                         "sequence 0 names the instance's own input rather than any event"));
     }
 
