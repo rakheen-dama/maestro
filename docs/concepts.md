@@ -383,6 +383,8 @@ workflow.addCompensation("release-reservation",
 
 Compensations form a **LIFO stack** -- they unwind in reverse registration order (most recent first). Set `@Saga(parallelCompensation = true)` to execute all compensations concurrently instead.
 
+Compensations registered inside `parallel()` branches (a `@Compensate` activity called in a branch, or `addCompensation` in a branch) are held until the fork joins and then pushed in **branch-index order** -- branch 0's entries first, in the order branch 0 registered them, then branch 1's, and so on; a nested `parallel()` does the same into its enclosing branch -- never in the order the branches happen to finish. That holds on the failure path too: a branch that registered a compensation before a sibling failed still has it unwound. Finish order is a thread race a recovery replay need not reproduce; branch-index order is deterministic, so a saga recovered mid-compensation unwinds the same entries in the same order.
+
 Compensation calls go through the activity proxy and are therefore memoized, retriable, and replayable, just like normal activity calls.
 
 ### Compensation argument resolution

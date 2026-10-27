@@ -68,6 +68,18 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
     /** Step-name prefix recorded on {@link EventType#VERSION_MARKER} events. */
     private static final String VERSION_STEP_PREFIX = "$maestro:version:";
 
+    /**
+     * The compensation buffer of the {@code parallel()} branch running on this
+     * thread — bound only inside a branch's virtual thread (scoped values are
+     * not inherited by {@code Thread.ofVirtual().start()}, so each branch, at
+     * every nesting level, binds its own). While bound,
+     * {@link #addCompensation} appends here instead of pushing onto the run's
+     * stack; the fork flushes every branch's buffer in branch-index order once
+     * all branches have joined. See {@link #parallel(List)}.
+     */
+    private static final ScopedValue<List<BufferedCompensation>> BRANCH_COMPENSATIONS =
+            ScopedValue.newInstance();
+
     private final WorkflowStore store;
     private final @Nullable DistributedLock distributedLock;
     private final @Nullable WorkflowMessaging messaging;
@@ -548,6 +560,11 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
 
         var results = new ArrayList<AtomicReference<T>>(branchCount);
         var errors = new ArrayList<AtomicReference<Throwable>>(branchCount);
+        // One compensation buffer per branch, each written only by its own
+        // branch thread and read here only after the join (the latch is the
+        // happens-before edge).
+        var compensationBuffers = new ArrayList<List<BufferedCompensation>>(branchCount);
+        var joined = false;
 
         // The advance runs in finally so a branch failure leaves the counter past
         // the branch space — SagaManager.compensate() anchors from ctx.nextSequence(),
@@ -583,6 +600,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             for (int i = 0; i < branchCount; i++) {
                 results.add(new AtomicReference<>());
                 errors.add(new AtomicReference<>());
+                compensationBuffers.add(new ArrayList<>());
             }
 
             for (int i = 0; i < branchCount; i++) {
@@ -605,6 +623,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                             WorkflowMDC.populate(branchCtx);
                             try {
                                 ScopedValue.where(WorkflowContext.scopedValue(), branchCtx)
+                                        .where(BRANCH_COMPENSATIONS, compensationBuffers.get(branchIndex))
                                         .run(() -> {
                                             try {
                                                 results.get(branchIndex).set(task.call());
@@ -625,6 +644,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                 Thread.currentThread().interrupt();
                 throw new RuntimeException("Parallel execution interrupted", e);
             }
+            joined = true;
 
             // Check for errors — fail fast with first error. Every engine
             // control-flow signal (MaestroControlFlowError: shutdown, terminate,
@@ -645,6 +665,21 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
 
         } finally {
             ctx.setSequence(nextParentSeq);
+            // Branch compensations are registered in branch-index order, never
+            // in finish order: finish order is a thread race a recovery replay
+            // need not reproduce, and SagaManager matches each entry to its
+            // recorded guard slot by name (C10) — finish-order registration
+            // stood a correct saga down as nondeterministic_history. Flushed in
+            // this finally so a branch that registered a compensation before a
+            // sibling failed still has it unwound. Only after a full join: an
+            // interrupted await leaves branches still writing their buffers.
+            if (joined) {
+                for (var buffer : compensationBuffers) {
+                    for (var buffered : buffer) {
+                        register(buffered.stepName(), buffered.action());
+                    }
+                }
+            }
         }
 
         // Collect results in order
@@ -916,12 +951,29 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
 
     @Override
     public void addCompensation(Runnable compensation) {
-        compensationStack.push(compensation);
+        register(null, compensation);
     }
 
     @Override
     public void addCompensation(String stepName, Runnable compensation) {
-        compensationStack.push(stepName, compensation);
+        register(stepName, compensation);
+    }
+
+    /**
+     * Routes a registration to the current {@code parallel()} branch's buffer
+     * when called on a branch thread — including a fork's own flush, so a
+     * nested fork's entries land in its enclosing branch's buffer — and onto
+     * the run's stack otherwise. An unnamed entry is numbered only when it
+     * reaches the stack, so its {@code $compensation:N} name is deterministic too.
+     */
+    private void register(@Nullable String stepName, Runnable action) {
+        if (BRANCH_COMPENSATIONS.isBound()) {
+            BRANCH_COMPENSATIONS.get().add(new BufferedCompensation(stepName, action));
+        } else if (stepName == null) {
+            compensationStack.push(action);
+        } else {
+            compensationStack.push(stepName, action);
+        }
     }
 
     // ── Internal helpers ───────────────────────────────────────────────
@@ -967,6 +1019,9 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
 
     private record TimerDetail(String timerId, String duration) {}
     private record ParallelDetail(int branchCount) {}
+
+    /** A compensation registered inside a {@code parallel()} branch, held until the fork joins. */
+    private record BufferedCompensation(@Nullable String stepName, Runnable action) {}
 
     /** Payload of a {@link EventType#VERSION_MARKER} event. */
     private record VersionDetail(String changeId, int version) {}

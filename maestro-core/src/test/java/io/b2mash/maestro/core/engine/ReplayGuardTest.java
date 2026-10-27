@@ -9,9 +9,11 @@ import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Instant;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -87,6 +89,24 @@ class ReplayGuardTest {
     }
 
     // ── helpers ───────────────────────────────────────────────────────────
+
+    @Test
+    void requireAbsent_emptySlotPasses() {
+        assertDoesNotThrow(() -> ReplayGuard.requireAbsent(Optional.empty(), "wf",
+                "$maestro:sequential-compensation"));
+    }
+
+    @Test
+    void requireAbsent_anyPresentEventStandsDownAsNondeterministic() {
+        var ex = assertThrows(UnknownWorkflowHistoryException.class, () ->
+                ReplayGuard.requireAbsent(Optional.of(event(7, EventType.SIDE_EFFECT,
+                        "$maestro:parallel-compensation")), "wf", "$maestro:sequential-compensation"));
+        assertAll(
+                () -> assertEquals(UnknownWorkflowHistoryException.Kind.NONDETERMINISTIC_HISTORY, ex.kind()),
+                () -> assertEquals(7, ex.sequenceNumber()),
+                () -> assertEquals("seq=7 expected=$maestro:sequential-compensation "
+                        + "stored=$maestro:parallel-compensation type=SIDE_EFFECT", ex.detail()));
+    }
 
     private static WorkflowEvent event(int seq, EventType type, @Nullable String stepName) {
         return new WorkflowEvent(UUID.randomUUID(), UUID.randomUUID(), seq, type, stepName, null,

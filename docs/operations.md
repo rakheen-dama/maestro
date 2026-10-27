@@ -618,13 +618,14 @@ adopts the instance, stands down again, and emits one WARN plus one counter
 increment — exactly the §10.3 behaviour, and the reason the alert above is a
 rate.
 
-**One known false positive.** Compensations registered from *inside*
-`parallel()` branches are pushed onto the saga stack in whatever order the
-branches happen to finish, which a recovery replay need not reproduce. A saga
-that crashes mid-compensation and is recovered with a different registration
-order stands down at the first mismatched entry rather than (as before) silently
-skipping the wrong entry. Register compensations on the workflow's main line,
-after the `parallel()` join, to avoid it.
+**Compensations registered inside `parallel()` branches are not drift.** They
+reach the saga stack in branch-index order, not finish order (see
+`docs/concepts.md` → Compensation ordering), so a saga recovered
+mid-compensation unwinds the same entries in the same order whichever branch
+finishes first on replay. **Upgrade note:** an instance parked in
+`COMPENSATING` whose branch compensations were recorded by the previous
+version in an order other than branch-index order stands down here after
+upgrade; drain such instances before upgrading.
 
 ---
 

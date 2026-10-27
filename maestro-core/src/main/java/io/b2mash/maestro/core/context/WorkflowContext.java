@@ -457,6 +457,10 @@ public final class WorkflowContext {
     /**
      * Executes multiple tasks in parallel on separate virtual threads.
      *
+     * <p>Compensations registered inside the branches reach the saga stack when
+     * the fork joins (on success and on failure alike), in branch-index order
+     * rather than finish order, so recovery replays unwind them identically.
+     *
      * <h2>Limits</h2>
      * <ul>
      *   <li><b>999 sequence slots per branch.</b> Each branch draws from its own
@@ -633,6 +637,10 @@ public final class WorkflowContext {
     /**
      * Pushes a compensation action onto the compensation stack.
      *
+     * <p>Called inside a {@code parallel()} branch, the registration is held
+     * until the fork joins and then pushed in branch-index order (branch 0's
+     * entries first, in their registration order), never in finish order.
+     *
      * @param compensation the compensation action
      * @throws IllegalStateException if operations are not configured
      * @see WorkflowOperations#addCompensation(Runnable)
@@ -647,6 +655,10 @@ public final class WorkflowContext {
      * <p>The step name is used for logging and event recording. This
      * overload is used by the {@code @Compensate} activity proxy
      * integration.
+     *
+     * <p>Called inside a {@code parallel()} branch, the registration is held
+     * until the fork joins and then pushed in branch-index order (branch 0's
+     * entries first, in their registration order), never in finish order.
      *
      * @param stepName     the compensation step name for logging and events
      * @param compensation the compensation action
