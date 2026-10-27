@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed — Compensation after a failed `parallel()` no longer reads sibling-branch events
+
+When a `parallel()` branch threw, the parent sequence counter stayed at the fork's own sequence, so `SagaManager` anchored entry *i*'s compensation block at branch *i+1*'s base and a `@Compensate` action replayed the sibling's `ACTIVITY_COMPLETED`/`ACTIVITY_FAILED` instead of running. `parallel()` now advances the counter in a `finally`, so it sits past every branch block whether the fork returns or throws. **Behaviour change:** compensation events of a saga that fails inside `parallel()` now carry sequence numbers >= `(p*1000+(n+1)*1000+1)*1000` -- larger than before, still within `int` for one forward fork (see Task 3's note on depth).
+
 ### Added — `maestro.messaging.redelivery.enabled` flag, and a startup check for missing `.DLT` topics
 
 The dead-lettering error handler installed on every Maestro-managed consumer

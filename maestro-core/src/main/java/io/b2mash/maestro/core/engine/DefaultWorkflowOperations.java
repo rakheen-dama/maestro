@@ -550,99 +550,106 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
 
         var parentSeq = ctx.nextSequence();
         var branchCount = tasks.size();
-
-        // Replay check: look for existing parallel fork event at this sequence.
-        // Guarded first: an unknown type here would otherwise fail the SIDE_EFFECT
-        // comparison, fall through to the live path, re-fork every branch and
-        // stand down only on the duplicate append — as STALE_RUN, after the
-        // branches have already touched the outside world.
-        var storedEvent = UnknownHistoryGuard.requireKnown(
-                store.getEventBySequence(ctx.workflowInstanceId(), parentSeq), ctx.workflowId());
-        if (storedEvent.isEmpty() || storedEvent.get().eventType() != EventType.SIDE_EFFECT) {
-            // Live path: record the parallel fork point
-            ctx.setReplaying(false);
-            appendEvent(ctx, parentSeq, EventType.SIDE_EFFECT, "$maestro:parallel",
-                    serializer.serialize(new ParallelDetail(branchCount)));
-        }
+        var nextParentSeq = parentSeq * BRANCH_MULTIPLIER + (branchCount + 1) * BRANCH_MULTIPLIER;
 
         var results = new ArrayList<AtomicReference<T>>(branchCount);
         var errors = new ArrayList<AtomicReference<Throwable>>(branchCount);
-        var latch = new CountDownLatch(branchCount);
 
-        for (int i = 0; i < branchCount; i++) {
-            results.add(new AtomicReference<>());
-            errors.add(new AtomicReference<>());
-        }
-
-        for (int i = 0; i < branchCount; i++) {
-            var branchIndex = i;
-            var task = tasks.get(i);
-
-            // Each branch gets its own sequence space
-            var branchBaseSeq = parentSeq * BRANCH_MULTIPLIER + (branchIndex + 1) * BRANCH_MULTIPLIER;
-
-            Thread.ofVirtual()
-                    .name("maestro-workflow-%s-%s-branch-%d".formatted(
-                            ctx.workflowType(), ctx.workflowId(), branchIndex))
-                    .start(() -> {
-                        // Create a branch context with its own sequence counter
-                        // but sharing the same operations instance so branches
-                        // can call sleep/awaitSignal if needed
-                        var branchCtx = new WorkflowContext(
-                                ctx.workflowInstanceId(),
-                                ctx.workflowId(),
-                                ctx.runId(),
-                                ctx.workflowType(),
-                                ctx.taskQueue(),
-                                ctx.serviceName(),
-                                branchBaseSeq,
-                                ctx.isReplaying(),
-                                DefaultWorkflowOperations.this
-                        );
-                        WorkflowMDC.populate(branchCtx);
-                        try {
-                            ScopedValue.where(WorkflowContext.scopedValue(), branchCtx)
-                                    .run(() -> {
-                                        try {
-                                            results.get(branchIndex).set(task.call());
-                                        } catch (Throwable t) {
-                                            errors.get(branchIndex).set(t);
-                                        }
-                                    });
-                        } finally {
-                            WorkflowMDC.clear();
-                            latch.countDown();
-                        }
-                    });
-        }
-
+        // The advance runs in finally so a branch failure leaves the counter past
+        // the branch space — SagaManager.compensate() anchors from ctx.nextSequence(),
+        // and anchoring at p+1 would make entry i's block coincide with branch i+1's
+        // base (C1).
         try {
-            latch.await();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new RuntimeException("Parallel execution interrupted", e);
-        }
-
-        // Check for errors — fail fast with first error. Every engine
-        // control-flow signal (MaestroControlFlowError: shutdown, terminate,
-        // unknown-history stand-down) is an Error, not a RuntimeException, and
-        // is rethrown as-is by the `instanceof Error` arm below: wrapping one
-        // here would hide it inside a plain RuntimeException that
-        // executeWorkflow's dedicated catch arms no longer recognise, turning a
-        // routine deploy — or a mixed-version window — into a recorded failure
-        // with compensations.
-        for (int i = 0; i < branchCount; i++) {
-            var error = errors.get(i).get();
-            if (error != null) {
-                if (error instanceof Error err) throw err;
-                if (error instanceof RuntimeException re) throw re;
-                throw new RuntimeException("Parallel branch " + i + " failed", error);
+            // Replay check: look for existing parallel fork event at this sequence.
+            // Guarded first: an unknown type here would otherwise fail the SIDE_EFFECT
+            // comparison, fall through to the live path, re-fork every branch and
+            // stand down only on the duplicate append — as STALE_RUN, after the
+            // branches have already touched the outside world.
+            var storedEvent = UnknownHistoryGuard.requireKnown(
+                    store.getEventBySequence(ctx.workflowInstanceId(), parentSeq), ctx.workflowId());
+            if (storedEvent.isEmpty() || storedEvent.get().eventType() != EventType.SIDE_EFFECT) {
+                // Live path: record the parallel fork point
+                ctx.setReplaying(false);
+                appendEvent(ctx, parentSeq, EventType.SIDE_EFFECT, "$maestro:parallel",
+                        serializer.serialize(new ParallelDetail(branchCount)));
             }
-        }
 
-        // Advance parent sequence counter past all branch spaces
-        var nextParentSeq = parentSeq * BRANCH_MULTIPLIER + (branchCount + 1) * BRANCH_MULTIPLIER;
-        ctx.setSequence(nextParentSeq);
+            var latch = new CountDownLatch(branchCount);
+
+            for (int i = 0; i < branchCount; i++) {
+                results.add(new AtomicReference<>());
+                errors.add(new AtomicReference<>());
+            }
+
+            for (int i = 0; i < branchCount; i++) {
+                var branchIndex = i;
+                var task = tasks.get(i);
+
+                // Each branch gets its own sequence space
+                var branchBaseSeq = parentSeq * BRANCH_MULTIPLIER + (branchIndex + 1) * BRANCH_MULTIPLIER;
+
+                Thread.ofVirtual()
+                        .name("maestro-workflow-%s-%s-branch-%d".formatted(
+                                ctx.workflowType(), ctx.workflowId(), branchIndex))
+                        .start(() -> {
+                            // Create a branch context with its own sequence counter
+                            // but sharing the same operations instance so branches
+                            // can call sleep/awaitSignal if needed
+                            var branchCtx = new WorkflowContext(
+                                    ctx.workflowInstanceId(),
+                                    ctx.workflowId(),
+                                    ctx.runId(),
+                                    ctx.workflowType(),
+                                    ctx.taskQueue(),
+                                    ctx.serviceName(),
+                                    branchBaseSeq,
+                                    ctx.isReplaying(),
+                                    DefaultWorkflowOperations.this
+                            );
+                            WorkflowMDC.populate(branchCtx);
+                            try {
+                                ScopedValue.where(WorkflowContext.scopedValue(), branchCtx)
+                                        .run(() -> {
+                                            try {
+                                                results.get(branchIndex).set(task.call());
+                                            } catch (Throwable t) {
+                                                errors.get(branchIndex).set(t);
+                                            }
+                                        });
+                            } finally {
+                                WorkflowMDC.clear();
+                                latch.countDown();
+                            }
+                        });
+            }
+
+            try {
+                latch.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("Parallel execution interrupted", e);
+            }
+
+            // Check for errors — fail fast with first error. Every engine
+            // control-flow signal (MaestroControlFlowError: shutdown, terminate,
+            // unknown-history stand-down) is an Error, not a RuntimeException, and
+            // is rethrown as-is by the `instanceof Error` arm below: wrapping one
+            // here would hide it inside a plain RuntimeException that
+            // executeWorkflow's dedicated catch arms no longer recognise, turning a
+            // routine deploy — or a mixed-version window — into a recorded failure
+            // with compensations.
+            for (int i = 0; i < branchCount; i++) {
+                var error = errors.get(i).get();
+                if (error != null) {
+                    if (error instanceof Error err) throw err;
+                    if (error instanceof RuntimeException re) throw re;
+                    throw new RuntimeException("Parallel branch " + i + " failed", error);
+                }
+            }
+
+        } finally {
+            ctx.setSequence(nextParentSeq);
+        }
 
         // Collect results in order
         var resultList = new ArrayList<T>(branchCount);
