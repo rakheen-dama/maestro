@@ -219,9 +219,10 @@ public final class SagaManager {
         // seq this call consumes doubles as the anchor for the sequential
         // loop's per-entry sequence blocks (see executeSequential).
         var startedSeq = ctx.nextSequence();
-        if (UnknownHistoryGuard.requireKnown(
-                store.getEventBySequence(ctx.workflowInstanceId(), startedSeq),
-                ctx.workflowId()).isEmpty()) {
+        if (isRecordedMarker(ctx, startedSeq, EventType.COMPENSATION_STARTED)) {
+            logger.debug("Replaying COMPENSATION_STARTED at seq {} for workflow '{}' — already recorded",
+                    startedSeq, ctx.workflowId());
+        } else {
             // Live only — guarded by the COMPENSATION_STARTED replay-skip
             // above, so a recovery re-run does not double-count the phase.
             // Emitted BEFORE the append: unlike the executor's appendEvent,
@@ -236,9 +237,6 @@ public final class SagaManager {
 
             appendEvent(ctx, startedSeq, EventType.COMPENSATION_STARTED, "$maestro:compensation", null);
             publishLifecycleEvent(ctx, "$maestro:compensation", LifecycleEventType.COMPENSATION_STARTED);
-        } else {
-            logger.debug("Replaying COMPENSATION_STARTED at seq {} for workflow '{}' — already recorded",
-                    startedSeq, ctx.workflowId());
         }
 
         // Execute compensations
@@ -251,17 +249,15 @@ public final class SagaManager {
 
         // Record COMPENSATION_COMPLETED — same replay-skip guard.
         var completedSeq = ctx.nextSequence();
-        if (UnknownHistoryGuard.requireKnown(
-                store.getEventBySequence(ctx.workflowInstanceId(), completedSeq),
-                ctx.workflowId()).isEmpty()) {
+        if (isRecordedMarker(ctx, completedSeq, EventType.COMPENSATION_COMPLETED)) {
+            logger.debug("Replaying COMPENSATION_COMPLETED at seq {} for workflow '{}' — already recorded",
+                    completedSeq, ctx.workflowId());
+        } else {
             var completionPayload = failedCompensations.isEmpty()
                     ? null
                     : serializer.serialize(new CompensationSummary(entries.size(), failedCompensations));
             appendEvent(ctx, completedSeq, EventType.COMPENSATION_COMPLETED, "$maestro:compensation", completionPayload);
             publishLifecycleEvent(ctx, "$maestro:compensation", LifecycleEventType.COMPENSATION_COMPLETED);
-        } else {
-            logger.debug("Replaying COMPENSATION_COMPLETED at seq {} for workflow '{}' — already recorded",
-                    completedSeq, ctx.workflowId());
         }
 
         if (failedCompensations.isEmpty()) {
@@ -273,6 +269,28 @@ public final class SagaManager {
                     ctx.workflowId(), failedCompensations);
             throw new CompensationException(ctx.workflowId(), failedCompensations);
         }
+    }
+
+    /**
+     * The replay-skip read for a compensation phase marker
+     * ({@code COMPENSATION_STARTED} / {@code COMPENSATION_COMPLETED}).
+     *
+     * <p>Returns {@code true} when the slot already holds <em>this</em> marker
+     * (the phase boundary is durable — replay it) and {@code false} when the
+     * slot is empty (record it live). Any other event there stands the run down
+     * before anything is invoked or appended: an unknown type as
+     * {@code UNKNOWN_EVENT_TYPE}, a known event of another operation as
+     * {@code NONDETERMINISTIC_HISTORY} (R19). The code now reaches compensation
+     * at a different point than the recorded run did, so treating the foreign
+     * event as "already recorded" would run (or finalise) the compensation
+     * phase on another operation's slot.
+     */
+    private boolean isRecordedMarker(WorkflowContext ctx, int seq, EventType marker) {
+        var stored = UnknownHistoryGuard.requireKnown(
+                store.getEventBySequence(ctx.workflowInstanceId(), seq), ctx.workflowId());
+        stored.ifPresent(event -> ReplayGuard.requireMatch(event, ctx.workflowId(),
+                "$maestro:compensation", marker));
+        return stored.isPresent();
     }
 
     // ── Sequential execution ──────────────────────────────────────────

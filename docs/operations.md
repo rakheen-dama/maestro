@@ -606,9 +606,12 @@ sits where something else ran, an awaited signal was renamed, a `parallel()`
 now forks a different number of branches, a saga compensation entry was
 renamed or reordered, or `@Saga(parallelCompensation)` was flipped. In every
 case the workflow was edited without a `workflow.version()` gate (§10.2) while
-instances were in flight. It is checked at every replay read **before** any
-side effect at that slot — no activity runs, no timer row is saved, no signal
-is consumed, no branch or compensation is started. The `version()` peek itself
+instances were in flight. It is checked at every replay read — including a
+`sleep()`'s wake slot (which must hold that sleep's own `TIMER_FIRED` /
+`TIMER_CANCELLED`) and the saga's `COMPENSATION_STARTED` / `COMPENSATION_COMPLETED`
+markers — **before** any side effect at that slot: no activity runs, no timer
+row is saved or re-parked on, no signal is consumed, no branch or compensation
+is started. The `version()` peek itself
 is not a drift check: a non-marker event there means "this history predates
 the change", by design.
 
@@ -639,6 +642,27 @@ recoverable.
    The next recovery pass adopts the instance and it finishes normally.
 2. **Gate the change behind `workflow.version()`** (§10.2) — the old path for
    histories that predate it, the new one for new instances — and redeploy.
+
+**Upgrade note — histories that already drifted silently.** A workflow edited
+without a `version()` gate under an *older* build may have "worked": the drift
+was silent, so the instance carried on (on the wrong payload) and is still in
+flight. After upgrading to this build, its next replay checks the recorded
+step at every read and the instance stands down as `nondeterministic_history`.
+**Rollback does not apply** — the build you would roll back to is the one that
+replayed it wrongly, and the history it wrote already disagrees with the code.
+The remedies are:
+
+- **Terminate** the instance (admin dashboard) and handle its business outcome
+  by hand, or
+- **restore the recorded name** so the recorded path is runnable again. A
+  recorded activity step is `<group>.<method>` (the detail's `stored=` field
+  names it exactly): if the interface was renamed, pin the old group with
+  `@Activity(name = "<group>")` on it; if the method was renamed, give it its
+  old name back. Then redeploy.
+
+Where possible, **drain in-flight instances before upgrading** a service whose
+workflow code was edited without `version()` gates since those instances
+started.
 
 **Alert.** `rate(maestro.standdown{reason="nondeterministic_history"}) > 0` →
 "an ungated workflow edit shipped; roll back". Unlike `unknown_event_type` it

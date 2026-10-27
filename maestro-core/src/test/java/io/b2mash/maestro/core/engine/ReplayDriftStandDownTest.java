@@ -210,6 +210,54 @@ class ReplayDriftStandDownTest {
     }
 
     @Test
+    @DisplayName("sleep() whose wake slot holds another operation's event stands down at the read — "
+            + "no re-park, no timer-row logic, no outcome appended (R19)")
+    void sleepWakeSlotForeignEvent_standsDownBeforeAnyTimerLogic() {
+        // seq 2 is this sleep's own TIMER_SCHEDULED; seq 3 — the wake/outcome
+        // slot — holds an activity the old code ran right after a 1-slot op.
+        // Pre-fix the read was type-switched only: a foreign event fell through
+        // to the timer-row lookup, re-parked on a timer that does not exist, and
+        // eventually collided appending TIMER_FIRED — misreported as stale_run.
+        startAndPlant("drift-sleep-wake", () -> WorkflowContext.current().sleep(Duration.ofHours(1)),
+                plantAt(2, EventType.TIMER_SCHEDULED, "$maestro:sleep",
+                        json("{\"timerId\":\"sleep-2\",\"duration\":\"PT1H\"}")),
+                instanceId -> store.injectRawEvent(plantAt(3, EventType.ACTIVITY_COMPLETED, "Acts.oldName",
+                        json("\"stale\"")).apply(instanceId)));
+
+        awaitRunEnded("drift-sleep-wake");
+
+        var downs = observer.standDowns();
+        assertEquals(1, downs.size(), "exactly one stand-down; got " + downs);
+        var call = downs.getFirst();
+        assertAll(
+                () -> assertEquals(StandDownReason.NONDETERMINISTIC_HISTORY, call.reason()),
+                () -> assertEquals("seq=3 expected=$maestro:timer-fired stored=Acts.oldName "
+                        + "type=ACTIVITY_COMPLETED", call.detail()),
+                () -> assertTrue(store.getDueTimers(Instant.now().plus(Duration.ofDays(2)), 100).isEmpty(),
+                        "no timer row written"),
+                () -> assertEquals(1, store.appendAttempts(), "no TIMER_FIRED/CANCELLED append attempted"),
+                () -> assertEquals(WorkflowStatus.RUNNING,
+                        store.getInstance("drift-sleep-wake").orElseThrow().status()));
+    }
+
+    @Test
+    @DisplayName("sleep() whose wake slot holds its own TIMER_FIRED replays without parking")
+    void sleepWakeSlotOwnOutcome_replays() {
+        startAndPlant("drift-sleep-fired", () -> WorkflowContext.current().sleep(Duration.ofHours(1)),
+                plantAt(2, EventType.TIMER_SCHEDULED, "$maestro:sleep",
+                        json("{\"timerId\":\"sleep-2\",\"duration\":\"PT1H\"}")),
+                instanceId -> store.injectRawEvent(plantAt(3, EventType.TIMER_FIRED, "$maestro:timer-fired",
+                        null).apply(instanceId)));
+
+        TestTerminalWait.awaitTerminal(store, "drift-sleep-fired", BOUND);
+
+        assertAll(
+                () -> assertEquals(WorkflowStatus.COMPLETED,
+                        store.getInstance("drift-sleep-fired").orElseThrow().status()),
+                () -> assertTrue(observer.standDowns().isEmpty()));
+    }
+
+    @Test
     @DisplayName("awaitSignal() of a renamed signal stands down — the old signal's payload is never "
             + "returned and the waiting signal is never consumed")
     void awaitSignalRenamed_standsDownWithoutConsuming() {   // Review Focus 2

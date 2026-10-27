@@ -698,6 +698,60 @@ class SagaManagerTest {
     }
 
     @Test
+    @DisplayName("Drift (R19): a foreign event at the COMPENSATION_STARTED anchor stands down — not "
+            + "misread as 'already recorded'; nothing invoked, nothing appended")
+    void foreignEventAtCompensationStartedAnchor_standsDown() {
+        var invocations = new AtomicInteger();
+        var stack = new CompensationStack();
+        stack.push("step-A", invocations::incrementAndGet);
+        // The code now fails one step earlier than the recorded run did: the
+        // anchor slot holds that run's next activity, not a compensation marker.
+        plant(6, EventType.ACTIVITY_COMPLETED, "chargeCard", "\"ok\"");
+
+        assertDriftStandDown(stack, false,
+                "seq=6 expected=$maestro:compensation stored=chargeCard type=ACTIVITY_COMPLETED");
+        assertEquals(0, invocations.get(), "no compensation action may run on drifted history");
+        assertEquals(0, countEvents(EventType.COMPENSATION_STEP_COMPLETED));
+        assertEquals(0, countEvents(EventType.COMPENSATION_COMPLETED));
+    }
+
+    @Test
+    @DisplayName("Drift (R19): a foreign event at the COMPENSATION_COMPLETED slot stands down — the "
+            + "phase is not finalised on another operation's record")
+    void foreignEventAtCompensationCompletedSlot_standsDown() {
+        var invocations = new AtomicInteger();
+        var stack = new CompensationStack();
+        stack.push("step-A", invocations::incrementAndGet);
+        // ctx at 5: STARTED=6, step-A's block=7000, then the counter advances to
+        // nextParentSeq(6, 1)=8000 and COMPENSATION_COMPLETED consumes 8001.
+        plant(6, EventType.COMPENSATION_STARTED, "$maestro:compensation", null);
+        plant(7000, EventType.COMPENSATION_STEP_COMPLETED, "step-A", null);
+        plant(8001, EventType.ACTIVITY_COMPLETED, "chargeCard", "\"ok\"");
+
+        assertDriftStandDown(stack, false,
+                "seq=8001 expected=$maestro:compensation stored=chargeCard type=ACTIVITY_COMPLETED");
+        assertEquals(0, invocations.get(), "step-A replays from its record, never re-invoked");
+    }
+
+    @Test
+    @DisplayName("R19: the recorded COMPENSATION_STARTED/COMPLETED markers still replay-skip — a "
+            + "fully recorded phase appends nothing on recovery")
+    void recordedCompensationMarkers_replayWithoutAppending() {
+        var invocations = new AtomicInteger();
+        var stack = new CompensationStack();
+        stack.push("step-A", invocations::incrementAndGet);
+        plant(6, EventType.COMPENSATION_STARTED, "$maestro:compensation", null);
+        plant(7000, EventType.COMPENSATION_STEP_COMPLETED, "step-A", null);
+        plant(8001, EventType.COMPENSATION_COMPLETED, "$maestro:compensation", null);
+        var eventsBefore = store.getEvents(instance.id()).size();
+
+        sagaManager.compensate(ctx, instance, stack, false);
+
+        assertEquals(0, invocations.get());
+        assertEquals(eventsBefore, store.getEvents(instance.id()).size());
+    }
+
+    @Test
     @DisplayName("Compensation whose block arithmetic would overflow throws before transitioning or running anything")
     void compensationBlockOverflow_failsBeforeAnyActionRuns() {
         var invocations = new AtomicInteger();

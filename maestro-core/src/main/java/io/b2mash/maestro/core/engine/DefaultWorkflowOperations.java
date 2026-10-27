@@ -68,6 +68,12 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
     /** Step-name prefix recorded on {@link EventType#VERSION_MARKER} events. */
     private static final String VERSION_STEP_PREFIX = "$maestro:version:";
 
+    /** Step name of a sleep's {@code TIMER_FIRED} outcome event. */
+    private static final String TIMER_FIRED_STEP = "$maestro:timer-fired";
+
+    /** Step name of a sleep's {@code TIMER_CANCELLED} outcome event. */
+    private static final String TIMER_CANCELLED_STEP = "$maestro:timer-cancelled";
+
     /**
      * The compensation buffer of the {@code parallel()} branch running on this
      * thread — bound only inside a branch's virtual thread (scoped values are
@@ -227,6 +233,13 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             var nextEvent = UnknownHistoryGuard.requireKnown(
                     store.getEventBySequence(ctx.workflowInstanceId(), nextSeq),
                     ctx.workflowId());
+            // R19: the wake slot is a replay read too. Only this sleep's own
+            // outcome may sit there — TIMER_FIRED or TIMER_CANCELLED, under the
+            // step names recordTimerFired/recordTimerCancelled write. Anything
+            // else is drift: stand down HERE, before the timer-row lookup and
+            // re-park below (which would wait on a timer that does not exist
+            // and then collide appending the outcome, misreported as stale_run).
+            nextEvent.ifPresent(wake -> requireOwnWakeOutcome(wake, ctx.workflowId()));
             if (nextEvent.isPresent() && nextEvent.get().eventType() == EventType.TIMER_FIRED) {
                 // Both events exist — skip the sleep entirely
                 ctx.nextSequence(); // advance past TIMER_FIRED
@@ -471,14 +484,30 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
      */
     private void recordTimerFired(WorkflowContext ctx, String timerId) {
         var firedSeq = ctx.nextSequence();
-        appendEvent(ctx, firedSeq, EventType.TIMER_FIRED, "$maestro:timer-fired", null);
+        appendEvent(ctx, firedSeq, EventType.TIMER_FIRED, TIMER_FIRED_STEP, null);
         observer.timerFired(observedTimer(ctx, timerId), false);
+    }
+
+    /**
+     * Stands the run down unless {@code wake} — the event at a replayed
+     * {@code sleep()}'s outcome slot — is that sleep's own outcome: a
+     * {@code TIMER_FIRED} recorded as {@value #TIMER_FIRED_STEP} or a
+     * {@code TIMER_CANCELLED} recorded as {@value #TIMER_CANCELLED_STEP}.
+     */
+    private static void requireOwnWakeOutcome(WorkflowEvent wake, String workflowId) {
+        if (wake.eventType() == EventType.TIMER_CANCELLED) {
+            ReplayGuard.requireMatch(wake, workflowId, TIMER_CANCELLED_STEP, EventType.TIMER_CANCELLED);
+        } else {
+            // TIMER_FIRED, or a foreign event: the fired outcome is what the
+            // detail names as expected.
+            ReplayGuard.requireMatch(wake, workflowId, TIMER_FIRED_STEP, EventType.TIMER_FIRED);
+        }
     }
 
     /** Appends the {@code TIMER_CANCELLED} event and observes the cancel live. */
     private void recordTimerCancelled(WorkflowContext ctx, String timerId) {
         var cancelledSeq = ctx.nextSequence();
-        appendEvent(ctx, cancelledSeq, EventType.TIMER_CANCELLED, "$maestro:timer-cancelled", null);
+        appendEvent(ctx, cancelledSeq, EventType.TIMER_CANCELLED, TIMER_CANCELLED_STEP, null);
         observer.timerCancelled(observedTimer(ctx, timerId), false);
     }
 
