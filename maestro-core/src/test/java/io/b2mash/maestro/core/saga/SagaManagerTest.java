@@ -366,6 +366,10 @@ class SagaManagerTest {
                 "exactly one COMPENSATION_STEP_COMPLETED per branch — no duplicate for 'completed-branch'");
         assertEquals(1, countEvents(EventType.COMPENSATION_STARTED));
         assertEquals(1, countEvents(EventType.COMPENSATION_COMPLETED));
+        assertEquals(1, store.getEvents(instance.id()).stream()
+                .filter(e -> e.eventType() == EventType.SIDE_EFFECT
+                        && "$maestro:parallel-compensation".equals(e.stepName())).count(),
+                "the fork marker must be appended once, never re-appended on replay");
     }
 
     // ── Unknown-history stand-down during compensation (design §§6.3–6.4) ──
@@ -460,6 +464,23 @@ class SagaManagerTest {
     }
 
     @Test
+    @DisplayName("Stand-down: the parallel-compensation fork marker's replay read is guarded")
+    void parallelForkMarkerReadStandsDown() {
+        var invocations = new AtomicInteger();
+        var stack = new CompensationStack();
+        stack.push("branch-A", invocations::incrementAndGet);
+        plantFutureEvent(7);   // ctx seeded at 5: COMPENSATION_STARTED consumes 6, the fork marker 7
+
+        org.junit.jupiter.api.Assertions.assertThrows(UnknownWorkflowHistoryException.class,
+                () -> sagaManager.compensate(ctx, instance, stack, true));
+
+        assertEquals(0, invocations.get());
+        assertEquals(0, countEvents(EventType.SIDE_EFFECT), "no live append may follow an unreadable read");
+        assertEquals(0, countEvents(EventType.COMPENSATION_STEP_FAILED));
+        assertEquals(0, countEvents(EventType.COMPENSATION_COMPLETED));
+    }
+
+    @Test
     @DisplayName("Catch ordering: a stand-down raised INSIDE a sequential compensation action is "
             + "rethrown, never recorded as COMPENSATION_STEP_FAILED")
     void sequentialActionStandDownIsRethrown() {
@@ -530,7 +551,17 @@ class SagaManagerTest {
             instancesByWorkflowId.put(instance.workflowId(), instance);
         }
 
-        @Override public void appendEvent(WorkflowEvent event) { events.add(event); }
+        @Override public void appendEvent(WorkflowEvent event) {
+            // Mirrors the real store's unique index (workflow_instance_id, sequence_number).
+            boolean duplicate = events.stream().anyMatch(e ->
+                    e.workflowInstanceId().equals(event.workflowInstanceId())
+                            && e.sequenceNumber() == event.sequenceNumber());
+            if (duplicate) {
+                throw new io.b2mash.maestro.core.exception.DuplicateEventException(
+                        event.workflowInstanceId(), event.sequenceNumber());
+            }
+            events.add(event);
+        }
 
         @Override public Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int seq) {
             return events.stream()

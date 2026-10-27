@@ -350,6 +350,10 @@ public final class SagaManager {
      * not re-invoked; its recorded outcome is reused instead. This mirrors
      * {@code executeSequential}'s per-entry guard, applied per-branch.
      *
+     * <p>The fork point itself is replay-guarded like {@code COMPENSATION_STARTED},
+     * because {@code appendEvent} rethrows {@code DuplicateEventException} and an
+     * unguarded re-append on recovery stood the run down forever (C2).
+     *
      * @param ctx     the workflow context
      * @param entries the compensation entries, one per branch
      * @return the step names of entries whose action failed (live or replayed)
@@ -370,8 +374,14 @@ public final class SagaManager {
 
         // Record the fork point so each branch gets a deterministic sequence space
         var parentSeq = ctx.nextSequence();
-        appendEvent(ctx, parentSeq, EventType.SIDE_EFFECT, "$maestro:parallel-compensation",
-                serializer.serialize(new ParallelCompensationDetail(entries.size())));
+        if (UnknownHistoryGuard.requireKnown(
+                store.getEventBySequence(ctx.workflowInstanceId(), parentSeq), ctx.workflowId()).isEmpty()) {
+            appendEvent(ctx, parentSeq, EventType.SIDE_EFFECT, "$maestro:parallel-compensation",
+                    serializer.serialize(new ParallelCompensationDetail(entries.size())));
+        } else {
+            logger.debug("Replaying parallel-compensation fork at seq {} for workflow '{}' — already recorded",
+                    parentSeq, ctx.workflowId());
+        }
 
         for (int i = 0; i < entries.size(); i++) {
             var index = i;

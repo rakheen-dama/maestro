@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed — A crash during parallel saga compensation no longer strands the workflow in COMPENSATING
+
+The `$maestro:parallel-compensation` fork marker was appended unconditionally. On recovery the duplicate append was rethrown as a stale-run stand-down, so the instance was re-adopted on every recovery poll forever and never left `COMPENSATING`. The marker is now replay-guarded like `COMPENSATION_STARTED`. The pre-existing unit pin passed only because the test's in-memory store lacked the unique index; it now has one.
+
 ### Fixed — Compensation after a failed `parallel()` no longer reads sibling-branch events
 
 When a `parallel()` branch threw, the parent sequence counter stayed at the fork's own sequence, so `SagaManager` anchored entry *i*'s compensation block at branch *i+1*'s base and a `@Compensate` action replayed the sibling's `ACTIVITY_COMPLETED`/`ACTIVITY_FAILED` instead of running. `parallel()` now advances the counter in a `finally`, so it sits past every branch block whether the fork returns or throws. **Behaviour change:** every step recorded after a failed `parallel()` moves, not just compensation. Compensation now starts at `p*1000+(n+1)*1000+1` (step blocks at `(that+1)*1000` and above), and so does any step a workflow runs after catching a fork failure (`try { parallel(...) } catch (Exception e) { activities.x(); }`), which previously landed at `p+1`; this stays within `int` for one forward fork (see docs/concepts.md § Parallel execution (depth limit)). **Upgrade every node of a service together, or drain it first:** an instance recorded on the previous version that caught a fork failure and ran a step, or is parked in COMPENSATING, would on recovery by an upgraded node find nothing at the new slot and run that step again live (a duplicate external side effect), and a mixed-version fleet would write diverging histories. Stop starting and recovering workflows before mixing versions; single-node deployments should drain such instances before upgrading.
