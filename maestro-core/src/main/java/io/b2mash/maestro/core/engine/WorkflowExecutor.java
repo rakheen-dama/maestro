@@ -1707,23 +1707,36 @@ public final class WorkflowExecutor {
      * the current code no longer matches.
      *
      * <p>Deliberately writes nothing. The instance keeps whatever recoverable
-     * status this run found it in and an upgraded node adopts it through the
-     * ordinary lock-TTL/recovery-poller machinery. This is <b>never</b>
-     * recorded as a workflow failure and <b>never</b> triggers compensation:
-     * doing either would mark a workflow that is perfectly healthy on the
-     * upgraded half of the fleet as {@code FAILED}, and unwind real work
-     * (refunds issued, reservations released) that never failed.
+     * status this run found it in, and what heals it depends on the kind —
+     * exactly as the WARN's closing clause ({@link #standDownRemedy}) says:
+     * <ul>
+     *   <li>{@code UNKNOWN_EVENT_TYPE} — only a newer build can have written
+     *       it; an upgraded node adopts it through the ordinary
+     *       lock-TTL/recovery-poller machinery.</li>
+     *   <li>{@code UNKNOWN_EVENT_PAYLOAD} — if a newer node wrote it, that node
+     *       adopts it on recovery; on a homogeneous fleet it is an incompatible
+     *       payload change, healed only by rolling back, gating the change with
+     *       {@code workflow.version()}, or terminating.</li>
+     *   <li>{@code NONDETERMINISTIC_HISTORY} — the code no longer matches the
+     *       recorded path; healed by rolling back the deploy or gating the
+     *       change, never by waiting.</li>
+     * </ul>
+     * This is <b>never</b> recorded as a workflow failure and <b>never</b>
+     * triggers compensation: doing either would mark a workflow whose history
+     * is fine — perhaps perfectly healthy on the upgraded half of the fleet —
+     * as {@code FAILED}, and unwind real work (refunds issued, reservations
+     * released) that never failed.
      *
      * <p>The instance lock is released by {@code executeWorkflow}'s
      * {@code finally}, exactly as it is for a shutdown — this method
      * deliberately adds no early return that could bypass it.
      *
      * <p><b>Re-adoption churn is intended.</b> This node's recovery poller will
-     * adopt and stand down the same instance once per poll until an upgraded
-     * node wins the lock race. Each pass logs one WARN and increments
+     * adopt and stand down the same instance once per poll until the remedy
+     * for its kind lands (an upgraded node wins the lock race, or a rollback /
+     * gated change / terminate ships). Each pass logs one WARN and increments
      * {@code maestro.standdown{reason}} — that steadily-rising counter <em>is</em>
-     * the operator signal that a mixed fleet is lingering, so it is not
-     * deduplicated away.
+     * the operator signal, so it is not deduplicated away.
      */
     private void handleUnknownHistoryStandDown(WorkflowContext ctx,
                                                UnknownWorkflowHistoryException e) {

@@ -186,15 +186,24 @@ public final class SagaManager {
             return;
         }
 
+        // The anchor is the seq COMPENSATION_STARTED will consume; parallel
+        // compensation forks one seq later.
+        var anchor = ctx.currentSequence() + 1;
+
+        // Anchor replay read (R19), deliberately FIRST — before the pre-check
+        // and before the COMPENSATING transition. A foreign or unknown event
+        // here stands the run down, and a stand-down writes nothing: reading
+        // it after the transition would durably flip a RUNNING instance to
+        // COMPENSATING (a status the machine only leaves for FAILED) before
+        // standing down. The live emit/append below stay where they are.
+        var startedRecorded = isRecordedMarker(ctx, anchor, EventType.COMPENSATION_STARTED);
+
         // Sequence-space pre-check (C4), deliberately BEFORE the COMPENSATING
         // transition: if the per-entry block arithmetic cannot fit in the int
         // sequence space, nothing durable may change — no status write, no
         // COMPENSATION_STARTED, no action run at a wrapped (negative) sequence.
-        // The anchor is the seq COMPENSATION_STARTED will consume; parallel
-        // compensation forks one seq later. WorkflowExecutor.handleWorkflowFailure
-        // turns the throw into a loud FAILED with an ERROR log that no
-        // compensation ran.
-        var anchor = ctx.currentSequence() + 1;
+        // WorkflowExecutor.handleWorkflowFailure turns the throw into a loud
+        // FAILED with an ERROR log that no compensation ran.
         try {
             SequenceSpace.nextParentSeq(ctx.workflowId(), parallelCompensation ? anchor + 1 : anchor, entries.size());
         } catch (SequenceSpaceExhaustedException noRoom) {
@@ -217,9 +226,10 @@ public final class SagaManager {
         // event-emitting path, rather than relying on the store's unique
         // index to silently reject the duplicate on a recovery re-run. The
         // seq this call consumes doubles as the anchor for the sequential
-        // loop's per-entry sequence blocks (see executeSequential).
+        // loop's per-entry sequence blocks (see executeSequential). Its slot
+        // was already read and guarded above, before anything durable changed.
         var startedSeq = ctx.nextSequence();
-        if (isRecordedMarker(ctx, startedSeq, EventType.COMPENSATION_STARTED)) {
+        if (startedRecorded) {
             logger.debug("Replaying COMPENSATION_STARTED at seq {} for workflow '{}' — already recorded",
                     startedSeq, ctx.workflowId());
         } else {

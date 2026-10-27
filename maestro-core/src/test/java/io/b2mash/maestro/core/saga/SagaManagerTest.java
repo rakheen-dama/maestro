@@ -707,9 +707,15 @@ class SagaManagerTest {
         // The code now fails one step earlier than the recorded run did: the
         // anchor slot holds that run's next activity, not a compensation marker.
         plant(6, EventType.ACTIVITY_COMPLETED, "chargeCard", "\"ok\"");
+        var before = store.getInstance(instance.workflowId()).orElseThrow();
 
         assertDriftStandDown(stack, false,
                 "seq=6 expected=$maestro:compensation stored=chargeCard type=ACTIVITY_COMPLETED");
+        var after = store.getInstance(instance.workflowId()).orElseThrow();
+        assertEquals(WorkflowStatus.RUNNING, after.status(),
+                "a stand-down writes nothing — the anchor is read BEFORE the COMPENSATING transition, "
+                        + "or the instance is stuck in a state the machine only exits to FAILED");
+        assertEquals(before.version(), after.version(), "no status write, no version bump");
         assertEquals(0, invocations.get(), "no compensation action may run on drifted history");
         assertEquals(0, countEvents(EventType.COMPENSATION_STEP_COMPLETED));
         assertEquals(0, countEvents(EventType.COMPENSATION_COMPLETED));

@@ -538,22 +538,6 @@ than one.
 Remember that both gauges are **node-local, in-JVM** values: dashboard them per
 pod and sum for a cluster total (see `docs/observability.md`).
 
-**Node errors are not workflow failures — alert on them separately.** A
-`LinkageError` (`NoClassDefFoundError`, `ExceptionInInitializerError`, ...) or
-a `VirtualMachineError` other than `StackOverflowError` (`OutOfMemoryError`,
-`InternalError`, ...) escaping a workflow method means that *node* is broken —
-a bad deploy or resource exhaustion — so the engine does **not** record
-`FAILED` and does **not** compensate. It logs an `ERROR` under the workflow's
-MDC (`Workflow '<id>' abandoned its local run on a node-level error (<class>)
-...`), fires `runAbandoned(..., NODE_ERROR)` (span attribute
-`maestro.abandon.reason=NODE_ERROR`), writes nothing, releases the lock, and
-leaves the instance recoverable, so every recovery pass re-adopts it and logs
-again until the node is fixed or rolled back. Alert on that `ERROR` line (or the
-span attribute); the remedy is the node — redeploy the previous build, fix the
-classpath, raise the heap — or terminate the workflow if it cannot be healed.
-`StackOverflowError`, `AssertionError` and every other `Error` remain workflow
-failures (`FAILED` + compensation): they recur identically on every node.
-
 ### 10.5 A skipped instance row reports "not found"
 
 An instance row whose `status` column this build cannot map — again, written by
@@ -711,6 +695,24 @@ finishes first on replay. **Upgrade note:** an instance parked in
 `COMPENSATING` whose branch compensations were recorded by the previous
 version in an order other than branch-index order stands down here after
 upgrade; drain such instances before upgrading.
+
+### 10.8 Node errors: `node_error` abandons
+
+**Node errors are not workflow failures — alert on them separately.** A
+`LinkageError` (`NoClassDefFoundError`, `ExceptionInInitializerError`, ...) or
+a `VirtualMachineError` other than `StackOverflowError` (`OutOfMemoryError`,
+`InternalError`, ...) escaping a workflow method means that *node* is broken —
+a bad deploy or resource exhaustion — so the engine does **not** record
+`FAILED` and does **not** compensate. It logs an `ERROR` under the workflow's
+MDC (`Workflow '<id>' abandoned its local run on a node-level error (<class>)
+...`), fires `runAbandoned(..., NODE_ERROR)` (span attribute
+`maestro.abandon.reason=NODE_ERROR`), writes nothing, releases the lock, and
+leaves the instance recoverable, so every recovery pass re-adopts it and logs
+again until the node is fixed or rolled back. Alert on that `ERROR` line (or the
+span attribute); the remedy is the node — redeploy the previous build, fix the
+classpath, raise the heap — or terminate the workflow if it cannot be healed.
+`StackOverflowError`, `AssertionError` and every other `Error` remain workflow
+failures (`FAILED` + compensation): they recur identically on every node.
 
 ---
 
