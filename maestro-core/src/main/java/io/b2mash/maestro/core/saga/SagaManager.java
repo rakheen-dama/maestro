@@ -7,6 +7,7 @@ import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.InvalidStateTransitionException;
 import io.b2mash.maestro.core.exception.MaestroControlFlowError;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
+import io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
@@ -149,7 +150,9 @@ public final class SagaManager {
      * If the blocks cannot fit in the 32-bit sequence space (typically a
      * workflow that already forked twice), compensation cannot be sequenced at
      * all, and running it anyway would place actions at int-wrapped sequence
-     * numbers. The stack is already drained at that point; the caller
+     * numbers. The stack is already drained at that point, so this method logs
+     * the drained entries' step names at {@code ERROR} (the operator's manual
+     * compensation list) before rethrowing; the caller
      * ({@code WorkflowExecutor.handleWorkflowFailure}) logs at {@code ERROR}
      * that no compensation ran and still finishes the workflow {@code FAILED}.
      *
@@ -181,7 +184,17 @@ public final class SagaManager {
         // turns the throw into a loud FAILED with an ERROR log that no
         // compensation ran.
         var anchor = ctx.currentSequence() + 1;
-        SequenceSpace.nextParentSeq(ctx.workflowId(), parallelCompensation ? anchor + 1 : anchor, entries.size());
+        try {
+            SequenceSpace.nextParentSeq(ctx.workflowId(), parallelCompensation ? anchor + 1 : anchor, entries.size());
+        } catch (SequenceSpaceExhaustedException noRoom) {
+            // The stack is already drained, so this is the last place that knows
+            // what an operator must now undo by hand.
+            logger.error("Workflow '{}': none of its {} compensation(s) can run (sequence space exhausted) — "
+                            + "compensate manually, in this order: {}",
+                    ctx.workflowId(), entries.size(),
+                    entries.stream().map(CompensationEntry::stepName).toList());
+            throw noRoom;
+        }
 
         logger.info("Running {} compensation(s) for workflow '{}' (parallel={})",
                 entries.size(), ctx.workflowId(), parallelCompensation);

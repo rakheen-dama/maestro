@@ -1754,9 +1754,11 @@ public final class WorkflowExecutor {
                 // and falling through to the FAILED transition is deliberate:
                 // letting it escape would leave an active zombie that every
                 // recovery re-drives into the same overflow. The stack is
-                // already drained, so no count is logged.
+                // already drained here; SagaManager.compensate() logged the
+                // drained entries' step names just before rethrowing.
                 logger.error("Workflow '{}' failed and its registered compensations could NOT run — the "
-                                + "sequence space is exhausted ({}). Finishing as FAILED; compensate manually.",
+                                + "sequence space is exhausted ({}). Finishing as FAILED; compensate manually "
+                                + "(the step names are in the preceding SagaManager ERROR line).",
                         ctx.workflowId(), noRoom.getMessage(), noRoom);
             }
         }

@@ -195,6 +195,7 @@ public final class WorkflowContext {
      * @param baseSeq        the block's base sequence number (never handed out)
      * @param limitExclusive the first sequence number outside the block
      * @return a bounded context sharing {@code parent}'s operations
+     * @throws IllegalArgumentException if {@code limitExclusive <= baseSeq + 1}
      * @see #bounded(WorkflowContext, int, int, int, WorkflowOperations)
      */
     public static WorkflowContext bounded(
@@ -227,6 +228,8 @@ public final class WorkflowContext {
      * @param limitExclusive the first sequence number outside the branch's block
      * @param operations     the operations delegate for the branch, or {@code null}
      * @return a bounded branch context
+     * @throws IllegalArgumentException if {@code limitExclusive <= baseSeq + 1} — the
+     *         block would have no slot to hand out
      */
     public static WorkflowContext bounded(
             WorkflowContext parent,
@@ -235,6 +238,11 @@ public final class WorkflowContext {
             int limitExclusive,
             @Nullable WorkflowOperations operations
     ) {
+        if ((long) limitExclusive <= (long) baseSeq + 1) {
+            throw new IllegalArgumentException(
+                    "A bounded block needs at least one slot: limitExclusive (" + limitExclusive
+                            + ") must be greater than baseSeq + 1 (baseSeq = " + baseSeq + ")");
+        }
         return new WorkflowContext(
                 parent.workflowInstanceId, parent.workflowId, parent.runId,
                 parent.workflowType, parent.taskQueue, parent.serviceName,
@@ -449,9 +457,30 @@ public final class WorkflowContext {
     /**
      * Executes multiple tasks in parallel on separate virtual threads.
      *
+     * <h2>Limits</h2>
+     * <ul>
+     *   <li><b>999 sequence slots per branch.</b> Each branch draws from its own
+     *       1000-wide block; the 1000th slot throws
+     *       {@link BranchSequenceExhaustedException}. Most steps take one slot;
+     *       {@code sleep()} takes two (the timer and its wake record).</li>
+     *   <li><b>Depth.</b> Every fork level multiplies the sequence by 1000, and
+     *       sequence numbers are 32-bit, so only a few levels fit. A fork that
+     *       cannot be sequenced throws
+     *       {@link io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException}
+     *       before it consumes a slot. See {@code docs/concepts.md} § Parallel
+     *       Execution → Depth limit for which shapes fit.</li>
+     * </ul>
+     * <p>Both are ordinary {@link io.b2mash.maestro.core.exception.MaestroException}s,
+     * not engine control-flow signals: they fail the branch (the fork rethrows
+     * once every branch has joined) and, uncaught, fail the workflow, which
+     * runs its registered compensations.
+     *
      * @param tasks the tasks to execute in parallel
      * @param <T>   the result type
      * @return the results in the same order as the input tasks
+     * @throws BranchSequenceExhaustedException if a branch takes a 1000th sequence slot
+     * @throws io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException
+     *         if the fork's branch blocks would overflow the sequence space
      * @throws IllegalStateException if operations are not configured
      * @see WorkflowOperations#parallel(List)
      */

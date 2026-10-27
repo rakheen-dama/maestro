@@ -3,6 +3,7 @@ package io.b2mash.maestro.core.context;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.b2mash.maestro.core.exception.BranchSequenceExhaustedException;
 import java.util.UUID;
@@ -65,6 +66,16 @@ class WorkflowContextBoundTest {
         child.setSequence(3999);
         var e = assertThrows(BranchSequenceExhaustedException.class, child::nextSequence);
         assertEquals(1, e.branchIndex());
+    }
+
+    @Test
+    void bounded_rejectsABlockWithNoSlotToHandOut() {
+        var e = assertThrows(IllegalArgumentException.class, () -> WorkflowContext.bounded(parent, 0, 2000, 2001, null));
+        assertTrue(e.getMessage().contains("2000") && e.getMessage().contains("2001"), e.getMessage());
+        assertThrows(IllegalArgumentException.class, () -> WorkflowContext.bounded(parent, 0, 2000, 2000, null));
+        assertThrows(IllegalArgumentException.class, () -> WorkflowContext.bounded(parent, 0, 2000, 1000));
+        assertEquals(2001, WorkflowContext.bounded(parent, 0, 2000, 2002, null).nextSequence(),
+                "a one-slot block is the smallest legal block");
     }
 
     @Test

@@ -97,9 +97,33 @@ public sealed interface WorkflowOperations permits DefaultWorkflowOperations {
      * On replay, each branch replays its own events independently,
      * regardless of execution order.
      *
+     * <h2>Limits</h2>
+     * <ul>
+     *   <li><b>999 sequence slots per branch.</b> Branch {@code i} of a fork at
+     *       parent sequence {@code p} draws from the block starting at
+     *       {@code p * 1000 + (i + 1) * 1000}; the 1000th slot throws
+     *       {@link io.b2mash.maestro.core.exception.BranchSequenceExhaustedException}
+     *       instead of spilling into the sibling's block. Most steps take one
+     *       slot; {@code sleep()} takes two.</li>
+     *   <li><b>Depth.</b> Every fork level multiplies the sequence by 1000 and
+     *       sequence numbers are 32-bit, so only a few levels fit. A fork that
+     *       cannot be sequenced throws
+     *       {@link io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException}
+     *       before it consumes a slot. See {@code docs/concepts.md} § Parallel
+     *       Execution → Depth limit for which shapes fit.</li>
+     * </ul>
+     * <p>Both are ordinary {@link io.b2mash.maestro.core.exception.MaestroException}s,
+     * not engine control-flow signals: they fail the branch (rethrown once every
+     * branch has joined) and, uncaught, fail the workflow, which runs its
+     * registered compensations.
+     *
      * @param tasks the tasks to execute in parallel
      * @param <T>   the result type
      * @return the results in the same order as the input tasks
+     * @throws io.b2mash.maestro.core.exception.BranchSequenceExhaustedException
+     *         if a branch takes a 1000th sequence slot
+     * @throws io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException
+     *         if the fork's branch blocks would overflow the sequence space
      */
     <T> List<T> parallel(List<Callable<T>> tasks);
 

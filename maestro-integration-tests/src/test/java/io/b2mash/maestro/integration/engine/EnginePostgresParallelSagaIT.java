@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Callable;
@@ -179,6 +180,34 @@ class EnginePostgresParallelSagaIT extends PostgresIntegrationSupport {
                     WorkflowContext.current().randomUUID();
                 }
             });
+            throw new IllegalStateException("boom");
+        }
+    }
+
+    /**
+     * Forks forward, then registers an ordinary compensation and one that itself forks, then
+     * fails. The forking entry unwinds first (block 4,002,000); its nested fork at 4,002,001 cannot
+     * be sequenced, which fails that entry — not the compensation pre-check (final review I2).
+     */
+    @DurableWorkflow(name = "ForkAfterForwardForkCompensationWorkflow")
+    public static class ForkAfterForwardForkCompensationWorkflow {
+
+        @ActivityStub
+        ChainActivities chain;
+
+        /**
+         * @param input the seed value
+         * @return never; the workflow always fails
+         */
+        @Saga
+        @WorkflowMethod
+        public String run(String input) {
+            var workflow = WorkflowContext.current();
+            workflow.parallel(List.<Callable<String>>of(() -> chain.stepOne(input), () -> chain.stepTwo(input)));
+            workflow.addCompensation("undoOrdinary", () -> chain.stepThree(input));
+            workflow.addCompensation("undoFanOut", () ->
+                    WorkflowContext.current().parallel(List.<Callable<String>>of(
+                            () -> chain.stepOne(input), () -> chain.stepTwo(input))));
             throw new IllegalStateException("boom");
         }
     }
@@ -381,6 +410,40 @@ class EnginePostgresParallelSagaIT extends PostgresIntegrationSupport {
                 "999 slots fit the entry's block; the 1000th throws before writing");
         assertEquals(EventType.COMPENSATION_COMPLETED,
                 store.getEventBySequence(handle.instanceId(), 4001).orElseThrow().eventType());
+        assertEquals(List.of(), observer.standDowns());
+    }
+
+    @Test
+    @DisplayName("a compensation that forks after a forward parallel() fails its own step with SequenceSpaceExhaustedException; the remaining entry still runs")
+    void forkInsideCompensationAfterForwardFork_failsThatStepOnly() {
+        var recorder = new CountingActivities.Recorder();
+        var observer = new RecordingObserver();
+        harness = MaestroEngineHarness.builder(store, objectMapper).serviceName("fork-after-fork-comp")
+                .lock(newLock()).observer(observer).build();
+        harness.registerActivities(ChainActivities.class, new CountingActivities.RecordingChainActivities(recorder));
+        harness.registerWorkflow(new ForkAfterForwardForkCompensationWorkflow());
+        var handle = harness.start(MaestroEngineHarness.uniqueWorkflowId("fork-after-fork-comp"),
+                ForkAfterForwardForkCompensationWorkflow.class, "in");
+
+        assertEquals(WorkflowStatus.FAILED, handle.awaitTerminal(Duration.ofSeconds(30)));
+        assertEquals(1, recorder.count("stepOne"), "forward branch only — the nested fork never ran");
+        assertEquals(1, recorder.count("stepTwo"), "forward branch only — the nested fork never ran");
+        assertEquals(1, recorder.count("stepThree"), "the remaining entry's action ran");
+        assertEquals(List.of(
+                "1:SIDE_EFFECT:$maestro:parallel",
+                "2001:ACTIVITY_COMPLETED:chain.stepOne",
+                "3001:ACTIVITY_COMPLETED:chain.stepTwo",
+                "4001:COMPENSATION_STARTED:$maestro:compensation",
+                "4002000:COMPENSATION_STEP_FAILED:undoFanOut",
+                "4003000:COMPENSATION_STEP_COMPLETED:undoOrdinary",
+                "4003001:ACTIVITY_COMPLETED:chain.stepThree",
+                "4004001:COMPENSATION_COMPLETED:$maestro:compensation",
+                "4004002:WORKFLOW_FAILED:null"),
+                describe(handle).stream().sorted(Comparator.comparingLong(
+                        s -> Long.parseLong(s.substring(0, s.indexOf(':'))))).toList());
+        assertEquals(SequenceSpaceExhaustedException.class.getName(),
+                store.getEventBySequence(handle.instanceId(), 4_002_000).orElseThrow()
+                        .payload().get("exceptionType").stringValue());
         assertEquals(List.of(), observer.standDowns());
     }
 
