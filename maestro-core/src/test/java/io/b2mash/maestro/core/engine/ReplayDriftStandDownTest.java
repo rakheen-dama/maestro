@@ -302,7 +302,9 @@ class ReplayDriftStandDownTest {
                 () -> assertEquals("an upgraded node will adopt it via recovery",
                         WorkflowExecutor.standDownRemedy(
                                 UnknownWorkflowHistoryException.Kind.UNKNOWN_EVENT_TYPE)),
-                () -> assertEquals("an upgraded node will adopt it via recovery",
+                () -> assertEquals("if a newer node wrote it, that node adopts it on recovery; on a "
+                                + "homogeneous fleet this is an incompatible payload change — roll back, "
+                                + "gate the change with workflow.version(), or terminate (operations §10.4)",
                         WorkflowExecutor.standDownRemedy(
                                 UnknownWorkflowHistoryException.Kind.UNKNOWN_EVENT_PAYLOAD)),
                 () -> assertEquals("roll back the deploy or gate the change behind workflow.version()",

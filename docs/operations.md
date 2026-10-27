@@ -451,11 +451,17 @@ instead of failing:
   adopt it via recovery
   ```
 
-  For `nondeterministic_history` the closing clause reads instead `roll back
-  the deploy or gate the change behind workflow.version()` (§10.7).
+  That closing clause is the `unknown_event_type` one. For
+  `unknown_event_payload` it reads instead `if a newer node wrote it, that node
+  adopts it on recovery; on a homogeneous fleet this is an incompatible payload
+  change — roll back, gate the change with workflow.version(), or terminate
+  (operations §10.4)`; for `nondeterministic_history`, `roll back the deploy or
+  gate the change behind workflow.version()` (§10.7).
 
-An upgraded node then adopts and finishes the workflow through the ordinary
-lock-TTL / recovery-poller machinery, unchanged. Nothing special is needed.
+For an `unknown_event_type` stand-down, an upgraded node then adopts and
+finishes the workflow through the ordinary lock-TTL / recovery-poller
+machinery, unchanged — nothing special is needed. The other two reasons are
+**not** healed by waiting: see §10.4 and §10.7.
 
 There are three history reasons and **they mean different things**:
 
@@ -499,11 +505,18 @@ Two other remedies exist, and neither needs a code change:
   transient skew from a permanent refactor.
 
 The WARN and the `standDown` observer detail carry the deserializer's root
-cause: `seq=N cause=<class>: <message>` (for a removed enum constant this is
-Jackson's "not one of the values accepted for Enum class" message). That is what
-distinguishes "a newer node wrote this" from "my own refactor broke this" on a
-fleet you know to be homogeneous. The original exception is also attached as the
-cause, so the stack trace carries the full Jackson detail.
+cause as **the exception class and the JSON path of the offending field**:
+`seq=N cause=<class> at <path>` — for example
+`seq=3 cause=tools.jackson.databind.exc.InvalidFormatException at
+com.acme.Order["status"]` — or just `seq=N cause=<class>` when the failure has
+no field path (a root-level shape mismatch, or a stream-level error). That is
+what distinguishes "a newer node wrote this" from "my own refactor broke this"
+on a fleet you know to be homogeneous. The deserializer's own message is
+deliberately left out: Jackson quotes the stored *values* (and, for stream
+errors, the source text) in it, and stored payloads carry customer data that
+must not reach log or metric backends. **The raw deserializer message is in the
+DEBUG stack trace** — enable `DEBUG` for `io.b2mash.maestro.core.engine.WorkflowExecutor`
+to see the full cause chain logged with each stand-down.
 
 `unknown_event_type` keeps the "wait for the deploy" reading, because a type
 this build does not define really can only come from a newer build. That is

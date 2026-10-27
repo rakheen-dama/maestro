@@ -76,6 +76,8 @@ class UnreadablePayloadStandDownIT extends PostgresIntegrationSupport {
                     () -> assertTrue(call.detail().startsWith("seq=1 cause="), call.detail()),
                     () -> assertTrue(call.detail().contains("Exception"),
                             "the root cause's class name must be present: " + call.detail()),
+                    () -> assertFalse(call.detail().contains("reshaped"),
+                            "R17: no fragment of the stored payload may reach the detail: " + call.detail()),
                     () -> assertTrue(observer.failed().isEmpty()),
                     () -> assertEquals(WorkflowStatus.WAITING_SIGNAL,
                             store.getInstance(workflowId).orElseThrow().status()),

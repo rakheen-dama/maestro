@@ -1651,8 +1651,10 @@ public final class WorkflowExecutor {
     /**
      * Records that a workflow's local run stood down because this node cannot
      * interpret the workflow's persisted history — an event type this build
-     * does not define, or a stored payload it cannot read, written by a node
-     * running a newer build during a mixed-version deploy window.
+     * does not define, or a stored payload it cannot read (written by a node
+     * running a newer build during a mixed-version deploy window, or reshaped
+     * by an incompatible change on a homogeneous fleet), or recorded history
+     * the current code no longer matches.
      *
      * <p>Deliberately writes nothing. The instance keeps whatever recoverable
      * status this run found it in and an upgraded node adopts it through the
@@ -1681,6 +1683,10 @@ public final class WorkflowExecutor {
         logger.warn("Workflow '{}' stood down at sequence {}: {} (instance status still {}) — no "
                         + "failure recorded, no compensation run; {}",
                 ctx.workflowId(), e.sequenceNumber(), e.getMessage(), status, standDownRemedy(e.kind()));
+        // R17: the WARN above names a payload root cause by class and field path
+        // only (stored values must not reach log backends). The full chain —
+        // including the deserializer's raw message — is available at DEBUG.
+        logger.debug("Stand-down cause for workflow '{}'", ctx.workflowId(), e);
         emit("standDown", ctx.workflowId(), () ->
                 observer.standDown(standDownReason(e.kind()), ctx.workflowId(), e.detail()));
     }
@@ -1692,7 +1698,13 @@ public final class WorkflowExecutor {
      */
     static String standDownRemedy(UnknownWorkflowHistoryException.Kind kind) {
         return switch (kind) {
-            case UNKNOWN_EVENT_TYPE, UNKNOWN_EVENT_PAYLOAD -> "an upgraded node will adopt it via recovery";
+            case UNKNOWN_EVENT_TYPE -> "an upgraded node will adopt it via recovery";
+            // R18: an unreadable payload is not proof of a newer node — on a
+            // homogeneous fleet it is the operator's own incompatible change,
+            // and "an upgraded node will adopt it" would wait forever.
+            case UNKNOWN_EVENT_PAYLOAD -> "if a newer node wrote it, that node adopts it on recovery; on a "
+                    + "homogeneous fleet this is an incompatible payload change — roll back, gate the "
+                    + "change with workflow.version(), or terminate (operations §10.4)";
             case NONDETERMINISTIC_HISTORY -> "roll back the deploy or gate the change behind workflow.version()";
         };
     }

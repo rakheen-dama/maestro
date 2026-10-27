@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.exception.SerializationException;
 import io.b2mash.maestro.core.exception.UnknownWorkflowHistoryException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
+import tools.jackson.databind.DatabindException;
 
 import java.util.Optional;
 import java.util.function.Supplier;
@@ -81,8 +82,13 @@ public final class UnknownHistoryGuard {
      *
      * <p>Only stored history counts. A live-path serialization failure is an
      * ordinary workflow failure and must keep flowing to the failure handler;
-     * a stored payload this build cannot read means a newer node shaped it, so
-     * the run stands down instead.
+     * a stored payload this build cannot read means a newer node shaped it (or,
+     * on a homogeneous fleet, an incompatible payload change did), so the run
+     * stands down instead.
+     *
+     * <p>The stand-down's message and {@code detail} name the root cause by
+     * class and JSON field path only — never its message, which quotes stored
+     * values (see {@link #redactedCause}).
      *
      * @param workflowId     the workflow being replayed
      * @param sequenceNumber the sequence number of the event being read
@@ -99,15 +105,38 @@ public final class UnknownHistoryGuard {
         try {
             return deserialize.get();
         } catch (SerializationException e) {
-            var root = e.getCause() != null ? e.getCause() : e;
+            var cause = redactedCause(e.getCause() != null ? e.getCause() : e);
             var standDown = payloadStandDown(workflowId, sequenceNumber,
-                    "could not deserialize the stored %s: %s: %s".formatted(what,
-                            root.getClass().getName(), root.getMessage()),
-                    "seq=%d cause=%s: %s".formatted(sequenceNumber, root.getClass().getName(),
-                            root.getMessage()));
+                    "could not deserialize the stored %s: %s".formatted(what, cause),
+                    "seq=%d cause=%s".formatted(sequenceNumber, cause));
             standDown.initCause(e);
             throw standDown;
         }
+    }
+
+    /**
+     * Describes a deserialization root cause <em>without</em> its message.
+     *
+     * <p>Jackson's messages quote the stored values ({@code from String
+     * "…"}) and, for stream-level errors, the source text they choked on.
+     * Stored payloads routinely carry customer data, and this description
+     * reaches a WARN line and the observer's {@code detail} (both commonly
+     * shipped to log/metric backends with weaker access controls than the
+     * database). So only the exception class and — for a
+     * {@link DatabindException} — the JSON path of the offending field
+     * ({@link DatabindException#getPathReference()}: type and property names,
+     * never values) are kept. The raw message stays on the attached cause,
+     * logged at DEBUG only.
+     */
+    private static String redactedCause(Throwable root) {
+        var name = root.getClass().getName();
+        if (root instanceof DatabindException databind) {
+            var path = databind.getPathReference();
+            if (path != null && !path.isEmpty()) {
+                return name + " at " + path;
+            }
+        }
+        return name;
     }
 
     /**
@@ -138,8 +167,8 @@ public final class UnknownHistoryGuard {
         return new UnknownWorkflowHistoryException(workflowId, sequenceNumber,
                 UnknownWorkflowHistoryException.Kind.UNKNOWN_EVENT_PAYLOAD,
                 ("Workflow '%s' has an event at sequence %d whose stored payload this build "
-                        + "cannot interpret (%s) — likely written by a newer node; standing this "
-                        + "run down without recording a failure")
+                        + "cannot interpret (%s) — a newer node or an incompatible payload change; "
+                        + "standing this run down without recording a failure")
                         .formatted(workflowId, sequenceNumber, detail),
                 structuredDetail);
     }

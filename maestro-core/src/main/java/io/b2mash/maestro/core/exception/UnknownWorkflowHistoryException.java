@@ -33,8 +33,13 @@ import io.b2mash.maestro.core.model.EventType;
  * written, <b>no compensation runs</b>, the instance keeps whatever
  * recoverable status it already had, and the instance lock is released as the
  * thread unwinds through {@code WorkflowExecutor.executeWorkflow}'s
- * {@code finally}. An upgraded node then adopts and processes the workflow
- * through the ordinary lock-TTL/recovery-poller machinery, unchanged.
+ * {@code finally}. What heals it depends on the {@link Kind}: for an unknown
+ * event <em>type</em> an upgraded node adopts and processes the workflow
+ * through the ordinary lock-TTL/recovery-poller machinery, unchanged; for an
+ * unreadable <em>payload</em> that holds only if a newer node wrote it — on a
+ * homogeneous fleet it is an incompatible payload change, healed by rolling
+ * back, gating the change with {@code workflow.version()}, or terminating; for
+ * nondeterministic history, by rolling back or gating the change.
  *
  * <h2>The failure this prevents</h2>
  * <p>Version N+1 of a service writes a new event type. A node still on version
