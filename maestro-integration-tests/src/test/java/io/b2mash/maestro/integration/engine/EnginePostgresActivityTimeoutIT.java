@@ -28,9 +28,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * the attempt is cancelled at the timeout and becomes an ordinary, retryable
  * {@link ActivityTimeoutException}: retried when the policy allows (and the
  * fast second attempt completes the workflow), persisted as
- * {@code ACTIVITY_FAILED} with the timeout's type when it does not. Both bounds
- * sit well under the 5 s sleep, so a build that does not enforce the timeout
- * fails them instead of passing slowly.
+ * {@code ACTIVITY_FAILED} with the timeout's type when it does not.
+ *
+ * <p>The discrimination comes from the result and status assertions, not from
+ * the wait bound: the 10 s {@code awaitTerminal} bound exceeds the 5 s sleep, so
+ * a build that does not enforce the timeout still reaches a terminal state —
+ * but the wrong one ({@code x-ok-after-1} instead of {@code x-ok-after-2};
+ * {@code COMPLETED} instead of {@code FAILED}).
  */
 @Tag("integration")
 @DisplayName("startToCloseTimeout bounds each activity attempt against a real Postgres store")

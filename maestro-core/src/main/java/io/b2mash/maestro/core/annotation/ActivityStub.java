@@ -51,8 +51,14 @@ public @interface ActivityStub {
      * ActivityTimeoutException}. That failure is retried under
      * {@link #retryPolicy()} like any other — list the exception in
      * {@code nonRetryableExceptions} to make a timeout terminal. Each retry
-     * gets the full timeout afresh. Also the base of the TTL of the
+     * gets the full timeout afresh, and {@code @Compensate} methods are bounded
+     * by the same timeout. Must be positive. Also the base of the TTL of the
      * distributed lock acquired during live execution.
+     *
+     * <p>Because the attempt runs on its own thread, activity code must not
+     * call workflow APIs or other activity proxies (unsupported); the
+     * {@code WorkflowContext} is re-bound there for compatibility only, and a
+     * {@code parallel()} branch's compensation buffer is not.
      *
      * @return the start-to-close timeout duration
      */

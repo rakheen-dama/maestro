@@ -14,6 +14,9 @@ import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.observe.ActivityInfo;
+import io.b2mash.maestro.core.observe.EngineObserver;
+import io.b2mash.maestro.core.observe.RecordingEngineObserver;
 import io.b2mash.maestro.core.retry.RetryExecutor;
 import io.b2mash.maestro.core.retry.RetryPolicy;
 import io.b2mash.maestro.core.spi.DistributedLock;
@@ -39,8 +42,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -478,12 +485,15 @@ class ActivityInvocationHandlerTest {
     @Test
     @DisplayName("Timeout: a late value from an attempt that ignored interruption is never memoized")   // Review Focus 3
     void lateValueAfterTimeout_isNeverMemoized() throws Exception {
+        var zombie = new SlowActivitiesImpl(Duration.ofMillis(400), true);
         withContext(() -> {
-            var proxy = createProxy(SlowActivities.class, new SlowActivitiesImpl(Duration.ofMillis(400), true),
+            var proxy = createProxy(SlowActivities.class, zombie,
                     RetryPolicy.noRetry(), Duration.ofMillis(50));
             assertThrows(ActivityExecutionException.class, proxy::slow);
         });
         Thread.sleep(700);   // let the uninterruptible attempt finish and try to "return"
+        assertTrue(zombie.returned.await(5, TimeUnit.SECONDS),
+                "the uninterruptible attempt must actually have run to its return, or this pin is vacuous");
         assertEquals(1, store.appendedEvents.size(), "exactly one event at this sequence");
         assertEquals(EventType.ACTIVITY_FAILED, store.appendedEvents.get(0).eventType(),
                 "the late 'late' value must not be persisted over the recorded timeout");
@@ -493,17 +503,62 @@ class ActivityInvocationHandlerTest {
     @DisplayName("Terminate requested before the call: no lock, no ACTIVITY_STARTED, no attempt (R22 part 3)")
     void terminateBeforeCall_publishesNoActivityStarted() {
         var calls = new AtomicInteger();
+        var observer = new RecordingEngineObserver();
         withContext(() -> {
             WorkflowContext.current().cancellation().requestTermination("operator");
             var proxy = createProxy(SlowActivities.class, () -> { calls.incrementAndGet(); return "ran"; },
-                    RetryPolicy.noRetry(), Duration.ofSeconds(30));
+                    RetryPolicy.noRetry(), Duration.ofSeconds(30), observer);
             assertThrows(WorkflowTerminatedException.class, proxy::slow);
         });
         assertTrue(messaging.publishedEvents.isEmpty(),
                 "a terminated run must not publish ACTIVITY_STARTED (or open an activity span)");
+        assertTrue(observer.invocations().isEmpty(),
+                "no observer callback either — in particular no activityStarted: " + observer.callbackNames());
         assertTrue(lock.acquiredKeys.isEmpty(), "no activity lock for a terminated run");
         assertTrue(store.appendedEvents.isEmpty());
         assertEquals(0, calls.get());
+    }
+
+    @Test
+    @DisplayName("Attempt thread: the observer's wrapActivityAttempt wrapper runs on the attempt thread, "
+            + "around the activity (R26)")
+    void observerWrapperRunsAroundTheAttemptOnTheAttemptThread() {
+        var workflowThread = new AtomicReference<Thread>();
+        var wrapperThread = new AtomicReference<Thread>();
+        var activityThread = new AtomicReference<Thread>();
+        var wrappedInfo = new AtomicReference<ActivityInfo>();
+        var observer = new EngineObserver() {
+            @Override
+            public <T> Callable<T> wrapActivityAttempt(ActivityInfo a, Callable<T> attempt) {
+                wrappedInfo.set(a);
+                return () -> {
+                    wrapperThread.set(Thread.currentThread());
+                    return attempt.call();
+                };
+            }
+        };
+        withContext(() -> {
+            workflowThread.set(Thread.currentThread());
+            var proxy = createProxy(SlowActivities.class, () -> {
+                activityThread.set(Thread.currentThread());
+                return "ok";
+            }, RetryPolicy.noRetry(), Duration.ofSeconds(30), observer);
+            assertEquals("ok", proxy.slow());
+        });
+        assertEquals("SlowActivities.slow", wrappedInfo.get().activityName());
+        assertEquals(1, wrappedInfo.get().sequenceNumber());
+        assertNotSame(workflowThread.get(), wrapperThread.get(), "the wrapper must run on the attempt thread");
+        assertSame(wrapperThread.get(), activityThread.get(), "the wrapper must run around the activity");
+    }
+
+    @Test
+    @DisplayName("Constructor: a zero or negative startToCloseTimeout is rejected up front")
+    void nonPositiveTimeout_isRejected() {
+        var zero = assertThrows(IllegalArgumentException.class, () ->
+                createProxy(SlowActivities.class, () -> "x", RetryPolicy.noRetry(), Duration.ZERO));
+        assertTrue(zero.getMessage().contains("startToCloseTimeout must be positive"), zero.getMessage());
+        assertThrows(IllegalArgumentException.class, () ->
+                createProxy(SlowActivities.class, () -> "x", RetryPolicy.noRetry(), Duration.ofSeconds(-1)));
     }
 
     // ── Helper methods ────────────────────────────────────────────────
@@ -513,6 +568,15 @@ class ActivityInvocationHandlerTest {
                 iface, impl, store, lock, messaging,
                 RetryPolicy.noRetry(), Duration.ofSeconds(30),
                 serializer, retryExecutor
+        );
+    }
+
+    private <T> T createProxy(Class<T> iface, T impl, RetryPolicy policy, Duration startToCloseTimeout,
+                              EngineObserver observer) {
+        return factory.createProxy(
+                iface, impl, store, lock, messaging,
+                policy, startToCloseTimeout,
+                serializer, retryExecutor, WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, observer
         );
     }
 
@@ -673,6 +737,8 @@ class ActivityInvocationHandlerTest {
     static final class SlowActivitiesImpl implements SlowActivities {
         private final Duration sleep;
         private final boolean ignoreInterrupt;
+        /** Counted down when an interrupt-ignoring attempt reaches its return. */
+        final CountDownLatch returned = new CountDownLatch(1);
 
         SlowActivitiesImpl(Duration sleep, boolean ignoreInterrupt) {
             this.sleep = sleep;
@@ -690,6 +756,7 @@ class ActivityInvocationHandlerTest {
                         // deliberately ignored: this attempt cannot be stopped
                     }
                 }
+                returned.countDown();
                 return "late";
             }
             return sleepThenReturn(sleep);

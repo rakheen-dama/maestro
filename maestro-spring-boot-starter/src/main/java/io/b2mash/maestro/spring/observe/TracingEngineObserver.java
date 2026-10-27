@@ -23,6 +23,7 @@ import java.time.Duration;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
@@ -333,6 +334,35 @@ public final class TracingEngineObserver implements EngineObserver {
             s.activity = span;
             s.activityScope = tracer.withSpan(span);
         });
+    }
+
+    /**
+     * Re-scopes the open activity span on the attempt thread (R26).
+     *
+     * <p>Each live attempt runs on its own virtual thread (C11), but the scope
+     * {@link #activityStarted} opened lives in this thread's {@link RunState}.
+     * Without this hook activity code would see no current span: its
+     * downstream instrumentation would start detached traces and a Kafka
+     * publish from inside the activity would carry no {@code traceparent}. The
+     * span is captured here, on the workflow thread, and put in scope around
+     * the attempt on the attempt thread; the scope is closed on that same
+     * thread on every exit path. The span itself is still ended by
+     * {@code activityCompleted}/{@code activityFailed} on the workflow thread.
+     */
+    @Override
+    public <T> Callable<T> wrapActivityAttempt(ActivityInfo a, Callable<T> attempt) {
+        var span = state.get().activity;
+        if (span == null) {
+            return attempt;
+        }
+        return () -> {
+            var scope = tracer.withSpan(span);
+            try {
+                return attempt.call();
+            } finally {
+                scope.close();
+            }
+        };
     }
 
     @Override

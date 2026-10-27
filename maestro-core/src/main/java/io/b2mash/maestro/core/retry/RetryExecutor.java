@@ -24,7 +24,8 @@ import java.util.concurrent.Callable;
  * as either a termination or a shutdown is requested, raising the matching
  * control-flow {@code Error}. A shutdown is deliberately not checked before an
  * attempt, so in-flight work drains. The attempt that is already executing is
- * never interrupted.
+ * never interrupted by cancellation; {@code startToCloseTimeout} (enforced
+ * inside the task by the activity proxy, not here) does interrupt an attempt.
  *
  * <p><b>Thread safety:</b> This class is stateless and thread-safe; the
  * {@link RunCancellation} is caller-owned (and itself thread-safe).

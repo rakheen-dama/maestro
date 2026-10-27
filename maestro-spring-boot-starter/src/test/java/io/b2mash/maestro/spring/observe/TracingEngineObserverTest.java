@@ -17,11 +17,14 @@ import org.slf4j.MDC;
 
 import java.time.Duration;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -96,6 +99,56 @@ class TracingEngineObserverTest {
     }
 
     // ── Segment + activity topology ───────────────────────────────────
+
+    @Test
+    @DisplayName("wrapActivityAttempt puts the activity span in scope on the attempt thread, "
+            + "and closes that scope when the attempt ends (R26)")
+    void wrappedAttemptSeesTheActivitySpanOnItsOwnThread() throws Exception {
+        observer.workflowStarted(WORKFLOW);
+        observer.activityStarted(CHARGE);
+        var workflowSide = otel.tracer().currentSpan();
+        assertNotNull(workflowSide, "activityStarted scopes the activity span on the workflow thread");
+
+        var seenSpanId = new AtomicReference<String>();
+        var seenTraceId = new AtomicReference<String>();
+        var afterAttempt = new AtomicReference<Object>("unset");
+        var wrapped = observer.wrapActivityAttempt(CHARGE, () -> {
+            var current = otel.tracer().currentSpan();
+            seenSpanId.set(current == null ? null : current.context().spanId());
+            seenTraceId.set(current == null ? null : current.context().traceId());
+            return "ok";
+        });
+
+        // The engine runs the wrapped attempt on a fresh virtual thread.
+        var result = new AtomicReference<Object>();
+        var attemptThread = Thread.ofVirtual().start(() -> {
+            try {
+                result.set(wrapped.call());
+            } catch (Exception e) {
+                result.set(e);
+            }
+            afterAttempt.set(otel.tracer().currentSpan());
+        });
+        attemptThread.join(5_000);
+
+        assertEquals("ok", result.get());
+        assertEquals(workflowSide.context().spanId(), seenSpanId.get(),
+                "activity code on the attempt thread must see the activity span as current");
+        assertEquals(workflowSide.context().traceId(), seenTraceId.get());
+        assertNull(afterAttempt.get(), "the attempt-thread scope must be closed when the attempt returns");
+
+        observer.activityCompleted(CHARGE, Duration.ofMillis(3), false);
+        observer.workflowCompleted(WORKFLOW);
+        assertEquals(seenSpanId.get(), otel.spansNamed(ACTIVITY).getFirst().getSpanId(),
+                "the span seen by activity code is the exported maestro.activity span");
+    }
+
+    @Test
+    @DisplayName("wrapActivityAttempt is the identity when no activity span is open")
+    void wrapWithoutOpenActivityIsIdentity() {
+        java.util.concurrent.Callable<String> attempt = () -> "ok";
+        assertSame(attempt, observer.wrapActivityAttempt(CHARGE, attempt));
+    }
 
     @Test
     @DisplayName("an activity span is a child of the run-segment span, and both carry the §3.2 attributes")

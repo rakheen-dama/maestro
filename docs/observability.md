@@ -222,6 +222,20 @@ branch, where no segment exists (see [Known limitations](#known-limitations)),
 they are parented to the fork point instead, so they still land in the same
 trace.
 
+**Activity code sees the activity span as current.** Each live activity attempt
+runs on its own virtual thread, bounded by `startToCloseTimeout`, while the
+span is opened on the workflow thread. Before handing an attempt to its thread
+the engine calls `EngineObserver.wrapActivityAttempt(info, attempt)` on the
+workflow thread; `TracingEngineObserver` captures the open `maestro.activity`
+span there and puts it in scope around the attempt on the attempt thread,
+closing that scope when the attempt returns or throws. So instrumentation
+inside the activity (HTTP clients, JDBC, a `KafkaTemplate` send, and
+`KafkaTracePropagation.inject` for a Maestro publish) nests under
+`maestro.activity` and propagates the workflow's trace across the service
+boundary. The span is still ended on the workflow thread. Pinned by
+`TracingEngineObserverTest` and, on a real broker, by
+`KafkaTracePropagationContractTest`.
+
 A workflow that runs, parks, resumes, and completes therefore renders as one
 trace containing a chain of `maestro.workflow.run` segments, each with its
 activity spans nested underneath.
@@ -536,7 +550,7 @@ The callback surface, grouped:
 |---|---|
 | Workflow lifecycle | `workflowStarted`, `workflowResumed`, `workflowCompleted`, `workflowFailed(w, exceptionType)`, `workflowCompensating`, `workflowTerminated` |
 | Parking | `workflowParked(w, ParkKind)`, `workflowUnparked(w, ParkKind)` — `ParkKind` is `SIGNAL` or `TIMER` |
-| Activities | `activityStarted`, `activityCompleted(a, duration, replayed)`, `activityFailed(a, duration, exceptionType, replayed)` |
+| Activities | `activityStarted`, `wrapActivityAttempt(a, attempt)` (workflow thread; the returned callable runs on the attempt thread), `activityCompleted(a, duration, replayed)`, `activityFailed(a, duration, exceptionType, replayed)` |
 | Signals | `signalPersisted`, `signalConsumed(s, replayed)` |
 | Timers | `timerScheduled(t, replayed)`, `timerFired(t, replayed)`, `timerCancelled(t, replayed)` |
 | Instance lock | `instanceLockAcquired`, `instanceLockRenewFailed`, `instanceLockLost` |
@@ -554,6 +568,12 @@ Rules for implementers:
   as a failure.
 - Callbacks run on engine threads, including workflow virtual threads. Keep them
   cheap and non-blocking; do no I/O.
+- **If you scope thread-local context per activity** (a span, an `Observation`,
+  anything activity code should see), implement `wrapActivityAttempt`: the
+  activity runs on its own attempt thread, not on the thread `activityStarted`
+  ran on. Capture the context in the call, re-establish it in the returned
+  callable, close it in a `finally`, and call the attempt exactly once.
+  Counting observers ignore the hook.
 
 ---
 

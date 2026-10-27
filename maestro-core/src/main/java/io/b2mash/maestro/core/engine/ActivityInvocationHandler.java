@@ -29,7 +29,9 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
@@ -63,9 +65,13 @@ import java.util.concurrent.TimeoutException;
  * <h2>Timeouts</h2>
  * <p>{@code startToCloseTimeout} bounds each live <em>attempt</em> on the wall
  * clock. Every attempt runs on its own virtual thread — carrying a copy of the
- * caller's MDC and its {@link WorkflowContext} binding, but no other
- * thread-local state of the workflow thread — while the workflow thread waits
- * at most the timeout for it. An attempt that overruns is cancelled — its
+ * caller's MDC, its {@link WorkflowContext} binding and whatever the
+ * {@link EngineObserver} re-establishes through
+ * {@link EngineObserver#wrapActivityAttempt} (the tracing adapter's activity
+ * span), but no other thread-local state of the workflow thread — while the
+ * workflow thread waits at most the timeout for it. {@code @Compensate}
+ * methods run through this same path and are bounded by the same timeout.
+ * An attempt that overruns is cancelled — its
  * thread is interrupted — and fails with an {@link ActivityTimeoutException},
  * which the {@link RetryPolicy} treats like any other failure: retried by
  * default, terminal if listed in {@code nonRetryableExceptions}. The workflow
@@ -74,6 +80,14 @@ import java.util.concurrent.TimeoutException;
  * bounded: nothing executes. The attempt counter is in-memory; a crash
  * mid-retry restarts the schedule at attempt 1, and the durable guarantee is
  * only that a <em>completed</em> attempt is never re-executed.
+ *
+ * <p><b>Activity code must not call workflow APIs</b> ({@code sleep},
+ * {@code awaitSignal}, {@code parallel}, {@code addCompensation}, ...) or other
+ * activity proxies — that is unsupported. The {@code WorkflowContext} is
+ * re-bound on the attempt thread for compatibility only, so such code keeps
+ * its pre-C11 behaviour where it can; the branch-compensation buffer of a
+ * {@code parallel()} branch ({@code BRANCH_COMPENSATIONS}) is <em>not</em>
+ * re-bound, and an attempt that outlives its timeout still holds the context.
  *
  * <h2>Thread Safety</h2>
  * <p>Each handler instance is associated with one activity interface but may be
@@ -187,7 +201,12 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      *                            {@code activityCompleted}/{@code activityFailed}
      *                            (live and replay, with the {@code replayed}
      *                            flag); never {@code null} (pass
-     *                            {@link EngineObserver#NOOP})
+     *                            {@link EngineObserver#NOOP}); also wraps each
+     *                            live attempt via
+     *                            {@link EngineObserver#wrapActivityAttempt}
+     * @throws IllegalArgumentException if {@code startToCloseTimeout} is zero or
+     *                                  negative — every attempt would time out
+     *                                  before it could run
      */
     public ActivityInvocationHandler(
             Object activityImpl,
@@ -202,6 +221,12 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             String lockKeyPrefix,
             EngineObserver observer
     ) {
+        Objects.requireNonNull(startToCloseTimeout, "startToCloseTimeout must not be null");
+        if (startToCloseTimeout.isZero() || startToCloseTimeout.isNegative()) {
+            throw new IllegalArgumentException(
+                    "startToCloseTimeout must be positive for activity '%s', was %s"
+                            .formatted(activityName, startToCloseTimeout));
+        }
         this.activityImpl = activityImpl;
         this.activityName = activityName;
         this.store = store;
@@ -384,7 +409,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             try {
                 result = retryExecutor.executeWithRetry(
                         retryPolicy,
-                        () -> invokeActivityBounded(method, args, ctx, stepName),
+                        () -> invokeActivityBounded(method, args, ctx, stepName, info),
                         stepName,
                         ctx.workflowId(),
                         ctx.cancellation()
@@ -443,7 +468,11 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * <p>The attempt thread gets a copy of the caller's MDC, so the activity
      * logs under the same {@code workflowId}/{@code runId}/{@code activityName}
      * keys it did when it ran on the workflow thread, and the caller's
-     * {@link WorkflowContext} is re-bound for the attempt's duration.
+     * {@link WorkflowContext} is re-bound for the attempt's duration (for
+     * compatibility only — see the class Javadoc). The attempt body is passed
+     * through {@link EngineObserver#wrapActivityAttempt} on this (the workflow)
+     * thread, so an observer can re-establish thread-local context — the
+     * tracing adapter's activity span — on the attempt thread (R26).
      *
      * <p>On timeout the attempt is cancelled with {@code cancel(true)} (its
      * thread is interrupted) and an {@link ActivityTimeoutException} is thrown
@@ -451,9 +480,10 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * only ever reaches the memoization log by being returned from here (the
      * workflow thread persists it), so a late value from an attempt that
      * ignored the interrupt is discarded with its {@code FutureTask} and can
-     * never be memoized. The timeout wins even if the attempt completes in the
-     * instant between the deadline and the cancel — the deadline is the
-     * contract, and an activity must be idempotent anyway.
+     * never be memoized. If the attempt finished in the instant between the
+     * deadline and the cancel ({@code cancel} returns {@code false}), its
+     * outcome is used instead of being discarded — discarding a completed
+     * attempt would only guarantee its re-execution.
      *
      * <p>An attempt that fails is unwrapped in the same order as
      * {@link #invokeActivity}: an {@link Error} (a control-flow signal among
@@ -462,23 +492,24 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      */
     private @Nullable Object invokeActivityBounded(
             Method method, @Nullable Object @Nullable [] args,
-            WorkflowContext ctx, String stepName
+            WorkflowContext ctx, String stepName, ActivityInfo info
     ) throws Exception {
+        // Re-bind the caller's WorkflowContext: before C11 the activity ran on
+        // the workflow thread and could see it, and code reached through it (a
+        // park that a shutdown or terminate unwinds) keeps behaving as it did.
+        // The workflow thread is blocked in get() meanwhile, so the context is
+        // never used from two live threads — except by an attempt that ignores
+        // the timeout's interrupt, whose result is discarded regardless.
+        Callable<@Nullable Object> body = () -> ScopedValue.where(WorkflowContext.scopedValue(), ctx)
+                .call(() -> invokeActivity(method, args));
+        var wrapped = observer.wrapActivityAttempt(info, body);
         var callerMdc = MDC.getCopyOfContextMap();
         var attempt = new FutureTask<@Nullable Object>(() -> {
             if (callerMdc != null) {
                 MDC.setContextMap(callerMdc);
             }
             try {
-                // Re-bind the caller's WorkflowContext: before C11 the activity
-                // ran on the workflow thread and could see it, and code reached
-                // through it (a nested proxy, a park that a shutdown or terminate
-                // unwinds) must keep behaving as it did. The workflow thread is
-                // blocked in get() meanwhile, so the context is never used from
-                // two live threads — except by an attempt that ignores the
-                // timeout's interrupt, whose result is discarded regardless.
-                return ScopedValue.where(WorkflowContext.scopedValue(), ctx)
-                        .call(() -> invokeActivity(method, args));
+                return wrapped.call();
             } finally {
                 MDC.clear();
             }
@@ -490,21 +521,18 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         try {
             return attempt.get(saturatedNanos(startToCloseTimeout), TimeUnit.NANOSECONDS);
         } catch (TimeoutException e) {
-            attempt.cancel(true);
+            if (!attempt.cancel(true)) {
+                // Completed between the timed get() and the cancel: the attempt
+                // did finish, so honour its outcome; get() cannot block now.
+                // Not unit-pinned: the window cannot be forced deterministically
+                // without a test-only seam in this method.
+                return completedOutcome(attempt);
+            }
             logger.warn("Activity '{}' in workflow '{}' exceeded its startToCloseTimeout of {}; "
                     + "attempt cancelled", stepName, ctx.workflowId(), startToCloseTimeout);
             throw new ActivityTimeoutException(ctx.workflowId(), stepName, startToCloseTimeout);
         } catch (ExecutionException e) {
-            var cause = e.getCause();
-            // Error first — see invokeActivity(): a control-flow signal must not
-            // be re-wrapped into a catchable, retryable RuntimeException.
-            if (cause instanceof Error err) {
-                throw err;
-            }
-            if (cause instanceof Exception ex) {
-                throw ex;
-            }
-            throw new RuntimeException(cause);
+            throw rethrowAttemptFailure(e);
         } catch (InterruptedException e) {
             // The engine never interrupts a workflow thread; a foreign interrupt
             // used to reach the activity itself (it ran on this thread), so pass
@@ -513,6 +541,34 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             Thread.currentThread().interrupt();
             throw e;
         }
+    }
+
+    /** The outcome of an attempt already known to be done and not cancelled. */
+    private static @Nullable Object completedOutcome(FutureTask<@Nullable Object> attempt) throws Exception {
+        try {
+            return attempt.get();
+        } catch (ExecutionException e) {
+            throw rethrowAttemptFailure(e);
+        }
+    }
+
+    /**
+     * Rethrows an attempt's failure: an {@link Error} first — see
+     * {@link #invokeActivity}: a control-flow signal must not be re-wrapped
+     * into a catchable, retryable {@code RuntimeException} — then an
+     * {@link Exception}, else a {@code RuntimeException} wrapping the cause.
+     * Never returns normally; declared to return an exception so call sites
+     * can {@code throw} it.
+     */
+    private static Exception rethrowAttemptFailure(ExecutionException e) throws Exception {
+        var cause = e.getCause();
+        if (cause instanceof Error err) {
+            throw err;
+        }
+        if (cause instanceof Exception ex) {
+            throw ex;
+        }
+        throw new RuntimeException(cause);
     }
 
     /** {@code d} in nanoseconds, saturating at {@code Long.MAX_VALUE} for a practically-infinite timeout. */
