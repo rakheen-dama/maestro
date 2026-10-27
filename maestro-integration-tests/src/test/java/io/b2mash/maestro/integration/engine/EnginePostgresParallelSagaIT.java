@@ -12,6 +12,7 @@ import io.b2mash.maestro.integration.support.PostgresIntegrationSupport;
 import io.b2mash.maestro.integration.support.RecordingObserver;
 import io.b2mash.maestro.integration.support.WorkflowHandle;
 import io.b2mash.maestro.integration.workflows.CountingActivities;
+import io.b2mash.maestro.integration.workflows.CountingActivities.ChainActivities;
 import io.b2mash.maestro.integration.workflows.CountingActivities.SagaActivities;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -122,6 +123,32 @@ class EnginePostgresParallelSagaIT extends PostgresIntegrationSupport {
             workflow.parallel(List.<Callable<String>>of(() -> "a", () -> "b"));
             workflow.parallel(List.<Callable<String>>of(() -> "a", () -> "b"));
             return input;
+        }
+    }
+
+    /**
+     * Registers an inline compensation that itself fans out with {@code parallel()}, then fails.
+     * A {@code Runnable} compensation is the only path where author code runs on the workflow
+     * thread during compensation.
+     */
+    @DurableWorkflow(name = "FanOutCompensationWorkflow")
+    public static class FanOutCompensationWorkflow {
+
+        @ActivityStub
+        ChainActivities chain;
+
+        /**
+         * @param input the seed value
+         * @return never; the workflow always fails
+         */
+        @Saga
+        @WorkflowMethod
+        public String run(String input) {
+            chain.stepOne(input);
+            WorkflowContext.current().addCompensation("undoFanOut", () ->
+                    WorkflowContext.current().parallel(List.<Callable<String>>of(
+                            () -> chain.stepTwo(input), () -> chain.stepThree(input))));
+            throw new IllegalStateException("boom");
         }
     }
 
@@ -265,6 +292,35 @@ class EnginePostgresParallelSagaIT extends PostgresIntegrationSupport {
                 "4001:SIDE_EFFECT:$maestro:parallel",
                 "4004001:WORKFLOW_FAILED:null"),
                 describe(handle));
+    }
+
+    @Test
+    @DisplayName("a compensation that fans out runs each branch once, in the entry's own block, past every forward slot")
+    void compensationThatForks_runsOnceInItsOwnBlock() {
+        var recorder = new CountingActivities.Recorder();
+        var observer = new RecordingObserver();
+        harness = MaestroEngineHarness.builder(store, objectMapper).serviceName("fan-out-comp").lock(newLock())
+                .observer(observer).build();
+        harness.registerActivities(ChainActivities.class, new CountingActivities.RecordingChainActivities(recorder));
+        harness.registerWorkflow(new FanOutCompensationWorkflow());
+        var handle = harness.start(MaestroEngineHarness.uniqueWorkflowId("fan-out-comp"),
+                FanOutCompensationWorkflow.class, "in");
+
+        assertEquals(WorkflowStatus.FAILED, handle.awaitTerminal(Duration.ofSeconds(30)));
+        assertEquals(1, recorder.count("stepOne"));
+        assertEquals(1, recorder.count("stepTwo"));
+        assertEquals(1, recorder.count("stepThree"));
+        assertEquals(List.of(
+                "1:ACTIVITY_COMPLETED:chain.stepOne",
+                "2:COMPENSATION_STARTED:$maestro:compensation",
+                "3000:COMPENSATION_STEP_COMPLETED:undoFanOut",
+                "3001:SIDE_EFFECT:$maestro:parallel",
+                "4001:COMPENSATION_COMPLETED:$maestro:compensation",
+                "4002:WORKFLOW_FAILED:null",
+                "3002001:ACTIVITY_COMPLETED:chain.stepTwo",
+                "3003001:ACTIVITY_COMPLETED:chain.stepThree"),
+                describe(handle));
+        assertEquals(List.of(), observer.standDowns());
     }
 
     // ── helpers ───────────────────────────────────────────────────────────
