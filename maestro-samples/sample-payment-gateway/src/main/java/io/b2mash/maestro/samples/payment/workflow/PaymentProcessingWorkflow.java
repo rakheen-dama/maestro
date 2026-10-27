@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.annotation.ActivityStub;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.RetryPolicy;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
+import io.b2mash.maestro.core.exception.ActivityExecutionException;
 import io.b2mash.maestro.samples.payment.activity.PaymentMessagingActivities;
 import io.b2mash.maestro.samples.payment.activity.PaymentProviderActivities;
 import io.b2mash.maestro.samples.payment.domain.PaymentProcessingResult;
@@ -16,8 +17,13 @@ import io.b2mash.maestro.samples.payment.exception.PaymentDeclinedException;
  * provider and publishing the result to Kafka.
  *
  * <p>Transient provider failures are retried automatically by Maestro with
- * exponential backoff (up to 30 attempts over ~10 minutes). Permanent
- * failures (card declined) are caught and published as a failed result.</p>
+ * exponential backoff (up to 30 attempts over ~10 minutes). A permanent
+ * failure (card declined) is listed as non-retryable on the provider stub, so
+ * it costs exactly one provider call. An activity's exception always reaches
+ * workflow code wrapped in {@link ActivityExecutionException}, so the decline
+ * is caught as that wrapper and recognised with
+ * {@code e.causedBy(PaymentDeclinedException.class)}; it is then published as a
+ * failed result.</p>
  */
 @DurableWorkflow(name = "payment-processing", taskQueue = "payments")
 public class PaymentProcessingWorkflow {
@@ -28,7 +34,8 @@ public class PaymentProcessingWorkflow {
                     maxAttempts = 30,
                     initialInterval = "PT5S",
                     maxInterval = "PT10M",
-                    backoffMultiplier = 2.0
+                    backoffMultiplier = 2.0,
+                    nonRetryableExceptions = PaymentDeclinedException.class
             ))
     private PaymentProviderActivities provider;
 
@@ -57,12 +64,13 @@ public class PaymentProcessingWorkflow {
 
             return PaymentProcessingResult.success(confirmation.transactionId());
 
-        } catch (PaymentDeclinedException e) {
-            messaging.publishPaymentResult(
-                    request.orderId(),
-                    PaymentResult.failed(e.getMessage())
-            );
-            return PaymentProcessingResult.declined(e.getMessage());
+        } catch (ActivityExecutionException e) {
+            if (!e.causedBy(PaymentDeclinedException.class)) {
+                throw e;
+            }
+            var reason = e.getCause().getMessage();
+            messaging.publishPaymentResult(request.orderId(), PaymentResult.failed(reason));
+            return PaymentProcessingResult.declined(reason);
         }
     }
 }

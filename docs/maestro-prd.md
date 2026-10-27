@@ -224,7 +224,8 @@ public class PaymentProcessingWorkflow {
             maxAttempts = 30,
             initialInterval = "PT5S",
             maxInterval = "PT10M",
-            backoffMultiplier = 2.0
+            backoffMultiplier = 2.0,
+            nonRetryableExceptions = PaymentDeclinedException.class
         ))
     private PaymentProviderActivities provider;
 
@@ -247,13 +248,18 @@ public class PaymentProcessingWorkflow {
 
             return PaymentProcessingResult.success(confirmation.transactionId());
 
-        } catch (PaymentDeclinedException e) {
-            // Permanent failure — card declined, insufficient funds, etc.
-            messaging.publishPaymentResult(
-                request.orderId(),
-                PaymentResult.failed(e.getMessage())
-            );
-            return PaymentProcessingResult.declined(e.getMessage());
+        } catch (ActivityExecutionException e) {
+            // An activity's exception always arrives wrapped; test the cause.
+            if (e.causedBy(PaymentDeclinedException.class)) {
+                // Permanent failure — card declined, insufficient funds, etc.
+                // (listed in nonRetryableExceptions above, so no retries)
+                messaging.publishPaymentResult(
+                    request.orderId(),
+                    PaymentResult.failed(e.getCause().getMessage())
+                );
+                return PaymentProcessingResult.declined(e.getCause().getMessage());
+            }
+            throw e;
         }
     }
 }

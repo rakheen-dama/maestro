@@ -135,6 +135,26 @@ The `@RetryPolicy` annotation configures automatic retries for failed activity i
 
 Backoff formula: `delay = min(initialInterval * backoffMultiplier^attempt, maxInterval)`.
 
+### Handling activity failures in workflow code
+
+An activity's exception **always** reaches the workflow method wrapped in `ActivityExecutionException`, both live and on replay. The original exception is available as `getCause()` and is tested with `causedBy(Class)`:
+
+```java
+try {
+    provider.charge(request.paymentMethod(), request.amount());
+} catch (ActivityExecutionException e) {
+    if (e.causedBy(PaymentDeclinedException.class)) {
+        // handle the business outcome
+    } else {
+        throw e;
+    }
+}
+```
+
+Why the wrapper is kept: on replay the engine may have to *reconstruct* the cause from its recorded class name (for example when the type has no public `(String)` constructor, or is no longer on the classpath), in which case `getCause()` is a `ReconstructedActivityFailure` rather than the original type. `causedBy` handles both cases, so `catch (PaymentDeclinedException e)` directly would silently never match.
+
+Retry interaction: an exception you intend to catch as a business outcome belongs in `nonRetryableExceptions`. Otherwise the policy retries it to exhaustion before the workflow ever sees it (30 attempts with up-to-10-minute backoff in the payment sample's case).
+
 ---
 
 ## The Determinism Rule

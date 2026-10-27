@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed — Activity failures: explicit catch contract, payment sample no longer retries a declined card 30×
+
+- **Before:** the PRD and the payment sample did `catch (PaymentDeclinedException e)`, which could never match because activity exceptions reach workflow code wrapped in `ActivityExecutionException`; the decline was also not non-retryable, so a declined card was retried up to 30 times with up-to-10-minute backoff.
+- **Now:** `ActivityExecutionException.causedBy(Class<? extends Throwable>)` matches the live cause by type, and a replay-reconstructed cause (`ReconstructedActivityFailure`) by `originalClassName()` (the named type or a subtype). The payment sample catches the wrapper, checks `causedBy`, and lists `PaymentDeclinedException` in `nonRetryableExceptions`; a decline costs exactly one provider call. The PRD, `docs/concepts.md` ("Handling activity failures in workflow code") and the samples README are corrected, and the sample gains its first `TestWorkflowEnvironment` test. Spec F2.
+
 ### Changed — Replayed activity failures never degrade to a bare `RuntimeException`
 
 - **Before:** a memoized activity failure was rebuilt by reflection — a `(String)` constructor, else a no-arg one (dropping the message), else a bare `RuntimeException` — so workflow code's `catch (MyDomainException)` behaved differently live and on replay.

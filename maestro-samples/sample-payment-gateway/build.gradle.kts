@@ -18,4 +18,7 @@ dependencies {
     runtimeOnly(libs.spring.boot.starter.jdbc)
     runtimeOnly(libs.spring.boot.starter.flyway)
     runtimeOnly(libs.spring.boot.starter.kafka)
+
+    testImplementation(project(":maestro-test"))
+    testImplementation(libs.spring.boot.starter.test)
 }

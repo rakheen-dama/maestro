@@ -118,7 +118,7 @@ curl -s -X POST http://localhost:8081/orders \
 Watch the logs — you'll see:
 1. Inventory reserved
 2. Payment request sent to Kafka
-3. Payment gateway immediately declines
+3. Payment gateway immediately declines (`PaymentDeclinedException` is declared non-retryable on the provider stub, so no retry happens; the workflow catches it as `ActivityExecutionException` and checks `causedBy`)
 4. Order workflow receives failure signal
 5. **Saga compensation**: inventory reservation is automatically released
 
