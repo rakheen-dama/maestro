@@ -7,6 +7,7 @@ import io.b2mash.maestro.core.exception.CompensationException;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
+import io.b2mash.maestro.core.exception.MaestroControlFlowError;
 import io.b2mash.maestro.core.exception.QueryNotDefinedException;
 import io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException;
 import io.b2mash.maestro.core.exception.UnknownWorkflowHistoryException;
@@ -1494,42 +1495,17 @@ public final class WorkflowExecutor {
             // and recovery replays it from the log. MUST stay ahead of
             // catch (Exception e) — DuplicateEventException is a MaestroException.
             handleStaleRunStandDown(ctx, staleRun);
+        } catch (Error e) {
+            // Sits after the control-flow arms above and before catch (Exception e):
+            // an Error that is NOT one of the three MaestroControlFlowError signals
+            // (StackOverflowError, AssertionError, ExceptionInInitializerError, ...)
+            // is a workflow failure. Before this arm it unwound through finally,
+            // released the lock and left the row RUNNING, so the recovery poller
+            // re-adopted it every pass forever — no log, no workflowFailed callback.
+            if (e instanceof MaestroControlFlowError) throw e; // owned by the arms above
+            failAndCompensate(ctx, instance, e, compensationStack, parallelCompensation);
         } catch (Exception e) {
-            try {
-                handleWorkflowFailure(ctx, instance, e, compensationStack, parallelCompensation);
-            } catch (ExecutorShutdownException shutdownDuringCompensation) {
-                // Shutdown landed while compensating a genuine failure. The
-                // compensation actions that already ran are memoized (they
-                // went through the activity proxy); the instance is still
-                // COMPENSATING — an active, recoverable status — and no
-                // COMPENSATION_STEP_FAILED was recorded for the interrupted
-                // step (SagaManager rethrows this instead of recording it).
-                // Treat it exactly like a shutdown during a park: leave the
-                // durable state alone for the next node to finish.
-                handleShutdownSuspension(ctx);
-            } catch (WorkflowTerminatedException terminatedDuringCompensation) {
-                // Terminate landed while compensating. The remaining
-                // compensations do not run — that is terminate's contract —
-                // and the TERMINATED row already stands, so nothing is written.
-                handleTermination(ctx, terminatedDuringCompensation);
-            } catch (UnknownWorkflowHistoryException unreadableDuringCompensation) {
-                // A compensation replay read met history this build cannot
-                // interpret. SagaManager rethrows instead of recording
-                // COMPENSATION_STEP_FAILED (a stand-down is not a failed
-                // reversal — nothing ran), the instance stays COMPENSATING —
-                // active and recoverable — and an upgraded node finishes the
-                // unwind. Nothing is written here.
-                handleUnknownHistoryStandDown(ctx, unreadableDuringCompensation);
-            } catch (DuplicateEventException staleDuringCompensation) {
-                // The duplicate landed while compensating a genuine failure:
-                // another runner adopted the workflow and is compensating it
-                // (or already finished). SagaManager rethrows instead of
-                // recording COMPENSATION_STEP_FAILED, exactly like the shutdown
-                // case; the instance stays COMPENSATING — active and
-                // recoverable — and the winner's compensation run finishes the
-                // job. Nothing is written here.
-                handleStaleRunStandDown(ctx, staleDuringCompensation);
-            }
+            failAndCompensate(ctx, instance, e, compensationStack, parallelCompensation);
         } finally {
             // Remove-then-release: a concurrent recovery attempt in the gap
             // still sees the lock held and skips — retried by the next poll
@@ -1701,14 +1677,64 @@ public final class WorkflowExecutor {
 
     // ── Internal: failure handling ─────────────────────────────────────
 
-    private void handleWorkflowFailure(
+    /**
+     * The single entry for "record FAILED and compensate", shared by the
+     * {@code Exception} and non-control-flow {@code Error} arms of
+     * {@link #executeWorkflow}. A stand-down signal landing while compensating
+     * is routed to its own handler rather than recorded as a failure.
+     */
+    private void failAndCompensate(
             WorkflowContext ctx,
             WorkflowInstance instance,
-            Exception exception,
+            Throwable failure,
             CompensationStack compensationStack,
             boolean parallelCompensation
     ) {
-        logger.error("Workflow '{}' failed: {}", ctx.workflowId(), exception.getMessage(), exception);
+        try {
+            handleWorkflowFailure(ctx, instance, failure, compensationStack, parallelCompensation);
+        } catch (ExecutorShutdownException shutdownDuringCompensation) {
+            // Shutdown landed while compensating a genuine failure. The
+            // compensation actions that already ran are memoized (they
+            // went through the activity proxy); the instance is still
+            // COMPENSATING — an active, recoverable status — and no
+            // COMPENSATION_STEP_FAILED was recorded for the interrupted
+            // step (SagaManager rethrows this instead of recording it).
+            // Treat it exactly like a shutdown during a park: leave the
+            // durable state alone for the next node to finish.
+            handleShutdownSuspension(ctx);
+        } catch (WorkflowTerminatedException terminatedDuringCompensation) {
+            // Terminate landed while compensating. The remaining
+            // compensations do not run — that is terminate's contract —
+            // and the TERMINATED row already stands, so nothing is written.
+            handleTermination(ctx, terminatedDuringCompensation);
+        } catch (UnknownWorkflowHistoryException unreadableDuringCompensation) {
+            // A compensation replay read met history this build cannot
+            // interpret. SagaManager rethrows instead of recording
+            // COMPENSATION_STEP_FAILED (a stand-down is not a failed
+            // reversal — nothing ran), the instance stays COMPENSATING —
+            // active and recoverable — and an upgraded node finishes the
+            // unwind. Nothing is written here.
+            handleUnknownHistoryStandDown(ctx, unreadableDuringCompensation);
+        } catch (DuplicateEventException staleDuringCompensation) {
+            // The duplicate landed while compensating a genuine failure:
+            // another runner adopted the workflow and is compensating it
+            // (or already finished). SagaManager rethrows instead of
+            // recording COMPENSATION_STEP_FAILED, exactly like the shutdown
+            // case; the instance stays COMPENSATING — active and
+            // recoverable — and the winner's compensation run finishes the
+            // job. Nothing is written here.
+            handleStaleRunStandDown(ctx, staleDuringCompensation);
+        }
+    }
+
+    private void handleWorkflowFailure(
+            WorkflowContext ctx,
+            WorkflowInstance instance,
+            Throwable failure,
+            CompensationStack compensationStack,
+            boolean parallelCompensation
+    ) {
+        logger.error("Workflow '{}' failed: {}", ctx.workflowId(), failure.getMessage(), failure);
 
         // Run compensations via SagaManager if any are registered
         if (!compensationStack.isEmpty()) {
@@ -1737,8 +1763,8 @@ public final class WorkflowExecutor {
         // Update instance to FAILED
         try {
             var errorPayload = serializer.serialize(new ErrorDetail(
-                    exception.getClass().getName(),
-                    exception.getMessage()
+                    failure.getClass().getName(),
+                    failure.getMessage()
             ));
             if (transitionToTerminal(ctx, instance, WorkflowStatus.FAILED, errorPayload)) {
                 // Winner-only, and emitted before the append for the same
@@ -1746,7 +1772,7 @@ public final class WorkflowExecutor {
                 // outcome is already written, so nothing that follows may
                 // decide whether it is observed.
                 emit("workflowFailed", ctx.workflowId(), () ->
-                        observer.workflowFailed(observed(instance), exception.getClass().getName()));
+                        observer.workflowFailed(observed(instance), failure.getClass().getName()));
 
                 appendEvent(ctx, EventType.WORKFLOW_FAILED, null, errorPayload);
                 publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_FAILED, null);

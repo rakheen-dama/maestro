@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed — A JVM Error escaping a workflow method now ends the workflow FAILED
+
+- **Before:** an `Error` thrown out of the workflow body (`AssertionError`, `StackOverflowError`, `ExceptionInInitializerError`, ...) was caught by nothing in `executeWorkflow`. The `finally` released the instance lock and the row stayed `RUNNING`, so the recovery poller re-adopted it on every pass, forever — with no log line and no `workflowFailed` observer callback.
+- **Now:** such an `Error` takes the same path as an exception: an `ERROR` log, the `workflowFailed` callback, registered compensations, and a `WORKFLOW_FAILED` event carrying the `Error`'s class name; the row ends `FAILED` and is never re-adopted. The three control-flow signals (`ExecutorShutdownException`, `WorkflowTerminatedException`, `UnknownWorkflowHistoryException`) are unaffected and still stand down. Spec C8.
+
 ### Changed — The 999-step-per-branch limit is enforced
 
 A parallel branch owns a 1000-number sequence block, so it can take at most 999 memoized steps. Previously a branch's 1000th step landed on the sibling's *base* slot (which the sibling never writes); collisions with the sibling's own events began at step 1001, or at the 1000th step when a nested fork sat at that base (replaying a sibling's result or colliding on the unique index). A branch context is now bounded: the 1000th direct step throws `BranchSequenceExhaustedException` (a `MaestroException`), failing the branch and therefore the workflow, and registered compensations run. The bound applies to `parallel()` branches and parallel-compensation branches alike (a compensation branch that exhausts its block is recorded `COMPENSATION_STEP_FAILED` with the typed cause). A nested `parallel()` inside a branch is unaffected. **Upgrade note:** an in-flight history whose branch took exactly 1000 direct steps used to complete and will now fail with `BranchSequenceExhaustedException` on replay after upgrade; the upgrade-together/drain guidance in the C1 entry below applies. See docs/concepts.md § Parallel Execution.

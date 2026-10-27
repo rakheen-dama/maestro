@@ -50,6 +50,24 @@ public final class TestWorkflows {
         }
     }
 
+    /** Runs one activity, then throws a JVM Error — the fixture for C8. */
+    @DurableWorkflow(name = "ErrorThrowingWorkflow")
+    public static class ErrorThrowingWorkflow {
+
+        @ActivityStub
+        ChainActivities activities;
+
+        /**
+         * @param input the seed value
+         * @return never returns normally
+         */
+        @WorkflowMethod
+        public String run(String input) {
+            activities.stepOne(input);
+            throw new AssertionError("boom");
+        }
+    }
+
     /**
      * Runs one activity, parks until a signal arrives, then runs another —
      * the fixture for park/wake, pre-arrived signals and orphan adoption.
