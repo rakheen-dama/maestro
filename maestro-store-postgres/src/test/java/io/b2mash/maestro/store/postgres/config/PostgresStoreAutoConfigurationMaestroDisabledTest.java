@@ -31,7 +31,7 @@ class PostgresStoreAutoConfigurationMaestroDisabledTest {
                 .withConfiguration(AutoConfigurations.of(PostgresStoreAutoConfiguration.class))
                 .withBean(DataSource.class, () -> mock(DataSource.class))
                 .withBean(ObjectMapper.class, ObjectMapper::new)
-                .withPropertyValues("maestro.enabled=false", "maestro.service-name=x")
+                .withPropertyValues("maestro.enabled=false", "maestro.service-name=x", "maestro.store.schema.mode=none")
                 .run(ctx -> {
                     assertThat(ctx).hasNotFailed();
                     assertThat(ctx).doesNotHaveBean(WorkflowStore.class);

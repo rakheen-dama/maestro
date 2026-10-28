@@ -56,7 +56,7 @@ abstract class PostgresMessagingTestSupport {
             if (!migrated) {
                 Flyway.configure()
                         .dataSource(dataSource)
-                        .locations("classpath:db/migration")
+                        .locations("classpath:db/maestro/messaging")
                         .load()
                         .migrate();
                 migrated = true;

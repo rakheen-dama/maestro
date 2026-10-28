@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.spring.client.MaestroClient;
 import io.b2mash.maestro.spring.config.MaestroAutoConfiguration;
 import io.b2mash.maestro.store.postgres.PostgresWorkflowStore;
+import io.b2mash.maestro.store.postgres.schema.MaestroSchemaInitializer;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -107,10 +108,38 @@ class PostgresStoreAutoConfigurationTest {
                 .withConfiguration(AutoConfigurations.of(withEngine(moduleAutoConfigurations())))
                 .withBean(ObjectMapper.class, ObjectMapper::new)
                 .withBean(DataSource.class, () -> mock(DataSource.class))
-                .withPropertyValues("maestro.service-name=test-service")
+                .withPropertyValues("maestro.service-name=test-service", "maestro.store.schema.mode=none")
                 .run(context -> {
                     assertThat(context).hasSingleBean(WorkflowStore.class);
                     assertThat(context).hasSingleBean(MaestroClient.class);
+                });
+    }
+
+    @Test
+    void schemaModeBindsFromEnvironment() {
+        storeRunner()
+                .withBean(DataSource.class, () -> mock(DataSource.class))
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(MaestroSchemaInitializer.class);
+                });
+        storeRunner()
+                .withBean(DataSource.class, () -> mock(DataSource.class))
+                .withPropertyValues("maestro.store.schema.mode=bogus")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure()).rootCause()
+                            .isInstanceOf(IllegalArgumentException.class)
+                            .hasMessageContaining("maestro.store.schema.mode 'bogus'")
+                            .hasMessageContaining("flyway, validate, none");
+                });
+        // Case-insensitive, as Boot's lenient enum binding would be.
+        storeRunner()
+                .withBean(DataSource.class, () -> mock(DataSource.class))
+                .withPropertyValues("maestro.store.schema.mode=NONE")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(MaestroSchemaInitializer.class);
                 });
     }
 
@@ -131,11 +160,17 @@ class PostgresStoreAutoConfigurationTest {
 
     // ── helpers ─────────────────────────────────────────────────────
 
+    /**
+     * The {@link DataSource} in these tests is a Mockito mock, so the schema
+     * initializer is switched off ({@code maestro.store.schema.mode=none}) —
+     * a real Flyway run against it would fail. A later
+     * {@code withPropertyValues} overrides it where a test needs another mode.
+     */
     private ApplicationContextRunner storeRunner() {
         return new ApplicationContextRunner()
                 .withConfiguration(AutoConfigurations.of(moduleAutoConfigurations()))
                 .withBean(ObjectMapper.class, ObjectMapper::new)
-                .withPropertyValues("maestro.service-name=test-service");
+                .withPropertyValues("maestro.service-name=test-service", "maestro.store.schema.mode=none");
     }
 
     private static Class<?>[] moduleAutoConfigurations() {

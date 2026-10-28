@@ -118,7 +118,7 @@ graph TB
 | `maestro-core` | Execution engine, hybrid memoization, virtual threads, timers, signals, saga, queries. | **No** |
 | `maestro-spring-boot-starter` | Auto-configuration, annotation scanning, activity proxy creation, config binding, health indicators. | Yes |
 | `maestro-store-jdbc` | Abstract JDBC `WorkflowStore`. | No (JDBC only) |
-| `maestro-store-postgres` | Postgres implementation + Flyway 11 migrations. | No |
+| `maestro-store-postgres` | Postgres implementation + Flyway 11 migrations (own history table). | No |
 | `maestro-messaging-kafka` | Spring Kafka 4.x `WorkflowMessaging` implementation. `@MaestroSignalListener` processing. | Yes |
 | `maestro-messaging-postgres` | PostgreSQL-based `WorkflowMessaging` + `SignalNotifier`. No external broker required. | No |
 | `maestro-lock-valkey` | Lettuce-based `DistributedLock`. | No |

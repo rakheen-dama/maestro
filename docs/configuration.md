@@ -44,8 +44,27 @@ Properties under `maestro.store.*` control the workflow persistence layer.
 | Property                   | Type     | Default     | Description                                                                                              |
 |----------------------------|----------|-------------|----------------------------------------------------------------------------------------------------------|
 | `maestro.store.type`       | `String` | `"postgres"`| Store implementation type. Currently only `postgres` is supported.                                       |
+| `maestro.store.schema.mode`| `String` | `"flyway"`  | `flyway` applies pending Maestro migrations; `validate` fails startup if any are pending; `none` skips — you own the DDL. Case-insensitive. See [Schema management](#schema-management). |
 
 **Isolating services that share a database.** Maestro's tables are always named `maestro_*`. Two services must never share a `maestro_workflow_instance` table, so give each service its own Postgres schema and point its datasource at it — `jdbc:postgresql://host/db?currentSchema=order_service` or `spring.datasource.hikari.schema: order_service`. Maestro's migrations (see [Schema management](#schema-management)) run in the connection's current schema, so no further configuration is needed. `maestro.store.table-prefix` was removed; setting it fails startup.
+
+### Schema management
+
+`maestro-store-postgres` creates and upgrades Maestro's `maestro_*` tables at startup with an embedded Flyway run that Maestro owns: it records what it applied in its **own history table, `maestro_schema_history`**, and never reads or writes your application's `flyway_schema_history`. Your `spring.flyway.*` settings (location, table, baseline, `enabled`) apply only to your own Flyway and are unaffected — a `V1__init.sql` of yours in `classpath:db/migration` does not collide with Maestro's `V1`. Your application does not need `spring-boot-starter-flyway` for Maestro; Flyway is already a runtime dependency of `maestro-store-postgres`. You do need `spring-boot-starter-jdbc` (for the `DataSource`).
+
+Each Maestro Postgres module ships its SQL under its own classpath location, in its own version band, and advertises that location in a `META-INF/maestro/schema-locations` resource; the initializer applies every location it finds on the classpath:
+
+| Module                       | Location                         | Versions  |
+|------------------------------|----------------------------------|-----------|
+| `maestro-store-postgres`     | `classpath:db/maestro/store`     | 1–99      |
+| `maestro-lock-postgres`      | `classpath:db/maestro/lock`      | 100–199   |
+| `maestro-messaging-postgres` | `classpath:db/maestro/messaging` | 200–299   |
+
+The initializer runs after your application's own database initializers (its Flyway, Liquibase or `spring.sql.init` scripts) and before the store and engine beans are created. When it first meets a schema that already holds your tables, it writes a baseline marker row at version `0` into `maestro_schema_history` and then applies every Maestro migration — your tables are not touched. Several nodes starting at once are safe: Flyway serialises concurrent runs with a database lock. (If you add Flyway to your own application *later*, against a database that already holds Maestro's tables, your Flyway needs `spring.flyway.baseline-on-migrate: true` for its first run, as for any non-empty schema.)
+
+**`validate` and `none`.** With `maestro.store.schema.mode: validate` Maestro applies nothing and fails startup — naming the pending versions — if any migration is pending, or if an applied one no longer matches the shipped SQL; it reads `maestro_schema_history`, so whoever applies the SQL out of band must record it there (e.g. the Flyway CLI with `-table=maestro_schema_history` and the locations above). With `none` Maestro does nothing and reads no history: you apply the SQL under the locations above yourself, in version order, before deploying the build that ships it. A build at or past V5 omits `received_at` from signal inserts, so a self-managed database must have V5 applied (`ALTER TABLE maestro_workflow_signal ALTER COLUMN received_at SET DEFAULT now()`) before that build is deployed, or every signal insert fails.
+
+**Upgrading an existing database.** A database migrated by an earlier Maestro build (before Maestro owned its history) has Maestro's rows in your `flyway_schema_history` and no `maestro_schema_history`; the new build's first run then fails, because Maestro's `V1` tries to create tables that already exist. Maestro is pre-1.0 and there is no data-preserving path: drop the `maestro_*` tables and delete Maestro's rows from `flyway_schema_history` (versions 1–5, 100, 200 and 201 — the rows whose scripts are Maestro's), then restart and let Maestro recreate its schema. Alternatively keep the existing tables and set `maestro.store.schema.mode: none`, taking over Maestro's DDL from then on.
 
 ---
 
@@ -244,7 +263,7 @@ JVM dead-letters after `max-attempts` crashes instead of looping forever.
 
 When `maestro.messaging.type: postgres`, Maestro uses PostgreSQL queue tables with `LISTEN/NOTIFY` for immediate notification and polling as a fallback. No Kafka infrastructure is needed.
 
-The Postgres messaging module shares the same `DataSource` as the workflow store. Additional Flyway migrations create the queue tables (`maestro_task_queue`, `maestro_signal_queue`, `maestro_lifecycle_event_queue`).
+The Postgres messaging module shares the same `DataSource` as the workflow store. Its queue tables (`maestro_task_queue`, `maestro_signal_queue`, `maestro_lifecycle_event_queue`) are created by Maestro's schema initializer from `classpath:db/maestro/messaging` (see [Schema management](#schema-management)).
 
 **Dependencies:**
 ```kotlin
@@ -291,7 +310,7 @@ set, `spring.data.redis.host`/`port`/`password` are not consulted at all.
 
 When `maestro.lock.type: postgres`, Maestro uses PostgreSQL tables for distributed locking and leader election. Locks use `INSERT ... ON CONFLICT` with token-based ownership and TTL-based expiry.
 
-The Postgres lock module shares the same `DataSource` as the workflow store. Flyway migrations create the lock tables (`maestro_distributed_lock`, `maestro_leader_election`).
+The Postgres lock module shares the same `DataSource` as the workflow store. Its lock tables (`maestro_distributed_lock`, `maestro_leader_election`) are created by Maestro's schema initializer from `classpath:db/maestro/lock` (see [Schema management](#schema-management)).
 
 **Dependencies:**
 ```kotlin

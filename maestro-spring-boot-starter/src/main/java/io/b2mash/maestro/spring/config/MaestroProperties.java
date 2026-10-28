@@ -204,14 +204,37 @@ public class MaestroProperties {
      * <p>Tables live in the connection's default schema; use the JDBC URL's
      * {@code currentSchema} parameter to relocate them.
      *
-     * @param type store implementation type (e.g., {@code "postgres"})
+     * @param type   store implementation type (e.g., {@code "postgres"})
+     * @param schema how Maestro manages its own tables at startup
      */
     public record StoreProperties(
-            @DefaultValue("postgres") String type
+            @DefaultValue("postgres") String type,
+            @DefaultValue SchemaProperties schema
     ) {
         /** @return the defaults documented above */
         public static StoreProperties defaults() {
-            return new StoreProperties("postgres");
+            return new StoreProperties("postgres", SchemaProperties.defaults());
+        }
+    }
+
+    /**
+     * Schema management for Maestro's own {@code maestro_*} tables.
+     *
+     * <p>Read at startup by the Postgres store's schema initializer straight
+     * from the {@code Environment} (it runs before this class is bound); bound
+     * here so the property is documented and visible in configuration
+     * metadata. Maestro records its migrations in its own
+     * {@code maestro_schema_history} table and never touches the host
+     * application's Flyway or {@code flyway_schema_history}.
+     *
+     * @param mode {@code flyway} applies pending Maestro migrations;
+     *             {@code validate} fails startup if any are pending;
+     *             {@code none} skips — the operator owns the DDL
+     */
+    public record SchemaProperties(@DefaultValue("flyway") String mode) {
+        /** @return the defaults documented above */
+        public static SchemaProperties defaults() {
+            return new SchemaProperties("flyway");
         }
     }
 

@@ -22,8 +22,9 @@ import java.sql.Types;
  * </ul>
  *
  * <p>Flyway migrations for the schema are in
- * {@code src/main/resources/db/migration/} and must be applied before
- * using this store.
+ * {@code classpath:db/maestro/store} and must be applied before using this
+ * store — {@link io.b2mash.maestro.store.postgres.schema.MaestroSchemaInitializer}
+ * does so (the auto-configuration runs it at startup).
  *
  * <h2>Thread Safety</h2>
  * <p>This class is thread-safe — all state is immutable after construction.

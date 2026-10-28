@@ -4,6 +4,8 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.integration.support.PostgresIntegrationSupport;
 import io.b2mash.maestro.integration.support.TerminalWait;
+import io.b2mash.maestro.store.postgres.schema.MaestroSchemaInitializer;
+import io.b2mash.maestro.store.postgres.schema.SchemaMode;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.NewTopic;
@@ -13,7 +15,6 @@ import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
-import org.flywaydb.core.Flyway;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Tag;
 import org.springframework.kafka.core.ConsumerFactory;
@@ -61,7 +62,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * exists. Ryuk removes the container when the JVM exits.
  *
  * <h2>Schema</h2>
- * <p>Flyway runs in the static initialiser, not in a {@code @BeforeEach}: the
+ * <p>Maestro's schema initializer runs in the static initialiser, not in a
+ * {@code @BeforeEach}: the
  * Spring context is built before any {@code @BeforeEach} runs and its
  * {@code StartupRecoveryRunner} queries {@code maestro_workflow_instance} during
  * startup, so the schema has to exist before the context is created. The
@@ -100,12 +102,8 @@ abstract class KafkaSpringIntegrationSupport extends PostgresIntegrationSupport 
     static {
         KAFKA.start();
 
-        var dataSource = newDataSource();
-        Flyway.configure()
-                .dataSource(dataSource)
-                .locations("classpath:db/migration")
-                .load()
-                .migrate();
+        new MaestroSchemaInitializer(newDataSource(), SchemaMode.FLYWAY,
+                KafkaSpringIntegrationSupport.class.getClassLoader()).initialize();
 
         PRODUCER = new KafkaTemplate<>(new DefaultKafkaProducerFactory<>(Map.of(
                 ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers(),

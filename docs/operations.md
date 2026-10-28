@@ -281,8 +281,8 @@ with no Valkey pub/sub present — bounded, by design, never a correctness
 dependency.
 
 **Schema footprint note.** Because the sample now depends on both lock
-modules to make the `E2E_LOCK_BACKEND` switch possible, Flyway's classpath
-scan picks up the Postgres-lock migration regardless of which backend is
+modules to make the `E2E_LOCK_BACKEND` switch possible, Maestro's schema
+initializer picks up the Postgres-lock migration regardless of which backend is
 configured — a **default (Valkey) boot now also creates the (unused, inert)
 `maestro_distributed_lock`/`maestro_leader_election` tables** in the sample's
 databases. See `maestro-samples/sample-loan-origination/README.md` and
@@ -612,6 +612,8 @@ recovery pass it feeds, still completes
 ### 10.6 Schema migrations
 
 Maestro's migrations always target `maestro_*` tables and are applied by Maestro itself at startup in the connection's current schema, so upgrades need no manual SQL. The former custom-prefix mode (`maestro.store.table-prefix`) is gone; to isolate services sharing a database, give each its own Postgres schema (see `docs/configuration.md` § Store Configuration).
+
+Maestro records what it applied in its **own Flyway history table, `maestro_schema_history`** — never your application's `flyway_schema_history`, whose `spring.flyway.*` settings it ignores. Each Maestro Postgres module ships its SQL under its own location and version band (`classpath:db/maestro/store` 1–99, `classpath:db/maestro/lock` 100–199, `classpath:db/maestro/messaging` 200–299), and every location on the classpath is applied. In a rolling or mixed-version deploy the first node of the new build applies the new migrations before its engine starts; Flyway's database lock makes concurrent starts safe, and Maestro's migrations to date are additive, so older nodes keep working against the newer schema (the deploy rule in §10.1 still applies). `maestro.store.schema.mode: validate` makes a node fail startup instead when migrations are pending; `none` hands the DDL to you entirely. A database migrated by a build from before Maestro owned its history must have its `maestro_*` tables dropped (pre-1.0, no data-preserving path) — see `docs/configuration.md` § Schema management.
 
 ### 10.7 Replay drift: `nondeterministic_history`
 

@@ -50,6 +50,7 @@ dependencies {
 
     // Spring Boot
     implementation("org.springframework.boot:spring-boot-starter-webmvc")
+    implementation("org.springframework.boot:spring-boot-starter-jdbc")
 
     // Test
     testImplementation("io.b2mash.maestro:maestro-test")
@@ -177,7 +178,7 @@ spring:
       port: 6379
 ```
 
-Maestro uses Flyway to create its `maestro_*` tables automatically on startup. No manual DDL required.
+Maestro creates and upgrades its own `maestro_*` tables at startup with an embedded Flyway run, recorded in its own history table `maestro_schema_history`. Your application's Flyway (if any) and its `flyway_schema_history` are untouched — a `V1__init.sql` of your own does not collide with Maestro's `V1`. Set `maestro.store.schema.mode: validate` to fail startup instead when migrations are pending, or `none` to apply the SQL yourself.
 
 ---
 

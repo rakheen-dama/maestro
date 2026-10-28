@@ -57,7 +57,7 @@ abstract class PostgresTestSupport {
             if (!migrated) {
                 Flyway.configure()
                         .dataSource(dataSource)
-                        .locations("classpath:db/migration")
+                        .locations("classpath:db/maestro/store")
                         .load()
                         .migrate();
                 migrated = true;

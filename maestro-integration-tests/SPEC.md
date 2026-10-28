@@ -92,9 +92,11 @@ abstract class PostgresIntegrationSupport {
 }
 ```
 
-- Flyway migrates `classpath:db/migration` **once per container**, guarded by a
-  static flag — this applies the store (V1–V99), lock (V100–V199) and messaging
-  (V200–V299) bands together. Version bands are pinned by
+- `MaestroSchemaInitializer` migrates **once per container**, from the static
+  initialiser — it applies every module's `classpath:db/maestro/*` location, so
+  the store (V1–V99), lock (V100–V199) and messaging (V200–V299) bands together,
+  into `maestro_schema_history`. (`src/test/resources/db/migration` holds only a
+  stand-in *host* `V1__init.sql` for the coexistence suite.) Version bands are pinned by
   `schema.MaestroMigrationsCoexistIT`; never reuse another module's band.
 - `@BeforeEach` truncates every `maestro_*` table for isolation. The container
   is **never** restarted between tests.
@@ -110,7 +112,7 @@ Both container fixtures start from a **static initialiser**, never via
 `@Testcontainers`/`@Container`. That extension stops a static container when its
 test *class* ends, so an inherited container is recreated per subclass — and a
 cached `@SpringBootTest` context then holds factories bound to a dead broker.
-Flyway likewise runs in the static initialiser, because Spring refreshes the
+The schema initializer likewise runs in the static initialiser, because Spring refreshes the
 context (and `StartupRecoveryRunner` queries `maestro_workflow_instance`)
 *before* any `@BeforeEach` runs.
 
