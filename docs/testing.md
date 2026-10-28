@@ -15,7 +15,7 @@ The module provides an in-memory Maestro engine for testing durable workflows. N
 What you get:
 
 - **Real execution engine.** The same `WorkflowExecutor` that runs in production, backed by in-memory SPI implementations.
-- **Deterministic time.** A `ControllableClock` replaces wall-clock time. Call `advanceTime(Duration.ofDays(30))` and all due timers fire immediately.
+- **Deterministic time.** A `ControllableClock` replaces wall-clock time. Call `advanceTime(Duration.ofDays(30).plusSeconds(1))` and every timer due by then fires immediately (step just past the duration — see [How It Works](#how-it-works)).
 - **Signal self-recovery testing.** Pre-deliver signals before a workflow starts to verify the orphan adoption path.
 - **Full event log inspection.** Assert on every activity completion, signal receipt, and timer firing.
 - **Sub-second test execution.** No containers to start, no connections to establish.
@@ -227,8 +227,11 @@ var handle = env.startWorkflow(ReminderWorkflow.class, input);
 // Workflow is now parked on a timer
 assertEquals(WorkflowStatus.WAITING_TIMER, handle.getStatus());
 
-// Fast-forward 30 days -- timer fires instantly
-env.advanceTime(Duration.ofDays(30));
+// Fast-forward just past 30 days -- timer fires instantly. The test clock
+// starts when the environment is created; the timer's fireAt is taken a few
+// milliseconds later, when the workflow schedules it, so advancing exactly
+// 30 days would stop a hair short of it.
+env.advanceTime(Duration.ofDays(30).plusSeconds(1));
 
 // Workflow resumes and completes
 var result = handle.getResult(ReminderResult.class, Duration.ofSeconds(5));
@@ -463,8 +466,9 @@ class OrderFulfilmentWorkflowTest {
         // Workflow sleeps for 30 days before sending a follow-up
         assertEquals(WorkflowStatus.WAITING_TIMER, handle.getStatus());
 
-        // Fast-forward 30 days
-        env.advanceTime(Duration.ofDays(30));
+        // Fast-forward just past 30 days (the timer was scheduled a few ms
+        // after the test clock started — see "How It Works")
+        env.advanceTime(Duration.ofDays(30).plusSeconds(1));
 
         handle.awaitCompletion(Duration.ofSeconds(5));
 

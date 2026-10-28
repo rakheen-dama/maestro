@@ -85,6 +85,7 @@ public interface WorkflowStore {
     Optional<WorkflowInstance> getInstance(String workflowId);
     List<WorkflowInstance> getRecoverableInstances();
     void updateInstance(WorkflowInstance instance);       // optimistic locking
+    boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent); // atomic terminal write (CAS + event in one transaction)
 
     void appendEvent(WorkflowEvent event);
     Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int seq);

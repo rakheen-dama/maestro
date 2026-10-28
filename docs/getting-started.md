@@ -552,8 +552,9 @@ class WelcomeWorkflowTest {
     void shouldCompleteWelcomeWorkflow() throws TimeoutException {
         var handle = env.startWorkflow(WelcomeWorkflow.class, "Alice");
 
-        // Advance past the 5-second durable sleep
-        env.advanceTime(Duration.ofSeconds(5));
+        // Advance just past the 5-second durable sleep: the test clock starts
+        // when the environment is created, the sleep's fireAt a few ms later
+        env.advanceTime(Duration.ofSeconds(6));
 
         String result = handle.getResult(String.class, Duration.ofSeconds(5));
         assertEquals("Hello, Alice! Welcome aboard.", result);

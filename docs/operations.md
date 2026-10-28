@@ -100,7 +100,11 @@ cycle (`.superpowers/sdd/progress.md`, Task 3 entry): *"`awaitSignal(timeout)`
 does NOT persist a durable timer row... the brief was wrong; scenario covers
 3 distinct WAITING_SIGNAL states; WAITING_TIMER deploy-safety is covered by
 engine ITs + the Task 7 chaos harness ROLLING_RESTART action on verification
-nodes."* If you need evidence specifically for "a workflow parked in
+nodes."* That quote predates the durable `awaitSignal` deadline (C12/F4):
+since then a parked `awaitSignal(timeout)` **does** persist a durable timer
+row (`await-signal-<seq>`), but the await still parks as `WAITING_SIGNAL`, so
+the scenario's coverage boundary is unchanged — it still reaches no
+`WAITING_TIMER` state. If you need evidence specifically for "a workflow parked in
 `sleep()` survives a graceful restart," look at
 `WorkflowExecutorShutdownTest`/`ShutdownContractIT` (engine-level) and the
 chaos harness's `ROLLING_RESTART` action against `verification-gateway`
@@ -409,6 +413,30 @@ new one. Leave a fleet half-upgraded and those workflows wait indefinitely.
 
 New event types are rare, so this is insurance, not a hot path.
 
+**This release changes the `awaitSignal` layout — rollback requires draining
+parked awaits.** An await that parks now records `TIMER_SCHEDULED` at its slot
+and its outcome at the next one (the two-slot layout, `docs/release-notes.md`
+→ "`awaitSignal` deadlines are durable timers"). Histories an older build wrote
+replay safely here, but **not the reverse**: an older node that adopts a
+workflow parked in a new-layout await stands down — a build with the replay
+drift guard as `nondeterministic_history` (detail
+`stored=$maestro:awaitSignal:<name> type=TIMER_SCHEDULED`, the same step name
+the code performs), a pre-drift-guard build as `stale_run` when its outcome
+append collides with the occupied slot. Nothing is written, nothing is
+compensated, but the older node makes no progress on that workflow. So upgrade
+every node together, or drain parked awaits first; **after a rollback, roll
+forward** — redeploying the older build again (§10.7's first remedy) does not
+heal these stand-downs.
+
+**Postgres transport: an old node's stale claim gets one uncounted attempt.**
+This release counts a queue row's attempt when it is *claimed* (Issue 27). A
+row an older node claimed carries no such count, so if that node dies
+mid-handler during a rolling upgrade, the upgraded node's stale reclaim sees
+budget left and re-invokes the handler — one extra attempt beyond
+`max-attempts` (or a second attempt with redelivery disabled) for that row,
+once. Handlers must be idempotent anyway; drain the queues first if even one
+extra attempt is unacceptable.
+
 ### 10.2 `workflow.version()` — changing workflow code with instances in flight
 
 Recovery re-runs the workflow method against the **current** code. If you edit a
@@ -476,8 +504,11 @@ There are three history reasons and **they mean different things**:
 | `unknown_event_payload` | A stored payload this build could not deserialize while replaying. A newer build *or* an incompatible payload change. |
 | `nondeterministic_history` | The current code performs a different operation at this sequence than the one recorded (step renamed/reordered, `parallel()` arity changed). Only a code change can cause it. See §10.7. |
 
-(A fourth value, `stale_run`, is unrelated to versioning — it is the
-split-brain convergence of §6: another runner owns the workflow. It is reported
+(A fourth value, `stale_run`, is normally unrelated to versioning — it is the
+split-brain convergence of §6: another runner owns the workflow. The one
+versioning exception: after a rollback, a build older than the replay drift
+guard reports `stale_run` on a workflow parked in a new-layout `awaitSignal`
+(§10.1) — roll forward. It is reported
 for an event-append collision with that runner's history (Issue 18), and for a
 fresh read that finds the row already finalised (`COMPLETED`/`FAILED`) by it
 (`StaleRunException`, C5) — at a park/wake status write, an `awaitSignal()`
@@ -668,6 +699,13 @@ recoverable.
 2. **Gate the change behind `workflow.version()`** (§10.2) — the old path for
    histories that predate it, the new one for new instances — and redeploy.
 
+**Exception — `stored=$maestro:awaitSignal:* type=TIMER_SCHEDULED` after a
+rollback → roll forward.** When `expected` and `stored` name the same
+`$maestro:awaitSignal:<name>` step and the stored type is `TIMER_SCHEDULED`,
+the "drift" is the engine's own two-slot await layout, written by the newer
+build you rolled back from (§10.1). The workflow code did not change, and
+remedy 1 is what caused it: redeploy the newer build.
+
 **Upgrade note — histories that already drifted silently.** A workflow edited
 without a `version()` gate under an *older* build may have "worked": the drift
 was silent, so the instance carried on (on the wrong payload) and is still in
@@ -740,6 +778,44 @@ span attribute); the remedy is the node — redeploy the previous build, fix the
 classpath, raise the heap — or terminate the workflow if it cannot be healed.
 `StackOverflowError`, `AssertionError` and every other `Error` remain workflow
 failures (`FAILED` + compensation): they recur identically on every node.
+
+### 10.9 Store-side faults that need a human: `TERMINAL_WRITE_FAILED` and retired queue rows
+
+Two store-side outcomes are deliberately *not* workflow failures, and both are
+logged at `ERROR` — alert on them together, as "the store is refusing or losing
+writes":
+
+- **`TERMINAL_WRITE_FAILED`** — `runAbandoned(..., TERMINAL_WRITE_FAILED)`
+  (span attribute `maestro.abandon.reason=TERMINAL_WRITE_FAILED`), with the
+  `ERROR` line `Could not persist the COMPLETED outcome of workflow '<id>' ...`
+  (success path) or `Failed to update workflow '<id>' status to FAILED`
+  (failure path). The atomic terminal write (Issue 26) failed with a store
+  error, so the instance normally stays active and the next recovery pass
+  finalises it. **Repeated for one run id** means the rejection is
+  deterministic, not a blip — an oversized output/error payload, a constraint
+  or type error (SQLSTATE class `22`), a program-limit error (`54000`): every
+  recovery pass re-runs the workflow, re-abandons with the same `ERROR`, and
+  the workflow never ends. Fix the cause (shrink the result, widen the
+  column) or terminate the workflow.
+  **It can also mean the commit landed but its acknowledgement was lost.**
+  Then the row *is* terminal and the run is never re-driven — but
+  `workflowCompleted`/`workflowFailed` and the `WORKFLOW_COMPLETED` /
+  `WORKFLOW_FAILED` lifecycle event were never emitted. Check the instance:
+  if it is already `COMPLETED`/`FAILED`, the outcome stands and only
+  downstream consumers of the lifecycle event (the admin dashboard, any
+  listener) missed it.
+- **Retired queue rows (Postgres transport, Issue 27)** — `Retired <n> stale
+  PROCESSING claim(s) in <table> for '<queue>' as DEAD_LETTER ...`. The
+  handler's final status write was lost with no attempt budget left, so the
+  row was parked in `DEAD_LETTER` with `last_error` containing `outcome
+  unknown`, in both redelivery modes. Triage each with
+  `listDeadLetterSignals`/`listDeadLetterTasks`: check whether the handler's
+  effect happened, then `replaySignal`/`replayTask` or delete it
+  (`docs/configuration.md` → "Retired rows").
+
+Suggested rule: any `ERROR` from either source → page; the same run id
+abandoning `TERMINAL_WRITE_FAILED` on consecutive recovery passes → treat as
+deterministic and escalate.
 
 ---
 

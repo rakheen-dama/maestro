@@ -960,5 +960,5 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - [ ] `./gradlew build --console=plain` → `BUILD SUCCESSFUL` (needs Docker).
 - [ ] `./gradlew :maestro-integration-tests:test --console=plain --rerun-tasks` × 3 → green each time.
 - [ ] `./gradlew :maestro-core:dependencies --configuration compileClasspath | grep -c springframework` → `0`.
-- [ ] `grep -rn "LoanTimeouts\|configureTimeouts\|Instant.now().plus(timeout)" maestro-samples maestro-core/src/main` → no matches (the last pattern is the C12 defect at `SignalManager.java:359`).
+- [ ] `grep -rn "LoanTimeouts\|configureTimeouts\|Instant.now().plus(timeout)" maestro-samples/*/src/main maestro-samples/*/*/src/main maestro-core/src/main` → no matches (the last pattern is the C12 defect at `SignalManager.java:359`; scoped to production sources — sample test helpers legitimately compute a wall-clock poll deadline with it; the second glob reaches the nested loan-origination services).
 - [ ] `docs/open-issues.md` rows 26 and 27 read `**Resolved**` with commit hashes; `docs/release-notes.md` `## Unreleased` has the six entries named above.
