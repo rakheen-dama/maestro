@@ -12,6 +12,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import javax.sql.DataSource;
+import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
@@ -34,16 +35,17 @@ import java.util.function.Consumer;
  * <ul>
  *   <li>All publish methods provide <b>at-least-once</b> delivery.</li>
  *   <li>Consumers must be idempotent — duplicate messages are possible
- *       if processing fails after status update, and a handler that throws is
- *       re-invoked with the same message.</li>
+ *       if the status write after a handler fails while attempt budget
+ *       remains (see below), and a handler that throws is re-invoked with the
+ *       same message.</li>
  *   <li>Message ordering is guaranteed <b>per queue</b> by
  *       {@code created_at} ordering.</li>
  * </ul>
  *
  * <h2>Handler Failure</h2>
  * <p>A handler exception is never an acknowledgement: the queue row is the
- * retry ledger. The row returns to {@code PENDING} with an incremented
- * {@code attempts} counter and a {@code next_attempt_at} in the future
+ * retry ledger. The row returns to {@code PENDING} — its {@code attempts}
+ * counter already incremented by the claim — with a {@code next_attempt_at} in the future
  * (exponential backoff, see {@link PostgresRedeliveryConfig}), and once the
  * attempt budget is exhausted it is parked in {@code DEAD_LETTER} — durable and
  * inspectable via {@link #listDeadLetterSignals}/{@link #listDeadLetterTasks},
@@ -52,6 +54,35 @@ import java.util.function.Consumer;
  * {@code maestro.messaging.redelivery.enabled=false} none of that applies: a
  * failing row is marked {@code FAILED} after its single attempt instead —
  * the operator's explicit choice of at-most-once handler semantics.
+ *
+ * <h2>Attempts Are Counted at Claim Time</h2>
+ * <p>Claiming a row ({@code PENDING} → {@code PROCESSING}) increments its
+ * {@code attempts} in the same statement. The status write that follows the
+ * handler — {@code COMPLETED} on success, {@code PENDING}/{@code DEAD_LETTER}
+ * on failure with redelivery enabled, {@code FAILED} with it disabled — can
+ * itself fail, and when it does the database is the thing that is down, so
+ * nothing can be recorded <i>at</i> that failure: the row is simply left
+ * {@code PROCESSING}. The count written at claim time is the only durable
+ * marker available, and it lets one rule govern every stale
+ * {@code PROCESSING} row (one older than five minutes), uniformly across all
+ * three status-write sites (Issue 27):
+ * <ul>
+ *   <li><b>Budget left</b> ({@code attempts < maxAttempts}, redelivery
+ *       enabled): the stale reclaim re-claims the row and re-invokes the
+ *       handler. This is the documented, accepted double delivery under a
+ *       double fault; handlers must be idempotent.</li>
+ *   <li><b>No budget left</b> ({@code attempts >= maxAttempts} with
+ *       redelivery enabled; {@code attempts >= 1} with it disabled — exactly
+ *       one attempt): a retire sweep, run before every claim in the same
+ *       transaction, moves the row straight to {@code DEAD_LETTER} (enabled)
+ *       or {@code FAILED} (disabled) with a {@code last_error} saying the
+ *       outcome is unknown, and never invokes the handler again.</li>
+ * </ul>
+ * <p>Consequence, deliberately: a consumer that crashes mid-handler consumes
+ * an attempt. A poison message that crashes the JVM therefore dead-letters
+ * after {@code maxAttempts} crashes instead of looping forever, and with
+ * redelivery disabled at-most-once handler invocation holds even when the
+ * final status write is lost.
  *
  * <h2>Thread Safety</h2>
  * <p>This class is thread-safe. Publishing uses pooled connections with
@@ -281,11 +312,13 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
     private void pollTasks(String taskQueue, Consumer<TaskMessage> handler, Object lock) {
         // A PENDING row is claimable once it is due: a handler failure pushes
         // next_attempt_at into the future rather than retiring the row. The
-        // stale-PROCESSING branch is unchanged — a crashed consumer is not a
-        // handler failure and must not consume an attempt.
+        // claim itself counts the attempt, so a consumer that crashed (or lost
+        // its final status write) mid-handler has consumed one: a stale
+        // PROCESSING row is re-claimed only while budget remains, and
+        // retireStaleClaims parks it first once the budget is spent (Issue 27).
         var claimSql = """
                 UPDATE maestro_task_queue
-                SET status = 'PROCESSING', processed_at = now()
+                SET status = 'PROCESSING', attempts = attempts + 1, processed_at = now()
                 WHERE id = (
                     SELECT id FROM maestro_task_queue
                     WHERE task_queue = ?
@@ -305,6 +338,7 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
                 try (var conn = dataSource.getConnection()) {
                     conn.setAutoCommit(false);
                     try (var stmt = conn.prepareStatement(claimSql)) {
+                        retireStaleClaims(conn, "maestro_task_queue", "task_queue", taskQueue);
                         stmt.setString(1, taskQueue);
                         try (var rs = stmt.executeQuery()) {
                             if (rs.next()) {
@@ -343,10 +377,12 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
 
     private void pollSignals(String serviceName, Consumer<SignalMessage> handler, Object lock) {
         // See pollTasks: PENDING rows are claimable once due, so a failed
-        // handler's row comes back after its backoff instead of being lost.
+        // handler's row comes back after its backoff instead of being lost;
+        // the claim counts the attempt and stale claims with no budget left
+        // are retired before the claim.
         var claimSql = """
                 UPDATE maestro_signal_queue
-                SET status = 'PROCESSING', processed_at = now()
+                SET status = 'PROCESSING', attempts = attempts + 1, processed_at = now()
                 WHERE id = (
                     SELECT id FROM maestro_signal_queue
                     WHERE service_name = ?
@@ -365,6 +401,7 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
                 try (var conn = dataSource.getConnection()) {
                     conn.setAutoCommit(false);
                     try (var stmt = conn.prepareStatement(claimSql)) {
+                        retireStaleClaims(conn, "maestro_signal_queue", "service_name", serviceName);
                         stmt.setString(1, serviceName);
                         try (var rs = stmt.executeQuery()) {
                             if (rs.next()) {
@@ -423,6 +460,12 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
         }
     }
 
+    /**
+     * Records a successful delivery. If this write fails, the row stays
+     * {@code PROCESSING}; the attempt was already counted at claim time, so the
+     * stale reclaim re-invokes the handler only if attempt budget remains —
+     * otherwise {@link #retireStaleClaims} retires it (Issue 27).
+     */
     private void updateStatus(String table, UUID rowId, String status) {
         var sql = "UPDATE " + table + " SET status = ?, processed_at = now() WHERE id = ?";
         try (var conn = dataSource.getConnection();
@@ -431,32 +474,76 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
             stmt.setObject(2, rowId);
             stmt.executeUpdate();
         } catch (SQLException e) {
-            logger.warn("Failed to update status to '{}' for row {} in {}: {}",
+            logger.warn("Failed to update status to '{}' for row {} in {} — leaving it PROCESSING; "
+                            + "the stale reclaim re-invokes it only if attempt budget remains; "
+                            + "otherwise it is retired: {}",
                     status, rowId, table, e.getMessage(), e);
         }
+    }
+
+    /**
+     * Retires stale {@code PROCESSING} claims that have no attempt budget left,
+     * so the claim that follows in the same transaction can only re-claim rows
+     * that are still allowed another attempt.
+     *
+     * <p>A stale claim is one whose final status write never landed — the
+     * consumer crashed, or the store was unreachable when the handler
+     * returned. Its attempt was counted at claim time; when that was the last
+     * one ({@code attempts >= maxAttempts}, or {@code attempts >= 1} with
+     * redelivery disabled), the row moves to {@code DEAD_LETTER} (enabled) or
+     * {@code FAILED} (disabled) without the handler being invoked again. The
+     * handler may or may not have run to completion — hence "outcome unknown".
+     *
+     * @return the number of rows retired
+     */
+    private int retireStaleClaims(Connection conn, String table, String qualifierColumn, String qualifier)
+            throws SQLException {
+        // last_error = "finalisation write lost after attempt <n>; outcome unknown — ..."
+        var sql = "UPDATE " + table + " SET status = ?, "
+                + "last_error = 'finalisation write lost after attempt ' || attempts || ?, "
+                + "processed_at = now() "
+                + "WHERE " + qualifierColumn + " = ? AND status = 'PROCESSING' "
+                + "AND processed_at < now() - interval '5 minutes' AND attempts >= ?";
+        var status = redelivery.enabled() ? "DEAD_LETTER" : "FAILED";
+        var threshold = redelivery.enabled() ? redelivery.maxAttempts() : 1;
+        int retired;
+        try (var stmt = conn.prepareStatement(sql)) {
+            stmt.setString(1, status);
+            stmt.setString(2, "; outcome unknown — retired without re-invoking the handler");
+            stmt.setString(3, qualifier);
+            stmt.setInt(4, threshold);
+            retired = stmt.executeUpdate();
+        }
+        if (retired > 0) {
+            logger.warn("Retired {} stale PROCESSING claim(s) in {} for '{}' as {} — attempt budget "
+                            + "spent and the final status write was lost; the handler is not "
+                            + "invoked again", retired, table, qualifier, status);
+        }
+        return retired;
     }
 
     /**
      * Schedules the next attempt for a message whose handler threw, or parks it
      * once the attempt budget is spent.
      *
-     * <p>If this update itself fails — the store being unreachable is exactly
-     * the fault we are surviving — the row is left {@code PROCESSING} and the
-     * five-minute stale reclaim in the poll loop picks it up. Either way the
-     * message is not lost.
+     * <p>{@code attempts} is the count the claim already wrote, including this
+     * attempt. If this update itself fails — the store being unreachable is
+     * exactly the fault we are surviving — the row is left {@code PROCESSING}:
+     * after five minutes the stale reclaim re-invokes the handler if attempt
+     * budget remains, and otherwise {@link #retireStaleClaims} parks it in
+     * {@code DEAD_LETTER}. Either way the message is not lost.
      *
      * <p>When {@code maestro.messaging.redelivery.enabled=false}, this skips
      * straight to marking the row {@code FAILED} after its single attempt — see
      * {@link #recordSingleAttemptFailure}.
      */
-    private void recordFailure(String table, UUID rowId, int previousAttempts,
+    private void recordFailure(String table, UUID rowId, int attempts,
                                String workflowId, Exception failure) {
         if (!redelivery.enabled()) {
-            recordSingleAttemptFailure(table, rowId, previousAttempts, workflowId, failure);
+            recordSingleAttemptFailure(table, rowId, attempts, workflowId, failure);
             return;
         }
 
-        var attempts = previousAttempts + 1;
         var exhausted = attempts >= redelivery.maxAttempts();
         var backoffMillis = exhausted ? 0L : redelivery.backoffAfter(attempts).toMillis();
 
@@ -484,9 +571,10 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
             stmt.setObject(5, rowId);
             stmt.executeUpdate();
         } catch (SQLException e) {
-            // The row stays PROCESSING and the stale reclaim recovers it.
-            logger.warn("Failed to record delivery failure for row {} in {} — "
-                            + "leaving it PROCESSING for the stale reclaim: {}",
+            // The row stays PROCESSING; the claim already counted this attempt.
+            logger.warn("Failed to record delivery failure for row {} in {} — leaving it "
+                            + "PROCESSING; the stale reclaim re-invokes it only if attempt "
+                            + "budget remains; otherwise it is retired: {}",
                     rowId, table, e.getMessage(), e);
         }
     }
@@ -499,11 +587,13 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
      * {@code PENDING} branch and its stale-{@code PROCESSING} reclaim branch,
      * so it is never picked up again on its own; an operator restores it with
      * the same rescue statement documented for legacy {@code FAILED} rows in
-     * {@code docs/configuration.md}.
+     * {@code docs/configuration.md}. If this write itself fails, the row stays
+     * {@code PROCESSING} with {@code attempts = 1} from the claim, and
+     * {@link #retireStaleClaims} marks it {@code FAILED} without a second
+     * invocation — "exactly one attempt" holds under that double fault too.
      */
-    private void recordSingleAttemptFailure(String table, UUID rowId, int previousAttempts,
+    private void recordSingleAttemptFailure(String table, UUID rowId, int attempts,
                                             String workflowId, Exception failure) {
-        var attempts = previousAttempts + 1;
         logger.error("Message {} for workflow '{}' in {} failed on its only attempt "
                         + "(redelivery disabled) — marking FAILED: {}",
                 rowId, workflowId, table, failure.getMessage(), failure);
@@ -517,9 +607,10 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
             stmt.setObject(3, rowId);
             stmt.executeUpdate();
         } catch (SQLException e) {
-            // The row stays PROCESSING and the stale reclaim recovers it.
-            logger.warn("Failed to record delivery failure for row {} in {} — "
-                            + "leaving it PROCESSING for the stale reclaim: {}",
+            // The row stays PROCESSING; the claim already counted this attempt.
+            logger.warn("Failed to record delivery failure for row {} in {} — leaving it "
+                            + "PROCESSING; the stale reclaim re-invokes it only if attempt "
+                            + "budget remains; otherwise it is retired: {}",
                     rowId, table, e.getMessage(), e);
         }
     }

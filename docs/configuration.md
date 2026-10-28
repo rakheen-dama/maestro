@@ -230,6 +230,26 @@ UPDATE maestro_signal_queue SET status = 'PENDING', next_attempt_at = now() WHER
 UPDATE maestro_task_queue   SET status = 'PENDING', next_attempt_at = now() WHERE status = 'FAILED';
 ```
 
+**Retired rows (Postgres).** The Postgres transport counts an attempt when it
+*claims* a row, not when the handler finishes — so a consumer that crashes
+mid-handler, or whose final status write is lost because the database went
+down right after the handler returned, has consumed that attempt. A
+`PROCESSING` claim older than five minutes is re-claimed and its handler
+re-invoked only while attempt budget remains (the accepted double delivery
+under a double fault — handlers must be idempotent). Once the budget is spent
+(`attempts >= max-attempts`; with `maestro.messaging.redelivery.enabled=false`,
+after its single attempt) the row is instead **retired** to `DEAD_LETTER`
+(redelivery enabled) or `FAILED` (disabled) with
+`last_error = 'finalisation write lost after attempt <n>; outcome unknown —
+retired without re-invoking the handler'`. *Outcome unknown* means exactly
+that: the handler may or may not have run to completion, and Maestro will not
+guess by invoking it again. Check the downstream effect before re-queueing; a
+retired `DEAD_LETTER` row replays like any other, and a retired `FAILED` row is
+re-queued deliberately by the rescue `UPDATE ... SET status = 'PENDING',
+next_attempt_at = now()` above. A consequence worth knowing: a poison message
+that crashes the JVM dead-letters after `max-attempts` crashes instead of
+looping forever.
+
 ---
 
 ### Postgres Messaging

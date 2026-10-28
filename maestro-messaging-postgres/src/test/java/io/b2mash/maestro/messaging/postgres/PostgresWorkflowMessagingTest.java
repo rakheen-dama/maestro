@@ -316,6 +316,163 @@ class PostgresWorkflowMessagingTest extends PostgresMessagingTestSupport {
         }
     }
 
+    /**
+     * Issue 27: the store goes down exactly on the status write that follows a
+     * handler — the {@code COMPLETED} write, the enabled-redelivery
+     * {@code PENDING}/{@code DEAD_LETTER} write, or the disabled-redelivery
+     * {@code FAILED} write — leaving the row {@code PROCESSING}. The claim
+     * already counted the attempt, so one rule decides every case: a stale
+     * claim with budget left is reclaimed and re-invoked (the documented
+     * double delivery), and one with no budget left is retired without
+     * invoking the handler again.
+     */
+    @Nested
+    @DisplayName("status-write failure (Issue 27)")
+    class StatusWriteFailureTests {
+
+        private final FaultInjectingDataSource faulty = new FaultInjectingDataSource(newDataSource());
+        private final String service = "svc-swf-" + unique();
+        private final String wf = "wf-swf-" + unique();
+
+        private PostgresWorkflowMessaging consumer(boolean redeliveryEnabled, int maxAttempts) {
+            return new PostgresWorkflowMessaging(faulty, objectMapper, notificationListener,
+                    new PostgresRedeliveryConfig(redeliveryEnabled, maxAttempts,
+                            Duration.ofMillis(100), 2.0, Duration.ofMillis(200)));
+        }
+
+        @Test
+        @DisplayName("redelivery disabled: COMPLETED write fails → row retired FAILED, handler never re-invoked")
+        void completedWriteFails_disabled_retiredWithoutReinvocation() throws Exception {
+            var calls = new AtomicInteger();
+            var consumer = consumer(false, 10);
+            try {
+                consumer.subscribeSignals(service, m -> {
+                    calls.incrementAndGet();
+                    faulty.arm();
+                });
+                messaging.publishSignal(service, new SignalMessage(wf, "approval", null));
+
+                await().atMost(BOUND).until(() -> faulty.failedConnections() >= 1);
+                faulty.disarm();
+                ageProcessingClaim("maestro_signal_queue", wf);
+
+                await().atMost(BOUND).until(() -> "FAILED".equals(statusOf("maestro_signal_queue", wf)));
+                assertEquals(1, intColumnOf("maestro_signal_queue", "attempts", wf));
+                assertTrue(columnOf("maestro_signal_queue", "last_error", wf).contains("outcome unknown"));
+                await().during(Duration.ofSeconds(3)).atMost(Duration.ofSeconds(8))
+                        .until(() -> calls.get() == 1);
+            } finally {
+                consumer.close();
+            }
+        }
+
+        @Test
+        @DisplayName("redelivery disabled: FAILED write fails → row retired FAILED, handler never re-invoked")
+        void failureWriteFails_disabled_retiredWithoutReinvocation() throws Exception {
+            var calls = new AtomicInteger();
+            var consumer = consumer(false, 10);
+            try {
+                consumer.subscribeSignals(service, m -> {
+                    calls.incrementAndGet();
+                    faulty.arm();
+                    throw new IllegalStateException("handler fails, then the store goes down");
+                });
+                messaging.publishSignal(service, new SignalMessage(wf, "approval", null));
+
+                await().atMost(BOUND).until(() -> faulty.failedConnections() >= 1);
+                faulty.disarm();
+                ageProcessingClaim("maestro_signal_queue", wf);
+
+                await().atMost(BOUND).until(() -> "FAILED".equals(statusOf("maestro_signal_queue", wf)));
+                assertEquals(1, intColumnOf("maestro_signal_queue", "attempts", wf));
+                assertTrue(columnOf("maestro_signal_queue", "last_error", wf).contains("outcome unknown"));
+                await().during(Duration.ofSeconds(3)).atMost(Duration.ofSeconds(8))
+                        .until(() -> calls.get() == 1);
+            } finally {
+                consumer.close();
+            }
+        }
+
+        @Test
+        @DisplayName("redelivery enabled, budget left: COMPLETED write fails → reclaimed and re-invoked once (documented double delivery)")
+        void completedWriteFails_enabledWithBudget_reclaimedAndReinvoked() throws Exception {
+            var calls = new AtomicInteger();
+            var consumer = consumer(true, 3);
+            try {
+                consumer.subscribeSignals(service, m -> {
+                    if (calls.incrementAndGet() == 1) {
+                        faulty.arm();
+                    }
+                });
+                messaging.publishSignal(service, new SignalMessage(wf, "approval", null));
+
+                await().atMost(BOUND).until(() -> faulty.failedConnections() >= 1);
+                faulty.disarm();
+                ageProcessingClaim("maestro_signal_queue", wf);
+
+                await().atMost(BOUND).until(() -> "COMPLETED".equals(statusOf("maestro_signal_queue", wf)));
+                assertEquals(2, calls.get());
+                assertEquals(2, intColumnOf("maestro_signal_queue", "attempts", wf));
+                await().during(Duration.ofSeconds(3)).atMost(Duration.ofSeconds(8))
+                        .until(() -> calls.get() == 2);
+            } finally {
+                consumer.close();
+            }
+        }
+
+        @Test
+        @DisplayName("redelivery enabled, last attempt: FAILED→DEAD_LETTER write fails → retired DEAD_LETTER, handler never re-invoked")
+        void failureWriteFails_enabledLastAttempt_retiredDeadLetter() throws Exception {
+            var calls = new AtomicInteger();
+            var consumer = consumer(true, 1);
+            try {
+                consumer.subscribeSignals(service, m -> {
+                    calls.incrementAndGet();
+                    faulty.arm();
+                    throw new IllegalStateException("last attempt fails, then the store goes down");
+                });
+                messaging.publishSignal(service, new SignalMessage(wf, "approval", null));
+
+                await().atMost(BOUND).until(() -> faulty.failedConnections() >= 1);
+                faulty.disarm();
+                ageProcessingClaim("maestro_signal_queue", wf);
+
+                await().atMost(BOUND).until(() -> "DEAD_LETTER".equals(statusOf("maestro_signal_queue", wf)));
+                assertEquals(1, calls.get());
+                assertTrue(columnOf("maestro_signal_queue", "last_error", wf).contains("outcome unknown"));
+                await().during(Duration.ofSeconds(3)).atMost(Duration.ofSeconds(8))
+                        .until(() -> calls.get() == 1);
+            } finally {
+                consumer.close();
+            }
+        }
+
+        @Test
+        @DisplayName("a crash before the handler ran still counts as an attempt: stale claim with budget is reclaimed with attempts incremented")
+        void staleClaim_consumesAnAttempt() throws Exception {
+            var calls = new AtomicInteger();
+            messaging.publishSignal(service, new SignalMessage(wf, "approval", null));
+            // A consumer claimed the row (counting attempt 1) and died.
+            try (var conn = dataSource.getConnection();
+                 var stmt = conn.prepareStatement("UPDATE maestro_signal_queue SET status = 'PROCESSING', "
+                         + "attempts = 1, processed_at = now() - interval '6 minutes' WHERE workflow_id = ?")) {
+                stmt.setString(1, wf);
+                assertEquals(1, stmt.executeUpdate());
+            }
+
+            var consumer = consumer(true, 3);
+            try {
+                consumer.subscribeSignals(service, m -> calls.incrementAndGet());
+
+                await().atMost(BOUND).until(() -> "COMPLETED".equals(statusOf("maestro_signal_queue", wf)));
+                assertEquals(1, calls.get());
+                assertEquals(2, intColumnOf("maestro_signal_queue", "attempts", wf));
+            } finally {
+                consumer.close();
+            }
+        }
+    }
+
     // ── helpers ────────────────────────────────────────────────────────
 
     private String currentTaskQueue;

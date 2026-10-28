@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed — Postgres transport counts an attempt at claim time and retires stale claims with no budget (Issue 27)
+
+- **Before:** `maestro-messaging-postgres` incremented `attempts` only when it recorded a handler failure. If the status write after a handler — `COMPLETED`, the enabled-redelivery `PENDING`/`DEAD_LETTER`, or the disabled-redelivery `FAILED` — itself failed (database down), the row stayed `PROCESSING` and the five-minute stale reclaim re-invoked the handler with no bound: a second attempt despite `maestro.messaging.redelivery.enabled=false`'s "exactly one attempt", and, with the store failing every time, a loop.
+- **Now:** both claim statements set `attempts = attempts + 1`, so the attempt is durable before the handler runs. A retire sweep, run before the claim in the same transaction in both poll loops, moves a stale `PROCESSING` row whose budget is spent (`attempts >= max-attempts`; `attempts >= 1` with redelivery disabled) straight to `DEAD_LETTER` (enabled) or `FAILED` (disabled) with `last_error = "finalisation write lost after attempt <n>; outcome unknown — retired without re-invoking the handler"`, logged at `WARN`. A stale claim with budget left is still re-claimed and re-invoked — the documented double delivery under a double fault; handlers must be idempotent. The rule is the same for all three status-write sites. Retired rows are re-queued deliberately (see `docs/configuration.md`, "Retired rows"). Pinned by `PostgresWorkflowMessagingTest.StatusWriteFailureTests`.
+- **Behaviour change:** a consumer that crashes mid-handler now **consumes an attempt** (previously a crash did not count). This is deliberate: a poison message that crashes the JVM now dead-letters after `max-attempts` crashes instead of looping forever, and it is what makes at-most-once provable with redelivery disabled. `attempts` on `DEAD_LETTER`/`FAILED` rows and in `DeadLetterMessage` means the same as before for handler failures — the number of attempts made.
+
 ### Fixed — Valkey wake subscription is acknowledged before parking
 
 - **Before:** `ValkeySignalNotifier.subscribe` used Lettuce's async pub/sub command, so it returned before the server had registered the subscription; a signal published in that window was missed until `maestro.signal.wake-recheck-interval`, making `SignalManager`'s check-then-subscribe race closure racy.

@@ -276,7 +276,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [24](#issue-24) | Redelivery is always on and always dead-letters, but nothing documents or creates the `.DLT` topics | Library gap — docs + config | Medium | **Resolved** |
 | [25](#issue-25) | `maestro.worker.*` is documented but wholly unimplemented | Library gap — docs + config | Medium | Open |
 | [26](#issue-26) | Terminal instance write and terminal event append are two non-transactional writes | Library gap — durability contract | Medium | **Resolved** |
-| [27](#issue-27) | A redelivery status-write failure can let a disabled-redelivery row be reclaimed and reprocessed | Library gap — durability contract | Medium | Open |
+| [27](#issue-27) | A redelivery status-write failure can let a disabled-redelivery row be reclaimed and reprocessed | Library gap — durability contract | Medium | **Resolved** |
 | [28](#issue-28) | ×1000 sequence partitioning bounds sequential/nested `parallel()` and compensation depth | Structural limitation | Medium | **Open by design** |
 
 Issues 1–10 were each either observed directly through a written reproduction,
@@ -2396,7 +2396,31 @@ inherit the same proof obligation.
 
 ### Issue 27 — A redelivery status-write failure can let a disabled-redelivery row be reclaimed and reprocessed {#issue-27}
 
-> **Open.** Filed from a PR #34 external review finding (CodeRabbit,
+> **Resolved.** When the status write fails the database is the thing that is
+> down, so nothing can be recorded *at* the failure; the durable marker is
+> written at claim time instead — both claim statements in
+> `PostgresWorkflowMessaging` now set `attempts = attempts + 1`, and
+> `recordFailure`/`recordSingleAttemptFailure` use the claimed count. A new
+> retire sweep (`retireStaleClaims`), run before the claim in the same
+> transaction in both poll loops, moves a stale `PROCESSING` row with no budget
+> left (`attempts >= maxAttempts`, or `attempts >= 1` with redelivery disabled)
+> straight to `DEAD_LETTER` / `FAILED` with `last_error = "finalisation write
+> lost after attempt <n>; outcome unknown — retired without re-invoking the
+> handler"`. The guarantee is uniform across all three status-write sites
+> (`COMPLETED`, enabled `PENDING`/`DEAD_LETTER`, disabled `FAILED`): with
+> budget left the stale reclaim re-invokes the handler (the documented,
+> accepted double delivery under a double fault); with none left the handler
+> is never invoked again, so "exactly one attempt" holds when redelivery is
+> disabled. Deliberate behaviour change: a consumer that crashes mid-handler
+> now consumes an attempt (a JVM-crashing poison message dead-letters after
+> `maxAttempts` crashes instead of looping forever). The "done when" is pinned
+> on real Postgres by `PostgresWorkflowMessagingTest.StatusWriteFailureTests`
+> (a `FaultInjectingDataSource` refuses connections exactly on the status
+> write after the handler). Resolved in "fix(messaging-postgres): count
+> attempts at claim time; retire stale claims with no budget instead of
+> re-invoking (Issue 27)". The original report is kept below.
+>
+> **Original status — Open.** Filed from a PR #34 external review finding (CodeRabbit,
 > deferred rather than fixed in that PR — the fix needs a unified redesign
 > touching three sibling code paths together, not a scoped patch to one of
 > them). Verified against source, not assumed from the review's claim.
