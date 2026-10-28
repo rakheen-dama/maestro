@@ -41,13 +41,11 @@ class MaestroPropertiesBindingTest {
                         "maestro.service-name=binding-test",
                         "maestro.messaging.type=kafka",
                         "maestro.messaging.consumer-group=custom-group",
-                        "maestro.messaging.topics.tasks=custom.tasks",
                         "maestro.messaging.topics.signals=custom.signals",
                         "maestro.messaging.topics.admin-events=custom.admin.events")
                 .run(context -> {
                     var messaging = context.getBean(MaestroProperties.class).getMessaging();
                     assertThat(messaging.consumerGroup()).isEqualTo("custom-group");
-                    assertThat(messaging.topics().tasks()).isEqualTo("custom.tasks");
                     assertThat(messaging.topics().signals()).isEqualTo("custom.signals");
                     assertThat(messaging.topics().adminEvents()).isEqualTo("custom.admin.events");
                 });
@@ -148,7 +146,7 @@ class MaestroPropertiesBindingTest {
             assertThat(properties.getStore().schema().mode()).isEqualTo("flyway");
             assertThat(properties.getMessaging().type()).isEqualTo("kafka");
             assertThat(properties.getMessaging().consumerGroup()).isNull();
-            assertThat(properties.getMessaging().topics().tasks()).isNull();
+            assertThat(properties.getMessaging().topics().signals()).isNull();
             assertThat(properties.getMessaging().topics().adminEvents()).isEqualTo("maestro.admin.events");
             var redelivery = properties.getMessaging().redelivery();
             assertThat(redelivery.enabled()).isTrue();

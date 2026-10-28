@@ -769,12 +769,12 @@ writes":
   downstream consumers of the lifecycle event (the admin dashboard, any
   listener) missed it.
 - **Retired queue rows (Postgres transport, Issue 27)** — `Retired <n> stale
-  PROCESSING claim(s) in <table> for '<queue>' as DEAD_LETTER ...`. The
+  PROCESSING claim(s) in maestro_signal_queue for '<service>' as DEAD_LETTER ...`. The
   handler's final status write was lost with no attempt budget left, so the
   row was parked in `DEAD_LETTER` with `last_error` containing `outcome
   unknown`, in both redelivery modes. Triage each with
-  `listDeadLetterSignals`/`listDeadLetterTasks`: check whether the handler's
-  effect happened, then `replaySignal`/`replayTask` or delete it
+  `listDeadLetterSignals`: check whether the handler's
+  effect happened, then `replaySignal` or delete it
   (`docs/configuration.md` → "Retired rows").
 
 Suggested rule: any `ERROR` from either source → page; the same run id

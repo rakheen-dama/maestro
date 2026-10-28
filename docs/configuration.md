@@ -85,8 +85,9 @@ DELETE FROM flyway_schema_history WHERE version IN ('1','2','3','4','5','100','2
 
 ## Messaging Configuration
 
-Properties under `maestro.messaging.*` control task dispatch, signal delivery,
-and lifecycle event publishing.
+Properties under `maestro.messaging.*` control signal delivery and lifecycle
+event publishing. There is no task-dispatch channel: a workflow runs in-process
+on the node that started it.
 
 ### Core Properties
 
@@ -99,9 +100,12 @@ and lifecycle event publishing.
 
 | Property                                 | Type     | Default                  | Description                                                       |
 |------------------------------------------|----------|--------------------------|-------------------------------------------------------------------|
-| `maestro.messaging.topics.tasks`         | `String` | `null`                   | Topic for internal workflow task dispatch. Resolved at runtime based on the task queue name.    |
 | `maestro.messaging.topics.signals`       | `String` | `null`                   | Topic for inbound cross-service signals. Resolved at runtime based on the service name.        |
 | `maestro.messaging.topics.admin-events`  | `String` | `"maestro.admin.events"` | Topic for lifecycle events consumed by the admin dashboard.       |
+
+`maestro.messaging.topics.tasks` has been removed. It configured a task topic
+nothing ever consumed; setting it now **fails startup** on the Kafka transport
+with a message telling you to delete it and the `maestro.tasks.*` topics.
 
 When `consumer-group` is not explicitly set, Maestro derives it from the service
 name as `maestro-{serviceName}`. This ensures each service gets its own consumer
@@ -148,8 +152,8 @@ noisily-retrying consumer rather than a clear message while the gap could
 still be fixed for free.
 
 `KafkaDeadLetterTopicCheck` closes that gap: at every point Maestro subscribes
-to a topic — `KafkaWorkflowMessaging.subscribe`/`subscribeSignals` (the engine's
-own tasks/signals channels) and `MaestroSignalListenerBeanPostProcessor`'s
+to a topic — `KafkaWorkflowMessaging.subscribeSignals` (the engine's own
+signal channel) and `MaestroSignalListenerBeanPostProcessor`'s
 container activation (every `@MaestroSignalListener` topic) — it probes whether
 `<topic><dead-letter-suffix>` exists and logs:
 
@@ -169,9 +173,6 @@ to a dead-letter topic in that mode.
 messaging and redelivery enabled (the default), pre-create a `.DLT` companion
 for every topic **a Maestro consumer subscribes to**:
 
-- [ ] The engine's task-dispatch topic: `maestro.tasks.{taskQueue}.DLT` for
-      every task queue this service has workers on (or the fixed override
-      `maestro.messaging.topics.tasks` + suffix).
 - [ ] The engine's inbound signal topic: `maestro.signals.{serviceName}.DLT`
       (or the fixed override `maestro.messaging.topics.signals` + suffix).
 - [ ] Every `@MaestroSignalListener(topic = "...")` topic this service
@@ -225,8 +226,8 @@ maestro.signals.order-service.DLT --from-beginning --property
 print.headers=true`; the `kafka_dlt-*` headers carry the original topic,
 partition, offset and exception) and replay by producing the record back to the
 source topic with the same key. On Postgres use
-`PostgresWorkflowMessaging.listDeadLetterSignals` / `listDeadLetterTasks` and
-`replaySignal(id)` / `replayTask(id)`, or plain SQL:
+`PostgresWorkflowMessaging.listDeadLetterSignals` and `replaySignal(id)`, or
+plain SQL:
 
 ```sql
 SELECT id, workflow_id, signal_name, attempts, last_error, created_at
@@ -246,7 +247,6 @@ redelivery existed, or by `maestro.messaging.redelivery.enabled=false` since
 
 ```sql
 UPDATE maestro_signal_queue SET status = 'PENDING', next_attempt_at = now() WHERE status = 'FAILED';
-UPDATE maestro_task_queue   SET status = 'PENDING', next_attempt_at = now() WHERE status = 'FAILED';
 ```
 
 **Retired rows (Postgres).** The Postgres transport counts an attempt when it
@@ -264,12 +264,12 @@ retired without re-invoking the handler'`, logged at `ERROR`. *Outcome
 unknown* means exactly that: the handler may or may not have run to
 completion, and Maestro will not guess by invoking it again. A retired row
 always needs triage, so with redelivery disabled it still goes to
-`DEAD_LETTER`, not `FAILED`: it shows up in `listDeadLetterSignals` /
-`listDeadLetterTasks`, `PostgresMessageCleaner` never purges it, and the
+`DEAD_LETTER`, not `FAILED`: it shows up in `listDeadLetterSignals`,
+`PostgresMessageCleaner` never purges it, and the
 blanket `FAILED` rescue statement above does not touch it (that rescue applies
 only to handler failures recorded as `FAILED`, never to retired rows). Check
-the downstream effect, then replay it deliberately with `replaySignal` /
-`replayTask`. A consequence worth knowing: a poison message that crashes the
+the downstream effect, then replay it deliberately with `replaySignal`. A
+consequence worth knowing: a poison message that crashes the
 JVM dead-letters after `max-attempts` crashes instead of looping forever.
 
 ---
@@ -278,7 +278,9 @@ JVM dead-letters after `max-attempts` crashes instead of looping forever.
 
 When `maestro.messaging.type: postgres`, Maestro uses PostgreSQL queue tables with `LISTEN/NOTIFY` for immediate notification and polling as a fallback. No Kafka infrastructure is needed.
 
-The Postgres messaging module shares the same `DataSource` as the workflow store. Its queue tables (`maestro_task_queue`, `maestro_signal_queue`, `maestro_lifecycle_event_queue`) are created by Maestro's schema initializer from `classpath:db/maestro/messaging` (see [Schema management](#schema-management)).
+The Postgres messaging module shares the same `DataSource` as the workflow store. Maestro's schema initializer creates the queue table (`maestro_signal_queue`) from `classpath:db/maestro/messaging` (see [Schema management](#schema-management)); migration `V202` drops the former `maestro_task_queue` and `maestro_lifecycle_event_queue` tables.
+
+Lifecycle events are **not** carried by the Postgres transport — the admin dashboard consumes Kafka only. `publishLifecycleEvent` is a no-op that logs one WARN; set `maestro.admin.events.enabled: false` in Postgres-only services to silence it.
 
 **Dependencies:**
 ```kotlin
@@ -568,7 +570,6 @@ maestro:
   messaging:
     type: kafka
     topics:
-      tasks: maestro.tasks.orders
       signals: maestro.signals.order-service
       admin-events: maestro.admin.events
   lock:
@@ -641,15 +642,14 @@ infrastructure connections.
 
 ## Kafka Topics
 
-Maestro uses Kafka for internal task dispatch, cross-service signaling, and
-lifecycle event publishing. **Topics must be pre-created** -- Maestro never
+Maestro uses Kafka for cross-service signaling and lifecycle event
+publishing. **Topics must be pre-created** -- Maestro never
 auto-creates topics.
 
 ### Topic Naming Conventions
 
 | Topic Pattern                       | Purpose                                           |
 |-------------------------------------|---------------------------------------------------|
-| `maestro.tasks.{taskQueue}`         | Internal task dispatch for a specific task queue   |
 | `maestro.signals.{serviceName}`     | Inbound signals for a specific service             |
 | `maestro.admin.events`              | Lifecycle events consumed by the admin dashboard   |
 
@@ -755,10 +755,6 @@ for the full contract.
 Create topics before starting your service. Example using the Kafka CLI:
 
 ```bash
-kafka-topics.sh --create --topic maestro.tasks.orders \
-  --partitions 6 --replication-factor 3 \
-  --bootstrap-server localhost:9092
-
 kafka-topics.sh --create --topic maestro.signals.order-service \
   --partitions 6 --replication-factor 3 \
   --bootstrap-server localhost:9092

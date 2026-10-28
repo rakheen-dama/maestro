@@ -80,7 +80,6 @@ maestro:
   messaging:
     type: kafka
     topics:
-      tasks: maestro.tasks.loan-application
       signals: maestro.signals.loan-application
 
   lock:

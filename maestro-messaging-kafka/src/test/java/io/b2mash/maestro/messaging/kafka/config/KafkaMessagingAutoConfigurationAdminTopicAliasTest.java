@@ -117,6 +117,20 @@ class KafkaMessagingAutoConfigurationAdminTopicAliasTest {
         assertThat(warnMessages()).isEmpty();
     }
 
+    @Test
+    @DisplayName("the removed maestro.messaging.topics.tasks property fails startup instead of being silently ignored")
+    void tasksTopicPropertyFailsStartup() {
+        runner.withPropertyValues("maestro.messaging.topics.tasks=maestro.tasks.orders")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .rootCause()
+                            .isInstanceOf(IllegalStateException.class)
+                            .hasMessageContaining("has been removed")
+                            .hasMessageContaining("maestro.messaging.topics.tasks");
+                });
+    }
+
     // ── Log capture helpers ─────────────────────────────────────────────
 
     private static ch.qos.logback.classic.Logger logbackLogger() {

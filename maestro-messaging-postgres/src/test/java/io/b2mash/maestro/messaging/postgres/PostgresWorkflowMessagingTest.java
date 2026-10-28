@@ -2,11 +2,16 @@ package io.b2mash.maestro.messaging.postgres;
 
 import io.b2mash.maestro.core.spi.LifecycleEventType;
 import io.b2mash.maestro.core.spi.SignalMessage;
-import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 import java.sql.SQLException;
 import java.time.Duration;
@@ -28,8 +33,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>This module ships in releases but had no tests at all. The suite covers
  * the queue semantics the engine depends on: at-most-one-consumer claiming via
- * {@code FOR UPDATE SKIP LOCKED}, reclaim of stale {@code PROCESSING} rows, and
- * the round trips for tasks, signals and lifecycle events.
+ * {@code FOR UPDATE SKIP LOCKED}, reclaim of stale {@code PROCESSING} rows, the
+ * signal round trip, and the lifecycle-event no-op (lifecycle events are
+ * Kafka-only).
  *
  * <p>The handler-failure nest pins the redelivery state machine: a failed
  * handler must put its row back in {@code PENDING} with a future
@@ -37,7 +43,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * its attempt budget must park in {@code DEAD_LETTER}, listable and replayable,
  * instead of looping forever or vanishing.
  *
- * <p>Polling threads are started by {@code subscribe}, so every assertion about
+ * <p>Polling threads are started by {@code subscribeSignals}, so every assertion about
  * delivery is made through Awaitility rather than by assuming synchronous
  * hand-off.
  */
@@ -45,78 +51,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class PostgresWorkflowMessagingTest extends PostgresMessagingTestSupport {
 
     private static final Duration BOUND = Duration.ofSeconds(20);
-
-    @Nested
-    @DisplayName("task queue")
-    class TaskQueueTests {
-
-        @Test
-        @DisplayName("a published task is delivered to a subscriber and marked COMPLETED")
-        void publishedTaskIsDelivered() throws SQLException {
-            var queue = taskQueueName();
-            var received = new ConcurrentLinkedQueue<TaskMessage>();
-            messaging.subscribe(queue, received::add);
-
-            messaging.publishTask(queue, newTask("wf-task-1"));
-
-            await().atMost(BOUND).until(() -> !received.isEmpty());
-            assertEquals("wf-task-1", received.peek().workflowId());
-            await().atMost(BOUND).until(
-                    () -> "COMPLETED".equals(statusOf("maestro_task_queue", "wf-task-1")));
-        }
-
-        @Test
-        @DisplayName("only one of two competing consumers claims a task — FOR UPDATE SKIP LOCKED")
-        void competingConsumersClaimTaskOnce() throws Exception {
-            var queue = taskQueueName();
-            var deliveries = new AtomicInteger();
-            var slowHandlerEntered = new CountDownLatch(1);
-
-            // Two independent messaging instances model two nodes on one queue.
-            var nodeB = new PostgresWorkflowMessaging(newDataSource(), objectMapper, notificationListener);
-            try {
-                messaging.subscribe(queue, m -> {
-                    slowHandlerEntered.countDown();
-                    deliveries.incrementAndGet();
-                });
-                nodeB.subscribe(queue, m -> {
-                    slowHandlerEntered.countDown();
-                    deliveries.incrementAndGet();
-                });
-
-                messaging.publishTask(queue, newTask("wf-task-once"));
-
-                assertTrue(slowHandlerEntered.await(20, TimeUnit.SECONDS),
-                        "the task must be delivered to someone");
-                await().atMost(BOUND).until(
-                        () -> "COMPLETED".equals(statusOf("maestro_task_queue", "wf-task-once")));
-
-                // Give the loser a chance to double-deliver before asserting.
-                await().during(Duration.ofSeconds(2)).atMost(Duration.ofSeconds(6))
-                        .until(() -> deliveries.get() == 1);
-                assertEquals(1, deliveries.get(),
-                        "a task must be claimed by exactly one consumer");
-            } finally {
-                nodeB.close();
-            }
-        }
-
-        @Test
-        @DisplayName("a stale PROCESSING claim is reclaimed, so a crashed consumer does not strand the task")
-        void staleProcessingClaimIsReclaimed() throws Exception {
-            var queue = taskQueueName();
-
-            // Publish, then simulate a consumer that claimed the row and died.
-            messaging.publishTask(queue, newTask("wf-task-stale"));
-            ageProcessingClaim("maestro_task_queue", "wf-task-stale");
-
-            var received = new ConcurrentLinkedQueue<TaskMessage>();
-            messaging.subscribe(queue, received::add);
-
-            await().atMost(BOUND).until(() -> !received.isEmpty());
-            assertEquals("wf-task-stale", received.peek().workflowId());
-        }
-    }
 
     @Nested
     @DisplayName("signal channel")
@@ -139,6 +73,42 @@ class PostgresWorkflowMessagingTest extends PostgresMessagingTestSupport {
         }
 
         @Test
+        @DisplayName("only one of two competing consumers claims a signal — FOR UPDATE SKIP LOCKED")
+        void competingConsumersClaimSignalOnce() throws Exception {
+            var service = "svc-once-" + unique();
+            var deliveries = new AtomicInteger();
+            var delivered = new CountDownLatch(1);
+
+            // Two independent messaging instances model two nodes of one service.
+            var nodeB = new PostgresWorkflowMessaging(newDataSource(), objectMapper, notificationListener);
+            try {
+                messaging.subscribeSignals(service, m -> {
+                    delivered.countDown();
+                    deliveries.incrementAndGet();
+                });
+                nodeB.subscribeSignals(service, m -> {
+                    delivered.countDown();
+                    deliveries.incrementAndGet();
+                });
+
+                messaging.publishSignal(service, new SignalMessage("wf-sig-once", "approval", null));
+
+                assertTrue(delivered.await(20, TimeUnit.SECONDS),
+                        "the signal must be delivered to someone");
+                await().atMost(BOUND).until(
+                        () -> "COMPLETED".equals(statusOf("maestro_signal_queue", "wf-sig-once")));
+
+                // Give the loser a chance to double-deliver before asserting.
+                await().during(Duration.ofSeconds(2)).atMost(Duration.ofSeconds(6))
+                        .until(() -> deliveries.get() == 1);
+                assertEquals(1, deliveries.get(),
+                        "a signal must be claimed by exactly one consumer");
+            } finally {
+                nodeB.close();
+            }
+        }
+
+        @Test
         @DisplayName("a signal published for another service is not delivered here")
         void signalsAreRoutedByService() {
             var received = new ConcurrentLinkedQueue<SignalMessage>();
@@ -157,21 +127,51 @@ class PostgresWorkflowMessagingTest extends PostgresMessagingTestSupport {
     @DisplayName("lifecycle events")
     class LifecycleEventTests {
 
+        private ListAppender<ILoggingEvent> logAppender;
+
+        @BeforeEach
+        void attachLogAppender() {
+            logAppender = new ListAppender<>();
+            logAppender.start();
+            messagingLogger().addAppender(logAppender);
+        }
+
+        @AfterEach
+        void detachLogAppender() {
+            messagingLogger().detachAppender(logAppender);
+        }
+
         @Test
-        @DisplayName("a published lifecycle event is persisted with its type and workflow")
-        void lifecycleEventIsPersisted() throws SQLException {
+        @DisplayName("publishLifecycleEvent is a no-op that writes nothing and warns exactly once")
+        void publishLifecycleEventIsANoOpThatWarnsOnce() throws SQLException {
             var event = new WorkflowLifecycleEvent(
                     UUID.randomUUID(), "wf-life-1", "SomeWorkflow", "svc", "default",
                     LifecycleEventType.WORKFLOW_STARTED, null, null, Instant.now());
 
             messaging.publishLifecycleEvent(event);
+            messaging.publishLifecycleEvent(event);
 
-            // The lifecycle table is an append-only outbox — it has no status
-            // column, unlike the task and signal queues.
-            assertEquals(1, rowCount("maestro_lifecycle_event_queue", "wf-life-1"));
-            assertEquals("WORKFLOW_STARTED",
-                    columnOf("maestro_lifecycle_event_queue", "event_type", "wf-life-1"));
-            assertNotNull(columnOf("maestro_lifecycle_event_queue", "workflow_type", "wf-life-1"));
+            // Nothing ever read the old Postgres lifecycle outbox — the admin
+            // dashboard consumes Kafka only — so V202 dropped the table.
+            try (var conn = dataSource.getConnection();
+                 var stmt = conn.prepareStatement("SELECT count(*) FROM information_schema.tables "
+                         + "WHERE table_name = 'maestro_lifecycle_event_queue'");
+                 var rs = stmt.executeQuery()) {
+                rs.next();
+                assertEquals(0, rs.getInt(1), "the unread lifecycle queue table must be gone");
+            }
+
+            var warnings = logAppender.list.stream()
+                    .filter(e -> e.getLevel() == Level.WARN)
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .filter(m -> m.contains("Kafka only"))
+                    .toList();
+            assertEquals(1, warnings.size(),
+                    "the unsupported-transport warning must be logged once, not per event: " + warnings);
+        }
+
+        private static ch.qos.logback.classic.Logger messagingLogger() {
+            return (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(PostgresWorkflowMessaging.class);
         }
     }
 
@@ -246,24 +246,6 @@ class PostgresWorkflowMessagingTest extends PostgresMessagingTestSupport {
                 assertTrue(tight.listDeadLetterSignals(service, 10).isEmpty(),
                         "a replayed signal must leave the dead-letter listing");
             }
-        }
-
-        @Test
-        @DisplayName("a failed task handler must not lose the task either — it is redelivered")
-        void failedHandlerMustNotLoseTheTask() throws Exception {
-            var queue = taskQueueName();
-            var attempts = new AtomicInteger();
-            messaging.subscribe(queue, m -> {
-                if (attempts.incrementAndGet() == 1) {
-                    throw new IllegalStateException("transient handler failure");
-                }
-            });
-
-            messaging.publishTask(queue, newTask("wf-task-redeliver"));
-
-            await().atMost(BOUND).until(() -> attempts.get() >= 2);
-            await().atMost(BOUND).until(
-                    () -> "COMPLETED".equals(statusOf("maestro_task_queue", "wf-task-redeliver")));
         }
 
         @Test
@@ -450,34 +432,6 @@ class PostgresWorkflowMessagingTest extends PostgresMessagingTestSupport {
         }
 
         @Test
-        @DisplayName("task queue, redelivery disabled: COMPLETED write fails → row retired DEAD_LETTER, handler never re-invoked")
-        void taskQueue_completedWriteFails_disabled_retiredWithoutReinvocation() throws Exception {
-            // Pins that the retire sweep runs in the task loop too, not only the signal loop.
-            var queue = "queue-swf-" + unique();
-            var calls = new AtomicInteger();
-            var consumer = consumer(false, 10);
-            try {
-                consumer.subscribe(queue, m -> {
-                    calls.incrementAndGet();
-                    faulty.arm();
-                });
-                messaging.publishTask(queue, newTask(wf));
-
-                await().atMost(BOUND).until(() -> faulty.failedConnections() >= 1);
-                faulty.disarm();
-                ageProcessingClaim("maestro_task_queue", wf);
-
-                await().atMost(BOUND).until(() -> "DEAD_LETTER".equals(statusOf("maestro_task_queue", wf)));
-                assertEquals(1, intColumnOf("maestro_task_queue", "attempts", wf));
-                assertTrue(columnOf("maestro_task_queue", "last_error", wf).contains("outcome unknown"));
-                await().during(Duration.ofSeconds(3)).atMost(Duration.ofSeconds(8))
-                        .until(() -> calls.get() == 1);
-            } finally {
-                consumer.close();
-            }
-        }
-
-        @Test
         @DisplayName("a stale claim with no budget left is retired DEAD_LETTER and never re-invoked")
         void staleClaimWithoutBudget_retiredNeverReinvoked() throws Exception {
             var calls = new AtomicInteger();
@@ -577,21 +531,8 @@ class PostgresWorkflowMessagingTest extends PostgresMessagingTestSupport {
 
     // ── helpers ────────────────────────────────────────────────────────
 
-    private String currentTaskQueue;
-
-    private String taskQueueName() {
-        if (currentTaskQueue == null) {
-            currentTaskQueue = "queue-" + unique();
-        }
-        return currentTaskQueue;
-    }
-
     private static String unique() {
         return UUID.randomUUID().toString().substring(0, 8);
     }
 
-    private static TaskMessage newTask(String workflowId) {
-        return new TaskMessage(UUID.randomUUID(), workflowId, "SomeWorkflow",
-                UUID.randomUUID(), "svc", null);
-    }
 }

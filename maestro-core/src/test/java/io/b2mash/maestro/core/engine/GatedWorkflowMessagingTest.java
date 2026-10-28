@@ -2,7 +2,6 @@ package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.spi.LifecycleEventType;
 import io.b2mash.maestro.core.spi.SignalMessage;
-import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import org.junit.jupiter.api.DisplayName;
@@ -64,15 +63,10 @@ class GatedWorkflowMessagingTest {
         var delegate = new RecordingMessaging();
         var gated = new GatedWorkflowMessaging(delegate, false);
 
-        gated.publishTask("queue", new TaskMessage(
-                UUID.randomUUID(), "wf-1", "SomeWorkflow", UUID.randomUUID(), "test-service", null));
         gated.publishSignal("svc", new SignalMessage("wf-1", "sig", null));
-        gated.subscribe("queue", handler -> {});
         gated.subscribeSignals("svc", handler -> {});
 
-        assertEquals(1, delegate.tasks.get());
         assertEquals(1, delegate.signals.get());
-        assertEquals(1, delegate.subscribes.get());
         assertEquals(1, delegate.signalSubscribes.get());
     }
 
@@ -94,16 +88,9 @@ class GatedWorkflowMessagingTest {
 
     /** Counts calls per method instead of recording payloads — only the routing matters here. */
     private static class RecordingMessaging implements WorkflowMessaging {
-        final AtomicInteger tasks = new AtomicInteger();
         final AtomicInteger signals = new AtomicInteger();
         final AtomicInteger lifecycleEvents = new AtomicInteger();
-        final AtomicInteger subscribes = new AtomicInteger();
         final AtomicInteger signalSubscribes = new AtomicInteger();
-
-        @Override
-        public void publishTask(String taskQueue, TaskMessage message) {
-            tasks.incrementAndGet();
-        }
 
         @Override
         public void publishSignal(String serviceName, SignalMessage message) {
@@ -113,11 +100,6 @@ class GatedWorkflowMessagingTest {
         @Override
         public void publishLifecycleEvent(WorkflowLifecycleEvent event) {
             lifecycleEvents.incrementAndGet();
-        }
-
-        @Override
-        public void subscribe(String taskQueue, Consumer<TaskMessage> handler) {
-            subscribes.incrementAndGet();
         }
 
         @Override

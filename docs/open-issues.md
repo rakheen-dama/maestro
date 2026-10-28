@@ -62,7 +62,7 @@ Only active workflows are recoverable.
 | SPI | Job | Implementations |
 |---|---|---|
 | `WorkflowStore` | Durable state — instances, events, signals, timers | Postgres (via `maestro-store-jdbc`) |
-| `WorkflowMessaging` | Task dispatch, signal transport, lifecycle events | Kafka, Postgres |
+| `WorkflowMessaging` | Signal transport, lifecycle events (Kafka only) | Kafka, Postgres |
 | `DistributedLock` | Instance locking, leader election | Valkey, Postgres |
 
 **Locks are an optimisation, not the correctness backstop.** The SPI explicitly
@@ -293,7 +293,8 @@ the reproduction confirmed the reading was right.
 > `DefaultErrorHandler` + `DeadLetterPublishingRecoverer`), Postgres
 > (`DEAD_LETTER` status, `attempts`/`next_attempt_at`/`last_error` columns,
 > `V201` migration, `listDeadLetterSignals`/`listDeadLetterTasks` +
-> `replaySignal`/`replayTask` API), RabbitMQ (`RetryInterceptorBuilder` +
+> `replaySignal`/`replayTask` API — the task half later removed with the whole
+> task channel in commit "refactor(messaging): delete the unused task-dispatch channel and the unread Postgres lifecycle queue (F8, F10)"), RabbitMQ (`RetryInterceptorBuilder` +
 > self-declared `<queue>.dlq` bound to a `maestro.dead-letter` exchange). New
 > `maestro.messaging.redelivery.*` configuration (10 attempts, 1s→30s
 > exponential backoff by default). Both `@Disabled` specs are enabled and
@@ -2424,9 +2425,9 @@ inherit the same proof obligation.
 > claim's stale-reclaim branch filter on `status = 'PROCESSING' AND
 > processed_at < now() - interval '5 minutes'` per qualifier. A partial index
 > `(service_name, processed_at) WHERE status = 'PROCESSING'` on
-> `maestro_signal_queue` (and `(task_queue, processed_at) WHERE status =
-> 'PROCESSING'` on `maestro_task_queue`) would serve both without scanning the
-> queue's `PENDING` backlog. No migration ships with this fix; add one if
+> `maestro_signal_queue` would serve both without scanning the queue's
+> `PENDING` backlog (`maestro_task_queue` no longer exists — `V202` dropped it
+> in commit "refactor(messaging): delete the unused task-dispatch channel and the unread Postgres lifecycle queue (F8, F10)"). No migration ships with this fix; add one if
 > queue-table size makes the per-poll sweep show up in `pg_stat_statements`.
 >
 > **Original status — Open.** Filed from a PR #34 external review finding (CodeRabbit,

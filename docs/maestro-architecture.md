@@ -457,7 +457,6 @@ All topics are pre-created and declared in `application.yml`.
 |---|---|---|---|
 | `payments.requests` | Order Service | orderId | Payment commands to proxy |
 | `payments.results` | Payment Proxy | orderId | Payment results back |
-| `maestro.tasks.{taskQueue}` | Per-service | workflowId | Internal task dispatch |
 | `maestro.signals.{service}` | Per-service | workflowId | Inbound signals |
 | `maestro.admin.events` | All services | serviceName | Lifecycle events for dashboard |
 | `<any consumed topic>.DLT` | Per-service | workflowId | Messages that exhausted redelivery (suffix configurable) |

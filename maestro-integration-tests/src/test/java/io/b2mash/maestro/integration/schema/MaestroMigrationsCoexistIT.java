@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -86,7 +87,7 @@ class MaestroMigrationsCoexistIT {
 
         new MaestroSchemaInitializer(ds, SchemaMode.FLYWAY, getClass().getClassLoader()).initialize();
 
-        assertEquals(List.of("1", "2", "3", "4", "5", "100", "200", "201"),
+        assertEquals(List.of("1", "2", "3", "4", "5", "100", "200", "201", "202"),
                 versions(MaestroSchemaInitializer.HISTORY_TABLE));
         assertEquals(List.of("1"), versions("flyway_schema_history"),
                 "Maestro wrote nothing into the host's history");
@@ -94,6 +95,10 @@ class MaestroMigrationsCoexistIT {
         assertTrue(tables.containsAll(List.of(
                         "maestro_workflow_instance", "maestro_distributed_lock", "maestro_signal_queue")),
                 "every module's tables must be present, found: " + tables);
+        // V202: the task-dispatch channel and the never-read lifecycle outbox are gone.
+        assertFalse(tables.contains("maestro_task_queue"), "V202 must drop maestro_task_queue: " + tables);
+        assertFalse(tables.contains("maestro_lifecycle_event_queue"),
+                "V202 must drop maestro_lifecycle_event_queue: " + tables);
     }
 
     /**

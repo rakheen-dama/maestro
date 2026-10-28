@@ -9,7 +9,6 @@ import io.b2mash.maestro.core.retry.RetryExecutor;
 import io.b2mash.maestro.core.retry.RetryPolicy;
 import io.b2mash.maestro.core.spi.LifecycleEventType;
 import io.b2mash.maestro.core.spi.SignalMessage;
-import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.spring.observe.TracingEngineObserver;
@@ -92,7 +91,7 @@ class KafkaTracePropagationContractTest extends KafkaTestSupport {
 
     private KafkaMessagingConfig config() {
         return new KafkaMessagingConfig(
-                null, null,
+                null,
                 "maestro.admin.events." + testSuffix,
                 "trace-group-" + testSuffix,
                 2, Duration.ofMillis(50), 2.0, Duration.ofMillis(200), ".DLT", true);
@@ -133,27 +132,19 @@ class KafkaTracePropagationContractTest extends KafkaTestSupport {
     }
 
     @Test
-    @DisplayName("tasks and lifecycle events are injected on the same contract")
-    void publishedTaskAndLifecycleEventCarryTraceparent() throws Exception {
-        var queue = "q-" + testSuffix;
-        var taskTopic = "maestro.tasks." + queue;
+    @DisplayName("lifecycle events are injected on the same contract")
+    void publishedLifecycleEventCarriesTraceparent() throws Exception {
         var adminTopic = "maestro.admin.events." + testSuffix;
-        createTopics(taskTopic, adminTopic);
+        createTopics(adminTopic);
 
         var span = otel.tracer().nextSpan().name("publish").start();
         try (var ignored = otel.tracer().withSpan(span)) {
-            traced.publishTask(queue, new TaskMessage(
-                    UUID.randomUUID(), "order-1", "OrderWorkflow", UUID.randomUUID(), "svc", null));
             traced.publishLifecycleEvent(new WorkflowLifecycleEvent(
-                    UUID.randomUUID(), "order-1", "OrderWorkflow", "svc", queue,
+                    UUID.randomUUID(), "order-1", "OrderWorkflow", "svc", "default",
                     LifecycleEventType.WORKFLOW_STARTED, null, null, Instant.now()));
         } finally {
             span.end();
         }
-
-        var taskparent = header(readOne(taskTopic), TRACEPARENT);
-        assertNotNull(taskparent, "publishTask must inject");
-        assertTrue(TRACEPARENT_GRAMMAR.matcher(taskparent).matches());
 
         var adminparent = header(readOne(adminTopic), TRACEPARENT);
         assertNotNull(adminparent, "publishLifecycleEvent must inject");
@@ -352,36 +343,6 @@ class KafkaTracePropagationContractTest extends KafkaTestSupport {
         await().atMost(Duration.ofSeconds(20)).until(() -> !received.isEmpty());
         assertEquals("approval", received.getFirst().signalName());
         assertNull(holder.get());
-    }
-
-    @Test
-    @DisplayName("task subscriptions restore the remote context too")
-    void consumedTaskRestoresRemoteContext() throws Exception {
-        var queue = "q-rt-" + testSuffix;
-        var topic = "maestro.tasks." + queue;
-        createTopics(topic);
-
-        var seenTraceId = new AtomicReference<String>();
-        var received = new CopyOnWriteArrayList<TaskMessage>();
-        traced.subscribe(queue, message -> {
-            var current = otel.tracer().currentSpan();
-            seenTraceId.set(current != null ? current.context().traceId() : null);
-            received.add(message);
-        });
-        Thread.sleep(500);
-
-        var span = otel.tracer().nextSpan().name("publish").start();
-        String publishedTraceId;
-        try (var ignored = otel.tracer().withSpan(span)) {
-            publishedTraceId = span.context().traceId();
-            traced.publishTask(queue, new TaskMessage(
-                    UUID.randomUUID(), "order-1", "OrderWorkflow", UUID.randomUUID(), "svc", null));
-        } finally {
-            span.end();
-        }
-
-        await().atMost(Duration.ofSeconds(20)).until(() -> !received.isEmpty());
-        assertEquals(publishedTraceId, seenTraceId.get());
     }
 
     // ── Hostile / malformed inbound headers (fix round 1, F1) ─────────

@@ -10,7 +10,7 @@ import java.time.Duration;
 
 /**
  * Utility for cleaning up processed and stale messages from the
- * PostgreSQL messaging tables.
+ * PostgreSQL signal queue ({@code maestro_signal_queue}).
  *
  * <p>Deletes rows in {@code COMPLETED} or {@code FAILED} status that are
  * older than a configurable retention period. This prevents unbounded
@@ -42,21 +42,10 @@ public final class PostgresMessageCleaner {
 
     private static final Logger logger = LoggerFactory.getLogger(PostgresMessageCleaner.class);
 
-    private static final String DELETE_TASK_QUEUE = """
-            DELETE FROM maestro_task_queue
-            WHERE status IN ('COMPLETED', 'FAILED')
-              AND processed_at < now() - INTERVAL '%s seconds'
-            """;
-
     private static final String DELETE_SIGNAL_QUEUE = """
             DELETE FROM maestro_signal_queue
             WHERE status IN ('COMPLETED', 'FAILED')
               AND processed_at < now() - INTERVAL '%s seconds'
-            """;
-
-    private static final String DELETE_LIFECYCLE_QUEUE = """
-            DELETE FROM maestro_lifecycle_event_queue
-            WHERE created_at < now() - INTERVAL '%s seconds'
             """;
 
     private final DataSource dataSource;
@@ -74,20 +63,15 @@ public final class PostgresMessageCleaner {
     }
 
     /**
-     * Deletes processed messages older than the retention period from all
-     * messaging tables.
+     * Deletes processed messages older than the retention period from the
+     * signal queue.
      *
-     * @return the total number of rows deleted across all tables
+     * @return the number of rows deleted
      */
     public int cleanAll() {
         var retentionSeconds = retention.toSeconds();
-        var total = 0;
-        total += cleanTable("maestro_task_queue",
-                String.format(DELETE_TASK_QUEUE, retentionSeconds));
-        total += cleanTable("maestro_signal_queue",
+        var total = cleanTable("maestro_signal_queue",
                 String.format(DELETE_SIGNAL_QUEUE, retentionSeconds));
-        total += cleanTable("maestro_lifecycle_event_queue",
-                String.format(DELETE_LIFECYCLE_QUEUE, retentionSeconds));
         if (total > 0) {
             logger.info("Cleaned {} stale messages (retention={}s)", total, retentionSeconds);
         }

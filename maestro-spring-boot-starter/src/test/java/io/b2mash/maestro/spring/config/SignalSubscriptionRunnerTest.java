@@ -4,7 +4,6 @@ import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.spi.SignalMessage;
-import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.test.InMemoryWorkflowStore;
@@ -248,16 +247,10 @@ class SignalSubscriptionRunnerTest {
         Consumer<SignalMessage> handler;
 
         @Override
-        public void publishTask(String taskQueue, TaskMessage message) {}
-
-        @Override
         public void publishSignal(String serviceName, SignalMessage message) {}
 
         @Override
         public void publishLifecycleEvent(WorkflowLifecycleEvent event) {}
-
-        @Override
-        public void subscribe(String taskQueue, Consumer<TaskMessage> handler) {}
 
         @Override
         public void subscribeSignals(String serviceName, Consumer<SignalMessage> handler) {

@@ -13,7 +13,6 @@ import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.observe.RecordingEngineObserver;
 import io.b2mash.maestro.core.observe.TraceContextHolder;
 import io.b2mash.maestro.core.spi.SignalMessage;
-import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.SignalNotifier;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
@@ -1485,18 +1484,12 @@ class SignalManagerTest {
         final CopyOnWriteArrayList<WorkflowLifecycleEvent> events = new CopyOnWriteArrayList<>();
 
         @Override
-        public void publishTask(String taskQueue, TaskMessage message) {}
-
-        @Override
         public void publishSignal(String serviceName, SignalMessage message) {}
 
         @Override
         public void publishLifecycleEvent(WorkflowLifecycleEvent event) {
             events.add(event);
         }
-
-        @Override
-        public void subscribe(String taskQueue, Consumer<TaskMessage> handler) {}
 
         @Override
         public void subscribeSignals(String serviceName, Consumer<SignalMessage> handler) {}

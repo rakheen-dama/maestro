@@ -292,7 +292,7 @@ class KafkaAckOnFailureIT extends KafkaSpringIntegrationSupport {
      */
     private static KafkaMessagingConfig channelConfig(String signalsTopic, int maxAttempts) {
         return new KafkaMessagingConfig(
-                null, signalsTopic, ADMIN_TOPIC, "ack-channel-" + UUID.randomUUID(),
+                signalsTopic, ADMIN_TOPIC, "ack-channel-" + UUID.randomUUID(),
                 maxAttempts, Duration.ofMillis(250), 2.0, Duration.ofSeconds(1), ".DLT", true);
     }
 

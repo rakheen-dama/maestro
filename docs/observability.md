@@ -304,7 +304,7 @@ connected trace**. The contract is pinned by tests, not inherited from transport
 defaults.
 
 The promise now covers Kafka traffic generally, not only the engine's own
-`maestro.tasks.*` / `maestro.signals.*` topics — see the contract below and
+`maestro.signals.*` topics — see the contract below and
 [Issue 23](open-issues.md#issue-23) for the history (it was previously scoped
 narrower than this).
 

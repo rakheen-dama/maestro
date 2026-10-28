@@ -27,6 +27,8 @@ maestro:
       - name: documents
         concurrency: 3
 
+  # Lifecycle events reach the admin dashboard over Kafka only; on the
+  # Postgres transport publishLifecycleEvent is a no-op that WARNs once.
   admin:
     events:
-      enabled: true
+      enabled: false

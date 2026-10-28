@@ -308,7 +308,7 @@ class KafkaTraceLinkageIT extends PostgresIntegrationSupport {
                 ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class,
                 ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest"));
         var config = new KafkaMessagingConfig(
-                null, null, "maestro.admin.events." + group, "trace-linkage-" + group,
+                null, "maestro.admin.events." + group, "trace-linkage-" + group,
                 2, Duration.ofMillis(50), 2.0, Duration.ofMillis(200), ".DLT", true);
         return new KafkaWorkflowMessaging(template, consumers, objectMapper, config, propagation);
     }

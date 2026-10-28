@@ -239,7 +239,7 @@ public class MaestroProperties {
     }
 
     /**
-     * Messaging configuration for task dispatch, signals, and lifecycle events.
+     * Messaging configuration for signals and lifecycle events.
      *
      * @param type          messaging implementation type (e.g., {@code "kafka"})
      * @param consumerGroup Kafka consumer group; defaults to the service name at runtime
@@ -323,18 +323,21 @@ public class MaestroProperties {
     /**
      * Kafka topic names for Maestro messaging.
      *
-     * @param tasks      topic for workflow task dispatch
-     * @param signals    topic for cross-service signal delivery
+     * <p>There is no task topic: workflows start in-process, so nothing is
+     * dispatched over the transport. The former
+     * {@code maestro.messaging.topics.tasks} property fails Kafka-transport
+     * startup if it is still set.
+     *
+     * @param signals     topic for cross-service signal delivery
      * @param adminEvents topic for admin dashboard lifecycle events
      */
     public record TopicsProperties(
-            @Nullable String tasks,
             @Nullable String signals,
             @DefaultValue("maestro.admin.events") String adminEvents
     ) {
         /** @return the defaults documented above */
         public static TopicsProperties defaults() {
-            return new TopicsProperties(null, null, "maestro.admin.events");
+            return new TopicsProperties(null, "maestro.admin.events");
         }
     }
 

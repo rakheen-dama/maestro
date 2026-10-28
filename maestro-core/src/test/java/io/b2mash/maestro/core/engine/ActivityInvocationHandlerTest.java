@@ -27,7 +27,6 @@ import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.core.spi.SignalMessage;
-import io.b2mash.maestro.core.spi.TaskMessage;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -1004,17 +1003,7 @@ class ActivityInvocationHandlerTest {
         }
 
         @Override
-        public void publishTask(String taskQueue, TaskMessage message) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
         public void publishSignal(String serviceName, SignalMessage message) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public void subscribe(String taskQueue, Consumer<TaskMessage> handler) {
             throw new UnsupportedOperationException();
         }
 

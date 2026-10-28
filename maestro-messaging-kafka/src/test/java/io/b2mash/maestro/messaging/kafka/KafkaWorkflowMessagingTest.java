@@ -2,7 +2,6 @@ package io.b2mash.maestro.messaging.kafka;
 
 import io.b2mash.maestro.core.spi.LifecycleEventType;
 import io.b2mash.maestro.core.spi.SignalMessage;
-import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeEach;
@@ -41,7 +40,7 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
     void setUpMessaging() {
         testSuffix = UUID.randomUUID().toString().substring(0, 8);
         messaging = new KafkaWorkflowMessaging(
-                kafkaTemplate, consumerFactory, objectMapper, config(null, null));
+                kafkaTemplate, consumerFactory, objectMapper, config(null));
     }
 
     /**
@@ -49,9 +48,8 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
      * assert delivery, not the production backoff, and a failing record would
      * otherwise stall its partition for minutes.
      */
-    private KafkaMessagingConfig config(@Nullable String tasksTopic, @Nullable String signalsTopic) {
+    private KafkaMessagingConfig config(@Nullable String signalsTopic) {
         return new KafkaMessagingConfig(
-                tasksTopic,
                 signalsTopic,
                 "maestro.admin.events." + testSuffix,
                 "test-group-" + testSuffix,
@@ -62,104 +60,6 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
                 ".DLT",
                 true
         );
-    }
-
-    // ── Publish + Subscribe Tasks ────────────────────────────────────────
-
-    @Nested
-    @DisplayName("Task publishing and subscription")
-    class TaskTests {
-
-        @Test
-        @DisplayName("subscribe receives published task message with correct fields")
-        void subscribeReceivesPublishedTask() throws Exception {
-            var taskQueue = "orders-" + testSuffix;
-            var topic = "maestro.tasks." + taskQueue;
-            createTopics(topic);
-
-            var received = new CopyOnWriteArrayList<TaskMessage>();
-
-            messaging.subscribe(taskQueue, received::add);
-            Thread.sleep(500); // Allow container to start
-
-            var instanceId = UUID.randomUUID();
-            var runId = UUID.randomUUID();
-            var task = new TaskMessage(instanceId, "order-123", "order-fulfilment", runId, "order-service", null);
-
-            messaging.publishTask(taskQueue, task);
-
-            await().atMost(10, SECONDS).untilAsserted(() -> {
-                assertEquals(1, received.size());
-                var msg = received.getFirst();
-                assertEquals(instanceId, msg.workflowInstanceId());
-                assertEquals("order-123", msg.workflowId());
-                assertEquals("order-fulfilment", msg.workflowType());
-                assertEquals(runId, msg.runId());
-                assertEquals("order-service", msg.serviceName());
-                assertTrue(msg.input() == null || msg.input().isNull(),
-                        "Input should be null or NullNode");
-            });
-
-            messaging.destroy();
-        }
-
-        @Test
-        @DisplayName("publishTask uses workflowId as partition key")
-        void publishTaskUsesWorkflowIdAsKey() throws Exception {
-            var taskQueue = "keyed-" + testSuffix;
-            var topic = "maestro.tasks." + taskQueue;
-            createTopics(topic);
-
-            var keys = new CopyOnWriteArrayList<String>();
-
-            // Subscribe with a raw Kafka consumer to check the record key
-            var containerProps = new org.springframework.kafka.listener.ContainerProperties(topic);
-            containerProps.setGroupId("key-check-" + testSuffix);
-            containerProps.setMessageListener(
-                    (org.springframework.kafka.listener.MessageListener<String, byte[]>)
-                            record -> keys.add(record.key()));
-            var container = new org.springframework.kafka.listener.ConcurrentMessageListenerContainer<>(
-                    consumerFactory, containerProps);
-            container.start();
-            Thread.sleep(500);
-
-            var task = new TaskMessage(UUID.randomUUID(), "wf-abc", "type", UUID.randomUUID(), "svc", null);
-            messaging.publishTask(taskQueue, task);
-
-            await().atMost(10, SECONDS).untilAsserted(() -> {
-                assertEquals(1, keys.size());
-                assertEquals("wf-abc", keys.getFirst());
-            });
-
-            container.stop();
-        }
-
-        @Test
-        @DisplayName("publishTask with non-null input preserves JSON payload")
-        void publishTaskWithInput() throws Exception {
-            var taskQueue = "input-" + testSuffix;
-            var topic = "maestro.tasks." + taskQueue;
-            createTopics(topic);
-
-            var received = new CopyOnWriteArrayList<TaskMessage>();
-            messaging.subscribe(taskQueue, received::add);
-            Thread.sleep(500);
-
-            var inputNode = objectMapper.readTree("{\"amount\":100,\"currency\":\"ZAR\"}");
-            var task = new TaskMessage(UUID.randomUUID(), "order-1", "type", UUID.randomUUID(), "svc", inputNode);
-
-            messaging.publishTask(taskQueue, task);
-
-            await().atMost(10, SECONDS).untilAsserted(() -> {
-                assertEquals(1, received.size());
-                var input = received.getFirst().input();
-                assertNotNull(input);
-                assertEquals(100, input.get("amount").asInt());
-                assertEquals("ZAR", input.get("currency").stringValue());
-            });
-
-            messaging.destroy();
-        }
     }
 
     // ── Publish + Subscribe Signals ──────────────────────────────────────
@@ -195,6 +95,36 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
             });
 
             messaging.destroy();
+        }
+
+        @Test
+        @DisplayName("publishSignal uses workflowId as partition key")
+        void publishSignalUsesWorkflowIdAsKey() throws Exception {
+            var serviceName = "keyed-" + testSuffix;
+            var topic = "maestro.signals." + serviceName;
+            createTopics(topic);
+
+            var keys = new CopyOnWriteArrayList<String>();
+
+            // Subscribe with a raw Kafka consumer to check the record key
+            var containerProps = new org.springframework.kafka.listener.ContainerProperties(topic);
+            containerProps.setGroupId("key-check-" + testSuffix);
+            containerProps.setMessageListener(
+                    (org.springframework.kafka.listener.MessageListener<String, byte[]>)
+                            record -> keys.add(record.key()));
+            var container = new org.springframework.kafka.listener.ConcurrentMessageListenerContainer<>(
+                    consumerFactory, containerProps);
+            container.start();
+            Thread.sleep(500);
+
+            messaging.publishSignal(serviceName, new SignalMessage("wf-abc", "approval", null));
+
+            await().atMost(10, SECONDS).untilAsserted(() -> {
+                assertEquals(1, keys.size());
+                assertEquals("wf-abc", keys.getFirst());
+            });
+
+            container.stop();
         }
 
         @Test
@@ -273,8 +203,8 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
         @Test
         @DisplayName("handler exception does not crash consumer — subsequent messages still processed")
         void handlerExceptionDoesNotCrashConsumer() throws Exception {
-            var taskQueue = "errors-" + testSuffix;
-            var topic = "maestro.tasks." + taskQueue;
+            var serviceName = "errors-" + testSuffix;
+            var topic = "maestro.signals." + serviceName;
             // The failing record is redelivered and then dead-lettered, so the
             // dead-letter topic has to exist — Maestro never creates topics.
             createTopics(topic, topic + ".DLT");
@@ -282,7 +212,7 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
             var successCount = new AtomicInteger(0);
             var failCount = new AtomicInteger(0);
 
-            messaging.subscribe(taskQueue, msg -> {
+            messaging.subscribeSignals(serviceName, msg -> {
                 if ("fail-me".equals(msg.workflowId())) {
                     failCount.incrementAndGet();
                     throw new RuntimeException("Deliberate test failure");
@@ -292,8 +222,7 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
             Thread.sleep(500);
 
             // Send a message that will fail
-            var failing = new TaskMessage(UUID.randomUUID(), "fail-me", "type", UUID.randomUUID(), "svc", null);
-            messaging.publishTask(taskQueue, failing);
+            messaging.publishSignal(serviceName, new SignalMessage("fail-me", "approval", null));
 
             // The failing record is redelivered before it is dead-lettered, so
             // the whole budget is spent before the consumer moves on.
@@ -304,8 +233,7 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
             // Now send a second message AFTER the failure — proves the consumer
             // is still alive and consuming, not just that both messages were
             // in-flight before the exception occurred
-            var succeeding = new TaskMessage(UUID.randomUUID(), "succeed", "type", UUID.randomUUID(), "svc", null);
-            messaging.publishTask(taskQueue, succeeding);
+            messaging.publishSignal(serviceName, new SignalMessage("succeed", "approval", null));
 
             await().atMost(10, SECONDS).untilAsserted(() ->
                     assertTrue(successCount.get() >= 1,
@@ -325,7 +253,7 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
         @DisplayName("installs a zero-retry handler with no dead-letter recoverer")
         void redeliveryDisabled_installsZeroRetryHandlerWithNoDeadLetterRecoverer() throws Exception {
             var disabledConfig = new KafkaMessagingConfig(
-                    null, "flagoff-" + testSuffix, "maestro.admin.events." + testSuffix,
+                    "flagoff-" + testSuffix, "maestro.admin.events." + testSuffix,
                     "test-group-flagoff-" + testSuffix,
                     2, Duration.ofMillis(50), 2.0, Duration.ofMillis(200), ".DLT",
                     false); // redeliveryEnabled
@@ -374,19 +302,18 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
         @Test
         @DisplayName("fixed topic override is used instead of dynamic naming")
         void fixedTopicOverride() throws Exception {
-            var fixedTopic = "custom.tasks." + testSuffix;
+            var fixedTopic = "custom.signals." + testSuffix;
             createTopics(fixedTopic);
 
-            var overrideConfig = config(fixedTopic, null);
+            var overrideConfig = config(fixedTopic);
             var overrideMessaging = new KafkaWorkflowMessaging(
                     kafkaTemplate, consumerFactory, objectMapper, overrideConfig);
 
-            var received = new CopyOnWriteArrayList<TaskMessage>();
-            overrideMessaging.subscribe("ignored-queue-name", received::add);
+            var received = new CopyOnWriteArrayList<SignalMessage>();
+            overrideMessaging.subscribeSignals("ignored-service-name", received::add);
             Thread.sleep(500);
 
-            var task = new TaskMessage(UUID.randomUUID(), "wf-1", "type", UUID.randomUUID(), "svc", null);
-            overrideMessaging.publishTask("ignored-queue-name", task);
+            overrideMessaging.publishSignal("ignored-service-name", new SignalMessage("wf-1", "approval", null));
 
             await().atMost(10, SECONDS).untilAsserted(() -> {
                 assertEquals(1, received.size());

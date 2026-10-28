@@ -8,20 +8,18 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * A queue row that exhausted its redelivery budget and was parked in
+ * A signal-queue row that exhausted its redelivery budget and was parked in
  * {@code DEAD_LETTER} status.
  *
- * <p>Returned by {@link PostgresWorkflowMessaging#listDeadLetterSignals} and
- * {@link PostgresWorkflowMessaging#listDeadLetterTasks} so a parked message can
- * be inspected and, once the underlying fault is fixed, replayed with
- * {@link PostgresWorkflowMessaging#replaySignal} /
- * {@link PostgresWorkflowMessaging#replayTask}.
+ * <p>Returned by {@link PostgresWorkflowMessaging#listDeadLetterSignals} so a
+ * parked signal can be inspected and, once the underlying fault is fixed,
+ * replayed with {@link PostgresWorkflowMessaging#replaySignal}.
  *
  * <p><b>Thread safety:</b> This record is immutable and therefore thread-safe.
  *
  * @param id         the queue row ID, and the handle for replay
  * @param workflowId the workflow the message belongs to
- * @param name       the signal name for signals, the workflow type for tasks
+ * @param name       the signal name
  * @param payload    the message payload, or {@code null} if it had none
  * @param attempts   how many delivery attempts were spent
  * @param lastError  the failure that exhausted the budget, or {@code null}

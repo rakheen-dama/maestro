@@ -10,7 +10,7 @@
 # Services:
 #   - postgres:16       → Workflow state store (Flyway auto-migrates)
 #   - valkey:8          → Distributed locks and signal notifications
-#   - kafka (KRaft)     → Task dispatch, signals, cross-service events
+#   - kafka (KRaft)     → Signals, lifecycle events, cross-service events
 #   - kafka-init        → Pre-creates all required Kafka topics
 #   - order-service     → REST API + OrderFulfilmentWorkflow (port 8081)
 #   - payment-gateway   → PaymentProcessingWorkflow with durable retries (port 8082)
@@ -92,8 +92,6 @@ services:
       - |
         echo "Creating Kafka topics..."
         KAFKA="/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092"
-        $$KAFKA --create --if-not-exists --topic maestro.tasks.orders          --partitions 3 --replication-factor 1
-        $$KAFKA --create --if-not-exists --topic maestro.tasks.payments        --partitions 3 --replication-factor 1
         $$KAFKA --create --if-not-exists --topic maestro.signals.order-service  --partitions 3 --replication-factor 1
         $$KAFKA --create --if-not-exists --topic maestro.signals.payment-gateway --partitions 3 --replication-factor 1
         $$KAFKA --create --if-not-exists --topic maestro.admin.events          --partitions 1 --replication-factor 1

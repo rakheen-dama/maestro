@@ -126,11 +126,6 @@ Maestro never auto-creates Kafka topics. Create them manually:
 # Find your Kafka container name
 KAFKA_CONTAINER=$(docker ps --format '{{.Names}}' | grep kafka)
 
-# Task queue topic
-docker exec -it $KAFKA_CONTAINER /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server localhost:9092 \
-  --create --topic maestro.tasks.default --partitions 3
-
 # Signal topic (one per service)
 docker exec -it $KAFKA_CONTAINER /opt/kafka/bin/kafka-topics.sh \
   --bootstrap-server localhost:9092 \
@@ -156,7 +151,6 @@ maestro:
   messaging:
     type: kafka    # Also supports: postgres
     topics:
-      tasks: maestro.tasks.default
       signals: maestro.signals.my-service
   lock:
     type: valkey   # Also supports: postgres
@@ -275,7 +269,7 @@ What each annotation does:
 
 | Annotation | Purpose |
 |---|---|
-| `@DurableWorkflow` | Marks this class as a crash-recoverable workflow. The `name` is used as the workflow type identifier. The `taskQueue` routes to worker groups. |
+| `@DurableWorkflow` | Marks this class as a crash-recoverable workflow. The `name` is used as the workflow type identifier. The `taskQueue` names the concurrency bucket configured under `maestro.worker.task-queues`. |
 | `@WorkflowMethod` | Marks the single entry-point method. Accepts zero or one parameter (the workflow input). The return value is serialized as the workflow output. |
 | `@ActivityStub` | Tells Maestro to inject a memoizing proxy for this activity interface. `startToCloseTimeout` is an ISO 8601 duration string. |
 | `@RetryPolicy` | Configures exponential-backoff retry for failed activity calls. Defaults: 3 max attempts, 1s initial interval, 2x backoff. |

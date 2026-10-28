@@ -394,7 +394,6 @@ maestro:
     type: kafka
     consumer-group: ${maestro.service-name}
     topics:
-      tasks: maestro.tasks.orders
       signals: maestro.signals.order-service
       admin-events: maestro.admin.events
 

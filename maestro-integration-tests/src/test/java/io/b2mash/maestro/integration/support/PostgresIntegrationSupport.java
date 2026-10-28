@@ -65,8 +65,7 @@ public abstract class PostgresIntegrationSupport {
             TRUNCATE maestro_workflow_signal, maestro_workflow_timer,
                      maestro_workflow_event, maestro_workflow_instance,
                      maestro_distributed_lock, maestro_leader_election,
-                     maestro_task_queue, maestro_signal_queue,
-                     maestro_lifecycle_event_queue
+                     maestro_signal_queue
             CASCADE""";
 
     protected PGSimpleDataSource dataSource;

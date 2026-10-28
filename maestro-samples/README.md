@@ -158,8 +158,6 @@ Prerequisites: PostgreSQL 16+, Kafka 3.x, Valkey/Redis running locally.
 
 ```bash
 # Create Kafka topics (see docker-compose.yml for the full list)
-kafka-topics.sh --bootstrap-server localhost:9092 --create --topic maestro.tasks.orders --partitions 3
-kafka-topics.sh --bootstrap-server localhost:9092 --create --topic maestro.tasks.payments --partitions 3
 kafka-topics.sh --bootstrap-server localhost:9092 --create --topic maestro.signals.order-service --partitions 3
 kafka-topics.sh --bootstrap-server localhost:9092 --create --topic maestro.signals.payment-gateway --partitions 3
 kafka-topics.sh --bootstrap-server localhost:9092 --create --topic maestro.admin.events --partitions 1

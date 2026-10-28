@@ -11,7 +11,6 @@ import io.b2mash.maestro.core.retry.RetryPolicy;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
 import io.b2mash.maestro.core.spi.SignalMessage;
-import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.core.spi.WorkflowStore;
@@ -447,22 +446,12 @@ class ActivityProxyFactoryTest {
     private static class StubWorkflowMessaging implements WorkflowMessaging {
 
         @Override
-        public void publishTask(String taskQueue, TaskMessage message) {
-            throw new UnsupportedOperationException("stub");
-        }
-
-        @Override
         public void publishSignal(String serviceName, SignalMessage message) {
             throw new UnsupportedOperationException("stub");
         }
 
         @Override
         public void publishLifecycleEvent(WorkflowLifecycleEvent event) {
-            throw new UnsupportedOperationException("stub");
-        }
-
-        @Override
-        public void subscribe(String taskQueue, Consumer<TaskMessage> handler) {
             throw new UnsupportedOperationException("stub");
         }
 
