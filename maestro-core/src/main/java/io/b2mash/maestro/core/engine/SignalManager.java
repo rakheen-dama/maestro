@@ -2,9 +2,11 @@ package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.SignalTimeoutException;
+import io.b2mash.maestro.core.exception.StaleRunException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
+import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.observe.EngineObserver;
@@ -398,7 +400,9 @@ final class SignalManager {
 
                 // Terminate outranks a signal: if the instance is TERMINATED,
                 // consuming a signal now would memoize a SIGNAL_RECEIVED event
-                // for a run that must not continue.
+                // for a run that must not continue. So does a row another
+                // runner already finalised (COMPLETED/FAILED): this run is
+                // stale and stands down before it can take the signal (M7).
                 standDownIfTerminated(ctx.workflowId());
 
                 // Advisory probe (Issue 20 / Ruling 5): a store exception here
@@ -601,25 +605,44 @@ final class SignalManager {
      * terminal row, and it bounds cross-node terminate convergence for a parked
      * await to one interval.
      *
+     * <p>The same read also catches the stale-run case (M7): a row another
+     * runner finalised as {@code COMPLETED} or {@code FAILED} while this run
+     * was parked. Without it the recheck that follows would consume the signal
+     * — marking it consumed and memoizing {@code SIGNAL_RECEIVED} — before the
+     * {@code RUNNING} status write's fresh read stood the run down, taking a
+     * signal from a workflow that no longer runs.
+     *
      * <p>The read itself is advisory (Issue 20 / Ruling 5, via {@link ParkProbe}):
      * if the store is unreachable this interval, that means "can't prove
-     * terminated" — fail open and keep parking rather than propagate the
+     * finalised" — fail open and keep parking rather than propagate the
      * store's exception. The instance is only ever actually stood down once a
-     * probe succeeds and observes {@code TERMINATED}.
+     * probe succeeds and observes a terminal status.
      *
      * @param workflowId the workflow's business ID
      * @throws WorkflowTerminatedException if the instance row is {@code TERMINATED}
+     * @throws StaleRunException           if the instance row is any other
+     *                                     terminal status — another runner
+     *                                     finalised it
      */
     private void standDownIfTerminated(String workflowId) {
-        var terminated = ParkProbe.read("awaitSignal.standDownIfTerminated", workflowId,
+        // The same single read as before: it now returns the status rather
+        // than a TERMINATED boolean, so no extra store read is added (R30).
+        @Nullable WorkflowStatus status = ParkProbe.<@Nullable WorkflowStatus>read(
+                "awaitSignal.standDownIfTerminated", workflowId,
                 () -> store.getInstance(workflowId)
-                        .map(instance -> instance.status() == WorkflowStatus.TERMINATED)
-                        .orElse(false),
-                false);
-        if (terminated) {
+                        .map(WorkflowInstance::status)
+                        .orElse(null),
+                null);
+        if (status == WorkflowStatus.TERMINATED) {
             logger.info("Workflow '{}' was terminated while parked on a signal — abandoning this run",
                     workflowId);
             throw new WorkflowTerminatedException(workflowId, null);
+        }
+        if (status != null && status.isTerminal()) {
+            logger.warn("Workflow '{}' is already {} — another runner finalised it while this run was "
+                    + "parked on a signal; standing this stale run down without consuming it",
+                    workflowId, status);
+            throw new StaleRunException(workflowId, status, "signal wake while parked");
         }
     }
 

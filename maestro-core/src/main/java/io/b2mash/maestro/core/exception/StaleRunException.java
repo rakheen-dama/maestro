@@ -23,6 +23,9 @@ import io.b2mash.maestro.core.model.WorkflowStatus;
  *       re-read before every sequential compensation entry, on the same
  *       fresh read — a stale run must never compensate a workflow a peer has
  *       already finished;</li>
+ *   <li>{@code SignalManager}'s wake-recheck inside {@code awaitSignal()} on
+ *       the same fresh read — a stale run must not consume a signal of a
+ *       workflow a peer has already finished;</li>
  *   <li>the run's {@code RunCancellation}, before every live activity attempt
  *       once one of the run's appends has collided with a concurrent runner's
  *       event ({@code observedStatus} {@code RUNNING}): a workflow author who

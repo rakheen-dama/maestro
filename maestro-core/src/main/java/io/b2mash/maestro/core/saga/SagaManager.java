@@ -643,6 +643,12 @@ public final class SagaManager {
         // which leaves the instance COMPENSATING and recoverable. (Branches
         // this call replay-skipped never ran, so they cannot be the source
         // of a shutdown here.)
+        //
+        // Two full passes, ranked like parallel()'s pre-scan (R27): a
+        // control-flow signal in ANY branch outranks a stale-run signal in an
+        // earlier one (M2) — a shutdown must leave the instance recoverable as
+        // a shutdown, not be reported as a stand-down because branch 0 happened
+        // to collide first — and either outranks a plain failure.
         for (var errorRef : errors) {
             // One check covers all three engine control-flow signals — a
             // shutdown, an operator terminate, or a stand-down because a branch
@@ -655,6 +661,8 @@ public final class SagaManager {
             if (errorRef.get() instanceof MaestroControlFlowError controlFlow) {
                 throw controlFlow;
             }
+        }
+        for (var errorRef : errors) {
             // Issue 18: a branch whose append collided with a concurrent
             // runner's event means the whole attempt is stale — a peer owns
             // this workflow's compensation progress. Not a step failure;
@@ -663,11 +671,9 @@ public final class SagaManager {
             // COMPENSATING, recoverable; the winner finishes the job). A
             // StaleRunException — a branch's status write finding the row
             // finalised by another runner — is the same signal.
-            if (errorRef.get() instanceof DuplicateEventException staleRun) {
-                throw staleRun;
-            }
-            if (errorRef.get() instanceof StaleRunException staleRun) {
-                throw staleRun;
+            var error = errorRef.get();
+            if (error instanceof DuplicateEventException || error instanceof StaleRunException) {
+                throw (RuntimeException) error;
             }
         }
 

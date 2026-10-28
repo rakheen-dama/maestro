@@ -589,7 +589,47 @@ class SagaManagerTest {
         assertEquals(0, countEvents(EventType.COMPENSATION_COMPLETED));
     }
 
-    // ── Replay drift during compensation (C10, ruling R4) ──────────────────
+    @Test
+    @DisplayName("Ranking (M2): a control-flow signal in a LATER parallel branch outranks a stale-run "
+            + "signal in an earlier one — mirrors parallel()'s R27 pre-scan")
+    void parallelBranchControlFlowOutranksEarlierStaleRun() {
+        var stack = new CompensationStack();
+        // Pushed first → unwinds second: branch 1 is shut down mid-unwind.
+        stack.push("shutdown-branch", () -> {
+            throw new ExecutorShutdownException("deploying");
+        });
+        // Pushed last → unwinds first: branch 0 finds the row finalised elsewhere.
+        stack.push("stale-branch", () -> {
+            throw new io.b2mash.maestro.core.exception.StaleRunException(
+                    "wf", WorkflowStatus.COMPLETED, "test");
+        });
+
+        org.junit.jupiter.api.Assertions.assertThrows(ExecutorShutdownException.class,
+                () -> sagaManager.compensate(ctx, instance, stack, true),
+                "control-flow first across ALL branches, then stale-run, then index order");
+        assertEquals(0, countEvents(EventType.COMPENSATION_STEP_FAILED));
+    }
+
+    @Test
+    @DisplayName("Ranking (M2): a stale-run signal in a LATER parallel branch outranks a plain failure in "
+            + "an earlier one — nothing recorded as COMPENSATION_STEP_FAILED")
+    void parallelBranchStaleRunOutranksEarlierPlainFailure() {
+        var stack = new CompensationStack();
+        stack.push("stale-branch", () -> {
+            throw new io.b2mash.maestro.core.exception.DuplicateEventException(instance.id(), 9);
+        });
+        stack.push("failing-branch", () -> {
+            throw new IllegalStateException("refund rejected");
+        });
+
+        org.junit.jupiter.api.Assertions.assertThrows(
+                io.b2mash.maestro.core.exception.DuplicateEventException.class,
+                () -> sagaManager.compensate(ctx, instance, stack, true));
+        assertEquals(0, countEvents(EventType.COMPENSATION_STEP_FAILED),
+                "a stale attempt records no failure — the winner owns the compensation progress");
+    }
+
+        // ── Replay drift during compensation (C10, ruling R4) ──────────────────
     //
     // Every guard slot read here used to treat ANY present event as "this
     // entry already ran": a renamed or reordered compensation entry skipped the

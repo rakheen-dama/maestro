@@ -39,6 +39,7 @@ import static io.b2mash.maestro.core.TestEventLogs.removeFailureEvents;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -547,6 +548,45 @@ class SignalManagerTest {
     }
 
     @Test
+    @DisplayName("a wake on a row another runner finalised (COMPLETED) stands down as stale WITHOUT consuming "
+            + "the signal (M7 / R30)")
+    void wakeOnCompletedRow_standsDownWithoutConsumingTheSignal() throws Exception {
+        var sm = new SignalManager(store, messaging, null, serializer, parkingLot, Duration.ofMillis(100));
+        var instanceId = UUID.randomUUID();
+        createInstance("order-1", instanceId);
+
+        var outcome = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var done = new CountDownLatch(1);
+        Thread.ofVirtual().start(() -> {
+            var ctx = createContext(instanceId, "order-1", 0, false);
+            ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() -> {
+                try {
+                    sm.awaitSignal(ctx, "payment.result", String.class, Duration.ofSeconds(30));
+                } catch (Throwable t) {
+                    outcome.set(t);
+                } finally {
+                    done.countDown();
+                }
+            });
+        });
+        await().atMost(Duration.ofSeconds(2)).until(() -> parkingLot.isParked("order-1:signal:payment.result"));
+
+        // Another runner finished the workflow; then a signal for it lands.
+        store.updateInstance(store.getInstance("order-1").orElseThrow().toBuilder()
+                .status(WorkflowStatus.COMPLETED).build());
+        store.saveSignal(new WorkflowSignal(UUID.randomUUID(), instanceId, "order-1",
+                "payment.result", serializer.serialize("late"), false, Instant.now()));
+
+        assertTrue(done.await(5, TimeUnit.SECONDS));
+        var stale = assertInstanceOf(io.b2mash.maestro.core.exception.StaleRunException.class, outcome.get());
+        assertEquals(WorkflowStatus.COMPLETED, stale.observedStatus());
+        assertEquals(1, store.getUnconsumedSignals("order-1", "payment.result").size(),
+                "a stale run must not consume a signal of a workflow another runner finished");
+        assertTrue(store.getEvents(instanceId).stream().noneMatch(e -> e.eventType() == EventType.SIGNAL_RECEIVED),
+                "no SIGNAL_RECEIVED may be memoized by the stale run");
+    }
+
+        @Test
     @DisplayName("spurious wake (notifier self-echo) re-parks instead of aborting the await")
     void spuriousWakeDoesNotAbortAwait() throws Exception {
         var instanceId = UUID.randomUUID();

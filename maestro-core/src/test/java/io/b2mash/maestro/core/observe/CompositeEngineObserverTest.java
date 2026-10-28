@@ -53,8 +53,8 @@ class CompositeEngineObserverTest {
     }
 
     @Test
-    @DisplayName("wrapActivityAttempt applies every delegate's wrapper, in order (first innermost), "
-            + "and passes the result through")
+    @DisplayName("wrapActivityAttempt applies every delegate's wrapper, first delegate OUTERMOST (so it runs "
+            + "first, like every fan-out callback), and passes the result through")
     void wrapActivityAttemptAppliesEveryDelegate() throws Exception {
         var trace = new CopyOnWriteArrayList<String>();
         var composite = CompositeEngineObserver.of(List.of(
@@ -66,8 +66,8 @@ class CompositeEngineObserverTest {
         });
 
         assertEquals("result", wrapped.call());
-        assertEquals(List.of("b:before", "a:before", "attempt", "a:after", "b:after"), trace,
-                "both wrappers must run, the last delegate's outermost; the non-wrapping delegate is identity");
+        assertEquals(List.of("a:before", "b:before", "attempt", "b:after", "a:after"), trace,
+                "both wrappers must run, the first delegate's outermost; the non-wrapping delegate is identity");
     }
 
     @Test
