@@ -280,6 +280,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [28](#issue-28) | ×1000 sequence partitioning bounds sequential/nested `parallel()` and compensation depth | Structural limitation | Medium | **Open by design** |
 | [29](#issue-29) | Shutdown never interrupts threads blocked waiting for a task-queue slot | Library gap — shutdown latency | Low | Open |
 | [30](#issue-30) | Recovery admission is not gated by task-queue capacity | Library gap — load distribution | Medium | Open |
+| [31](#issue-31) | Services sharing one set of `maestro_*` tables fire each other's timers | Library gap — multi-service wake latency | Low | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -2655,6 +2656,43 @@ slot before taking the instance lock.
 recovery backlog of N runs is executed by both nodes rather than queued on the
 first one to poll.
 
+
+---
+
+### Issue 31 — Services sharing one set of `maestro_*` tables fire each other's timers {#issue-31}
+
+> **Open.** Filed by the 2026-10-24 bug-fix cycle (plan 06 Task 3, ruling
+> R53) after an intermittent `TracingParallelBranchIT` wedge was traced to it
+> in the test suite (commit `b9f0bc1`). Recorded, not fixed, in that cycle.
+
+**Kind:** Library gap — multi-service wake latency. **Severity:** Low (every
+timer still fires exactly once and every parked workflow still resumes; only
+the wake is late).
+
+**What's wrong.** `WorkflowStore.getDueTimers` is not scoped by service, and
+timer-poller leadership is elected per service
+(`maestro:leader:timer-poller:{service}`). So when two services point
+`maestro.*` at the same database and table set, each service's leader polls
+the other's due timers too. Whichever poller claims a row (`FOR UPDATE SKIP
+LOCKED`) marks it `FIRED` and unparks the waiter in its **own** JVM — a no-op
+when the workflow is parked in the other service. The owner then only sees the
+fire on its durable re-check, so the wake arrives up to one
+`maestro.signal.wake-recheck-interval` (default 30s) late instead of within one
+poll interval. That is the documented cross-node contract working as designed,
+but nothing tells a team that sharing tables across services costs them this
+latency on any timer the wrong service wins.
+
+**How to tackle it.** Either scope `getDueTimers` to the polling service (join
+or denormalise `service_name` onto `maestro_workflow_timer` and filter on it,
+keeping a fallback sweep for orphaned services' rows), or document in
+`docs/operations.md` that each service needs its own schema / table set — the
+model the cross-service design already assumes ("each service owns its
+state").
+
+**Done when.** Either two services sharing one store never fire each other's
+timers (pinned with two executors of different service names over one
+Postgres store), or `docs/operations.md` states the one-schema-per-service
+requirement and the latency cost of breaking it.
 ---
 
 ## 6. Suggested order

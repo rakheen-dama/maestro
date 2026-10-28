@@ -139,10 +139,12 @@ class TracingParallelBranchIT extends PostgresIntegrationSupport {
      *
      * <p>{@code getDueTimers} is not scoped to a service — any poller over the
      * same store fires any due timer, and the unpark it performs lands in
-     * <em>its</em> JVM-local parking lot. In the full suite that poller is real:
-     * every {@code @SpringBootTest} Kafka suite leaves its cached application
-     * context running, each with a timer poller (5s interval, its own leader
-     * key) over the shared Postgres. Whenever one of them polled between the
+     * <em>its</em> JVM-local parking lot. In the full suite that poller was
+     * real: every {@code @SpringBootTest} Kafka suite left its cached
+     * application context running (closed after each suite since R53 —
+     * {@code KafkaSpringIntegrationSupport}), each with a timer poller (5s
+     * interval, its own leader key) over the shared Postgres. Whenever one of
+     * them polled between the
      * 50ms sleep falling due and this node's own 100ms poll, the timer row
      * went {@code FIRED} with no local wake, and the parked branch resumed
      * only on its durable re-check — after the default 30s wake-recheck
