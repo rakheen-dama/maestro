@@ -1,10 +1,12 @@
 package io.b2mash.maestro.samples.loan.application.workflow;
 
 import io.b2mash.maestro.core.model.EventType;
+import io.b2mash.maestro.core.exception.SignalTimeoutException;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.samples.loan.application.activity.FundingActivities;
 import io.b2mash.maestro.samples.loan.application.activity.LoanActivities;
 import io.b2mash.maestro.samples.loan.application.activity.LoanMessagingActivities;
+import io.b2mash.maestro.samples.loan.application.activity.LoanPolicyActivities;
 import io.b2mash.maestro.samples.loan.application.activity.impl.InMemoryLoanActivities;
 import io.b2mash.maestro.samples.loan.application.activity.impl.SimulatedFundingActivities;
 import io.b2mash.maestro.samples.loan.application.domain.DocumentUploaded;
@@ -37,8 +39,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * SPEC test matrix for the loan-application service, run against the
- * in-memory {@link TestWorkflowEnvironment} with fast (≤1s) timeouts and an
- * in-memory fake for the Kafka-publishing activities.
+ * in-memory {@link TestWorkflowEnvironment} with SPEC timeouts crossed by
+ * advancing the test clock, and an in-memory fake for the Kafka-publishing activities.
  */
 class LoanApplicationWorkflowTest {
 
@@ -53,13 +55,9 @@ class LoanApplicationWorkflowTest {
 
     @BeforeEach
     void setUp() {
-        // Fast test timeouts (≤1s); gate timeout kept short because each gate
-        // waits it out in real time on the not-withdrawn path.
-        LoanTimeouts.configure(
-                Duration.ofSeconds(1), Duration.ofSeconds(1),
-                Duration.ofSeconds(1), Duration.ofMillis(200));
-
         env = TestWorkflowEnvironment.create();
+        // SPEC timeouts; tests cross a timeout by advancing the test clock, never by waiting.
+        env.registerActivities(LoanPolicyActivities.class, () -> LoanTimeoutPolicy.SPEC_DEFAULTS);
         messaging = new RecordingMessagingActivities();
         env.registerActivities(LoanActivities.class, new InMemoryLoanActivities());
         env.registerActivities(LoanMessagingActivities.class, messaging);
@@ -71,7 +69,6 @@ class LoanApplicationWorkflowTest {
         if (env != null) {
             env.shutdown();
         }
-        LoanTimeouts.reset();
     }
 
     // ── Happy path ───────────────────────────────────────────────────────
@@ -86,6 +83,8 @@ class LoanApplicationWorkflowTest {
         handle.signal("package.signed", new Signature(APP_ID, BORROWER_1));
         handle.signal("package.signed", new Signature(APP_ID, BORROWER_2));
 
+        passGate(handle, "WITHDRAWAL_GATE_1");
+        passGate(handle, "WITHDRAWAL_GATE_2");
         var result = handle.getResult(LoanResult.class, RESULT_TIMEOUT);
 
         assertEquals(APP_ID, result.applicationId());
@@ -120,6 +119,8 @@ class LoanApplicationWorkflowTest {
         handle.signal("package.signed", new Signature(APP_ID, BORROWER_1));
         handle.signal("package.signed", new Signature(APP_ID, BORROWER_2));
 
+        passGate(handle, "WITHDRAWAL_GATE_1");
+        passGate(handle, "WITHDRAWAL_GATE_2");
         var result = handle.getResult(LoanResult.class, RESULT_TIMEOUT);
         assertEquals("FUNDED", result.status());
     }
@@ -142,6 +143,8 @@ class LoanApplicationWorkflowTest {
         handle.signal("package.signed", new Signature(APP_ID, BORROWER_1));
         handle.signal("package.signed", new Signature(APP_ID, BORROWER_2));
 
+        passGate(handle, "WITHDRAWAL_GATE_1");
+        passGate(handle, "WITHDRAWAL_GATE_2");
         var result = handle.getResult(LoanResult.class, RESULT_TIMEOUT);
         assertEquals("FUNDED", result.status());
     }
@@ -161,6 +164,8 @@ class LoanApplicationWorkflowTest {
         handle.signal("package.signed", new Signature(APP_ID, BORROWER_1));
         handle.signal("package.signed", new Signature(APP_ID, BORROWER_2));
 
+        passGate(handle, "WITHDRAWAL_GATE_1");
+        passGate(handle, "WITHDRAWAL_GATE_2");
         var result = handle.getResult(LoanResult.class, RESULT_TIMEOUT);
 
         assertEquals("FUNDED", result.status());
@@ -198,6 +203,7 @@ class LoanApplicationWorkflowTest {
 
         deliverApprovedVerifications(handle);
         deliverRequiredDocuments(handle);
+        passGate(handle, "WITHDRAWAL_GATE_1");
         handle.signal("underwriting.decision", approved(1));
 
         // Wait until gate #1 has passed and the rate lock is reserved, so the
@@ -229,6 +235,28 @@ class LoanApplicationWorkflowTest {
                         && e.eventType() == EventType.ACTIVITY_COMPLETED));
     }
 
+    // ── Decision timeout is a durable deadline ───────────────────────────
+
+    @Test
+    void decisionTimeoutIsDurable_sevenDaysElapseWithoutWallClock() throws TimeoutException {
+        var handle = start(application());
+
+        deliverRequiredDocuments(handle);
+        deliverApprovedVerifications(handle);
+        passGate(handle, "WITHDRAWAL_GATE_1");
+        waitUntil(() -> "UNDERWRITING_ROUND_1".equals(handle.query("getStatus", null, String.class))
+                && handle.getStatus() == WorkflowStatus.WAITING_SIGNAL, Duration.ofSeconds(5));
+
+        // +1s: see passGate — the test clock and the wall clock differ by a few ms.
+        env.advanceTime(LoanTimeoutPolicy.SPEC_DEFAULTS.decisionTimeout().plusSeconds(1));
+
+        var failure = assertThrows(RuntimeException.class,
+                () -> handle.awaitCompletion(Duration.ofSeconds(5)));
+        assertTrue(failure.getMessage().contains(SignalTimeoutException.class.getName()),
+                "expected SignalTimeoutException in failure detail: " + failure.getMessage());
+        assertEquals(WorkflowStatus.FAILED, handle.getStatus());
+    }
+
     // ── Signature dedupe ─────────────────────────────────────────────────
 
     @Test
@@ -243,6 +271,8 @@ class LoanApplicationWorkflowTest {
         handle.signal("package.signed", new Signature(APP_ID, BORROWER_1));
         handle.signal("package.signed", new Signature(APP_ID, BORROWER_2));
 
+        passGate(handle, "WITHDRAWAL_GATE_1");
+        passGate(handle, "WITHDRAWAL_GATE_2");
         var result = handle.getResult(LoanResult.class, RESULT_TIMEOUT);
         assertEquals("FUNDED", result.status());
     }
@@ -258,6 +288,7 @@ class LoanApplicationWorkflowTest {
         handle.signal("underwriting.decision",
                 new UnderwritingDecision(APP_ID, 1, "REJECTED", List.of()));
 
+        passGate(handle, "WITHDRAWAL_GATE_1");
         var failure = assertThrows(RuntimeException.class,
                 () -> handle.getResult(LoanResult.class, RESULT_TIMEOUT));
 
@@ -290,6 +321,18 @@ class LoanApplicationWorkflowTest {
 
     private static UnderwritingDecision approved(int round) {
         return new UnderwritingDecision(APP_ID, round, "APPROVED", List.of());
+    }
+
+    /**
+     * Waits for the workflow to park at the named withdrawal gate, then advances
+     * the test clock past the gate timeout (timeout = not withdrawn).
+     */
+    private void passGate(TestWorkflowHandle handle, String gateStep) {
+        waitUntil(() -> gateStep.equals(handle.query("getStatus", null, String.class))
+                && handle.getStatus() == WorkflowStatus.WAITING_SIGNAL, Duration.ofSeconds(5));
+        // +1s: the test clock freezes at environment creation while core arms the
+        // timer from the wall clock a few ms later, so an exact advance can miss.
+        env.advanceTime(LoanTimeoutPolicy.SPEC_DEFAULTS.gateTimeout().plusSeconds(1));
     }
 
     private static void deliverApprovedVerifications(TestWorkflowHandle handle) {

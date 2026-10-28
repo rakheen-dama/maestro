@@ -59,7 +59,9 @@ maestro:
     tracing:
       enabled: true
 
-  # Workflow timeouts (SPEC defaults) — bound via LoanSampleProperties.
+  # Workflow timeouts (SPEC defaults) — bound via LoanSampleProperties and read by
+  # ConfiguredLoanPolicyActivities, which the workflow calls once per run (memoized,
+  # so a run keeps the values it started with). Tests advance the clock instead.
   sample:
     doc-timeout: PT10M
     sign-timeout: PT10M

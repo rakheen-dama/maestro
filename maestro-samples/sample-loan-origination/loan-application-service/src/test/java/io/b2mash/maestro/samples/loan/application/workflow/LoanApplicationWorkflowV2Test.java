@@ -17,6 +17,7 @@ import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.samples.loan.application.activity.FundingActivities;
 import io.b2mash.maestro.samples.loan.application.activity.LoanActivities;
 import io.b2mash.maestro.samples.loan.application.activity.LoanMessagingActivities;
+import io.b2mash.maestro.samples.loan.application.activity.LoanPolicyActivities;
 import io.b2mash.maestro.samples.loan.application.activity.impl.InMemoryLoanActivities;
 import io.b2mash.maestro.samples.loan.application.activity.impl.SimulatedFundingActivities;
 import io.b2mash.maestro.samples.loan.application.domain.DocumentUploaded;
@@ -117,12 +118,6 @@ class LoanApplicationWorkflowV2Test {
 
     @BeforeEach
     void setUp() {
-        // Fast test timeouts; the gate timeout is waited out in real time on
-        // the not-withdrawn path, twice per run.
-        LoanTimeouts.configure(
-                Duration.ofSeconds(5), Duration.ofSeconds(5),
-                Duration.ofSeconds(5), Duration.ofMillis(200));
-
         store = new InMemoryWorkflowStore();
         lock = new InMemoryDistributedLock();
         messaging = new InMemoryWorkflowMessaging();
@@ -136,6 +131,10 @@ class LoanApplicationWorkflowV2Test {
         activityImpls.put(LoanActivities.class, new InMemoryLoanActivities());
         activityImpls.put(LoanMessagingActivities.class, recordingMessaging);
         activityImpls.put(FundingActivities.class, new SimulatedFundingActivities());
+        // This fixture runs raw executors with no test clock, so short memoized
+        // timeouts replace the old static holder here.
+        activityImpls.put(LoanPolicyActivities.class, (LoanPolicyActivities) () -> new LoanTimeoutPolicy(
+                Duration.ofSeconds(5), Duration.ofSeconds(5), Duration.ofSeconds(5), Duration.ofMillis(200)));
 
         v2WorkflowClass = loadV2WorkflowClass();
     }
@@ -144,7 +143,6 @@ class LoanApplicationWorkflowV2Test {
     void tearDown() {
         nodes.forEach(WorkflowExecutor::shutdown);
         nodes.clear();
-        LoanTimeouts.reset();
     }
 
     // ── Guard: the fixture really is running two different implementations ──

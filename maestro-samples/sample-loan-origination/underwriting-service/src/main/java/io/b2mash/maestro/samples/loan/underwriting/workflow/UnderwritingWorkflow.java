@@ -9,14 +9,13 @@ import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.SignalTimeoutException;
 import io.b2mash.maestro.samples.loan.underwriting.activity.AssessmentActivities;
 import io.b2mash.maestro.samples.loan.underwriting.activity.DecisionMessagingActivities;
+import io.b2mash.maestro.samples.loan.underwriting.activity.UnderwritingPolicyActivities;
 import io.b2mash.maestro.samples.loan.underwriting.domain.Decision;
 import io.b2mash.maestro.samples.loan.underwriting.domain.UnderwritingDecision;
 import io.b2mash.maestro.samples.loan.underwriting.domain.UnderwritingRequest;
 import io.b2mash.maestro.samples.loan.underwriting.domain.Verdict;
 
-import java.time.Duration;
 import java.util.List;
-import java.util.Objects;
 
 /**
  * Durable workflow for one underwriting review round
@@ -42,38 +41,12 @@ import java.util.Objects;
  * outcome flows through the same await.
  *
  * <p><b>Determinism:</b> the code between activity calls is pure — no clock
- * reads, no randomness, no I/O. Timeouts are configuration constants fixed
- * before any workflow starts, and every side effect (assessment, escalation
- * log, Kafka publish) is behind a memoized activity.
+ * reads, no randomness, no I/O. Timeouts come from a memoized
+ * policy activity, and every side effect (assessment, escalation log, Kafka
+ * publish) is behind a memoized activity.
  */
 @DurableWorkflow(name = "underwriting", taskQueue = "underwriting")
 public class UnderwritingWorkflow {
-
-    private static final Duration DEFAULT_TIMEOUT = Duration.ofMinutes(10);
-
-    // Static because the engine instantiates workflow classes via no-arg
-    // constructor (both the Spring registrar's bean and maestro-test's
-    // per-start instances), so per-instance injection cannot carry config.
-    // Set once at startup from maestro.sample.* properties (see
-    // UnderwritingSampleConfiguration) and overridden directly by tests.
-    private static volatile Duration underwriterTimeout = DEFAULT_TIMEOUT;
-    private static volatile Duration seniorTimeout = DEFAULT_TIMEOUT;
-
-    /**
-     * Configures the human-decision timeouts. Called at startup from the
-     * {@code maestro.sample.*} properties, and by tests to install fast
-     * timeouts. Must be called before workflows start; changing timeouts
-     * mid-flight only affects awaits that have not yet begun.
-     */
-    public static void configureTimeouts(Duration underwriter, Duration senior) {
-        underwriterTimeout = Objects.requireNonNull(underwriter, "underwriter timeout");
-        seniorTimeout = Objects.requireNonNull(senior, "senior timeout");
-    }
-
-    /** Resets the timeouts to the SPEC defaults (10 minutes each). */
-    public static void resetTimeouts() {
-        configureTimeouts(DEFAULT_TIMEOUT, DEFAULT_TIMEOUT);
-    }
 
     @ActivityStub(startToCloseTimeout = "PT30S",
                   retryPolicy = @RetryPolicy(maxAttempts = 3))
@@ -90,11 +63,18 @@ public class UnderwritingWorkflow {
                   ))
     private DecisionMessagingActivities messaging;
 
+    // Read ONCE at the top of review(): the configured timeouts are memoized in
+    // history, so they are deterministic on replay.
+    @ActivityStub(startToCloseTimeout = "PT10S")
+    private UnderwritingPolicyActivities policy;
+
     // Volatile: read by @QueryMethod from caller's thread, written by workflow's virtual thread
     private volatile String currentStep = "RECEIVED";
 
     @WorkflowMethod
     public UnderwritingDecision review(UnderwritingRequest request) {
+        var timeouts = policy.timeouts();
+
         currentStep = "AUTO_ASSESSING";
         var outcome = assessment.autoAssess(request);
 
@@ -102,7 +82,7 @@ public class UnderwritingWorkflow {
             case AUTO_APPROVE -> decide(request, Verdict.APPROVED, List.of());
             case AUTO_REJECT -> decide(request, Verdict.REJECTED,
                     List.of("debt-to-income ratio too high"));
-            case HUMAN_REVIEW -> awaitHumanDecision(request);
+            case HUMAN_REVIEW -> awaitHumanDecision(request, timeouts);
         };
 
         currentStep = "PUBLISHING_DECISION";
@@ -116,14 +96,15 @@ public class UnderwritingWorkflow {
      * Human decision path: underwriter first, senior underwriter after a
      * timeout escalation, REJECTED("no decision") after a second timeout.
      */
-    private UnderwritingDecision awaitHumanDecision(UnderwritingRequest request) {
+    private UnderwritingDecision awaitHumanDecision(UnderwritingRequest request,
+                                                    UnderwritingTimeoutPolicy timeouts) {
         var workflow = WorkflowContext.current();
 
         currentStep = "AWAITING_UNDERWRITER";
         try {
             // Single signal name; verdict arrives in the payload (idiom #1).
             var decision = workflow.awaitSignal(
-                    "underwriter.decision", Decision.class, underwriterTimeout);
+                    "underwriter.decision", Decision.class, timeouts.underwriterTimeout());
             return decide(request, decision.verdict(), decision.conditions());
         } catch (SignalTimeoutException underwriterTimedOut) {
             currentStep = "ESCALATING";
@@ -132,7 +113,7 @@ public class UnderwritingWorkflow {
             currentStep = "AWAITING_SENIOR";
             try {
                 var decision = workflow.awaitSignal(
-                        "senior.decision", Decision.class, seniorTimeout);
+                        "senior.decision", Decision.class, timeouts.seniorTimeout());
                 return decide(request, decision.verdict(), decision.conditions());
             } catch (SignalTimeoutException seniorTimedOut) {
                 currentStep = "NO_DECISION";

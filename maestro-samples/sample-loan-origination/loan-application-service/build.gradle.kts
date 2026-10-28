@@ -60,7 +60,7 @@ dependencies {
 val v2: SourceSet = sourceSets.create("v2") {
     java.setSrcDirs(listOf("src/v2/java"))
     // main's output first so v2's own source is what compiles; the rest of the
-    // service (LoanTimeouts, activities, domain) resolves from main.
+    // service (LoanTimeoutPolicy, activities, domain) resolves from main.
     compileClasspath += sourceSets["main"].output + configurations["compileClasspath"]
     runtimeClasspath += output + sourceSets["main"].output + configurations["runtimeClasspath"]
 }

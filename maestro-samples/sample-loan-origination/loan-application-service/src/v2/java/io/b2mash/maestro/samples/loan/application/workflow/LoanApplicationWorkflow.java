@@ -11,6 +11,7 @@ import io.b2mash.maestro.core.exception.SignalTimeoutException;
 import io.b2mash.maestro.samples.loan.application.activity.FundingActivities;
 import io.b2mash.maestro.samples.loan.application.activity.LoanActivities;
 import io.b2mash.maestro.samples.loan.application.activity.LoanMessagingActivities;
+import io.b2mash.maestro.samples.loan.application.activity.LoanPolicyActivities;
 import io.b2mash.maestro.samples.loan.application.domain.DocumentUploaded;
 import io.b2mash.maestro.samples.loan.application.domain.LoanApplication;
 import io.b2mash.maestro.samples.loan.application.domain.LoanResult;
@@ -99,6 +100,11 @@ public class LoanApplicationWorkflow {
                   retryPolicy = @RetryPolicy(maxAttempts = 3))
     private FundingActivities funding;
 
+    // Read ONCE at the top of the workflow method: the configured timeouts are
+    // memoized in history, so they are deterministic on replay.
+    @ActivityStub(startToCloseTimeout = "PT10S")
+    private LoanPolicyActivities policy;
+
     // Volatile: read by @QueryMethod from caller threads, written by the workflow's virtual thread
     private volatile String currentStep = "CREATED";
 
@@ -131,6 +137,12 @@ public class LoanApplicationWorkflow {
         int v = workflow.version(PARALLEL_VERIFICATION, WorkflowContext.DEFAULT_VERSION,
                 PARALLEL_VERIFICATION_VERSION);
 
+        // The configured timeouts, memoized as the first activity after the gate.
+        // A history whose first activity sits at sequence 1 still resolves the
+        // gate to DEFAULT_VERSION (nothing there is the marker), and the policy
+        // call replays from that slot.
+        var timeouts = policy.timeouts();
+
         // Step 1: validate + persist demo state
         currentStep = "RECORDING_APPLICATION";
         loan.recordApplication(application);
@@ -143,9 +155,9 @@ public class LoanApplicationWorkflow {
         if (v < PARALLEL_VERIFICATION_VERSION) {
             // v1 behaviour, unchanged: verification fan-in, then documents.
             currentStep = "COLLECTING_VERIFICATIONS";
-            awaitAllVerifications();
+            awaitAllVerifications(timeouts);
             currentStep = "COLLECTING_DOCUMENTS";
-            collectRequiredDocuments(application);
+            collectRequiredDocuments(application, timeouts);
         } else {
             currentStep = "COLLECTING_VERIFICATIONS_AND_DOCUMENTS";
             // Branches return a label, not null: parallel() collects results
@@ -153,11 +165,11 @@ public class LoanApplicationWorkflow {
             // fails the workflow with a message-less NullPointerException.
             workflow.parallel(List.<Callable<String>>of(
                     () -> {
-                        awaitAllVerifications();
+                        awaitAllVerifications(timeouts);
                         return "verifications";
                     },
                     () -> {
-                        collectRequiredDocuments(application);
+                        collectRequiredDocuments(application, timeouts);
                         return "documents";
                     }));
         }
@@ -166,10 +178,10 @@ public class LoanApplicationWorkflow {
         // submission): nothing reserved yet, so a withdrawal here fails the
         // workflow without any saga compensation.
         currentStep = "WITHDRAWAL_GATE_1";
-        checkWithdrawalGate(workflow);
+        checkWithdrawalGate(workflow, timeouts);
 
         // Step 6: underwriting rounds (max 3)
-        runUnderwritingRounds(workflow, application);
+        runUnderwritingRounds(workflow, application, timeouts);
 
         // Step 7: funding saga — reserveRateLock/disburse declare @Compensate
         // methods; the @Saga workflow method unwinds them (LIFO) on failure.
@@ -177,12 +189,12 @@ public class LoanApplicationWorkflow {
         var rateLock = funding.reserveRateLock(application.applicationId(), application.amount());
 
         currentStep = "COLLECTING_SIGNATURES";
-        collectSignatures(workflow, application);
+        collectSignatures(workflow, application, timeouts);
 
         // DESIGN IDIOM 2 (withdrawal gate #2, before disbursement): a
         // withdrawal here throws → saga compensation releases the rate lock.
         currentStep = "WITHDRAWAL_GATE_2";
-        checkWithdrawalGate(workflow);
+        checkWithdrawalGate(workflow, timeouts);
 
         currentStep = "DISBURSING";
         var disbursement = funding.disburse(application.applicationId(), application.amount());
@@ -211,14 +223,14 @@ public class LoanApplicationWorkflow {
     // make both branches allocate from one counter and collide on
     // (workflow_instance_id, sequence_number).
 
-    private void awaitAllVerifications() {
+    private void awaitAllVerifications(LoanTimeoutPolicy timeouts) {
         var workflow = WorkflowContext.current();
         var expectedTypes = LoanMessagingActivities.VERIFICATION_TYPES;
         var verifiedTypes = new LinkedHashSet<String>();
 
         for (int i = 0; i < MAX_VERIFICATION_SIGNALS && verifiedTypes.size() < expectedTypes.size(); i++) {
             var result = workflow.awaitSignal("verification.result", VerificationResult.class,
-                    LoanTimeouts.decisionTimeout());
+                    timeouts.decisionTimeout());
             if (!result.approved()) {
                 // Any declined verification fails the workflow (no saga yet —
                 // nothing to compensate).
@@ -241,14 +253,15 @@ public class LoanApplicationWorkflow {
     }
 
     /** Step 4, byte-for-byte from v1. */
-    private void collectRequiredDocuments(LoanApplication application) {
+    private void collectRequiredDocuments(LoanApplication application, LoanTimeoutPolicy timeouts) {
         WorkflowContext.current().collectSignals("document.uploaded", DocumentUploaded.class,
-                application.requiredDocs().size(), LoanTimeouts.docTimeout());
+                application.requiredDocs().size(), timeouts.docTimeout());
     }
 
     // ── Step 6: underwriting rounds ─────────────────────────────────────
 
-    private void runUnderwritingRounds(WorkflowContext workflow, LoanApplication application) {
+    private void runUnderwritingRounds(WorkflowContext workflow, LoanApplication application,
+                                       LoanTimeoutPolicy timeouts) {
         for (int round = 1; round <= MAX_UNDERWRITING_ROUNDS; round++) {
             currentStep = "UNDERWRITING_ROUND_" + round;
             messaging.requestUnderwriting(application, round);
@@ -256,7 +269,7 @@ public class LoanApplicationWorkflow {
             // DESIGN IDIOM 1 (decision-as-payload): one signal name for the
             // decision point — the verdict (APPROVED/REJECTED/CONDITIONS)
             // lives in the payload, never in competing signal names.
-            var decision = awaitDecisionForRound(workflow, round);
+            var decision = awaitDecisionForRound(workflow, round, timeouts);
 
             if (VERDICT_APPROVED.equals(decision.verdict())) {
                 return;
@@ -280,7 +293,7 @@ public class LoanApplicationWorkflow {
             // Collect one document per condition, then run the next round.
             currentStep = "COLLECTING_CONDITION_DOCUMENTS_ROUND_" + round;
             workflow.collectSignals("document.uploaded", DocumentUploaded.class,
-                    decision.conditions().size(), LoanTimeouts.docTimeout());
+                    decision.conditions().size(), timeouts.docTimeout());
         }
     }
 
@@ -290,10 +303,11 @@ public class LoanApplicationWorkflow {
      * mis-attributed to the active round. Bounded by the decision timeout on
      * each await.
      */
-    private UnderwritingDecision awaitDecisionForRound(WorkflowContext workflow, int round) {
+    private UnderwritingDecision awaitDecisionForRound(WorkflowContext workflow, int round,
+                                                       LoanTimeoutPolicy timeouts) {
         while (true) {
             var decision = workflow.awaitSignal("underwriting.decision",
-                    UnderwritingDecision.class, LoanTimeouts.decisionTimeout());
+                    UnderwritingDecision.class, timeouts.decisionTimeout());
             if (decision.round() == round) {
                 return decision;
             }
@@ -304,12 +318,13 @@ public class LoanApplicationWorkflow {
 
     // ── Step 7: signature fan-in with dedupe ────────────────────────────
 
-    private void collectSignatures(WorkflowContext workflow, LoanApplication application) {
+    private void collectSignatures(WorkflowContext workflow, LoanApplication application,
+                                   LoanTimeoutPolicy timeouts) {
         Set<String> required = new LinkedHashSet<>(application.borrowerIds());
         var signed = new LinkedHashSet<String>();
 
         var batch = workflow.collectSignals("package.signed", Signature.class,
-                required.size(), LoanTimeouts.signTimeout());
+                required.size(), timeouts.signTimeout());
         int received = batch.size();
         for (var signature : batch) {
             if (required.contains(signature.signerId())) {
@@ -321,7 +336,7 @@ public class LoanApplicationWorkflow {
         // signals, bounded at MAX_SIGNATURE_SIGNALS total.
         while (signed.size() < required.size() && received < MAX_SIGNATURE_SIGNALS) {
             var signature = workflow.awaitSignal("package.signed", Signature.class,
-                    LoanTimeouts.signTimeout());
+                    timeouts.signTimeout());
             received++;
             if (required.contains(signature.signerId())) {
                 signed.add(signature.signerId());
@@ -343,10 +358,10 @@ public class LoanApplicationWorkflow {
      * {@link SignalTimeoutException} catch. Timeout = not withdrawn, continue.
      * A pre-arrived withdrawal signal is consumed instantly (no delay).
      */
-    private void checkWithdrawalGate(WorkflowContext workflow) {
+    private void checkWithdrawalGate(WorkflowContext workflow, LoanTimeoutPolicy timeouts) {
         try {
             var withdrawal = workflow.awaitSignal("application.withdrawn", Withdrawal.class,
-                    LoanTimeouts.gateTimeout());
+                    timeouts.gateTimeout());
             throw new LoanWithdrawnException("Application withdrawn: " + withdrawal.reason());
         } catch (SignalTimeoutException notWithdrawn) {
             // No withdrawal within the gate window — proceed.

@@ -9,8 +9,7 @@ import java.time.Duration;
  * Sample-level timeouts, bound from {@code maestro.sample.*}.
  *
  * <p>SPEC defaults are demo-fast (10 minutes per human decision desk);
- * tests override them to sub-second values via
- * {@code UnderwritingWorkflow.configureTimeouts}.
+ * tests cross them by advancing the test clock.
  *
  * @param underwriterTimeout how long to wait for the underwriter's decision
  *                           before escalating to a senior underwriter
