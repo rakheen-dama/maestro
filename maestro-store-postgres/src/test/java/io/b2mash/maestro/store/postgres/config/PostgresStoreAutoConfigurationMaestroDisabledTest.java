@@ -2,6 +2,7 @@ package io.b2mash.maestro.store.postgres.config;
 
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.store.postgres.PostgresWorkflowStore;
+import io.b2mash.maestro.store.postgres.schema.MaestroSchemaInitializer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -31,11 +32,14 @@ class PostgresStoreAutoConfigurationMaestroDisabledTest {
                 .withConfiguration(AutoConfigurations.of(PostgresStoreAutoConfiguration.class))
                 .withBean(DataSource.class, () -> mock(DataSource.class))
                 .withBean(ObjectMapper.class, ObjectMapper::new)
-                .withPropertyValues("maestro.enabled=false", "maestro.service-name=x", "maestro.store.schema.mode=none")
+                .withPropertyValues("maestro.enabled=false", "maestro.service-name=x")
                 .run(ctx -> {
                     assertThat(ctx).hasNotFailed();
                     assertThat(ctx).doesNotHaveBean(WorkflowStore.class);
                     assertThat(ctx).doesNotHaveBean(PostgresWorkflowStore.class);
+                    // No schema mode is set: with the guard gone, the initializer
+                    // would run Flyway against the mocked DataSource and fail.
+                    assertThat(ctx).doesNotHaveBean(MaestroSchemaInitializer.class);
                 });
     }
 }

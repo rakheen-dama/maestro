@@ -5,6 +5,7 @@ import io.b2mash.maestro.spring.client.MaestroClient;
 import io.b2mash.maestro.spring.config.MaestroAutoConfiguration;
 import io.b2mash.maestro.store.postgres.PostgresWorkflowStore;
 import io.b2mash.maestro.store.postgres.schema.MaestroSchemaInitializer;
+import io.b2mash.maestro.store.postgres.schema.SchemaMode;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -13,12 +14,16 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import tools.jackson.databind.ObjectMapper;
 
 import javax.sql.DataSource;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * Verifies that maestro-store-postgres ships a Spring Boot auto-configuration
@@ -116,13 +121,28 @@ class PostgresStoreAutoConfigurationTest {
     }
 
     @Test
-    void schemaModeBindsFromEnvironment() {
-        storeRunner()
-                .withBean(DataSource.class, () -> mock(DataSource.class))
+    void schemaModeBindsFromEnvironment() throws SQLException {
+        // Default (property unset): the initializer runs Flyway, so it reaches
+        // for a connection. The mock refuses one, which proves initialize() was
+        // attempted in a managing mode rather than skipped as NONE. That the
+        // default is FLYWAY specifically (migrations applied) is pinned end to
+        // end, against a real database with the property unset, by
+        // PostgresStoreAutoConfigurationHostFlywayTest.
+        var refusing = mock(DataSource.class);
+        when(refusing.getConnection()).thenThrow(new SQLException("no database in this test"));
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(moduleAutoConfigurations()))
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withBean(DataSource.class, () -> refusing)
+                .withPropertyValues("maestro.service-name=test-service")
                 .run(context -> {
-                    assertThat(context).hasNotFailed();
-                    assertThat(context).hasSingleBean(MaestroSchemaInitializer.class);
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasMessageContaining("maestroSchemaInitializer")
+                            .hasStackTraceContaining("no database in this test");
                 });
+        verify(refusing, atLeastOnce()).getConnection();
+
         storeRunner()
                 .withBean(DataSource.class, () -> mock(DataSource.class))
                 .withPropertyValues("maestro.store.schema.mode=bogus")
@@ -140,7 +160,14 @@ class PostgresStoreAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     assertThat(context).hasSingleBean(MaestroSchemaInitializer.class);
+                    assertThat(context.getBean(MaestroSchemaInitializer.class).mode())
+                            .isEqualTo(SchemaMode.NONE);
                 });
+        storeRunner()
+                .withBean(DataSource.class, () -> mock(DataSource.class))
+                .withPropertyValues("maestro.store.schema.mode=none")
+                .run(context -> assertThat(context.getBean(MaestroSchemaInitializer.class).mode())
+                        .isEqualTo(SchemaMode.NONE));
     }
 
     @Test

@@ -94,6 +94,13 @@ public final class MaestroSchemaInitializer {
     }
 
     /**
+     * @return the mode {@link #initialize()} acts on
+     */
+    public SchemaMode mode() {
+        return mode;
+    }
+
+    /**
      * Applies, validates or skips Maestro's migrations according to the mode.
      *
      * @throws IllegalStateException in {@link SchemaMode#VALIDATE} mode when a
