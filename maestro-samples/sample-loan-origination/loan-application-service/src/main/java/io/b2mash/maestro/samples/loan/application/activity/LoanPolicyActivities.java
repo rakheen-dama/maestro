@@ -14,7 +14,9 @@ import io.b2mash.maestro.samples.loan.application.workflow.LoanTimeoutPolicy;
 public interface LoanPolicyActivities {
 
     /**
-     * Returns the configured timeouts. The workflow calls this once, first.
+     * Returns the configured timeouts. The workflow calls this exactly once per
+     * run, before its first wait (in the v2 loan workflow, right after the
+     * version gate), so the memoized result fixes the run's timeouts.
      */
     LoanTimeoutPolicy timeouts();
 }

@@ -13,7 +13,8 @@ import io.b2mash.maestro.samples.loan.underwriting.workflow.UnderwritingTimeoutP
 public interface UnderwritingPolicyActivities {
 
     /**
-     * Returns the configured timeouts. The workflow calls this once, first.
+     * Returns the configured timeouts. The workflow calls this exactly once per
+     * run, before its first wait, so the memoized result fixes the run's timeouts.
      */
     UnderwritingTimeoutPolicy timeouts();
 }

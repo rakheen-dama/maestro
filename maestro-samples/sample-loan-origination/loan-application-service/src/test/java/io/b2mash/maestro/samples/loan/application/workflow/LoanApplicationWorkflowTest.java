@@ -1,7 +1,7 @@
 package io.b2mash.maestro.samples.loan.application.workflow;
 
-import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.exception.SignalTimeoutException;
+import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.samples.loan.application.activity.FundingActivities;
 import io.b2mash.maestro.samples.loan.application.activity.LoanActivities;
@@ -238,7 +238,7 @@ class LoanApplicationWorkflowTest {
     // ── Decision timeout is a durable deadline ───────────────────────────
 
     @Test
-    void decisionTimeoutIsDurable_sevenDaysElapseWithoutWallClock() throws TimeoutException {
+    void decisionTimeout_failsTheLoanWithSignalTimeout_whenTheTestClockCrossesIt() throws TimeoutException {
         var handle = start(application());
 
         deliverRequiredDocuments(handle);
