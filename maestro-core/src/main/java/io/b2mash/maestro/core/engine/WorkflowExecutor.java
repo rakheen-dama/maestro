@@ -49,9 +49,11 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.InstantSource;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -138,6 +140,7 @@ public final class WorkflowExecutor {
     private final Duration shutdownTimeout;
     private final Duration wakeRecheckInterval;
     private final EngineObserver observer;
+    private final InstantSource instantSource;
     private final LifecycleEventPublisher lifecycleEventPublisher;
     private final ConcurrentHashMap<String, RunningWorkflow> runningWorkflows;
     private final AtomicBoolean shuttingDown;
@@ -403,6 +406,94 @@ public final class WorkflowExecutor {
             EngineObserver observer,
             Map<String, TaskQueueLimits> taskQueueLimits
     ) {
+        this(store, distributedLock, messaging, signalNotifier, serializer, serviceName,
+                lockKeyPrefix, instanceLockTtl, lifecycleEventsEnabled,
+                shutdownTimeout, wakeRecheckInterval, observer, taskQueueLimits, InstantSource.system());
+    }
+
+    /**
+     * Creates a workflow executor with the defaults of the six-argument
+     * constructor but an explicit {@link InstantSource} for arming durable
+     * deadlines — the seam {@code TestWorkflowEnvironment} uses to put
+     * {@code sleep()} timers and {@code awaitSignal()} deadlines on its
+     * controllable test clock (R59). Production code has no reason to call
+     * this: every other constructor uses {@link InstantSource#system()}.
+     *
+     * @param store           workflow store for persistence
+     * @param distributedLock optional distributed lock backend
+     * @param messaging       optional messaging for lifecycle events
+     * @param signalNotifier  optional cross-instance signal notification
+     * @param serializer      Jackson serializer for payloads
+     * @param serviceName     the name of the owning service
+     * @param instantSource   the clock deadlines are armed on — see
+     *                        {@link #instantSource()}
+     */
+    public WorkflowExecutor(
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            @Nullable WorkflowMessaging messaging,
+            @Nullable SignalNotifier signalNotifier,
+            PayloadSerializer serializer,
+            String serviceName,
+            InstantSource instantSource
+    ) {
+        this(store, distributedLock, messaging, signalNotifier, serializer, serviceName,
+                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
+                WorkflowInstanceLockManager.DEFAULT_LOCK_TTL, true,
+                DEFAULT_SHUTDOWN_TIMEOUT, SignalManager.DEFAULT_WAKE_RECHECK_INTERVAL,
+                EngineObserver.NOOP, Map.of(), instantSource);
+    }
+
+    /**
+     * Creates a new workflow executor with every setting of the 13-argument
+     * constructor plus the {@link InstantSource} durable deadlines are armed
+     * on (R59).
+     *
+     * @param store                  workflow store for persistence
+     * @param distributedLock        optional distributed lock backend
+     * @param messaging              optional messaging for lifecycle events
+     * @param signalNotifier         optional cross-instance signal notification
+     * @param serializer             Jackson serializer for payloads
+     * @param serviceName            the name of the owning service
+     * @param lockKeyPrefix          prefix for distributed lock keys (e.g. {@code maestro:lock:})
+     * @param instanceLockTtl        TTL for the per-workflow instance lock — must be
+     *                               strictly positive
+     * @param lifecycleEventsEnabled whether {@code WORKFLOW_*} lifecycle events are
+     *                               published at all
+     * @param shutdownTimeout        how long {@link #shutdown()} waits for in-flight
+     *                               workflows to drain — must be strictly positive
+     * @param wakeRecheckInterval    how often a parked {@code awaitSignal()} or
+     *                               {@code sleep()} re-checks the store — must be
+     *                               strictly positive
+     * @param observer               engine observation seam; pass
+     *                               {@link EngineObserver#NOOP} (never {@code null})
+     * @param taskQueueLimits        per-node concurrency limits keyed by task-queue name
+     * @param instantSource          the clock a live {@code sleep()} arms its timer's
+     *                               {@code fireAt} from, a live {@code awaitSignal()}
+     *                               arms and decides its deadline on, and
+     *                               {@code currentTime()} records — see
+     *                               {@link #instantSource()}. Pass
+     *                               {@link InstantSource#system()} in production.
+     * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
+     *                                  or {@code wakeRecheckInterval} is {@code null}, zero,
+     *                                  or negative
+     */
+    public WorkflowExecutor(
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            @Nullable WorkflowMessaging messaging,
+            @Nullable SignalNotifier signalNotifier,
+            PayloadSerializer serializer,
+            String serviceName,
+            String lockKeyPrefix,
+            Duration instanceLockTtl,
+            boolean lifecycleEventsEnabled,
+            Duration shutdownTimeout,
+            Duration wakeRecheckInterval,
+            EngineObserver observer,
+            Map<String, TaskQueueLimits> taskQueueLimits,
+            InstantSource instantSource
+    ) {
         if (instanceLockTtl == null || instanceLockTtl.isNegative() || instanceLockTtl.isZero()) {
             throw new IllegalArgumentException(
                     "instanceLockTtl must be positive, got " + instanceLockTtl);
@@ -432,9 +523,10 @@ public final class WorkflowExecutor {
         this.taskQueueGovernor = taskQueueLimits.isEmpty()
                 ? TaskQueueGovernor.UNBOUNDED
                 : new TaskQueueGovernor(taskQueueLimits);
+        this.instantSource = Objects.requireNonNull(instantSource, "instantSource");
         this.signalManager = new SignalManager(
                 store, this.messaging, signalNotifier, serializer, parkingLot, wakeRecheckInterval,
-                observer, taskQueueGovernor);
+                observer, taskQueueGovernor, instantSource);
         this.sagaManager = new SagaManager(store, this.messaging, serializer, serviceName, observer);
         this.instanceLockManager = new WorkflowInstanceLockManager(
                 distributedLock, serviceName, lockKeyPrefix, instanceLockTtl,
@@ -446,6 +538,25 @@ public final class WorkflowExecutor {
         this.lifecycleEventPublisher = new LifecycleEventPublisher(serviceName);
         this.runningWorkflows = new ConcurrentHashMap<>();
         this.shuttingDown = new AtomicBoolean(false);
+    }
+
+    /**
+     * Returns the clock this executor arms durable deadlines on: a live
+     * {@code sleep()} timer's {@code fireAt}, a live {@code awaitSignal()}
+     * deadline (armed {@code now + timeout} and decided against "now"), and
+     * the value a live {@code currentTime()} records (R59).
+     *
+     * <p>{@link InstantSource#system()} unless the seven- or 14-argument
+     * constructor was given another — the Spring starter never does, and the
+     * timer poller compares due rows against the system clock, so a
+     * non-system source is only coherent where the poller is not running and
+     * something else fires the rows ({@code TestWorkflowEnvironment.advanceTime}).
+     * Replay never re-arms from it: a memoized deadline is read back.
+     *
+     * @return the instant source, never {@code null}
+     */
+    public InstantSource instantSource() {
+        return instantSource;
     }
 
     // ── Start workflow ─────────────────────────────────────────────────

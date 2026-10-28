@@ -30,6 +30,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -73,6 +74,19 @@ class MaestroAutoConfigurationConfigSeamsTest {
             .withBean(ObjectMapper.class, ObjectMapper::new)
             .withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
             .withPropertyValues("maestro.service-name=config-seams-test");
+
+    @Test
+    @DisplayName("the auto-configured executor arms sleep timers and await deadlines on the system clock (R59)")
+    void autoConfiguredExecutorArmsDeadlinesOnTheSystemClock() {
+        // The InstantSource seam exists for TestWorkflowEnvironment's test clock;
+        // production deadlines must stay on the clock the timer poller's due
+        // check reads.
+        runner.run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context.getBean(WorkflowExecutor.class).instantSource())
+                    .isSameAs(InstantSource.system());
+        });
+    }
 
     @Test
     @DisplayName("maestro.shutdown.timeout bounds WorkflowExecutor#shutdown() instead of the 30s default")

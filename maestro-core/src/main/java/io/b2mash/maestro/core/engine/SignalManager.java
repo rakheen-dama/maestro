@@ -31,6 +31,7 @@ import tools.jackson.databind.JsonNode;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.InstantSource;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
@@ -131,6 +132,7 @@ final class SignalManager {
     private final Duration wakeRecheckInterval;
     private final EngineObserver observer;
     private final TaskQueueGovernor governor;
+    private final InstantSource instantSource;
 
     /**
      * Ref-counted cross-instance wake subscriptions, keyed by workflow ID.
@@ -264,6 +266,36 @@ final class SignalManager {
             EngineObserver observer,
             TaskQueueGovernor governor
     ) {
+        this(store, messaging, signalNotifier, serializer, parkingLot, wakeRecheckInterval, observer,
+                governor, InstantSource.system());
+    }
+
+    /**
+     * Creates a new signal manager with every setting of the governor
+     * constructor plus the {@link InstantSource} its await deadlines are armed
+     * and decided on (R59).
+     *
+     * @param instantSource the clock a live await reads to arm its deadline
+     *                      ({@code now + timeout}) and to decide that the
+     *                      deadline has passed. Production passes
+     *                      {@link InstantSource#system()} — every shorter
+     *                      constructor does — so deadlines live on the same
+     *                      clock as the timer poller's due check;
+     *                      {@code TestWorkflowEnvironment} passes its
+     *                      controllable test clock. A memoized deadline is
+     *                      read back from history, never re-armed from it.
+     */
+    SignalManager(
+            WorkflowStore store,
+            @Nullable WorkflowMessaging messaging,
+            @Nullable SignalNotifier signalNotifier,
+            PayloadSerializer serializer,
+            ParkingLot parkingLot,
+            Duration wakeRecheckInterval,
+            EngineObserver observer,
+            TaskQueueGovernor governor,
+            InstantSource instantSource
+    ) {
         this.store = store;
         this.messaging = messaging;
         this.signalNotifier = signalNotifier;
@@ -272,6 +304,19 @@ final class SignalManager {
         this.wakeRecheckInterval = wakeRecheckInterval;
         this.observer = observer;
         this.governor = governor;
+        this.instantSource = instantSource;
+    }
+
+    /**
+     * The clock this manager's await deadlines are armed and decided on.
+     * {@link DefaultWorkflowOperations} arms {@code sleep()} timers from the
+     * same one, so one executor never mixes two clocks.
+     *
+     * @return the instant source passed at construction —
+     *         {@link InstantSource#system()} unless a test kit supplied its own
+     */
+    InstantSource instantSource() {
+        return instantSource;
     }
 
     // ── Delivery ────────────────────────────────────────────────────────
@@ -512,11 +557,13 @@ final class SignalManager {
                 logger.debug("Workflow '{}' await of '{}' reuses existing deadline row '{}' ({}, fireAt={})",
                         ctx.workflowId(), signalName, timerId, existing.get().status(), deadline);
             } else {
-                var now = Instant.now();
-                deadline = now.plus(timeout).truncatedTo(ChronoUnit.MICROS);
+                // Armed from the injectable instant source (R59): the system
+                // clock in production, the controllable clock under
+                // TestWorkflowEnvironment — so advanceTime(timeout) is exact.
+                deadline = instantSource.instant().plus(timeout).truncatedTo(ChronoUnit.MICROS);
                 timerDbId = UUID.randomUUID();
                 store.saveTimer(new WorkflowTimer(timerDbId, ctx.workflowInstanceId(), ctx.workflowId(),
-                        timerId, deadline, TimerStatus.PENDING, now));
+                        timerId, deadline, TimerStatus.PENDING, Instant.now()));
             }
             appendEvent(ctx, seq, EventType.TIMER_SCHEDULED, stepName, serializer.serialize(
                     new AwaitSignalDetail(signalName, timerId, timeout.toString(), deadline.toString())));
@@ -699,7 +746,10 @@ final class SignalManager {
                                 .map(WorkflowTimer::status)
                                 .orElse(TimerStatus.PENDING),
                         TimerStatus.PENDING);
-                var now = Instant.now();
+                // Decided on the clock the deadline was armed on (R59):
+                // checking a test-clock deadline against the wall clock would
+                // expire it in real time, behind advanceTime's back.
+                var now = instantSource.instant();
                 if (rowStatus != TimerStatus.PENDING || !now.isBefore(deadline)) {
                     if (rowStatus == TimerStatus.PENDING && timerDbId != null) {
                         selfFire(workflowId, signalName, timerDbId);

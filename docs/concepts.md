@@ -252,7 +252,7 @@ try {
 }
 ```
 
-The timeout is durable: it is a timer row in `maestro_workflow_timer`, so a crash does not restart the clock, and in tests advancing the test clock just past the timeout (`env.advanceTime(timeout.plusSeconds(1))`) fires it deterministically — see [Testing](testing.md).
+The timeout is durable: it is a timer row in `maestro_workflow_timer`, so a crash does not restart the clock, and in tests advancing the test clock by the timeout (`env.advanceTime(timeout)`) fires it deterministically: `TestWorkflowEnvironment` arms the deadline from its test clock, so the exact timeout reaches it — see [Testing](testing.md).
 
 ### Collecting multiple signals
 

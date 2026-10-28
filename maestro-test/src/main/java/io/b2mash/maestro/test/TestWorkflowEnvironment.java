@@ -49,9 +49,12 @@ import java.util.function.Supplier;
  * }</pre>
  *
  * <h2>Time Control</h2>
- * <p>Workflows that call {@code sleep()} create durable timers. Use
+ * <p>Workflows that call {@code sleep()} or {@code awaitSignal(..., timeout)}
+ * create durable timers, armed from this environment's
+ * {@link ControllableClock} rather than the wall clock. Use
  * {@link #advanceTime(Duration)} to fire due timers deterministically
- * without waiting for real time to pass.
+ * without waiting for real time to pass; {@code workflow.currentTime()}
+ * reads the same clock.
  *
  * <h2>Thread Safety</h2>
  * <p>The environment is thread-safe. Workflows run on virtual threads
@@ -91,8 +94,10 @@ public final class TestWorkflowEnvironment {
         this.serializer = new PayloadSerializer(objectMapper);
         this.proxyFactory = new ActivityProxyFactory();
         this.retryExecutor = new RetryExecutor();
+        // Deadlines arm on the test clock, not the wall clock (R59): a timer
+        // armed at clock.now() + d fires on exactly advanceTime(d).
         this.executor = new WorkflowExecutor(
-                store, lock, messaging, signalNotifier, serializer, SERVICE_NAME);
+                store, lock, messaging, signalNotifier, serializer, SERVICE_NAME, clock);
     }
 
     // ── Factory methods ──────────────────────────────────────────────────
@@ -216,19 +221,26 @@ public final class TestWorkflowEnvironment {
     /**
      * Advances the test clock and fires any timers that become due.
      *
-     * <p>Workflows that called {@code workflow.sleep(duration)} create
-     * durable timers. This method advances the clock and fires all
-     * timers whose {@code fireAt <= clock.now()}, then yields briefly
-     * to let virtual threads process.
+     * <p>Workflows that call {@code workflow.sleep(duration)} or
+     * {@code workflow.awaitSignal(name, type, timeout)} create durable timers,
+     * armed from the test clock: a timer armed at {@code t} with duration
+     * {@code d} has {@code fireAt = t + d}, so advancing by exactly {@code d}
+     * fires it — no margin needed (R59). This method advances the clock to
+     * a target instant and fires every timer whose {@code fireAt} is at or
+     * before that target.
      *
-     * <p>The method loops to handle cascading timers (timer A fires
-     * → workflow creates timer B → B is also due).
+     * <p>The target is fixed when the call starts. A workflow woken by this
+     * call that parks again arms its next timer from the advanced clock, at
+     * {@code target + d}; for any positive {@code d} that is after the target,
+     * so this call never fires it — the next {@code advanceTime} does. The
+     * loop repeats only while timers due by the target remain (more than one
+     * batch, or a zero-duration timer armed meanwhile).
      *
      * @param duration the amount to advance (must be non-negative)
      */
     public void advanceTime(Duration duration) {
         clock.advance(duration);
-        fireAllDueTimers();
+        fireAllDueTimers(clock.now());
     }
 
     /**
@@ -299,12 +311,12 @@ public final class TestWorkflowEnvironment {
 
     // ── Internal: timer firing ───────────────────────────────────────────
 
-    private void fireAllDueTimers() {
+    private void fireAllDueTimers(Instant target) {
         List<WorkflowTimer> due;
         int safetyLimit = 1000;
         int iterations = 0;
 
-        while (!(due = store.getDueTimers(clock.now(), 100)).isEmpty()) {
+        while (!(due = store.getDueTimers(target, 100)).isEmpty()) {
             for (var timer : due) {
                 executor.fireTimer(timer.workflowId(), timer.timerId(), timer.id());
             }

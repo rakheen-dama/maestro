@@ -10,6 +10,7 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.RecordingEngineObserver;
 import io.b2mash.maestro.core.observe.TraceContextHolder;
 import io.b2mash.maestro.core.spi.SignalMessage;
@@ -26,6 +27,7 @@ import tools.jackson.databind.ObjectMapper;
 import java.lang.ScopedValue;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.InstantSource;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Optional;
@@ -44,6 +46,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -432,6 +435,47 @@ class SignalManagerTest {
         worker.join(5_000);
         assertInstanceOf(SignalTimeoutException.class, outcome.get());
         assertEquals(EventType.SIGNAL_TIMEOUT, store.getEventBySequence(instanceId, 2).orElseThrow().eventType());
+    }
+
+    // ── awaitSignal — the deadline's clock is injectable (R59) ─────────
+
+    @Test
+    @DisplayName("every shorter constructor arms deadlines on the system clock")
+    void defaultInstantSource_isTheSystemClock() {
+        assertSame(InstantSource.system(), signalManager.instantSource());
+        assertSame(InstantSource.system(), new SignalManager(store, messaging, null, serializer, parkingLot,
+                Duration.ofSeconds(1), EngineObserver.NOOP, TaskQueueGovernor.UNBOUNDED).instantSource());
+    }
+
+    @Test
+    @DisplayName("a live await arms its deadline from the injected InstantSource and decides it there, not on the wall clock")
+    void liveAwait_armsAndDecidesItsDeadlineOnTheInstantSource() throws Exception {
+        // Frozen at the wall clock's "now": wall time then runs past the 100 ms
+        // deadline while the source does not, so deciding the deadline on the
+        // wall clock would time the await out.
+        var armedAt = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        signalManager = new SignalManager(store, messaging, null, serializer, parkingLot, Duration.ofMillis(50),
+                EngineObserver.NOOP, TaskQueueGovernor.UNBOUNDED, InstantSource.fixed(armedAt));
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+        var ctx = createContext(instanceId, "order-1", 0, false);
+        var outcome = new AtomicReference<Object>();
+        var worker = awaitInBackground(ctx, "payment.result", Duration.ofMillis(100), outcome);
+        await().atMost(Duration.ofSeconds(5)).until(() -> store.findTimer(instanceId, "await-signal-1").isPresent());
+
+        var row = store.findTimer(instanceId, "await-signal-1").orElseThrow();
+        assertEquals(armedAt.plusMillis(100), row.fireAt());
+        assertEquals(armedAt.plusMillis(100), Instant.parse(
+                store.getEventBySequence(instanceId, 1).orElseThrow().payload().get("deadline").stringValue()));
+
+        // Five timeouts' worth of wall time, re-checked every 50 ms: the source
+        // stands still, so the deadline has not passed and the await stays parked.
+        await().during(Duration.ofMillis(500)).atMost(Duration.ofSeconds(2)).until(() -> outcome.get() == null);
+        assertTrue(store.getEventBySequence(instanceId, 2).isEmpty(), "timed out on the wall clock");
+
+        assertTrue(store.markTimerFired(row.id()));
+        signalManager.onTimerTransition("order-1", "await-signal-1");
+        worker.join(5_000);
+        assertInstanceOf(SignalTimeoutException.class, outcome.get());
     }
 
     @Test

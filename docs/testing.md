@@ -15,7 +15,7 @@ The module provides an in-memory Maestro engine for testing durable workflows. N
 What you get:
 
 - **Real execution engine.** The same `WorkflowExecutor` that runs in production, backed by in-memory SPI implementations.
-- **Deterministic time.** A `ControllableClock` replaces wall-clock time. Call `advanceTime(Duration.ofDays(30).plusSeconds(1))` and every timer due by then fires immediately (step just past the duration — see [How It Works](#how-it-works)).
+- **Deterministic time.** A `ControllableClock` replaces wall-clock time: the engine arms every `sleep()` timer and `awaitSignal()` deadline from it. Call `advanceTime(Duration.ofDays(30))` and every timer due by then fires immediately — see [How It Works](#how-it-works).
 - **Signal self-recovery testing.** Pre-deliver signals before a workflow starts to verify the orphan adoption path.
 - **Full event log inspection.** Assert on every activity completion, signal receipt, and timer firing.
 - **Sub-second test execution.** No containers to start, no connections to establish.
@@ -227,11 +227,9 @@ var handle = env.startWorkflow(ReminderWorkflow.class, input);
 // Workflow is now parked on a timer
 assertEquals(WorkflowStatus.WAITING_TIMER, handle.getStatus());
 
-// Fast-forward just past 30 days -- timer fires instantly. The test clock
-// starts when the environment is created; the timer's fireAt is taken a few
-// milliseconds later, when the workflow schedules it, so advancing exactly
-// 30 days would stop a hair short of it.
-env.advanceTime(Duration.ofDays(30).plusSeconds(1));
+// Fast-forward 30 days -- the timer fires instantly. Its fireAt was armed
+// from the test clock (now + 30 days), so advancing exactly 30 days reaches it.
+env.advanceTime(Duration.ofDays(30));
 
 // Workflow resumes and completes
 var result = handle.getResult(ReminderResult.class, Duration.ofSeconds(5));
@@ -241,12 +239,14 @@ var result = handle.getResult(ReminderResult.class, Duration.ofSeconds(5));
 
 `advanceTime(duration)` does two things:
 
-1. **Advances the `ControllableClock`** by the given duration.
-2. **Fires all due timers** whose `fireAt <= clock.now()`.
+1. **Advances the `ControllableClock`** by the given duration, to a target instant fixed for the call.
+2. **Fires all due timers** whose `fireAt` is at or before that target.
 
-The method loops to handle cascading timers: if timer A fires and the workflow immediately creates timer B that is also due, timer B fires in the same `advanceTime` call. A safety limit of 1,000 iterations prevents infinite timer loops.
+**Why an exact advance works.** The environment hands its `ControllableClock` to the engine, which arms every durable deadline from it: `sleep(d)` gets `fireAt = clock.now() + d`, and a parked `awaitSignal(name, type, timeout)` gets `deadline = clock.now() + timeout`, decided against the same clock. The wall clock plays no part, so a 1-second deadline cannot expire while a slow test is still getting ready, and `advanceTime(timeout)` lands exactly on the deadline — no `plusSeconds(1)` margin. `workflow.currentTime()` reads the same clock, so `collectSignals` budgets its overall timeout in test time too. (Production uses the system clock; only `TestWorkflowEnvironment` swaps it.)
 
-`advanceTime` also fires `awaitSignal` deadlines: a parked `awaitSignal(name, type, timeout)` persists its deadline as a durable timer row, so a 7-day approval wait times out with one `advanceTime` call instead of seven days of wall clock — and a signal delivered before the advanced clock reaches the deadline still wins. The clock starts when the environment is created, while a timer's `fireAt` is taken when the workflow schedules it a few milliseconds later, so step just past the duration: `env.advanceTime(Duration.ofDays(7).plusSeconds(1))` (the same holds for `sleep()`).
+**What one call fires.** A workflow that a call wakes and that parks again arms its next timer from the advanced clock, at `target + d`. For any positive `d` that is after the target, so the same call never fires it — the next `advanceTime` does. Each `advanceTime` therefore moves every parked workflow forward by exactly one deadline per elapsed duration, never by an arbitrary number depending on thread timing. The loop inside the call repeats only while timers due by the target remain (more than one batch, or a zero-duration timer); a safety limit of 1,000 iterations prevents infinite timer loops.
+
+`advanceTime` fires `awaitSignal` deadlines exactly as it fires `sleep()` timers: a 7-day approval wait times out with one `env.advanceTime(Duration.ofDays(7))` instead of seven days of wall clock — and a signal delivered before the advanced clock reaches the deadline still wins. Wait for the workflow to be parked (status `WAITING_SIGNAL`, or its `TIMER_SCHEDULED` memo in the event log) before advancing: advancing first moves the clock past nothing, and the await then arms its deadline from the already-advanced clock.
 
 ### Direct Clock Access
 
@@ -466,9 +466,9 @@ class OrderFulfilmentWorkflowTest {
         // Workflow sleeps for 30 days before sending a follow-up
         assertEquals(WorkflowStatus.WAITING_TIMER, handle.getStatus());
 
-        // Fast-forward just past 30 days (the timer was scheduled a few ms
-        // after the test clock started — see "How It Works")
-        env.advanceTime(Duration.ofDays(30).plusSeconds(1));
+        // Fast-forward 30 days: the timer was armed from the test clock,
+        // so the exact duration fires it (see "How It Works")
+        env.advanceTime(Duration.ofDays(30));
 
         handle.awaitCompletion(Duration.ofSeconds(5));
 

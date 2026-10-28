@@ -36,6 +36,7 @@ import tools.jackson.databind.JsonNode;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.StringJoiner;
@@ -104,6 +105,15 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
     private final Duration wakeRecheckInterval;
     private final EngineObserver observer;
     private final TaskQueueGovernor governor;
+
+    /**
+     * The clock {@link #sleep(Duration)} arms its timer from and
+     * {@link #currentTime()} records — always the {@link SignalManager}'s
+     * ({@link SignalManager#instantSource()}), so a sleep and an await
+     * deadline of one executor are armed on one clock (R59). The system clock
+     * in production; the controllable clock under {@code TestWorkflowEnvironment}.
+     */
+    private final InstantSource instantSource;
 
     /**
      * Version decisions already resolved in this run, {@code changeId → version}.
@@ -249,6 +259,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         this.wakeRecheckInterval = wakeRecheckInterval;
         this.observer = observer;
         this.governor = governor;
+        this.instantSource = signalManager.instantSource();
     }
 
     // ── sleep ──────────────────────────────────────────────────────────
@@ -358,7 +369,8 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                 ctx.workflowInstanceId(),
                 ctx.workflowId(),
                 timerId,
-                Instant.now().plus(duration),
+                // Armed from the executor's instant source (R59) — see the field.
+                instantSource.instant().plus(duration),
                 TimerStatus.PENDING,
                 Instant.now()
         );
@@ -884,9 +896,11 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                     () -> serializer.deserialize(storedEvent.get().payload(), Instant.class));
         }
 
-        // Live path
+        // Live path. The executor's instant source (R59): collectSignals()
+        // computes its overall deadline from this value, so it must be the
+        // clock the per-await deadlines are armed on.
         WorkflowContextInternals.setReplaying(ctx, false);
-        var now = Instant.now();
+        var now = instantSource.instant();
         appendEvent(ctx, seq, EventType.SIDE_EFFECT, "$maestro:currentTime", serializer.serialize(now));
         return now;
     }

@@ -27,6 +27,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -46,6 +47,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -73,6 +75,12 @@ class WorkflowExecutorTest {
     @AfterEach
     void tearDown() {
         executor.shutdown();
+    }
+
+    @Test
+    @DisplayName("an executor built without an InstantSource arms deadlines on the system clock (R59)")
+    void defaultInstantSource_isTheSystemClock() {
+        assertSame(InstantSource.system(), executor.instantSource());
     }
 
     // ── Start and complete ─────────────────────────────────────────────
