@@ -72,9 +72,8 @@ public final class ChaosCluster implements AutoCloseable {
 
     /** All topics the sample uses; Maestro never auto-creates topics. */
     private static final List<String> TOPICS = List.of(
-            "maestro.tasks.loan-application", "maestro.tasks.verification-gateway",
-            "maestro.tasks.underwriting", "maestro.signals.loan-application",
-            "maestro.signals.verification-gateway", "maestro.signals.underwriting",
+            "maestro.signals.loan-application", "maestro.signals.verification-gateway",
+            "maestro.signals.underwriting",
             "maestro.admin.events", "loans.verification.requests", "loans.verification.results",
             "loans.underwriting.requests", "loans.underwriting.decisions");
 

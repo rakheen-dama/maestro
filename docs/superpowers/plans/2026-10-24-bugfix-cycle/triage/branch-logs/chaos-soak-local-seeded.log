@@ -1,0 +1,682 @@
+# pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle head=ec9286dbf3e2fe6beab43e79486a150203929d30 started=2026-10-28T18:53:45Z mode=SOAK seed=-6945054112340787534 durationMinutes=75 evidenceDir=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/docs/superpowers/plans/2026-10-24-bugfix-cycle/triage/evidence/local/chaos-evidence
+> Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :build-logic:generateExternalPluginSpecBuilders
+> Task :build-logic:extractPrecompiledScriptPluginPlugins
+> Task :build-logic:generateScriptPluginAdapters
+> Task :build-logic:pluginDescriptors
+> Task :build-logic:processResources
+> Task :build-logic:compilePluginsBlocks
+> Task :build-logic:generatePrecompiledScriptPluginAccessors
+
+> Configure project :maestro-admin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :build-logic:compileKotlin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+w: ⚠️ Inconsistent JVM Target Compatibility Between Java and Kotlin Tasks
+Inconsistent JVM-target compatibility detected for tasks 'compileJava' (25) and 'compileKotlin' (24).
+This will become an error in Gradle 8.0.
+Solution: Consider using JVM Toolchain: https://kotl.in/gradle/jvm/toolchain
+Learn more about JVM-target validation: https://kotl.in/gradle/jvm/target-validation
+
+
+> Task :build-logic:compileJava NO-SOURCE
+> Task :build-logic:classes
+> Task :build-logic:jar
+> Task :maestro-test:processResources NO-SOURCE
+> Task :maestro-integration-tests:compileJava NO-SOURCE
+> Task :maestro-integration-tests:processResources NO-SOURCE
+> Task :maestro-integration-tests:classes UP-TO-DATE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:processResources
+> Task :maestro-store-jdbc:processResources NO-SOURCE
+> Task :maestro-messaging-kafka:processResources
+> Task :maestro-spring-boot-starter:processResources
+> Task :maestro-lock-valkey:processResources
+> Task :maestro-samples:sample-loan-origination:underwriting-service:processResources
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:processResources
+> Task :maestro-integration-tests:processTestResources
+> Task :maestro-lock-postgres:processResources
+> Task :maestro-messaging-postgres:processResources
+> Task :maestro-store-postgres:processResources
+> Task :maestro-core:compileJava
+> Task :maestro-core:processResources NO-SOURCE
+> Task :maestro-core:classes
+> Task :maestro-core:jar
+> Task :maestro-store-jdbc:compileJava
+> Task :maestro-store-jdbc:classes
+> Task :maestro-store-jdbc:jar
+> Task :maestro-test:compileJava
+> Task :maestro-test:classes
+> Task :maestro-test:jar
+> Task :maestro-spring-boot-starter:compileJava
+> Task :maestro-spring-boot-starter:classes
+> Task :maestro-spring-boot-starter:jar
+> Task :maestro-lock-postgres:compileJava
+> Task :maestro-lock-postgres:classes
+> Task :maestro-lock-postgres:jar
+> Task :maestro-store-postgres:compileJava
+> Task :maestro-store-postgres:classes
+> Task :maestro-store-postgres:jar
+> Task :maestro-messaging-postgres:compileJava
+> Task :maestro-messaging-postgres:classes
+> Task :maestro-messaging-postgres:jar
+> Task :maestro-lock-valkey:compileJava
+> Task :maestro-lock-valkey:classes
+> Task :maestro-lock-valkey:jar
+
+> Task :maestro-messaging-kafka:compileJava
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-messaging-kafka/src/main/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagation.java:156: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = tracer.withSpan(span)) {
+                 ^
+1 warning
+
+> Task :maestro-messaging-kafka:classes
+> Task :maestro-messaging-kafka:jar
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:compileJava
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:classes
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:resolveMainClassName
+> Task :maestro-samples:sample-loan-origination:underwriting-service:compileJava
+> Task :maestro-samples:sample-loan-origination:underwriting-service:classes
+> Task :maestro-samples:sample-loan-origination:underwriting-service:resolveMainClassName
+> Task :maestro-samples:sample-loan-origination:loan-application-service:compileJava
+> Task :maestro-samples:sample-loan-origination:loan-application-service:classes
+> Task :maestro-samples:sample-loan-origination:loan-application-service:resolveMainClassName
+> Task :maestro-samples:sample-loan-origination:loan-application-service:bootJar
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:bootJar
+> Task :maestro-samples:sample-loan-origination:underwriting-service:bootJar
+
+> Task :maestro-integration-tests:compileTestJava
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/support/PostgresIntegrationSupport.java:52: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+    static final PostgreSQLContainer<?> postgres =
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/support/PostgresIntegrationSupport.java:53: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+            new PostgreSQLContainer<>("postgres:16-alpine")
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/KafkaTraceLinkageIT.java:73: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+    private static final KafkaContainer KAFKA =
+                         ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/KafkaTraceLinkageIT.java:74: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+            new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1")).withKraft();
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/KafkaTraceLinkageIT.java:135: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+            try (var ignored = otelA.tracer().withSpan(publishSpan)) {
+                     ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/SignalListenerTraceContextIT.java:85: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+    private static final KafkaContainer KAFKA =
+                         ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/SignalListenerTraceContextIT.java:86: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+            new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1")).withKraft();
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/schema/MaestroMigrationsCoexistIT.java:65: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+    static final PostgreSQLContainer<?> postgres =
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/schema/MaestroMigrationsCoexistIT.java:66: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+            new PostgreSQLContainer<>("postgres:16-alpine")
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/schema/MaestroMigrationsCoexistIT.java:83: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+        ds.setPortNumbers(new int[] {postgres.getMappedPort(PostgreSQLContainer.POSTGRESQL_PORT)});
+                                                            ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/kafka/KafkaLifecycleEventLatencyIT.java:64: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+    private static final KafkaContainer KAFKA =
+                         ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/kafka/KafkaLifecycleEventLatencyIT.java:65: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+            new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1"))
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/kafka/KafkaSpringIntegrationSupport.java:103: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+    private static final KafkaContainer KAFKA =
+                         ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/kafka/KafkaSpringIntegrationSupport.java:104: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+            new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1"))
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/ChaosCluster.java:88: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+    private PostgreSQLContainer<?> postgres;
+            ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/ChaosCluster.java:141: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+        postgres = new PostgreSQLContainer<>(DockerImageName.parse(POSTGRES_IMAGE))
+                       ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/engine/EnginePostgresParallelIT.java:234: warning: [deprecation] asText() in JsonNode has been deprecated
+                handle.instance().output().get("exceptionType").asText());
+                                                               ^
+17 warnings
+
+> Task :maestro-integration-tests:testClasses
+
+> Task :maestro-integration-tests:e2eTest
+
+Golden calibration: each path chaos-free, gap sets characterised > all four paths reach their declared terminal chaos-free and gaps are recorded SKIPPED
+
+Chaos PR-gate: 6-node loan cluster stays correct under chaos > cluster survives six minutes of chaos with all store invariants intact SKIPPED
+
+Chaos soak: hours-long multi-instance correctness + Issue 12 curves > cluster stays correct across the full soak window STANDARD_OUT
+    [chaos] ================= CHAOS RUN =================
+    [chaos] mode=SOAK seed=-6945054112340787534 runId=20261028-185351--6945054112340787534
+    [chaos] re-run: ./gradlew :maestro-integration-tests:e2eTest -Dmaestro.chaos.seed=-6945054112340787534
+    20:53:51.452 [Test worker] INFO org.testcontainers.DockerClientFactory -- Testcontainers version: 2.0.1
+    20:53:51.607 [Test worker] INFO org.testcontainers.dockerclient.DockerClientProviderStrategy -- Loaded org.testcontainers.dockerclient.UnixSocketClientProviderStrategy from ~/.testcontainers.properties, will try it first
+    20:53:51.814 [Test worker] INFO org.testcontainers.dockerclient.DockerClientProviderStrategy -- Found Docker environment with local Unix socket (unix:///var/run/docker.sock)
+    20:53:51.815 [Test worker] INFO org.testcontainers.DockerClientFactory -- Docker host IP address is localhost
+    20:53:51.826 [Test worker] INFO org.testcontainers.DockerClientFactory -- Connected to docker: 
+      Server Version: 28.5.1
+      API Version: 1.51
+      Operating System: Docker Desktop
+      Total Memory: 7837 MB
+      Labels: 
+        com.docker.desktop.address=unix:///Users/rakheendama/Library/Containers/com.docker.docker/Data/docker-cli.sock
+    20:53:51.831 [Test worker] INFO org.testcontainers.images.PullPolicy -- Image pull policy will be performed by: DefaultPullPolicy()
+    20:53:51.832 [Test worker] INFO org.testcontainers.utility.ImageNameSubstitutor -- Image name substitution will be performed by: DefaultImageNameSubstitutor (composite of 'ConfigurationFileImageNameSubstitutor' and 'PrefixingImageNameSubstitutor')
+    20:53:51.835 [Test worker] INFO org.testcontainers.DockerClientFactory -- Checking the system...
+    20:53:51.835 [Test worker] INFO org.testcontainers.DockerClientFactory -- ✔︎ Docker server version should be at least 1.6.0
+    20:53:51.856 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] starting cluster network + infrastructure
+    20:53:51.913 [Test worker] INFO tc.postgres:16-alpine -- Creating container for image: postgres:16-alpine
+    20:53:52.064 [Test worker] INFO tc.testcontainers/ryuk:0.13.0 -- Creating container for image: testcontainers/ryuk:0.13.0
+    20:53:52.130 [Test worker] INFO tc.testcontainers/ryuk:0.13.0 -- Container testcontainers/ryuk:0.13.0 is starting: 5e36cadaee7d93392e2f246a19a3dd1c6dbd58df685282c6e12e95f42e409df2
+    20:53:52.310 [Test worker] INFO tc.testcontainers/ryuk:0.13.0 -- Container testcontainers/ryuk:0.13.0 started in PT0.246228S
+    20:53:52.426 [Test worker] INFO tc.postgres:16-alpine -- Container postgres:16-alpine is starting: d63ce851a518c4d6cb94eb915cd788490666446ca8a29f42112b257a7c4fa61c
+    20:53:53.678 [Test worker] INFO tc.postgres:16-alpine -- Container postgres:16-alpine started in PT1.7649S
+    20:53:53.679 [Test worker] INFO tc.postgres:16-alpine -- Container is started (JDBC URL: jdbc:postgresql://localhost:63583/maestro?loggerLevel=OFF)
+    20:53:53.680 [Test worker] INFO tc.apache/kafka:3.9.0 -- Creating container for image: apache/kafka:3.9.0
+    20:53:53.708 [Test worker] INFO tc.apache/kafka:3.9.0 -- Container apache/kafka:3.9.0 is starting: 4636f9944ea85d2314e0bae10462a55db8325521603b887328a4eeb17ac4f805
+    20:53:55.892 [Test worker] INFO tc.apache/kafka:3.9.0 -- Container apache/kafka:3.9.0 started in PT2.212122S
+    20:53:55.893 [Test worker] INFO tc.valkey/valkey:8-alpine -- Creating container for image: valkey/valkey:8-alpine
+    20:53:55.925 [Test worker] INFO tc.valkey/valkey:8-alpine -- Container valkey/valkey:8-alpine is starting: 53419459316f40bae3d95c60a12720937da63e4a8d5c4b035fa4476c80408c6d
+    20:53:56.150 [Test worker] INFO tc.valkey/valkey:8-alpine -- Container valkey/valkey:8-alpine started in PT0.257115S
+    20:54:04.689 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] pre-created 8 Kafka topics
+    20:54:04.693 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Creating container for image: alpine/socat:1.7.4.3-r0
+    20:54:04.728 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 is starting: 215911c904e1b2c7bc56ddb7bbdd7214d1200411b4a1643d3342b7936d215995
+    20:54:04.923 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 started in PT0.230672S
+    20:54:04.924 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.NodeAmbassador -- [chaos] ambassador up at localhost: loan-a->63591, loan-b->63586, verify-a->63587, verify-b->63588, uw-a->63589, uw-b->63590
+    20:54:04.924 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] starting 6 workload nodes
+    20:54:04.925 [Test worker] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    20:54:06.177 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 387f98253fa2989f0bdbf995abc8299f2ad8769e442b39e91197305691d60776
+    20:54:09.833 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.907752S
+    20:54:09.833 [Test worker] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    20:54:11.343 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: ef32daa56c00f1fb18a073c0d07119e18f685044f8f1a5233edffb095cc03c9f
+    20:54:15.351 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.517357S
+    20:54:15.352 [Test worker] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    20:54:16.558 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 7bdad4555d0683625b4c3c8b8469e3350cbc4cea868d6b041cb70246fa7e6526
+    20:54:20.443 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.09144S
+    20:54:20.446 [Test worker] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    20:54:21.772 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: b2f21fb6c6fd150c9fa05e53ab1ad5cebfbdc5d66ba150e67e1d8085be229b30
+    20:54:25.671 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.224822S
+    20:54:25.672 [Test worker] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    20:54:27.108 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 1e8f8b38ef6817e53bc4f883feb983f250885c70d22fe41752d57f003efd5955
+    20:54:30.682 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.010158S
+    20:54:30.683 [Test worker] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    20:54:32.008 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 723fcfc7b1e8956f721b6767839085164598c8c8a8137392ab879864a7f0c926
+    20:54:35.375 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.691957S
+    20:54:36.148 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] cluster healthy: 6 nodes live
+    20:54:36.170 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.WorkloadDriver -- [chaos] workload generation begins: 20/min for PT1H15M (chaos, runaway cap 4600)
+    20:54:36.170 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] controller starts (75 min window)
+    20:55:26.205 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] PAUSE LOAN_A
+    20:56:17.231 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] UNPAUSE LOAN_A
+    20:56:17.232 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#1 PAUSE_RESUME LOAN_A started=2026-10-28T18:55:26.177026Z healed=2026-10-28T18:56:17.231365Z
+    20:57:04.245 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] PAUSE LOAN_B
+    20:57:50.274 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] UNPAUSE LOAN_B
+    20:57:50.275 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#2 PAUSE_RESUME LOAN_B started=2026-10-28T18:57:04.233792Z healed=2026-10-28T18:57:50.275114Z
+    20:58:13.160 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) UW_A (1e8f8b38ef68)
+    20:58:13.163 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    20:58:14.450 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 8ba5809db5fc421151476df2b9e33d666e621fb92c335b3c116539ddf6f0e6f5
+    20:58:17.844 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.681546S
+    20:58:18.077 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED UW_A -> generation 1 at http://localhost:63589
+    20:58:19.147 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) UW_B (723fcfc7b1e8)
+    20:58:19.148 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    20:58:20.349 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 6d303683b82fa021bf7909d16df7f831aa9f809bddc007ca6ec50d899c1aa940
+    20:58:23.635 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.487591S
+    20:58:23.781 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED UW_B -> generation 1 at http://localhost:63590
+    20:58:23.787 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#3 ROLLING_RESTART UNDERWRITING started=2026-10-28T18:58:12.280790Z healed=2026-10-28T18:58:23.783994Z
+    20:59:04.926 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 VERIFY_B (b2f21fb6c6fd)
+    20:59:30.932 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    20:59:32.186 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 90957b9351f24c9b35f1269aeb2935b7fc5b5d6c357f55021518ebb4388658b6
+    20:59:35.617 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.684957S
+    20:59:35.779 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED VERIFY_B -> generation 1 at http://localhost:63588
+    20:59:35.780 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#4 KILL9 VERIFY_B started=2026-10-28T18:59:04.793466Z healed=2026-10-28T18:59:35.779851Z
+    21:00:07.923 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 UW_B (6d303683b82f)
+    21:00:30.933 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:00:32.379 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 0fb58a50d561ddcaa43003bb02d05d5c382c40c4c6bf282d04b5cfd90ebfc22a
+    21:00:36.346 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.413743S
+    21:00:36.546 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED UW_B -> generation 2 at http://localhost:63590
+    21:00:36.547 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#5 KILL9 UW_B started=2026-10-28T19:00:07.781650Z healed=2026-10-28T19:00:36.547039Z
+    21:01:16.740 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 UW_A (8ba5809db5fc)
+    21:01:31.748 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:01:33.214 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 97931b5c39c13f60623a3b3165887e71db36eafae7f9d75dc8d7e12bff215863
+    21:01:37.527 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.779468S
+    21:01:37.695 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED UW_A -> generation 2 at http://localhost:63589
+    21:01:37.698 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#6 KILL9 UW_A started=2026-10-28T19:01:16.548804Z healed=2026-10-28T19:01:37.695383Z
+    21:02:32.820 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 UW_B (0fb58a50d561)
+    21:03:02.826 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:03:04.096 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 4451a42c1af94d4bdda12d77de0921e8d8052cd58b1007819cee8b8e6a792a00
+    21:03:07.624 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.797707S
+    21:03:07.808 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED UW_B -> generation 3 at http://localhost:63590
+    21:03:07.808 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#7 KILL9 UW_B started=2026-10-28T19:02:32.700376Z healed=2026-10-28T19:03:07.808182Z
+    21:04:00.939 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 LOAN_A (387f98253fa2)
+    21:04:12.945 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:04:14.121 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 8c1eb2d4f3c41e690806cfcd134b18bcaa29ea7ed04aca7c1756a008661de304
+    21:04:17.697 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.752118S
+    21:04:17.796 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED LOAN_A -> generation 1 at http://localhost:63591
+    21:04:17.797 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#8 KILL9 LOAN_A started=2026-10-28T19:04:00.813580Z healed=2026-10-28T19:04:17.797170Z
+    21:04:59.940 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 VERIFY_A (7bdad4555d06)
+    21:05:18.950 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:05:20.235 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 9c253859c0f539ee543fbecb85a32ef482e9134b2c0a5b2538dcae6d26861dc5
+    21:05:23.596 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.645833S
+    21:05:23.780 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED VERIFY_A -> generation 1 at http://localhost:63587
+    21:05:23.781 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#9 KILL9 VERIFY_A started=2026-10-28T19:04:59.802794Z healed=2026-10-28T19:05:23.780275Z
+    21:06:11.927 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 VERIFY_B (90957b9351f2)
+    21:06:40.933 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:06:42.143 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 9b8d54b1849b87be59a5f06a6d0fb984f5f61b719236f27aea639ba43b48c6d8
+    21:06:45.627 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.694643S
+    21:06:45.775 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED VERIFY_B -> generation 2 at http://localhost:63588
+    21:06:45.776 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#10 KILL9 VERIFY_B started=2026-10-28T19:06:11.786734Z healed=2026-10-28T19:06:45.775609Z
+    21:07:43.921 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 VERIFY_A (9c253859c0f5)
+    21:08:11.930 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:08:18.041 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 352df5813359e936be78d399e9f4e0232284f46aec4adcf703970cc9e57ce1f8
+    21:08:25.045 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT13.114989S
+    21:08:25.408 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED VERIFY_A -> generation 2 at http://localhost:63587
+    21:08:25.408 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#11 KILL9 VERIFY_A started=2026-10-28T19:07:43.797155Z healed=2026-10-28T19:08:25.408574Z
+    21:09:01.542 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 LOAN_A (8c1eb2d4f3c4)
+    21:09:26.550 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:09:27.779 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 417b60cf3dec1080db94f08af40aa7d595a7d26956563ba1586f547ee7a92c58
+    21:09:31.360 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.810361S
+    21:09:31.476 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED LOAN_A -> generation 2 at http://localhost:63591
+    21:09:31.478 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#12 KILL9 LOAN_A started=2026-10-28T19:09:01.413839Z healed=2026-10-28T19:09:31.477308Z
+    21:10:01.794 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 VERIFY_B (9b8d54b1849b)
+    21:10:20.797 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:10:29.316 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: e6b65fca7d2e4da9b54d4df7f55663bc78291ae9ab24abbe4b823a2c236c52f9
+    21:10:33.276 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT12.47922S
+    21:10:33.422 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED VERIFY_B -> generation 3 at http://localhost:63588
+    21:10:33.423 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#13 KILL9 VERIFY_B started=2026-10-28T19:10:01.483283Z healed=2026-10-28T19:10:33.423237Z
+    21:11:31.563 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] PARTITION VERIFY_A
+    21:11:43.589 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] RECONNECT VERIFY_A
+    21:11:43.589 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#14 PARTITION VERIFY_A started=2026-10-28T19:11:31.425523Z healed=2026-10-28T19:11:43.589639Z
+    21:12:29.629 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] BACKEND_OUTAGE pause postgres
+    21:12:36.969 [chaos-metrics-sampler] WARN io.b2mash.maestro.integration.e2e.chaos.MetricsSampler -- [chaos] metrics: status-count probe failed for LOAN_APPLICATION — org.postgresql.util.PSQLException: Connection attempt timed out. (first of streak; DB-derived columns are zero/stale while this persists)
+    21:12:45.096 [chaos-periodic-checker] WARN io.b2mash.maestro.integration.e2e.chaos.PeriodicChecker -- [chaos] periodic checker: store unreachable this cycle (expected only inside a bounded backend-outage window) — cause: LOAN_APPLICATION: org.postgresql.util.PSQLException: The connection attempt failed.
+    21:12:46.694 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] BACKEND_OUTAGE unpause postgres
+    21:12:46.698 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#15 BACKEND_OUTAGE postgres started=2026-10-28T19:12:29.604228Z healed=2026-10-28T19:12:46.698017Z
+    21:13:16.080 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) LOAN_A (417b60cf3dec)
+    21:13:16.081 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:13:22.356 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 93da52d4588652de2c43208d5e1f4ea6f546056b51e2194e1c276c2d316c8044
+    21:13:29.375 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT13.293807S
+    21:13:29.643 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED LOAN_A -> generation 3 at http://localhost:63591
+    21:13:31.132 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) LOAN_B (ef32daa56c00)
+    21:13:31.142 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:13:35.730 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: a71c439acaf61f9e7328eea256633f14a69799bafc8c4f61b5eecbb7f8d63a06
+    21:13:39.245 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT8.103231S
+    21:13:39.366 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED LOAN_B -> generation 1 at http://localhost:63586
+    21:13:39.366 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#16 ROLLING_RESTART LOAN_APPLICATION started=2026-10-28T19:13:14.702431Z healed=2026-10-28T19:13:39.366578Z
+    21:14:39.388 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] BACKEND_OUTAGE pause kafka
+    21:15:09.431 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] BACKEND_OUTAGE unpause kafka
+    21:15:09.432 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#17 BACKEND_OUTAGE kafka started=2026-10-28T19:14:39.374695Z healed=2026-10-28T19:15:09.432223Z
+    21:16:09.588 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 VERIFY_B (e6b65fca7d2e)
+    21:16:33.592 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:16:34.802 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 26561cbad72b4d7928cea87a73bc367cb5e4068c4b7cc865b25e3008aaca96e0
+    21:16:38.253 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.660966S
+    21:16:38.379 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED VERIFY_B -> generation 4 at http://localhost:63588
+    21:16:38.380 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#18 KILL9 VERIFY_B started=2026-10-28T19:16:09.436536Z healed=2026-10-28T19:16:38.379928Z
+    21:17:01.444 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] PARTITION UW_B
+    21:17:25.482 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] RECONNECT UW_B
+    21:17:25.482 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#19 PARTITION UW_B started=2026-10-28T19:17:01.382239Z healed=2026-10-28T19:17:25.482307Z
+    21:18:11.503 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] PAUSE VERIFY_A
+    21:19:18.525 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] UNPAUSE VERIFY_A
+    21:19:18.526 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#20 PAUSE_RESUME VERIFY_A started=2026-10-28T19:18:11.487240Z healed=2026-10-28T19:19:18.525760Z
+    21:20:11.407 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) LOAN_A (93da52d45886)
+    21:20:11.411 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:20:12.657 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 2ebb85e706988c2e289b839189b27cdd518d9063eb66559ca9043b5925d73bb2
+    21:20:16.089 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.677976S
+    21:20:16.236 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED LOAN_A -> generation 4 at http://localhost:63591
+    21:20:18.122 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) LOAN_B (a71c439acaf6)
+    21:20:18.122 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:20:19.531 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 231976182afa7de21ff2bb3e45f2b0dd634a83f4d34d6a39f73dbf28d7257373
+    21:20:23.114 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.991778S
+    21:20:23.221 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED LOAN_B -> generation 2 at http://localhost:63586
+    21:20:23.222 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#21 ROLLING_RESTART LOAN_APPLICATION started=2026-10-28T19:20:10.528741Z healed=2026-10-28T19:20:23.221734Z
+    21:20:57.241 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] BACKEND_OUTAGE pause kafka
+    21:21:23.275 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] BACKEND_OUTAGE unpause kafka
+    21:21:23.279 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#22 BACKEND_OUTAGE kafka started=2026-10-28T19:20:57.229400Z healed=2026-10-28T19:21:23.275529Z
+    21:21:52.309 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] PAUSE LOAN_B
+    21:22:53.332 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] UNPAUSE LOAN_B
+    21:22:53.333 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#23 PAUSE_RESUME LOAN_B started=2026-10-28T19:21:52.287362Z healed=2026-10-28T19:22:53.332582Z
+    21:23:40.367 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] PAUSE UW_B
+    21:24:47.410 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] UNPAUSE UW_B
+    21:24:47.411 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#24 PAUSE_RESUME UW_B started=2026-10-28T19:23:40.356652Z healed=2026-10-28T19:24:47.410219Z
+    21:25:26.475 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) LOAN_A (2ebb85e70698)
+    21:25:26.476 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:25:27.748 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 08420001e5b8ca60ada4bc6f85d8b34a036b5288d29c4302525a2fec348fd81e
+    21:25:31.239 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.76258S
+    21:25:31.373 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED LOAN_A -> generation 5 at http://localhost:63591
+    21:25:32.741 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) LOAN_B (231976182afa)
+    21:25:32.743 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:25:33.919 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 20a1caf4f7f07684028d694b7e72de95f07c24038b6f453fe725dfeeab6a5c22
+    21:25:37.846 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.103411S
+    21:25:37.970 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED LOAN_B -> generation 3 at http://localhost:63586
+    21:25:37.970 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#25 ROLLING_RESTART LOAN_APPLICATION started=2026-10-28T19:25:25.414953Z healed=2026-10-28T19:25:37.970848Z
+    21:26:23.212 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) LOAN_A (08420001e5b8)
+    21:26:23.216 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:26:24.489 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 611c2fd07ac97e2e2689ffa8f7edcda406e553e8fd2dec0163d744d6f0e2305d
+    21:26:28.130 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.914336S
+    21:26:28.283 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED LOAN_A -> generation 6 at http://localhost:63591
+    21:26:29.832 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) LOAN_B (20a1caf4f7f0)
+    21:26:29.833 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:26:31.448 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 310d63c52edbffddae1cec33ad6694b03caebc117607f1a45f2e0672f8c1fee3
+    21:26:35.247 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.414905S
+    21:26:35.364 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED LOAN_B -> generation 4 at http://localhost:63586
+    21:26:35.365 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#26 ROLLING_RESTART LOAN_APPLICATION started=2026-10-28T19:26:21.975129Z healed=2026-10-28T19:26:35.364845Z
+    21:27:18.512 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 VERIFY_A (352df5813359)
+    21:27:40.519 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:27:41.967 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 2f3eb35b98582842bec8f31df6c9487d314d2925c84718a6e632a5dd4ac8ddb5
+    21:27:47.723 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT7.204116S
+    21:27:47.918 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED VERIFY_A -> generation 3 at http://localhost:63587
+    21:27:47.918 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#27 KILL9 VERIFY_A started=2026-10-28T19:27:18.370831Z healed=2026-10-28T19:27:47.918350Z
+    21:28:17.248 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 UW_A (97931b5c39c1)
+    21:28:47.250 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:28:56.554 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 28b7699b3b509475d7553edfd5b8428231f85343ba7eb9045350de3c9ca307dd
+    21:29:03.788 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT16.537989S
+    21:29:04.453 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED UW_A -> generation 3 at http://localhost:63589
+    21:29:04.454 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#28 KILL9 UW_A started=2026-10-28T19:28:16.924508Z healed=2026-10-28T19:29:04.454008Z
+    21:29:25.499 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] BACKEND_OUTAGE pause valkey
+    21:29:28.471 [chaos-metrics-sampler] WARN io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] valkey-cli [INFO, commandstats] failed: com.github.dockerjava.api.exception.ConflictException: Status 409: {"message":"Container 53419459316f40bae3d95c60a12720937da63e4a8d5c4b035fa4476c80408c6d is paused, unpause the container before exec"}
+
+    21:29:28.475 [chaos-metrics-sampler] WARN io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] valkey-cli [PUBSUB, CHANNELS] failed: com.github.dockerjava.api.exception.ConflictException: Status 409: {"message":"Container 53419459316f40bae3d95c60a12720937da63e4a8d5c4b035fa4476c80408c6d is paused, unpause the container before exec"}
+
+    21:29:43.522 [chaos-metrics-sampler] WARN io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] valkey-cli [INFO, commandstats] failed: com.github.dockerjava.api.exception.ConflictException: Status 409: {"message":"Container 53419459316f40bae3d95c60a12720937da63e4a8d5c4b035fa4476c80408c6d is paused, unpause the container before exec"}
+
+    21:29:43.526 [chaos-metrics-sampler] WARN io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] valkey-cli [PUBSUB, CHANNELS] failed: com.github.dockerjava.api.exception.ConflictException: Status 409: {"message":"Container 53419459316f40bae3d95c60a12720937da63e4a8d5c4b035fa4476c80408c6d is paused, unpause the container before exec"}
+
+    21:29:55.591 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] BACKEND_OUTAGE unpause valkey
+    21:29:55.592 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#29 BACKEND_OUTAGE valkey started=2026-10-28T19:29:25.459055Z healed=2026-10-28T19:29:55.591880Z
+    21:30:30.631 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] PAUSE LOAN_A
+    21:31:17.663 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] UNPAUSE LOAN_A
+    21:31:17.663 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#30 PAUSE_RESUME LOAN_A started=2026-10-28T19:30:30.602886Z healed=2026-10-28T19:31:17.663217Z
+    21:31:51.827 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 LOAN_B (310d63c52edb)
+    21:32:01.837 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:32:03.125 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 863d62c1c41d9b60873aadd96dbd7b54bc19f24e162a7edef4a27ca6c4e84cd5
+    21:32:07.355 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.518392S
+    21:32:07.471 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED LOAN_B -> generation 5 at http://localhost:63586
+    21:32:07.472 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#31 KILL9 LOAN_B started=2026-10-28T19:31:51.669758Z healed=2026-10-28T19:32:07.471505Z
+    21:32:31.640 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 VERIFY_A (2f3eb35b9858)
+    21:32:47.648 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:32:48.946 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 82723bcbeec86f797f0b10687110eea236c490bbb61ac5c0500a813c934c22f2
+    21:32:52.459 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.810863S
+    21:32:52.631 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED VERIFY_A -> generation 4 at http://localhost:63587
+    21:32:52.633 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#32 KILL9 VERIFY_A started=2026-10-28T19:32:31.477944Z healed=2026-10-28T19:32:52.632201Z
+    21:33:20.412 [chaos-periodic-checker] WARN io.b2mash.maestro.integration.e2e.chaos.PeriodicChecker -- [chaos] PERIODIC calm-window [I2] stuck WAITING_TIMER with no PENDING timer in verification_gateway -> [verification-chaos-11501689961368764082-735-appraisal, verification-chaos-11501689961368764082-737-appraisal, verification-chaos-11501689961368764082-737-employment, verification-chaos-11501689961368764082-735-employment, verification-chaos-11501689961368764082-733-appraisal]
+    21:33:29.832 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) VERIFY_A (82723bcbeec8)
+    21:33:29.833 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:33:31.041 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: c5cd13c9fc1e77082360cb7119c462dd88ab06f9f26dfe32ac66f564852a4426
+    21:33:34.876 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.04262S
+    21:33:35.048 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED VERIFY_A -> generation 5 at http://localhost:63587
+    21:33:36.345 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) VERIFY_B (26561cbad72b)
+    21:33:36.348 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:33:37.669 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: f1bb5818eb80ef9f17c17a1169e2f0b74501e846cb5bdeee2379d491aa8503c2
+    21:33:41.247 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.899552S
+    21:33:41.394 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED VERIFY_B -> generation 5 at http://localhost:63588
+    21:33:41.395 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#33 ROLLING_RESTART VERIFICATION_GATEWAY started=2026-10-28T19:33:28.641294Z healed=2026-10-28T19:33:41.395165Z
+    21:34:07.522 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] PARTITION VERIFY_A
+    21:34:47.556 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] RECONNECT VERIFY_A
+    21:34:47.557 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#34 PARTITION VERIFY_A started=2026-10-28T19:34:07.403191Z healed=2026-10-28T19:34:47.557010Z
+    21:35:10.871 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] PARTITION VERIFY_A
+    21:35:39.905 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] RECONNECT VERIFY_A
+    21:35:39.905 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#35 PARTITION VERIFY_A started=2026-10-28T19:35:10.567095Z healed=2026-10-28T19:35:39.905445Z
+    21:36:38.205 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) LOAN_A (611c2fd07ac9)
+    21:36:38.222 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:36:40.810 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 350e594caef14ed860c8cff57e961fb3ac64a777f8114be0a394899bf8578341
+    21:36:45.388 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT7.166206S
+    21:36:45.559 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED LOAN_A -> generation 7 at http://localhost:63591
+    21:36:47.511 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) LOAN_B (863d62c1c41d)
+    21:36:47.511 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:36:49.074 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 58b2b0b0ad0b7b2074a0efe5d1b1e6f8a5a00169662114a0a6c0cef004c0d6fc
+    21:36:53.529 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT6.017909S
+    21:36:53.668 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED LOAN_B -> generation 6 at http://localhost:63586
+    21:36:53.669 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#36 ROLLING_RESTART LOAN_APPLICATION started=2026-10-28T19:36:36.913299Z healed=2026-10-28T19:36:53.668616Z
+    21:37:16.792 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] PARTITION UW_B
+    21:37:28.058 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] RECONNECT UW_B
+    21:37:28.059 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#37 PARTITION UW_B started=2026-10-28T19:37:16.676102Z healed=2026-10-28T19:37:28.058938Z
+    21:37:55.153 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] PARTITION UW_A
+    21:38:16.336 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] RECONNECT UW_A
+    21:38:16.337 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#38 PARTITION UW_A started=2026-10-28T19:37:55.069718Z healed=2026-10-28T19:38:16.337235Z
+    21:38:51.426 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] PARTITION LOAN_A
+    21:39:15.409 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] RECONNECT LOAN_A
+    21:39:15.410 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#39 PARTITION LOAN_A started=2026-10-28T19:38:51.340214Z healed=2026-10-28T19:39:15.409931Z
+    21:39:57.426 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] PAUSE LOAN_A
+    21:41:11.467 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] UNPAUSE LOAN_A
+    21:41:11.468 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#40 PAUSE_RESUME LOAN_A started=2026-10-28T19:39:57.412182Z healed=2026-10-28T19:41:11.467501Z
+    21:41:56.562 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] PARTITION UW_A
+    21:42:09.606 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] RECONNECT UW_A
+    21:42:09.608 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#41 PARTITION UW_A started=2026-10-28T19:41:56.473657Z healed=2026-10-28T19:42:09.606871Z
+    21:43:06.702 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] PARTITION UW_A
+    21:43:36.738 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] RECONNECT UW_A
+    21:43:36.739 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#42 PARTITION UW_A started=2026-10-28T19:43:06.613088Z healed=2026-10-28T19:43:36.738331Z
+    21:44:33.895 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 UW_B (4451a42c1af9)
+    21:44:58.910 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:45:00.193 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 44df8abedd0dfacf6773aeca57e6f3ec6c629458b6b3b859011c6de95bac5a08
+    21:45:04.003 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.092932S
+    21:45:04.167 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED UW_B -> generation 4 at http://localhost:63590
+    21:45:04.168 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#43 KILL9 UW_B started=2026-10-28T19:44:33.741253Z healed=2026-10-28T19:45:04.167956Z
+    21:45:32.250 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) LOAN_A (350e594caef1)
+    21:45:32.251 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:45:33.602 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 1553ce640f8b6d04534ae8825d612849def00b968243c92b9a69a18cafe175dc
+    21:45:37.420 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.168731S
+    21:45:37.536 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED LOAN_A -> generation 8 at http://localhost:63591
+    21:45:39.271 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) LOAN_B (58b2b0b0ad0b)
+    21:45:39.272 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:45:40.492 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 5e4c79779191db0e143d8130b632b85bccb233f389e77a372d86ab6bab220432
+    21:45:44.205 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.933106S
+    21:45:44.328 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED LOAN_B -> generation 7 at http://localhost:63586
+    21:45:44.329 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#44 ROLLING_RESTART LOAN_APPLICATION started=2026-10-28T19:45:31.172804Z healed=2026-10-28T19:45:44.328902Z
+    21:46:08.449 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 UW_A (28b7699b3b50)
+    21:46:28.459 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:46:29.686 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 56b31aacec07417fe849d3b51c73ec6af3a4640ffd67bacaa3e1b90da48e6ad5
+    21:46:33.229 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.770594S
+    21:46:33.378 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED UW_A -> generation 4 at http://localhost:63589
+    21:46:33.378 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#45 KILL9 UW_A started=2026-10-28T19:46:08.330173Z healed=2026-10-28T19:46:33.378449Z
+    21:47:20.502 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 LOAN_A (1553ce640f8b)
+    21:47:39.510 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:47:40.786 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: da6ba9d990d2d167646a31bb5b8d0f32333ac6e47700374397abb54e49a9ef07
+    21:47:44.755 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.245745S
+    21:47:44.866 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED LOAN_A -> generation 9 at http://localhost:63591
+    21:47:44.867 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#46 KILL9 LOAN_A started=2026-10-28T19:47:20.380986Z healed=2026-10-28T19:47:44.866826Z
+    21:48:39.258 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) LOAN_A (da6ba9d990d2)
+    21:48:39.262 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:48:40.524 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: e724e64ba5abb25ef2486b976c8606f8b293d8be295d5fb33f74579935b2e575
+    21:48:44.026 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.764239S
+    21:48:44.144 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED LOAN_A -> generation 10 at http://localhost:63591
+    21:48:45.560 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) LOAN_B (5e4c79779191)
+    21:48:45.561 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:48:46.940 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 3a2ea38780dc5efecf517766b78211b7455158952bc4a3cd2e02a2ea3ccd69fd
+    21:48:50.499 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.937898S
+    21:48:50.624 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED LOAN_B -> generation 8 at http://localhost:63586
+    21:48:50.625 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#47 ROLLING_RESTART LOAN_APPLICATION started=2026-10-28T19:48:37.872112Z healed=2026-10-28T19:48:50.624853Z
+    21:49:26.025 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 VERIFY_A (c5cd13c9fc1e)
+    21:49:56.029 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:49:57.647 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: c9a3a02d7c87344d312ebf5173c2e45be07273b318de66d355a380ebcb3aac45
+    21:50:02.393 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT6.364284S
+    21:50:02.611 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED VERIFY_A -> generation 6 at http://localhost:63587
+    21:50:02.612 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#48 KILL9 VERIFY_A started=2026-10-28T19:49:25.632836Z healed=2026-10-28T19:50:02.612037Z
+    21:51:01.279 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) UW_A (56b31aacec07)
+    21:51:01.292 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:51:03.147 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: a9e5f3c6c95898acc33700a7f4ded829459ab65f779ae14b32a637a523c25511
+    21:51:07.573 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT6.281574S
+    21:51:07.738 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED UW_A -> generation 5 at http://localhost:63589
+    21:51:08.804 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) UW_B (44df8abedd0d)
+    21:51:08.804 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:51:10.349 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 8f1bb0f89326162aee5a0a0e0a4bad7ba80505cfe4cc311c72a7406549056ec3
+    21:51:14.360 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.555311S
+    21:51:14.530 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED UW_B -> generation 5 at http://localhost:63590
+    21:51:14.531 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#49 ROLLING_RESTART UNDERWRITING started=2026-10-28T19:51:00.617389Z healed=2026-10-28T19:51:14.530439Z
+    21:51:39.565 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] BACKEND_OUTAGE pause valkey
+    21:51:43.569 [chaos-metrics-sampler] WARN io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] valkey-cli [INFO, commandstats] failed: com.github.dockerjava.api.exception.ConflictException: Status 409: {"message":"Container 53419459316f40bae3d95c60a12720937da63e4a8d5c4b035fa4476c80408c6d is paused, unpause the container before exec"}
+
+    21:51:43.572 [chaos-metrics-sampler] WARN io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] valkey-cli [PUBSUB, CHANNELS] failed: com.github.dockerjava.api.exception.ConflictException: Status 409: {"message":"Container 53419459316f40bae3d95c60a12720937da63e4a8d5c4b035fa4476c80408c6d is paused, unpause the container before exec"}
+
+    21:51:58.623 [chaos-metrics-sampler] WARN io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] valkey-cli [INFO, commandstats] failed: com.github.dockerjava.api.exception.ConflictException: Status 409: {"message":"Container 53419459316f40bae3d95c60a12720937da63e4a8d5c4b035fa4476c80408c6d is paused, unpause the container before exec"}
+
+    21:51:58.629 [chaos-metrics-sampler] WARN io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] valkey-cli [PUBSUB, CHANNELS] failed: com.github.dockerjava.api.exception.ConflictException: Status 409: {"message":"Container 53419459316f40bae3d95c60a12720937da63e4a8d5c4b035fa4476c80408c6d is paused, unpause the container before exec"}
+
+    21:52:06.612 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] BACKEND_OUTAGE unpause valkey
+    21:52:06.618 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#50 BACKEND_OUTAGE valkey started=2026-10-28T19:51:39.534081Z healed=2026-10-28T19:52:06.612379Z
+    21:52:44.759 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 UW_B (8f1bb0f89326)
+    21:53:02.767 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:53:05.507 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: b848a93606ef97f9caf1d260510971e9f966d35283684aa7772991e17c0c4b61
+    21:53:10.507 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT7.739272S
+    21:53:10.725 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED UW_B -> generation 6 at http://localhost:63590
+    21:53:10.726 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#51 KILL9 UW_B started=2026-10-28T19:52:44.623461Z healed=2026-10-28T19:53:10.725711Z
+    21:53:38.759 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] BACKEND_OUTAGE pause kafka
+    21:53:50.857 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] BACKEND_OUTAGE unpause kafka
+    21:53:50.858 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#52 BACKEND_OUTAGE kafka started=2026-10-28T19:53:38.731664Z healed=2026-10-28T19:53:50.858401Z
+    21:54:37.122 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 UW_A (a9e5f3c6c958)
+    21:54:52.128 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:54:55.238 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: d3ceffe32fc7cd5274eb263a04ccc1fcd281c02dd155dc98638125ba1a7342c4
+    21:55:01.271 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT9.142195S
+    21:55:01.755 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED UW_A -> generation 6 at http://localhost:63589
+    21:55:01.756 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#53 KILL9 UW_A started=2026-10-28T19:54:36.862381Z healed=2026-10-28T19:55:01.755709Z
+    21:55:50.836 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 UW_B (b848a93606ef)
+    21:56:15.841 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:56:17.083 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 80793677f88ce1cb4acbdec593e0f5d5e22bf24aeed9ba0bb7e6b847a84cbd5d
+    21:56:20.835 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.993591S
+    21:56:20.987 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED UW_B -> generation 7 at http://localhost:63590
+    21:56:20.988 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#54 KILL9 UW_B started=2026-10-28T19:55:50.699630Z healed=2026-10-28T19:56:20.987831Z
+    21:57:08.847 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) UW_A (d3ceffe32fc7)
+    21:57:08.853 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:57:10.078 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 3664ce1bd358ebd367e8a823fd3a1391e3c85b9be79d1ac71a1df06eef6b6dc9
+    21:57:14.282 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.429542S
+    21:57:14.551 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED UW_A -> generation 7 at http://localhost:63589
+    21:57:15.359 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) UW_B (80793677f88c)
+    21:57:15.367 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:57:16.559 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 5a9376f574f0b086cd5ccbaeaa13b1124ab3fa84bc15faa3091f101a909aa88b
+    21:57:21.963 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT6.596264S
+    21:57:22.250 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED UW_B -> generation 8 at http://localhost:63590
+    21:57:22.250 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#55 ROLLING_RESTART UNDERWRITING started=2026-10-28T19:57:07.991325Z healed=2026-10-28T19:57:22.250618Z
+    21:57:52.416 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 VERIFY_A (c9a3a02d7c87)
+    21:58:15.425 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    21:58:16.636 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: b9da43e87ddd28bf94043fe0575f8966e06bcdf2691021f6121f40d34b9a4db0
+    21:58:20.417 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.991971S
+    21:58:20.628 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED VERIFY_A -> generation 7 at http://localhost:63587
+    21:58:20.632 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#56 KILL9 VERIFY_A started=2026-10-28T19:57:52.259016Z healed=2026-10-28T19:58:20.629334Z
+    21:59:06.678 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] PAUSE VERIFY_A
+    22:00:15.711 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] UNPAUSE VERIFY_A
+    22:00:15.715 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#57 PAUSE_RESUME VERIFY_A started=2026-10-28T19:59:06.640559Z healed=2026-10-28T20:00:15.711719Z
+    22:00:41.865 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 VERIFY_B (f1bb5818eb80)
+    22:01:01.871 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    22:01:03.172 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: bbecff85fa895bc47aca385916334fd643389226625b8ed863ceff0c750b261b
+    22:01:07.192 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.320485S
+    22:01:07.394 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED VERIFY_B -> generation 6 at http://localhost:63588
+    22:01:07.394 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#58 KILL9 VERIFY_B started=2026-10-28T20:00:41.720239Z healed=2026-10-28T20:01:07.394310Z
+    22:01:51.525 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 VERIFY_A (b9da43e87ddd)
+    22:02:01.533 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    22:02:02.829 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: afd982efb6a605cc11663cb1ba33a7cd021894ec30dc34af97b4b1c3db24b94d
+    22:02:07.273 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.739533S
+    22:02:07.661 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED VERIFY_A -> generation 8 at http://localhost:63587
+    22:02:07.661 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#59 KILL9 VERIFY_A started=2026-10-28T20:01:51.398035Z healed=2026-10-28T20:02:07.661250Z
+    22:02:30.012 [chaos-periodic-checker] WARN io.b2mash.maestro.integration.e2e.chaos.PeriodicChecker -- [chaos] PERIODIC calm-window [I2] stuck WAITING_TIMER with no PENDING timer in verification_gateway -> [verification-chaos-11501689961368764082-1307-appraisal, verification-chaos-11501689961368764082-1307-employment]
+    22:03:00.171 [chaos-periodic-checker] WARN io.b2mash.maestro.integration.e2e.chaos.PeriodicChecker -- [chaos] PERIODIC calm-window [I2] stuck WAITING_TIMER with no PENDING timer in verification_gateway -> [verification-chaos-11501689961368764082-1307-appraisal, verification-chaos-11501689961368764082-1307-employment]
+    22:03:07.811 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 LOAN_B (3a2ea38780dc)
+    22:03:35.818 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    22:03:37.237 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: ad4c79f0f6eaa01d4df14e82700f617721fc26e0b24d3fa8c61ecefbb1f7691e
+    22:03:41.564 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.746311S
+    22:03:41.705 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED LOAN_B -> generation 9 at http://localhost:63586
+    22:03:41.705 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#60 KILL9 LOAN_B started=2026-10-28T20:03:07.667760Z healed=2026-10-28T20:03:41.705277Z
+    22:04:40.863 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 UW_B (5a9376f574f0)
+    22:04:59.870 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    22:05:01.182 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: b37cf2dd506edee5137e1f7b9b14bc45ac573a750657fc03c80e88db677f9589
+    22:05:05.307 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.43739S
+    22:05:05.508 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED UW_B -> generation 9 at http://localhost:63590
+    22:05:05.509 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#61 KILL9 UW_B started=2026-10-28T20:04:40.705883Z healed=2026-10-28T20:05:05.508986Z
+    22:05:52.632 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) LOAN_A (e724e64ba5ab)
+    22:05:52.633 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    22:05:53.914 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: b1858b533957ca0d283bd716fab68a9ef09ba4c2b3ef3aca4709f1f9d3b6b76b
+    22:05:57.834 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.20113S
+    22:05:57.994 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED LOAN_A -> generation 11 at http://localhost:63591
+    22:05:59.366 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) LOAN_B (ad4c79f0f6ea)
+    22:05:59.367 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    22:06:00.665 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: be3713239704a1063c3c21b29e7540bcd93782681edd01dc1ea3b7417530b3c1
+    22:06:04.503 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.136071S
+    22:06:04.663 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED LOAN_B -> generation 10 at http://localhost:63586
+    22:06:04.664 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#62 ROLLING_RESTART LOAN_APPLICATION started=2026-10-28T20:05:51.510086Z healed=2026-10-28T20:06:04.663672Z
+    22:06:40.762 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] PARTITION UW_B
+    22:07:17.788 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] RECONNECT UW_B
+    22:07:17.789 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#63 PARTITION UW_B started=2026-10-28T20:06:40.667533Z healed=2026-10-28T20:07:17.788603Z
+    22:08:09.945 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 VERIFY_A (afd982efb6a6)
+    22:08:38.949 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    22:08:40.557 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: a1e056b7c447d3eaece2466b50cd1f12a5ca6ac5b71f6bbc9e5453e6b59d9db5
+    22:08:44.928 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.979288S
+    22:08:45.110 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED VERIFY_A -> generation 9 at http://localhost:63587
+    22:08:45.110 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#64 KILL9 VERIFY_A started=2026-10-28T20:08:09.792327Z healed=2026-10-28T20:08:45.110376Z
+    22:09:29.288 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 UW_A (3664ce1bd358)
+    22:09:37.560 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.WorkloadDriver -- [chaos] workload generation window closed: 1482 workflows submitted (chaos)
+    22:09:39.294 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    22:09:40.826 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 1e03dd07e2dc5657e96f272885706e94502dc8fb5cb15bd61bfad14648b8a0b5
+    22:09:44.755 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.460734S
+    22:09:44.930 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED UW_A -> generation 8 at http://localhost:63589
+    22:09:44.931 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#65 KILL9 UW_A started=2026-10-28T20:09:29.115835Z healed=2026-10-28T20:09:44.930856Z
+    22:09:44.931 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] controller done: 65 actions, 5 loan pause-resumes
+    22:09:44.931 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosRun -- [chaos] generation + chaos complete; healing
+    22:09:44.931 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] heal-all begin
+    22:09:44.992 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] heal-all complete: all nodes healthy
+    22:12:14.248 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosRun -- [chaos] drain: waiting up to 240s for all workflows terminal in all services
+    22:12:16.326 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosRun -- [chaos] drain: all workflows terminal in all three services
+    22:12:17.574 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.SideEffectCensus -- [chaos] side-effect census: totalDup=0 explained=0 unexplained=0 missingSagaComp=0
+    [chaos] VERDICT: PASS
+    [chaos] !!! PERIODIC CHECKER WAS BLIND for 1 of 155 cycles (max streak 1) — invariants were unwatched during those windows
+    [chaos] side-effect duplicates: total=0 explained=0 unexplained=0
+    [chaos] FINDING (Ruling 3): redelivered-but-unconsumed signals (consumedTwin=true, Kafka at-least-once redelivery): [loan-chaos-11501689961368764082-381:verification.result x6 consumedTwin=true, loan-chaos-11501689961368764082-382:verification.result x6 consumedTwin=true, loan-chaos-11501689961368764082-490:verification.result x4 consumedTwin=true, loan-chaos-11501689961368764082-505:verification.result x1 consumedTwin=true]
+    22:12:17.577 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosRun -- [chaos] benchmark tail begins: 300s per phase at 6/min
+    22:12:17.577 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.WorkloadDriver -- [chaos] workload generation begins: 6/min for PT5M (tail6, runaway cap 190)
+    22:17:22.139 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.WorkloadDriver -- [chaos] workload generation window closed: 36 workflows submitted (tail6)
+    22:17:23.065 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) LOAN_B (be3713239704)
+    22:17:23.866 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) VERIFY_B (bbecff85fa89)
+    22:17:25.267 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) UW_B (b37cf2dd506e)
+    22:17:25.268 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.WorkloadDriver -- [chaos] workload generation begins: 6/min for PT5M (tail3, runaway cap 190)
+    22:22:27.397 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.WorkloadDriver -- [chaos] workload generation window closed: 31 workflows submitted (tail3)
+    22:22:27.401 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosRun -- [chaos] benchmark tail complete: 36 + 31 workflows
+
+Chaos soak: hours-long multi-instance correctness + Issue 12 curves > cluster stays correct across the full soak window PASSED
+
+Chaos cluster boots and all six nodes are reachable > cluster boot brings up 6 healthy nodes with migrated per-service schemas SKIPPED
+
+Chaos harness: a reconnected node is reachable again > the harness endpoint for a node still works after PARTITION + RECONNECT STANDARD_OUT
+    22:22:29.817 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Creating container for image: alpine/socat:1.7.4.3-r0
+    22:22:29.893 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 is starting: 6f6e361739497e31a4468d2513e3f68810dcec9509c9f8baeda212c89f42a48c
+    22:22:30.140 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 started in PT0.322708S
+    22:22:30.140 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.NodeAmbassador -- [chaos] ambassador up at localhost: verify-b->53276
+    22:22:30.140 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Creating container for image: alpine/socat:1.7.4.3-r0
+    22:22:30.160 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 is starting: 061d2587386a339c34b32e02fa8abaa2f952ca573fa231ab80e934e5c8e32239
+    22:22:30.334 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 started in PT0.19378S
+    22:22:30.337 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PartitionReachabilityIT -- [repro] node up: alias=verify-b ip=10.173.244.3 harness endpoint=localhost:53276 direct(published)=localhost:53278
+    22:22:30.469 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PartitionReachabilityIT -- [repro] PARTITION applied; ip now '<none>'
+    22:22:30.498 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PartitionReachabilityIT -- [repro] RECONNECT applied; ip now '10.173.244.99'; docker still advertises host port 53278
+    22:22:32.501 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PartitionReachabilityIT -- [repro] node's own published port localhost:53278 after RECONNECT: reachable=false
+
+Chaos harness: a reconnected node is reachable again > the harness endpoint for a node still works after PARTITION + RECONNECT PASSED
+
+Chaos harness: a reconnected node is reachable again > the harness endpoint follows a node replaced by a fresh container STANDARD_OUT
+    22:22:33.178 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Creating container for image: alpine/socat:1.7.4.3-r0
+    22:22:33.248 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 is starting: 01a1f78cdd09217d11fcf8b543371782a9dbdcfb63ec60bccd33a9c211e27b2d
+    22:22:33.454 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 started in PT0.275895S
+    22:22:33.454 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.NodeAmbassador -- [chaos] ambassador up at localhost: verify-b->53293
+    22:22:33.454 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Creating container for image: alpine/socat:1.7.4.3-r0
+    22:22:33.479 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 is starting: eaab9d07ba4b57a670be560bfc0d8fcc44ee94ce2c339cff8db501eff6dbedbb
+    22:22:33.785 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 started in PT0.330652S
+    22:22:34.031 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Creating container for image: alpine/socat:1.7.4.3-r0
+    22:22:34.144 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 is starting: 6a108696ce04a3359e32f29a52aabb1b8539da5e5f2b8b4cc6f056ce632c8afa
+    22:22:34.522 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 started in PT0.490543S
+    22:22:34.525 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PartitionReachabilityIT -- [repro] replacement up at ip=10.173.244.3; endpoint unchanged: localhost:53293
+
+Chaos harness: a reconnected node is reachable again > the harness endpoint follows a node replaced by a fresh container PASSED
+
+Chaos harness: a reconnected node is reachable again > a genuinely dead node still fails the probe through the ambassador STANDARD_OUT
+    22:22:35.128 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Creating container for image: alpine/socat:1.7.4.3-r0
+    22:22:35.166 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 is starting: d049e613263bb790ca9028090ac8593ce36a8e2be91e5f6c8fc13b29cf09d9aa
+    22:22:35.350 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 started in PT0.222225S
+    22:22:35.350 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.NodeAmbassador -- [chaos] ambassador up at localhost: verify-b->53308
+    22:22:35.355 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Creating container for image: alpine/socat:1.7.4.3-r0
+    22:22:35.404 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 is starting: 9dfef56d8e293665182407eaaaee9eedd6d4097b5e0009d77ed611d8c743abf0
+    22:22:35.596 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 started in PT0.240502S
+    22:22:35.758 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PartitionReachabilityIT -- [repro] bare TCP connect with the backend dead: accepted=true
+
+Chaos harness: a reconnected node is reachable again > a genuinely dead node still fails the probe through the ambassador PASSED
+
+[Incubating] Problems report is available at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/build/reports/problems/problems-report.html
+
+BUILD SUCCESSFUL in 1h 28m 51s
+48 actionable tasks: 48 executed
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.2.0/userguide/configuration_cache_enabling.html
+# exit=0 finished=2026-10-28T20:22:36Z

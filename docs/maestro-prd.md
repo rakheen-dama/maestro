@@ -137,7 +137,7 @@ This example shows a typical e-commerce order workflow spanning two Maestro-enab
 
 1. Customer places an order via REST API — gets back an order ID immediately.
 2. Order Workflow reserves inventory, requests payment, and waits for payment confirmation.
-3. Payment Gateway Proxy picks up the payment request from Kafka and calls an external payment provider (unreliable, may be down). It retries durably.
+3. Payment Gateway Proxy picks up the payment request from Kafka and calls an external payment provider (unreliable, may be down). It retries under the activity's retry policy; the attempt counter lives in memory (a crash restarts the schedule at attempt 1), and the durable guarantee is that a *completed* attempt is never re-executed.
 4. Once payment is confirmed, the Order Workflow arranges shipment and sends a confirmation notification.
 5. If payment fails permanently, the workflow compensates by releasing the inventory reservation.
 
@@ -224,7 +224,8 @@ public class PaymentProcessingWorkflow {
             maxAttempts = 30,
             initialInterval = "PT5S",
             maxInterval = "PT10M",
-            backoffMultiplier = 2.0
+            backoffMultiplier = 2.0,
+            nonRetryableExceptions = PaymentDeclinedException.class
         ))
     private PaymentProviderActivities provider;
 
@@ -247,17 +248,24 @@ public class PaymentProcessingWorkflow {
 
             return PaymentProcessingResult.success(confirmation.transactionId());
 
-        } catch (PaymentDeclinedException e) {
-            // Permanent failure — card declined, insufficient funds, etc.
-            messaging.publishPaymentResult(
-                request.orderId(),
-                PaymentResult.failed(e.getMessage())
-            );
-            return PaymentProcessingResult.declined(e.getMessage());
+        } catch (ActivityExecutionException e) {
+            // An activity's exception always arrives wrapped; test the cause.
+            if (e.causedBy(PaymentDeclinedException.class)) {
+                // Permanent failure — card declined, insufficient funds, etc.
+                // (listed in nonRetryableExceptions above, so no retries)
+                messaging.publishPaymentResult(
+                    request.orderId(),
+                    PaymentResult.failed(e.getCause().getMessage())
+                );
+                return PaymentProcessingResult.declined(e.getCause().getMessage());
+            }
+            throw e;
         }
     }
 }
 ```
+
+**Stand-down exceptions are not failures — rethrow them.** The `catch` above deliberately names `ActivityExecutionException`, not `Exception`. Two other exceptions can surface from an activity call (or from `sleep()`/`awaitSignal()`): `DuplicateEventException` and `StaleRunException`. Neither is wrapped and neither means the step failed; both mean *another runner owns this workflow* (a peer adopted it while this node lost its instance lock, or with no lock backend), and the engine stands the local run down — writes nothing, compensates nothing. Both are ordinary `MaestroException`s, so a broad `catch (Exception e)` can intercept them. Never catch-and-continue them, and never turn them into a business outcome: a swallowed stand-down lets the next live activity execute a side effect the winner also runs (here, a second charge or a second payment-result publish), and a rethrow-as-business-failure can run compensations that undo work the winner owns. If you must catch broadly, rethrow them first (`catch (DuplicateEventException | StaleRunException s) { throw s; }`). As a backstop the engine remembers that a run is stale, regardless of what the workflow code did, and stands it down at its next stop point — the next live activity, `sleep()` or `awaitSignal()`, or the terminal write (no `COMPLETED`/`FAILED`, no compensation) — with `StaleRunException`, before executing anything.
 
 ### 6.4 Signal Routing
 
@@ -365,7 +373,7 @@ maestro/
 ├── maestro-test                    # In-memory engine, time control, TestWorkflowEnvironment
 ├── maestro-samples/
 │   ├── sample-order-service        # Order fulfilment workflow
-│   └── sample-payment-gateway      # Payment processing with durable retries
+│   └── sample-payment-gateway      # Payment processing with retry policies and a declined-card catch
 └── docs/
 ```
 
@@ -380,14 +388,12 @@ maestro:
 
   store:
     type: postgres
-    table-prefix: maestro_
     schema: maestro
 
   messaging:
     type: kafka
     consumer-group: ${maestro.service-name}
     topics:
-      tasks: maestro.tasks.orders
       signals: maestro.signals.order-service
       admin-events: maestro.admin.events
 

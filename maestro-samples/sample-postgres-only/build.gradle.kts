@@ -11,9 +11,10 @@ dependencies {
     implementation(project(":maestro-lock-postgres"))
     implementation(libs.spring.boot.starter.webmvc)
     runtimeOnly(libs.postgresql)
-    // Spring Boot 4 modular auto-configuration: JDBC (DataSource) and Flyway
-    // (maestro_* schema from maestro-store-postgres) each live in their own
-    // starter and must be declared explicitly.
+    // Spring Boot 4 modular auto-configuration: JDBC (DataSource) lives in its
+    // own starter and must be declared explicitly. Maestro applies its own schema
+    // (maestro_schema_history) via maestro-store-postgres; no Flyway starter needed.
     runtimeOnly(libs.spring.boot.starter.jdbc)
-    runtimeOnly(libs.spring.boot.starter.flyway)
+
+    testImplementation(project(":maestro-test"))
 }

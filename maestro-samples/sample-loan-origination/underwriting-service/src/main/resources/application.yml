@@ -67,7 +67,8 @@ maestro:
       enabled: true
 
   # Sample-level knobs (bound by UnderwritingSampleProperties).
-  # SPEC defaults: 10 minutes per human decision desk; tests override to <=1s.
+  # SPEC defaults: 10 minutes per human decision desk. Read by
+  # ConfiguredUnderwritingPolicyActivities and memoized per run; tests advance the clock.
   sample:
     underwriter-timeout: PT10M
     senior-timeout: PT10M
@@ -84,7 +85,6 @@ maestro:
   messaging:
     type: kafka
     topics:
-      tasks: maestro.tasks.underwriting
       signals: maestro.signals.underwriting
 
   lock:

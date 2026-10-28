@@ -1,12 +1,15 @@
 package io.b2mash.maestro.core.saga;
 
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.context.WorkflowContextInternals;
 import io.b2mash.maestro.core.context.WorkflowMDC;
 import io.b2mash.maestro.core.exception.CompensationException;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
-import io.b2mash.maestro.core.exception.InvalidStateTransitionException;
 import io.b2mash.maestro.core.exception.MaestroControlFlowError;
+import io.b2mash.maestro.core.exception.NodeErrors;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
+import io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException;
+import io.b2mash.maestro.core.exception.StaleRunException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
@@ -20,6 +23,8 @@ import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.core.engine.InstanceStatusWriter;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
+import io.b2mash.maestro.core.engine.ReplayGuard;
+import io.b2mash.maestro.core.engine.SequenceSpace;
 import io.b2mash.maestro.core.engine.UnknownHistoryGuard;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -29,6 +34,7 @@ import tools.jackson.databind.JsonNode;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
@@ -56,7 +62,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * (via {@code workflow.addCompensation(Runnable)}) is <b>not</b> memoized
  * that way, so {@code compensate()} gives every compensation entry — both
  * kinds, in both the sequential and parallel loops — its own reserved
- * sequence block (mirroring the {@code BRANCH_MULTIPLIER} isolation already
+ * sequence block (the same {@link SequenceSpace} partitioning already
  * used for {@code parallel()} branches). Before invoking an entry's action,
  * the block's guard sequence is checked against the store; if an event
  * already exists there, the action is <b>not</b> re-invoked — its outcome
@@ -80,6 +86,15 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class SagaManager {
 
     private static final Logger logger = LoggerFactory.getLogger(SagaManager.class);
+
+    /** Step name of the parallel-compensation fork marker. */
+    private static final String PARALLEL_COMPENSATION = "$maestro:parallel-compensation";
+
+    /**
+     * Names the sequential compensation layout in a drift detail. Never written
+     * as a step name — a sequential compensation records no fork marker.
+     */
+    private static final String SEQUENTIAL_COMPENSATION = "$maestro:sequential-compensation";
 
     private final WorkflowStore store;
     private final @Nullable WorkflowMessaging messaging;
@@ -142,10 +157,25 @@ public final class SagaManager {
      * {@link EventType#COMPENSATION_STEP_FAILED} event, but remaining
      * compensations continue.
      *
+     * <p>Before anything durable changes — before the {@code COMPENSATING}
+     * transition and before {@code COMPENSATION_STARTED} — the per-entry
+     * block arithmetic is pre-checked with {@link SequenceSpace#nextParentSeq}.
+     * If the blocks cannot fit in the 32-bit sequence space (typically a
+     * workflow that already forked twice), compensation cannot be sequenced at
+     * all, and running it anyway would place actions at int-wrapped sequence
+     * numbers. The stack is already drained at that point, so this method logs
+     * the drained entries' step names at {@code ERROR} (the operator's manual
+     * compensation list) before rethrowing; the caller
+     * ({@code WorkflowExecutor.handleWorkflowFailure}) logs at {@code ERROR}
+     * that no compensation ran and still finishes the workflow {@code FAILED}.
+     *
      * @param ctx                   the workflow context
      * @param instance              the workflow instance
      * @param stack                 the compensation stack to unwind
      * @param parallelCompensation  whether to run compensations in parallel
+     * @throws io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException
+     *         if the compensation blocks would overflow the sequence space;
+     *         thrown before any status write, event append or action
      */
     public void compensate(
             WorkflowContext ctx,
@@ -158,6 +188,36 @@ public final class SagaManager {
             return;
         }
 
+        // The anchor is the seq COMPENSATION_STARTED will consume; parallel
+        // compensation forks one seq later.
+        var anchor = ctx.currentSequence() + 1;
+
+        // Anchor replay read (R19), deliberately FIRST — before the pre-check
+        // and before the COMPENSATING transition. A foreign or unknown event
+        // here stands the run down, and a stand-down writes nothing: reading
+        // it after the transition would durably flip a RUNNING instance to
+        // COMPENSATING (a status the machine only leaves for FAILED) before
+        // standing down. The live emit/append below stay where they are.
+        var startedRecorded = isRecordedMarker(ctx, anchor, EventType.COMPENSATION_STARTED);
+
+        // Sequence-space pre-check (C4), deliberately BEFORE the COMPENSATING
+        // transition: if the per-entry block arithmetic cannot fit in the int
+        // sequence space, nothing durable may change — no status write, no
+        // COMPENSATION_STARTED, no action run at a wrapped (negative) sequence.
+        // WorkflowExecutor.handleWorkflowFailure turns the throw into a loud
+        // FAILED with an ERROR log that no compensation ran.
+        try {
+            SequenceSpace.nextParentSeq(ctx.workflowId(), parallelCompensation ? anchor + 1 : anchor, entries.size());
+        } catch (SequenceSpaceExhaustedException noRoom) {
+            // The stack is already drained, so this is the last place that knows
+            // what an operator must now undo by hand.
+            logger.error("Workflow '{}': none of its {} compensation(s) can run (sequence space exhausted) — "
+                            + "compensate manually, in this order: {}",
+                    ctx.workflowId(), entries.size(),
+                    entries.stream().map(CompensationEntry::stepName).toList());
+            throw noRoom;
+        }
+
         logger.info("Running {} compensation(s) for workflow '{}' (parallel={})",
                 entries.size(), ctx.workflowId(), parallelCompensation);
 
@@ -168,11 +228,13 @@ public final class SagaManager {
         // event-emitting path, rather than relying on the store's unique
         // index to silently reject the duplicate on a recovery re-run. The
         // seq this call consumes doubles as the anchor for the sequential
-        // loop's per-entry sequence blocks (see executeSequential).
-        var startedSeq = ctx.nextSequence();
-        if (UnknownHistoryGuard.requireKnown(
-                store.getEventBySequence(ctx.workflowInstanceId(), startedSeq),
-                ctx.workflowId()).isEmpty()) {
+        // loop's per-entry sequence blocks (see executeSequential). Its slot
+        // was already read and guarded above, before anything durable changed.
+        var startedSeq = WorkflowContextInternals.nextSequence(ctx);
+        if (startedRecorded) {
+            logger.debug("Replaying COMPENSATION_STARTED at seq {} for workflow '{}' — already recorded",
+                    startedSeq, ctx.workflowId());
+        } else {
             // Live only — guarded by the COMPENSATION_STARTED replay-skip
             // above, so a recovery re-run does not double-count the phase.
             // Emitted BEFORE the append: unlike the executor's appendEvent,
@@ -187,32 +249,27 @@ public final class SagaManager {
 
             appendEvent(ctx, startedSeq, EventType.COMPENSATION_STARTED, "$maestro:compensation", null);
             publishLifecycleEvent(ctx, "$maestro:compensation", LifecycleEventType.COMPENSATION_STARTED);
-        } else {
-            logger.debug("Replaying COMPENSATION_STARTED at seq {} for workflow '{}' — already recorded",
-                    startedSeq, ctx.workflowId());
         }
 
         // Execute compensations
         List<String> failedCompensations;
         if (parallelCompensation) {
-            failedCompensations = executeParallel(ctx, entries);
+            failedCompensations = executeParallel(ctx, entries, startedSeq);
         } else {
             failedCompensations = executeSequential(ctx, entries, startedSeq);
         }
 
         // Record COMPENSATION_COMPLETED — same replay-skip guard.
-        var completedSeq = ctx.nextSequence();
-        if (UnknownHistoryGuard.requireKnown(
-                store.getEventBySequence(ctx.workflowInstanceId(), completedSeq),
-                ctx.workflowId()).isEmpty()) {
+        var completedSeq = WorkflowContextInternals.nextSequence(ctx);
+        if (isRecordedMarker(ctx, completedSeq, EventType.COMPENSATION_COMPLETED)) {
+            logger.debug("Replaying COMPENSATION_COMPLETED at seq {} for workflow '{}' — already recorded",
+                    completedSeq, ctx.workflowId());
+        } else {
             var completionPayload = failedCompensations.isEmpty()
                     ? null
                     : serializer.serialize(new CompensationSummary(entries.size(), failedCompensations));
             appendEvent(ctx, completedSeq, EventType.COMPENSATION_COMPLETED, "$maestro:compensation", completionPayload);
             publishLifecycleEvent(ctx, "$maestro:compensation", LifecycleEventType.COMPENSATION_COMPLETED);
-        } else {
-            logger.debug("Replaying COMPENSATION_COMPLETED at seq {} for workflow '{}' — already recorded",
-                    completedSeq, ctx.workflowId());
         }
 
         if (failedCompensations.isEmpty()) {
@@ -226,13 +283,52 @@ public final class SagaManager {
         }
     }
 
+    /**
+     * The replay-skip read for a compensation phase marker
+     * ({@code COMPENSATION_STARTED} / {@code COMPENSATION_COMPLETED}).
+     *
+     * <p>Returns {@code true} when the slot already holds <em>this</em> marker
+     * (the phase boundary is durable — replay it) and {@code false} when the
+     * slot is empty (record it live). Any other event there stands the run down
+     * before anything is invoked or appended: an unknown type as
+     * {@code UNKNOWN_EVENT_TYPE}, a known event of another operation as
+     * {@code NONDETERMINISTIC_HISTORY} (R19). The code now reaches compensation
+     * at a different point than the recorded run did, so treating the foreign
+     * event as "already recorded" would run (or finalise) the compensation
+     * phase on another operation's slot.
+     */
+    private boolean isRecordedMarker(WorkflowContext ctx, int seq, EventType marker) {
+        var stored = UnknownHistoryGuard.requireKnown(
+                store.getEventBySequence(ctx.workflowInstanceId(), seq), ctx.workflowId());
+        stored.ifPresent(event -> ReplayGuard.requireMatch(event, ctx.workflowId(),
+                "$maestro:compensation", marker));
+        return stored.isPresent();
+    }
+
     // ── Sequential execution ──────────────────────────────────────────
 
     /**
      * Runs compensations one at a time, in LIFO order.
      *
-     * <p>Each entry gets its own reserved sequence block — {@code anchorSeq *
-     * BRANCH_MULTIPLIER + (i+1) * BRANCH_MULTIPLIER} — the same isolation
+     * <p><b>Per-entry terminate guard (C7).</b> Before each <em>live</em> entry
+     * (after the replay-skip, before the entry's context is created) the
+     * instance row is re-read via {@link #requireNotFinalised}: a
+     * {@code TERMINATED} row throws {@link WorkflowTerminatedException}, any
+     * other terminal row throws {@link StaleRunException}. So a terminate that
+     * lands while entry <i>i</i> runs stops the unwind before entry
+     * <i>i+1</i>; only the entry already executing completes. Cost: exactly one
+     * {@code getInstance} read per live entry (none for replay-skipped
+     * entries). This covers a terminate issued from a <em>non-owning</em> node
+     * and manually registered {@code Runnable}s, neither of which the owning
+     * node's in-memory cancellation flag can reach. Parallel compensation is
+     * deliberately unchanged: its branches all start in the same instant, so
+     * there is no "next entry" to stop, and every {@code @Compensate} entry
+     * already passes through the activity invocation handler, where the local
+     * cancellation flag stops a local terminate; only manually registered
+     * {@code Runnable}s in parallel mode remain uncovered.
+     *
+     * <p>Each entry gets its own reserved sequence block —
+     * {@code SequenceSpace.branchBase(anchorSeq, i)} — the same isolation
      * scheme {@code executeParallel} uses for branches. The block's base
      * (the guard sequence) is checked against the store before the entry's
      * action runs; if an event already exists there, the entry already ran
@@ -243,6 +339,14 @@ public final class SagaManager {
      * {@code @Compensate} activity call nested inside a manually-registered
      * compensation) — the next entry's block base is always deterministic.
      *
+     * <p>The action runs under {@link WorkflowContext#bounded(WorkflowContext, int, int, int)}
+     * — a child context limited to the entry's block and sharing {@code ctx}'s
+     * operations — so an entry may take at most 999 sequence slots; the 1000th
+     * throws {@link io.b2mash.maestro.core.exception.BranchSequenceExhaustedException},
+     * which fails that entry ({@code COMPENSATION_STEP_FAILED}) instead of
+     * spilling into the next entry's guard slot and silently skipping it. The
+     * per-entry outcome events are written through {@code ctx} at the block base.
+     *
      * @param ctx       the workflow context
      * @param entries   the compensation entries, in LIFO execution order
      * @param anchorSeq the {@code COMPENSATION_STARTED} event's own sequence
@@ -252,9 +356,19 @@ public final class SagaManager {
     private List<String> executeSequential(WorkflowContext ctx, List<CompensationEntry> entries, int anchorSeq) {
         var failures = new ArrayList<String>();
 
+        // Mode-flip guard (C10): a sequential compensation never writes
+        // anchorSeq + 1 — its entries live in their blocks — but a parallel one
+        // records its fork marker exactly there. An event at that slot means
+        // @Saga(parallelCompensation) was flipped since the history was written;
+        // without this, entry 0's (empty) block would run an entry the parallel
+        // run may already have reversed.
+        ReplayGuard.requireAbsent(UnknownHistoryGuard.requireKnown(
+                        store.getEventBySequence(ctx.workflowInstanceId(), anchorSeq + 1), ctx.workflowId()),
+                ctx.workflowId(), SEQUENTIAL_COMPENSATION);
+
         for (int i = 0; i < entries.size(); i++) {
             var entry = entries.get(i);
-            var stepBaseSeq = anchorSeq * BRANCH_MULTIPLIER + (i + 1) * BRANCH_MULTIPLIER;
+            var stepBaseSeq = SequenceSpace.branchBase(anchorSeq, i);
 
             // Replay-skip guard: don't re-invoke an action whose outcome is
             // already durable. A manually-registered compensation isn't
@@ -264,6 +378,11 @@ public final class SagaManager {
                     store.getEventBySequence(ctx.workflowInstanceId(), stepBaseSeq),
                     ctx.workflowId());
             if (storedEvent.isPresent()) {
+                // Drift (C10): only THIS entry's outcome means "already done". A
+                // renamed or reordered entry used to be skipped on another
+                // entry's record — and so never compensated at all.
+                ReplayGuard.requireMatch(storedEvent.get(), ctx.workflowId(), entry.stepName(),
+                        EventType.COMPENSATION_STEP_COMPLETED, EventType.COMPENSATION_STEP_FAILED);
                 var eventType = storedEvent.get().eventType();
                 logger.debug("Replaying compensation {} '{}' at seq {} ({}) for workflow '{}' — not re-invoking",
                         i, entry.stepName(), stepBaseSeq, eventType, ctx.workflowId());
@@ -273,12 +392,28 @@ public final class SagaManager {
                 continue;
             }
 
-            // Live path: enter this entry's reserved block so any sequence
-            // numbers the action consumes internally (e.g. a nested
-            // @Compensate activity call) land inside it, not on the next
-            // entry's guard sequence.
-            ctx.setReplaying(false);
-            ctx.setSequence(stepBaseSeq);
+            // C7: re-check the instance before every live entry. A terminate
+            // (from any node) or another runner's finalisation that landed
+            // while the previous entry ran must stop the unwind here, not
+            // after entries i+1..n have run. Replay-skipped entries above run
+            // nothing, so they read nothing.
+            requireNotFinalised(ctx, "compensation entry " + i + " '" + entry.stepName() + "'");
+
+            // Live path: run the action under a context bounded to this
+            // entry's reserved block, so any sequence numbers it consumes
+            // internally (e.g. a nested @Compensate activity call) are
+            // numbered from stepBaseSeq + 1 and can never reach the next
+            // entry's guard sequence: the 1000th throws
+            // BranchSequenceExhaustedException, recorded below as this
+            // entry's COMPENSATION_STEP_FAILED — exactly how executeParallel's
+            // branches behave. Unbounded, a 1000th call landed on entry i+1's
+            // guard slot and entry i+1 was silently skipped as "already done".
+            // The child shares ctx's operations (the action runs on the
+            // workflow thread, so sleep/awaitSignal/parallel stay available);
+            // the outcome events below are still written through ctx.
+            WorkflowContextInternals.setReplaying(ctx, false);
+            var entryCtx = WorkflowContext.bounded(ctx, i, stepBaseSeq,
+                    stepBaseSeq + SequenceSpace.BRANCH_MULTIPLIER);
 
             try {
                 // catch (Exception e) deliberately does not catch the engine's
@@ -292,17 +427,18 @@ public final class SagaManager {
                 // compensations are left for a recovering node, which replays
                 // this one's memoized side effects and continues; for a
                 // terminate they are simply never run, which is terminate's
-                // contract; for a stand-down an upgraded node finishes the job.
+                // contract (a terminate is also caught BETWEEN entries, by
+                // requireNotFinalised above, not only when an action parks); for a stand-down an upgraded node finishes the job.
                 // Any entry already recorded COMPLETED earlier in this same
                 // call (i.e. before the entry that threw) stays durable —
                 // its append already happened, in an earlier loop iteration.
-                entry.action().run();
+                ScopedValue.where(WorkflowContext.scopedValue(), entryCtx).run(entry.action());
                 logger.debug("Compensation {} '{}' completed for workflow '{}'",
                         i, entry.stepName(), ctx.workflowId());
                 appendEvent(ctx, stepBaseSeq, EventType.COMPENSATION_STEP_COMPLETED, entry.stepName(), null);
                 publishLifecycleEvent(ctx, entry.stepName(),
                         LifecycleEventType.COMPENSATION_STEP_COMPLETED);
-            } catch (DuplicateEventException staleRun) {
+            } catch (DuplicateEventException | StaleRunException staleRun) {
                 // Issue 18: an append collision here means a concurrent runner
                 // owns this workflow's compensation progress (the replay-skip
                 // guard above read the store before the winner's event landed).
@@ -312,8 +448,12 @@ public final class SagaManager {
                 // (WorkflowExecutor leaves the instance COMPENSATING and
                 // recoverable; the winner's run finishes the job) — the exact
                 // treatment ExecutorShutdownException gets here, and ahead of
-                // catch (Exception e) because DuplicateEventException is a
-                // MaestroException.
+                // catch (Exception e) because both are MaestroExceptions. The
+                // collision may come from the action itself: since C5 a
+                // compensation activity that loses its append race propagates
+                // the duplicate instead of adopting the winner's result. A
+                // StaleRunException (a status write inside the action finding
+                // the row finalised by another runner) is the same signal.
                 throw staleRun;
             } catch (Exception e) {
                 logger.error("Compensation {} '{}' failed for workflow '{}': {}",
@@ -326,19 +466,12 @@ public final class SagaManager {
         // Advance past every entry's reserved block so COMPENSATION_COMPLETED
         // gets a deterministic sequence, independent of how many internal
         // sequence numbers each entry's action actually consumed.
-        ctx.setSequence(anchorSeq * BRANCH_MULTIPLIER + (entries.size() + 1) * BRANCH_MULTIPLIER);
+        WorkflowContextInternals.setSequence(ctx, SequenceSpace.nextParentSeq(ctx.workflowId(), anchorSeq, entries.size()));
 
         return failures;
     }
 
     // ── Parallel execution ────────────────────────────────────────────
-
-    /**
-     * Branch multiplier for parallel compensation sequence isolation.
-     * Matches {@code DefaultWorkflowOperations.BRANCH_MULTIPLIER}.
-     * Each branch gets up to {@code BRANCH_MULTIPLIER - 1} sequence slots.
-     */
-    private static final int BRANCH_MULTIPLIER = 1000;
 
     /**
      * Runs all compensations concurrently, one virtual thread per branch.
@@ -350,11 +483,22 @@ public final class SagaManager {
      * not re-invoked; its recorded outcome is reused instead. This mirrors
      * {@code executeSequential}'s per-entry guard, applied per-branch.
      *
-     * @param ctx     the workflow context
-     * @param entries the compensation entries, one per branch
+     * <p>The fork point itself is replay-guarded like {@code COMPENSATION_STARTED},
+     * because {@code appendEvent} rethrows {@code DuplicateEventException} and an
+     * unguarded re-append on recovery stood the run down forever (C2).
+     *
+     * <p>Every replay read — the fork marker, the sequential layout's entry-0
+     * slot, and every branch's guard slot — is drift-checked (C10) <em>before</em>
+     * the marker is appended or any branch is spawned, so a stand-down leaves
+     * nothing behind and nothing run.
+     *
+     * @param ctx       the workflow context
+     * @param entries   the compensation entries, one per branch
+     * @param anchorSeq the {@code COMPENSATION_STARTED} event's sequence number,
+     *                  used only to locate the sequential layout's entry-0 slot
      * @return the step names of entries whose action failed (live or replayed)
      */
-    private List<String> executeParallel(WorkflowContext ctx, List<CompensationEntry> entries) {
+    private List<String> executeParallel(WorkflowContext ctx, List<CompensationEntry> entries, int anchorSeq) {
         var failures = new ArrayList<String>();
         var errors = new ArrayList<AtomicReference<Throwable>>(entries.size());
         // Replay-skip guard state, indexed like entries/errors: true for a
@@ -368,26 +512,63 @@ public final class SagaManager {
             errors.add(new AtomicReference<>());
         }
 
-        // Record the fork point so each branch gets a deterministic sequence space
-        var parentSeq = ctx.nextSequence();
-        appendEvent(ctx, parentSeq, EventType.SIDE_EFFECT, "$maestro:parallel-compensation",
-                serializer.serialize(new ParallelCompensationDetail(entries.size())));
+        // The fork point gives each branch a deterministic sequence space
+        var parentSeq = WorkflowContextInternals.nextSequence(ctx);
+        var marker = UnknownHistoryGuard.requireKnown(
+                store.getEventBySequence(ctx.workflowInstanceId(), parentSeq), ctx.workflowId());
+        if (marker.isPresent()) {
+            // Drift (C10): the marker must be this fork's, over the same number
+            // of entries. ParallelCompensationDetail's field is named
+            // branchCount, so the parallel() arity check applies unchanged.
+            ReplayGuard.requireMatch(marker.get(), ctx.workflowId(), PARALLEL_COMPENSATION,
+                    EventType.SIDE_EFFECT);
+            ReplayGuard.requireBranchCount(marker.get(), ctx.workflowId(), entries.size());
+        }
+        // Mode-flip guard (C10): a parallel compensation never writes the
+        // sequential layout's entry-0 slot (its branch blocks start one block
+        // later), so an event there means @Saga(parallelCompensation) was
+        // flipped since a sequential run reversed that entry.
+        ReplayGuard.requireAbsent(UnknownHistoryGuard.requireKnown(
+                        store.getEventBySequence(ctx.workflowInstanceId(), SequenceSpace.branchBase(anchorSeq, 0)),
+                        ctx.workflowId()),
+                ctx.workflowId(), PARALLEL_COMPENSATION);
+
+        // Replay-skip guard reads for EVERY branch, before the marker append and
+        // before any branch thread is spawned: a manually-registered
+        // compensation isn't memoized the way an activity call is, so without
+        // this check a branch that already completed (or failed) durably
+        // before some OTHER branch was interrupted by shutdown would be
+        // re-invoked on recovery. Reading all of them first means a drifted
+        // slot at branch i stands the run down before branch 0 has run.
+        var recorded = new ArrayList<Optional<WorkflowEvent>>(entries.size());
+        for (int i = 0; i < entries.size(); i++) {
+            var storedEvent = UnknownHistoryGuard.requireKnown(
+                    store.getEventBySequence(ctx.workflowInstanceId(), SequenceSpace.branchBase(parentSeq, i)),
+                    ctx.workflowId());
+            if (storedEvent.isPresent()) {
+                // Only THIS entry's outcome means "already done" (C10).
+                ReplayGuard.requireMatch(storedEvent.get(), ctx.workflowId(), entries.get(i).stepName(),
+                        EventType.COMPENSATION_STEP_COMPLETED, EventType.COMPENSATION_STEP_FAILED);
+            }
+            recorded.add(storedEvent);
+        }
+
+        if (marker.isEmpty()) {
+            appendEvent(ctx, parentSeq, EventType.SIDE_EFFECT, PARALLEL_COMPENSATION,
+                    serializer.serialize(new ParallelCompensationDetail(entries.size())));
+        } else {
+            logger.debug("Replaying parallel-compensation fork at seq {} for workflow '{}' — already recorded",
+                    parentSeq, ctx.workflowId());
+        }
 
         for (int i = 0; i < entries.size(); i++) {
             var index = i;
             var entry = entries.get(i);
 
             // Each branch gets its own isolated sequence space
-            var branchBaseSeq = parentSeq * BRANCH_MULTIPLIER + (index + 1) * BRANCH_MULTIPLIER;
+            var branchBaseSeq = SequenceSpace.branchBase(parentSeq, index);
 
-            // Replay-skip guard: a manually-registered compensation isn't
-            // memoized the way an activity call is, so without this check a
-            // branch that already completed (or failed) durably before some
-            // OTHER branch was interrupted by shutdown would be re-invoked
-            // on recovery — never spawn its thread at all.
-            var storedEvent = UnknownHistoryGuard.requireKnown(
-                    store.getEventBySequence(ctx.workflowInstanceId(), branchBaseSeq),
-                    ctx.workflowId());
+            var storedEvent = recorded.get(index);
             if (storedEvent.isPresent()) {
                 var eventType = storedEvent.get().eventType();
                 logger.debug("Replaying compensation branch {} '{}' at seq {} ({}) for workflow '{}' "
@@ -407,17 +588,9 @@ public final class SagaManager {
                     .start(() -> {
                         // Create a branch context with its own sequence counter
                         // for deterministic replay
-                        var branchCtx = new WorkflowContext(
-                                ctx.workflowInstanceId(),
-                                ctx.workflowId(),
-                                ctx.runId(),
-                                ctx.workflowType(),
-                                ctx.taskQueue(),
-                                ctx.serviceName(),
-                                branchBaseSeq,
-                                ctx.isReplaying(),
-                                null // no operations needed — compensations call through proxy directly
-                        );
+                        var branchCtx = WorkflowContext.bounded(ctx, index, branchBaseSeq,
+                                branchBaseSeq + SequenceSpace.BRANCH_MULTIPLIER,
+                                null); // no operations needed — compensations call through proxy directly
                         WorkflowMDC.populate(branchCtx);
                         try {
                             ScopedValue.where(WorkflowContext.scopedValue(), branchCtx)
@@ -461,8 +634,8 @@ public final class SagaManager {
         }
 
         // Advance parent sequence past all branch spaces
-        var nextParentSeq = parentSeq * BRANCH_MULTIPLIER + (entries.size() + 1) * BRANCH_MULTIPLIER;
-        ctx.setSequence(nextParentSeq);
+        var nextParentSeq = SequenceSpace.nextParentSeq(ctx.workflowId(), parentSeq, entries.size());
+        WorkflowContextInternals.setSequence(ctx, nextParentSeq);
 
         // A shutdown in any branch takes priority over recording outcomes: the
         // whole compensation attempt is being abandoned for a later node to
@@ -472,6 +645,14 @@ public final class SagaManager {
         // which leaves the instance COMPENSATING and recoverable. (Branches
         // this call replay-skipped never ran, so they cannot be the source
         // of a shutdown here.)
+        //
+        // Three full passes, ranked like parallel()'s pre-scan (R27, R33): a
+        // control-flow signal in ANY branch first, then a node-level error
+        // (rethrown raw, so the executor abandons the run as NODE_ERROR and no
+        // COMPENSATION_STEP_FAILED is recorded for a reversal that never
+        // failed), then a stale-run signal — so a shutdown is not reported as a
+        // stand-down because branch 0 happened to collide first (M2) — and all
+        // of them outrank a plain failure.
         for (var errorRef : errors) {
             // One check covers all three engine control-flow signals — a
             // shutdown, an operator terminate, or a stand-down because a branch
@@ -484,14 +665,27 @@ public final class SagaManager {
             if (errorRef.get() instanceof MaestroControlFlowError controlFlow) {
                 throw controlFlow;
             }
+        }
+        for (var errorRef : errors) {
+            // R33: this node is broken (bad deploy, resource exhaustion) — not
+            // a failed reversal. Recording it would durably claim the step was
+            // attempted and failed; a healthy node finishes the unwind.
+            if (errorRef.get() instanceof Error nodeError && NodeErrors.isNodeError(nodeError)) {
+                throw nodeError;
+            }
+        }
+        for (var errorRef : errors) {
             // Issue 18: a branch whose append collided with a concurrent
             // runner's event means the whole attempt is stale — a peer owns
             // this workflow's compensation progress. Not a step failure;
             // recording it would contradict the winner's durable entry.
             // Rethrow so WorkflowExecutor stands the run down (instance stays
-            // COMPENSATING, recoverable; the winner finishes the job).
-            if (errorRef.get() instanceof DuplicateEventException staleRun) {
-                throw staleRun;
+            // COMPENSATING, recoverable; the winner finishes the job). A
+            // StaleRunException — a branch's status write finding the row
+            // finalised by another runner — is the same signal.
+            var error = errorRef.get();
+            if (error instanceof DuplicateEventException || error instanceof StaleRunException) {
+                throw (RuntimeException) error;
             }
         }
 
@@ -506,7 +700,7 @@ public final class SagaManager {
             var error = errors.get(i).get();
             if (error != null) {
                 var entry = entries.get(i);
-                var branchBaseSeq = parentSeq * BRANCH_MULTIPLIER + (i + 1) * BRANCH_MULTIPLIER;
+                var branchBaseSeq = SequenceSpace.branchBase(parentSeq, i);
                 logger.error("Compensation {} '{}' failed for workflow '{}': {}",
                         i, entry.stepName(), ctx.workflowId(), error.getMessage(), error);
                 recordStepFailure(ctx, branchBaseSeq, entry.stepName(),
@@ -552,10 +746,16 @@ public final class SagaManager {
      *       recording a failure.</li>
      *   <li>A freshly-read {@code COMPLETED}/{@code FAILED} means another
      *       runner already finalised the instance; this run has nothing to add
-     *       and throws {@link InvalidStateTransitionException} rather than
-     *       returning normally — a stale run must never proceed to compensate
-     *       a workflow a peer already finished (that peer's own failure path
-     *       ran, or skipped, compensations per its own outcome).</li>
+     *       and throws {@link StaleRunException} rather than returning
+     *       normally — a stale run must never proceed to compensate a workflow
+     *       a peer already finished (that peer's own failure path ran, or
+     *       skipped, compensations per its own outcome). It propagates out of
+     *       {@link #compensate} to {@code WorkflowExecutor}'s stale-run
+     *       stand-down ({@code STALE_RUN}), which writes nothing. (It used to
+     *       be an {@code InvalidStateTransitionException}, which no executor
+     *       arm caught: thrown from the failure path, it escaped
+     *       {@code executeWorkflow} and killed the workflow thread uncaught —
+     *       C5.)</li>
      *   <li>A lost compare-and-set ({@link OptimisticLockException}) is
      *       retried against a fresh read, up to the shared budget.</li>
      * </ul>
@@ -593,19 +793,7 @@ public final class SagaManager {
      */
     private void transitionToCompensating(WorkflowContext ctx, WorkflowInstance instance) {
         for (var attempt = 1; attempt <= InstanceStatusWriter.STATUS_WRITE_ATTEMPTS; attempt++) {
-            var latest = store.getInstance(ctx.workflowId()).orElse(instance);
-            if (latest.status() == WorkflowStatus.TERMINATED) {
-                logger.info("Workflow '{}' is TERMINATED — not starting compensation; abandoning this run",
-                        ctx.workflowId());
-                throw new WorkflowTerminatedException(ctx.workflowId(), null);
-            }
-            if (latest.status().isTerminal()) {
-                logger.warn("Workflow '{}' is already {} — another runner finalised it first; "
-                                + "abandoning this stale run without compensating",
-                        ctx.workflowId(), latest.status());
-                throw new InvalidStateTransitionException(
-                        ctx.workflowId(), latest.status(), WorkflowStatus.COMPENSATING);
-            }
+            var latest = requireNotFinalised(ctx, "COMPENSATING write").orElse(instance);
             try {
                 var compensating = latest.toBuilder()
                         .status(WorkflowStatus.COMPENSATING)
@@ -638,6 +826,50 @@ public final class SagaManager {
                 throw e;
             }
         }
+    }
+
+    /**
+     * The single "is this run still the one that should be acting?" read shared
+     * by the COMPENSATING transition (once per CAS attempt) and the sequential
+     * compensation loop (once before each live entry).
+     *
+     * <p>Performs exactly one {@link WorkflowStore#getInstance} read and then:
+     * <ul>
+     *   <li>{@link WorkflowStatus#TERMINATED} &rarr; throws
+     *       {@link WorkflowTerminatedException} (an operator, possibly on
+     *       another node, asked this workflow to stop);</li>
+     *   <li>any other terminal status &rarr; throws {@link StaleRunException}
+     *       (another runner finalised the workflow; this run is stale);</li>
+     *   <li>no row &rarr; {@link Optional#empty()}; otherwise the fresh row.</li>
+     * </ul>
+     *
+     * @param ctx    the workflow context
+     * @param action what the caller is about to do, for the stale-run detail
+     * @return the freshly read, non-terminal instance, or empty if the row is gone
+     * @throws WorkflowTerminatedException if the instance reads {@code TERMINATED}
+     * @throws StaleRunException           if it reads any other terminal status
+     */
+    private Optional<WorkflowInstance> requireNotFinalised(WorkflowContext ctx, String action) {
+        var latest = store.getInstance(ctx.workflowId());
+        if (latest.isEmpty()) {
+            return latest;
+        }
+        var status = latest.get().status();
+        if (status == WorkflowStatus.TERMINATED) {
+            logger.info("Workflow '{}' is TERMINATED — not running {}; abandoning this run",
+                    ctx.workflowId(), action);
+            throw new WorkflowTerminatedException(ctx.workflowId(), null);
+        }
+        if (status.isTerminal()) {
+            logger.warn("Workflow '{}' is already {} — another runner finalised it first; "
+                            + "abandoning this stale run without running {}",
+                    ctx.workflowId(), status, action);
+            // Sticky (R33): the run stays stale whatever workflow code does
+            // with the exception — its next stop point stands it down too.
+            ctx.cancellation().requestStale(action);
+            throw new StaleRunException(ctx.workflowId(), status, action);
+        }
+        return latest;
     }
 
     /**
@@ -713,7 +945,9 @@ public final class SagaManager {
             // this workflow's compensation progress — swallowing it here (as
             // this method does for other append problems) would let a stale
             // run keep executing compensation ACTIONS the winner also runs.
-            // Propagate so the whole attempt stands down at the executor.
+            // Propagate so the whole attempt stands down at the executor —
+            // sticky (R33), so swallowing it cannot let the run carry on.
+            ctx.cancellation().requestStale("append collision at sequence " + seq);
             throw staleRun;
         } catch (Exception e) {
             logger.warn("Failed to append {} event for workflow '{}'", type, ctx.workflowId(), e);

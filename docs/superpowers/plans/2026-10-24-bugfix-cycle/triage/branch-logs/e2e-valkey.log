@@ -1,0 +1,327 @@
+# pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-samples/sample-loan-origination head=ec9286dbf3e2fe6beab43e79486a150203929d30 started=2026-10-28T18:07:53Z E2E_LOCK_BACKEND=valkey
+# ENV NOTE: host port 5433 occupied by: com.docke 64355 rakheendama  282u  IPv6 0xd8c5cb25d27e9030      0t0  TCP *:5433 (LISTEN)
+# ENV NOTE: docker-compose.override.yml remaps sample postgres to host 5434; POSTGRES_PORT=5434 exported
+20:07:54 [e2e] Loan-origination E2E run 200754 (logs: /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-samples/sample-loan-origination/e2e/logs) - E2E_LOCK_BACKEND=valkey
+20:07:54 [e2e] Building boot jars (gradle bootJar)...
+20:07:55 [e2e] Starting infrastructure (Postgres/Valkey/Kafka) via docker compose...
+ Network maestro-loan-origination_default  Creating
+ Network maestro-loan-origination_default  Created
+ Volume maestro-loan-origination_loan-pgdata  Creating
+ Volume maestro-loan-origination_loan-pgdata  Created
+ Container maestro-loan-origination-kafka-1  Creating
+ Container maestro-loan-origination-valkey-1  Creating
+ Container maestro-loan-origination-postgres-1  Creating
+ Container maestro-loan-origination-postgres-1  Created
+ Container maestro-loan-origination-valkey-1  Created
+ Container maestro-loan-origination-kafka-1  Created
+ Container maestro-loan-origination-kafka-1  Starting
+ Container maestro-loan-origination-valkey-1  Starting
+ Container maestro-loan-origination-postgres-1  Starting
+ Container maestro-loan-origination-valkey-1  Started
+ Container maestro-loan-origination-kafka-1  Started
+ Container maestro-loan-origination-postgres-1  Started
+ Container maestro-loan-origination-postgres-1  Waiting
+ Container maestro-loan-origination-valkey-1  Waiting
+ Container maestro-loan-origination-kafka-1  Waiting
+ Container maestro-loan-origination-valkey-1  Healthy
+ Container maestro-loan-origination-postgres-1  Healthy
+ Container maestro-loan-origination-kafka-1  Healthy
+ Container maestro-loan-origination-kafka-1  Running
+ Container maestro-loan-origination-kafka-init-1  Creating
+ Container maestro-loan-origination-kafka-init-1  Created
+ Container maestro-loan-origination-kafka-1  Waiting
+ Container maestro-loan-origination-kafka-1  Healthy
+ Container maestro-loan-origination-kafka-init-1  Starting
+ Container maestro-loan-origination-kafka-init-1  Started
+20:08:03 [e2e] Waiting for kafka-init to finish creating topics...
+20:08:17 [e2e] kafka-init completed - all topics created.
+20:08:17 [e2e] Starting loan-application-service (service=loan-application-service) on port 8091...
+20:08:20 [e2e] LOCK BACKEND VERIFIED (loan-application-service, E2E_LOCK_BACKEND=valkey): io.b2mash.maestro.lock.valkey.ValkeyDistributedLock
+20:08:20 [e2e] Starting verification-gateway-service (service=verification-gateway-service) on port 8092...
+20:08:23 [e2e] LOCK BACKEND VERIFIED (verification-gateway-service, E2E_LOCK_BACKEND=valkey): io.b2mash.maestro.lock.valkey.ValkeyDistributedLock
+20:08:23 [e2e] Starting underwriting-service (service=underwriting-service) on port 8093...
+20:08:26 [e2e] LOCK BACKEND VERIFIED (underwriting-service, E2E_LOCK_BACKEND=valkey): io.b2mash.maestro.lock.valkey.ValkeyDistributedLock
+20:08:26 [e2e] loan-application-service is up (HTTP 404 from http://localhost:8091/applications/__probe__)
+20:08:26 [e2e] verification-gateway-service is up (HTTP 405 from http://localhost:8092/webhooks/credit/__probe__)
+20:08:28 [e2e] underwriting-service is up (HTTP 200 from http://localhost:8093/underwriting/pending)
+20:08:29 [e2e] Kafka consumer group 'verification-gateway' is stable (1 member(s), needed >=1).
+20:08:33 [e2e] Kafka consumer group 'underwriting' is stable (1 member(s), needed >=1).
+
+=== SCENARIO: 1. Happy path (co-borrower signs first) ===
+20:08:34 [e2e] Created application e2e-200754-s1 (2 borrowers, DTI 4.0 -> human review)
+20:08:45 [e2e] Round 1 queued for human review - underwriter approves
+20:08:46 [e2e]   assert OK: engine status = 'COMPLETED'
+20:08:46 [e2e]   assert OK: loan result = 'FUNDED'
+PASS 1. Happy path (co-borrower signs first) (13s)
+
+=== SCENARIO: 2. Out-of-order doc (orphan adoption) ===
+20:08:46 [e2e] Uploaded document for e2e-200754-s2 BEFORE creating the application
+20:08:46 [e2e] Created application e2e-200754-s2 (auto-approve DTI, pre-delivered doc must be adopted)
+20:09:01 [e2e]   assert OK: engine status = 'COMPLETED'
+20:09:01 [e2e]   assert OK: loan result = 'FUNDED'
+PASS 2. Out-of-order doc (orphan adoption) (15s)
+
+=== SCENARIO: 3. Conditions loop -> round-2 approval ===
+20:09:15 [e2e] Round 1 queued - underwriter returns CONDITIONS (proof-of-insurance)
+20:09:15 [e2e] Round 2 queued (conditions loop worked) - underwriter approves
+20:09:16 [e2e]   assert OK: engine status = 'COMPLETED'
+20:09:16 [e2e]   assert OK: loan result = 'FUNDED'
+PASS 3. Conditions loop -> round-2 approval (15s)
+
+=== SCENARIO: 4. Withdrawal after rate lock (saga) ===
+20:09:31 [e2e] Rate lock reserved - borrower withdraws BEFORE signing
+20:09:31 [e2e]   assert OK: engine status = 'FAILED'
+20:09:31 [e2e]   assert OK: rate-lock compensation logged
+PASS 4. Withdrawal after rate lock (saga) (15s)
+
+=== SCENARIO: 5. Crash recovery (kill -9 + replay) ===
+20:09:45 [e2e] kill -9 loan-application-service (pid 40568) mid-underwriting wait
+./e2e/run-e2e.sh: line 236: 40568 Killed: 9                  SERVER_PORT="$port" env ${extra_env[@]+"${extra_env[@]}"} java -jar "$jar" >> "$LOG_DIR/$iname.log" 2>&1
+20:09:46 [e2e] Restarting loan-application-service...
+20:09:46 [e2e] Starting loan-application-service (service=loan-application-service) on port 8091...
+20:09:49 [e2e] LOCK BACKEND VERIFIED (loan-application-service, E2E_LOCK_BACKEND=valkey): io.b2mash.maestro.lock.valkey.ValkeyDistributedLock
+20:09:50 [e2e] loan-application-service is up (HTTP 404 from http://localhost:8091/applications/__probe__)
+20:09:50 [e2e] Post-restart status of e2e-200754-s5: WAITING_SIGNAL
+20:09:50 [e2e] Delivering the underwriting decision after the restart
+20:10:51 [e2e]   assert OK: engine status = 'COMPLETED'
+20:10:51 [e2e]   assert OK: loan result = 'FUNDED'
+PASS 5. Crash recovery (kill -9 + replay) (80s)
+
+=== SCENARIO: 6. Two-node loan-application (multi-node) ===
+20:10:51 [e2e] Starting loan-application-service-b (service=loan-application-service) on port 8094...
+20:10:54 [e2e] LOCK BACKEND VERIFIED (loan-application-service-b, E2E_LOCK_BACKEND=valkey): io.b2mash.maestro.lock.valkey.ValkeyDistributedLock
+20:10:55 [e2e] loan-application-service-b is up (HTTP 404 from http://localhost:8094/applications/__probe__)
+20:10:55 [e2e] Node A pid=41676, node B pid=42405
+20:10:55 [e2e] Created e2e-200754-s6 on node A; every signal below goes to node B
+20:11:07 [e2e]   assert OK: node A engine status = 'COMPLETED'
+20:11:07 [e2e]   assert OK: node A loan result = 'FUNDED'
+20:11:07 [e2e]   assert OK: node B engine status = 'COMPLETED'
+20:11:07 [e2e]   assert OK: node B loan result = 'FUNDED'
+20:11:07 [e2e] Disbursement side effect observed 1 time(s) across both nodes
+PASS 6. Two-node loan-application (multi-node) (18s)
+
+=== SCENARIO: 7. Owner-kill -> peer adoption (multi-node) ===
+20:11:09 [e2e] Starting loan-application-service-b (service=loan-application-service) on port 8094...
+20:11:12 [e2e] LOCK BACKEND VERIFIED (loan-application-service-b, E2E_LOCK_BACKEND=valkey): io.b2mash.maestro.lock.valkey.ValkeyDistributedLock
+20:11:13 [e2e] loan-application-service-b is up (HTTP 404 from http://localhost:8094/applications/__probe__)
+20:11:13 [e2e] Node A (owner-to-be) pid=41676, node B (peer) pid=42648
+20:11:13 [e2e] Created e2e-200754-s7 on node A (port 8091) - node A is the owner-to-be
+20:11:26 [e2e] OWNERSHIP PROOF (log): only node A's log (/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-samples/sample-loan-origination/e2e/logs/loan-application-service.log) shows 'Requested underwriting round 1 for loan e2e-200754-s7'
+20:11:26 [e2e] OWNERSHIP PROOF (lock, extra credit): maestro:lock:workflow:loan-e2e-200754-s7 = 'b8c539a5:65:1ca45154-5cfb-46be-b596-d9d0ed1abac7' (held pre-kill)
+20:11:26 [e2e] kill -9 loan-application-service (pid 41676, OWNER of loan-e2e-200754-s7) - will NOT be restarted until after assertions pass
+./e2e/run-e2e.sh: line 280: 41676 Killed: 9                  SERVER_PORT="$port" env ${extra_env[@]+"${extra_env[@]}"} java -jar "$jar" >> "$LOG_DIR/$iname.log" 2>&1
+20:11:27 [e2e] Decision + signature delivered with node A dead (signature routed via node B, port 8094)
+20:11:27 [e2e] Waiting for node B to adopt loan-e2e-200754-s7 (bound 150s = lock TTL 30s + recovery poll-interval 60s + slack)...
+20:12:13 [e2e] ADOPTION LATENCY: 47s (kill -> node B's 'Resuming workflow' log line)
+20:12:14 [e2e]   assert OK: engine status (via node B) = 'COMPLETED'
+20:12:14 [e2e]   assert OK: loan result (via node B) = 'FUNDED'
+20:12:14 [e2e] Node A confirmed dead throughout (never restarted before this line)
+20:12:14 [e2e] SIDE-EFFECT COUNT: loan e2e-200754-s7 disbursed A=0 B=1 total=1 (Issue 11: >1 tolerated only if documented duplication - recorded as observed, not asserted away)
+20:12:14 [e2e] SQL: maestro_workflow_instance id=a98683c9-c3d5-4220-a696-1506dbef0acd workflow_id=loan-e2e-200754-s7 status=COMPLETED event_sequence=24
+20:12:14 [e2e] SQL> SELECT COUNT(*), COUNT(DISTINCT sequence_number), MIN(sequence_number), MAX(sequence_number) FROM maestro_workflow_event WHERE workflow_instance_id = 'a98683c9-c3d5-4220-a696-1506dbef0acd';
+20:12:14 [e2e] SQL: result -> total=25 distinct_sequences=25 min_seq=1 max_seq=25
+20:12:15 [e2e]   assert OK: no duplicate (workflow_instance_id, sequence_number) = '25'
+20:12:15 [e2e] SQL> SELECT string_agg(s::text, ',' ORDER BY s) FROM generate_series(1, 25) s WHERE NOT EXISTS (SELECT 1 FROM maestro_workflow_event WHERE workflow_instance_id = 'a98683c9-c3d5-4220-a696-1506dbef0acd' AND sequence_number = s);
+20:12:15 [e2e] SQL: missing sequence numbers in 1..25 -> <none>
+20:12:15 [e2e]   assert OK: missing-sequence set below terminal event (timed-out gate awaits only) = ''
+20:12:15 [e2e]   assert OK: terminal event at max sequence 25 = 'WORKFLOW_COMPLETED'
+20:12:15 [e2e]   assert OK: event log for loan-e2e-200754-s7 is duplicate-free and contiguous below the terminal (25 events, sequence 1..25)
+20:12:15 [e2e] Assertions passed - restarting node A (post-scenario cleanup, not required for the scenario's own claim)
+20:12:15 [e2e] Starting loan-application-service (service=loan-application-service) on port 8091...
+20:12:18 [e2e] LOCK BACKEND VERIFIED (loan-application-service, E2E_LOCK_BACKEND=valkey): io.b2mash.maestro.lock.valkey.ValkeyDistributedLock
+20:12:19 [e2e] loan-application-service is up (HTTP 404 from http://localhost:8091/applications/__probe__)
+PASS 7. Owner-kill -> peer adoption (multi-node) (72s)
+
+=== SCENARIO: 8. Rolling restart (graceful SIGTERM mid-flight) ===
+20:12:21 [e2e] Starting loan-application-service-b (service=loan-application-service) on port 8094...
+20:12:24 [e2e] LOCK BACKEND VERIFIED (loan-application-service-b, E2E_LOCK_BACKEND=valkey): io.b2mash.maestro.lock.valkey.ValkeyDistributedLock
+20:12:25 [e2e] loan-application-service-b is up (HTTP 404 from http://localhost:8094/applications/__probe__)
+20:12:25 [e2e] Node A (to be SIGTERM'd) pid=43131, node B (peer) pid=43161
+20:12:25 [e2e] Created e2e-200754-s8-docs (document withheld - will park awaiting document.uploaded)
+20:12:25 [e2e] Created e2e-200754-s8-decision (doc uploaded - will park awaiting underwriting.decision)
+20:12:25 [e2e] Created e2e-200754-s8-sign (doc uploaded - decision will be approved immediately, then parks awaiting package.signed)
+20:12:36 [e2e] e2e-200754-s8-decision parked awaiting underwriting.decision
+20:12:37 [e2e] e2e-200754-s8-sign parked awaiting package.signed
+20:12:37 [e2e] e2e-200754-s8-docs parked awaiting document.uploaded (verification fan-in confirmed complete: 3/3)
+20:12:37 [e2e]   assert OK: pre-SIGTERM engine status (e2e-200754-s8-docs) = 'WAITING_SIGNAL'
+20:12:37 [e2e]   assert OK: pre-SIGTERM engine status (e2e-200754-s8-decision) = 'WAITING_SIGNAL'
+20:12:38 [e2e]   assert OK: pre-SIGTERM engine status (e2e-200754-s8-sign) = 'WAITING_SIGNAL'
+20:12:38 [e2e] SIGTERM node A (pid 43131) - 3 workflows parked, grace 40s (maestro.shutdown.timeout default 30s + slack)
+20:12:40 [e2e] loan-application-service (pid 43131) exited gracefully 2s after SIGTERM (grace budget 40s) - no KILL fallback used
+20:12:40 [e2e] GRACEFUL-SHUTDOWN EVIDENCE: all 3 parked workflows suspended WAITING_SIGNAL (not FAILED) - node A's log confirms the graceful path, not a kill
+20:12:40 [e2e] NODE-B STATUS READ (node A down): e2e-200754-s8-decision -> WAITING_SIGNAL
+20:12:40 [e2e] NODE-B SIGNAL INGESTED (node A down): document.uploaded for e2e-200754-s8-docs
+20:12:40 [e2e] Node A confirmed dead throughout the downtime window
+20:12:40 [e2e] Restarting node A...
+20:12:40 [e2e] Starting loan-application-service (service=loan-application-service) on port 8091...
+20:12:43 [e2e] LOCK BACKEND VERIFIED (loan-application-service, E2E_LOCK_BACKEND=valkey): io.b2mash.maestro.lock.valkey.ValkeyDistributedLock
+20:12:44 [e2e] loan-application-service is up (HTTP 404 from http://localhost:8091/applications/__probe__)
+20:12:46 [e2e]   assert OK: engine status (e2e-200754-s8-docs) = 'COMPLETED'
+20:12:46 [e2e]   assert OK: loan result (e2e-200754-s8-docs) = 'FUNDED'
+20:12:46 [e2e]   assert OK: engine status (e2e-200754-s8-decision) = 'COMPLETED'
+20:12:46 [e2e]   assert OK: loan result (e2e-200754-s8-decision) = 'FUNDED'
+20:12:46 [e2e]   assert OK: engine status (e2e-200754-s8-sign) = 'COMPLETED'
+20:12:46 [e2e]   assert OK: loan result (e2e-200754-s8-sign) = 'FUNDED'
+20:12:46 [e2e] All 3 deploy-window workflows reached COMPLETED/FUNDED after node A's restart
+20:12:46 [e2e] SQL: FAILED count among deploy-window workflows (loan-e2e-200754-s8-docs, loan-e2e-200754-s8-decision, loan-e2e-200754-s8-sign) = 0
+20:12:46 [e2e]   assert OK: FAILED count among deploy-window workflows = '0'
+20:12:46 [e2e]   assert OK: compensation log lines attributable to the deploy-window workflows = '0'
+20:12:47 [e2e] SQL: loan-e2e-200754-s8-docs -> status=COMPLETED version=18
+20:12:47 [e2e]   assert OK: SQL status (loan-e2e-200754-s8-docs) = 'COMPLETED'
+20:12:47 [e2e] SQL: loan-e2e-200754-s8-decision -> status=COMPLETED version=14
+20:12:47 [e2e]   assert OK: SQL status (loan-e2e-200754-s8-decision) = 'COMPLETED'
+20:12:47 [e2e] SQL: loan-e2e-200754-s8-sign -> status=COMPLETED version=16
+20:12:47 [e2e]   assert OK: SQL status (loan-e2e-200754-s8-sign) = 'COMPLETED'
+20:12:47 [e2e] SQL: maestro_workflow_instance id=62f8846c-01ca-4dd5-8f3e-fa5b5c30d215 workflow_id=loan-e2e-200754-s8-docs status=COMPLETED event_sequence=26
+20:12:47 [e2e] SQL> SELECT COUNT(*), COUNT(DISTINCT sequence_number), MIN(sequence_number), MAX(sequence_number) FROM maestro_workflow_event WHERE workflow_instance_id = '62f8846c-01ca-4dd5-8f3e-fa5b5c30d215';
+20:12:47 [e2e] SQL: result -> total=27 distinct_sequences=27 min_seq=1 max_seq=27
+20:12:47 [e2e]   assert OK: no duplicate (workflow_instance_id, sequence_number) = '27'
+20:12:47 [e2e] SQL> SELECT string_agg(s::text, ',' ORDER BY s) FROM generate_series(1, 27) s WHERE NOT EXISTS (SELECT 1 FROM maestro_workflow_event WHERE workflow_instance_id = '62f8846c-01ca-4dd5-8f3e-fa5b5c30d215' AND sequence_number = s);
+20:12:48 [e2e] SQL: missing sequence numbers in 1..27 -> <none>
+20:12:48 [e2e]   assert OK: missing-sequence set below terminal event (timed-out gate awaits only) = ''
+20:12:48 [e2e]   assert OK: terminal event at max sequence 27 = 'WORKFLOW_COMPLETED'
+20:12:48 [e2e]   assert OK: event log for loan-e2e-200754-s8-docs is duplicate-free and contiguous below the terminal (27 events, sequence 1..27)
+20:12:48 [e2e] SQL: maestro_workflow_instance id=2ce2db05-aa91-4fa1-af51-adcaf5228643 workflow_id=loan-e2e-200754-s8-decision status=COMPLETED event_sequence=24
+20:12:48 [e2e] SQL> SELECT COUNT(*), COUNT(DISTINCT sequence_number), MIN(sequence_number), MAX(sequence_number) FROM maestro_workflow_event WHERE workflow_instance_id = '2ce2db05-aa91-4fa1-af51-adcaf5228643';
+20:12:48 [e2e] SQL: result -> total=25 distinct_sequences=25 min_seq=1 max_seq=25
+20:12:48 [e2e]   assert OK: no duplicate (workflow_instance_id, sequence_number) = '25'
+20:12:48 [e2e] SQL> SELECT string_agg(s::text, ',' ORDER BY s) FROM generate_series(1, 25) s WHERE NOT EXISTS (SELECT 1 FROM maestro_workflow_event WHERE workflow_instance_id = '2ce2db05-aa91-4fa1-af51-adcaf5228643' AND sequence_number = s);
+20:12:48 [e2e] SQL: missing sequence numbers in 1..25 -> <none>
+20:12:48 [e2e]   assert OK: missing-sequence set below terminal event (timed-out gate awaits only) = ''
+20:12:49 [e2e]   assert OK: terminal event at max sequence 25 = 'WORKFLOW_COMPLETED'
+20:12:49 [e2e]   assert OK: event log for loan-e2e-200754-s8-decision is duplicate-free and contiguous below the terminal (25 events, sequence 1..25)
+20:12:49 [e2e] SQL: maestro_workflow_instance id=740550ab-8b16-46de-91c0-afad8cf9e993 workflow_id=loan-e2e-200754-s8-sign status=COMPLETED event_sequence=25
+20:12:49 [e2e] SQL> SELECT COUNT(*), COUNT(DISTINCT sequence_number), MIN(sequence_number), MAX(sequence_number) FROM maestro_workflow_event WHERE workflow_instance_id = '740550ab-8b16-46de-91c0-afad8cf9e993';
+20:12:49 [e2e] SQL: result -> total=26 distinct_sequences=26 min_seq=1 max_seq=26
+20:12:49 [e2e]   assert OK: no duplicate (workflow_instance_id, sequence_number) = '26'
+20:12:49 [e2e] SQL> SELECT string_agg(s::text, ',' ORDER BY s) FROM generate_series(1, 26) s WHERE NOT EXISTS (SELECT 1 FROM maestro_workflow_event WHERE workflow_instance_id = '740550ab-8b16-46de-91c0-afad8cf9e993' AND sequence_number = s);
+20:12:49 [e2e] SQL: missing sequence numbers in 1..26 -> <none>
+20:12:49 [e2e]   assert OK: missing-sequence set below terminal event (timed-out gate awaits only) = ''
+20:12:49 [e2e]   assert OK: terminal event at max sequence 26 = 'WORKFLOW_COMPLETED'
+20:12:49 [e2e]   assert OK: event log for loan-e2e-200754-s8-sign is duplicate-free and contiguous below the terminal (26 events, sequence 1..26)
+PASS 8. Rolling restart (graceful SIGTERM mid-flight) (30s)
+
+=== SCENARIO: 9. Timer-poller leader failover (verification-gateway) ===
+20:12:51 [e2e] Starting verification-gateway-service-b (service=verification-gateway-service) on port 8095...
+20:12:54 [e2e] LOCK BACKEND VERIFIED (verification-gateway-service-b, E2E_LOCK_BACKEND=valkey): io.b2mash.maestro.lock.valkey.ValkeyDistributedLock
+20:12:55 [e2e] verification-gateway-service-b is up (HTTP 405 from http://localhost:8095/webhooks/credit/__probe__)
+20:12:55 [e2e] Restarting both verification-gateway nodes with DEBUG timer-poller logging (leader-election evidence)...
+20:12:59 [e2e] Starting verification-gateway-service (service=verification-gateway-service) on port 8092, extra env: LOGGING_LEVEL_IO_B2MASH_MAESTRO_CORE_ENGINE=DEBUG...
+20:13:02 [e2e] LOCK BACKEND VERIFIED (verification-gateway-service, E2E_LOCK_BACKEND=valkey): io.b2mash.maestro.lock.valkey.ValkeyDistributedLock
+20:13:02 [e2e] Starting verification-gateway-service-b (service=verification-gateway-service) on port 8095, extra env: LOGGING_LEVEL_IO_B2MASH_MAESTRO_CORE_ENGINE=DEBUG...
+20:13:05 [e2e] LOCK BACKEND VERIFIED (verification-gateway-service-b, E2E_LOCK_BACKEND=valkey): io.b2mash.maestro.lock.valkey.ValkeyDistributedLock
+20:13:05 [e2e] verification-gateway-service is up (HTTP 405 from http://localhost:8092/webhooks/credit/__probe__)
+20:13:05 [e2e] verification-gateway-service-b is up (HTTP 405 from http://localhost:8095/webhooks/credit/__probe__)
+20:13:10 [e2e] Kafka consumer group 'verification-gateway' is stable (2 member(s), needed >=2).
+20:13:10 [e2e] Waiting 17s for the timer-poller election to settle (any stale leader-key entry to expire)...
+20:13:27 [e2e] Observing 12s post-settle (marks: A@line454, B@line422)...
+20:13:39 [e2e] Post-settle follower-line counts: A=3 B=0
+20:13:39 [e2e] LEADER PROOF (log): vg node B shows ZERO 'Another instance holds timer poller leadership' DEBUG lines - it is the elected timer-poller leader for service 'verification-gateway'
+20:13:42 [e2e] LEADER PROOF (lock, extra credit): maestro:leader:timer-poller:verification-gateway stable at 'ef0c0042-94bf-44dc-9598-54f948a57e75' across a 3s window - single consistent leader
+20:13:43 [e2e] WARN Attempt 1: verification-e2e-200754-s9-1-22272-appraisal landed on the LEADER node (B) - abandoning e2e-200754-s9-1-22272 (left running; harmless test debris, never asserted on) and trying a fresh loan id
+20:13:44 [e2e] WARN Attempt 2: verification-e2e-200754-s9-2-2100-appraisal landed on the LEADER node (B) - abandoning e2e-200754-s9-2-2100 (left running; harmless test debris, never asserted on) and trying a fresh loan id
+20:13:45 [e2e] WARN Attempt 3: verification-e2e-200754-s9-3-834-appraisal landed on the LEADER node (B) - abandoning e2e-200754-s9-3-834 (left running; harmless test debris, never asserted on) and trying a fresh loan id
+20:13:46 [e2e] WARN Attempt 4: verification-e2e-200754-s9-4-5406-appraisal landed on the LEADER node (B) - abandoning e2e-200754-s9-4-5406 (left running; harmless test debris, never asserted on) and trying a fresh loan id
+20:13:47 [e2e] OWNERSHIP PROOF (log): verification-e2e-200754-s9-5-11200-appraisal started on node A, the NON-leader node (leader=B) - attempt 5/20
+20:13:47 [e2e] kill -9 vg node B (pid 43832, TIMER-POLLER LEADER) - e2e-200754-s9-5-11200's verification workflows are owned by the surviving node and stay alive throughout
+./e2e/run-e2e.sh: line 1806: 43832 Killed: 9                  SERVER_PORT="$port" env ${extra_env[@]+"${extra_env[@]}"} java -jar "$jar" >> "$LOG_DIR/$iname.log" 2>&1
+20:14:03 [e2e] TIMER FAILOVER LATENCY: 16s (leader kill -> appraisal verification result published by the surviving owner node), bound 60s (TTL 15s + poll 5s + wake-recheck 5s + slack)
+20:14:03 [e2e] SQL: verification-e2e-200754-s9-5-11200-appraisal timer status=FIRED, workflow status=COMPLETED
+20:14:03 [e2e]   assert OK: verification appraisal durable timer status = 'FIRED'
+20:14:03 [e2e]   assert OK: verification appraisal workflow status = 'COMPLETED'
+20:14:05 [e2e]   assert OK: engine status = 'COMPLETED'
+20:14:05 [e2e]   assert OK: loan result = 'FUNDED'
+20:14:05 [e2e] Loan e2e-200754-s9-5-11200 progressed to FUNDED after the timer-poller leader failover
+20:14:06 [e2e] SQL: maestro_workflow_instance id=c1dfdff5-0fbb-4229-be05-f89465f31f3e workflow_id=loan-e2e-200754-s9-5-11200 status=COMPLETED event_sequence=23
+20:14:06 [e2e] SQL> SELECT COUNT(*), COUNT(DISTINCT sequence_number), MIN(sequence_number), MAX(sequence_number) FROM maestro_workflow_event WHERE workflow_instance_id = 'c1dfdff5-0fbb-4229-be05-f89465f31f3e';
+20:14:06 [e2e] SQL: result -> total=24 distinct_sequences=24 min_seq=1 max_seq=24
+20:14:06 [e2e]   assert OK: no duplicate (workflow_instance_id, sequence_number) = '24'
+20:14:06 [e2e] SQL> SELECT string_agg(s::text, ',' ORDER BY s) FROM generate_series(1, 24) s WHERE NOT EXISTS (SELECT 1 FROM maestro_workflow_event WHERE workflow_instance_id = 'c1dfdff5-0fbb-4229-be05-f89465f31f3e' AND sequence_number = s);
+20:14:06 [e2e] SQL: missing sequence numbers in 1..24 -> <none>
+20:14:06 [e2e]   assert OK: missing-sequence set below terminal event (timed-out gate awaits only) = ''
+20:14:06 [e2e]   assert OK: terminal event at max sequence 24 = 'WORKFLOW_COMPLETED'
+20:14:06 [e2e]   assert OK: event log for loan-e2e-200754-s9-5-11200 is duplicate-free and contiguous below the terminal (24 events, sequence 1..24)
+20:14:06 [e2e] Assertions passed - restoring vg node A to default (non-DEBUG) config
+20:14:08 [e2e] Starting verification-gateway-service (service=verification-gateway-service) on port 8092...
+20:14:11 [e2e] LOCK BACKEND VERIFIED (verification-gateway-service, E2E_LOCK_BACKEND=valkey): io.b2mash.maestro.lock.valkey.ValkeyDistributedLock
+20:14:11 [e2e] verification-gateway-service is up (HTTP 405 from http://localhost:8092/webhooks/credit/__probe__)
+20:14:11 [e2e] verification-gateway-service-b was started by this scenario - left stopped.
+20:14:32 [e2e] Kafka consumer group 'verification-gateway' is stable (1 member(s), needed >=1).
+PASS 9. Timer-poller leader failover (verification-gateway) (101s)
+
+=== SCENARIO: 10. Cross-node admin retry/terminate ===
+20:14:32 [e2e] Restarting node A with a short decision-timeout (PT8S) and node B with admin events enabled...
+20:14:34 [e2e] Starting loan-application-service (service=loan-application-service) on port 8091, extra env: MAESTRO_SAMPLE_DECISION_TIMEOUT=PT8S...
+20:14:37 [e2e] LOCK BACKEND VERIFIED (loan-application-service, E2E_LOCK_BACKEND=valkey): io.b2mash.maestro.lock.valkey.ValkeyDistributedLock
+20:14:37 [e2e] Starting loan-application-service-b (service=loan-application-service) on port 8094, extra env: MAESTRO_ADMIN_EVENTS_ENABLED=true...
+20:14:40 [e2e] LOCK BACKEND VERIFIED (loan-application-service-b, E2E_LOCK_BACKEND=valkey): io.b2mash.maestro.lock.valkey.ValkeyDistributedLock
+20:14:41 [e2e] loan-application-service is up (HTTP 404 from http://localhost:8091/applications/__probe__)
+20:14:42 [e2e] loan-application-service-b is up (HTTP 404 from http://localhost:8094/applications/__probe__)
+20:14:46 [e2e] Kafka consumer group 'maestro-loan-application' is stable (6 member(s), needed >=2).
+20:14:46 [e2e] Node A (short decision-timeout, to be killed) pid=44435; node B (admin events, survivor) pid=44455
+20:14:58 [e2e] OWNERSHIP PROOF (log): node A's log shows 'Requested underwriting round 1 for loan e2e-200754-s10-retry' - node A owns loan-e2e-200754-s10-retry
+20:14:58 [e2e] Withholding the underwriting decision for e2e-200754-s10-retry - waiting up to 30s for node A's short decision-timeout to FAIL it
+20:15:06 [e2e]   assert OK: SQL status (loan-e2e-200754-s10-retry) after decision-timeout = 'FAILED'
+20:15:06 [e2e] SQL: loan-e2e-200754-s10-retry COMPENSATION_STARTED count = 0 (must be 0 - Issue 16 precondition for a retryable FAILED)
+20:15:06 [e2e]   assert OK: COMPENSATION_STARTED events for loan-e2e-200754-s10-retry = '0'
+20:15:18 [e2e] OWNERSHIP PROOF (log): node A's log shows 'Requested underwriting round 1 for loan e2e-200754-s10-term' - node A owns loan-e2e-200754-s10-term
+20:15:18 [e2e]   assert OK: pre-kill engine status (e2e-200754-s10-term) = 'WAITING_SIGNAL'
+20:15:19 [e2e] kill -9 loan-application-service (pid 44435, OWNER of loan-e2e-200754-s10-retry and loan-e2e-200754-s10-term) - will NOT be restarted until after assertions pass
+./e2e/run-e2e.sh: line 732: 44435 Killed: 9                  SERVER_PORT="$port" env ${extra_env[@]+"${extra_env[@]}"} java -jar "$jar" >> "$LOG_DIR/$iname.log" 2>&1
+20:16:04 [e2e] Kafka consumer group 'maestro-loan-application' rebalanced: Stable with exactly 3 member(s) - dead node's partitions are reassigned.
+20:16:05 [e2e] Published $maestro:retry for loan-e2e-200754-s10-retry to maestro.signals.loan-application (node A dead, only node B can consume it)
+20:16:05 [e2e] Node B's log confirms it executed the retry for loan-e2e-200754-s10-retry
+20:16:06 [e2e]   assert OK: engine status (via node B, post-retry) = 'COMPLETED'
+20:16:06 [e2e]   assert OK: loan result (via node B, post-retry) = 'FUNDED'
+20:16:06 [e2e] loan-e2e-200754-s10-retry retried by node B alone and completed FUNDED
+20:16:08 [e2e] Published $maestro:terminate for loan-e2e-200754-s10-term to maestro.signals.loan-application (node A dead, only node B can consume it)
+20:16:08 [e2e]   assert OK: engine status (via node B, post-terminate) = 'TERMINATED'
+20:16:08 [e2e] loan-e2e-200754-s10-term terminated by node B alone
+20:16:08 [e2e] Node A confirmed dead throughout (never restarted before this line)
+20:16:27 [e2e] ADMIN-EVENTS PROOF: WORKFLOW_RETRIED for loan-e2e-200754-s10-retry found on maestro.admin.events
+20:16:27 [e2e] ADMIN-EVENTS PROOF: WORKFLOW_TERMINATED for loan-e2e-200754-s10-term found on maestro.admin.events
+20:16:28 [e2e] SQL: maestro_workflow_instance id=72402299-c7af-41be-b05e-cbc3e86034db workflow_id=loan-e2e-200754-s10-retry status=COMPLETED event_sequence=24
+20:16:28 [e2e] SQL> SELECT COUNT(*), COUNT(DISTINCT sequence_number), MIN(sequence_number), MAX(sequence_number) FROM maestro_workflow_event WHERE workflow_instance_id = '72402299-c7af-41be-b05e-cbc3e86034db';
+20:16:28 [e2e] SQL: result -> total=25 distinct_sequences=25 min_seq=1 max_seq=25
+20:16:28 [e2e]   assert OK: no duplicate (workflow_instance_id, sequence_number) = '25'
+20:16:28 [e2e] SQL> SELECT string_agg(s::text, ',' ORDER BY s) FROM generate_series(1, 25) s WHERE NOT EXISTS (SELECT 1 FROM maestro_workflow_event WHERE workflow_instance_id = '72402299-c7af-41be-b05e-cbc3e86034db' AND sequence_number = s);
+20:16:28 [e2e] SQL: missing sequence numbers in 1..25 -> <none>
+20:16:28 [e2e]   assert OK: missing-sequence set below terminal event (timed-out gate awaits only) = ''
+20:16:28 [e2e]   assert OK: terminal event at max sequence 25 = 'WORKFLOW_COMPLETED'
+20:16:28 [e2e]   assert OK: event log for loan-e2e-200754-s10-retry is duplicate-free and contiguous below the terminal (25 events, sequence 1..25)
+20:16:29 [e2e] SQL: maestro_workflow_instance id=2d339e6a-7f76-49e0-b987-eeabeaa2a533 workflow_id=loan-e2e-200754-s10-term status=TERMINATED event_sequence=0
+20:16:29 [e2e] SQL> SELECT COUNT(*), COUNT(DISTINCT sequence_number), MIN(sequence_number), MAX(sequence_number) FROM maestro_workflow_event WHERE workflow_instance_id = '2d339e6a-7f76-49e0-b987-eeabeaa2a533';
+20:16:29 [e2e] SQL: result -> total=15 distinct_sequences=15 min_seq=1 max_seq=15
+20:16:29 [e2e]   assert OK: no duplicate (workflow_instance_id, sequence_number) = '15'
+20:16:29 [e2e] SQL> SELECT string_agg(s::text, ',' ORDER BY s) FROM generate_series(1, 15) s WHERE NOT EXISTS (SELECT 1 FROM maestro_workflow_event WHERE workflow_instance_id = '2d339e6a-7f76-49e0-b987-eeabeaa2a533' AND sequence_number = s);
+20:16:29 [e2e] SQL: missing sequence numbers in 1..15 -> <none>
+20:16:29 [e2e]   assert OK: missing-sequence set below terminal event (timed-out gate awaits only) = ''
+20:16:29 [e2e]   (skipping terminal-event-type check - expected_terminal='' - e.g. a TERMINATED instance appends no event of its own)
+20:16:29 [e2e]   assert OK: event log for loan-e2e-200754-s10-term is duplicate-free and contiguous below the terminal (15 events, sequence 1..15)
+20:16:29 [e2e] Assertions passed - restarting node A (default config) and node B (default config)
+20:16:29 [e2e] Starting loan-application-service (service=loan-application-service) on port 8091...
+20:16:32 [e2e] LOCK BACKEND VERIFIED (loan-application-service, E2E_LOCK_BACKEND=valkey): io.b2mash.maestro.lock.valkey.ValkeyDistributedLock
+20:16:33 [e2e] loan-application-service is up (HTTP 404 from http://localhost:8091/applications/__probe__)
+20:16:35 [e2e] loan-application-service-b was started by this scenario - left stopped.
+PASS 10. Cross-node admin retry/terminate (123s)
+
+=== LOG SWEEP (ERROR / stack traces) ===
+20:16:35 [e2e] loan-application-service log: clean
+20:16:35 [e2e] WARN verification-gateway-service log contains ERROR/stack-trace lines (first 15 shown):
+155:2026-10-28T20:14:11.918+02:00  WARN 44313 --- [sample-verification-gateway-service] [nio-8092-exec-2] [                                                 ] .w.s.m.s.DefaultHandlerExceptionResolver : Resolved [org.springframework.web.HttpRequestMethodNotSupportedException: Request method 'GET' is not supported]
+20:16:35 [e2e] underwriting-service log: clean
+
+=== RESULTS ===
+PASS 1. Happy path (co-borrower signs first)       13s
+PASS 2. Out-of-order doc (orphan adoption)         15s
+PASS 3. Conditions loop -> round-2 approval        15s
+PASS 4. Withdrawal after rate lock (saga)          15s
+PASS 5. Crash recovery (kill -9 + replay)          80s
+PASS 6. Two-node loan-application (multi-node)     18s
+PASS 7. Owner-kill -> peer adoption (multi-node)   72s
+PASS 8. Rolling restart (graceful SIGTERM mid-flight) 30s
+PASS 9. Timer-poller leader failover (verification-gateway) 101s
+PASS 10. Cross-node admin retry/terminate          123s
+20:16:35 [e2e] All scenarios passed.
+20:16:35 [e2e] Tearing down services and infrastructure...
+# exit=0 finished=2026-10-28T18:16:42Z

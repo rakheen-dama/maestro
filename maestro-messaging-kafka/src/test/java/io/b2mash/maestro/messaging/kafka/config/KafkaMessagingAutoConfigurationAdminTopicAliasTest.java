@@ -2,8 +2,11 @@ package io.b2mash.maestro.messaging.kafka.config;
 
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.messaging.kafka.KafkaMessagingConfig;
+import io.b2mash.maestro.spring.config.MaestroAutoConfiguration;
 import io.b2mash.maestro.spring.config.MaestroProperties;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -16,7 +19,10 @@ import org.springframework.context.annotation.Configuration;
 import org.slf4j.event.Level;
 import tools.jackson.databind.ObjectMapper;
 
+import java.time.Duration;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 /**
  * Pins the precedence between {@code maestro.messaging.topics.admin-events}
@@ -115,6 +121,45 @@ class KafkaMessagingAutoConfigurationAdminTopicAliasTest {
                     assertThat(config.adminEventsTopic()).isEqualTo("same.topic");
                 });
         assertThat(warnMessages()).isEmpty();
+    }
+
+    /**
+     * The engine with the Kafka transport — the guard for the removed
+     * {@code maestro.messaging.topics.tasks} lives in
+     * {@code MaestroAutoConfiguration}, so it is not tied to this module's
+     * {@link KafkaMessagingConfig} bean.
+     */
+    private final ApplicationContextRunner engineRunner = new ApplicationContextRunner()
+            .withConfiguration(AutoConfigurations.of(
+                    KafkaMessagingAutoConfiguration.class, MaestroAutoConfiguration.class))
+            .withBean(ObjectMapper.class, ObjectMapper::new)
+            .withBean(WorkflowStore.class, () -> mock(WorkflowStore.class))
+            .withPropertyValues("maestro.service-name=alias-test",
+                    "maestro.messaging.topics.tasks=maestro.tasks.orders");
+
+    @Test
+    @DisplayName("the removed maestro.messaging.topics.tasks property fails startup instead of being silently ignored")
+    void tasksTopicPropertyFailsStartup() {
+        engineRunner.run(context -> assertTasksTopicRejected(context.getStartupFailure()));
+    }
+
+    @Test
+    @DisplayName("…even when the application supplies its own KafkaMessagingConfig")
+    void tasksTopicPropertyFailsStartupWithAUserSuppliedKafkaMessagingConfig() {
+        engineRunner.withBean(KafkaMessagingConfig.class, () -> new KafkaMessagingConfig(
+                        null, "maestro.admin.events", "maestro-alias-test",
+                        3, Duration.ofSeconds(1), 2.0, Duration.ofSeconds(30), ".DLT", true))
+                .run(context -> assertTasksTopicRejected(context.getStartupFailure()));
+    }
+
+    private static void assertTasksTopicRejected(@Nullable Throwable startupFailure) {
+        assertThat(startupFailure)
+                .as("startup must fail")
+                .isNotNull()
+                .rootCause()
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("has been removed")
+                .hasMessageContaining("maestro.messaging.topics.tasks");
     }
 
     // ── Log capture helpers ─────────────────────────────────────────────

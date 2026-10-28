@@ -33,16 +33,21 @@ dependencies {
     // connection-refused from the OTLP exporter) until this was added.
     runtimeOnly(libs.micrometer.tracing.bridge.otel)
     runtimeOnly(libs.opentelemetry.exporter.otlp)
-    // Spring Boot 4 modular auto-configuration: JDBC (DataSource), Flyway
-    // (maestro_* schema from maestro-store-postgres), and Kafka
-    // (@KafkaListener container factory + spring.kafka.* binding) each
-    // live in their own starter and must be declared explicitly.
+    // Spring Boot 4 modular auto-configuration: JDBC (DataSource) and Kafka
+    // (@KafkaListener container factory + spring.kafka.* binding) each live in their own
+    // starter and must be declared explicitly. Maestro applies its own schema
+    // (maestro_schema_history) via maestro-store-postgres; no Flyway starter needed.
     runtimeOnly(libs.spring.boot.starter.jdbc)
-    runtimeOnly(libs.spring.boot.starter.flyway)
     runtimeOnly(libs.spring.boot.starter.kafka)
 
     testImplementation(project(":maestro-test"))
     testImplementation(libs.spring.boot.starter.test)
+    // The *ContextBootTest boots the real application context against a
+    // Testcontainers Postgres, with Postgres messaging and locking standing in
+    // for Kafka/Valkey so no broker or cache is needed: far enough for
+    // WorkflowRegistrar to validate every @DurableWorkflow bean (R55).
+    testImplementation(project(":maestro-messaging-postgres"))
+    testImplementation(libs.testcontainers.postgresql)
 }
 
 // ── The v2 deployment: parallel verification behind workflow.version() ────
@@ -60,7 +65,7 @@ dependencies {
 val v2: SourceSet = sourceSets.create("v2") {
     java.setSrcDirs(listOf("src/v2/java"))
     // main's output first so v2's own source is what compiles; the rest of the
-    // service (LoanTimeouts, activities, domain) resolves from main.
+    // service (LoanTimeoutPolicy, activities, domain) resolves from main.
     compileClasspath += sourceSets["main"].output + configurations["compileClasspath"]
     runtimeClasspath += output + sourceSets["main"].output + configurations["runtimeClasspath"]
 }

@@ -62,7 +62,7 @@ Only active workflows are recoverable.
 | SPI | Job | Implementations |
 |---|---|---|
 | `WorkflowStore` | Durable state — instances, events, signals, timers | Postgres (via `maestro-store-jdbc`) |
-| `WorkflowMessaging` | Task dispatch, signal transport, lifecycle events | Kafka, Postgres |
+| `WorkflowMessaging` | Signal transport, lifecycle events (Kafka only) | Kafka, Postgres |
 | `DistributedLock` | Instance locking, leader election | Valkey, Postgres |
 
 **Locks are an optimisation, not the correctness backstop.** The SPI explicitly
@@ -232,7 +232,7 @@ while auditing the same Kafka path, is **now resolved** too — see its
 section. Three more (25, 26, 27), found by the open-issues cycle's own
 inert-config audit (`tasks/audit-2026-08-05-inert-config.md`), by a deferred
 item from the demo cycle, and by an external review of PR #34 respectively,
-are filed **open** — see their sections.
+are filed **open** — see their sections. Issue 25 (`maestro.worker.*` inert) is **now resolved** — implemented, see its section.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -274,9 +274,15 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [22](#issue-22) | Compensations can run on an operator-terminated workflow | Library defect | Medium | **Resolved** |
 | [23](#issue-23) | Maestro's Kafka beans silently disable `spring.kafka.*`; `@MaestroSignalListener` drops trace context | Library defect | Critical | **Resolved** |
 | [24](#issue-24) | Redelivery is always on and always dead-letters, but nothing documents or creates the `.DLT` topics | Library gap — docs + config | Medium | **Resolved** |
-| [25](#issue-25) | `maestro.worker.*` is documented but wholly unimplemented | Library gap — docs + config | Medium | Open |
-| [26](#issue-26) | Terminal instance write and terminal event append are two non-transactional writes | Library gap — durability contract | Medium | Open |
-| [27](#issue-27) | A redelivery status-write failure can let a disabled-redelivery row be reclaimed and reprocessed | Library gap — durability contract | Medium | Open |
+| [25](#issue-25) | `maestro.worker.*` is documented but wholly unimplemented | Library gap — docs + config | Medium | **Resolved** |
+| [26](#issue-26) | Terminal instance write and terminal event append are two non-transactional writes | Library gap — durability contract | Medium | **Resolved** |
+| [27](#issue-27) | A redelivery status-write failure can let a disabled-redelivery row be reclaimed and reprocessed | Library gap — durability contract | Medium | **Resolved** |
+| [28](#issue-28) | ×1000 sequence partitioning bounds sequential/nested `parallel()` and compensation depth | Structural limitation | Medium | **Open by design** |
+| [29](#issue-29) | Shutdown never interrupts threads blocked waiting for a task-queue slot | Library gap — shutdown latency | Low | Open |
+| [30](#issue-30) | Recovery admission is not gated by task-queue capacity | Library gap — load distribution | Medium | Open |
+| [31](#issue-31) | Services sharing one set of `maestro_*` tables fire each other's timers | Library gap — multi-service wake latency | Low | Open |
+| [32](#issue-32) | A Valkey outage stalls every signal send after the signal is durable, so caller retries persist duplicate signals | Library defect | Medium | **Resolved** |
+| [33](#issue-33) | Admin retry attributes the failure to the highest-sequenced `SIGNAL_TIMEOUT`, which can be a caught gate | Library defect — wrong failure attribution on retry | Medium | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -292,7 +298,8 @@ the reproduction confirmed the reading was right.
 > `DefaultErrorHandler` + `DeadLetterPublishingRecoverer`), Postgres
 > (`DEAD_LETTER` status, `attempts`/`next_attempt_at`/`last_error` columns,
 > `V201` migration, `listDeadLetterSignals`/`listDeadLetterTasks` +
-> `replaySignal`/`replayTask` API), RabbitMQ (`RetryInterceptorBuilder` +
+> `replaySignal`/`replayTask` API — the task half later removed with the whole
+> task channel in commit "refactor(messaging): delete the unused task-dispatch channel and the unread Postgres lifecycle queue (F8, F10)"), RabbitMQ (`RetryInterceptorBuilder` +
 > self-declared `<queue>.dlq` bound to a `maestro.dead-letter` exchange). New
 > `maestro.messaging.redelivery.*` configuration (10 attempts, 1s→30s
 > exponential backoff by default). Both `@Disabled` specs are enabled and
@@ -822,8 +829,9 @@ logs an error and drops the handle, and the workflow keeps running.
 
 **Why it matters.** Two nodes can then execute the same workflow. Duplicate
 *persisted results* are still prevented by the unique event index — the loser's
-writes fail and it adopts the winner's results. Duplicate *side effects* are
-not: both nodes can call a payment API.
+writes fail and it stands down, leaving the winner's results as the record
+(since spec row C5 it no longer adopts the winner's value and carries on).
+Duplicate *side effects* are not prevented: both nodes can call a payment API.
 
 This is currently **accepted by design** (the architecture doc says split-brain
 is tolerated until fencing lands, and activities must be idempotent). Treat it
@@ -863,8 +871,9 @@ containing at least one mandated split-brain window.
 lose fast rather than merely lose eventually:
 
 1. **The unique event index was always the store-correctness backstop** this
-   section describes ("the loser's writes fail and it adopts the winner's
-   results") — that part of the contract was never in doubt.
+   section describes ("the loser's writes fail and it stands down, leaving
+   the winner's results as the record") — that part of the contract was never
+   in doubt.
 2. **Issue 18's fix makes that failure cheap and immediate.** Before Issue 18
    was fixed, the loser's colliding append threw `DuplicateEventException`
    into the generic failure handler, which durably marked the (already-won)
@@ -1511,11 +1520,19 @@ with two engine instances.
 > only an append that escapes to the executor's top level means the whole
 > local run is stale. Commit `0fe8bd7`, reproduced RED-first in `73af765`.
 > Pinned by `WorkflowExecutorDuplicateEventStandDownTest` (three tests: the
-> loser adopts a winner's COMPLETED outcome — no FAILED write, no
+> loser leaves a winner's COMPLETED outcome standing — no FAILED write, no
 > compensation; with no winner the instance stays active and recoverable;
 > a duplicate landing mid-compensation stands the whole attempt down
 > without recording a step failure). The rest of this section is the record
-> of the defect.
+> of the defect. **Superseded in part by spec row C5:** the activity live
+> path no longer adopts the winner's value either — a lost activity append
+> now unwinds to the same `STALE_RUN` stand-down, because the winner is alive
+> and ahead and every later live step of the loser would collide again or
+> repeat a side effect (pinned by
+> `WorkflowExecutorDuplicateEventStandDownTest`'s fourth test and
+> `EnginePostgresDualExecutionIT`) — and the new `StaleRunException` carries
+> the status-write variant of the same signal (a fresh read of `COMPLETED`
+> or `FAILED` that this run did not write) into that one stand-down arm.
 
 **What's wrong.** In the Issue 11 no-fencing window — a node frozen past the
 30s instance-lock TTL (long GC pause, `docker pause`), partitioned, or racing
@@ -1535,8 +1552,9 @@ reversing side effects of work that had **succeeded** on the winner.
 stale run could also march through compensation actions the winner was
 concurrently running.
 
-**Why it matters.** The architecture's documented split-brain contract is
-"the loser's writes fail and it adopts the winner's results" — duplicate
+**Why it matters.** The architecture's documented split-brain contract was
+then "the loser's writes fail and it adopts the winner's results" (since C5:
+"... and it stands down, leaving the winner's results as the record") — duplicate
 *side effects* are the tolerated Issue 11 consequence, store-level
 correctness is not negotiable. This path instead produced a durably wrong
 terminal state (a funded loan recorded `FAILED`) and real compensation-side
@@ -1811,6 +1829,24 @@ that had **enshrined this defect as "an engine-level limitation"**.
 > the guard and the swallow lived **before** the fix and are no longer
 > current — see `SagaManager.transitionToCompensating`'s Javadoc for the
 > present-day mechanism.
+>
+> **Residual closed (this cycle).** The entry gap was closed earlier (above);
+> a second, per-entry gap remained: a terminate landing while sequential
+> compensation entry *i* ran let entries *i+1…n* run on the terminated
+> workflow, while this section said Resolved. `SagaManager.requireNotFinalised`
+> (one `store.getInstance` read) now runs before **each live** sequential
+> entry — `TERMINATED` throws `WorkflowTerminatedException`, any other
+> terminal status throws `StaleRunException` — and `transitionToCompensating`
+> uses the same helper on every CAS attempt. Only the entry already executing
+> can still complete after a terminate. Pinned by
+> `SagaManagerTerminateRaceTest` (`terminateDuringEntryZero_stopsBeforeEntryOne`,
+> the stale-run twin, and the exact-read-count pin) and by
+> `EnginePostgresSagaIT.remoteTerminateDuringFirstCompensation_stopsBeforeTheSecond`
+> (a second harness on the same store terminates from the non-owning node,
+> so the in-memory cancellation flag plays no part). Parallel compensation is
+> unchanged (its branches start together; `@Compensate` entries are stopped
+> locally by the activity path), so a manually registered `Runnable` in
+> parallel mode is the one uncovered case.
 
 **Kind:** Library defect. **Severity:** Medium (narrow window, but the
 outcome contradicted a documented guarantee).
@@ -2154,12 +2190,7 @@ stall.
 
 ### Issue 25 — `maestro.worker.*` is documented but wholly unimplemented {#issue-25}
 
-> **Open.** Found by the open-issues cycle's own inert-config audit
-> (`tasks/audit-2026-08-05-inert-config.md` finding F7). Filed rather than
-> fixed: whether to implement task-queue concurrency or retract the docs is
-> a product decision, not a quick patch — see "How to tackle it." The one
-> part of this that could not wait, and was done in this same cycle, is the
-> interim documentation warning below.
+> **Resolved.** Implemented as per-node `Semaphore`s in `TaskQueueGovernor` (maestro-core), bound from `maestro.worker.task-queues` by `MaestroAutoConfiguration`. Commit `4aaeaa0` ("feat(core): per-task-queue workflow and activity concurrency via TaskQueueGovernor (F8, Issue 25)"), fixed by `1374d88` (activity-slot waiters stand down on shutdown; corrected `parallel()` slot docs) and `85b6cc0` (two `parallel()` branches waking at once no longer wedge their run, R49). Pinned by `TaskQueueGovernorTest`, `WorkflowExecutorConcurrencyTest`, `MaestroAutoConfigurationConfigSeamsTest.workerConcurrencyReachesTheGovernor`, `TaskQueueConcurrencyIT`.
 
 **Kind:** Library gap — an entire documented configuration section binds and
 does nothing. **Severity:** Medium. Nobody loses data, but every operator who
@@ -2224,7 +2255,33 @@ those lands, the section carries the warning added this cycle.
 
 ### Issue 26 — Terminal instance write and terminal event append are two non-transactional writes {#issue-26}
 
-> **Open.** Deferred from the demo-cycle handover
+> **Resolved.** The SPI gained an abstract
+> `boolean WorkflowStore.completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent)`
+> (CAS exactly like `updateInstance`; the terminal event appended in the same
+> transaction; `false` and nothing written on a lost CAS;
+> `DuplicateEventException` and nothing written when the terminal slot is
+> occupied). `AbstractJdbcWorkflowStore` implements it as one JDBC transaction
+> around the existing `UPDATE` and `INSERT`; `InMemoryWorkflowStore` under the
+> instance lock. `WorkflowExecutor.transitionToTerminal` is now the only
+> terminal write path and the two separate terminal `appendEvent` calls are
+> gone. Unlike this issue's original proposal, there is **no** non-atomic
+> default method — a compile error is the honest signal for a third-party
+> store. The "done when" is pinned on real Postgres by `TerminalWriteAtomicityIT`
+> (the event `INSERT` fault-injected inside the transaction: the instance stays
+> non-terminal and recoverable with no terminal event, and recovery then
+> finalises it exactly once), `TerminalEventRaceIT.statusOnlyWait_neverSeesTheGap`
+> (a status poll that sees a terminal status always finds the event) and
+> `PostgresWorkflowStoreTest.CompleteInstanceTests` (including the rollback of
+> the `UPDATE` when the `INSERT` fails). Commit: `b85c1b8` — "fix(store):
+> write terminal status and terminal event in one transaction (Issue 26)";
+> follow-up "fix(engine): a store error on the COMPLETED write abandons the
+> run as TERMINAL_WRITE_FAILED instead of compensating it (plan 04 Task 1
+> review, R31)" routes a store error on the `COMPLETED` write to
+> `runAbandoned(TERMINAL_WRITE_FAILED)` instead of failure handling, so a
+> successful saga is never compensated or recorded `FAILED` on a DB blip.
+> The original report is kept below.
+>
+> **Original status — Open.** Deferred from the demo-cycle handover
 > (`tasks/next-cycle-handover-prompt.md`) rather than a new finding — the gap
 > is already documented as an *observable symptom* in `docs/testing.md:195`
 > and `docs/release-notes.md`'s "Changed — `maestro-test` waits for the
@@ -2340,7 +2397,45 @@ inherit the same proof obligation.
 
 ### Issue 27 — A redelivery status-write failure can let a disabled-redelivery row be reclaimed and reprocessed {#issue-27}
 
-> **Open.** Filed from a PR #34 external review finding (CodeRabbit,
+> **Resolved.** When the status write fails the database is the thing that is
+> down, so nothing can be recorded *at* the failure; the durable marker is
+> written at claim time instead — both claim statements in
+> `PostgresWorkflowMessaging` now set `attempts = attempts + 1`, and
+> `recordFailure`/`recordSingleAttemptFailure` use the claimed count. A new
+> retire sweep (`retireStaleClaims`), run before the claim in the same
+> transaction in both poll loops, moves a stale `PROCESSING` row with no budget
+> left (`attempts >= maxAttempts`, or `attempts >= 1` with redelivery disabled)
+> straight to `DEAD_LETTER` — in both redelivery modes, since an "outcome
+> unknown" row always needs triage (Ruling R36) — with `last_error =
+> "finalisation write lost after attempt <n>; outcome unknown — retired
+> without re-invoking the handler"`. The sweep selects with `FOR UPDATE SKIP
+> LOCKED`, and the claim's stale-reclaim branch requires `attempts <
+> threshold`, so correctness does not depend on the sweep having retired a row
+> first. The guarantee is uniform across all three status-write sites
+> (`COMPLETED`, enabled `PENDING`/`DEAD_LETTER`, disabled `FAILED`): with
+> budget left the stale reclaim re-invokes the handler (the documented,
+> accepted double delivery under a double fault); with none left the handler
+> is never invoked again, so "exactly one attempt" holds when redelivery is
+> disabled. Deliberate behaviour change: a consumer that crashes mid-handler
+> now consumes an attempt (a JVM-crashing poison message dead-letters after
+> `maxAttempts` crashes instead of looping forever). The "done when" is pinned
+> on real Postgres by `PostgresWorkflowMessagingTest.StatusWriteFailureTests`
+> (a `FaultInjectingDataSource` refuses connections exactly on the status
+> write after the handler). Resolved in `b3768fe` ("fix(messaging-postgres):
+> count attempts at claim time; retire stale claims with no budget instead of
+> re-invoking (Issue 27)"), with the DEAD_LETTER-in-both-modes and SKIP LOCKED
+> follow-ups in the plan 04 final fix wave. The original report is kept below.
+>
+> **Follow-up (not yet done) — partial index.** Both the retire sweep and the
+> claim's stale-reclaim branch filter on `status = 'PROCESSING' AND
+> processed_at < now() - interval '5 minutes'` per qualifier. A partial index
+> `(service_name, processed_at) WHERE status = 'PROCESSING'` on
+> `maestro_signal_queue` would serve both without scanning the queue's
+> `PENDING` backlog (`maestro_task_queue` no longer exists — `V202` dropped it
+> in commit "refactor(messaging): delete the unused task-dispatch channel and the unread Postgres lifecycle queue (F8, F10)"). No migration ships with this fix; add one if
+> queue-table size makes the per-poll sweep show up in `pg_stat_statements`.
+>
+> **Original status — Open.** Filed from a PR #34 external review finding (CodeRabbit,
 > deferred rather than fixed in that PR — the fix needs a unified redesign
 > touching three sibling code paths together, not a scoped patch to one of
 > them). Verified against source, not assumed from the review's claim.
@@ -2406,6 +2501,329 @@ identical and acceptable on all three, not just two of them.
 
 ---
 
+### Issue 28 — ×1000 sequence partitioning bounds sequential/nested `parallel()` and compensation depth {#issue-28}
+
+> **Open by design (structural).** Filed by the 2026-10-24 bug-fix cycle
+> while closing C1–C4 (`docs/superpowers/plans/2026-10-24-bugfix-cycle/`).
+> The cycle deliberately chose a loud failure
+> (`SequenceSpaceExhaustedException`, `FAILED`, `ERROR` log) over the
+> previous behaviour of silently wrapping `int` and running compensations at
+> garbage sequence numbers.
+
+**Kind:** Structural limitation — sequence-space design. **Severity:** Medium
+(deterministic and loud, but it makes a whole class of workflow shape
+unusable with sagas).
+
+**What's wrong.** Every fork level multiplies the parent sequence by 1000 and
+the sequence is a 32-bit `int`, so depth compounds. Concrete limits once C1
+lands (the counter now sits *past* the branch space after any `parallel()`):
+one `parallel()` plus compensation fits; **two sequential `parallel()` calls
+at a low parent sequence put the compensation anchor at ≈ 7,004,001** (e.g.
+two plain steps, a 3-branch fork at seq 3 → counter 7000, a 2-branch fork at
+7001 → counter 7,004,000, anchor 7,004,001; with 2-branch forks from seq 1 it
+is 4,004,001) — the anchor × 1000 block arithmetic overflows `int`, so
+**compensation cannot run**: the workflow finishes `FAILED` with an `ERROR`
+log naming the steps that could not run, and the operator compensates by
+hand. A third sequential `parallel()`, or a third level on any one branch's
+path, fails the same way before any sequence is consumed. *Parent-line* levels
+(sequential `parallel()` calls and the compensation phase) compound with each
+other; a nested `parallel()` compounds only within its own branch — it never
+moves the parent counter — so a nested fork plus compensation fits (anchor
+4001), as does a nested fork plus a second sequential fork.
+Enforced by `SequenceSpace.nextParentSeq` (sub-plan 01, Task 3) and pinned by
+`SequenceSpaceExhaustionTest` and
+`EnginePostgresParallelSagaIT.sequenceSpaceExhaustion_isALoudFailureNotAZombie`.
+
+- **A compensation that forks after a forward `parallel()` fails that
+  compensation step, not the pre-check.** The compensation phase is already
+  the second level (anchor 4001, entry block 4,002,000), so the entry's own
+  `parallel()` at 4,002,001 throws `SequenceSpaceExhaustedException`, which is
+  recorded as that entry's `COMPENSATION_STEP_FAILED`; the remaining entries
+  still run and the workflow ends `FAILED`. Pinned by
+  `CompensationWithParallelTest.forkInsideCompensationAfterForwardFork_failsThatStepOnly`
+  and `EnginePostgresParallelSagaIT.forkInsideCompensationAfterForwardFork_failsThatStepOnly`.
+- **Parallel-compensation branches cannot fork at all.** Under
+  `@Saga(parallelCompensation = true)` each branch runs with no workflow
+  operations (by design: no `sleep()`, `awaitSignal()` or `parallel()`), so a
+  compensation that calls `parallel()` fails that step with
+  `IllegalStateException` whatever the depth.
+
+**How to tackle it.** Two candidate redesigns for a future cycle:
+
+(a) **Widen `sequence_number` to `BIGINT`/`long`** across the SPI
+(`WorkflowStore.getEventBySequence`), model (`WorkflowEvent`,
+`WorkflowInstance.eventSequence`), both stores (new Flyway migrations in the
+store band), `maestro-test` fakes and the admin dashboard — mechanical, no
+change to ordering or display, but only raises the ceiling to roughly three
+sequential `parallel()` calls plus compensation; the compounding stays.
+
+(b) **Replace the single integer line with a structured event identity** — a
+path such as `"7.1.3"` (fork seq, branch, step), or a reserved non-colliding
+compensation space (e.g. negative sequence numbers for the compensation
+phase) — which removes compounding entirely, but changes event ordering, the
+unique index, and how the dashboard displays and sorts history; a schema and
+SPI change, not a patch.
+
+Related residual gaps found while closing C1-C4, to fold into whichever
+redesign is chosen:
+
+- Linear `nextSequence()` increments on the parent context are still an
+  unguarded `int` increment, so after a fork that lands near
+  `Integer.MAX_VALUE` (legal per `SequenceSpaceTest`) a few hundred further
+  plain steps wrap silently - the same class of silent wrap C4 removed for
+  block arithmetic.
+- When compensation is skipped because of `SequenceSpaceExhaustedException`,
+  the only record is the `ERROR` logs (`SagaManager` lists the skipped steps'
+  names, the executor says nothing ran): no event or observer callback says
+  compensation was skipped, so an operator looking only at the dashboard
+  cannot tell.
+- A nested fork near the end of a branch's block rebases that branch's
+  counter into space that can collide with a sibling's *nested* blocks: e.g.
+  branch 0 (base 2000) forking 2 ways at slot 2999 puts its inner blocks at
+  3,000,000 and 3,001,000 and rebases branch 0 to 3,002,000 — exactly where
+  sibling branch 1 (base 3000) puts its own nested fork's first block if it
+  forks at 3001. The bound only covers a branch's *direct* steps: post-rebase
+  steps are unbounded, so branch 0's post-join steps would land in branch 1's
+  nested block.
+- ~~Sequential saga compensation entries each get a 1000-slot block on the
+  shared, unbounded parent context, so an entry that consumes 1000 or more
+  internal sequences spills into the next entry's guard slot.~~ **Fixed** by
+  the sub-plan 01 final review (I1): each entry's action now runs under
+  `WorkflowContext.bounded(...)`, so the 1000th slot is recorded as that
+  entry's `COMPENSATION_STEP_FAILED` (`BranchSequenceExhaustedException`)
+  and the next entry still runs.
+
+**Done when.** A workflow with three sequential 3-branch `parallel()` calls
+followed by a failing step compensates fully on real Postgres, and
+`SequenceSpaceExhaustedException` is either unreachable for realistic depth or
+removed.
+
+---
+
+### Issue 29 — Shutdown never interrupts threads blocked waiting for a task-queue slot {#issue-29}
+
+> **Open.** Filed by the 2026-10-24 bug-fix cycle's review of the Issue 25
+> fix (plan 05 Task 5, ruling R47). Recorded, not fixed, in that cycle.
+
+**Kind:** Library gap — shutdown latency. **Severity:** Low (nothing is
+written or lost; a waiting run either stands down once it gets a slot or dies
+with the JVM).
+
+**What's wrong.** `TaskQueueGovernor.acquireWorkflowSlot` and
+`acquireActivitySlot` block on a `Semaphore`, and `WorkflowExecutor.shutdown()`
+wakes parks (`ParkingLot.shutdown`) and retry backoffs (`RunCancellation`) but
+nothing that waits on those semaphores. A run queued behind
+`maestro.worker.task-queues[].concurrency` / `activity-concurrency` therefore
+keeps waiting until a slot frees; it then stands down (the post-acquire
+cancellation checks in `executeWorkflow` and `ActivityInvocationHandler`), but
+if no slot frees within `maestro.shutdown.timeout` the drain simply times out
+around it. The governor's `InterruptedException → ExecutorShutdownException`
+conversion is unreachable in production — nothing interrupts these threads.
+
+**How to tackle it.** Track the threads currently waiting in the governor
+(per queue) and, on shutdown, interrupt only those — never a thread inside
+user activity code. Their wait then ends at once with the existing
+`ExecutorShutdownException`, which the executor already treats as a
+recoverable stand-down.
+
+**Done when.** A run waiting for a workflow or activity slot at shutdown exits
+within the drain even when no slot ever frees, pinned on the in-memory
+executor.
+
+---
+
+### Issue 30 — Recovery admission is not gated by task-queue capacity {#issue-30}
+
+> **Open.** Filed by the 2026-10-24 bug-fix cycle's review of the Issue 25
+> fix (plan 05 Task 5, ruling R47). Recorded, not fixed, in that cycle.
+
+**Kind:** Library gap — multi-node load distribution. **Severity:** Medium
+(no correctness impact, but a backlog can sit on one busy node while others
+idle).
+
+**What's wrong.** `WorkflowExecutor.recoverWorkflows` (and the recovery
+poller) adopts every recoverable instance it can lock, regardless of
+`maestro.worker.task-queues[].concurrency`. Each adopted run takes the
+instance lock immediately and then queues behind the limit in
+`executeWorkflow`, renewing the lock while it waits. So one node can hoard a
+queue's whole recovery backlog — far more runs than it can execute — while
+other nodes, which would find every instance locked, sit idle.
+
+**How to tackle it.** Gate adoption on capacity: skip (leave for another node
+or a later pass) an instance whose task queue has no free workflow slot on
+this node, e.g. via `TaskQueueGovernor.availableWorkflowSlots`, or reserve the
+slot before taking the instance lock.
+
+**Done when.** With two nodes sharing a store and `concurrency: 1`, a
+recovery backlog of N runs is executed by both nodes rather than queued on the
+first one to poll.
+
+
+---
+
+### Issue 31 — Services sharing one set of `maestro_*` tables fire each other's timers {#issue-31}
+
+> **Open.** Filed by the 2026-10-24 bug-fix cycle (plan 06 Task 3, ruling
+> R53) after an intermittent `TracingParallelBranchIT` wedge was traced to it
+> in the test suite (commit `b9f0bc1`). Recorded, not fixed, in that cycle.
+
+**Kind:** Library gap — multi-service wake latency. **Severity:** Low (every
+timer still fires exactly once and every parked workflow still resumes; only
+the wake is late).
+
+**What's wrong.** `WorkflowStore.getDueTimers` is not scoped by service, and
+timer-poller leadership is elected per service
+(`maestro:leader:timer-poller:{service}`). So when two services point
+`maestro.*` at the same database and table set, each service's leader polls
+the other's due timers too. Whichever poller claims a row (`FOR UPDATE SKIP
+LOCKED`) marks it `FIRED` and unparks the waiter in its **own** JVM — a no-op
+when the workflow is parked in the other service. The owner then only sees the
+fire on its durable re-check, so the wake arrives up to one
+`maestro.signal.wake-recheck-interval` (default 30s) late instead of within one
+poll interval. That is the documented cross-node contract working as designed,
+but nothing tells a team that sharing tables across services costs them this
+latency on any timer the wrong service wins.
+
+**How to tackle it.** Either scope `getDueTimers` to the polling service (join
+or denormalise `service_name` onto `maestro_workflow_timer` and filter on it,
+keeping a fallback sweep for orphaned services' rows), or document in
+`docs/operations.md` that each service needs its own schema / table set — the
+model the cross-service design already assumes ("each service owns its
+state").
+
+**Done when.** Either two services sharing one store never fire each other's
+timers (pinned with two executors of different service names over one
+Postgres store), or `docs/operations.md` states the one-schema-per-service
+requirement and the latency cost of breaking it.
+
+---
+
+### Issue 32 — A Valkey outage stalls every signal send after the signal is durable, so caller retries persist duplicate signals {#issue-32}
+
+> **Resolved.** Commit `1da4f1a` ("fix(signals): signal notification is handed off and bounded — a Valkey brownout no longer stalls signal() or persists retry duplicates (Issue 32)"), plan 04 Task 8 (Ruling R56).
+> `SignalManager.deliverSignal` now hands `SignalNotifier.publish` to a virtual
+> thread it never awaits, after the signal row is saved, so the guarantee holds
+> for every notifier; `ValkeySignalNotifier.publish` issues `async().publish`
+> and logs the outcome from the future (one `WARN` per outage, `DEBUG` after,
+> one `INFO` on recovery); `PostgresSignalNotifier.publish` hands its `NOTIFY`
+> to a virtual thread the same way (a pool that cannot lend a connection parks
+> `getConnection()` for its connection timeout). The `SignalNotifier.publish`
+> contract now says it must return promptly and that delivery is best-effort,
+> covered by the wake-recheck (`maestro.signal.wake-recheck-interval`). Pinned by
+> `SignalManagerTest.deliverSignalDoesNotWaitForABlockingNotifier`,
+> `ValkeySignalNotifierTest.BrownoutTests` (paused container),
+> `ValkeySignalNotifierAckTimeoutTest.unansweredPublish_returnsImmediately` /
+> `failedPublish_neverThrows`, `PostgresSignalNotifierTest.publishDoesNotWaitForAConnection`
+> and `ValkeyBrownoutSignalDeliveryIT` (real Valkey paused, real Postgres:
+> `signal()` returns in well under 1 s, one row, and the parked workflow
+> completes from the store re-read while Valkey is still paused). Not changed:
+> the chaos driver's `post()` re-POST and a caller-supplied dedup key on
+> `signal()` (see "Proposed fix" below) — client retries of a signal that did
+> time out for another reason still persist duplicates.
+>
+> Filed from the 2026-10-24 bug-fix cycle's chaos triage (plan 06
+> Task 2): soak run 40674015602 (2026-10-28, `66cdf95`, seed
+> `-6945054112340787534`), workflow `loan-chaos-11501689961368764082-1145`,
+> the only I1 violation of that run. Dump, timeline and classification:
+> `docs/superpowers/plans/2026-10-24-bugfix-cycle/triage/ViolationTriageReport.md`.
+
+**Kind:** Library defect. **Severity:** Medium (no signal is lost, but a 27 s
+Valkey pause turned one borrower's signature into nine identical signal rows,
+and a workflow whose duplicate tolerance was five failed and compensated).
+
+**What's wrong.** `SignalManager.deliverSignal` persists the signal row,
+unparks a local waiter, and then calls `SignalNotifier.publish`
+**synchronously on the caller's thread**. `ValkeySignalNotifier.publish` is
+`publishConnection.sync().publish(...)` on a `RedisClient` built with no
+timeout, so it can wait Lettuce's default 60 s command timeout. The call is
+treated as best-effort (it sits inside a `catch`), but that only covers
+*failure*, not *latency*: while Valkey is unreachable, every
+`WorkflowHandle.signal()` (and every `@MaestroSignalListener` delivery) blocks
+for the whole outage even though its signal is already durable. Any caller with
+a timeout shorter than that sees a failure and retries, and because a signal
+send carries no idempotency key, each retry persists another byte-identical
+row. In the triaged run the chaos driver's 3 s HTTP timeout produced nine
+`package.signed` rows for one signer inside the outage; the loan sample's
+signature loop consumed five of them, hit its `MAX_SIGNATURE_SIGNALS = 5`
+bound and failed with `LoanRejectedException` — while the second borrower's
+signature waited behind the stalled first one. Starts stall the same way (the
+instance lock is taken on Valkey), but their retries are harmless because the
+`workflow_id` unique key rejects them (75 `WorkflowAlreadyExistsException`s
+when Valkey healed). Plan 04 Task 6 (R37) bounded `subscribe` at 5 s for
+exactly this reason; `publish` was left unbounded. Same shape as Issue 3.
+
+**Where.** `maestro-core/src/main/java/io/b2mash/maestro/core/engine/SignalManager.java:322`
+(save) then `:329-337` (synchronous publish);
+`maestro-lock-valkey/src/main/java/io/b2mash/maestro/lock/valkey/ValkeySignalNotifier.java:83-92`
+(`sync().publish`); `maestro-lock-valkey/src/main/java/io/b2mash/maestro/lock/valkey/config/ValkeyLockAutoConfiguration.java:67`
+(`RedisClient.create(RedisURI.create(uri))`, no timeout). Amplifiers, not
+defects in themselves: `maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/WorkloadDriver.java:702-731`
+(`post()` re-POSTs on its 3 s timeout without the store check `signAll`,
+`:479`, applies between its own re-posts) and the sample's bound,
+`LoanApplicationWorkflow.java:49`.
+
+**Proposed fix (sketch, not committed to).** Make the notification genuinely
+fire-and-forget at the engine: `SignalManager` hands `publish` to a virtual
+thread and never awaits it, so the guarantee holds for every `SignalNotifier`;
+and `ValkeySignalNotifier` uses `publishConnection.async().publish(...)`
+(logging a failure from the future) so that thread is not parked either. A lost notification is already covered by the
+wake-recheck store re-read (`maestro.signal.wake-recheck-interval`), so nothing
+new depends on it. Separately, and not as a substitute: the chaos driver's
+`post()` for signal endpoints should re-check the store before re-POSTing
+(workload behaviour, not invariant semantics). A caller-supplied dedup key on
+`signal()` is the general answer to client retries and a larger API decision.
+
+**Done when.** With Valkey unreachable, `WorkflowHandle.signal()` returns
+within a bound far below a typical client timeout and persists exactly one row
+— pinned by a unit test with a blocking `SignalNotifier` fake and an
+`@Tag("integration")` test that pauses a real Valkey container.
+
+---
+
+### Issue 33 — Admin retry attributes the failure to the highest-sequenced `SIGNAL_TIMEOUT`, which can be a caught gate {#issue-33}
+
+> **Open.** Raised by the R61 implementer and sharpened by the R61 reviewer
+> (commit `53ca7e9`, "admin retry after an awaitSignal timeout re-arms a fresh
+> deadline instead of honouring the spent one"); filed under Rulings R62/R63.
+
+**Kind:** Library defect — wrong failure attribution on retry. **Severity:** Medium.
+
+**What's wrong.** Admin retry attributes the failure to the
+**highest-sequenced** `SIGNAL_TIMEOUT` (the Issue 19 heuristic). That is wrong
+when the propagated failure is a `SignalTimeoutException` from a
+**lower-sequenced** await while a **higher-sequenced, caught** gate holds the
+highest `SIGNAL_TIMEOUT`. Two shapes: (1) a main-sequence await after a
+`parallel()` whose branch caught a gate timeout (branch slots are
+`p*1000+...`, so they sort above later main-sequence slots); (2) a
+lower-index branch timing out uncaught while a higher-index branch caught a gate
+timeout (`parallel()` rethrows the branch error as-is). A second trigger:
+`collectSignals`' own `remaining <= 0` throw records no `SIGNAL_TIMEOUT`, so the
+highest one found is a caught gate's.
+
+Since R61, retry deletes the caught gate's outcome, memo and timer row while
+the real failing timeout survives. Consequences: (a) the retry fails again at
+once; (b) the caught gate re-runs live — a fresh full gate timeout, or, if its
+signal arrived meanwhile, it consumes that signal at its memo slot and the
+history after it diverges from the pre-failure history. That is the exact
+divergence Issue 19 exists to prevent: later branch slots no longer line up,
+causing re-execution or a stand-down.
+
+**Where.** The admin-retry path in `maestro-core` (Issue 19 outcome selection
+and the R61 memo/timer cleanup added in `53ca7e9`) and the failing-timeout
+delete in `AbstractJdbcWorkflowStore`.
+
+**Proposed fix.** Attribute the failure to the await that actually propagated:
+record the failing await's sequence in the `WORKFLOW_FAILED` payload and delete
+by it. Follow-ups: add `AND event_type = 'SIGNAL_TIMEOUT'` to the
+failing-timeout delete in `AbstractJdbcWorkflowStore` (safe today, defensive);
+add a second-retry core pin (retry, times out again, retry again).
+
+**Done when.** A workflow with a caught timed-out gate at a higher sequence than
+the propagated timeout is retried and only the propagated await's outcome, memo
+and timer row are cleared — pinned by a core test for each shape above.
+
+---
+
 ## 6. Suggested order
 
 **Historical note:** the order below was the plan followed by the
@@ -2451,6 +2869,11 @@ as failure" defect the cycle found. Issues 11 and 12 remain open by
 deliberate design decision, but both now carry measured evidence from the
 same cycle — Issue 11's split-brain duplicate-side-effect count and Issue
 12's benchmark — appended to their sections (see "Known limitations" below).
+
+**From the 2026-10-24 bug-fix cycle:** Issue 32 — small, in the signal hot
+path, the same shape as Issue 3, and the only one observed failing a workflow
+(chaos soak 40674015602) — was fixed in that cycle after all (plan 04 Task 8,
+R56). Issues 29–31 are latency/load gaps with no correctness impact.
 
 ---
 

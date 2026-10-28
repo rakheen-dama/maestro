@@ -1,6 +1,6 @@
 # Maestro Test Plan — Verification Status and Gaps
 
-**Date:** 2026-07-28 · **Scope:** every feature Maestro provides ·
+**Date:** 2026-07-28 · **Scope:** every feature Maestro provides · **Inventory refreshed:** 2026-10-28 (197 test classes / 1299 `@Test` across 18 modules — counts from `find … -name '*Test.java' -o -name '*IT.java'` and `grep -rhE '^\s*@(Test|ParameterizedTest|RepeatedTest)\b'`; `maestro-bom` has no sources and is excluded)
 **Must-work integrations:** **Kafka** and **Postgres** (Valkey is
 best-effort; Postgres-messaging is secondary).
 
@@ -68,7 +68,7 @@ entire integration seams unverified. This plan makes those seams explicit.
 
 ## 1. Current verification matrix
 
-### Core engine (maestro-core — 16 unit test classes)
+### Core engine (maestro-core — 72 test classes, 621 tests)
 
 | Feature | U | I | E | Notes / gap |
 |---|---|---|---|---|
@@ -88,9 +88,9 @@ entire integration seams unverified. This plan makes those seams explicit.
 | Queries (@QueryMethod, in-memory only) | ✅ | — | — | Documented single-node limitation |
 | Instance lock (acquire/release/renew, NO_BACKEND, HELD_ELSEWHERE, lost-lock, TTL validation) | ✅ | ✅ | ✅ | `MultiNodeLockContentionIT`, `MultiNodeOwnerDeathIT`, `PostgresDistributedLockContractTest` (24) |
 | Graceful shutdown | ✅ | ✅ | — | **BUG6 FIXED.** `WorkflowExecutorShutdownTest` (7) + `ShutdownContractIT` (6): parked workflows stay WAITING_*, no compensation, recoverable by a fresh node |
-| Determinism guardrails | — | — | — | Nothing detects nondeterministic workflow code; replay divergence is silent |
+| Determinism guardrails | ✅ | ✅ | — | Replay drift (step name/type/fork arity) stands down as `nondeterministic_history`; value-level nondeterminism with an unchanged step sequence is still only caught by `DeterminismChecker`. `ReplayDriftStandDownTest`, `ReplayGuardTest`, `SagaManagerTest`, `ReplayDriftStandDownIT` |
 
-### Spring Boot starter (3 test classes)
+### Spring Boot starter (17 test classes, 134 tests)
 
 | Feature | U | I | E | Notes |
 |---|---|---|---|---|
@@ -101,13 +101,13 @@ entire integration seams unverified. This plan makes those seams explicit.
 | MaestroClient (startAsync, startAndWait, signal, query handles) | ✅ | — | ✅ | `MaestroClientTest` (8) through the real auto-config chain |
 | Health indicator | ✅ | — | — | **Implemented** (post-audit). `io.b2mash.maestro.spring.health.MaestroHealthIndicator`, auto-configured with Actuator; bounded 2s store probe, three-state poller reporting (`starting`/running/`disabled`). `MaestroHealthAutoConfigurationTest`, `MaestroHealthIndicatorTest` |
 
-### Kafka (must-work) — maestro-messaging-kafka (2 test classes)
+### Kafka (must-work) — maestro-messaging-kafka (11 test classes, 59 tests)
 
 | Feature | U | I | E | Notes |
 |---|---|---|---|---|
 | KafkaWorkflowMessaging publish/subscribe (tasks, signals, lifecycle) | — | ✅ | ◐ | Module Testcontainers tests exist; engine-level signals channel unused in E2E |
 | @MaestroSignalListener discovery + routing → deliverSignal | ✅ | ✅ | ✅ | `KafkaSignalListenerRoundTripIT` — full round trip in CI |
-| At-least-once semantics: handler failure vs ack | — | ✅ | — | **Fixed.** Bounded exponential-backoff redelivery + dead-letter on exhaustion, all transports (`maestro.messaging.redelivery.*`). `KafkaAckOnFailureIT` + `PostgresWorkflowMessagingTest` + `RabbitMqWorkflowMessagingTest` — desired-behaviour specs enabled and green, no longer `@Disabled` |
+| At-least-once semantics: handler failure vs ack | — | ✅ | — | **Fixed.** Bounded exponential-backoff redelivery + dead-letter on exhaustion, all transports (`maestro.messaging.redelivery.*`). `KafkaAckOnFailureIT` + `PostgresWorkflowMessagingTest` — desired-behaviour specs enabled and green, no longer `@Disabled` |
 | Consumer-group routing: signal consumed on node B for workflow parked on node A | — | ✅ | — | `MultiNodeSignalRoutingIT`; E2E scenario 6 adds a two-instance run |
 | Duplicate delivery tolerance end-to-end | — | ✅ | ◐ | `KafkaDuplicateDeliveryIT` — 2 rows, 1 consume, 1 completion |
 
@@ -126,12 +126,46 @@ entire integration seams unverified. This plan makes those seams explicit.
 
 | Area | Status |
 |---|---|
-| maestro-test kit (in-memory SPIs, TestWorkflowEnvironment, clock) | ✅ U (3 classes) |
+| maestro-test kit (in-memory SPIs, TestWorkflowEnvironment, clock) | ✅ U (7 classes, 72 tests) |
 | maestro-lock-valkey | ✅ I (lock + notifier mechanics) |
-| maestro-messaging-rabbitmq | ✅ real suite (`RabbitMqWorkflowMessagingTest`); the shared ack-on-failure defect it carried is fixed alongside Kafka and Postgres |
 | maestro-admin / admin-client | ✅ real suites (`DashboardSmokeMockMvcTest`, `EventIngestionRoundTripTest`, `AdminEventPublisherTest`, `AdminCommandDispatcherTest`, `AdminCommandKafkaIT`, others). `$maestro:retry`/`terminate` commands are now consumed end-to-end by a starter-side `AdminCommandDispatcher` — dashboard buttons are functional; see `docs/open-issues.md` Issue 15 (**Resolved**) |
-| Loan-origination E2E (10 scenarios, incl. 5 multi-node) | ✅ E — nightly + on-demand in CI, both Valkey and Postgres lock backends (`.github/workflows/e2e-nightly.yml`) |
-| Multi-instance chaos/soak harness (`maestro-integration-tests` `e2eTest`, `@Tag("e2e")`) | ✅ E — 6-node Testcontainers cluster, scripted failure injection; nightly PR-gate mode (3× consecutive) + weekly soak mode in CI. Found and fixed Issues 17-20. See `docs/operations.md` |
+| Loan-origination E2E (10 scenarios, incl. 5 multi-node) | ✅ E — nightly + on-demand in CI, both Valkey and Postgres lock backends (`.github/workflows/e2e-nightly.yml`) — schedule was auto-disabled 2026-10-10 → 2026-10-24 (GitHub 60-day inactivity rule, see § CI wiring); soak failed 5/5 and PR-gate 2/30 between 2026-08-09 and 2026-10-04, baseline dispatch 40593820947 (2026-10-27) at 66cdf95 was wholly green; the second dispatch 40674015602 (2026-10-28, same SHA) failed the soak with one I1 workflow (a Valkey outage stalled signal sends, so retries duplicated a signature — Issue 32), PR-gate and both loan E2Es green; triaged in docs/superpowers/plans/2026-10-24-bugfix-cycle/triage/ViolationTriageReport.md and fixed (Issue 32, `1da4f1a`); the bug-fix-branch dispatch 40762898010 (2026-10-28) at ec9286d was wholly green — all four jobs success, the 2 h soak ran 2320 workflows with 0 violations (`triage/branch-verification.md`) |
+| Multi-instance chaos/soak harness (`maestro-integration-tests` `e2eTest`, `@Tag("e2e")`) | ✅ E — 6-node Testcontainers cluster, scripted failure injection; nightly PR-gate mode (3× consecutive) + weekly soak mode in CI. Found and fixed Issues 17-20. See `docs/operations.md` — schedule was auto-disabled 2026-10-10 → 2026-10-24 (GitHub 60-day inactivity rule, see § CI wiring); soak failed 5/5 and PR-gate 2/30 between 2026-08-09 and 2026-10-04, baseline dispatch 40593820947 (2026-10-27) at 66cdf95 was wholly green; the second dispatch 40674015602 (2026-10-28, same SHA) failed the soak with one I1 workflow (a Valkey outage stalled signal sends, so retries duplicated a signature — Issue 32), PR-gate and both loan E2Es green; triaged in docs/superpowers/plans/2026-10-24-bugfix-cycle/triage/ViolationTriageReport.md and fixed (Issue 32, `1da4f1a`); the bug-fix-branch dispatch 40762898010 (2026-10-28) at ec9286d was wholly green — all four jobs success, the 2 h soak ran 2320 workflows with 0 violations (`triage/branch-verification.md`) |
+
+### Bug-fix cycle 2026-10-24 — new pins
+
+| Finding | Unit pin (in-memory) | Integration pin (real Postgres) | Plan |
+|---|---|---|---|
+| C1 parallel() failure leaves the parent seq inside the branch space | `ParallelFailureCompensationSequenceTest` | `EnginePostgresParallelSagaIT` | 01 |
+| C2 parallel-compensation fork marker not replay-guarded | `SagaManagerTest` | `EnginePostgresParallelSagaIT` | 01 |
+| C3 999-step branch limit (`BranchSequenceExhaustedException`) | `ParallelBranchExhaustionTest`, `WorkflowContextBoundTest` | `EnginePostgresParallelIT` | 01 |
+| C4 overflow-guarded sequence arithmetic | `SequenceSpaceTest`, `SequenceSpaceExhaustionTest` | `EnginePostgresParallelSagaIT` | 01 |
+| Review Focus 1 — parallel() inside saga compensation | `CompensationWithParallelTest` | `EnginePostgresParallelSagaIT` | 01 |
+| C8 Error escaping the workflow body loops instead of failing | `WorkflowExecutorErrorEscapeTest` | `ErrorEscapeFailsWorkflowIT` | 02 |
+| C9 unreadable-payload stand-down carries cause, redacts content | `UnknownHistoryGuardTest`, `ForeignPayloadStandDownTest` | `UnreadablePayloadStandDownIT` | 02 |
+| C10 replay drift → `nondeterministic_history` stand-down (F3 docs) | `ReplayDriftStandDownTest`, `ReplayGuardTest` | `ReplayDriftStandDownIT` | 02 |
+| C15 replayed activity failures reconstruct deterministically | `ActivityFailureReconstructionTest` | `ActivityFailureReplayIT` | 02 |
+| F2 `ActivityExecutionException.causedBy` | `ActivityExecutionExceptionTest`, `PaymentProcessingWorkflowTest` (sample) | — | 02 |
+| C5 stale run stands down at first collision / terminal read | `InstanceStatusWriterTest`, `WorkflowExecutorDuplicateEventStandDownTest`, `StickyStaleStopPointsTest` | `EnginePostgresDualExecutionIT`, `MultiNodeNoLockBackendIT` | 03 |
+| C6 terminate stops live activities and retry backoff | `WorkflowExecutorTerminateTest`, `RetryExecutorTest` | `EnginePostgresTerminateIT` | 03 |
+| C7 compensation re-checks instance status per entry | `SagaManagerTerminateRaceTest` | `EnginePostgresSagaIT` | 03 |
+| C11 per-attempt `startToCloseTimeout` (`ActivityTimeoutException`) | `ActivityInvocationHandlerTest` | `EnginePostgresActivityTimeoutIT` | 03 |
+| C12 durable `awaitSignal` deadlines via timer rows (F4 docs) | `SignalManagerTest`, `AwaitDeadlineStoreErrorTest`, `AwaitTimerStrayPermitTest` | `EnginePostgresSignalTimeoutIT`, `AwaitSignalTimeoutRaceIT` | 04 |
+| C13 / Issue 26 atomic terminal status + event write | `TerminalWritesTest`, `InMemoryWorkflowStoreTest` | `TerminalWriteAtomicityIT`, `TerminalEventRaceIT` | 04 |
+| C14 DB-assigned `received_at`, `SignalJanitor`, acknowledged Valkey wake subscribe | `SignalJanitorTest`, `ValkeySignalNotifierTest`, `ValkeySignalNotifierAckTimeoutTest` | `PostgresWorkflowStoreTest` (ORDER BY `received_at`, Testcontainers) | 04 |
+| Issue 27 redelivery claim counting / stale-claim retirement | — | `PostgresWorkflowMessagingTest` (Testcontainers) | 04 |
+| F1 per-run workflow instance (prototype scope, per-run factory) | `WorkflowExecutorPerRunInstanceTest`, `WorkflowRegistrarPrototypeTest`, sample workflow tests | `MultiNodePerRunQueryIT` | 05 |
+| F5/F9 Maestro-owned Flyway history, module-specific locations | `MaestroSchemaInitializerTest`, `PostgresStoreAutoConfigurationHostFlywayTest` | `MaestroMigrationsCoexistIT` | 05 |
+| F6 `maestro.store.table-prefix` removed (fail fast) | `MaestroPropertiesBindingTest`, `JdbcStoreConfigurationTest`, `PostgresStoreAutoConfigurationTest` | — | 05 |
+| F8 / Issue 25 per-task-queue concurrency (`TaskQueueGovernor`) | `TaskQueueGovernorTest`, `WorkflowExecutorConcurrencyTest` | `TaskQueueConcurrencyIT` | 05 |
+| F10 unused task-dispatch channel / Postgres lifecycle queue deleted | `WorkflowMessagingSurfaceTest`, `PostgresMessagingRemovedTasksTopicTest`, `MaestroAutoConfigurationRemovedPropertiesTest` | — | 05 |
+| F11 `WorkflowHandle` status/result/terminate | `MaestroClientTest` | — | 05 |
+| F12 sequence/replay mutators moved to `WorkflowContextInternals` | `WorkflowContextSurfaceTest` | — | 05 |
+| F13 BOM module, build/competitive-table/timeout/drift docs | — (docs and `maestro-bom`, no sources) | — | 05 |
+| Plan 06 Task 3 de-flaked `Build & Test` suites (R53) | `RecoveryPassIsolationTest` (poisoned instance adopted first) | `TracingParallelBranchIT` (parking fixture no longer races the timer poller); Kafka Spring suites close their context after the class | 06 |
+| Plan 06 Task 2 chaos-violation triage (I1/I4) — `triage/ViolationTriageReport.md`; the one dumped violation (soak 40674015602) is class 8, filed as **Issue 32** (Valkey outage stalls signal sends; retries duplicate signals) — **Resolved** at `1da4f1a` (plan 04 Task 8, fix round `4880710`) | `SignalManagerTest` (blocking-notifier case: `deliverSignalDoesNotWaitForABlockingNotifier` — `deliverSignal` returns promptly while `SignalNotifier.publish` blocks, one row, notified off-thread) | `ValkeyBrownoutSignalDeliveryIT` (Valkey paused: `signal()` on node B returns promptly, persists one row, and node A's parked workflow still wakes) | 04 / 06 |
+
+Every integration pin gates on the terminal **event** via `TerminalWait` (Review Focus 5), not on the instance row, so it cannot pass on the non-atomic-write window Issue 26 closed.
 
 ---
 
@@ -234,11 +268,19 @@ indicator audit; admin-command end-to-end once implemented; RabbitMQ suite
 if that backend is kept.
 
 ### CI wiring
-- `test` = U only (fast). New `integrationTest` source set/tag for P0–P3
-  (Testcontainers; runs on every PR). P4 e2e tag nightly + pre-release.
-- Coverage gate: every `maestro-*` module with production code must have
-  ≥1 test class (fails today for lock-postgres, messaging-postgres,
-  messaging-rabbitmq, admin, admin-client).
+- `test` runs the unit and `@Tag("integration")` suites on every PR; `e2eTest`
+  is excluded from `build`
+  (`build-logic/src/main/kotlin/maestro.integration-test-conventions.gradle.kts:18-39`).
+- The nightly/weekly schedule lives in `e2e-nightly.yml`. GitHub disables every
+  scheduled workflow in a repository with no commits for 60 days
+  (`disabled_inactivity`); `build-test.yml`'s `keep-nightly-enabled` job
+  re-enables it on every push to `main`. `gh workflow list --all` (not plain
+  `gh workflow list`) shows disabled workflows.
+- Dispatched runs of `e2e-nightly.yml` (`gh workflow run e2e-nightly.yml --ref <branch>`):
+  - Baseline 40593820947 (2026-10-27, `main` at 66cdf95): wholly green.
+  - 40674015602 (2026-10-28, same SHA): red. The soak hit one I1 workflow, which was triaged as Issue 32 and fixed in `1da4f1a`.
+  - 40762898010 (2026-10-28, branch `worktree-bugfix-cycle` at ec9286d): green. All four jobs succeeded (both loan E2Es, the PR-gate run three times, and the 2 h soak, which ran 2320 workflows with 0 violations). This run is the CI part of the whole-branch gate recorded in `docs/superpowers/plans/2026-10-24-bugfix-cycle/triage/branch-verification.md`.
+- Coverage gate: every subproject with `src/main/java` — libraries and samples alike — must carry ≥1 test class (`verifyModuleTestCoverage`, root `build.gradle.kts`); accepted debt is listed by name in `modulesWithoutTests` and printed on every run.
 
 ---
 
@@ -315,7 +357,8 @@ recollection. "Unverified" below means no test asserts the behaviour either way.
    second node launches its own copy and an in-flight activity runs once per
    node, so activities must be idempotent in that profile. Memoized steps still
    replay rather than re-run, the unique index admits one event per sequence, and
-   the losing node adopts the winner's result.
+   the losing node stands down at its first collision instead of adopting the
+   winner's result (C5, `EnginePostgresDualExecutionIT`).
 
 #### B. Design sharp edges
 
@@ -394,8 +437,10 @@ recollection. "Unverified" below means no test asserts the behaviour either way.
 
 18. **`DeterminismChecker` catches only between-run nondeterminism** — randomness,
     clock reads, mutable static state. A value that is stable for a JVM's
-    lifetime but changes across restarts or code edits still slips through, and
-    replay divergence against a *stored* event log is not detected at all.
+    lifetime but changes across restarts or code edits still slips through.
+    Replay drift (step name/type/fork arity) against a *stored* event log now
+    stands down as `nondeterministic_history`; value-level nondeterminism with
+    an unchanged step sequence is still only caught by `DeterminismChecker`.
 
 19. **Five hand-rolled `WorkflowStore` fakes and three lock fakes** live across
     `maestro-core`'s tests. Every SPI change ripples through all of them, and

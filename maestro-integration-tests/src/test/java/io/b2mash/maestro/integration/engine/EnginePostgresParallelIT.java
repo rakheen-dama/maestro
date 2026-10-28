@@ -2,7 +2,9 @@ package io.b2mash.maestro.integration.engine;
 
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
+import io.b2mash.maestro.core.annotation.ActivityStub;
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.exception.BranchSequenceExhaustedException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
@@ -179,7 +181,7 @@ class EnginePostgresParallelIT extends PostgresIntegrationSupport {
                 .lock(newLock())
                 .instanceLockTtl(Duration.ofSeconds(30))
                 .build();
-        harness.registerWorkflow(workflow);
+        harness.registerWorkflow(ParallelParkingWorkflow.class, () -> workflow);
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("parallel-park");
         var handle = harness.start(workflowId, ParallelParkingWorkflow.class, "seed");
@@ -211,7 +213,67 @@ class EnginePostgresParallelIT extends PostgresIntegrationSupport {
                 "no failure or compensation may reach the durable log");
     }
 
+    @Test
+    @DisplayName("a branch that takes a 1000th step fails the workflow; its sibling's block and the parent counter are intact")
+    void branchExceedingItsBlock_failsTheWorkflowAndLeavesSiblingsIntact() {
+        var recorder = new CountingActivities.Recorder();
+        harness = MaestroEngineHarness.builder(store, objectMapper)
+                .serviceName("overlong-branch-node")
+                .lock(newLock())
+                .instanceLockTtl(Duration.ofSeconds(30))
+                .build();
+        harness.registerActivities(CountingActivities.ChainActivities.class,
+                new CountingActivities.RecordingChainActivities(recorder));
+        harness.registerWorkflow(OverlongBranchWorkflow.class);
+
+        var handle = harness.start(MaestroEngineHarness.uniqueWorkflowId("parallel-overlong"),
+                OverlongBranchWorkflow.class, "seed");
+
+        assertEquals(WorkflowStatus.FAILED, handle.awaitTerminal(Duration.ofSeconds(30)));
+        assertEquals(BranchSequenceExhaustedException.class.getName(),
+                handle.instance().output().get("exceptionType").asText());
+        assertEquals(1, recorder.count("stepTwo"), "the sibling branch ran to completion before the fork rethrew");
+        assertTrue(store.getEventBySequence(handle.instanceId(), 2999).isPresent());
+        assertTrue(store.getEventBySequence(handle.instanceId(), 3000).isEmpty(),
+                "branch 1's base is never written by branch 0");
+        assertEquals("3001:ACTIVITY_COMPLETED:chain.stepTwo", describe(handle).get(1000),
+                "events: fork(1), 999 uuids, then branch 1");
+        assertEquals("4001:WORKFLOW_FAILED:null", describe(handle).getLast(),
+                "parent counter advanced to 1*1000 + 3*1000 before the terminal event");
+        assertEquals(0, handle.events().stream()
+                        .filter(e -> e.eventType() == EventType.COMPENSATION_STARTED).count(),
+                "nothing was registered to compensate");
+    }
+
     // ── fixtures ──────────────────────────────────────────────────────────
+
+    /**
+     * Forks two branches, the first of which takes 1000 memoized steps — one
+     * more than its sequence block holds.
+     */
+    @DurableWorkflow(name = "OverlongBranchWorkflow")
+    public static class OverlongBranchWorkflow {
+
+        @ActivityStub
+        CountingActivities.ChainActivities activities;
+
+        /**
+         * @param input the seed value
+         * @return never returns normally
+         */
+        @WorkflowMethod
+        public String run(String input) {
+            List<Callable<String>> branches = List.of(
+                    () -> {
+                        for (int i = 0; i < 1000; i++) {
+                            WorkflowContext.current().randomUUID();
+                        }
+                        return "never";
+                    },
+                    () -> activities.stepTwo(input));
+            return String.join(",", WorkflowContext.current().parallel(branches));
+        }
+    }
 
     /**
      * Forks two branches that both park on their own signal — the shape
@@ -318,6 +380,11 @@ class EnginePostgresParallelIT extends PostgresIntegrationSupport {
         }
 
         @Override
+        public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+            return delegate.completeInstance(terminal, terminalEvent);
+        }
+
+        @Override
         public Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int sequenceNumber) {
             return delegate.getEventBySequence(instanceId, sequenceNumber);
         }
@@ -350,6 +417,11 @@ class EnginePostgresParallelIT extends PostgresIntegrationSupport {
         @Override
         public void adoptOrphanedSignals(String workflowId, UUID instanceId) {
             delegate.adoptOrphanedSignals(workflowId, instanceId);
+        }
+
+        @Override
+        public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+            return delegate.deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff);
         }
 
         @Override
@@ -435,7 +507,7 @@ class EnginePostgresParallelIT extends PostgresIntegrationSupport {
                 .instanceLockTtl(Duration.ofSeconds(2))
                 .build();
         built.registerActivities(CountingActivities.ChainActivities.class, activities);
-        built.registerWorkflow(new TestWorkflows.ParallelWorkflow());
+        built.registerWorkflow(TestWorkflows.ParallelWorkflow.class);
         return built;
     }
 

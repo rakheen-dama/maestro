@@ -13,7 +13,7 @@ import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Simulates an unreliable external payment provider to demonstrate
- * Maestro's durable retry behaviour.
+ * Maestro's activity retry policy.
  *
  * <ul>
  *   <li>{@code "DECLINE_ME"} payment method triggers a permanent failure.</li>

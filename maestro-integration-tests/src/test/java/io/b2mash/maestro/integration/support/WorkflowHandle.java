@@ -94,12 +94,12 @@ public final class WorkflowHandle {
      * Waits until the workflow reaches a terminal status <em>and</em> its
      * terminal event has been appended.
      *
-     * <p>Both waits are needed. Finalising a run is two writes: the instance row
-     * moves to {@code COMPLETED}/{@code FAILED} first, and the matching
-     * {@code WORKFLOW_COMPLETED}/{@code WORKFLOW_FAILED} event is appended
-     * after. A test that waits only on the status can therefore read the event
-     * log during the gap and see the terminal event missing — invisible on a
-     * fast machine, reproducible on slower CI. See {@link TerminalWait}.
+     * <p>Both waits are kept. Until Issue 26 finalising a run was two writes —
+     * the instance row first, the matching
+     * {@code WORKFLOW_COMPLETED}/{@code WORKFLOW_FAILED} event after — and a
+     * status-only wait could read the log during the gap. The engine now
+     * writes both atomically; waiting for the event still states exactly what
+     * the caller's log assertions depend on. See {@link TerminalWait}.
      *
      * <p>The terminal event is <em>required</em>, not hoped for. Which node wins
      * the finalisation race is racy; that the shared log ends up carrying the

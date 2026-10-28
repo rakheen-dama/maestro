@@ -81,7 +81,6 @@ maestro:
   messaging:
     type: kafka
     topics:
-      tasks: maestro.tasks.verification-gateway
       signals: maestro.signals.verification-gateway
 
   lock:

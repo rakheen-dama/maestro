@@ -12,6 +12,7 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.spi.TerminalWrites;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -67,6 +68,13 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     /** SQL state for unique constraint violation (standard across Postgres, H2, etc.). */
     private static final String UNIQUE_VIOLATION = "23505";
 
+    /**
+     * Logical-ID prefix of an {@code awaitSignal} deadline row; the suffix is
+     * the sequence of the await's {@code TIMER_SCHEDULED} memo (the layout the
+     * {@link WorkflowStore#deleteFailureEvents} contract names).
+     */
+    private static final String AWAIT_SIGNAL_TIMER_ID_PREFIX = "await-signal-";
+
     /** SQL IN-clause fragment derived from {@link WorkflowStatus#isActive()}. */
     private static final String ACTIVE_STATUS_SQL = Arrays.stream(WorkflowStatus.values())
             .filter(WorkflowStatus::isActive)
@@ -80,7 +88,8 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * Creates a new JDBC workflow store.
      *
      * @param dataSource the JDBC data source (expected to be a connection pool)
-     * @param config     store configuration (table prefix, Jackson ObjectMapper)
+     * @param config     store configuration (the Jackson ObjectMapper; table names are
+     *                   always {@code maestro_*})
      */
     protected AbstractJdbcWorkflowStore(DataSource dataSource, JdbcStoreConfiguration config) {
         this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
@@ -144,13 +153,14 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     // ── Protected utilities ───────────────────────────────────────────────
 
     /**
-     * Returns the fully qualified table name with the configured prefix.
+     * Returns the table name for {@code suffix} — always prefixed
+     * {@value JdbcStoreConfiguration#TABLE_PREFIX}; the prefix is not configurable.
      *
      * @param suffix the table name suffix (e.g., {@code "workflow_instance"})
-     * @return the prefixed table name (e.g., {@code "maestro_workflow_instance"})
+     * @return the table name (e.g., {@code "maestro_workflow_instance"})
      */
     protected final String tableName(String suffix) {
-        return config.tablePrefix() + suffix;
+        return JdbcStoreConfiguration.TABLE_PREFIX + suffix;
     }
 
     /**
@@ -169,16 +179,20 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
         try (var conn = dataSource.getConnection()) {
             conn.setAutoCommit(false);
+            boolean settled = false; // committed or rolled back — see endTransaction
             try {
                 insertInstance(conn, instance);
                 doAdoptOrphanedSignals(conn, instance.workflowId(), instance.id());
                 conn.commit();
+                settled = true;
                 log.debug("Created workflow instance: workflowId={}, id={}",
                         instance.workflowId(), instance.id());
                 return instance;
-            } catch (SQLException e) {
-                conn.rollback();
+            } catch (SQLException | RuntimeException e) {
+                settled = rollbackAfter(conn, e);
                 throw e;
+            } finally {
+                endTransaction(conn, settled);
             }
         } catch (SQLException e) {
             if (UNIQUE_VIOLATION.equals(e.getSQLState())) {
@@ -218,16 +232,162 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     public void updateInstance(WorkflowInstance instance) {
         Objects.requireNonNull(instance, "instance");
 
+        int updated;
+        try (var conn = dataSource.getConnection()) {
+            updated = updateInstanceRow(conn, instance);
+        } catch (SQLException e) {
+            throw new UncheckedSqlException("Update failed: " + updateInstanceSql(), e);
+        }
+
+        if (updated == 0) {
+            resolveUpdateFailure(instance);
+        }
+
+        log.debug("Updated workflow instance: workflowId={}, version={}→{}",
+                instance.workflowId(), instance.version() - 1, instance.version());
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One connection, one transaction ({@code autoCommit=false}): the
+     * version-checked {@code UPDATE} of the instance row and the
+     * {@code INSERT} of the terminal event commit together or roll back
+     * together. A zero-row {@code UPDATE} rolls back and probes whether the
+     * row exists ({@link WorkflowNotFoundException}) or merely moved on
+     * ({@code false}); a unique violation on the {@code INSERT} rolls the
+     * {@code UPDATE} back and surfaces as {@link DuplicateEventException};
+     * any other {@link SQLException} rolls back and surfaces as
+     * {@link UncheckedSqlException}.
+     */
+    @Override
+    public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+        Objects.requireNonNull(terminal, "terminal");
+        Objects.requireNonNull(terminalEvent, "terminalEvent");
+        TerminalWrites.requireValid(terminal, terminalEvent);
+
+        boolean written;
+        try (var conn = dataSource.getConnection()) {
+            conn.setAutoCommit(false);
+            boolean settled = false; // committed or rolled back — see endTransaction
+            try {
+                written = updateInstanceRow(conn, terminal) > 0;
+                if (written) {
+                    insertEvent(conn, terminalEvent);
+                    conn.commit();
+                } else {
+                    conn.rollback();
+                }
+                settled = true;
+            } catch (SQLException | RuntimeException e) {
+                settled = rollbackAfter(conn, e);
+                throw e;
+            } finally {
+                endTransaction(conn, settled);
+            }
+        } catch (SQLException e) {
+            if (UNIQUE_VIOLATION.equals(e.getSQLState())) {
+                var ex = new DuplicateEventException(terminalEvent.workflowInstanceId(),
+                        terminalEvent.sequenceNumber());
+                ex.initCause(e);
+                throw ex;
+            }
+            throw new UncheckedSqlException("Failed to complete workflow instance: "
+                    + terminal.workflowId(), e);
+        }
+
+        if (!written) {
+            // Probed after the transaction's connection is released, so a
+            // single-connection pool cannot deadlock on the nested borrow.
+            if (currentVersion(terminal).isEmpty()) {
+                throw new WorkflowNotFoundException(terminal.workflowId());
+            }
+            return false;
+        }
+
+        log.debug("Completed workflow instance: workflowId={}, status={}, version={}→{}, terminalSeq={}",
+                terminal.workflowId(), terminal.status(), terminal.version() - 1,
+                terminal.version(), terminalEvent.sequenceNumber());
+        return true;
+    }
+
+    /**
+     * Rolls back {@code conn} after {@code original} aborted its transaction. A
+     * rollback failure is attached to {@code original} as suppressed rather
+     * than replacing it, so the caller still sees — and maps — the real cause.
+     *
+     * @return {@code true} if the rollback succeeded (the transaction is
+     *         settled); {@code false} if it failed and the transaction may
+     *         still be open — the caller must then not restore auto-commit
+     *         (see {@link #endTransaction})
+     */
+    private static boolean rollbackAfter(Connection conn, Throwable original) {
+        try {
+            conn.rollback();
+            return true;
+        } catch (SQLException rollbackFailed) {
+            original.addSuppressed(rollbackFailed);
+            return false;
+        }
+    }
+
+    /**
+     * Ends a transactional borrow before the connection is closed.
+     *
+     * <p>When the transaction is {@code settled} (committed or rolled back),
+     * auto-commit is restored so a pooled connection is never handed to the
+     * next borrower mid-mode; a failure there cannot change the outcome, so
+     * it is logged, not thrown.
+     *
+     * <p>When it is <b>not</b> settled — the {@code rollback()} itself failed,
+     * or an {@link Error} escaped mid-transaction — the transaction may still
+     * be open on a live connection, and JDBC specifies that
+     * {@code setAutoCommit(true)} mid-transaction <em>commits</em> it: the
+     * half-done write (an instance row without its adopted signals, a terminal
+     * status without its terminal event) would become durable. So auto-commit
+     * is deliberately left off and the connection is
+     * {@linkplain Connection#abort aborted}: the database rolls the
+     * transaction back when the session ends, and a pool evicts the dead
+     * connection rather than resetting and reusing it (R34).
+     */
+    private static void endTransaction(Connection conn, boolean settled) {
+        if (settled) {
+            try {
+                conn.setAutoCommit(true);
+            } catch (SQLException e) {
+                log.warn("Could not restore auto-commit on a store connection before closing it: {}",
+                        e.toString());
+            }
+            return;
+        }
+        try {
+            conn.abort(Runnable::run);
+        } catch (SQLException | RuntimeException e) {
+            log.warn("Could not abort a store connection whose transaction failed to roll back; "
+                    + "closing it without restoring auto-commit: {}", e.toString());
+        }
+    }
+
+    private String updateInstanceSql() {
         // Canonical optimistic-lock convention: the caller has already built
         // the updated instance with version = current + 1, so the row is
         // persisted verbatim iff the stored version equals version - 1.
-        String sql = "UPDATE " + tableName("workflow_instance")
+        return "UPDATE " + tableName("workflow_instance")
                 + " SET run_id = ?, workflow_type = ?, task_queue = ?, status = ?, "
                 + "input = ?, output = ?, service_name = ?, event_sequence = ?, "
                 + "started_at = ?, completed_at = ?, updated_at = ?, version = ?"
                 + " WHERE id = ? AND version = ?";
+    }
 
-        int updated = update(sql, ps -> {
+    /**
+     * Executes the version-checked instance {@code UPDATE} on {@code conn},
+     * inside whatever transaction mode the caller set.
+     *
+     * @return the number of rows updated; {@code 0} means a missing row or a
+     *         version conflict
+     */
+    private int updateInstanceRow(Connection conn, WorkflowInstance instance) throws SQLException {
+        try (var ps = conn.prepareStatement(updateInstanceSql())) {
             ps.setObject(1, instance.runId());
             ps.setString(2, instance.workflowType());
             ps.setString(3, instance.taskQueue());
@@ -242,14 +402,8 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             ps.setInt(12, instance.version());
             ps.setObject(13, instance.id());
             ps.setInt(14, instance.version() - 1);
-        });
-
-        if (updated == 0) {
-            resolveUpdateFailure(instance);
+            return ps.executeUpdate();
         }
-
-        log.debug("Updated workflow instance: workflowId={}, version={}→{}",
-                instance.workflowId(), instance.version() - 1, instance.version());
     }
 
     // ── Event operations ──────────────────────────────────────────────────
@@ -268,29 +422,41 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                                     .formatted(event.workflowInstanceId(), event.sequenceNumber()));
         }
 
-        String sql = "INSERT INTO " + tableName("workflow_event")
-                + " (id, workflow_instance_id, sequence_number, event_type, step_name,"
-                + " payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)";
-
-        try {
-            update(sql, ps -> {
-                ps.setObject(1, event.id());
-                ps.setObject(2, event.workflowInstanceId());
-                ps.setInt(3, event.sequenceNumber());
-                ps.setString(4, event.eventType().name());
-                setNullableString(ps, 5, event.stepName());
-                setJsonParameter(ps, 6, event.payload());
-                ps.setTimestamp(7, Timestamp.from(event.createdAt()));
-            });
-        } catch (UncheckedSqlException e) {
-            if (e.getCause() instanceof SQLException sqle
-                    && UNIQUE_VIOLATION.equals(sqle.getSQLState())) {
+        try (var conn = dataSource.getConnection()) {
+            insertEvent(conn, event);
+        } catch (SQLException e) {
+            if (UNIQUE_VIOLATION.equals(e.getSQLState())) {
                 var ex = new DuplicateEventException(event.workflowInstanceId(),
                         event.sequenceNumber());
-                ex.initCause(sqle);
+                ex.initCause(e);
                 throw ex;
             }
-            throw e;
+            throw new UncheckedSqlException("Update failed: " + insertEventSql(), e);
+        }
+    }
+
+    private String insertEventSql() {
+        return "INSERT INTO " + tableName("workflow_event")
+                + " (id, workflow_instance_id, sequence_number, event_type, step_name,"
+                + " payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)";
+    }
+
+    /**
+     * Executes the event {@code INSERT} on {@code conn}, inside whatever
+     * transaction mode the caller set. A duplicate
+     * {@code (workflow_instance_id, sequence_number)} surfaces as an
+     * {@link SQLException} whose SQL state is the unique-violation code.
+     */
+    private void insertEvent(Connection conn, WorkflowEvent event) throws SQLException {
+        try (var ps = conn.prepareStatement(insertEventSql())) {
+            ps.setObject(1, event.id());
+            ps.setObject(2, event.workflowInstanceId());
+            ps.setInt(3, event.sequenceNumber());
+            ps.setString(4, event.eventType().name());
+            setNullableString(ps, 5, event.stepName());
+            setJsonParameter(ps, 6, event.payload());
+            ps.setTimestamp(7, Timestamp.from(event.createdAt()));
+            ps.executeUpdate();
         }
     }
 
@@ -319,10 +485,47 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         return queryList(sql, ps -> ps.setObject(1, instanceId), this::mapEvent);
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One connection, one transaction ({@code autoCommit=false}): the
+     * failing await's deadline rows and park memo, the failing
+     * {@code SIGNAL_TIMEOUT} memo, and the {@code ACTIVITY_FAILED} /
+     * {@code WORKFLOW_FAILED} events are deleted together or not at all. A
+     * partial delete is not harmless here: with {@code WORKFLOW_FAILED} still
+     * present and the failing timeout memo gone, a second retry would take the
+     * next-highest {@code SIGNAL_TIMEOUT} — a caught gate — for the failing
+     * one.
+     */
     @Override
     public int deleteFailureEvents(UUID instanceId) {
         Objects.requireNonNull(instanceId, "instanceId");
 
+        int deleted;
+        try (var conn = dataSource.getConnection()) {
+            conn.setAutoCommit(false);
+            boolean settled = false; // committed or rolled back — see endTransaction
+            try {
+                deleted = deleteFailureEvents(conn, instanceId);
+                conn.commit();
+                settled = true;
+            } catch (SQLException | RuntimeException e) {
+                settled = rollbackAfter(conn, e);
+                throw e;
+            } finally {
+                endTransaction(conn, settled);
+            }
+        } catch (SQLException e) {
+            throw new UncheckedSqlException("Failed to delete failure events of workflow instance "
+                    + instanceId, e);
+        }
+
+        log.debug("Deleted {} failure event(s) for workflow instance {}", deleted, instanceId);
+        return deleted;
+    }
+
+    /** The deletes of {@link #deleteFailureEvents(UUID)}, on the caller's transaction. */
+    private int deleteFailureEvents(Connection conn, UUID instanceId) throws SQLException {
         // The FAILING timeout memo (Issue 19): when the workflow FAILED
         // *because* of a signal timeout — the WORKFLOW_FAILED payload's
         // exceptionType says so — retry must also delete the timeout memo the
@@ -336,34 +539,84 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         // late-arrived signal at that gate and diverge from the pre-failure
         // execution.
         int deleted = 0;
-        if (failedBySignalTimeout(instanceId)) {
-            String timeoutSql = "DELETE FROM " + tableName("workflow_event")
-                    + " WHERE workflow_instance_id = ? AND event_type = ?"
-                    + " AND sequence_number = (SELECT MAX(sequence_number) FROM "
-                    + tableName("workflow_event")
-                    + "   WHERE workflow_instance_id = ? AND event_type = ?)";
-            deleted = update(timeoutSql, ps -> {
-                ps.setObject(1, instanceId);
-                ps.setString(2, EventType.SIGNAL_TIMEOUT.name());
-                ps.setObject(3, instanceId);
-                ps.setString(4, EventType.SIGNAL_TIMEOUT.name());
-            });
+        if (failedBySignalTimeout(conn, instanceId)) {
+            var failingTimeout = failingTimeoutMemo(conn, instanceId);
+            if (failingTimeout != null) {
+                deleted += deleteFailingAwaitDeadline(conn, instanceId, failingTimeout);
+                deleted += executeUpdate(conn, "DELETE FROM " + tableName("workflow_event")
+                        + " WHERE workflow_instance_id = ? AND sequence_number = ?", ps -> {
+                    ps.setObject(1, instanceId);
+                    ps.setInt(2, failingTimeout.sequenceNumber());
+                });
+            }
         }
 
         // Scoped to the instance AND to the two failure types — deliberately
         // not a sequence range, which would take the success and compensation
         // memos with it. See the SPI Javadoc for why those must survive.
-        String sql = "DELETE FROM " + tableName("workflow_event")
-                + " WHERE workflow_instance_id = ? AND event_type IN (?, ?)";
-
-        deleted += update(sql, ps -> {
+        deleted += executeUpdate(conn, "DELETE FROM " + tableName("workflow_event")
+                + " WHERE workflow_instance_id = ? AND event_type IN (?, ?)", ps -> {
             ps.setObject(1, instanceId);
             ps.setString(2, EventType.ACTIVITY_FAILED.name());
             ps.setString(3, EventType.WORKFLOW_FAILED.name());
         });
-
-        log.debug("Deleted {} failure event(s) for workflow instance {}", deleted, instanceId);
         return deleted;
+    }
+
+    /** Sequence and step name of the failing (highest-sequenced) {@code SIGNAL_TIMEOUT} memo. */
+    private record FailingTimeout(int sequenceNumber, @Nullable String stepName) {
+    }
+
+    private @Nullable FailingTimeout failingTimeoutMemo(Connection conn, UUID instanceId)
+            throws SQLException {
+        String sql = "SELECT sequence_number, step_name FROM " + tableName("workflow_event")
+                + " WHERE workflow_instance_id = ? AND event_type = ?"
+                + " ORDER BY sequence_number DESC";
+        try (var ps = conn.prepareStatement(sql)) {
+            ps.setObject(1, instanceId);
+            ps.setString(2, EventType.SIGNAL_TIMEOUT.name());
+            try (var rs = ps.executeQuery()) {
+                return rs.next()
+                        ? new FailingTimeout(rs.getInt("sequence_number"), rs.getString("step_name"))
+                        : null;
+            }
+        }
+    }
+
+    /**
+     * The failing await's spent deadline (R61): if the slot just before the
+     * failing {@code SIGNAL_TIMEOUT} holds that await's {@code TIMER_SCHEDULED}
+     * park memo (same step name), deletes the memo and the await's deadline
+     * rows ({@code await-signal-<memoSeq>}, any status), so the retried await
+     * arms a fresh full timeout instead of resuming past its old deadline.
+     * Matching the step name keeps an unrelated memo in that slot — a
+     * {@code sleep()} or another await — out of reach.
+     *
+     * @return the number of events deleted (0 or 1); timer rows are not counted
+     */
+    private int deleteFailingAwaitDeadline(Connection conn, UUID instanceId, FailingTimeout failingTimeout)
+            throws SQLException {
+        var stepName = failingTimeout.stepName();
+        if (stepName == null) {
+            return 0;
+        }
+        int memoSeq = failingTimeout.sequenceNumber() - 1;
+        int memoDeleted = executeUpdate(conn, "DELETE FROM " + tableName("workflow_event")
+                + " WHERE workflow_instance_id = ? AND sequence_number = ?"
+                + " AND event_type = ? AND step_name = ?", ps -> {
+            ps.setObject(1, instanceId);
+            ps.setInt(2, memoSeq);
+            ps.setString(3, EventType.TIMER_SCHEDULED.name());
+            ps.setString(4, stepName);
+        });
+        if (memoDeleted > 0) {
+            executeUpdate(conn, "DELETE FROM " + tableName("workflow_timer")
+                    + " WHERE workflow_instance_id = ? AND timer_id = ?", ps -> {
+                ps.setObject(1, instanceId);
+                ps.setString(2, AWAIT_SIGNAL_TIMER_ID_PREFIX + memoSeq);
+            });
+        }
+        return memoDeleted;
     }
 
     /**
@@ -378,20 +631,24 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * wrapping of a CAUGHT gate timeout) and wrongly delete a caught-gate
      * memo, reintroducing the very replay divergence Issue 19 fixed.
      */
-    private boolean failedBySignalTimeout(UUID instanceId) {
+    private boolean failedBySignalTimeout(Connection conn, UUID instanceId) throws SQLException {
         String sql = "SELECT payload FROM " + tableName("workflow_event")
                 + " WHERE workflow_instance_id = ? AND event_type = ?"
                 + " ORDER BY sequence_number DESC";
-        var payloads = queryList(sql, ps -> {
+        @Nullable String payloadJson;
+        try (var ps = conn.prepareStatement(sql)) {
             ps.setObject(1, instanceId);
             ps.setString(2, EventType.WORKFLOW_FAILED.name());
-        }, rs -> rs.getString("payload"));
-        if (payloads.isEmpty() || payloads.getFirst() == null) {
+            try (var rs = ps.executeQuery()) {
+                payloadJson = rs.next() ? rs.getString("payload") : null;
+            }
+        }
+        if (payloadJson == null) {
             return false;
         }
         JsonNode payload;
         try {
-            payload = parseJsonNode(payloads.getFirst());
+            payload = parseJsonNode(payloadJson);
         } catch (SerializationException e) {
             // Not ErrorDetail-shaped — cannot be a signal-timeout failure.
             return false;
@@ -404,13 +661,22 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
     // ── Signal operations ─────────────────────────────────────────────────
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The {@code INSERT} omits {@code received_at}, so the column's
+     * {@code DEFAULT now()} (migration V5) assigns it from the database clock;
+     * the caller's {@link WorkflowSignal#receivedAt()} is ignored. A database
+     * whose schema is managed by hand ({@code maestro.store.schema.mode: none})
+     * must have V5 applied, or the {@code NOT NULL} column rejects the insert.
+     */
     @Override
     public void saveSignal(WorkflowSignal signal) {
         Objects.requireNonNull(signal, "signal");
 
         String sql = "INSERT INTO " + tableName("workflow_signal")
                 + " (id, workflow_instance_id, workflow_id, signal_name, payload,"
-                + " consumed, received_at, trace_context) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+                + " consumed, trace_context) VALUES (?, ?, ?, ?, ?, ?, ?)";
 
         update(sql, ps -> {
             ps.setObject(1, signal.id());
@@ -419,9 +685,8 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             ps.setString(4, signal.signalName());
             setJsonParameter(ps, 5, signal.payload());
             ps.setBoolean(6, signal.consumed());
-            ps.setTimestamp(7, Timestamp.from(signal.receivedAt()));
             // Opaque metadata (migration V4): written verbatim, never parsed.
-            ps.setString(8, signal.traceContext());
+            ps.setString(7, signal.traceContext());
         });
     }
 
@@ -462,6 +727,26 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             throw new UncheckedSqlException("Failed to adopt orphaned signals for workflow: "
                     + workflowId, e);
         }
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One dialect-neutral statement — a {@code DELETE} with an
+     * {@code IN (SELECT ...)} subquery rather than a vendor-specific
+     * {@code DELETE ... USING} join.
+     */
+    @Override
+    public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+        Objects.requireNonNull(cutoff, "cutoff");
+
+        String sql = "DELETE FROM " + tableName("workflow_signal")
+                + " WHERE consumed = FALSE AND workflow_instance_id IN (SELECT id FROM "
+                + tableName("workflow_instance")
+                + " WHERE status IN ('" + WorkflowStatus.COMPLETED.name() + "', '"
+                + WorkflowStatus.TERMINATED.name() + "') AND completed_at < ?)";
+
+        return update(sql, ps -> ps.setTimestamp(1, Timestamp.from(cutoff)));
     }
 
     // ── Timer operations ──────────────────────────────────────────────────
@@ -595,12 +880,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * or a version conflict, and throws the appropriate exception.
      */
     private void resolveUpdateFailure(WorkflowInstance instance) {
-        String sql = "SELECT version FROM " + tableName("workflow_instance")
-                + " WHERE id = ?";
-
-        Optional<Integer> currentVersion = querySingle(sql,
-                ps -> ps.setObject(1, instance.id()),
-                rs -> rs.getInt("version"));
+        Optional<Integer> currentVersion = currentVersion(instance);
 
         if (currentVersion.isEmpty()) {
             throw new WorkflowNotFoundException(instance.workflowId());
@@ -608,6 +888,15 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         // The caller expected the stored row to still be at version - 1
         throw new OptimisticLockException(instance.workflowId(),
                 instance.version() - 1, currentVersion.get());
+    }
+
+    /** Reads the instance row's stored version; empty when the row does not exist. */
+    private Optional<Integer> currentVersion(WorkflowInstance instance) {
+        String sql = "SELECT version FROM " + tableName("workflow_instance")
+                + " WHERE id = ?";
+        return querySingle(sql,
+                ps -> ps.setObject(1, instance.id()),
+                rs -> rs.getInt("version"));
     }
 
     // ── Row mappers ───────────────────────────────────────────────────────
@@ -773,6 +1062,14 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             }
         } catch (SQLException e) {
             throw new UncheckedSqlException("Query failed: " + sql, e);
+        }
+    }
+
+    /** Executes one statement on the caller's connection (and transaction). */
+    private static int executeUpdate(Connection conn, String sql, StatementSetter setter) throws SQLException {
+        try (var ps = conn.prepareStatement(sql)) {
+            setter.set(ps);
+            return ps.executeUpdate();
         }
     }
 

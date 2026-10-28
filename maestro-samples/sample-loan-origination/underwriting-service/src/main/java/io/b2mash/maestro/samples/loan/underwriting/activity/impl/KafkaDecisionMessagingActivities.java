@@ -22,7 +22,10 @@ public class KafkaDecisionMessagingActivities implements DecisionMessagingActivi
 
     private static final Logger logger = LoggerFactory.getLogger(KafkaDecisionMessagingActivities.class);
     private static final String TOPIC = "loans.underwriting.decisions";
-    private static final Duration SEND_TIMEOUT = Duration.ofSeconds(30);
+    // Below the PT10S startToCloseTimeout of the stub that calls this activity,
+    // so a slow broker fails the send with its own error and the stub's retry
+    // policy takes over, instead of the engine timing the attempt out mid-send.
+    private static final Duration SEND_TIMEOUT = Duration.ofSeconds(8);
 
     private final KafkaTemplate<String, byte[]> kafkaTemplate;
     private final ObjectMapper objectMapper;

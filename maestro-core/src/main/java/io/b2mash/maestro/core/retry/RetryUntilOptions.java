@@ -21,7 +21,10 @@ import java.time.Duration;
  * <p><b>Thread safety:</b> Records are immutable and therefore thread-safe.
  *
  * @param maxAttempts       maximum number of supplier calls (must be &ge; 1)
- * @param maxDuration       maximum total wall-clock duration for the loop
+ * @param maxDuration       maximum total duration for the loop, measured with
+ *                          {@code workflow.currentTime()} — the executor's
+ *                          instant source: the system clock in production,
+ *                          test time under {@code TestWorkflowEnvironment}
  * @param initialInterval   initial delay between retry attempts
  * @param maxInterval       maximum delay between retry attempts
  * @param backoffMultiplier multiplier applied after each attempt (must be &ge; 1.0)

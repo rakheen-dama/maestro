@@ -204,21 +204,42 @@ public class MaestroProperties {
      * <p>Tables live in the connection's default schema; use the JDBC URL's
      * {@code currentSchema} parameter to relocate them.
      *
-     * @param type        store implementation type (e.g., {@code "postgres"})
-     * @param tablePrefix prefix for database tables
+     * @param type   store implementation type (e.g., {@code "postgres"})
+     * @param schema how Maestro manages its own tables at startup
      */
     public record StoreProperties(
             @DefaultValue("postgres") String type,
-            @DefaultValue("maestro_") String tablePrefix
+            @DefaultValue SchemaProperties schema
     ) {
         /** @return the defaults documented above */
         public static StoreProperties defaults() {
-            return new StoreProperties("postgres", "maestro_");
+            return new StoreProperties("postgres", SchemaProperties.defaults());
         }
     }
 
     /**
-     * Messaging configuration for task dispatch, signals, and lifecycle events.
+     * Schema management for Maestro's own {@code maestro_*} tables.
+     *
+     * <p>Read at startup by the Postgres store's schema initializer straight
+     * from the {@code Environment} (it runs before this class is bound); bound
+     * here so the property is documented and visible in configuration
+     * metadata. Maestro records its migrations in its own
+     * {@code maestro_schema_history} table and never touches the host
+     * application's Flyway or {@code flyway_schema_history}.
+     *
+     * @param mode {@code flyway} applies pending Maestro migrations;
+     *             {@code validate} fails startup if any are pending;
+     *             {@code none} skips — the operator owns the DDL
+     */
+    public record SchemaProperties(@DefaultValue("flyway") String mode) {
+        /** @return the defaults documented above */
+        public static SchemaProperties defaults() {
+            return new SchemaProperties("flyway");
+        }
+    }
+
+    /**
+     * Messaging configuration for signals and lifecycle events.
      *
      * @param type          messaging implementation type (e.g., {@code "kafka"})
      * @param consumerGroup Kafka consumer group; defaults to the service name at runtime
@@ -302,18 +323,21 @@ public class MaestroProperties {
     /**
      * Kafka topic names for Maestro messaging.
      *
-     * @param tasks      topic for workflow task dispatch
-     * @param signals    topic for cross-service signal delivery
+     * <p>There is no task topic: workflows start in-process, so nothing is
+     * dispatched over the transport. The former
+     * {@code maestro.messaging.topics.tasks} property fails startup if it is
+     * still set, whichever transport is in use ({@code MaestroAutoConfiguration}).
+     *
+     * @param signals     topic for cross-service signal delivery
      * @param adminEvents topic for admin dashboard lifecycle events
      */
     public record TopicsProperties(
-            @Nullable String tasks,
             @Nullable String signals,
             @DefaultValue("maestro.admin.events") String adminEvents
     ) {
         /** @return the defaults documented above */
         public static TopicsProperties defaults() {
-            return new TopicsProperties(null, null, "maestro.admin.events");
+            return new TopicsProperties(null, "maestro.admin.events");
         }
     }
 
@@ -336,7 +360,12 @@ public class MaestroProperties {
     }
 
     /**
-     * Worker pool configuration.
+     * Worker concurrency configuration ({@code maestro.worker.*}).
+     *
+     * <p>Each entry bounds one task queue on this node, enforced by the
+     * executor's {@code TaskQueueGovernor}. Queues not listed are unbounded.
+     * Limits are per node — three nodes with {@code concurrency: 10} run up to
+     * 30 workflows of that queue at once. Naming a queue twice fails startup.
      *
      * @param taskQueues per-queue concurrency settings
      */
@@ -352,9 +381,16 @@ public class MaestroProperties {
     /**
      * Per-task-queue concurrency configuration.
      *
-     * @param name                the task queue name
-     * @param concurrency         max concurrent workflow executions
-     * @param activityConcurrency max concurrent activity executions
+     * @param name                the task queue name — the bucket a workflow names in
+     *                            {@code @DurableWorkflow(taskQueue = ...)}
+     * @param concurrency         max workflow runs of this queue executing at once on
+     *                            this node; a run holds its slot from start until it
+     *                            parks on {@code sleep()}/{@code awaitSignal()} or
+     *                            reaches a terminal status, and reacquires one before
+     *                            resuming — must be {@code >= 1}
+     * @param activityConcurrency max live activity executions of this queue at once on
+     *                            this node; replayed (memoized) steps never take a
+     *                            slot — must be {@code >= 1}
      */
     public record TaskQueueProperties(
             String name,
@@ -498,13 +534,24 @@ public class MaestroProperties {
      *                            {@code SignalNotifier} (Kafka messaging
      *                            without Valkey). Bounds cross-node
      *                            signal latency in those cases.
+     * @param janitorInterval     how often the signal janitor purges
+     *                            unconsumed signals addressed to finished
+     *                            workflows. Every node runs it (the purge is
+     *                            idempotent).
+     * @param terminalRetention   how long after a workflow reaches
+     *                            {@code COMPLETED} or {@code TERMINATED} its
+     *                            unconsumed signals are kept before the
+     *                            janitor purges them. {@code FAILED} workflows
+     *                            keep theirs, because they can be retried.
      */
     public record SignalProperties(
-            @DefaultValue("30s") Duration wakeRecheckInterval
+            @DefaultValue("30s") Duration wakeRecheckInterval,
+            @DefaultValue("1h") Duration janitorInterval,
+            @DefaultValue("7d") Duration terminalRetention
     ) {
         /** @return the defaults documented above */
         public static SignalProperties defaults() {
-            return new SignalProperties(Duration.ofSeconds(30));
+            return new SignalProperties(Duration.ofSeconds(30), Duration.ofHours(1), Duration.ofDays(7));
         }
     }
 

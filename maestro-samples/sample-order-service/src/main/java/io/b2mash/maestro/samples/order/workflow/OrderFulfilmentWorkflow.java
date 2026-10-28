@@ -36,7 +36,7 @@ public class OrderFulfilmentWorkflow {
     @ActivityStub(startToCloseTimeout = "PT10S")
     private NotificationActivities notifications;
 
-    // Volatile: read by @QueryMethod from caller's thread, written by workflow's virtual thread
+    // Per-run state: Maestro creates a new workflow object for every run. Volatile because @QueryMethod runs on the caller's thread.
     private volatile String currentStep = "CREATED";
 
     @WorkflowMethod

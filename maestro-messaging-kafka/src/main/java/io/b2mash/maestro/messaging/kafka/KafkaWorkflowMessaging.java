@@ -1,7 +1,6 @@
 package io.b2mash.maestro.messaging.kafka;
 
 import io.b2mash.maestro.core.spi.SignalMessage;
-import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -33,7 +32,6 @@ import java.util.function.Consumer;
  *
  * <h2>Topic Naming</h2>
  * <ul>
- *   <li>Tasks: {@code maestro.tasks.{taskQueue}} (or fixed override)</li>
  *   <li>Signals: {@code maestro.signals.{serviceName}} (or fixed override)</li>
  *   <li>Admin events: {@code maestro.admin.events} (configurable)</li>
  * </ul>
@@ -125,13 +123,6 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
     // ── Publishing ───────────────────────────────────────────────────────
 
     @Override
-    public void publishTask(String taskQueue, TaskMessage message) {
-        var topic = resolveTaskTopic(taskQueue);
-        var key = message.workflowId();
-        send(topic, key, message);
-    }
-
-    @Override
     public void publishSignal(String serviceName, SignalMessage message) {
         var topic = resolveSignalTopic(serviceName);
         var key = message.workflowId();
@@ -154,35 +145,16 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
     // ── Subscribing ──────────────────────────────────────────────────────
 
     @Override
-    public void subscribe(String taskQueue, Consumer<TaskMessage> handler) {
-        var topic = resolveTaskTopic(taskQueue);
-        if (config.redeliveryEnabled()) {
-            KafkaDeadLetterTopicCheck.warnOnMissing(consumerFactory, topic, config.deadLetterSuffix());
-        }
-        // Nothing is caught here on purpose: a handler failure — or an
-        // undeserializable record — must reach the container's error handler so
-        // the offset is not committed. See the class Javadoc.
-        var container = createContainer(topic, record -> {
-            var message = deserialize(record.value(), TaskMessage.class);
-            if (tracePropagation == null) {
-                handler.accept(message);
-            } else {
-                tracePropagation.runWithExtractedContext(record.headers(), () -> handler.accept(message));
-            }
-        });
-        containers.add(container);
-        container.start();
-        logger.info("Subscribed to task queue '{}' on topic '{}'", taskQueue, topic);
-    }
-
-    @Override
     public void subscribeSignals(String serviceName, Consumer<SignalMessage> handler) {
         var topic = resolveSignalTopic(serviceName);
         if (config.redeliveryEnabled()) {
             KafkaDeadLetterTopicCheck.warnOnMissing(consumerFactory, topic, config.deadLetterSuffix());
         }
-        // The only place the raw ConsumerRecord — and therefore its W3C
-        // headers — is visible before the payload-typed handler runs.
+        // Nothing is caught here on purpose: a handler failure — or an
+        // undeserializable record — must reach the container's error handler so
+        // the offset is not committed. See the class Javadoc. This is also the
+        // only place the raw ConsumerRecord — and therefore its W3C headers — is
+        // visible before the payload-typed handler runs.
         var container = createContainer(topic, record -> {
             var message = deserialize(record.value(), SignalMessage.class);
             if (tracePropagation == null) {
@@ -282,12 +254,6 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
             throw new IllegalArgumentException(
                     "Failed to deserialize message to " + type.getName(), e);
         }
-    }
-
-    private String resolveTaskTopic(String taskQueue) {
-        return config.tasksTopic() != null
-                ? config.tasksTopic()
-                : "maestro.tasks." + taskQueue;
     }
 
     private String resolveSignalTopic(String serviceName) {

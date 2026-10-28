@@ -58,7 +58,7 @@ final class RecoveryPoller {
      *
      * @throws IllegalStateException if already started
      */
-    void start() {
+    synchronized void start() {
         if (!started.compareAndSet(false, true)) {
             throw new IllegalStateException("Recovery poller already started");
         }
@@ -72,7 +72,7 @@ final class RecoveryPoller {
     /**
      * Stops the polling loop. After stopping, the poller cannot be restarted.
      */
-    void stop() {
+    synchronized void stop() {
         running = false;
         var thread = pollerThread;
         if (thread != null) {

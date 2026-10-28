@@ -3,7 +3,7 @@
 Two Spring Boot services demonstrating Maestro's durable workflow capabilities across services:
 
 - **sample-order-service** — REST API for placing orders, runs the `OrderFulfilmentWorkflow`
-- **sample-payment-gateway** — Processes payments with durable retries, runs the `PaymentProcessingWorkflow`
+- **sample-payment-gateway** — Processes payments under a retry policy (a declined card is non-retryable), runs the `PaymentProcessingWorkflow`
 
 ## Architecture
 
@@ -118,7 +118,7 @@ curl -s -X POST http://localhost:8081/orders \
 Watch the logs — you'll see:
 1. Inventory reserved
 2. Payment request sent to Kafka
-3. Payment gateway immediately declines
+3. Payment gateway immediately declines (`PaymentDeclinedException` is declared non-retryable on the provider stub, so no retry happens; the workflow catches it as `ActivityExecutionException` and checks `causedBy`)
 4. Order workflow receives failure signal
 5. **Saga compensation**: inventory reservation is automatically released
 
@@ -158,8 +158,6 @@ Prerequisites: PostgreSQL 16+, Kafka 3.x, Valkey/Redis running locally.
 
 ```bash
 # Create Kafka topics (see docker-compose.yml for the full list)
-kafka-topics.sh --bootstrap-server localhost:9092 --create --topic maestro.tasks.orders --partitions 3
-kafka-topics.sh --bootstrap-server localhost:9092 --create --topic maestro.tasks.payments --partitions 3
 kafka-topics.sh --bootstrap-server localhost:9092 --create --topic maestro.signals.order-service --partitions 3
 kafka-topics.sh --bootstrap-server localhost:9092 --create --topic maestro.signals.payment-gateway --partitions 3
 kafka-topics.sh --bootstrap-server localhost:9092 --create --topic maestro.admin.events --partitions 1
@@ -181,7 +179,7 @@ kafka-topics.sh --bootstrap-server localhost:9092 --create --topic payments.resu
 | **Activity memoization** | Replay after crash skips completed steps |
 | **Cross-service signals** | Payment result flows Order → Kafka → Payment → Kafka → Order |
 | **Saga compensation** | `DECLINE_ME` triggers automatic inventory release |
-| **Durable retries** | Payment gateway retries 30x with exponential backoff |
+| **Retry policies** | Payment gateway retries a provider outage up to 30x with exponential backoff (attempt counter in memory — a crash restarts the schedule; a completed charge is never re-executed); a declined card is non-retryable |
 | **Signal self-recovery** | Signals persist to Postgres, delivered when workflow is ready |
 | **Workflow queries** | `GET /orders/{id}/status` reads live workflow state |
 

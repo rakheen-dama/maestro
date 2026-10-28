@@ -29,6 +29,23 @@ public interface SignalNotifier {
      * <p>This is best-effort — failures are silently tolerated by the
      * engine. Implementations should log warnings but never throw.
      *
+     * <p><b>Must return promptly — it must not block the caller</b> on the
+     * transport: send the notification without waiting for its
+     * acknowledgement (an asynchronous command, or a hand-off to another
+     * thread), so an outage of the notification backend costs no caller any
+     * time. Delivery is best-effort: a notification that is lost, late, or
+     * arrives for a signal already consumed is covered by the receiving
+     * await's wake-recheck ({@code maestro.signal.wake-recheck-interval}),
+     * which re-reads the store. The engine calls this only after the signal
+     * is durably persisted, and additionally on a thread of its own that it
+     * never awaits, so a misbehaving implementation cannot stall
+     * {@code signal()} (Issue 32) — but it would still park one thread per
+     * signal for as long as it blocks, and once the engine's in-flight cap
+     * (1,000 per node) is reached further notifications are dropped
+     * outright. Implementations should rate-limit
+     * their outage logging (for example one {@code WARN} per outage, not one
+     * per signal).
+     *
      * @param workflowId the target workflow's business ID
      * @param signalName the signal name
      */

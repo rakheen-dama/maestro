@@ -47,6 +47,16 @@ class TracingParallelBranchIT extends PostgresIntegrationSupport {
     private static final Duration BOUND = Duration.ofSeconds(30);
     private static final Duration LOCK_TTL = Duration.ofSeconds(60);
 
+    /**
+     * Bound for a wake that can only come from the durable re-check. Well
+     * under the engine's 30s default wake-recheck interval, so a fixture that
+     * relies on that default cannot pass it.
+     */
+    private static final Duration FOREIGN_FIRE_BOUND = Duration.ofSeconds(10);
+
+    /** {@code maestro.signal.wake-recheck-interval} for the parking node. */
+    private static final Duration WAKE_RECHECK_INTERVAL = Duration.ofMillis(250);
+
     private static final String SEGMENT_SPAN = "maestro.workflow.run";
     private static final String ACTIVITY_SPAN = "maestro.activity";
 
@@ -65,7 +75,7 @@ class TracingParallelBranchIT extends PostgresIntegrationSupport {
                     .build();
             node.registerActivities(ChainActivities.class,
                     new CountingActivities.RecordingChainActivities(recorder));
-            node.registerWorkflow(new TestWorkflows.ParallelWorkflow());
+            node.registerWorkflow(TestWorkflows.ParallelWorkflow.class);
 
             var workflowId = MaestroEngineHarness.uniqueWorkflowId("tracing-fanout");
             var handle = node.start(workflowId, TestWorkflows.ParallelWorkflow.class, "seed");
@@ -115,40 +125,95 @@ class TracingParallelBranchIT extends PostgresIntegrationSupport {
     @DisplayName("a fork-first workflow whose branches park still leaves no unclosed segment "
             + "and no orphan parent")
     void parkingBranchesLeaveNoOrphanParent() throws Exception {
-        var recorder = new CountingActivities.Recorder();
-
-        try (var otel = new OtelTracingFixture("parking-fanout-node")) {
-            var node = MaestroEngineHarness.builder(store, objectMapper)
-                    .serviceName("parking-fanout-node")
-                    .lock(newLock())
-                    .instanceLockTtl(LOCK_TTL)
-                    .observer(new TracingEngineObserver(otel.tracer(), otel.propagator()))
-                    .build();
-            node.registerActivities(ChainActivities.class,
-                    new CountingActivities.RecordingChainActivities(recorder));
-            node.registerWorkflow(new ParkingBranchWorkflow());
+        try (var otel = new OtelTracingFixture("parking-fanout-node");
+             var node = parkingNode(otel)) {
             node.startTimerPoller(Duration.ofMillis(100), 20);
-
-            var workflowId = MaestroEngineHarness.uniqueWorkflowId("tracing-fanout-park");
-            var handle = node.start(workflowId, ParkingBranchWorkflow.class, "seed");
-            assertEquals(WorkflowStatus.COMPLETED, handle.awaitTerminal(BOUND));
-            node.close();
-
-            var spans = otel.finishedSpans();
-            Set<String> exportedIds = spans.stream().map(SpanData::getSpanId).collect(Collectors.toSet());
-            var orphans = spans.stream()
-                    .filter(sp -> sp.getParentSpanContext().isValid())
-                    .filter(sp -> !sp.getParentSpanContext().isRemote())
-                    .filter(sp -> !exportedIds.contains(sp.getParentSpanId()))
-                    .toList();
-            assertTrue(orphans.isEmpty(),
-                    () -> "a parking branch opened a segment nothing closed; orphaned spans: "
-                            + orphans.stream()
-                            .map(sp -> sp.getName() + "(parent=" + sp.getParentSpanId() + ")").toList());
-            assertTrue(otel.spansNamed(SEGMENT_SPAN).size() <= 1,
-                    () -> "a parking branch must not mint its own run segment; got "
-                            + otel.spansNamed(SEGMENT_SPAN).size());
+            runParkingFanOut(node, otel, BOUND);
         }
+    }
+
+    /**
+     * Pins the flake this suite once had in the full integration run: the
+     * parking branch's timer can be fired by a timer poller that is <em>not</em>
+     * this node's.
+     *
+     * <p>{@code getDueTimers} is not scoped to a service — any poller over the
+     * same store fires any due timer, and the unpark it performs lands in
+     * <em>its</em> JVM-local parking lot. In the full suite that poller was
+     * real: every {@code @SpringBootTest} Kafka suite left its cached
+     * application context running (closed after each suite since R53 —
+     * {@code KafkaSpringIntegrationSupport}), each with a timer poller (5s
+     * interval, its own leader key) over the shared Postgres. Whenever one of
+     * them polled between the
+     * 50ms sleep falling due and this node's own 100ms poll, the timer row
+     * went {@code FIRED} with no local wake, and the parked branch resumed
+     * only on its durable re-check — after the default 30s wake-recheck
+     * interval, which is exactly this suite's {@link #BOUND}. That is the
+     * engine's documented cross-node wake contract working as designed; the
+     * defect was the fixture depending on winning the poll race. Here the
+     * foreign poller is the only one, so the race is lost every time.
+     */
+    @Test
+    @DisplayName("the parking fan-out still completes when another node's timer poller fires "
+            + "the branch's timer")
+    void parkingBranchesCompleteWhenAForeignPollerFiresTheTimer() throws Exception {
+        try (var otel = new OtelTracingFixture("parking-fanout-node");
+             var node = parkingNode(otel);
+             var foreignPoller = MaestroEngineHarness.builder(store, objectMapper)
+                     .serviceName("foreign-timer-poller")
+                     .lock(newLock())
+                     .build()) {
+            foreignPoller.startTimerPoller(Duration.ofMillis(100), 20);
+            runParkingFanOut(node, otel, FOREIGN_FIRE_BOUND);
+        }
+    }
+
+    /**
+     * Builds the parking fan-out node. Its short wake-recheck interval is
+     * what lets a parked branch resume promptly from the durable
+     * {@code FIRED} row when another poller fired its timer (see
+     * {@link #parkingBranchesCompleteWhenAForeignPollerFiresTheTimer}). The
+     * caller closes it with try-with-resources even when an assertion fails,
+     * so a failed run never leaves a timer poller behind to fire later
+     * suites' timers.
+     */
+    private MaestroEngineHarness parkingNode(OtelTracingFixture otel) {
+        var node = MaestroEngineHarness.builder(store, objectMapper)
+                .serviceName("parking-fanout-node")
+                .lock(newLock())
+                .instanceLockTtl(LOCK_TTL)
+                .wakeRecheckInterval(WAKE_RECHECK_INTERVAL)
+                .observer(new TracingEngineObserver(otel.tracer(), otel.propagator()))
+                .build();
+        node.registerActivities(ChainActivities.class,
+                new CountingActivities.RecordingChainActivities(new CountingActivities.Recorder()));
+        node.registerWorkflow(ParkingBranchWorkflow.class);
+        return node;
+    }
+
+    private void runParkingFanOut(MaestroEngineHarness node, OtelTracingFixture otel, Duration bound) {
+        var workflowId = MaestroEngineHarness.uniqueWorkflowId("tracing-fanout-park");
+        var handle = node.start(workflowId, ParkingBranchWorkflow.class, "seed");
+        assertEquals(WorkflowStatus.COMPLETED, handle.awaitTerminal(bound));
+        // Closing ends the run segments so they are exported before the
+        // assertions read them. Idempotent: the try-with-resources close that
+        // follows is a no-op.
+        node.close();
+
+        var spans = otel.finishedSpans();
+        Set<String> exportedIds = spans.stream().map(SpanData::getSpanId).collect(Collectors.toSet());
+        var orphans = spans.stream()
+                .filter(sp -> sp.getParentSpanContext().isValid())
+                .filter(sp -> !sp.getParentSpanContext().isRemote())
+                .filter(sp -> !exportedIds.contains(sp.getParentSpanId()))
+                .toList();
+        assertTrue(orphans.isEmpty(),
+                () -> "a parking branch opened a segment nothing closed; orphaned spans: "
+                        + orphans.stream()
+                        .map(sp -> sp.getName() + "(parent=" + sp.getParentSpanId() + ")").toList());
+        assertTrue(otel.spansNamed(SEGMENT_SPAN).size() <= 1,
+                () -> "a parking branch must not mint its own run segment; got "
+                        + otel.spansNamed(SEGMENT_SPAN).size());
     }
 
     /**

@@ -1,0 +1,725 @@
+# source=gh run view 33463346389 --log-failed  repo=rakheen-dama/maestro  archived=2026-10-27T22:30:00Z  by_head=9a399e8f1efd411a01a886242534e12814672f9e
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	﻿2026-09-01T02:39:22.8701443Z Current runner version: '2.337.0'
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8726984Z ##[group]Runner Image Provisioner
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8728178Z Hosted Compute Agent
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8728905Z Version: 20260819.586
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8729577Z Commit: 3cc4a88dfa507ef76119ad1bb3eccc6378bb2b76
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8730332Z Build Date: 2026-08-18T23:20:18Z
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8731164Z Worker ID: {86a6784a-3bc3-4056-b6fa-3a09fef132e4}
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8731916Z Azure Region: northcentralus
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8732586Z ##[endgroup]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8734192Z ##[group]Operating System
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8734845Z Ubuntu
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8735571Z 24.04.4
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8736150Z LTS
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8736733Z ##[endgroup]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8737330Z ##[group]Runner Image
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8737957Z Image: ubuntu-24.04
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8738640Z Version: 20260823.283.1
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8739933Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20260823.283/images/ubuntu/Ubuntu2404-Readme.md
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8741523Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20260823.283
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8742568Z ##[endgroup]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8743918Z ##[group]GITHUB_TOKEN Permissions
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8746110Z Contents: read
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8746829Z Metadata: read
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8747458Z ##[endgroup]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8749887Z Secret source: Actions
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.8751317Z Prepare workflow directory
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.9082878Z Prepare all required actions
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:22.9132104Z Getting action download info
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:23.1528598Z Download action repository 'actions/checkout@v4' (SHA:11d5960a326750d5838078e36cf38b85af677262)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:23.2457505Z Download action repository 'actions/setup-java@v4' (SHA:cf277c60eb25467037889841efdb72551f06f6c3)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:23.6773410Z Download action repository 'gradle/actions@v4' (SHA:ed408507eac070d1f99cc633dbcf757c94c7933a)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.5660503Z Download action repository 'actions/upload-artifact@v4' (SHA:ea165f8d65b6e75b540449e92b4886f43607fa02)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.7879640Z Complete job name: Chaos PR-gate (3x consecutive)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.8600373Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.8608591Z ##[group]Run actions/checkout@v4
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.8609085Z with:
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.8609382Z   repository: rakheen-dama/maestro
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.8611880Z   token: ***
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.8612160Z   ssh-strict: true
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.8612435Z   ssh-user: git
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.8612721Z   persist-credentials: true
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.8613362Z   clean: true
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.8613661Z   sparse-checkout-cone-mode: true
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.8613989Z   fetch-depth: 1
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.8614292Z   fetch-tags: false
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.8614579Z   show-progress: true
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.8614860Z   lfs: false
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.8615170Z   submodules: false
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.8615448Z   set-safe-directory: true
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.8615765Z   allow-unsafe-pr-checkout: false
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.8616340Z ##[endgroup]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9630842Z Syncing repository: rakheen-dama/maestro
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9632278Z ##[group]Getting Git version info
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9632904Z Working directory is '/home/runner/work/maestro/maestro'
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9633739Z [command]/usr/bin/git version
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9669982Z git version 2.55.0
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9688256Z ##[endgroup]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9701246Z Temporarily overriding HOME='/home/runner/work/_temp/d5206414-370a-42eb-8283-fe9afa360f57' before making global git config changes
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9702249Z Adding repository directory to the temporary git global config as a safe directory
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9706588Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/maestro/maestro
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9749210Z Deleting the contents of '/home/runner/work/maestro/maestro'
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9752963Z ##[group]Initializing the repository
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9757659Z [command]/usr/bin/git init /home/runner/work/maestro/maestro
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9827778Z hint: Using 'master' as the name for the initial branch. This default branch name
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9828831Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9829619Z hint: to use in all of your new repositories, which will suppress this warning,
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9830285Z hint: call:
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9830565Z hint:
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9830968Z hint: 	git config --global init.defaultBranch <name>
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9831386Z hint:
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9831783Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9832374Z hint: 'development'. The just-created branch can be renamed via this command:
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9832882Z hint:
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9833527Z hint: 	git branch -m <name>
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9833848Z hint:
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9834285Z hint: Disable this message with "git config set advice.defaultBranchName false"
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9839258Z Initialized empty Git repository in /home/runner/work/maestro/maestro/.git/
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9848858Z [command]/usr/bin/git remote add origin https://github.com/rakheen-dama/maestro
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9888390Z ##[endgroup]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9889186Z ##[group]Disabling automatic garbage collection
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9893368Z [command]/usr/bin/git config --local gc.auto 0
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9923750Z ##[endgroup]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9924471Z ##[group]Setting up auth
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9930495Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:24.9961647Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:25.0271071Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:25.0304362Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:25.0539649Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:25.0575873Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:25.0815224Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:25.0850312Z ##[endgroup]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:25.0850931Z ##[group]Fetching the repository
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:25.0859098Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +66cdf952a17987774a31c08e9afb1d316a8d2349:refs/remotes/origin/main
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.0924933Z From https://github.com/rakheen-dama/maestro
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.0929408Z  * [new ref]         66cdf952a17987774a31c08e9afb1d316a8d2349 -> origin/main
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.0932253Z ##[endgroup]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.0933223Z ##[group]Determining the checkout info
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.0934035Z ##[endgroup]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.0939549Z [command]/usr/bin/git sparse-checkout disable
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.0985260Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.1021258Z ##[group]Checking out the ref
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.1025844Z [command]/usr/bin/git checkout --progress --force -B main refs/remotes/origin/main
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.1795004Z Switched to a new branch 'main'
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.1797801Z branch 'main' set up to track 'origin/main'.
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.1805944Z ##[endgroup]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.1848278Z [command]/usr/bin/git log -1 --format=%H
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.1872303Z 66cdf952a17987774a31c08e9afb1d316a8d2349
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.2159186Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.2161184Z ##[group]Run actions/setup-java@v4
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.2161457Z with:
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.2161668Z   java-version: 25
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.2161894Z   distribution: temurin
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.2162139Z   java-package: jdk
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.2162362Z   check-latest: false
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.2162579Z   server-id: github
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.2162811Z   server-username: GITHUB_ACTOR
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.2163261Z   server-password: GITHUB_TOKEN
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.2163525Z   overwrite-settings: true
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.2163776Z   job-status: success
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.2166113Z   token: ***
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.2166339Z ##[endgroup]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.3828445Z ##[warning]setup-java v4 is deprecated and will no longer receive updates. Please migrate to actions/setup-java@v5.
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.3835523Z ##[group]Installed distributions
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.3869307Z Resolved Java 25.0.4+1 from tool-cache
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.3869795Z Setting Java 25.0.4+1 as the default
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.3879222Z (node:2296) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.3880100Z (Use `node --trace-deprecation ...` to show where the warning was created)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.3882610Z Creating toolchains.xml for JDK version 25 from temurin
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.3952544Z Writing to /home/runner/.m2/toolchains.xml
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.3952910Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.3953296Z Java configuration:
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.3953670Z   Distribution: temurin
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.3954028Z   Version: 25.0.4+1
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.3954547Z   Path: /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/25.0.4-1/x64
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.3955011Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.3955462Z ##[endgroup]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.3983764Z Creating settings.xml with server-id: github
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4000205Z Writing to /home/runner/.m2/settings.xml
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4259672Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4260999Z ##[group]Run gradle/actions/setup-gradle@v4
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4261293Z with:
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4261514Z   cache-disabled: false
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4261777Z   cache-read-only: false
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4262025Z   cache-write-only: false
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4262284Z   cache-overwrite-existing: false
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4262561Z   cache-cleanup: on-success
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4262879Z   gradle-home-cache-includes: caches
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	notifications
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4263464Z   add-job-summary: always
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4263731Z   add-job-summary-as-pr-comment: never
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4264025Z   dependency-graph: disabled
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4264377Z   dependency-graph-report-dir: dependency-graph-reports
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4264748Z   dependency-graph-continue-on-failure: true
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4265062Z   build-scan-publish: false
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4265319Z   validate-wrappers: true
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4265574Z   allow-snapshot-wrappers: false
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4265858Z   gradle-home-cache-strict-match: false
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4266149Z   workflow-job-context: null
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4268525Z   github-token: ***
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4268762Z env:
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4269081Z   JAVA_HOME: /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/25.0.4-1/x64
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4269566Z   JAVA_HOME_25_X64: /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/25.0.4-1/x64
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:26.4270163Z ##[endgroup]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:29.4134002Z Merged default JDK locations into /home/runner/.m2/toolchains.xml
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:29.4135863Z Preparing cache for cleanup.
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:29.4139022Z ##[group]Restore Gradle state from cache
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:29.5295599Z Cache hit for: gradle-home-v1|Linux-X64|chaos-pr-gate[3f7cb471700b33cbd2621e3a30e0f2b2]-66cdf952a17987774a31c08e9afb1d316a8d2349
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.1335877Z Received 11709258 of 11709258 (100.0%), 21.8 MBs/sec
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.1337151Z Cache Size: ~11 MB (11709258 B)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.1498225Z [command]/usr/bin/tar -xf /home/runner/work/_temp/9e371dce-230e-40e1-a569-4c403e6b12f0/cache.tzst -P -C /home/runner/work/maestro/maestro --use-compress-program unzstd
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.3112387Z Cache restored successfully
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.3123331Z Restored cache entry with key gradle-home-v1|Linux-X64|chaos-pr-gate[3f7cb471700b33cbd2621e3a30e0f2b2]-66cdf952a17987774a31c08e9afb1d316a8d2349 to /home/runner/.gradle/caches,/home/runner/.gradle/notifications,/home/runner/.gradle/.setup-gradle in 898ms
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.4214381Z Cache hit for: gradle-generated-gradle-jars-v1-6a07800ae0d4914b0ad73d4d6010da28
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.4245158Z Cache hit for: gradle-transforms-v1-19fb88f0275566a3cd1154cb6d8874e2
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.4304769Z Cache hit for: gradle-kotlin-dsl-v1-c100f629b7faf6a3fb7c1121fa817d11
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.4346417Z Cache hit for: gradle-groovy-dsl-v1-e6c876ba86ea61a1bc6c9e34f7bac451
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.4444069Z Cache hit for: gradle-wrapper-zips-v1-889283e8efdc35d60983ea39dc2829d0
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.4554802Z Cache hit for: gradle-instrumented-jars-v1-850653db6a4f8efbc212544b29cda138
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.4574830Z Cache hit for: gradle-dependencies-v1-d0384b9f5067886c65a65aa9d9ea0227
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.5069455Z Received 464800 of 464800 (100.0%), 9.9 MBs/sec
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.5070056Z Cache Size: ~0 MB (464800 B)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.5098591Z [command]/usr/bin/tar -xf /home/runner/work/_temp/268978b7-f040-4758-b013-5856cad45b83/cache.tzst -P -C /home/runner/work/maestro/maestro --use-compress-program unzstd
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.7577678Z Cache restored successfully
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.7638371Z Restored cache entry with key gradle-kotlin-dsl-v1-c100f629b7faf6a3fb7c1121fa817d11 to /home/runner/.gradle/caches/*/kotlin-dsl/accessors/*/,/home/runner/.gradle/caches/*/kotlin-dsl/scripts/*/ in 450ms
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.7821802Z Received 108892 of 108892 (100.0%), 0.4 MBs/sec
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.7822391Z Cache Size: ~0 MB (108892 B)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.7850608Z [command]/usr/bin/tar -xf /home/runner/work/_temp/efcd7ed9-1df4-42e6-baf8-9b28bf4f434d/cache.tzst -P -C /home/runner/work/maestro/maestro --use-compress-program unzstd
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.8080869Z Cache restored successfully
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.8085085Z Restored cache entry with key gradle-groovy-dsl-v1-e6c876ba86ea61a1bc6c9e34f7bac451 to /home/runner/.gradle/caches/*/groovy-dsl/*/ in 494ms
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.8377007Z Received 68722 of 68722 (100.0%), 0.3 MBs/sec
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.8377515Z Cache Size: ~0 MB (68722 B)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.8406149Z [command]/usr/bin/tar -xf /home/runner/work/_temp/138ecf5a-0d77-433e-a4a1-2a191f44c51d/cache.tzst -P -C /home/runner/work/maestro/maestro --use-compress-program unzstd
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.8559147Z Cache restored successfully
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:30.8566808Z Restored cache entry with key gradle-instrumented-jars-v1-850653db6a4f8efbc212544b29cda138 to /home/runner/.gradle/caches/jars-*/*/ in 543ms
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:31.3877206Z Received 41615173 of 41615173 (100.0%), 47.0 MBs/sec
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:31.3879501Z Cache Size: ~40 MB (41615173 B)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:31.4715627Z [command]/usr/bin/tar -xf /home/runner/work/_temp/fdc8b930-6e4c-4c3d-a607-85babe57a47c/cache.tzst -P -C /home/runner/work/maestro/maestro --use-compress-program unzstd
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:31.5835243Z Received 104857600 of 134895404 (77.7%), 98.6 MBs/sec
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:31.5854616Z Received 50331648 of 289311010 (17.4%), 47.9 MBs/sec
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:31.6244867Z Received 46137344 of 81372938 (56.7%), 42.8 MBs/sec
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:31.8046285Z Received 134895404 of 134895404 (100.0%), 104.4 MBs/sec
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:31.8047274Z Cache Size: ~129 MB (134895404 B)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:31.8454962Z Cache restored successfully
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:31.8481059Z Restored cache entry with key gradle-generated-gradle-jars-v1-6a07800ae0d4914b0ad73d4d6010da28 to /home/runner/.gradle/caches/9.2.0/generated-gradle-jars/gradle-api-9.2.0.jar in 1535ms
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:31.8495442Z [command]/usr/bin/tar -xf /home/runner/work/_temp/ed637a75-4017-4de6-ab32-c56b83f77893/cache.tzst -P -C /home/runner/work/maestro/maestro --use-compress-program unzstd
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:31.8794542Z Received 81372938 of 81372938 (100.0%), 60.5 MBs/sec
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:31.8802364Z Cache Size: ~78 MB (81372938 B)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:31.9251226Z [command]/usr/bin/tar -xf /home/runner/work/_temp/6fd57009-32a5-4e55-9127-6ca3916f5320/cache.tzst -P -C /home/runner/work/maestro/maestro --use-compress-program unzstd
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:32.2263672Z Cache restored successfully
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:32.3275851Z Restored cache entry with key gradle-wrapper-zips-v1-889283e8efdc35d60983ea39dc2829d0 to /home/runner/.gradle/wrapper/dists/gradle-9.2.0-bin/11i5gvueggl8a5cioxuftxrik in 2014ms
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:32.5851019Z Received 192937984 of 289311010 (66.7%), 91.8 MBs/sec
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:32.7716152Z Cache restored successfully
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:32.7795127Z Restored cache entry with key gradle-transforms-v1-19fb88f0275566a3cd1154cb6d8874e2 to /home/runner/.gradle/caches/transforms-4/*/,/home/runner/.gradle/caches/*/transforms/*/ in 2465ms
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:33.1002211Z Received 289311010 of 289311010 (100.0%), 109.5 MBs/sec
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:33.1004502Z Cache Size: ~276 MB (289311010 B)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:33.1032074Z [command]/usr/bin/tar -xf /home/runner/work/_temp/7ab40aef-2c83-4c3d-b6f9-4da8a4722456/cache.tzst -P -C /home/runner/work/maestro/maestro --use-compress-program unzstd
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:33.5530513Z Cache restored successfully
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:33.5663899Z Restored cache entry with key gradle-dependencies-v1-d0384b9f5067886c65a65aa9d9ea0227 to /home/runner/.gradle/caches/modules-*/files-*/*/*/*/* in 3253ms
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:34.1420427Z ##[endgroup]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:34.1732397Z ##[group]All Gradle Wrapper jars are valid
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:34.1734017Z ✓ Found known Gradle Wrapper JAR files:
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:34.1734795Z   423cb469ccc0ecc31f0e4e1c309976198ccb734cdcbb7029d4bda0f18f57e8d9 gradle/wrapper/gradle-wrapper.jar
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:34.1735598Z ##[endgroup]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:34.2304401Z ##[group]Run for i in 1 2 3; do
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:34.2304985Z [36;1mfor i in 1 2 3; do[0m
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:34.2305537Z [36;1m  echo "=== chaos PR-gate run $i of 3 ==="[0m
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:34.2306285Z [36;1m  ./gradlew :maestro-integration-tests:e2eTest --rerun-tasks[0m
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:34.2307187Z [36;1mdone[0m
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:34.2362691Z shell: /usr/bin/bash -e {0}
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:34.2363354Z env:
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:34.2363924Z   JAVA_HOME: /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/25.0.4-1/x64
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:34.2364834Z   JAVA_HOME_25_X64: /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/25.0.4-1/x64
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:34.2365598Z   GRADLE_ACTION_ID: gradle/actions/setup-gradle
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:34.2366178Z   GRADLE_USER_HOME: /home/runner/.gradle
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:34.2366715Z   GRADLE_BUILD_ACTION_SETUP_COMPLETED: true
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:34.2367265Z   GRADLE_BUILD_ACTION_CACHE_RESTORED: true
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:34.2368111Z   DEVELOCITY_INJECTION_INIT_SCRIPT_NAME: gradle-actions.inject-develocity.init.gradle
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:34.2368958Z   DEVELOCITY_INJECTION_CUSTOM_VALUE: gradle-actions
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:34.2369547Z   GITHUB_DEPENDENCY_GRAPH_ENABLED: false
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:34.2370047Z ##[endgroup]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:34.2469479Z === chaos PR-gate run 1 of 3 ===
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:38.0821366Z Starting a Gradle Daemon (subsequent builds will be faster)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:48.6819868Z > Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:48.8808271Z > Task :build-logic:generateExternalPluginSpecBuilders
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:48.8811879Z > Task :build-logic:extractPrecompiledScriptPluginPlugins
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:49.2802610Z > Task :build-logic:generateScriptPluginAdapters
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:49.2803642Z > Task :build-logic:pluginDescriptors
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:49.2804013Z > Task :build-logic:processResources
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:50.1810089Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:50.1834451Z > Configure project :maestro-admin
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:50.1836055Z Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:55.1804208Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:55.1822630Z > Task :build-logic:compilePluginsBlocks
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:56.2801697Z > Task :build-logic:generatePrecompiledScriptPluginAccessors
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:58.2820387Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:58.2834096Z > Task :build-logic:compileKotlin
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:58.2854575Z Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:58.2872490Z w: ⚠️ Inconsistent JVM Target Compatibility Between Java and Kotlin Tasks
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:58.2914080Z Inconsistent JVM-target compatibility detected for tasks 'compileJava' (25) and 'compileKotlin' (24).
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:58.2932860Z This will become an error in Gradle 8.0.
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:58.2973964Z Solution: Consider using JVM Toolchain: https://kotl.in/gradle/jvm/toolchain
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:58.2977934Z Learn more about JVM-target validation: https://kotl.in/gradle/jvm/target-validation
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:39:58.2978957Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:07.6801551Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:07.6802624Z > Task :build-logic:compileJava NO-SOURCE
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:07.6803434Z > Task :build-logic:classes
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:07.8824236Z > Task :build-logic:jar
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:19.8822125Z > Task :maestro-integration-tests:compileJava NO-SOURCE
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:19.8858180Z > Task :maestro-lock-valkey:processResources
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:19.8864746Z > Task :maestro-lock-postgres:processResources
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:19.9800850Z > Task :maestro-messaging-postgres:processResources
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:19.9801812Z > Task :maestro-messaging-kafka:processResources
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:19.9814095Z > Task :maestro-store-jdbc:processResources NO-SOURCE
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:19.9821999Z > Task :maestro-integration-tests:processResources NO-SOURCE
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:19.9822799Z > Task :maestro-integration-tests:classes UP-TO-DATE
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:19.9823625Z > Task :maestro-spring-boot-starter:processResources
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:19.9824305Z > Task :maestro-integration-tests:processTestResources
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:19.9825437Z > Task :maestro-store-postgres:processResources
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:19.9825986Z > Task :maestro-test:processResources NO-SOURCE
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:19.9826813Z > Task :maestro-samples:sample-loan-origination:verification-gateway-service:processResources
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:19.9827912Z > Task :maestro-samples:sample-loan-origination:loan-application-service:processResources
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:19.9828859Z > Task :maestro-samples:sample-loan-origination:underwriting-service:processResources
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:22.1806627Z > Task :maestro-core:compileJava
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:22.2807911Z > Task :maestro-core:processResources NO-SOURCE
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:22.2812055Z > Task :maestro-core:classes
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:22.2818358Z > Task :maestro-core:jar
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:22.7814458Z > Task :maestro-store-jdbc:compileJava
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:22.7843692Z > Task :maestro-store-jdbc:classes
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:22.7844286Z > Task :maestro-store-jdbc:jar
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:22.8800575Z > Task :maestro-test:compileJava
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:22.8806887Z > Task :maestro-test:classes
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:22.8807955Z > Task :maestro-test:jar
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:23.4864577Z > Task :maestro-spring-boot-starter:compileJava
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:23.7824668Z > Task :maestro-lock-postgres:compileJava
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:23.9806286Z > Task :maestro-store-postgres:compileJava
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:23.9821244Z > Task :maestro-lock-postgres:classes
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:23.9822117Z > Task :maestro-lock-valkey:compileJava
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:23.9823128Z > Task :maestro-lock-valkey:classes
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:23.9824216Z > Task :maestro-lock-postgres:jar
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:23.9824962Z > Task :maestro-spring-boot-starter:classes
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:23.9825732Z > Task :maestro-lock-valkey:jar
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:23.9826436Z > Task :maestro-store-postgres:classes
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:23.9827236Z > Task :maestro-messaging-postgres:compileJava
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:23.9828044Z > Task :maestro-messaging-postgres:classes
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:23.9828809Z > Task :maestro-store-postgres:jar
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:23.9829545Z > Task :maestro-messaging-postgres:jar
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:24.0831561Z > Task :maestro-spring-boot-starter:jar
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:24.0847152Z /home/runner/work/maestro/maestro/maestro-messaging-kafka/src/main/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagation.java:156: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:24.0849004Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:24.0849853Z         try (var ignored = tracer.withSpan(span)) {
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:24.0857699Z                  ^
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:24.0858255Z > Task :maestro-messaging-kafka:compileJava
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:24.0859205Z 1 warning
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:24.0859427Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:24.0859927Z > Task :maestro-messaging-kafka:classes
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:24.0860721Z > Task :maestro-messaging-kafka:jar
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:24.5804682Z > Task :maestro-samples:sample-loan-origination:underwriting-service:compileJava
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:24.5834246Z > Task :maestro-samples:sample-loan-origination:underwriting-service:classes
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:24.5864447Z > Task :maestro-samples:sample-loan-origination:underwriting-service:resolveMainClassName
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:24.5865756Z > Task :maestro-samples:sample-loan-origination:verification-gateway-service:compileJava
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:24.5904179Z > Task :maestro-samples:sample-loan-origination:verification-gateway-service:classes
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:24.6804179Z > Task :maestro-samples:sample-loan-origination:verification-gateway-service:resolveMainClassName
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:24.6844461Z > Task :maestro-samples:sample-loan-origination:loan-application-service:compileJava
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:24.6874084Z > Task :maestro-samples:sample-loan-origination:loan-application-service:classes
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:24.6884147Z > Task :maestro-samples:sample-loan-origination:loan-application-service:resolveMainClassName
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:25.3801277Z > Task :maestro-samples:sample-loan-origination:verification-gateway-service:bootJar
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:25.5801673Z > Task :maestro-samples:sample-loan-origination:loan-application-service:bootJar
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:25.5816029Z > Task :maestro-samples:sample-loan-origination:underwriting-service:bootJar
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0799998Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0801015Z > Task :maestro-integration-tests:compileTestJava
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0811730Z /home/runner/work/maestro/maestro/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/support/PostgresIntegrationSupport.java:49: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0818328Z     static final PostgreSQLContainer<?> postgres =
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0844053Z                  ^
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0846127Z /home/runner/work/maestro/maestro/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/support/PostgresIntegrationSupport.java:50: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0848507Z             new PostgreSQLContainer<>("postgres:16-alpine")
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0849351Z                 ^
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0851301Z /home/runner/work/maestro/maestro/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/SignalListenerTraceContextIT.java:85: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0853702Z     private static final KafkaContainer KAFKA =
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0854476Z                          ^
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0856421Z /home/runner/work/maestro/maestro/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/SignalListenerTraceContextIT.java:86: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0859214Z             new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1")).withKraft();
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0860188Z                 ^
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0861988Z /home/runner/work/maestro/maestro/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/KafkaTraceLinkageIT.java:73: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0864365Z     private static final KafkaContainer KAFKA =
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0865142Z                          ^
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0866987Z /home/runner/work/maestro/maestro/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/KafkaTraceLinkageIT.java:74: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0869245Z             new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1")).withKraft();
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0870197Z                 ^
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0872014Z /home/runner/work/maestro/maestro/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/KafkaTraceLinkageIT.java:135: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0874420Z             try (var ignored = otelA.tracer().withSpan(publishSpan)) {
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0875277Z                      ^
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0877123Z /home/runner/work/maestro/maestro/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/kafka/KafkaSpringIntegrationSupport.java:90: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0879279Z     private static final KafkaContainer KAFKA =
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0880043Z                          ^
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0881968Z /home/runner/work/maestro/maestro/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/kafka/KafkaSpringIntegrationSupport.java:91: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0884529Z             new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1"))
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0885468Z                 ^
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0887674Z /home/runner/work/maestro/maestro/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/kafka/KafkaLifecycleEventLatencyIT.java:64: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0889906Z     private static final KafkaContainer KAFKA =
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0890786Z                          ^
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0892704Z /home/runner/work/maestro/maestro/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/kafka/KafkaLifecycleEventLatencyIT.java:65: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0895121Z             new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1"))
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0895996Z                 ^
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0897783Z /home/runner/work/maestro/maestro/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/schema/MaestroMigrationsCoexistIT.java:39: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0899961Z     static final PostgreSQLContainer<?> postgres =
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0900759Z                  ^
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0902673Z /home/runner/work/maestro/maestro/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/schema/MaestroMigrationsCoexistIT.java:40: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0905059Z             new PostgreSQLContainer<>("postgres:16-alpine")
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0905834Z                 ^
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0907890Z /home/runner/work/maestro/maestro/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/ChaosCluster.java:89: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0909980Z     private PostgreSQLContainer<?> postgres;
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0910714Z             ^
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0912485Z /home/runner/work/maestro/maestro/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/ChaosCluster.java:142: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0914998Z         postgres = new PostgreSQLContainer<>(DockerImageName.parse(POSTGRES_IMAGE))
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.0915980Z                        ^
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.3800994Z 15 warnings
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.5799615Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:26.5830657Z > Task :maestro-integration-tests:testClasses
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.5810740Z WARNING: A restricted method in java.lang.System has been called
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.5811339Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.5811585Z > Task :maestro-integration-tests:e2eTest
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.5811971Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.5812790Z Golden calibration: each path chaos-free, gap sets characterised > all four paths reach their declared terminal chaos-free and gaps are recorded SKIPPED
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.5814468Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.5815264Z Chaos PR-gate: 6-node loan cluster stays correct under chaos > cluster survives six minutes of chaos with all store invariants intact STANDARD_OUT
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.5816423Z     [chaos] ================= CHAOS RUN =================
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.5817249Z     [chaos] mode=PR_GATE seed=-970181608425652116 runId=20260901-024028--970181608425652116
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.5818051Z     [chaos] re-run: ./gradlew :maestro-integration-tests:e2eTest -Dmaestro.chaos.seed=-970181608425652116
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.5818814Z     02:40:28.229 [Test worker] INFO org.testcontainers.DockerClientFactory -- Testcontainers version: 2.0.1
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.5820029Z WARNING: java.lang.System::load has been called by com.sun.jna.Native in an unnamed module (file:/home/runner/.gradle/caches/modules-2/files-2.1/net.java.dev.jna/jna/5.17.0/33d12735bef894440780fce64f9758d420c7bae2/jna-5.17.0.jar)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.5821149Z WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.5822068Z WARNING: Restricted methods will be blocked in a future release unless native access is enabled
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.5823236Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.9800230Z     02:40:28.874 [Test worker] INFO org.testcontainers.dockerclient.DockerClientProviderStrategy -- Found Docker environment with local Unix socket (unix:///var/run/docker.sock)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.9801535Z     02:40:28.883 [Test worker] INFO org.testcontainers.DockerClientFactory -- Docker host IP address is localhost
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.9802326Z     02:40:28.898 [Test worker] INFO org.testcontainers.DockerClientFactory -- Connected to docker: 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.9802856Z       Server Version: 28.0.4
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.9803299Z       API Version: 1.48
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.9803619Z       Operating System: Ubuntu 24.04.4 LTS
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.9803958Z       Total Memory: 15989 MB
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.9804581Z     02:40:28.906 [Test worker] INFO org.testcontainers.images.PullPolicy -- Image pull policy will be performed by: DefaultPullPolicy()
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.9805954Z     02:40:28.908 [Test worker] INFO org.testcontainers.utility.ImageNameSubstitutor -- Image name substitution will be performed by: DefaultImageNameSubstitutor (composite of 'ConfigurationFileImageNameSubstitutor' and 'PrefixingImageNameSubstitutor')
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:28.9807489Z     02:40:28.933 [Test worker] INFO tc.testcontainers/ryuk:0.13.0 -- Pulling docker image: testcontainers/ryuk:0.13.0. Please be patient; this may take some time but only needs to be done once.
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:29.4799784Z     02:40:29.428 [docker-java-stream-984152511] INFO tc.testcontainers/ryuk:0.13.0 -- Starting to pull image
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:29.4801881Z     02:40:29.445 [docker-java-stream-984152511] INFO tc.testcontainers/ryuk:0.13.0 -- Pulling image layers:  0 pending,  0 downloaded,  0 extracted, (0 bytes/0 bytes)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:29.6802287Z     02:40:29.626 [docker-java-stream-984152511] INFO tc.testcontainers/ryuk:0.13.0 -- Pulling image layers:  1 pending,  1 downloaded,  0 extracted, (290 KB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:29.6807111Z     02:40:29.631 [docker-java-stream-984152511] INFO tc.testcontainers/ryuk:0.13.0 -- Pulling image layers:  1 pending,  1 downloaded,  1 extracted, (290 KB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:29.6808940Z     02:40:29.657 [docker-java-stream-984152511] INFO tc.testcontainers/ryuk:0.13.0 -- Pulling image layers:  0 pending,  2 downloaded,  1 extracted, (290 KB/6 MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:30.0805116Z     02:40:29.982 [docker-java-stream-984152511] INFO tc.testcontainers/ryuk:0.13.0 -- Pulling image layers:  0 pending,  2 downloaded,  2 extracted, (6 MB/6 MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:30.0812945Z     02:40:29.987 [Test worker] INFO tc.testcontainers/ryuk:0.13.0 -- Image testcontainers/ryuk:0.13.0 pull took PT1.053483735S
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:30.0814653Z     02:40:30.012 [Test worker] INFO tc.testcontainers/ryuk:0.13.0 -- Creating container for image: testcontainers/ryuk:0.13.0
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:30.1802818Z     02:40:30.077 [Test worker] INFO tc.testcontainers/ryuk:0.13.0 -- Container testcontainers/ryuk:0.13.0 is starting: 7a66103cd4c8b1f55c41e86e675e21e613c6a4542b777fb2d892125fad983461
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:30.3800329Z     02:40:30.305 [Test worker] INFO tc.testcontainers/ryuk:0.13.0 -- Container testcontainers/ryuk:0.13.0 started in PT0.292505557S
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:30.3808488Z     02:40:30.309 [Test worker] INFO org.testcontainers.utility.RyukResourceReaper -- Ryuk started - will monitor and terminate Testcontainers containers on JVM exit
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:30.3809543Z     02:40:30.309 [Test worker] INFO org.testcontainers.DockerClientFactory -- Checking the system...
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:30.3810704Z     02:40:30.309 [Test worker] INFO org.testcontainers.DockerClientFactory -- ✔︎ Docker server version should be at least 1.6.0
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:30.4799590Z     02:40:30.437 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] starting cluster network + infrastructure
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:30.4800956Z     02:40:30.443 [Test worker] INFO tc.postgres:16-alpine -- Pulling docker image: postgres:16-alpine. Please be patient; this may take some time but only needs to be done once.
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:30.8800621Z     02:40:30.822 [docker-java-stream-1987595545] INFO tc.postgres:16-alpine -- Starting to pull image
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:30.8801638Z     02:40:30.823 [docker-java-stream-1987595545] INFO tc.postgres:16-alpine -- Pulling image layers:  0 pending,  0 downloaded,  0 extracted, (0 bytes/0 bytes)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:31.0799924Z     02:40:31.015 [docker-java-stream-1987595545] INFO tc.postgres:16-alpine -- Pulling image layers: 10 pending,  1 downloaded,  0 extracted, (15 KB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:31.0801083Z     02:40:31.024 [docker-java-stream-1987595545] INFO tc.postgres:16-alpine -- Pulling image layers:  9 pending,  2 downloaded,  0 extracted, (16 KB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:31.0802940Z     02:40:31.026 [docker-java-stream-1987595545] INFO tc.postgres:16-alpine -- Pulling image layers:  8 pending,  3 downloaded,  0 extracted, (16 KB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:31.0804464Z     02:40:31.041 [docker-java-stream-1987595545] INFO tc.postgres:16-alpine -- Pulling image layers:  8 pending,  3 downloaded,  1 extracted, (16 KB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:31.0805519Z     02:40:31.071 [docker-java-stream-1987595545] INFO tc.postgres:16-alpine -- Pulling image layers:  8 pending,  3 downloaded,  2 extracted, (880 KB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:31.1801441Z     02:40:31.079 [docker-java-stream-1987595545] INFO tc.postgres:16-alpine -- Pulling image layers:  8 pending,  3 downloaded,  3 extracted, (880 KB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:31.1803480Z     02:40:31.098 [docker-java-stream-1987595545] INFO tc.postgres:16-alpine -- Pulling image layers:  7 pending,  4 downloaded,  3 extracted, (889 KB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:31.1805553Z     02:40:31.100 [docker-java-stream-1987595545] INFO tc.postgres:16-alpine -- Pulling image layers:  6 pending,  5 downloaded,  3 extracted, (889 KB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:31.1807237Z     02:40:31.108 [docker-java-stream-1987595545] INFO tc.postgres:16-alpine -- Pulling image layers:  6 pending,  5 downloaded,  4 extracted, (889 KB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:31.1809200Z     02:40:31.173 [docker-java-stream-1987595545] INFO tc.postgres:16-alpine -- Pulling image layers:  5 pending,  6 downloaded,  4 extracted, (1 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:31.2800159Z     02:40:31.182 [docker-java-stream-1987595545] INFO tc.postgres:16-alpine -- Pulling image layers:  4 pending,  7 downloaded,  4 extracted, (1 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:31.2801638Z     02:40:31.252 [docker-java-stream-1987595545] INFO tc.postgres:16-alpine -- Pulling image layers:  3 pending,  8 downloaded,  4 extracted, (7 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:31.2803679Z     02:40:31.266 [docker-java-stream-1987595545] INFO tc.postgres:16-alpine -- Pulling image layers:  2 pending,  9 downloaded,  4 extracted, (7 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:31.7801623Z     02:40:31.696 [docker-java-stream-1987595545] INFO tc.postgres:16-alpine -- Pulling image layers:  1 pending, 10 downloaded,  4 extracted, (89 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:34.2800476Z     02:40:34.190 [docker-java-stream-1987595545] INFO tc.postgres:16-alpine -- Pulling image layers:  1 pending, 10 downloaded,  5 extracted, (107 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:34.2802724Z     02:40:34.201 [docker-java-stream-1987595545] INFO tc.postgres:16-alpine -- Pulling image layers:  1 pending, 10 downloaded,  6 extracted, (107 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:34.2805150Z     02:40:34.211 [docker-java-stream-1987595545] INFO tc.postgres:16-alpine -- Pulling image layers:  1 pending, 10 downloaded,  7 extracted, (107 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:34.2806718Z     02:40:34.219 [docker-java-stream-1987595545] INFO tc.postgres:16-alpine -- Pulling image layers:  1 pending, 10 downloaded,  8 extracted, (107 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:34.2807757Z     02:40:34.228 [docker-java-stream-1987595545] INFO tc.postgres:16-alpine -- Pulling image layers:  1 pending, 10 downloaded,  9 extracted, (107 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:34.2808727Z     02:40:34.237 [docker-java-stream-1987595545] INFO tc.postgres:16-alpine -- Pulling image layers:  1 pending, 10 downloaded, 10 extracted, (107 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:34.2810024Z     02:40:34.242 [docker-java-stream-1987595545] INFO tc.postgres:16-alpine -- Pull complete. 11 layers, pulled in 3s (downloaded 107 MB at 35 MB/s)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:34.2810918Z     02:40:34.242 [Test worker] INFO tc.postgres:16-alpine -- Image postgres:16-alpine pull took PT3.798747701S
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:34.2811684Z     02:40:34.245 [Test worker] INFO tc.postgres:16-alpine -- Creating container for image: postgres:16-alpine
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:34.3801246Z     02:40:34.332 [Test worker] INFO tc.postgres:16-alpine -- Container postgres:16-alpine is starting: 97f57e8b736062acd04d96d906337d8a5a0a6b0e290b39dd0e3b38bd07ba185b
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:36.0799784Z     02:40:36.007 [Test worker] INFO tc.postgres:16-alpine -- Container postgres:16-alpine started in PT1.762390727S
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:36.0800958Z     02:40:36.008 [Test worker] INFO tc.postgres:16-alpine -- Container is started (JDBC URL: jdbc:postgresql://localhost:32769/maestro?loggerLevel=OFF)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:36.0802108Z     02:40:36.012 [Test worker] INFO tc.apache/kafka:3.9.0 -- Pulling docker image: apache/kafka:3.9.0. Please be patient; this may take some time but only needs to be done once.
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:36.4799124Z     02:40:36.402 [docker-java-stream--1483220680] INFO tc.apache/kafka:3.9.0 -- Starting to pull image
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:36.4800114Z     02:40:36.403 [docker-java-stream--1483220680] INFO tc.apache/kafka:3.9.0 -- Pulling image layers:  0 pending,  0 downloaded,  0 extracted, (0 bytes/0 bytes)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:36.6800167Z     02:40:36.635 [docker-java-stream--1483220680] INFO tc.apache/kafka:3.9.0 -- Pulling image layers:  9 pending,  1 downloaded,  0 extracted, (4 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:36.7800568Z     02:40:36.684 [docker-java-stream--1483220680] INFO tc.apache/kafka:3.9.0 -- Pulling image layers:  8 pending,  2 downloaded,  0 extracted, (4 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:36.7802315Z     02:40:36.710 [docker-java-stream--1483220680] INFO tc.apache/kafka:3.9.0 -- Pulling image layers:  7 pending,  3 downloaded,  0 extracted, (4 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:36.7804200Z     02:40:36.764 [docker-java-stream--1483220680] INFO tc.apache/kafka:3.9.0 -- Pulling image layers:  6 pending,  4 downloaded,  0 extracted, (26 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:36.7805829Z     02:40:36.777 [docker-java-stream--1483220680] INFO tc.apache/kafka:3.9.0 -- Pulling image layers:  6 pending,  4 downloaded,  1 extracted, (26 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:36.8801329Z     02:40:36.815 [docker-java-stream--1483220680] INFO tc.apache/kafka:3.9.0 -- Pulling image layers:  5 pending,  5 downloaded,  1 extracted, (27 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:36.9800446Z     02:40:36.919 [docker-java-stream--1483220680] INFO tc.apache/kafka:3.9.0 -- Pulling image layers:  4 pending,  6 downloaded,  1 extracted, (52 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:36.9803645Z     02:40:36.932 [docker-java-stream--1483220680] INFO tc.apache/kafka:3.9.0 -- Pulling image layers:  3 pending,  7 downloaded,  1 extracted, (52 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:37.0802427Z     02:40:36.992 [docker-java-stream--1483220680] INFO tc.apache/kafka:3.9.0 -- Pulling image layers:  2 pending,  8 downloaded,  1 extracted, (52 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:37.0805231Z     02:40:37.014 [docker-java-stream--1483220680] INFO tc.apache/kafka:3.9.0 -- Pulling image layers:  1 pending,  9 downloaded,  1 extracted, (79 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:37.2800178Z     02:40:37.228 [docker-java-stream--1483220680] INFO tc.apache/kafka:3.9.0 -- Pulling image layers:  0 pending, 10 downloaded,  1 extracted, (151 MB/207 MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:37.7803453Z     02:40:37.693 [docker-java-stream--1483220680] INFO tc.apache/kafka:3.9.0 -- Pulling image layers:  0 pending, 10 downloaded,  2 extracted, (156 MB/207 MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:38.6801490Z     02:40:38.590 [docker-java-stream--1483220680] INFO tc.apache/kafka:3.9.0 -- Pulling image layers:  0 pending, 10 downloaded,  3 extracted, (184 MB/207 MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:38.6803845Z     02:40:38.598 [docker-java-stream--1483220680] INFO tc.apache/kafka:3.9.0 -- Pulling image layers:  0 pending, 10 downloaded,  4 extracted, (184 MB/207 MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:38.6806223Z     02:40:38.606 [docker-java-stream--1483220680] INFO tc.apache/kafka:3.9.0 -- Pulling image layers:  0 pending, 10 downloaded,  5 extracted, (184 MB/207 MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:39.2800948Z     02:40:39.216 [docker-java-stream--1483220680] INFO tc.apache/kafka:3.9.0 -- Pulling image layers:  0 pending, 10 downloaded,  6 extracted, (191 MB/207 MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:39.4800158Z     02:40:39.433 [docker-java-stream--1483220680] INFO tc.apache/kafka:3.9.0 -- Pulling image layers:  0 pending, 10 downloaded,  7 extracted, (203 MB/207 MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:39.5800484Z     02:40:39.510 [docker-java-stream--1483220680] INFO tc.apache/kafka:3.9.0 -- Pulling image layers:  0 pending, 10 downloaded,  8 extracted, (207 MB/207 MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:39.5801954Z     02:40:39.522 [docker-java-stream--1483220680] INFO tc.apache/kafka:3.9.0 -- Pulling image layers:  0 pending, 10 downloaded,  9 extracted, (207 MB/207 MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:39.5803512Z     02:40:39.531 [docker-java-stream--1483220680] INFO tc.apache/kafka:3.9.0 -- Pulling image layers:  0 pending, 10 downloaded, 10 extracted, (207 MB/207 MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:39.5804916Z     02:40:39.535 [docker-java-stream--1483220680] INFO tc.apache/kafka:3.9.0 -- Pull complete. 10 layers, pulled in 3s (downloaded 207 MB at 69 MB/s)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:39.5805910Z     02:40:39.535 [Test worker] INFO tc.apache/kafka:3.9.0 -- Image apache/kafka:3.9.0 pull took PT3.523165848S
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:39.5806775Z     02:40:39.538 [Test worker] INFO tc.apache/kafka:3.9.0 -- Creating container for image: apache/kafka:3.9.0
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:39.5807820Z     02:40:39.551 [Test worker] INFO tc.apache/kafka:3.9.0 -- Container apache/kafka:3.9.0 is starting: 16bd883b388c1464390f096a3ed9237aeb23226c7c82118462d3e0f71251c00d
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:42.0799624Z     02:40:41.997 [Test worker] INFO tc.apache/kafka:3.9.0 -- Container apache/kafka:3.9.0 started in PT2.458806141S
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:42.0800706Z     02:40:42.000 [Test worker] INFO tc.valkey/valkey:8-alpine -- Pulling docker image: valkey/valkey:8-alpine. Please be patient; this may take some time but only needs to be done once.
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:42.4800069Z     02:40:42.382 [docker-java-stream--408080698] INFO tc.valkey/valkey:8-alpine -- Starting to pull image
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:42.4801103Z     02:40:42.382 [docker-java-stream--408080698] INFO tc.valkey/valkey:8-alpine -- Pulling image layers:  0 pending,  0 downloaded,  0 extracted, (0 bytes/0 bytes)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:42.5805954Z     02:40:42.569 [docker-java-stream--408080698] INFO tc.valkey/valkey:8-alpine -- Pulling image layers:  6 pending,  1 downloaded,  0 extracted, (952 bytes/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:42.6799319Z     02:40:42.584 [docker-java-stream--408080698] INFO tc.valkey/valkey:8-alpine -- Pulling image layers:  6 pending,  1 downloaded,  1 extracted, (128 KB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:42.6800461Z     02:40:42.612 [docker-java-stream--408080698] INFO tc.valkey/valkey:8-alpine -- Pulling image layers:  5 pending,  2 downloaded,  1 extracted, (159 KB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:42.6801498Z     02:40:42.627 [docker-java-stream--408080698] INFO tc.valkey/valkey:8-alpine -- Pulling image layers:  4 pending,  3 downloaded,  1 extracted, (160 KB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:42.7800346Z     02:40:42.684 [docker-java-stream--408080698] INFO tc.valkey/valkey:8-alpine -- Pulling image layers:  3 pending,  4 downloaded,  1 extracted, (160 KB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:42.7801815Z     02:40:42.702 [docker-java-stream--408080698] INFO tc.valkey/valkey:8-alpine -- Pulling image layers:  2 pending,  5 downloaded,  1 extracted, (3 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:42.8801506Z     02:40:42.796 [docker-java-stream--408080698] INFO tc.valkey/valkey:8-alpine -- Pulling image layers:  2 pending,  5 downloaded,  2 extracted, (3 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:43.0800262Z     02:40:42.980 [docker-java-stream--408080698] INFO tc.valkey/valkey:8-alpine -- Pulling image layers:  2 pending,  5 downloaded,  3 extracted, (15 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:43.0801791Z     02:40:42.990 [docker-java-stream--408080698] INFO tc.valkey/valkey:8-alpine -- Pulling image layers:  2 pending,  5 downloaded,  4 extracted, (15 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:43.0803467Z     02:40:42.996 [docker-java-stream--408080698] INFO tc.valkey/valkey:8-alpine -- Pulling image layers:  2 pending,  5 downloaded,  5 extracted, (15 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:43.0804574Z     02:40:43.004 [docker-java-stream--408080698] INFO tc.valkey/valkey:8-alpine -- Pulling image layers:  2 pending,  5 downloaded,  6 extracted, (15 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:43.0805634Z     02:40:43.009 [Test worker] INFO tc.valkey/valkey:8-alpine -- Image valkey/valkey:8-alpine pull took PT1.009271228S
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:43.0806447Z     02:40:43.011 [Test worker] INFO tc.valkey/valkey:8-alpine -- Creating container for image: valkey/valkey:8-alpine
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:43.0807485Z     02:40:43.022 [Test worker] INFO tc.valkey/valkey:8-alpine -- Container valkey/valkey:8-alpine is starting: 92d509636f37214e2abf64ebb2215d72121e60ee74c5fd980ab446c3963da19e
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:43.2800648Z     02:40:43.227 [Test worker] INFO tc.valkey/valkey:8-alpine -- Container valkey/valkey:8-alpine started in PT0.215298418S
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:58.6799249Z     02:40:58.660 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] pre-created 11 Kafka topics
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:58.6800413Z     02:40:58.664 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Pulling docker image: alpine/socat:1.7.4.3-r0. Please be patient; this may take some time but only needs to be done once.
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:59.0799610Z     02:40:59.063 [docker-java-stream--10949359] INFO tc.alpine/socat:1.7.4.3-r0 -- Starting to pull image
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:59.0804092Z     02:40:59.064 [docker-java-stream--10949359] INFO tc.alpine/socat:1.7.4.3-r0 -- Pulling image layers:  0 pending,  0 downloaded,  0 extracted, (0 bytes/0 bytes)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:59.3803633Z     02:40:59.278 [docker-java-stream--10949359] INFO tc.alpine/socat:1.7.4.3-r0 -- Pulling image layers:  1 pending,  1 downloaded,  0 extracted, (46 KB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:59.3811936Z     02:40:59.290 [docker-java-stream--10949359] INFO tc.alpine/socat:1.7.4.3-r0 -- Pulling image layers:  0 pending,  2 downloaded,  0 extracted, (46 KB/3 MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:59.4811641Z     02:40:59.375 [docker-java-stream--10949359] INFO tc.alpine/socat:1.7.4.3-r0 -- Pulling image layers:  0 pending,  2 downloaded,  1 extracted, (2 MB/3 MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:59.4818867Z     02:40:59.412 [docker-java-stream--10949359] INFO tc.alpine/socat:1.7.4.3-r0 -- Pulling image layers:  0 pending,  2 downloaded,  2 extracted, (3 MB/3 MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:59.4820065Z     02:40:59.417 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Image alpine/socat:1.7.4.3-r0 pull took PT0.752274234S
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:59.4821394Z     02:40:59.419 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Creating container for image: alpine/socat:1.7.4.3-r0
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:59.4822962Z     02:40:59.439 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 is starting: ef81a4329777574c013993e0abcf977c24f65252a8d09930a2ebc4576f51aff2
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:59.8800510Z     02:40:59.788 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 started in PT0.369511812S
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:59.8802395Z     02:40:59.789 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.NodeAmbassador -- [chaos] ambassador up at localhost: loan-a->32771, loan-b->32772, verify-a->32773, verify-b->32774, uw-a->32775, uw-b->32776
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:59.8804552Z     02:40:59.789 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] starting 6 workload nodes
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:40:59.8806225Z     02:40:59.792 [Test worker] INFO tc.eclipse-temurin:25-jre -- Pulling docker image: eclipse-temurin:25-jre. Please be patient; this may take some time but only needs to be done once.
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:00.2799697Z     02:41:00.177 [docker-java-stream-230823370] INFO tc.eclipse-temurin:25-jre -- Starting to pull image
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:00.2800726Z     02:41:00.178 [docker-java-stream-230823370] INFO tc.eclipse-temurin:25-jre -- Pulling image layers:  0 pending,  0 downloaded,  0 extracted, (0 bytes/0 bytes)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:00.4802632Z     02:41:00.372 [docker-java-stream-230823370] INFO tc.eclipse-temurin:25-jre -- Pulling image layers:  5 pending,  1 downloaded,  0 extracted, (393 bytes/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:00.4806260Z     02:41:00.436 [docker-java-stream-230823370] INFO tc.eclipse-temurin:25-jre -- Pulling image layers:  4 pending,  2 downloaded,  0 extracted, (543 KB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:00.5803699Z     02:41:00.505 [docker-java-stream-230823370] INFO tc.eclipse-temurin:25-jre -- Pulling image layers:  3 pending,  3 downloaded,  0 extracted, (31 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:00.5806936Z     02:41:00.524 [docker-java-stream-230823370] INFO tc.eclipse-temurin:25-jre -- Pulling image layers:  2 pending,  4 downloaded,  0 extracted, (31 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:00.6800531Z     02:41:00.587 [docker-java-stream-230823370] INFO tc.eclipse-temurin:25-jre -- Pulling image layers:  1 pending,  5 downloaded,  0 extracted, (61 MB/? MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:00.6803648Z     02:41:00.666 [docker-java-stream-230823370] INFO tc.eclipse-temurin:25-jre -- Pulling image layers:  0 pending,  6 downloaded,  0 extracted, (61 MB/111 MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:02.8800135Z     02:41:02.795 [docker-java-stream-230823370] INFO tc.eclipse-temurin:25-jre -- Pulling image layers:  0 pending,  6 downloaded,  1 extracted, (70 MB/111 MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:03.0800180Z     02:41:03.006 [docker-java-stream-230823370] INFO tc.eclipse-temurin:25-jre -- Pulling image layers:  0 pending,  6 downloaded,  2 extracted, (70 MB/111 MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:03.5799523Z     02:41:03.554 [docker-java-stream-230823370] INFO tc.eclipse-temurin:25-jre -- Pulling image layers:  0 pending,  6 downloaded,  3 extracted, (82 MB/111 MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:04.7799921Z     02:41:04.689 [docker-java-stream-230823370] INFO tc.eclipse-temurin:25-jre -- Pulling image layers:  0 pending,  6 downloaded,  4 extracted, (111 MB/111 MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:04.7801789Z     02:41:04.700 [docker-java-stream-230823370] INFO tc.eclipse-temurin:25-jre -- Pulling image layers:  0 pending,  6 downloaded,  5 extracted, (111 MB/111 MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:04.7803709Z     02:41:04.709 [docker-java-stream-230823370] INFO tc.eclipse-temurin:25-jre -- Pulling image layers:  0 pending,  6 downloaded,  6 extracted, (111 MB/111 MB)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:04.7805351Z     02:41:04.731 [docker-java-stream-230823370] INFO tc.eclipse-temurin:25-jre -- Pull complete. 6 layers, pulled in 4s (downloaded 111 MB at 27 MB/s)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:04.7806767Z     02:41:04.731 [Test worker] INFO tc.eclipse-temurin:25-jre -- Image eclipse-temurin:25-jre pull took PT4.938956484S
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:04.7807997Z     02:41:04.734 [Test worker] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:06.5799904Z     02:41:06.518 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: e4954afed5ee3c829b9c953f93db8f289762cf01b60196105013847b3d7ab15a
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:13.0812103Z     02:41:13.000 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT8.266331302S
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:13.0850313Z     02:41:13.002 [Test worker] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:14.5799982Z     02:41:14.532 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 99dc37fb577e5a3d0c5226456c59954c42de2629c3e2ee955c032cd018cce705
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:21.0800547Z     02:41:21.025 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT8.023009438S
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:21.0802276Z     02:41:21.026 [Test worker] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:22.7800525Z     02:41:22.695 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 100408abc35d1068e42cce038dfc0190f50a0ba984122658237c14469e7df9d8
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:28.7849947Z     02:41:28.746 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT7.720392329S
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:28.7852248Z     02:41:28.747 [Test worker] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:29.9806154Z     02:41:29.889 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 4af34b2d9ee85bffbffe9edbc94face588561d59c71665fb8c2ee816156a72be
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:36.0800776Z     02:41:36.055 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT7.308054631S
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:36.0815758Z     02:41:36.056 [Test worker] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:37.4800389Z     02:41:37.440 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 185f666c9a150765ac9b5722f1bb0f1197e4d9243df374124d83d81e24145b01
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:43.8828569Z     02:41:43.798 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT7.741917008S
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:43.8830764Z     02:41:43.800 [Test worker] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:44.7803691Z     02:41:44.723 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: b9d00278a03ecd88088d9caab7166b4ff16eb6f45f24111678456ffba2049e46
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:51.1800603Z     02:41:51.089 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT7.288993044S
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:52.9805482Z     02:41:52.947 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] cluster healthy: 6 nodes live
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:53.0827378Z     02:41:52.976 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.WorkloadDriver -- [chaos] workload generation begins: 12/min for PT6M (chaos, runaway cap 316)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:41:53.0854192Z     02:41:52.977 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] controller starts (6 min window)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:42:12.0799506Z     02:42:12.005 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] PAUSE LOAN_A
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:43:03.0799146Z     02:43:03.025 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] UNPAUSE LOAN_A
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:43:03.0800411Z     02:43:03.030 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#1 PAUSE_RESUME LOAN_A started=2026-09-01T02:42:11.977504598Z healed=2026-09-01T02:43:03.029381140Z
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:43:42.0799215Z     02:43:42.040 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] PAUSE LOAN_B
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:44:35.0799234Z     02:44:35.062 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] UNPAUSE LOAN_B
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:44:35.0800514Z     02:44:35.062 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#2 PAUSE_RESUME LOAN_B started=2026-09-01T02:43:42.030742329Z healed=2026-09-01T02:44:35.062707286Z
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:44:57.1799272Z     02:44:57.110 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] PARTITION VERIFY_A
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:45:33.1799071Z     02:45:33.153 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] RECONNECT VERIFY_A
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:45:33.1800349Z     02:45:33.154 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#3 PARTITION VERIFY_A started=2026-09-01T02:44:57.063220386Z healed=2026-09-01T02:45:33.153839300Z
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:46:13.1799087Z     02:46:13.164 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] BACKEND_OUTAGE pause valkey
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:46:25.6800619Z     02:46:25.647 [chaos-metrics-sampler] WARN io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] valkey-cli [INFO, commandstats] failed: com.github.dockerjava.api.exception.ConflictException: Status 409: {"message":"Container 92d509636f37214e2abf64ebb2215d72121e60ee74c5fd980ab446c3963da19e is paused, unpause the container before exec"}
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:46:25.6802092Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:46:25.6803610Z     02:46:25.649 [chaos-metrics-sampler] WARN io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] valkey-cli [PUBSUB, CHANNELS] failed: com.github.dockerjava.api.exception.ConflictException: Status 409: {"message":"Container 92d509636f37214e2abf64ebb2215d72121e60ee74c5fd980ab446c3963da19e is paused, unpause the container before exec"}
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:46:25.6805057Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:46:40.7800838Z     02:46:40.684 [chaos-metrics-sampler] WARN io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] valkey-cli [INFO, commandstats] failed: com.github.dockerjava.api.exception.ConflictException: Status 409: {"message":"Container 92d509636f37214e2abf64ebb2215d72121e60ee74c5fd980ab446c3963da19e is paused, unpause the container before exec"}
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:46:40.7802431Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:46:40.7804334Z     02:46:40.685 [chaos-metrics-sampler] WARN io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] valkey-cli [PUBSUB, CHANNELS] failed: com.github.dockerjava.api.exception.ConflictException: Status 409: {"message":"Container 92d509636f37214e2abf64ebb2215d72121e60ee74c5fd980ab446c3963da19e is paused, unpause the container before exec"}
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:46:40.7805605Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:46:43.2815310Z     02:46:43.176 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] BACKEND_OUTAGE unpause valkey
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:46:43.2817962Z     02:46:43.180 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#4 BACKEND_OUTAGE valkey started=2026-09-01T02:46:13.154386895Z healed=2026-09-01T02:46:43.176893981Z
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:47:08.2800121Z     02:47:08.193 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] PAUSE UW_B
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:48:09.2800116Z     02:48:09.212 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] UNPAUSE UW_B
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:48:09.2801401Z     02:48:09.214 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#5 PAUSE_RESUME UW_B started=2026-09-01T02:47:08.183980096Z healed=2026-09-01T02:48:09.214010417Z
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:48:09.2802661Z     02:48:09.215 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] controller done: 5 actions, 2 loan pause-resumes
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:48:22.2799684Z     02:48:22.202 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.WorkloadDriver -- [chaos] workload generation window closed: 61 workflows submitted (chaos)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:48:22.2801320Z     02:48:22.202 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosRun -- [chaos] generation + chaos complete; healing
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:48:22.2802590Z     02:48:22.202 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] heal-all begin
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:48:22.2804066Z     02:48:22.245 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] heal-all complete: all nodes healthy
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:49:51.8799922Z     02:49:51.777 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosRun -- [chaos] drain: waiting up to 240s for all workflows terminal in all services
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:22.2805191Z     02:50:22.256 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosRun -- [chaos] drain: all workflows terminal in all three services
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:22.9799760Z     02:50:22.897 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.SideEffectCensus -- [chaos] side-effect census: totalDup=0 explained=0 unexplained=0 missingSagaComp=0
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:22.9800778Z     [chaos] VERDICT: FAIL
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:22.9801254Z     [chaos] side-effect duplicates: total=0 explained=0 unexplained=0
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:22.9805054Z     [chaos] FINDING (Ruling 3): redelivered-but-unconsumed signals (consumedTwin=true, Kafka at-least-once redelivery): [loan-chaos-17476562465283899500-13:underwriting.decision x1 consumedTwin=true, loan-chaos-17476562465283899500-5:underwriting.decision x1 consumedTwin=true]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:22.9808466Z     [chaos] VIOLATION [I1] terminal status != declared expectation -> [loan-chaos-17476562465283899500-41 (expected=COMPLETED, actual=FAILED, path=HAPPY), loan-chaos-17476562465283899500-39 (expected=COMPLETED, actual=FAILED, path=HAPPY)]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:22.9810960Z     [chaos] VIOLATION [I1] output.status != declared expectation -> [loan-chaos-17476562465283899500-41 (expected output=FUNDED), loan-chaos-17476562465283899500-39 (expected output=FUNDED)]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:22.9813969Z     [chaos] VIOLATION [I4] unconsumed application signal with NO consumed twin for COMPLETED workflow (loan DB) — genuinely missed signal -> [loan-chaos-17476562465283899500-2:document.uploaded x1 consumedTwin=false]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:24.4798704Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:24.4800162Z Chaos PR-gate: 6-node loan cluster stays correct under chaos > cluster survives six minutes of chaos with all store invariants intact FAILED
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:24.4802323Z     org.opentest4j.AssertionFailedError at ChaosPrGateE2EIT.java:56
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:24.4803488Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:24.4804411Z Chaos soak: hours-long multi-instance correctness + Issue 12 curves > cluster stays correct across the full soak window SKIPPED
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:24.4806073Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:24.4806990Z Chaos cluster boots and all six nodes are reachable > cluster boot brings up 6 healthy nodes with migrated per-service schemas SKIPPED
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:24.4807769Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:24.4808669Z Chaos harness: a reconnected node is reachable again > the harness endpoint for a node still works after PARTITION + RECONNECT STANDARD_OUT
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:24.4810119Z     02:50:24.413 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Creating container for image: alpine/socat:1.7.4.3-r0
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:24.5800396Z     02:50:24.476 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 is starting: f838db4287546f3f89f768e414b9426a4c72c25bba9a0ba65f8894d69d368b26
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:24.6800773Z     02:50:24.659 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 started in PT0.246291646S
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:24.6802436Z     02:50:24.659 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.NodeAmbassador -- [chaos] ambassador up at localhost: verify-b->32777
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:24.6804255Z     02:50:24.659 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Creating container for image: alpine/socat:1.7.4.3-r0
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:24.6805893Z     02:50:24.670 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 is starting: 4c340a19a6782dcd23664114ef88b140bd682bb9a3f5237d7e650e7170dd8dcd
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:24.8799200Z     02:50:24.856 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 started in PT0.196767655S
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:24.8800767Z     02:50:24.859 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PartitionReachabilityIT -- [repro] node up: alias=verify-b ip=10.173.244.3 harness endpoint=localhost:32777 direct(published)=localhost:32778
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:24.9799550Z     02:50:24.922 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PartitionReachabilityIT -- [repro] PARTITION applied; ip now '<none>'
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:26.9799438Z     02:50:26.965 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PartitionReachabilityIT -- [repro] RECONNECT applied; ip now '10.173.244.99'; docker still advertises host port 32778
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:26.9800860Z     02:50:26.968 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PartitionReachabilityIT -- [repro] node's own published port localhost:32778 after RECONNECT: reachable=false
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:27.2798347Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:27.2799635Z Chaos harness: a reconnected node is reachable again > the harness endpoint for a node still works after PARTITION + RECONNECT PASSED
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:27.2800874Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:27.2802562Z Chaos harness: a reconnected node is reachable again > the harness endpoint follows a node replaced by a fresh container STANDARD_OUT
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:27.2804109Z     02:50:27.261 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Creating container for image: alpine/socat:1.7.4.3-r0
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:27.3800727Z     02:50:27.312 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 is starting: 8ba45d6fd69f6a0f4cf83bec07a4980714158a11b0ddd88fbf949c96f829bafd
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:27.5799811Z     02:50:27.499 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 started in PT0.237790486S
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:27.5801726Z     02:50:27.499 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.NodeAmbassador -- [chaos] ambassador up at localhost: verify-b->32780
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:27.5804136Z     02:50:27.500 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Creating container for image: alpine/socat:1.7.4.3-r0
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:27.5806135Z     02:50:27.511 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 is starting: 4ccfdc0b734a113f8ec35a1ad9bf5ec7cbe63805516e327cae7287b5dd2b59b9
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:27.7799133Z     02:50:27.698 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 started in PT0.197961637S
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:27.8806237Z     02:50:27.803 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Creating container for image: alpine/socat:1.7.4.3-r0
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:27.8807901Z     02:50:27.813 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 is starting: 29ee4e43bff3cfcebc64b882fff3aa2083aefc7ae5e2433282c0764cd3e8156a
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:28.0804111Z     02:50:27.995 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 started in PT0.191830502S
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:28.0806100Z     02:50:27.996 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PartitionReachabilityIT -- [repro] replacement up at ip=10.173.244.3; endpoint unchanged: localhost:32780
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:28.3799020Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:28.3800599Z Chaos harness: a reconnected node is reachable again > the harness endpoint follows a node replaced by a fresh container PASSED
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:28.3801662Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:28.3802487Z Chaos harness: a reconnected node is reachable again > a genuinely dead node still fails the probe through the ambassador STANDARD_OUT
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:28.3804210Z     02:50:28.279 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Creating container for image: alpine/socat:1.7.4.3-r0
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:28.3805819Z     02:50:28.327 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 is starting: 83a1a372f22709ee65ac718d6083bafb8323eabe15f8dc37c40af9376a5bb585
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:28.5799933Z     02:50:28.511 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 started in PT0.231958123S
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:28.5800961Z     02:50:28.511 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.NodeAmbassador -- [chaos] ambassador up at localhost: verify-b->32783
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:30.5799432Z     02:50:30.514 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Creating container for image: alpine/socat:1.7.4.3-r0
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:30.5800509Z     02:50:30.527 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 is starting: f027a73e1680a1f67866c7de2722d3f3e4b39e91aea66ac78947cc8961816730
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:30.7799047Z     02:50:30.717 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 started in PT0.203171248S
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:32.8799509Z     02:50:32.816 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PartitionReachabilityIT -- [repro] bare TCP connect with the backend dead: accepted=true
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:33.0799419Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:33.0805385Z Chaos harness: a reconnected node is reachable again > a genuinely dead node still fails the probe through the ambassador PASSED
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:33.4798852Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:33.4799431Z 7 tests completed, 1 failed, 3 skipped
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:33.5800731Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:33.5802055Z FAILURE: Build failed with an exception.
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:33.5802682Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:33.5803320Z > Task :maestro-integration-tests:e2eTest FAILED
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:33.5804278Z gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/__run-1788230382710.json
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:33.5804836Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:33.5805504Z [Incubating] Problems report is available at: file:///home/runner/work/maestro/maestro/build/reports/problems/problems-report.html
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:33.5806207Z 48 actionable tasks: 48 executed
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:33.5808807Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:33.5809380Z * What went wrong:
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:33.5811998Z Execution failed for task ':maestro-integration-tests:e2eTest'.
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:33.5815786Z > There were failing tests. See the report at: file:///home/runner/work/maestro/maestro/maestro-integration-tests/build/reports/tests/e2eTest/index.html
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:33.5819004Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:33.5819344Z * Try:
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:33.5828660Z > Run with --scan to generate a Build Scan (powered by Develocity).
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:33.5829449Z 
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:33.5829953Z BUILD FAILED in 10m 59s
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:33.9999093Z ##[error]Process completed with exit code 1.
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.0066547Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.0068053Z ##[group]Run actions/upload-artifact@v4
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.0068391Z with:
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.0068653Z   name: chaos-pr-gate-evidence
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.0069031Z   path: maestro-integration-tests/build/chaos-evidence/
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.0069414Z   retention-days: 14
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.0069689Z   if-no-files-found: warn
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.0069975Z   compression-level: 6
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.0070246Z   overwrite: false
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.0070516Z   include-hidden-files: false
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.0070812Z env:
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.0071159Z   JAVA_HOME: /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/25.0.4-1/x64
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.0071747Z   JAVA_HOME_25_X64: /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/25.0.4-1/x64
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.0072227Z   GRADLE_ACTION_ID: gradle/actions/setup-gradle
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.0072586Z   GRADLE_USER_HOME: /home/runner/.gradle
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.0072934Z   GRADLE_BUILD_ACTION_SETUP_COMPLETED: true
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.0073517Z   GRADLE_BUILD_ACTION_CACHE_RESTORED: true
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.0074022Z   DEVELOCITY_INJECTION_INIT_SCRIPT_NAME: gradle-actions.inject-develocity.init.gradle
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.0074547Z   DEVELOCITY_INJECTION_CUSTOM_VALUE: gradle-actions
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.0074917Z   GITHUB_DEPENDENCY_GRAPH_ENABLED: false
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.0075240Z ##[endgroup]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.1792428Z (node:19240) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.1793356Z (Use `node --trace-deprecation ...` to show where the warning was created)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.1905464Z With the provided path, there will be 31 files uploaded
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.1910619Z Artifact name is valid!
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.1911066Z Root directory input is valid!
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.4430829Z Beginning upload of artifact content to blob storage
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.5091138Z (node:19240) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.7007535Z Uploaded bytes 180003
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.7367152Z Finished uploading artifact content to blob storage!
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.7368474Z SHA256 digest of uploaded artifact zip is 15bdb5f9c017419a562ce3ec08f5cd01f917ff7d464c46352ddd7f6c0bf3b1db
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:34.7369774Z Finalizing artifact upload
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:35.0119450Z Artifact chaos-pr-gate-evidence.zip successfully finalized. Artifact ID 9784197164
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:35.0120835Z Artifact chaos-pr-gate-evidence has been successfully uploaded! Final size is 180003 bytes. Artifact ID is 9784197164
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:35.0139354Z Artifact download URL: https://github.com/rakheen-dama/maestro/actions/runs/33463346389/artifacts/9784197164
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:35.0382502Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:35.0384051Z Post job cleanup.
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:35.2846219Z In post-action step
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:35.2858960Z ##[group]Stopping Gradle daemons
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:35.2860089Z Stopping Gradle daemons for /home/runner/.gradle/wrapper/dists/gradle-9.2.0-bin/11i5gvueggl8a5cioxuftxrik/gradle-9.2.0
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:35.2875163Z [command]/home/runner/.gradle/wrapper/dists/gradle-9.2.0-bin/11i5gvueggl8a5cioxuftxrik/gradle-9.2.0/bin/gradle --stop
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:35.9394349Z Stopping Daemon(s)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:35.9399747Z 1 Daemon stopped
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:35.9517122Z ##[endgroup]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:35.9544432Z Not performing cache-cleanup due to build failure
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:35.9574585Z ##[group]Caching Gradle state
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:35.9594857Z Cache hit occurred on the cache key gradle-home-v1|Linux-X64|chaos-pr-gate[3f7cb471700b33cbd2621e3a30e0f2b2]-66cdf952a17987774a31c08e9afb1d316a8d2349, not saving cache.
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:35.9597035Z ##[endgroup]
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:35.9597767Z Generating Job Summary
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:35.9598440Z Completed post-action step
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:35.9875603Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:35.9877702Z Post job cleanup.
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:36.2019581Z (node:19301) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:36.2026319Z (Use `node --trace-deprecation ...` to show where the warning was created)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:36.2328668Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:36.2330786Z Post job cleanup.
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:36.3423221Z [command]/usr/bin/git version
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:36.3459979Z git version 2.55.0
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:36.3498050Z Temporarily overriding HOME='/home/runner/work/_temp/ac19438a-58e5-493b-a924-a6b5323c637e' before making global git config changes
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:36.3499465Z Adding repository directory to the temporary git global config as a safe directory
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:36.3502293Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/maestro/maestro
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:36.3540457Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:36.3576328Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:36.3816940Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:36.3842604Z http.https://github.com/.extraheader
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:36.3853475Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:36.3887484Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:36.4126705Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:36.4160147Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:36.4542274Z Cleaning up orphan processes
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:36.4888246Z Terminate orphan process: pid (2441) (java)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:36.4915824Z Terminate orphan process: pid (2525) (java)
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-09-01T02:50:36.5007494Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/setup-java@v4, actions/upload-artifact@v4, gradle/actions/setup-gradle@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/

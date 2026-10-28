@@ -185,7 +185,6 @@ mechanics, and domain topics for cross-service communication.
 
 | Topic | Owner | Key | Purpose |
 |---|---|---|---|
-| `maestro.tasks.{taskQueue}` | Per-service | workflowId | Internal task dispatch -- tells a worker to execute a workflow step |
 | `maestro.signals.{serviceName}` | Per-service | workflowId | Inbound signals from `@MaestroSignalListener` routing |
 | `maestro.admin.events` | All services | serviceName | Lifecycle events consumed by the admin dashboard |
 | Domain topics (e.g., `payments.requests`) | Application | varies | Cross-service domain events -- the choreography layer |
@@ -199,8 +198,8 @@ shared topic messages (like `maestro.admin.events`).
 
 ### Why domain topics are separate
 
-Maestro internal topics (`maestro.tasks.*`, `maestro.signals.*`) carry engine
-messages -- task dispatch instructions and signal deliveries. Domain topics
+Maestro internal topics (`maestro.signals.*`) carry engine messages -- signal
+deliveries. Domain topics
 (`payments.requests`, `payments.results`) carry business events that multiple
 consumers might care about.
 
@@ -233,7 +232,7 @@ The `maestro-samples` directory contains a working two-service demo:
 The two services coordinate entirely through Kafka:
 
 1. Order Service publishes a `PaymentRequest` to `payments.requests`
-2. Payment Gateway consumes it, processes the payment with durable retries
+2. Payment Gateway consumes it, processes the payment with retries
 3. Payment Gateway publishes a `PaymentResult` to `payments.results`
 4. Order Service's `@MaestroSignalListener` routes the result to the waiting
    `OrderFulfilmentWorkflow`
@@ -330,7 +329,6 @@ kafka-init:
   command:
     - |
       KAFKA="/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092"
-      $$KAFKA --create --if-not-exists --topic maestro.tasks.orders --partitions 3
       $$KAFKA --create --if-not-exists --topic maestro.signals.order-service --partitions 3
       $$KAFKA --create --if-not-exists --topic maestro.admin.events --partitions 1
       $$KAFKA --create --if-not-exists --topic payments.requests --partitions 3
@@ -354,7 +352,6 @@ maestro:
   service-name: order-service
   messaging:
     topics:
-      tasks: maestro.tasks.orders
       signals: maestro.signals.order-service
   worker:
     task-queues:
@@ -369,7 +366,6 @@ maestro:
   service-name: payment-gateway
   messaging:
     topics:
-      tasks: maestro.tasks.payments
       signals: maestro.signals.payment-gateway
   worker:
     task-queues:
@@ -381,7 +377,7 @@ Note what is _not_ shared:
 
 - Each service has its own `service-name`, which drives its consumer group
   (`maestro-order-service`, `maestro-payment-gateway`).
-- Each service has its own task topic and signal topic.
+- Each service has its own signal topic.
 - Concurrency is tuned independently -- the order service handles more
   concurrent workflows than the payment gateway, which is bottlenecked by
   external provider latency.
@@ -468,7 +464,7 @@ straightforward. The `@MaestroSignalListener` can derive the target workflow
 ID directly from the domain event without needing a lookup table.
 
 **Keep domain events separate from Maestro internal topics.** Maestro internal
-topics (`maestro.tasks.*`, `maestro.signals.*`) are engine infrastructure.
+topics (`maestro.signals.*`) are engine infrastructure.
 Domain topics (`payments.requests`, `payments.results`) are business contracts.
 Separating them means non-Maestro services can participate in the choreography,
 and topic lifecycle management is cleaner.
@@ -484,10 +480,7 @@ auto-creation. Include topic creation in your infrastructure-as-code alongside
 database migrations and Valkey configuration. See
 [Topic Pre-Creation](#topic-pre-creation) above.
 
-**Give each service its own Postgres schema.** At minimum, use a unique
-`maestro.store.table-prefix` per service. This prevents workflow ID collisions,
-keeps event tables smaller, and allows independent backup and migration
-schedules. Two services should never share a `maestro_workflow_instance` table.
+**Give each service its own Postgres schema.** Set `currentSchema` in the JDBC URL (or `spring.datasource.hikari.schema`) so each service's `maestro_*` tables live apart. This prevents workflow ID collisions, keeps event tables smaller, and allows independent backup and migration schedules. Two services should never share a `maestro_workflow_instance` table.
 
 **Design for signal reordering.** Signals may arrive in any order relative to
 the workflow's execution progress. Maestro handles this correctly -- signals

@@ -33,6 +33,7 @@ public sealed class MaestroException extends RuntimeException
                 InvalidStateTransitionException,
                 WorkflowExecutionException,
                 ActivityExecutionException,
+                ActivityTimeoutException,
                 SignalTimeoutException,
                 TimerCancelledException,
                 RetryExhaustedException,
@@ -42,7 +43,11 @@ public sealed class MaestroException extends RuntimeException
                 CompensationException,
                 QueryException,
                 AdminCommandException,
-                UnsupportedWorkflowVersionException {
+                UnsupportedWorkflowVersionException,
+                SequenceSpaceExhaustedException,
+                BranchSequenceExhaustedException,
+                StaleRunException,
+                WorkflowInstantiationException {
 
     /**
      * Creates a new exception with the given message.

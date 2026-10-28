@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.Callable;
 
 /**
  * Fans one {@link EngineObserver} callback out to an ordered list of
@@ -118,6 +119,34 @@ public final class CompositeEngineObserver implements EngineObserver {
     @Override
     public void activityStarted(ActivityInfo a) {
         fanOut("activityStarted", d -> d.activityStarted(a));
+    }
+
+    /**
+     * Applies every delegate's wrapper so that the <b>first delegate's wrapper
+     * is outermost</b> and the last's innermost: when the attempt runs, the
+     * first delegate's code runs first on the way in and last on the way out —
+     * the same order in which every other callback fans out. The chain is
+     * therefore built in reverse delegate order (the last delegate wraps the
+     * attempt itself). A delegate that throws a {@link RuntimeException} (or
+     * returns {@code null}) while wrapping is contained: its wrapper is skipped
+     * and the chain built so far is kept. What a wrapper does once the attempt
+     * runs cannot be contained — see {@link EngineObserver#wrapActivityAttempt}.
+     */
+    @Override
+    public <T> Callable<T> wrapActivityAttempt(ActivityInfo a, Callable<T> attempt) {
+        var wrapped = attempt;
+        for (var delegate : delegates.reversed()) {
+            try {
+                var next = delegate.wrapActivityAttempt(a, wrapped);
+                if (next != null) {
+                    wrapped = next;
+                }
+            } catch (RuntimeException e) {
+                logger.warn("EngineObserver delegate {} threw from wrapActivityAttempt — contained",
+                        delegate.getClass().getName(), e);
+            }
+        }
+        return wrapped;
     }
 
     @Override

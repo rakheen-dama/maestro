@@ -1,10 +1,11 @@
 package io.b2mash.maestro.core.saga;
 
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.context.WorkflowContextInternals;
 import io.b2mash.maestro.core.engine.InstanceStatusWriter;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
-import io.b2mash.maestro.core.exception.InvalidStateTransitionException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
+import io.b2mash.maestro.core.exception.StaleRunException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.EventType;
@@ -14,7 +15,6 @@ import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.spi.SignalMessage;
-import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.core.spi.WorkflowStore;
@@ -204,7 +204,7 @@ class SagaManagerTerminateRaceTest {
         var stack = new CompensationStack();
         stack.push("step-A", compensationRuns::incrementAndGet);
 
-        assertThrows(InvalidStateTransitionException.class,
+        assertThrows(StaleRunException.class,
                 () -> sagaManager.compensate(ctx, instance, stack, false),
                 "a stale run must not compensate a workflow another runner already COMPLETED");
 
@@ -247,6 +247,115 @@ class SagaManagerTerminateRaceTest {
                 "a recovering run must still compensate when the instance already reads COMPENSATING");
         assertEquals(WorkflowStatus.COMPENSATING,
                 base.getInstance("recovering-workflow").orElseThrow().status());
+    }
+
+    // ── C7: the per-entry guard ──────────────────────────────────────────
+
+    @Test
+    @DisplayName("a terminate landing while entry 0 runs stops the loop before entry 1")
+    void terminateDuringEntryZero_stopsBeforeEntryOne() {
+        var store = new RaceableStore();
+        var sagaManager = new SagaManager(store, new RecordingMessaging(),
+                new PayloadSerializer(new ObjectMapper()), "test-service");
+        var instance = newInstance(store, "per-entry");
+        var ctx = newCtx(instance);
+        var runs = new CopyOnWriteArrayList<String>();
+        var stack = new CompensationStack();
+        stack.push("step-C", () -> runs.add("C"));
+        stack.push("step-B", () -> runs.add("B"));
+        stack.push("step-A", () -> { // LIFO: A runs first
+            runs.add("A");
+            forceStatus(store, "per-entry", WorkflowStatus.TERMINATED);
+        });
+
+        assertThrows(WorkflowTerminatedException.class,
+                () -> sagaManager.compensate(ctx, instance, stack, false));
+
+        assertEquals(List.of("A"), runs, "entries 1..n must not run once the instance reads TERMINATED");
+        var events = store.getEvents(instance.id());
+        assertEquals(1, events.stream()
+                        .filter(e -> e.eventType() == EventType.COMPENSATION_STEP_COMPLETED).count(),
+                "entry 0 ran to completion and its outcome stays durable");
+        assertTrue(events.stream().noneMatch(e -> e.eventType() == EventType.COMPENSATION_COMPLETED));
+        assertEquals(WorkflowStatus.TERMINATED, store.getInstance("per-entry").orElseThrow().status());
+    }
+
+    @Test
+    @DisplayName("another runner finalising the workflow mid-compensation stands this run down as stale")
+    void otherRunnerFinalisedDuringEntryZero_standsDownAsStale() {
+        var store = new RaceableStore();
+        var sagaManager = new SagaManager(store, new RecordingMessaging(),
+                new PayloadSerializer(new ObjectMapper()), "test-service");
+        var instance = newInstance(store, "per-entry-stale");
+        var ctx = newCtx(instance);
+        var runs = new CopyOnWriteArrayList<String>();
+        var stack = new CompensationStack();
+        stack.push("step-C", () -> runs.add("C"));
+        stack.push("step-B", () -> runs.add("B"));
+        stack.push("step-A", () -> {
+            runs.add("A");
+            forceStatus(store, "per-entry-stale", WorkflowStatus.FAILED);
+        });
+
+        assertThrows(StaleRunException.class, () -> sagaManager.compensate(ctx, instance, stack, false));
+
+        assertEquals(List.of("A"), runs);
+        assertEquals(io.b2mash.maestro.core.context.RunCancellation.Cause.STALE, ctx.cancellation().cause(),
+                "the fresh read's stand-down is sticky on the run (round 2, R33)");
+        assertTrue(store.getEvents(instance.id()).stream()
+                .noneMatch(e -> e.eventType() == EventType.COMPENSATION_COMPLETED));
+    }
+
+    @Test
+    @DisplayName("exactly one instance read per live entry; replay-skipped entries read nothing")
+    void perEntryGuard_costsOneReadPerLiveEntry() {
+        var counting = new CountingStore(new RaceableStore());
+        var sagaManager = new SagaManager(counting, new RecordingMessaging(),
+                new PayloadSerializer(new ObjectMapper()), "test-service");
+        var instance = newInstance(counting, "per-entry-reads");
+        var ctx = newCtx(instance);
+        var stack = new CompensationStack();
+        stack.push("step-C", () -> { });
+        stack.push("step-B", () -> { });
+        stack.push("step-A", () -> { });
+
+        counting.instanceReads.set(0);
+        sagaManager.compensate(ctx, instance, stack, false);
+        assertEquals(1 + 3, counting.instanceReads.get(),
+                "1 (transitionToCompensating) + one per live entry");
+
+        // Recovery re-run: every entry is now durable, so each is replay-skipped.
+        var replayCtx = newCtx(instance);
+        WorkflowContextInternals.setReplaying(replayCtx, true);
+        var replayStack = new CompensationStack(); // compensate() drained the first one
+        replayStack.push("step-C", () -> { });
+        replayStack.push("step-B", () -> { });
+        replayStack.push("step-A", () -> { });
+        counting.instanceReads.set(0);
+        sagaManager.compensate(replayCtx, instance, replayStack, false);
+        assertEquals(1, counting.instanceReads.get(),
+                "replay-skipped entries run nothing, so they read nothing");
+    }
+
+    private static void forceStatus(RaceableStore store, String workflowId, WorkflowStatus status) {
+        var latest = store.getInstance(workflowId).orElseThrow();
+        store.updateInstance(latest.toBuilder().status(status).version(latest.version() + 1).build());
+    }
+
+    /** Counts {@code getInstance} calls; everything else passes through. */
+    private static final class CountingStore extends DelegatingStore {
+        final AtomicInteger instanceReads = new AtomicInteger();
+
+        CountingStore(WorkflowStore delegate) {
+            super(delegate);
+        }
+
+        @Override public Optional<WorkflowInstance> getInstance(String workflowId) {
+            instanceReads.incrementAndGet();
+            return delegate.getInstance(workflowId);
+        }
+
+        @Override public void updateInstance(WorkflowInstance instance) { delegate.updateInstance(instance); }
     }
 
     // ── Fixtures ─────────────────────────────────────────────────────────
@@ -300,6 +409,9 @@ class SagaManagerTerminateRaceTest {
             return delegate.getRecoverableInstances();
         }
         @Override public void appendEvent(WorkflowEvent event) { delegate.appendEvent(event); }
+        @Override public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+            return delegate.completeInstance(terminal, terminalEvent);
+        }
         @Override public Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int seq) {
             return delegate.getEventBySequence(instanceId, seq);
         }
@@ -312,6 +424,9 @@ class SagaManagerTerminateRaceTest {
         @Override public boolean markSignalConsumed(UUID signalId) { return delegate.markSignalConsumed(signalId); }
         @Override public void adoptOrphanedSignals(String wfId, UUID instanceId) {
             delegate.adoptOrphanedSignals(wfId, instanceId);
+        }
+        @Override public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+            return delegate.deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff);
         }
         @Override public void saveTimer(WorkflowTimer timer) { delegate.saveTimer(timer); }
         @Override public List<WorkflowTimer> getDueTimers(Instant now, int batchSize) {
@@ -448,6 +563,27 @@ class SagaManagerTerminateRaceTest {
 
         @Override public void appendEvent(WorkflowEvent event) { events.add(event); }
 
+        @Override
+        public synchronized boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+            // Test fixture: composes this store's own CAS and append under its monitor
+            // (so every hook on either still fires), undoing the status write if the
+            // append fails and the row is still ours — nothing is written unless both land.
+            var before = instancesByWorkflowId.get(terminal.workflowId());
+            try {
+                updateInstance(terminal);
+            } catch (OptimisticLockException conflict) {
+                return false;
+            }
+            try {
+                appendEvent(terminalEvent);
+            } catch (RuntimeException appendFailed) {
+                // Restore only if the row is still ours — never clobber a later writer.
+                instancesByWorkflowId.replace(terminal.workflowId(), terminal, before);
+                throw appendFailed;
+            }
+            return true;
+        }
+
         @Override public Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int seq) {
             return events.stream()
                     .filter(e -> e.workflowInstanceId().equals(instanceId) && e.sequenceNumber() == seq)
@@ -472,6 +608,7 @@ class SagaManagerTerminateRaceTest {
         @Override public List<WorkflowSignal> getUnconsumedSignals(String wfId, String name) { return List.of(); }
         @Override public boolean markSignalConsumed(UUID signalId) { return true; }
         @Override public void adoptOrphanedSignals(String wfId, UUID instanceId) {}
+        @Override public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) { return 0; }
         @Override public void saveTimer(WorkflowTimer timer) {}
         @Override public List<WorkflowTimer> getDueTimers(Instant now, int batchSize) { return List.of(); }
         @Override public Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId) {
@@ -484,10 +621,8 @@ class SagaManagerTerminateRaceTest {
     private static class RecordingMessaging implements WorkflowMessaging {
         final CopyOnWriteArrayList<WorkflowLifecycleEvent> events = new CopyOnWriteArrayList<>();
 
-        @Override public void publishTask(String taskQueue, TaskMessage message) {}
         @Override public void publishSignal(String serviceName, SignalMessage message) {}
         @Override public void publishLifecycleEvent(WorkflowLifecycleEvent event) { events.add(event); }
-        @Override public void subscribe(String taskQueue, Consumer<TaskMessage> handler) {}
         @Override public void subscribeSignals(String serviceName, Consumer<SignalMessage> handler) {}
     }
 }

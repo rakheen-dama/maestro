@@ -3,6 +3,7 @@ package io.b2mash.maestro.samples.loan.underwriting.workflow;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.samples.loan.underwriting.activity.AssessmentActivities;
 import io.b2mash.maestro.samples.loan.underwriting.activity.DecisionMessagingActivities;
+import io.b2mash.maestro.samples.loan.underwriting.activity.UnderwritingPolicyActivities;
 import io.b2mash.maestro.samples.loan.underwriting.activity.impl.RuleBasedAssessmentActivities;
 import io.b2mash.maestro.samples.loan.underwriting.domain.Decision;
 import io.b2mash.maestro.samples.loan.underwriting.domain.UnderwritingDecision;
@@ -44,8 +45,8 @@ class UnderwritingWorkflowTest {
         published = new RecordingDecisionMessaging();
         env.registerActivities(AssessmentActivities.class, new RuleBasedAssessmentActivities(registry));
         env.registerActivities(DecisionMessagingActivities.class, published);
-        // Generous defaults; timeout-path tests install sub-second values.
-        UnderwritingWorkflow.configureTimeouts(Duration.ofMinutes(10), Duration.ofMinutes(10));
+        // SPEC timeouts; timeout-path tests cross them by advancing the test clock.
+        env.registerActivities(UnderwritingPolicyActivities.class, () -> UnderwritingTimeoutPolicy.SPEC_DEFAULTS);
     }
 
     @AfterEach
@@ -53,7 +54,6 @@ class UnderwritingWorkflowTest {
         if (env != null) {
             env.shutdown();
         }
-        UnderwritingWorkflow.resetTimeouts();
     }
 
     // ── Automatic path ───────────────────────────────────────────────────
@@ -124,12 +124,13 @@ class UnderwritingWorkflowTest {
 
     @Test
     void escalatesOnUnderwriterTimeoutThenAcceptsSeniorDecision() throws TimeoutException {
-        UnderwritingWorkflow.configureTimeouts(Duration.ofMillis(200), Duration.ofSeconds(5));
         var handle = start("loan-e1", 1, 400_000, 100_000, true);
+        waitForStep(handle, "AWAITING_UNDERWRITER");
+        env.advanceTime(UnderwritingTimeoutPolicy.SPEC_DEFAULTS.underwriterTimeout());
 
         // The escalate activity marks the registry before the senior await —
         // once visible, the underwriter desk has definitively timed out.
-        waitUntil(() -> registry.isEscalated("loan-e1", 1), Duration.ofSeconds(3));
+        waitUntil(() -> registry.isEscalated("loan-e1", 1), Duration.ofSeconds(10));
         assertTrue(registry.isEscalated("loan-e1", 1), "review should be escalated");
 
         handle.signal("senior.decision", new Decision(Verdict.APPROVED, List.of()));
@@ -141,8 +142,11 @@ class UnderwritingWorkflowTest {
 
     @Test
     void rejectsWithNoDecisionWhenBothDesksTimeOut() throws TimeoutException {
-        UnderwritingWorkflow.configureTimeouts(Duration.ofMillis(200), Duration.ofMillis(200));
         var handle = start("loan-e2", 1, 400_000, 100_000, true);
+        waitForStep(handle, "AWAITING_UNDERWRITER");
+        env.advanceTime(UnderwritingTimeoutPolicy.SPEC_DEFAULTS.underwriterTimeout());
+        waitForStep(handle, "AWAITING_SENIOR");
+        env.advanceTime(UnderwritingTimeoutPolicy.SPEC_DEFAULTS.seniorTimeout());
 
         var result = handle.getResult(UnderwritingDecision.class, RESULT_TIMEOUT);
 
@@ -162,8 +166,14 @@ class UnderwritingWorkflowTest {
         return env.startWorkflow(workflowId, UnderwritingWorkflow.class, request);
     }
 
+    /** Waits until the workflow is parked on the await for the named step. */
+    private static void waitForStep(TestWorkflowHandle handle, String step) {
+        waitUntil(() -> step.equals(handle.query("getStatus", null, String.class))
+                && handle.getStatus() == WorkflowStatus.WAITING_SIGNAL, Duration.ofSeconds(10));
+    }
+
     private static void waitForStatus(TestWorkflowHandle handle, WorkflowStatus expected) {
-        waitUntil(() -> handle.getStatus() == expected, Duration.ofSeconds(3));
+        waitUntil(() -> handle.getStatus() == expected, Duration.ofSeconds(10));
     }
 
     private static void waitUntil(java.util.function.BooleanSupplier condition, Duration timeout) {

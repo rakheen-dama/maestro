@@ -43,6 +43,7 @@ repositories {
 
 dependencies {
     // Maestro
+    implementation(platform("io.b2mash.maestro:maestro-bom:<version>"))
     implementation("io.b2mash.maestro:maestro-spring-boot-starter")
     implementation("io.b2mash.maestro:maestro-store-postgres")
     implementation("io.b2mash.maestro:maestro-messaging-kafka")
@@ -50,12 +51,15 @@ dependencies {
 
     // Spring Boot
     implementation("org.springframework.boot:spring-boot-starter-webmvc")
+    implementation("org.springframework.boot:spring-boot-starter-jdbc")
 
     // Test
     testImplementation("io.b2mash.maestro:maestro-test")
     testImplementation("org.springframework.boot:spring-boot-starter-test")
 }
 ```
+
+Replace `<version>` with the Maestro release you are adopting (`gradle.properties` on `main` holds the snapshot under development). Nothing is published to Maven Central yet; build and `publishToMavenLocal` from source.
 
 Create your main application class:
 
@@ -125,11 +129,6 @@ Maestro never auto-creates Kafka topics. Create them manually:
 # Find your Kafka container name
 KAFKA_CONTAINER=$(docker ps --format '{{.Names}}' | grep kafka)
 
-# Task queue topic
-docker exec -it $KAFKA_CONTAINER /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server localhost:9092 \
-  --create --topic maestro.tasks.default --partitions 3
-
 # Signal topic (one per service)
 docker exec -it $KAFKA_CONTAINER /opt/kafka/bin/kafka-topics.sh \
   --bootstrap-server localhost:9092 \
@@ -155,7 +154,6 @@ maestro:
   messaging:
     type: kafka    # Also supports: postgres
     topics:
-      tasks: maestro.tasks.default
       signals: maestro.signals.my-service
   lock:
     type: valkey   # Also supports: postgres
@@ -177,7 +175,7 @@ spring:
       port: 6379
 ```
 
-Maestro uses Flyway to create its `maestro_*` tables automatically on startup. No manual DDL required.
+Maestro creates and upgrades its own `maestro_*` tables at startup with an embedded Flyway run, recorded in its own history table `maestro_schema_history`. Your application's Flyway (if any) and its `flyway_schema_history` are untouched — a `V1__init.sql` of your own does not collide with Maestro's `V1`. Set `maestro.store.schema.mode: validate` to fail startup instead when migrations are pending, or `none` to apply the SQL yourself.
 
 ---
 
@@ -274,7 +272,7 @@ What each annotation does:
 
 | Annotation | Purpose |
 |---|---|
-| `@DurableWorkflow` | Marks this class as a crash-recoverable workflow. The `name` is used as the workflow type identifier. The `taskQueue` routes to worker groups. |
+| `@DurableWorkflow` | Marks this class as a crash-recoverable workflow. The `name` is used as the workflow type identifier. The `taskQueue` names the concurrency bucket configured under `maestro.worker.task-queues`. |
 | `@WorkflowMethod` | Marks the single entry-point method. Accepts zero or one parameter (the workflow input). The return value is serialized as the workflow output. |
 | `@ActivityStub` | Tells Maestro to inject a memoizing proxy for this activity interface. `startToCloseTimeout` is an ISO 8601 duration string. |
 | `@RetryPolicy` | Configures exponential-backoff retry for failed activity calls. Defaults: 3 max attempts, 1s initial interval, 2x backoff. |
@@ -393,6 +391,7 @@ public class WelcomeWithApprovalWorkflow {
     @ActivityStub(startToCloseTimeout = "PT30S")
     private GreetingActivities greetings;
 
+    // Per-run state: Maestro creates a new workflow object for every run. Volatile because @QueryMethod runs on the caller's thread.
     private volatile String currentStep = "PENDING";
 
     @WorkflowMethod
@@ -433,7 +432,7 @@ public class WelcomeWithApprovalWorkflow {
 Key details:
 - `workflow.awaitSignal(name, type, timeout)` parks the workflow's virtual thread until a matching signal arrives or the timeout elapses. The state is persisted -- the signal can arrive while the service is down.
 - `SignalTimeoutException` is thrown if no signal arrives within the timeout.
-- `@QueryMethod` exposes `getStatus()` for external callers. Query methods run on the caller's thread, so fields they read must be `volatile` or otherwise thread-safe.
+- `@QueryMethod` exposes `getStatus()` for external callers. A new workflow object is created per run, so `currentStep` is this run's state and never another instance's. Query methods run on the caller's thread, so fields they read must be `volatile` or otherwise thread-safe. A query is answered by the node currently running the workflow; see [Queries](concepts.md#queries).
 
 Add endpoints for approval and status:
 
@@ -442,6 +441,7 @@ package com.example.demo.controller;
 
 import com.example.demo.domain.ApprovalDecision;
 import com.example.demo.workflow.WelcomeWithApprovalWorkflow;
+import io.b2mash.maestro.core.exception.WorkflowNotQueryableException;
 import io.b2mash.maestro.spring.client.MaestroClient;
 import io.b2mash.maestro.spring.client.WorkflowOptions;
 import org.springframework.http.ResponseEntity;
@@ -484,8 +484,15 @@ public class WelcomeApprovalController {
 
     @GetMapping("/approval-welcome/{name}/status")
     public String status(@PathVariable String name) {
-        return maestro.getWorkflow("welcome-" + name)
-            .query("getStatus", String.class);
+        var handle = maestro.getWorkflow("welcome-" + name);
+        try {
+            // Live step from the running workflow -- answered by the owning node only
+            return handle.query("getStatus", String.class);
+        } catch (WorkflowNotQueryableException e) {
+            // Durable fallback: finished, or running on another node. status()
+            // reads the store, so it works on every node.
+            return handle.status().name();
+        }
     }
 }
 ```
@@ -523,15 +530,17 @@ package com.example.demo.workflow;
 
 import com.example.demo.activity.GreetingActivities;
 import com.example.demo.activity.GreetingActivitiesImpl;
+import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.test.TestWorkflowEnvironment;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
-import java.util.concurrent.TimeoutException;
+import java.time.Instant;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class WelcomeWorkflowTest {
 
@@ -549,10 +558,21 @@ class WelcomeWorkflowTest {
     }
 
     @Test
-    void shouldCompleteWelcomeWorkflow() throws TimeoutException {
+    void shouldCompleteWelcomeWorkflow() throws Exception {
         var handle = env.startWorkflow(WelcomeWorkflow.class, "Alice");
 
-        // Advance past the 5-second durable sleep
+        // startWorkflow returns at once; the workflow runs its activity on its
+        // own thread and only then arms the sleep. Wait until it is parked on
+        // the timer -- advancing earlier would move the clock past nothing,
+        // and the sleep would then arm from the already-advanced clock.
+        var deadline = Instant.now().plusSeconds(5);
+        while (handle.getStatus() != WorkflowStatus.WAITING_TIMER) {
+            assertTrue(Instant.now().isBefore(deadline), "workflow never parked on its sleep");
+            Thread.sleep(10);
+        }
+
+        // Advance by the 5-second durable sleep: its fireAt was armed from
+        // the test clock (now + 5 s), so the exact duration fires it
         env.advanceTime(Duration.ofSeconds(5));
 
         String result = handle.getResult(String.class, Duration.ofSeconds(5));

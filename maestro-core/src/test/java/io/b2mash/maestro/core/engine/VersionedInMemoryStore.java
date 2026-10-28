@@ -205,6 +205,27 @@ class VersionedInMemoryStore implements WorkflowStore {
         }
     }
 
+    @Override
+    public synchronized boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+        // Test fixture: composes this store's own CAS and append under its monitor
+        // (so every hook on either still fires), undoing the status write if the
+        // append fails and the row is still ours — nothing is written unless both land.
+        var before = byWorkflowId.get(terminal.workflowId());
+        try {
+            updateInstance(terminal);
+        } catch (OptimisticLockException conflict) {
+            return false;
+        }
+        try {
+            appendEvent(terminalEvent);
+        } catch (RuntimeException appendFailed) {
+            // Restore only if the row is still ours — never clobber a later writer.
+            byWorkflowId.replace(terminal.workflowId(), terminal, before);
+            throw appendFailed;
+        }
+        return true;
+    }
+
     /**
      * Plants an event without going through {@link #appendEvent} — the
      * in-memory counterpart of the integration suite's raw SQL {@code INSERT}
@@ -252,7 +273,7 @@ class VersionedInMemoryStore implements WorkflowStore {
     @Override
     public int deleteFailureEvents(UUID instanceId) {
         synchronized (events) {
-            return removeFailureEvents(events, instanceId);
+            return removeFailureEvents(events, timers, instanceId);
         }
     }
 
@@ -300,6 +321,11 @@ class VersionedInMemoryStore implements WorkflowStore {
         }
     }
 
+    @Override
+    public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+        return 0;
+    }
+
     /** @return every signal row ever saved, oldest first */
     List<WorkflowSignal> allSignals() {
         return List.copyOf(signals);
@@ -318,6 +344,11 @@ class VersionedInMemoryStore implements WorkflowStore {
                 .filter(t -> t.status() == TimerStatus.PENDING && !t.fireAt().isAfter(now))
                 .limit(batchSize)
                 .toList();
+    }
+
+    /** @return a snapshot of every stored timer row, in insertion order (test inspection) */
+    List<WorkflowTimer> allTimers() {
+        return List.copyOf(timers);
     }
 
     @Override

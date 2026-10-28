@@ -9,7 +9,8 @@ import org.springframework.core.Ordered;
 
 /**
  * Recovers workflows that were active when the service last stopped
- * and starts the background timer poller.
+ * and starts the background timer poller, signal janitor and (unless
+ * disabled) recovery poller.
  *
  * <p>Runs as an {@link ApplicationRunner} after the full context refresh,
  * ensuring all workflow registrations are available (populated by
@@ -48,6 +49,14 @@ public class StartupRecoveryRunner implements ApplicationRunner, Ordered {
         executor.startTimerPoller(timer.pollInterval(), timer.batchSize());
         logger.info("Maestro timer poller started (interval={}, batchSize={})",
                 timer.pollInterval(), timer.batchSize());
+
+        // 2b. Start the signal janitor — purges unconsumed signals addressed
+        // to workflows that finished long ago. Runs on every node; the purge
+        // is idempotent.
+        var signal = properties.getSignal();
+        executor.startSignalJanitor(signal.janitorInterval(), signal.terminalRetention());
+        logger.info("Maestro signal janitor started (interval={}, terminalRetention={})",
+                signal.janitorInterval(), signal.terminalRetention());
 
         // 3. Start the periodic recovery poller — adopts workflows whose
         // owning node has died (instance lock expired) or shut down

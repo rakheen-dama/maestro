@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.context;
 
 import io.b2mash.maestro.core.engine.WorkflowOperations;
+import io.b2mash.maestro.core.exception.BranchSequenceExhaustedException;
 import io.b2mash.maestro.core.retry.RetryUntilOptions;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -20,9 +21,11 @@ import java.util.function.Supplier;
  * Per-workflow-instance context bound to the workflow's virtual thread.
  *
  * <p>The activity proxy reads this context to obtain the current sequence
- * number for memoization lookups. The {@link #nextSequence()} method is
- * called once per activity invocation to deterministically assign a
- * sequence number to each step.
+ * number for memoization lookups. The engine assigns a sequence number to
+ * each step deterministically, once per activity invocation, through the
+ * package-private {@code nextSequence()} mutator. The sequence and replay
+ * mutators are engine-internal and reachable only via
+ * {@link WorkflowContextInternals}; workflow code must never call them.
  *
  * <h2>Lifecycle</h2>
  * <ol>
@@ -80,6 +83,17 @@ public final class WorkflowContext {
     private final AtomicInteger sequenceCounter;
     private volatile boolean replaying;
     private final @Nullable WorkflowOperations operations;
+    private final @Nullable BranchBound bound;
+    private final RunCancellation cancellation;
+
+    /**
+     * The sequence block a bounded branch context may draw from.
+     *
+     * @param branchIndex    zero-based branch index within its fork
+     * @param baseSeq        the branch's base sequence (never handed out)
+     * @param limitExclusive the first sequence number outside the block
+     */
+    private record BranchBound(int branchIndex, int baseSeq, int limitExclusive) {}
 
     /**
      * Creates a new workflow context without workflow operations.
@@ -138,6 +152,60 @@ public final class WorkflowContext {
             boolean replaying,
             @Nullable WorkflowOperations operations
     ) {
+        this(workflowInstanceId, workflowId, runId, workflowType, taskQueue,
+                serviceName, initialSequence, replaying, operations, new RunCancellation());
+    }
+
+    /**
+     * Creates a new workflow context with workflow operations support and the
+     * run's {@link RunCancellation}.
+     *
+     * <p>Used by the {@code WorkflowExecutor}, which keeps the same
+     * {@code cancellation} on its record of the running workflow so that
+     * {@code terminateWorkflow} and {@code shutdown()} can reach the run.
+     *
+     * @param workflowInstanceId the workflow instance UUID (primary key)
+     * @param workflowId         the business workflow ID (e.g., {@code "order-abc"})
+     * @param runId              the current run ID (changes on manual retry)
+     * @param workflowType       the workflow type name
+     * @param taskQueue          the task queue name
+     * @param serviceName        the owning service name
+     * @param initialSequence    the starting sequence number (0 for new, higher for resumed)
+     * @param replaying          whether this execution is replaying stored events
+     * @param operations         the workflow operations delegate, or {@code null} for test contexts
+     * @param cancellation       the run's cancellation latch, shared with every branch context
+     */
+    public WorkflowContext(
+            UUID workflowInstanceId,
+            String workflowId,
+            UUID runId,
+            String workflowType,
+            String taskQueue,
+            String serviceName,
+            int initialSequence,
+            boolean replaying,
+            @Nullable WorkflowOperations operations,
+            RunCancellation cancellation
+    ) {
+        this(workflowInstanceId, workflowId, runId, workflowType, taskQueue,
+                serviceName, initialSequence, replaying, operations, null, cancellation);
+    }
+
+    private WorkflowContext(
+            UUID workflowInstanceId,
+            String workflowId,
+            UUID runId,
+            String workflowType,
+            String taskQueue,
+            String serviceName,
+            int initialSequence,
+            boolean replaying,
+            @Nullable WorkflowOperations operations,
+            @Nullable BranchBound bound,
+            RunCancellation cancellation
+    ) {
+        this.bound = bound;
+        this.cancellation = cancellation;
         this.workflowInstanceId = workflowInstanceId;
         this.workflowId = workflowId;
         this.runId = runId;
@@ -147,6 +215,83 @@ public final class WorkflowContext {
         this.sequenceCounter = new AtomicInteger(initialSequence);
         this.replaying = replaying;
         this.operations = operations;
+    }
+
+    /**
+     * Creates a bounded context for one sequence block that runs with the
+     * parent's own {@link WorkflowOperations} — used by sequential saga
+     * compensation, whose entries run on the workflow thread and may call
+     * {@code sleep()}, {@code awaitSignal()}, {@code parallel()},
+     * {@code currentTime()} and {@code randomUUID()} exactly as the forward
+     * path can.
+     *
+     * <p>Equivalent to {@link #bounded(WorkflowContext, int, int, int, WorkflowOperations)}
+     * with the parent's operations delegate ({@code null} if the parent has
+     * none). Use the five-argument factory when the block must run with
+     * different (or no) operations, as parallel compensation branches do.
+     *
+     * @param parent         the context to copy identity, replay flag, operations and
+     *                       {@link RunCancellation} from
+     * @param branchIndex    zero-based index of the block (entry or branch) within its fork
+     * @param baseSeq        the block's base sequence number (never handed out)
+     * @param limitExclusive the first sequence number outside the block
+     * @return a bounded context sharing {@code parent}'s operations
+     * @throws IllegalArgumentException if {@code limitExclusive <= baseSeq + 1}
+     * @see #bounded(WorkflowContext, int, int, int, WorkflowOperations)
+     */
+    public static WorkflowContext bounded(
+            WorkflowContext parent,
+            int branchIndex,
+            int baseSeq,
+            int limitExclusive
+    ) {
+        return bounded(parent, branchIndex, baseSeq, limitExclusive, parent.operations);
+    }
+
+    /**
+     * Creates a branch context for one branch of a {@code parallel()} fork or
+     * a parallel saga compensation, bounded to the sequence block
+     * {@code [baseSeq, limitExclusive)}.
+     *
+     * <p>Identity fields, the replay flag and the run's {@link RunCancellation}
+     * are copied from {@code parent} — so a terminate or shutdown requested on
+     * the run reaches every branch — and the counter starts at
+     * {@code baseSeq}. The branch may take at most
+     * {@code limitExclusive - baseSeq - 1} sequence slots: its
+     * (package-private) {@code nextSequence()} throws
+     * {@link BranchSequenceExhaustedException} on the 1000th direct step
+     * instead of spilling into the sibling's block.
+     *
+     * <p><b>Thread safety:</b> the returned context is used by exactly one
+     * virtual thread (the branch), which is what makes the bound's
+     * compare-then-increment safe.
+     *
+     * @param parent         the forking context to copy identity from
+     * @param branchIndex    zero-based index of the branch within its fork
+     * @param baseSeq        the branch's base sequence number
+     * @param limitExclusive the first sequence number outside the branch's block
+     * @param operations     the operations delegate for the branch, or {@code null}
+     * @return a bounded branch context
+     * @throws IllegalArgumentException if {@code limitExclusive <= baseSeq + 1} — the
+     *         block would have no slot to hand out
+     */
+    public static WorkflowContext bounded(
+            WorkflowContext parent,
+            int branchIndex,
+            int baseSeq,
+            int limitExclusive,
+            @Nullable WorkflowOperations operations
+    ) {
+        if ((long) limitExclusive <= (long) baseSeq + 1) {
+            throw new IllegalArgumentException(
+                    "A bounded block needs at least one slot: limitExclusive (" + limitExclusive
+                            + ") must be greater than baseSeq + 1 (baseSeq = " + baseSeq + ")");
+        }
+        return new WorkflowContext(
+                parent.workflowInstanceId, parent.workflowId, parent.runId,
+                parent.workflowType, parent.taskQueue, parent.serviceName,
+                baseSeq, parent.replaying, operations,
+                new BranchBound(branchIndex, baseSeq, limitExclusive), parent.cancellation);
     }
 
     // ── ScopedValue management ─────────────────────────────────────────
@@ -186,9 +331,27 @@ public final class WorkflowContext {
      * <p>Called once per activity invocation. The returned value is used
      * as the memoization key: {@code (workflowInstanceId, sequence)}.
      *
+     * <p><b>Bounded branch contexts</b> (see
+     * {@link #bounded(WorkflowContext, int, int, int, WorkflowOperations)}): the rule is
+     * "the 1000th direct step throws" — if the counter currently stands at
+     * {@code limitExclusive - 1} the call throws
+     * {@link BranchSequenceExhaustedException} and leaves the counter
+     * untouched. {@code setSequence(int)} is deliberately not bounded: a
+     * nested {@code parallel()} join rebases the counter past the block on
+     * purpose, and a rebased counter never equals {@code limitExclusive - 1},
+     * so nesting keeps working. The compare-then-increment is not atomic, which
+     * is safe because a branch context is used by a single virtual thread.
+     *
      * @return the next sequence number (1-based: first call returns 1)
+     * @throws BranchSequenceExhaustedException if this is a bounded branch
+     *         context whose block is full
      */
-    public int nextSequence() {
+    int nextSequence() {
+        var b = bound;
+        if (b != null && sequenceCounter.get() == b.limitExclusive() - 1) {
+            throw new BranchSequenceExhaustedException(
+                    workflowId, b.branchIndex(), b.baseSeq(), b.limitExclusive());
+        }
         return sequenceCounter.incrementAndGet();
     }
 
@@ -220,7 +383,7 @@ public final class WorkflowContext {
      *
      * @param replaying {@code true} if replaying, {@code false} if live
      */
-    public void setReplaying(boolean replaying) {
+    void setReplaying(boolean replaying) {
         this.replaying = replaying;
     }
 
@@ -257,18 +420,28 @@ public final class WorkflowContext {
     }
 
     /**
-     * Sets the sequence counter to a specific value.
+     * Returns this run's cancellation latch — the same instance for the root
+     * context and every branch context of the run.
      *
-     * <p><b>Engine-internal method — do not call from workflow code.</b>
-     * Calling this from a workflow method will corrupt the memoization
-     * sequence and break deterministic replay.
+     * <p>Engine-internal; workflow code has no reason to call it. The activity
+     * proxy passes it to the retry executor, which checks it before every
+     * attempt and during every backoff wait.
+     *
+     * @return the run's {@link RunCancellation}, never {@code null}
+     */
+    public RunCancellation cancellation() {
+        return cancellation;
+    }
+
+    /**
+     * Sets the sequence counter to a specific value.
      *
      * <p>Used by the engine for parallel branch contexts, where each
      * branch needs its own sequence space.
      *
      * @param sequence the sequence value to set
      */
-    public void setSequence(int sequence) {
+    void setSequence(int sequence) {
         sequenceCounter.set(sequence);
     }
 
@@ -339,9 +512,34 @@ public final class WorkflowContext {
     /**
      * Executes multiple tasks in parallel on separate virtual threads.
      *
+     * <p>Compensations registered inside the branches reach the saga stack when
+     * the fork joins (on success and on failure alike), in branch-index order
+     * rather than finish order, so recovery replays unwind them identically.
+     *
+     * <h2>Limits</h2>
+     * <ul>
+     *   <li><b>999 sequence slots per branch.</b> Each branch draws from its own
+     *       1000-wide block; the 1000th slot throws
+     *       {@link BranchSequenceExhaustedException}. Most steps take one slot;
+     *       {@code sleep()} takes two (the timer and its wake record).</li>
+     *   <li><b>Depth.</b> Every fork level multiplies the sequence by 1000, and
+     *       sequence numbers are 32-bit, so only a few levels fit. A fork that
+     *       cannot be sequenced throws
+     *       {@link io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException}
+     *       before it consumes a slot. See {@code docs/concepts.md} § Parallel
+     *       Execution → Depth limit for which shapes fit.</li>
+     * </ul>
+     * <p>Both are ordinary {@link io.b2mash.maestro.core.exception.MaestroException}s,
+     * not engine control-flow signals: they fail the branch (the fork rethrows
+     * once every branch has joined) and, uncaught, fail the workflow, which
+     * runs its registered compensations.
+     *
      * @param tasks the tasks to execute in parallel
      * @param <T>   the result type
      * @return the results in the same order as the input tasks
+     * @throws BranchSequenceExhaustedException if a branch takes a 1000th sequence slot
+     * @throws io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException
+     *         if the fork's branch blocks would overflow the sequence space
      * @throws IllegalStateException if operations are not configured
      * @see WorkflowOperations#parallel(List)
      */
@@ -494,6 +692,10 @@ public final class WorkflowContext {
     /**
      * Pushes a compensation action onto the compensation stack.
      *
+     * <p>Called inside a {@code parallel()} branch, the registration is held
+     * until the fork joins and then pushed in branch-index order (branch 0's
+     * entries first, in their registration order), never in finish order.
+     *
      * @param compensation the compensation action
      * @throws IllegalStateException if operations are not configured
      * @see WorkflowOperations#addCompensation(Runnable)
@@ -508,6 +710,10 @@ public final class WorkflowContext {
      * <p>The step name is used for logging and event recording. This
      * overload is used by the {@code @Compensate} activity proxy
      * integration.
+     *
+     * <p>Called inside a {@code parallel()} branch, the registration is held
+     * until the fork joins and then pushed in branch-index order (branch 0's
+     * entries first, in their registration order), never in finish order.
      *
      * @param stepName     the compensation step name for logging and events
      * @param compensation the compensation action

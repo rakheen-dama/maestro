@@ -4,7 +4,7 @@
 [![Java](https://img.shields.io/badge/Java-25-orange.svg)](https://openjdk.org/projects/jdk/25/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.x-green.svg)](https://spring.io/projects/spring-boot)
 
-**Embeddable durable workflow engine for Spring Boot.** Add a starter to your microservice and get Temporal-grade workflow durability using your existing Postgres — plus optionally Kafka or Valkey.
+**Durable workflows for Spring Boot 4 teams on Postgres + Kafka — sagas, cross-service signals, free dashboard.** Add a starter to your microservice and get crash-recoverable workflows on the Postgres you already run; Kafka and Valkey are optional.
 
 ---
 
@@ -14,13 +14,17 @@ Maestro is an open-source durable workflow engine delivered as a Spring Boot Sta
 
 ### Why Maestro?
 
-| Solution | Trade-off |
-|---|---|
-| **Temporal / Cadence** | Powerful, but requires a separate cluster (Cassandra, Elasticsearch, multiple server roles) |
-| **Netflix Conductor** | Central server, Elasticsearch dependency, limited Spring Boot integration |
-| **Camunda / Zeebe** | BPMN-oriented, requires visual designer; Zeebe needs its own broker |
-| **Axon Framework** | Event sourcing focused, steep learning curve, commercial licensing |
-| **Maestro** | **Embedded in your service. Uses your Postgres, Kafka, and Valkey. Nothing new to deploy.** |
+| Solution | What it is | Trade-off against Maestro |
+|---|---|---|
+| **Temporal** | Durable execution with a separate server cluster (Postgres or MySQL; Cassandra and Elasticsearch optional; a single-binary dev server exists) | Most mature option, with determinism checking and a replayer; you run and upgrade a cluster next to your services |
+| **DBOS Transact Java** | Embedded durable-execution library on Postgres only; Spring Boot 3.5 starter, Boot 4 support test-only; JDK 17; MIT (the Conductor UI is a paid service) | Closest alternative. More mature and polyglot; no saga compensation, no Kafka signal bridge, no free dashboard, Boot 4 is not its primary target |
+| **JobRunr / JobRunr Pro** | Durable background jobs on your own database; very mature; Boot 4 support | Simplest durable jobs with a large install base; no replay/memoization model, no signals; durable multi-step workflows are a Pro (paid) feature |
+| **Restate** | Single-binary durable-execution server with a Java/Kotlin SDK and Boot starter; BSL-licensed server | Low-latency K/V state without a database; your workflow state lives in Restate's server, not your Postgres |
+| **Netflix Conductor** | Central orchestration server with a JSON workflow DSL (Elasticsearch optional) | Language-agnostic DSL and UI; a server to operate and workflows defined outside your code |
+| **Camunda / Zeebe, Flowable** | BPMN engines (Flowable 8 embeds on any JDBC; Zeebe needs its own broker) | BPMN modelling, human tasks and history views; model-first rather than code-first |
+| **Axon Framework** | Event-sourcing and CQRS framework | Event-sourcing model with a steep learning curve; Axon 5.1+ partly commercial |
+| **Dapr Workflow** | Sidecar-based workflow runtime | Polyglot and Kubernetes-native; a sidecar per pod and state outside your database |
+| **Maestro** | **Embedded Spring Boot 4 starter on your Postgres (+ optional Kafka, Valkey)** | **Sagas, cross-service signals with trace propagation, versioning, a test kit and a free dashboard — nothing new to deploy. Pre-1.0; see `docs/open-issues.md`.** |
 
 ---
 
@@ -33,7 +37,7 @@ Maestro is an open-source durable workflow engine delivered as a Spring Boot Sta
 - **Parallel Execution** -- Execute multiple activities or awaits concurrently on virtual threads. Each branch is independently memoized.
 - **Durable Timers** -- `workflow.sleep(Duration.ofDays(30))` creates a persistent timer. The service doesn't need to stay alive.
 - **Queries** -- Read live workflow state without affecting execution.
-- **Durable Retries** -- Activities retry with exponential backoff. Retries survive JVM restarts.
+- **Durable Retries** -- Activities retry with exponential backoff, each attempt bounded by `startToCloseTimeout`. A completed attempt is never re-executed after a crash; the attempt counter itself is in-memory, so a crash mid-retry restarts the schedule at attempt 1.
 - **Admin Dashboard** -- Standalone monitoring UI with workflow list, event timelines, signal monitor, and one-click retry.
 - **Workflow Versioning** -- `workflow.version()` gates a code change behind a durable, memoized decision, so in-flight instances keep replaying the branch they recorded.
 - **Observability** -- Micrometer meters and OpenTelemetry spans out of the box, including W3C trace propagation through Kafka so a cross-service flow renders as one connected trace. Replayed steps are never counted or traced.
@@ -48,14 +52,18 @@ Maestro is an open-source durable workflow engine delivered as a Spring Boot Sta
 ```kotlin
 // build.gradle.kts
 dependencies {
+    implementation(platform("io.b2mash.maestro:maestro-bom:<version>"))
     implementation("io.b2mash.maestro:maestro-spring-boot-starter")
     implementation("io.b2mash.maestro:maestro-store-postgres")
     implementation("io.b2mash.maestro:maestro-messaging-kafka")
     implementation("io.b2mash.maestro:maestro-lock-valkey")
+    implementation("org.springframework.boot:spring-boot-starter-jdbc")
 
     testImplementation("io.b2mash.maestro:maestro-test")
 }
 ```
+
+Replace `<version>` with the Maestro release you are adopting (`gradle.properties` on `main` holds the snapshot under development). Nothing is published to Maven Central yet; build and `publishToMavenLocal` from source.
 
 > **Postgres-only mode:** Replace `maestro-messaging-kafka` with `maestro-messaging-postgres` and `maestro-lock-valkey` with `maestro-lock-postgres` to eliminate Kafka and Valkey dependencies entirely. See [Configuration](docs/configuration.md) for details.
 
@@ -96,6 +104,8 @@ public class WelcomeWorkflow {
     }
 }
 ```
+
+Maestro creates a new `WelcomeWorkflow` object for every workflow run, so instance fields are per-instance state — two concurrent runs never share them. Fields read by a `@QueryMethod` are still `volatile`, because queries run on the caller's thread.
 
 ### 4. Start it from a REST endpoint
 
@@ -223,6 +233,7 @@ graph TB
 | `maestro-lock-postgres` | PostgreSQL `DistributedLock` via table-backed locks | No |
 | `maestro-admin` | Standalone monitoring dashboard | Yes |
 | `maestro-admin-client` | Lifecycle event publisher | Minimal |
+| `maestro-bom` | Gradle/Maven platform aligning all module versions | No |
 | `maestro-test` | In-memory engine for testing | No |
 | `sample-postgres-only` | Document approval workflow -- Postgres-only demo | Yes |
 
@@ -302,9 +313,10 @@ See the [Samples README](maestro-samples/README.md) for crash recovery simulatio
 ## Building from Source
 
 ```bash
-./gradlew build                            # Build everything
-./gradlew :maestro-core:test               # Unit tests for core
-./gradlew :maestro-store-postgres:integrationTest  # Integration tests (Docker required)
+./gradlew build                                      # Everything, including the real-backend suites (Docker required)
+./gradlew :maestro-core:test                         # Unit tests for core
+./gradlew :maestro-integration-tests:test            # Real Postgres/Kafka/Valkey (Docker)
+./gradlew :maestro-integration-tests:e2eTest         # Loan-origination E2E + chaos (Docker)
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor guide.

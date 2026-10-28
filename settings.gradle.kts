@@ -24,6 +24,7 @@ include(
     "maestro-messaging-postgres",
     "maestro-lock-valkey",
     "maestro-lock-postgres",
+    "maestro-bom",
     "maestro-test",
     "maestro-integration-tests",
     "maestro-admin",

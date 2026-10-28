@@ -91,19 +91,20 @@ timer ID. `workflowFailed`'s exception type is deliberately *not* a tag either
 | `maestro.recovery.scanned` | *(none)* | — | Incremented by the number of instances a recovery pass scanned |
 | `maestro.recovery.adopted` | *(none)* | — | Incremented by the number of instances that pass adopted |
 | `maestro.lock.renew.failures` | `outcome` | `error`, `lost` | Instance-lock renewal errored (`error`) or the lock was found gone (`lost`) |
-| `maestro.standdown` | `reason` | `unknown_event_type`, `unknown_event_payload`, `stale_run` | A local run stood down without recording a workflow outcome |
+| `maestro.standdown` | `reason` | `unknown_event_type`, `unknown_event_payload`, `nondeterministic_history`, `stale_run` | A local run stood down without recording a workflow outcome |
 
 `maestro.recovery.scanned` and `maestro.recovery.adopted` are `increment(n)`
 calls, not `increment()` — one recovery pass moves them by the pass's counts.
 
-The `reason` tag value set is closed at three, mapped from
+The `reason` tag value set is closed at four, mapped from
 `io.b2mash.maestro.core.observe.StandDownReason`:
 
 | `reason` | Meaning |
 |---|---|
 | `unknown_event_type` | A persisted `event_type` string this build's `EventType` enum does not define — written by a **newer** node |
 | `unknown_event_payload` | A stored payload this build could not deserialize while replaying |
-| `stale_run` | Issue 18 — an event append collided with a concurrent runner's history |
+| `nondeterministic_history` | C10 — the recorded event at a replayed sequence was written by a different operation than the current code performs there (an ungated workflow edit; roll back — see [Operations §10.7](operations.md#107-replay-drift-nondeterministic_history)) |
+| `stale_run` | Issue 18 / C5 — another runner owns this workflow. Either an event append collided with a concurrent runner's history (`DuplicateEventException`), or a fresh read found the row already finalised (`COMPLETED`/`FAILED`) by another runner (`StaleRunException`) — at a park/wake status write, an `awaitSignal()` wake, the transition to `COMPENSATING`, or before a sequential compensation entry. Also raised at the next stop point (live activity, `sleep()`, `awaitSignal()`, terminal write) of a run whose earlier stand-down the workflow code swallowed, and by a parked `sleep()`'s wake on a finalised row. |
 
 See [Operations §10](operations.md#10-versioning-and-mixed-version-deploys) for
 what a rising `maestro.standdown` means and how to act on each reason. The two
@@ -154,17 +155,30 @@ correct: no JVM is holding it.
 
 ### Which callbacks the meter adapter implements
 
-`MicrometerEngineObserver` implements 13 of the 22 `EngineObserver` callbacks.
+`MicrometerEngineObserver` implements 13 of the 23 `EngineObserver` callbacks.
 It deliberately does **not** implement:
 
 - `workflowResumed`, `workflowParked`, `workflowUnparked`, `activityStarted`,
   `signalPersisted`, `timerScheduled`, `timerCancelled`,
   `instanceLockAcquired` — no meter in the catalog needs them.
+- `wrapActivityAttempt` — its default returns the attempt unchanged; a meter
+  needs no thread-local context on the attempt thread.
 - **`runAbandoned`** — this fires when a run stops because the node is shutting
-  down, an operator terminated the workflow, or another writer finalised the row
-  first. Counting it would double-count: `workflowTerminated` already fires
-  exactly once per terminate. It exists for the tracing adapter, which needs a
-  callback on the workflow's own thread to close its span.
+  down, an operator terminated the workflow, another writer finalised the row
+  first, the terminal status write failed, or a node-level `Error` escaped the
+  workflow method, an activity or a compensation action (`NODE_ERROR`). Counting it would double-count:
+  `workflowTerminated` already fires exactly once per terminate. It exists for
+  the tracing adapter, which needs a callback on the workflow's own thread to
+  close its span. `NODE_ERROR` — a `LinkageError` (`NoClassDefFoundError`,
+  `ExceptionInInitializerError`, ...) or a `VirtualMachineError` other than
+  `StackOverflowError` (`OutOfMemoryError`, `InternalError`, ...) — is the one
+  reason that is not routine: it is a bad deploy or resource exhaustion on that
+  node, the instance keeps its active status (`RUNNING`, or `COMPENSATING`
+  mid-unwind) and stays recoverable, and nothing is recorded as a workflow or
+  activity failure — an activity that throws one is not retried. It is visible as the segment attribute
+  `maestro.abandon.reason=NODE_ERROR` and as an `ERROR` log line under the
+  workflow MDC (`... abandoned its local run on a node-level error (<class>)
+  ...`); alert on either.
 
 Every `EngineObserver` method is a `default` no-op, so a custom observer
 implements only what it cares about.
@@ -211,6 +225,20 @@ branch, where no segment exists (see [Known limitations](#known-limitations)),
 they are parented to the fork point instead, so they still land in the same
 trace.
 
+**Activity code sees the activity span as current.** Each live activity attempt
+runs on its own virtual thread, bounded by `startToCloseTimeout`, while the
+span is opened on the workflow thread. Before handing an attempt to its thread
+the engine calls `EngineObserver.wrapActivityAttempt(info, attempt)` on the
+workflow thread; `TracingEngineObserver` captures the open `maestro.activity`
+span there and puts it in scope around the attempt on the attempt thread,
+closing that scope when the attempt returns or throws. So instrumentation
+inside the activity (HTTP clients, JDBC, a `KafkaTemplate` send, and
+`KafkaTracePropagation.inject` for a Maestro publish) nests under
+`maestro.activity` and propagates the workflow's trace across the service
+boundary. The span is still ended on the workflow thread. Pinned by
+`TracingEngineObserverTest` and, on a real broker, by
+`KafkaTracePropagationContractTest`.
+
 A workflow that runs, parks, resumes, and completes therefore renders as one
 trace containing a chain of `maestro.workflow.run` segments, each with its
 activity spans nested underneath.
@@ -229,7 +257,7 @@ activity spans nested underneath.
 | `maestro.timer.id` | segment | See [span events](#span-events-and-their-attributes-ruling-8) below |
 | `maestro.error.type` | activity, segment | Exception type on `activityFailed` / `workflowFailed` |
 | `maestro.standdown.reason` | segment | The `StandDownReason` constant name |
-| `maestro.abandon.reason` | segment | The `AbandonReason` constant name (`SHUTDOWN`, `TERMINATED`, `CONVERGED`) |
+| `maestro.abandon.reason` | segment | The `AbandonReason` constant name (`SHUTDOWN`, `TERMINATED`, `CONVERGED`, `TERMINAL_WRITE_FAILED`, `NODE_ERROR`) |
 
 The three MDC keys Maestro logs with (`workflowId`, `runId`, `activityName`)
 appear here as `maestro.workflow.id`, `maestro.run.id`, and
@@ -276,7 +304,7 @@ connected trace**. The contract is pinned by tests, not inherited from transport
 defaults.
 
 The promise now covers Kafka traffic generally, not only the engine's own
-`maestro.tasks.*` / `maestro.signals.*` topics — see the contract below and
+`maestro.signals.*` topics — see the contract below and
 [Issue 23](open-issues.md#issue-23) for the history (it was previously scoped
 narrower than this).
 
@@ -515,9 +543,10 @@ their parenting are unaffected.
 
 ## Writing your own observer
 
-`EngineObserver` is a plain interface in `maestro-core` with 22 `default` no-op
-methods — implement only what you need, and register the bean; the starter picks
-up every `EngineObserver` in the context.
+`EngineObserver` is a plain interface in `maestro-core` with 23 `default`
+methods — 22 no-ops, plus `wrapActivityAttempt`, whose default returns the
+attempt unchanged — so implement only what you need, and register the bean; the
+starter picks up every `EngineObserver` in the context.
 
 The callback surface, grouped:
 
@@ -525,13 +554,13 @@ The callback surface, grouped:
 |---|---|
 | Workflow lifecycle | `workflowStarted`, `workflowResumed`, `workflowCompleted`, `workflowFailed(w, exceptionType)`, `workflowCompensating`, `workflowTerminated` |
 | Parking | `workflowParked(w, ParkKind)`, `workflowUnparked(w, ParkKind)` — `ParkKind` is `SIGNAL` or `TIMER` |
-| Activities | `activityStarted`, `activityCompleted(a, duration, replayed)`, `activityFailed(a, duration, exceptionType, replayed)` |
+| Activities | `activityStarted`, `wrapActivityAttempt(a, attempt)` (workflow thread; the returned callable runs on the attempt thread), `activityCompleted(a, duration, replayed)`, `activityFailed(a, duration, exceptionType, replayed)` |
 | Signals | `signalPersisted`, `signalConsumed(s, replayed)` |
 | Timers | `timerScheduled(t, replayed)`, `timerFired(t, replayed)`, `timerCancelled(t, replayed)` |
 | Instance lock | `instanceLockAcquired`, `instanceLockRenewFailed`, `instanceLockLost` |
 | Recovery | `recoveryPass(scanned, adopted)` |
 | Stand-down | `standDown(StandDownReason, workflowId, detail)` |
-| Run abandonment | `runAbandoned(w, AbandonReason)` — `SHUTDOWN`, `TERMINATED`, `CONVERGED` |
+| Run abandonment | `runAbandoned(w, AbandonReason)` — `SHUTDOWN`, `TERMINATED`, `CONVERGED`, `TERMINAL_WRITE_FAILED`, `NODE_ERROR` |
 
 Rules for implementers:
 
@@ -543,6 +572,14 @@ Rules for implementers:
   as a failure.
 - Callbacks run on engine threads, including workflow virtual threads. Keep them
   cheap and non-blocking; do no I/O.
+- **If you scope thread-local context per activity** (a span, an `Observation`,
+  anything activity code should see), implement `wrapActivityAttempt`: the
+  activity runs on its own attempt thread, not on the thread `activityStarted`
+  ran on. Capture the context in the call, re-establish it in the returned
+  callable, close it in a `finally`, and call the attempt exactly once.
+  Counting observers ignore the hook. With several observers registered, the
+  first one's wrapper is outermost — its code runs first on the way in and last
+  on the way out, matching the order every other callback fans out in.
 
 ---
 

@@ -28,6 +28,9 @@ import java.util.UUID;
  *       by {@link #updateInstance(WorkflowInstance)}.</li>
  *   <li>The {@code (workflow_instance_id, sequence_number)} uniqueness constraint on
  *       events must be enforced by {@link #appendEvent(WorkflowEvent)}.</li>
+ *   <li>{@link #completeInstance(WorkflowInstance, WorkflowEvent)} must be atomic:
+ *       the terminal status and the terminal event are written together or not
+ *       at all.</li>
  *   <li>Methods that return lists must never return {@code null} — return an
  *       empty list instead.</li>
  * </ul>
@@ -97,6 +100,69 @@ public interface WorkflowStore {
      *                                   {@code instance.version() - 1}
      */
     void updateInstance(WorkflowInstance instance);
+
+    /**
+     * Atomically finalises a workflow instance: writes its terminal status and
+     * appends its terminal event as <b>one</b> all-or-nothing operation.
+     *
+     * <p><b>Compare-and-set.</b> Exactly the {@link #updateInstance} version
+     * convention: {@code terminal} is the complete new row with its version
+     * already incremented, and it is written if and only if the stored row's
+     * version equals {@code terminal.version() - 1}. Unlike
+     * {@code updateInstance}, a version mismatch is reported by returning
+     * {@code false} rather than by throwing, because losing the CAS on a
+     * terminal write is an expected race the caller handles with a fresh read.
+     *
+     * <p><b>Atomicity.</b> {@code terminalEvent} is appended <em>in the same
+     * transaction</em> as the status write. When the CAS fails, or the append
+     * fails for any reason, <b>nothing</b> is written — neither the row nor the
+     * event. This closes Issue 26: because a reader can never observe a
+     * terminal status without its terminal event, nor the terminal event
+     * without the terminal status, {@link #getRecoverableInstances()} can never
+     * re-enter a workflow that has already been finalised, and no reader is
+     * ever handed a terminal workflow whose log is one event short.
+     *
+     * <p>The {@code (workflow_instance_id, sequence_number)} uniqueness
+     * {@link #appendEvent} enforces applies to {@code terminalEvent} too: if an
+     * event already occupies {@code terminalEvent.sequenceNumber()} (typically
+     * another runner finalised the workflow first), a
+     * {@link DuplicateEventException} is thrown and nothing is written.
+     *
+     * <p>Implementations must not provide this by calling
+     * {@link #updateInstance} and {@link #appendEvent} as two independent
+     * writes — that is precisely the non-atomic gap this method exists to
+     * remove. A relational store wraps the {@code UPDATE} and the
+     * {@code INSERT} in one transaction; an in-memory store performs both
+     * under the instance's lock so nothing is written unless both land.
+     *
+     * @param terminal      the fully-built terminal instance (version already
+     *                      incremented; {@link WorkflowInstance#status()} must be
+     *                      terminal)
+     * @param terminalEvent the {@link io.b2mash.maestro.core.model.EventType#WORKFLOW_COMPLETED}
+     *                      or {@link io.b2mash.maestro.core.model.EventType#WORKFLOW_FAILED}
+     *                      event to append; its
+     *                      {@link WorkflowEvent#workflowInstanceId()} must equal
+     *                      {@code terminal.id()}
+     * @return {@code true} if the status and the event were both written;
+     *         {@code false} if the stored version did not equal
+     *         {@code terminal.version() - 1} (nothing was written)
+     * @throws WorkflowNotFoundException if no row exists for the workflow
+     *                                   (nothing was written)
+     * @throws DuplicateEventException   if an event already exists at
+     *                                   {@code terminalEvent.sequenceNumber()}
+     *                                   for this instance (nothing was written)
+     * @throws IllegalArgumentException  if {@code terminal.status()} is not
+     *                                   {@linkplain io.b2mash.maestro.core.model.WorkflowStatus#isTerminal()
+     *                                   terminal}, if {@code terminalEvent.eventType()}
+     *                                   is not the type paired with the status
+     *                                   ({@code COMPLETED} ↔ {@code WORKFLOW_COMPLETED},
+     *                                   {@code FAILED} ↔ {@code WORKFLOW_FAILED};
+     *                                   {@code TERMINATED} is never accepted —
+     *                                   see {@link TerminalWrites#requireValid}), or if
+     *                                   {@code terminalEvent.workflowInstanceId()}
+     *                                   differs from {@code terminal.id()}
+     */
+    boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent);
 
     // ── Event operations ─────────────────────────────────────────────────
 
@@ -179,17 +245,39 @@ public interface WorkflowStore {
      * would let a retry replay consume a late-arrived signal at the gate and
      * diverge from the pre-failure execution.
      *
+     * <p><b>The failing await's deadline (R61).</b> An await that parked
+     * before timing out also recorded a {@code TIMER_SCHEDULED} memo carrying
+     * its absolute deadline in the slot immediately before its
+     * {@code SIGNAL_TIMEOUT} (same step name,
+     * {@code $maestro:awaitSignal:<signalName>}), and a timer row with logical
+     * ID {@code await-signal-<memoSeq>}, now {@code FIRED} or
+     * {@code CANCELLED}. That deadline is spent, so it is part of the failure
+     * too: when the failing {@code SIGNAL_TIMEOUT} at {@code seq} is deleted
+     * and the event at {@code seq - 1} is a {@code TIMER_SCHEDULED} with the
+     * same step name, implementations must delete that memo and every timer
+     * row of the instance with timer ID {@code await-signal-<seq - 1>} (any
+     * status) as well. The retried await then runs live at the same slot: a
+     * signal that has arrived since is consumed at once; otherwise it arms a
+     * fresh full timeout from the retry and parks. Leaving either behind makes
+     * the retried await honour the spent deadline and fail again at once.
+     * {@code sleep()} rows and the memos and rows of earlier awaits are never
+     * touched.
+     *
+     * <p><b>Atomicity.</b> Implementations should apply all of the deletes
+     * together (one transaction), so a crash cannot leave a partial delete for
+     * a second retry to compound. The shipped JDBC store does.
+     *
      * <p><b>Idempotent.</b> Called on an instance with no failure memos it
      * deletes nothing and returns {@code 0}.
      *
      * <p><b>Implementation note:</b> this is the only operation that removes
      * rows from the event log. Implementations must scope the delete to the
      * given instance and to those event types (plus the single failing-timeout
-     * memo) — never to a sequence range, which would take compensation and
-     * success memos with it.
+     * memo and its await's park memo and deadline rows) — never to a sequence
+     * range, which would take compensation and success memos with it.
      *
      * @param instanceId the workflow instance UUID whose failure memos to delete
-     * @return the number of events deleted
+     * @return the number of events deleted (deleted timer rows are not counted)
      * @see io.b2mash.maestro.core.engine.WorkflowExecutor#retryWorkflow
      */
     int deleteFailureEvents(UUID instanceId);
@@ -208,7 +296,19 @@ public interface WorkflowStore {
      * <p><b>Signals must never be discarded.</b> Even if the workflow doesn't
      * exist yet, the signal is persisted for later delivery.
      *
-     * @param signal the signal to persist
+     * <p><b>{@code receivedAt} is assigned by the store.</b> It is the order
+     * key of {@link #getUnconsumedSignals(String, String)}, so it must reflect
+     * the order in which the store accepted the signals. A store backed by a
+     * database shared between nodes <em>must</em> assign it from the database
+     * clock and ignore the caller's {@link WorkflowSignal#receivedAt()} — each
+     * node's JVM clock skews independently, and a caller-supplied value would
+     * let two same-name signals delivered through different nodes be consumed
+     * in skew order rather than arrival order. A single-process store (such as
+     * the in-memory test store) may keep the caller's value, because every
+     * caller shares one clock.
+     *
+     * @param signal the signal to persist; its {@code receivedAt} is advisory
+     *               (see above)
      */
     void saveSignal(WorkflowSignal signal);
 
@@ -253,6 +353,46 @@ public interface WorkflowStore {
      */
     void adoptOrphanedSignals(String workflowId, UUID instanceId);
 
+    /**
+     * Purges unconsumed signals addressed to workflows that finished long ago,
+     * so the signal table does not grow without bound.
+     *
+     * <p>Deletes exactly the signals with {@code consumed = false} whose
+     * {@link WorkflowSignal#workflowInstanceId()} references an instance whose
+     * status is {@link io.b2mash.maestro.core.model.WorkflowStatus#COMPLETED
+     * COMPLETED} or {@link io.b2mash.maestro.core.model.WorkflowStatus#TERMINATED
+     * TERMINATED} and whose {@code completedAt} is strictly before
+     * {@code cutoff}. No such workflow can ever consume them. Everything else
+     * must survive:
+     * <ul>
+     *   <li><b>{@code FAILED} instances are excluded.</b> A failed workflow can
+     *       be resumed by
+     *       {@link io.b2mash.maestro.core.engine.WorkflowExecutor#retryWorkflow
+     *       retryWorkflow}, and the retried run may still consume the signals
+     *       that arrived after it failed (Issue 19) — purging them would make
+     *       the retry wait for a signal that was delivered and then
+     *       discarded.</li>
+     *   <li><b>Orphans are never touched.</b> A signal with a {@code null}
+     *       {@code workflowInstanceId} belongs to a workflow that has not
+     *       started yet (pre-delivery) and will be adopted when it does.</li>
+     *   <li><b>Consumed rows are never touched here.</b> Their retention is a
+     *       separate concern this method does not address.</li>
+     *   <li>Instances with a {@code null} {@code completedAt}, or one at or
+     *       after {@code cutoff}, keep their signals.</li>
+     * </ul>
+     *
+     * <p><b>Idempotent and safe to run concurrently.</b> The engine's signal
+     * janitor calls this periodically on every node without leader election;
+     * a second call with the same cutoff deletes nothing and returns
+     * {@code 0}. Shared-database implementations should compare against the
+     * stored {@code completed_at} in a single statement.
+     *
+     * @param cutoff signals of instances completed strictly before this instant
+     *               are purged
+     * @return the number of signal rows deleted
+     */
+    int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff);
+
     // ── Timer operations ─────────────────────────────────────────────────
 
     /**
@@ -290,12 +430,14 @@ public interface WorkflowStore {
      * and continues rather than parking forever.
      *
      * <p>A timer ID is unique within a workflow instance (it is derived from the
-     * sequence number of the {@code sleep()} that created it). If an
+     * sequence number of the {@code sleep()} or parked {@code awaitSignal()}
+     * that created it). If an
      * implementation somehow holds duplicates, it must return one of them
      * deterministically.
      *
      * @param workflowInstanceId the owning workflow instance
-     * @param timerId            the logical timer ID (e.g. {@code "sleep-2"}),
+     * @param timerId            the logical timer ID (e.g. {@code "sleep-2"} or
+     *                           {@code "await-signal-7"}),
      *                           not the timer's database UUID
      * @return the timer, or empty if this instance has no timer with that ID
      */

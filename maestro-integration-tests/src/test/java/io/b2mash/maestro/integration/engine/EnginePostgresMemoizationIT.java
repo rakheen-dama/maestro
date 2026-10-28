@@ -168,7 +168,7 @@ class EnginePostgresMemoizationIT extends PostgresIntegrationSupport {
                 .build();
         built.registerActivities(CountingActivities.ChainActivities.class,
                 new CountingActivities.RecordingChainActivities(recorder));
-        built.registerWorkflow(new TestWorkflows.ChainWorkflow());
+        built.registerWorkflow(TestWorkflows.ChainWorkflow.class);
         return built;
     }
 

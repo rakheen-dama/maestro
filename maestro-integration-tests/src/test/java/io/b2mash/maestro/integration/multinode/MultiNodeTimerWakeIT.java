@@ -156,7 +156,7 @@ class MultiNodeTimerWakeIT extends PostgresIntegrationSupport {
                 .build();
         harness.registerActivities(CountingActivities.ChainActivities.class,
                 new CountingActivities.RecordingChainActivities(recorder));
-        harness.registerWorkflow(workflowImpl);
+        harness.registerWorkflow(workflowImpl.getClass(), () -> workflowImpl);
         return harness;
     }
 }

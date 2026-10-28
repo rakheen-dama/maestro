@@ -21,11 +21,14 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 /**
  * In-memory Maestro engine for fast, deterministic workflow tests.
@@ -46,9 +49,12 @@ import java.util.concurrent.atomic.AtomicInteger;
  * }</pre>
  *
  * <h2>Time Control</h2>
- * <p>Workflows that call {@code sleep()} create durable timers. Use
+ * <p>Workflows that call {@code sleep()} or {@code awaitSignal(..., timeout)}
+ * create durable timers, armed from this environment's
+ * {@link ControllableClock} rather than the wall clock. Use
  * {@link #advanceTime(Duration)} to fire due timers deterministically
- * without waiting for real time to pass.
+ * without waiting for real time to pass; {@code workflow.currentTime()}
+ * reads the same clock.
  *
  * <h2>Thread Safety</h2>
  * <p>The environment is thread-safe. Workflows run on virtual threads
@@ -76,6 +82,9 @@ public final class TestWorkflowEnvironment {
     private final Map<Class<?>, Object> activityImpls = new LinkedHashMap<>();
     private final AtomicInteger workflowCounter = new AtomicInteger(0);
 
+    // Workflow types whose @QueryMethods are registered with the executor; guarded by itself.
+    private final Set<String> queryRegisteredTypes = new HashSet<>();
+
     private TestWorkflowEnvironment(ObjectMapper objectMapper) {
         this.clock = new ControllableClock();
         this.store = new InMemoryWorkflowStore();
@@ -85,8 +94,10 @@ public final class TestWorkflowEnvironment {
         this.serializer = new PayloadSerializer(objectMapper);
         this.proxyFactory = new ActivityProxyFactory();
         this.retryExecutor = new RetryExecutor();
+        // Deadlines arm on the test clock, not the wall clock (R59): a timer
+        // armed at clock.now() + d fires on exactly advanceTime(d).
         this.executor = new WorkflowExecutor(
-                store, lock, messaging, signalNotifier, serializer, SERVICE_NAME);
+                store, lock, messaging, signalNotifier, serializer, SERVICE_NAME, clock);
     }
 
     // ── Factory methods ──────────────────────────────────────────────────
@@ -171,16 +182,33 @@ public final class TestWorkflowEnvironment {
         var taskQueue = annotation.taskQueue();
         var workflowMethod = findWorkflowMethod(workflowClass);
 
-        // Instantiate workflow and wire activity stubs
-        var workflowImpl = instantiate(workflowClass);
-        wireActivityStubs(workflowImpl);
+        // One workflow object per run (F1): the executor calls this factory on
+        // every launch of this workflow, each call building and wiring a fresh
+        // instance — exactly as the Spring starter does with prototype beans.
+        // Fail fast — before the instance row exists — on the wiring errors the
+        // factory would otherwise only hit inside the engine (where they arrive
+        // wrapped in WorkflowInstantiationException), keeping this method's
+        // documented exceptions unchanged.
+        validateWiring(workflowClass);
+        Supplier<Object> workflowFactory = () -> {
+            var workflowImpl = instantiate(workflowClass);
+            wireActivityStubs(workflowImpl);
+            return workflowImpl;
+        };
 
-        // Register query methods
-        executor.registerQueries(workflowType, workflowClass);
+        // Register query methods once per workflow type — the registry rejects a
+        // second registration, so re-registering on every start would make a second
+        // instance of any type with a @QueryMethod impossible to start.
+        synchronized (queryRegisteredTypes) {
+            if (!queryRegisteredTypes.contains(workflowType)) {
+                executor.registerQueries(workflowType, workflowClass);
+                queryRegisteredTypes.add(workflowType);
+            }
+        }
 
         // Start
         var instanceId = executor.startWorkflow(
-                workflowId, workflowType, taskQueue, input, workflowImpl, workflowMethod);
+                workflowId, workflowType, taskQueue, input, workflowFactory, workflowMethod);
 
         logger.debug("Test: started workflow '{}' (type={}, instanceId={})",
                 workflowId, workflowType, instanceId);
@@ -193,19 +221,30 @@ public final class TestWorkflowEnvironment {
     /**
      * Advances the test clock and fires any timers that become due.
      *
-     * <p>Workflows that called {@code workflow.sleep(duration)} create
-     * durable timers. This method advances the clock and fires all
-     * timers whose {@code fireAt <= clock.now()}, then yields briefly
-     * to let virtual threads process.
+     * <p>Workflows that call {@code workflow.sleep(duration)} or
+     * {@code workflow.awaitSignal(name, type, timeout)} create durable timers,
+     * armed from the test clock: a timer armed at {@code t} with duration
+     * {@code d} has {@code fireAt = t + d}, so advancing by exactly {@code d}
+     * fires it — no margin needed (R59). This method advances the clock to
+     * a target instant and fires every timer whose {@code fireAt} is at or
+     * before that target.
      *
-     * <p>The method loops to handle cascading timers (timer A fires
-     * → workflow creates timer B → B is also due).
+     * <p>The target is fixed when the call starts. A workflow woken by this
+     * call that parks again arms its next timer from the advanced clock, at
+     * {@code target + d}; for any positive {@code d} that is after the target,
+     * so this call never fires it — the next {@code advanceTime} does. One
+     * call therefore fires only the timers already due at its target and
+     * never chains on into a positive-duration timer a woken workflow arms.
+     * A zero- or negative-duration timer armed by a woken workflow is due at
+     * once: whether this call or the next fires it depends on thread timing.
+     * The loop repeats while timers due by the target remain (more than one
+     * batch, or such a timer).
      *
      * @param duration the amount to advance (must be non-negative)
      */
     public void advanceTime(Duration duration) {
         clock.advance(duration);
-        fireAllDueTimers();
+        fireAllDueTimers(clock.now());
     }
 
     /**
@@ -276,12 +315,12 @@ public final class TestWorkflowEnvironment {
 
     // ── Internal: timer firing ───────────────────────────────────────────
 
-    private void fireAllDueTimers() {
+    private void fireAllDueTimers(Instant target) {
         List<WorkflowTimer> due;
         int safetyLimit = 1000;
         int iterations = 0;
 
-        while (!(due = store.getDueTimers(clock.now(), 100)).isEmpty()) {
+        while (!(due = store.getDueTimers(target, 100)).isEmpty()) {
             for (var timer : due) {
                 executor.fireTimer(timer.workflowId(), timer.timerId(), timer.id());
             }
@@ -344,6 +383,44 @@ public final class TestWorkflowEnvironment {
         }
     }
 
+    /**
+     * Checks, without instantiating anything, that {@code workflowClass} has a
+     * no-arg constructor and that every {@link ActivityStub} field has a
+     * registered implementation.
+     */
+    private void validateWiring(Class<?> workflowClass) {
+        try {
+            workflowClass.getDeclaredConstructor();
+        } catch (NoSuchMethodException e) {
+            throw new IllegalArgumentException(
+                    "Class %s must have a no-arg constructor".formatted(workflowClass.getName()), e);
+        }
+        for (var field : getAllFields(workflowClass)) {
+            if (field.isAnnotationPresent(ActivityStub.class)) {
+                requireActivityImpl(field, workflowClass);
+            }
+        }
+    }
+
+    private Object requireActivityImpl(Field field, Class<?> workflowClass) {
+        var activityInterface = field.getType();
+        if (!activityInterface.isInterface()) {
+            throw new IllegalArgumentException(
+                    "@ActivityStub field '%s' in %s must be an interface type, got: %s"
+                            .formatted(field.getName(), workflowClass.getSimpleName(),
+                                    activityInterface.getName()));
+        }
+        var activityImpl = activityImpls.get(activityInterface);
+        if (activityImpl == null) {
+            throw new IllegalStateException(
+                    "No activity implementation registered for %s. "
+                            .formatted(activityInterface.getName())
+                            + "Call registerActivities(%s.class, impl) before startWorkflow()."
+                                    .formatted(activityInterface.getSimpleName()));
+        }
+        return activityImpl;
+    }
+
     @SuppressWarnings("unchecked")
     private void wireActivityStubs(Object workflowImpl) {
         for (var field : getAllFields(workflowImpl.getClass())) {
@@ -353,21 +430,7 @@ public final class TestWorkflowEnvironment {
             }
 
             var activityInterface = field.getType();
-            if (!activityInterface.isInterface()) {
-                throw new IllegalArgumentException(
-                        "@ActivityStub field '%s' in %s must be an interface type, got: %s"
-                                .formatted(field.getName(), workflowImpl.getClass().getSimpleName(),
-                                        activityInterface.getName()));
-            }
-
-            var activityImpl = activityImpls.get(activityInterface);
-            if (activityImpl == null) {
-                throw new IllegalStateException(
-                        "No activity implementation registered for %s. "
-                                .formatted(activityInterface.getName())
-                                + "Call registerActivities(%s.class, impl) before startWorkflow()."
-                                        .formatted(activityInterface.getSimpleName()));
-            }
+            var activityImpl = requireActivityImpl(field, workflowImpl.getClass());
 
             var retryPolicy = RetryPolicy.fromAnnotation(stub.retryPolicy());
             var timeout = Duration.parse(stub.startToCloseTimeout());

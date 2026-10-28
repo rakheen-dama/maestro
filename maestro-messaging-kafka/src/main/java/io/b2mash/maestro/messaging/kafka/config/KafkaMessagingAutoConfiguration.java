@@ -207,6 +207,17 @@ public class KafkaMessagingAutoConfiguration {
         return new DefaultKafkaConsumerFactory<>(props);
     }
 
+    /**
+     * Resolves the Kafka messaging configuration from {@link MaestroProperties}.
+     *
+     * <p>(The removed {@code maestro.messaging.topics.tasks} property is
+     * rejected transport-neutrally by {@code MaestroAutoConfiguration}, so a
+     * user-supplied {@link KafkaMessagingConfig} cannot bypass it.)
+     *
+     * @param properties the bound Maestro configuration
+     * @return the resolved configuration
+     * @throws IllegalStateException if neither a consumer group nor a service name is configured
+     */
     @Bean
     @ConditionalOnMissingBean
     public KafkaMessagingConfig maestroKafkaMessagingConfig(MaestroProperties properties) {
@@ -223,7 +234,6 @@ public class KafkaMessagingAutoConfiguration {
         }
         var redelivery = messaging.redelivery();
         return new KafkaMessagingConfig(
-                topics.tasks(),
                 topics.signals(),
                 resolveAdminEventsTopic(properties),
                 consumerGroup,

@@ -101,7 +101,7 @@ class ShutdownContractIT extends PostgresIntegrationSupport {
     void shutdown_withWorkflowParkedOnSignal_leavesItWaitingSignalAndRecoverable() throws Exception {
         var parked = new CountDownLatch(1);
         nodeA = node("node-a", new CountingActivities.RecordingChainActivities(recorder));
-        nodeA.registerWorkflow(new TestWorkflows.SignalWorkflow(parked));
+        nodeA.registerWorkflow(TestWorkflows.SignalWorkflow.class, () -> new TestWorkflows.SignalWorkflow(parked));
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("shutdown-signal");
         var handle = nodeA.start(workflowId, TestWorkflows.SignalWorkflow.class, "seed");
@@ -127,7 +127,7 @@ class ShutdownContractIT extends PostgresIntegrationSupport {
     @DisplayName("a workflow parked on sleep stays WAITING_TIMER with its timer still pending")
     void shutdown_withWorkflowParkedOnSleep_leavesItWaitingTimerAndRecoverable() {
         nodeA = node("node-a", new CountingActivities.RecordingChainActivities(recorder));
-        nodeA.registerWorkflow(new TestWorkflows.SleepingWorkflow(NEVER));
+        nodeA.registerWorkflow(TestWorkflows.SleepingWorkflow.class, () -> new TestWorkflows.SleepingWorkflow(NEVER));
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("shutdown-sleep");
         var handle = nodeA.start(workflowId, TestWorkflows.SleepingWorkflow.class, "seed");
@@ -158,7 +158,7 @@ class ShutdownContractIT extends PostgresIntegrationSupport {
         nodeA = node("node-a", null);
         nodeA.registerActivities(SagaActivities.class,
                 new CountingActivities.RecordingSagaActivities(recorder, null));
-        nodeA.registerWorkflow(new ShutdownWorkflows.ParkingSagaWorkflow(parked));
+        nodeA.registerWorkflow(ShutdownWorkflows.ParkingSagaWorkflow.class, () -> new ShutdownWorkflows.ParkingSagaWorkflow(parked));
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("shutdown-saga");
         var handle = nodeA.start(workflowId, ShutdownWorkflows.ParkingSagaWorkflow.class, "widget");
@@ -185,7 +185,7 @@ class ShutdownContractIT extends PostgresIntegrationSupport {
     void shutdown_duringCompensation_leavesItRecoverableAndCompletesOnRecovery() throws Exception {
         var released = new AtomicInteger();
         nodeA = node("node-a", null);
-        nodeA.registerWorkflow(new ShutdownWorkflows.ParkingCompensationWorkflow(released));
+        nodeA.registerWorkflow(ShutdownWorkflows.ParkingCompensationWorkflow.class, () -> new ShutdownWorkflows.ParkingCompensationWorkflow(released));
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("shutdown-mid-comp");
         var handle = nodeA.start(workflowId, ShutdownWorkflows.ParkingCompensationWorkflow.class, "seed");
@@ -226,7 +226,7 @@ class ShutdownContractIT extends PostgresIntegrationSupport {
         var restartedReleased = new AtomicInteger();
         nodeA = null;
         nodeB = node("node-b", null);
-        nodeB.registerWorkflow(new ShutdownWorkflows.ParkingCompensationWorkflow(restartedReleased));
+        nodeB.registerWorkflow(ShutdownWorkflows.ParkingCompensationWorkflow.class, () -> new ShutdownWorkflows.ParkingCompensationWorkflow(restartedReleased));
 
         assertEquals(1, nodeB.recover(),
                 "the workflow abandoned mid-compensation must be recoverable from Postgres alone");
@@ -249,7 +249,7 @@ class ShutdownContractIT extends PostgresIntegrationSupport {
     void shutdown_withInFlightActivity_drainsItInsteadOfKillingIt() throws Exception {
         var enteredStepTwo = new CountDownLatch(1);
         nodeA = node("node-a", new BlockingChainActivities(enteredStepTwo));
-        nodeA.registerWorkflow(new TestWorkflows.ChainWorkflow());
+        nodeA.registerWorkflow(TestWorkflows.ChainWorkflow.class);
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("shutdown-drain");
         var handle = nodeA.start(workflowId, TestWorkflows.ChainWorkflow.class, "seed");
@@ -285,7 +285,7 @@ class ShutdownContractIT extends PostgresIntegrationSupport {
     void shutdown_withWorkflowParkedOnSignal_releasesTheInstanceLock() throws Exception {
         var parked = new CountDownLatch(1);
         nodeA = node("node-a", new CountingActivities.RecordingChainActivities(recorder));
-        nodeA.registerWorkflow(new TestWorkflows.SignalWorkflow(parked));
+        nodeA.registerWorkflow(TestWorkflows.SignalWorkflow.class, () -> new TestWorkflows.SignalWorkflow(parked));
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("shutdown-lock");
         var handle = nodeA.start(workflowId, TestWorkflows.SignalWorkflow.class, "seed");
@@ -314,7 +314,7 @@ class ShutdownContractIT extends PostgresIntegrationSupport {
     void afterShutdown_aFreshNodeRecoversTheParkedWorkflowAndCompletesIt() throws Exception {
         var parked = new CountDownLatch(1);
         nodeA = node("node-a", new CountingActivities.RecordingChainActivities(recorder));
-        nodeA.registerWorkflow(new TestWorkflows.SignalWorkflow(parked));
+        nodeA.registerWorkflow(TestWorkflows.SignalWorkflow.class, () -> new TestWorkflows.SignalWorkflow(parked));
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("shutdown-restart");
         var handle = nodeA.start(workflowId, TestWorkflows.SignalWorkflow.class, "seed");
@@ -328,7 +328,7 @@ class ShutdownContractIT extends PostgresIntegrationSupport {
         // node B's work alone and cannot be confused with node A's.
         var restartedRecorder = new CountingActivities.Recorder();
         nodeB = node("node-b", new CountingActivities.RecordingChainActivities(restartedRecorder));
-        nodeB.registerWorkflow(new TestWorkflows.SignalWorkflow(new CountDownLatch(1)));
+        nodeB.registerWorkflow(TestWorkflows.SignalWorkflow.class, () -> new TestWorkflows.SignalWorkflow(new CountDownLatch(1)));
 
         assertEquals(1, nodeB.recover(),
                 "the workflow left parked by the shutdown must be recoverable from Postgres alone");

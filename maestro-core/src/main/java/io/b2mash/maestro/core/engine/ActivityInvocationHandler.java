@@ -1,9 +1,13 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.annotation.Compensate;
+import io.b2mash.maestro.core.context.RunCancellation;
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.context.WorkflowContextInternals;
 import io.b2mash.maestro.core.exception.ActivityExecutionException;
+import io.b2mash.maestro.core.exception.ActivityTimeoutException;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
+import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.SerializationException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
@@ -28,7 +32,13 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * JDK dynamic proxy {@link InvocationHandler} that implements hybrid memoization
@@ -46,14 +56,69 @@ import java.util.UUID;
  *
  * <h2>Idempotency</h2>
  * <p>The Postgres unique constraint on {@code (workflow_instance_id, sequence_number)}
- * is the primary idempotency guard. If a {@link DuplicateEventException} is caught
- * during event append, the handler re-reads the stored event and returns/throws
- * its result — handling crash-after-persist scenarios gracefully.
+ * is the primary idempotency guard: at most one outcome is ever persisted per
+ * sequence. The memoization lookup above makes a recovery run replay what is
+ * already there, so a live append only collides when <em>another runner</em>
+ * wrote the slot between this run's lookup and its append — two nodes
+ * executing the same workflow in the lost-lock window (Issue 11).
+ *
+ * <p><b>The stand-down contract.</b> On a {@link DuplicateEventException} from
+ * the append — of this attempt's {@code ACTIVITY_COMPLETED} or of its
+ * {@code ACTIVITY_FAILED} alike — the handler accepts the winner's
+ * <em>record</em> as the truth and writes nothing that contradicts it: no
+ * lifecycle event, no failure surfaced to workflow code. It re-reads the
+ * winner only to check this build can interpret its type (an unknown-typed
+ * winner stands down as {@code UNKNOWN_EVENT_TYPE}, RULING 9), logs at WARN,
+ * and rethrows the duplicate, which unwinds to {@code WorkflowExecutor}'s
+ * {@code STALE_RUN} stand-down. The observer still sees the attempt this node
+ * genuinely executed — it measures executions, not the durable record.
+ *
+ * <p>The stand-down is <b>sticky</b>: before rethrowing, the handler sets the
+ * run's {@code RunCancellation} to {@code STALE}. Should workflow code catch
+ * and swallow the {@link DuplicateEventException}, the run's next live
+ * activity throws {@code StaleRunException} before it acquires a lock,
+ * publishes a start or executes anything (R29). Replayed activities are not
+ * affected — they execute nothing.
+ *
+ * <p><b>Why not adopt the winner's value.</b> This handler used to return the
+ * winner's stored payload and let the workflow carry on. But the winner is
+ * alive and ahead: every later live activity of the loser would either collide
+ * again or — worse — run a side effect the winner also runs, and a failure the
+ * loser surfaced would contradict a completion the winner recorded. Nothing the
+ * loser does after the collision is needed; standing down is the only move that
+ * cannot double a side effect (C5).
  *
  * <h2>Lock Strategy</h2>
  * <p>The distributed lock is an optimization to prevent duplicate execution, not
  * a correctness requirement. If the lock backend is unavailable, the handler
  * proceeds without the lock — the Postgres unique constraint prevents corruption.
+ *
+ * <h2>Timeouts</h2>
+ * <p>{@code startToCloseTimeout} bounds each live <em>attempt</em> on the wall
+ * clock. Every attempt runs on its own virtual thread — carrying a copy of the
+ * caller's MDC, its {@link WorkflowContext} binding and whatever the
+ * {@link EngineObserver} re-establishes through
+ * {@link EngineObserver#wrapActivityAttempt} (the tracing adapter's activity
+ * span), but no other thread-local state of the workflow thread — while the
+ * workflow thread waits at most the timeout for it. {@code @Compensate}
+ * methods run through this same path and are bounded by the same timeout.
+ * An attempt that overruns is cancelled — its
+ * thread is interrupted — and fails with an {@link ActivityTimeoutException},
+ * which the {@link RetryPolicy} treats like any other failure: retried by
+ * default, terminal if listed in {@code nonRetryableExceptions}. The workflow
+ * thread does not wait for a cancelled attempt to stop, and a value it
+ * produces after the deadline is discarded, never memoized. Replays are never
+ * bounded: nothing executes. The attempt counter is in-memory; a crash
+ * mid-retry restarts the schedule at attempt 1, and the durable guarantee is
+ * only that a <em>completed</em> attempt is never re-executed.
+ *
+ * <p><b>Activity code must not call workflow APIs</b> ({@code sleep},
+ * {@code awaitSignal}, {@code parallel}, {@code addCompensation}, ...) or other
+ * activity proxies — that is unsupported. The {@code WorkflowContext} is
+ * re-bound on the attempt thread for compatibility only, so such code keeps
+ * its pre-C11 behaviour where it can; the branch-compensation buffer of a
+ * {@code parallel()} branch ({@code BRANCH_COMPENSATIONS}) is <em>not</em>
+ * re-bound, and an attempt that outlives its timeout still holds the context.
  *
  * <h2>Thread Safety</h2>
  * <p>Each handler instance is associated with one activity interface but may be
@@ -79,6 +144,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     private final RetryExecutor retryExecutor;
     private final String lockKeyPrefix;
     private final EngineObserver observer;
+    private final TaskQueueGovernor governor;
 
     /**
      * Creates a new handler with the default lock key prefix
@@ -90,7 +156,8 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * @param distributedLock     optional distributed lock for dedup optimization
      * @param messaging           optional messaging for lifecycle event publishing
      * @param retryPolicy         retry policy for failed activity invocations
-     * @param startToCloseTimeout timeout used as lock TTL hint
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
+     *                            base of the per-activity lock TTL
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live activity invocations
      */
@@ -119,7 +186,8 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * @param distributedLock     optional distributed lock for dedup optimization
      * @param messaging           optional messaging for lifecycle event publishing
      * @param retryPolicy         retry policy for failed activity invocations
-     * @param startToCloseTimeout timeout used as lock TTL hint
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
+     *                            base of the per-activity lock TTL
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live activity invocations
      * @param lockKeyPrefix       prefix for the per-activity distributed lock key
@@ -154,7 +222,8 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * @param distributedLock     optional distributed lock for dedup optimization
      * @param messaging           optional messaging for lifecycle event publishing
      * @param retryPolicy         retry policy for failed activity invocations
-     * @param startToCloseTimeout timeout used as lock TTL hint
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
+     *                            base of the per-activity lock TTL
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live activity invocations
      * @param lockKeyPrefix       prefix for the per-activity distributed lock key
@@ -164,7 +233,12 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      *                            {@code activityCompleted}/{@code activityFailed}
      *                            (live and replay, with the {@code replayed}
      *                            flag); never {@code null} (pass
-     *                            {@link EngineObserver#NOOP})
+     *                            {@link EngineObserver#NOOP}); also wraps each
+     *                            live attempt via
+     *                            {@link EngineObserver#wrapActivityAttempt}
+     * @throws IllegalArgumentException if {@code startToCloseTimeout} is zero or
+     *                                  negative — every attempt would time out
+     *                                  before it could run
      */
     public ActivityInvocationHandler(
             Object activityImpl,
@@ -179,6 +253,58 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             String lockKeyPrefix,
             EngineObserver observer
     ) {
+        this(activityImpl, activityName, store, distributedLock, messaging, retryPolicy,
+                startToCloseTimeout, serializer, retryExecutor, lockKeyPrefix, observer,
+                TaskQueueGovernor.UNBOUNDED);
+    }
+
+    /**
+     * Creates a new handler with an explicit lock key prefix, an
+     * {@link EngineObserver} and a {@link TaskQueueGovernor}.
+     *
+     * @param activityImpl        the real activity implementation to delegate to
+     * @param activityName        the activity group name (for step name prefix)
+     * @param store               the workflow store for memoization lookups and event persistence
+     * @param distributedLock     optional distributed lock for dedup optimization
+     * @param messaging           optional messaging for lifecycle event publishing
+     * @param retryPolicy         retry policy for failed activity invocations
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
+     *                            base of the per-activity lock TTL
+     * @param serializer          Jackson serializer for payloads
+     * @param retryExecutor       retry executor for live activity invocations
+     * @param lockKeyPrefix       prefix for the per-activity distributed lock key
+     *                            (e.g. {@code maestro:lock:})
+     * @param observer            engine observation seam; never {@code null}
+     *                            (pass {@link EngineObserver#NOOP})
+     * @param governor            bounds live executions per task queue: a live
+     *                            execution holds one activity slot of its run's
+     *                            queue from the dedup lock through every retry
+     *                            attempt to its persisted outcome; a replay takes
+     *                            none. Pass {@link TaskQueueGovernor#UNBOUNDED} for none.
+     * @throws IllegalArgumentException if {@code startToCloseTimeout} is zero or
+     *                                  negative — every attempt would time out
+     *                                  before it could run
+     */
+    public ActivityInvocationHandler(
+            Object activityImpl,
+            String activityName,
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            @Nullable WorkflowMessaging messaging,
+            RetryPolicy retryPolicy,
+            Duration startToCloseTimeout,
+            PayloadSerializer serializer,
+            RetryExecutor retryExecutor,
+            String lockKeyPrefix,
+            EngineObserver observer,
+            TaskQueueGovernor governor
+    ) {
+        Objects.requireNonNull(startToCloseTimeout, "startToCloseTimeout must not be null");
+        if (startToCloseTimeout.isZero() || startToCloseTimeout.isNegative()) {
+            throw new IllegalArgumentException(
+                    "startToCloseTimeout must be positive for activity '%s', was %s"
+                            .formatted(activityName, startToCloseTimeout));
+        }
         this.activityImpl = activityImpl;
         this.activityName = activityName;
         this.store = store;
@@ -190,6 +316,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         this.retryExecutor = retryExecutor;
         this.lockKeyPrefix = lockKeyPrefix;
         this.observer = observer;
+        this.governor = governor;
     }
 
     @Override
@@ -202,7 +329,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         }
 
         var ctx = WorkflowContext.current();
-        var seq = ctx.nextSequence();
+        var seq = WorkflowContextInternals.nextSequence(ctx);
         var stepName = activityName + "." + method.getName();
 
         // Activity-specific MDC keys (base workflow keys are set by the scoped executor)
@@ -216,9 +343,13 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             if (storedEvent.isPresent()) {
                 // A type this build does not know means a newer node wrote this
                 // history: stand the run down BEFORE deciding replay-vs-live.
-                // (handleReplay's `default ->` guard stays — it still catches a
-                // known-but-wrong type, e.g. a TIMER_SCHEDULED at an activity slot.)
                 UnknownHistoryGuard.requireKnown(storedEvent.get(), ctx.workflowId());
+                // Then the slot must hold THIS step's outcome (C10): a renamed or
+                // reordered activity, or any other operation's event at this
+                // sequence, stands down here — before the impl could run and
+                // before another step's payload could be returned.
+                ReplayGuard.requireMatch(storedEvent.get(), ctx.workflowId(), stepName,
+                        EventType.ACTIVITY_COMPLETED, EventType.ACTIVITY_FAILED);
                 var info = new ActivityInfo(ctx.workflowId(), ctx.workflowType(), stepName, seq);
                 if (storedEvent.get().eventType() == EventType.ACTIVITY_FAILED) {
                     // handleReplay throws for a memoized failure — observe it
@@ -236,7 +367,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             }
 
             // ── Live execution ────────────────────────────────────────
-            ctx.setReplaying(false);
+            WorkflowContextInternals.setReplaying(ctx, false);
             var result = executeLive(method, args, ctx, seq, stepName);
             // Register compensation after successful live execution
             registerCompensationIfAnnotated(proxy, method, args, result, ctx);
@@ -273,8 +404,12 @@ public final class ActivityInvocationHandler implements InvocationHandler {
                 logger.debug("Replaying failed activity '{}' at seq {}", stepName, seq);
                 throw reconstructFailure(event, stepName, ctx.workflowId());
             }
+            // Unreachable: ReplayGuard.requireMatch admits only ACTIVITY_COMPLETED
+            // and ACTIVITY_FAILED before handleReplay is called. Kept so the
+            // switch stays total without a silent fall-through.
             default -> throw new IllegalStateException(
-                    "Unexpected event type %s at seq %d for activity '%s' in workflow '%s'"
+                    ("Unreachable: event type %s at seq %d for activity '%s' in workflow '%s' "
+                            + "should have been rejected by ReplayGuard")
                             .formatted(event.eventType(), seq, stepName, ctx.workflowId()));
         };
     }
@@ -292,9 +427,9 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     /**
      * Reconstructs an {@link ActivityExecutionException} from a stored failure event.
      *
-     * <p>Attempts to reconstruct the original exception type via reflection so that
-     * workflow code catching specific exception types behaves consistently between
-     * live execution and replay.
+     * <p>The cause is rebuilt by {@link FailureReconstruction#reconstruct}: the
+     * original type only via a public {@code (String)} constructor, otherwise a
+     * {@code ReconstructedActivityFailure} naming the original class.
      */
     private ActivityExecutionException reconstructFailure(
             WorkflowEvent event, String stepName, String workflowId
@@ -314,40 +449,8 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             }
         }
 
-        var cause = tryInstantiateException(exceptionType, message);
+        var cause = FailureReconstruction.reconstruct(exceptionType, message);
         return new ActivityExecutionException(workflowId, stepName, cause);
-    }
-
-    /**
-     * Attempts to reconstruct an exception by its class name. Falls back to
-     * {@link RuntimeException} if the type cannot be instantiated.
-     */
-    private static Throwable tryInstantiateException(
-            @Nullable String exceptionType, String message
-    ) {
-        if (exceptionType != null) {
-            try {
-                var clazz = Class.forName(exceptionType);
-                if (Throwable.class.isAssignableFrom(clazz)) {
-                    // Try (String) constructor first, then no-arg
-                    try {
-                        var ctor = clazz.getDeclaredConstructor(String.class);
-                        return (Throwable) ctor.newInstance(message);
-                    } catch (NoSuchMethodException ignored) {
-                        try {
-                            var ctor = clazz.getDeclaredConstructor();
-                            return (Throwable) ctor.newInstance();
-                        } catch (NoSuchMethodException alsoIgnored) {
-                            // Fall through to default
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                logger.debug("Could not reconstruct exception type '{}', falling back to RuntimeException",
-                        exceptionType, e);
-            }
-        }
-        return new RuntimeException(message);
     }
 
     // ── Live execution path ───────────────────────────────────────────
@@ -360,6 +463,50 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             Method method, @Nullable Object @Nullable [] args,
             WorkflowContext ctx, int seq, String stepName
     ) throws Throwable {
+        // F8: a live execution holds one activity slot of its run's task queue
+        // — blocking while the queue is at its activity-concurrency limit —
+        // from here through the lock, every retry attempt and backoff, to the
+        // persisted outcome. Replays never reach this method, so never take one.
+        var waited = governor.acquireActivitySlot(ctx.taskQueue());
+        try {
+            if (waited) {
+                // R47: a run that queued for its slot has not started this
+                // activity, so a stop requested meanwhile — shutdown included,
+                // which is otherwise not checked before an attempt so that
+                // in-flight work drains — stands it down here, before any
+                // side effect. Terminate and stale are checked first thing in
+                // executeLiveHoldingSlot, so only shutdown needs a check here.
+                if (ctx.cancellation().cause() == RunCancellation.Cause.SHUTDOWN) {
+                    throw new ExecutorShutdownException(("Executor is shutting down — activity '%s' of "
+                            + "workflow '%s' got its task-queue slot only after shutdown began; it did not "
+                            + "run and the workflow stays recoverable").formatted(stepName, ctx.workflowId()));
+                }
+            }
+            return executeLiveHoldingSlot(method, args, ctx, seq, stepName);
+        } finally {
+            governor.releaseActivitySlot(ctx.taskQueue());
+        }
+    }
+
+    /** {@link #executeLive}'s body, run while holding the activity slot. */
+    private @Nullable Object executeLiveHoldingSlot(
+            Method method, @Nullable Object @Nullable [] args,
+            WorkflowContext ctx, int seq, String stepName
+    ) throws Throwable {
+        // A terminated run stops here (checked after the slot wait, so one
+        // terminated while it waited for a slot stops too) — before the lock,
+        // the ACTIVITY_STARTED lifecycle event and observer.activityStarted —
+        // so it never opens an
+        // activity span (or publishes a start) that no completion would close.
+        // So does a run already known to be stale (R29): one of its appends
+        // collided with another runner's event, and the author caught and
+        // carried on past the DuplicateEventException — this activity is a
+        // side effect the winner also runs. RetryExecutor repeats both checks
+        // before every attempt; this only moves the first ahead of the side
+        // effects.
+        ctx.cancellation().throwIfTerminated(ctx.workflowId());
+        ctx.cancellation().throwIfStale(ctx.workflowId());
+
         LockHandle lockHandle = null;
         var info = new ActivityInfo(ctx.workflowId(), ctx.workflowType(), stepName, seq);
 
@@ -378,46 +525,45 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             try {
                 result = retryExecutor.executeWithRetry(
                         retryPolicy,
-                        () -> invokeActivity(method, args),
+                        () -> invokeActivityBounded(method, args, ctx, stepName, info),
                         stepName,
-                        ctx.workflowId()
+                        ctx.workflowId(),
+                        ctx.cancellation()
                 );
             } catch (ActivityExecutionException e) {
                 var elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
-                // Retries exhausted — persist failure
-                boolean failurePersisted = persistFailure(ctx, seq, stepName, e);
-                if (failurePersisted) {
-                    publishLifecycleEvent(ctx, stepName, LifecycleEventType.ACTIVITY_FAILED);
+                // Retries exhausted — persist the failure.
+                try {
+                    persistFailure(ctx, seq, stepName, e);
+                } catch (DuplicateEventException staleRun) {
+                    // A concurrent runner already recorded an outcome at this
+                    // sequence (Review Focus 4). The duplicate propagates
+                    // INSTEAD of e: this run neither publishes ACTIVITY_FAILED
+                    // nor surfaces a failure that contradicts the winner's
+                    // record — it stands down. The observer still sees the
+                    // failure this node genuinely executed: it measures this
+                    // node's executions, not the durable record.
+                    observer.activityFailed(info, elapsed, failureExceptionType(e), false);
+                    throw staleRun;
                 }
-                // If failurePersisted is false, a prior ACTIVITY_COMPLETED event exists
-                // at this sequence (DuplicateEventException). Don't publish misleading
-                // ACTIVITY_FAILED lifecycle event — the stored result is a success.
-                // The observer still sees the failure this node genuinely
-                // executed: it measures this node's executions, not the
-                // durable record. (An Error — e.g. a shutdown signal — never
-                // reaches this catch and is never observed as a failure.)
+                publishLifecycleEvent(ctx, stepName, LifecycleEventType.ACTIVITY_FAILED);
+                // (An Error — e.g. a shutdown signal — never reaches this catch
+                // and is never observed as a failure.)
                 observer.activityFailed(info, elapsed, failureExceptionType(e), false);
                 throw e;
             }
             var elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
 
-            // Persist success
-            var payload = serializer.serialize(result);
-            var persisted = appendEventSafe(ctx, seq, EventType.ACTIVITY_COMPLETED, stepName, payload);
-
-            // If DuplicateEventException was caught, use the stored result
-            if (persisted != null && persisted != payload) {
-                logger.debug("Using previously stored result for '{}' at seq {} (idempotent)", stepName, seq);
+            // Persist success.
+            try {
+                appendEventSafe(ctx, seq, EventType.ACTIVITY_COMPLETED, stepName, serializer.serialize(result));
+            } catch (DuplicateEventException staleRun) {
+                // The winner is alive and ahead: stand down rather than adopt
+                // its value (class Javadoc, "Idempotency"). No ACTIVITY_COMPLETED
+                // lifecycle event — this run did not persist one — but the
+                // observer sees the attempt this node genuinely executed.
                 observer.activityCompleted(info, elapsed, false);
-                // RULING 9: this is a payload this run did NOT write — a
-                // concurrent runner did, possibly on a newer build. Reading it
-                // is a replay read in everything but name, so a payload this
-                // build cannot interpret stands the run down instead of being
-                // recorded as a workflow failure with compensation.
-                return UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), seq,
-                        "result of activity '%s' adopted from a concurrent runner"
-                                .formatted(stepName),
-                        () -> deserializeResult(persisted, method));
+                throw staleRun;
             }
 
             publishLifecycleEvent(ctx, stepName, LifecycleEventType.ACTIVITY_COMPLETED);
@@ -426,6 +572,125 @@ public final class ActivityInvocationHandler implements InvocationHandler {
 
         } finally {
             releaseLock(lockHandle, stepName, seq);
+        }
+    }
+
+    /**
+     * Runs one attempt of the activity on its own virtual thread, bounded by
+     * {@link #startToCloseTimeout} (C11).
+     *
+     * <p>The attempt thread gets a copy of the caller's MDC, so the activity
+     * logs under the same {@code workflowId}/{@code runId}/{@code activityName}
+     * keys it did when it ran on the workflow thread, and the caller's
+     * {@link WorkflowContext} is re-bound for the attempt's duration (for
+     * compatibility only — see the class Javadoc). The attempt body is passed
+     * through {@link EngineObserver#wrapActivityAttempt} on this (the workflow)
+     * thread, so an observer can re-establish thread-local context — the
+     * tracing adapter's activity span — on the attempt thread (R26).
+     *
+     * <p>On timeout the attempt is cancelled with {@code cancel(true)} (its
+     * thread is interrupted) and an {@link ActivityTimeoutException} is thrown
+     * at once, without waiting for the attempt to stop. The attempt's result
+     * only ever reaches the memoization log by being returned from here (the
+     * workflow thread persists it), so a late value from an attempt that
+     * ignored the interrupt is discarded with its {@code FutureTask} and can
+     * never be memoized. If the attempt finished in the instant between the
+     * deadline and the cancel ({@code cancel} returns {@code false}), its
+     * outcome is used instead of being discarded — discarding a completed
+     * attempt would only guarantee its re-execution.
+     *
+     * <p>An attempt that fails is unwrapped in the same order as
+     * {@link #invokeActivity}: an {@link Error} (a control-flow signal among
+     * them) is rethrown first and intact, then an {@link Exception}; anything
+     * else is wrapped in a {@code RuntimeException}.
+     */
+    private @Nullable Object invokeActivityBounded(
+            Method method, @Nullable Object @Nullable [] args,
+            WorkflowContext ctx, String stepName, ActivityInfo info
+    ) throws Exception {
+        // Re-bind the caller's WorkflowContext: before C11 the activity ran on
+        // the workflow thread and could see it, and code reached through it (a
+        // park that a shutdown or terminate unwinds) keeps behaving as it did.
+        // The workflow thread is blocked in get() meanwhile, so the context is
+        // never used from two live threads — except by an attempt that ignores
+        // the timeout's interrupt, whose result is discarded regardless.
+        Callable<@Nullable Object> body = () -> ScopedValue.where(WorkflowContext.scopedValue(), ctx)
+                .call(() -> invokeActivity(method, args));
+        var wrapped = observer.wrapActivityAttempt(info, body);
+        var callerMdc = MDC.getCopyOfContextMap();
+        var attempt = new FutureTask<@Nullable Object>(() -> {
+            if (callerMdc != null) {
+                MDC.setContextMap(callerMdc);
+            }
+            try {
+                return wrapped.call();
+            } finally {
+                MDC.clear();
+            }
+        });
+        Thread.ofVirtual()
+                .name("maestro-activity-" + ctx.workflowId() + "-" + stepName)
+                .start(attempt);
+
+        try {
+            return attempt.get(saturatedNanos(startToCloseTimeout), TimeUnit.NANOSECONDS);
+        } catch (TimeoutException e) {
+            if (!attempt.cancel(true)) {
+                // Completed between the timed get() and the cancel: the attempt
+                // did finish, so honour its outcome; get() cannot block now.
+                // Not unit-pinned: the window cannot be forced deterministically
+                // without a test-only seam in this method.
+                return completedOutcome(attempt);
+            }
+            logger.warn("Activity '{}' in workflow '{}' exceeded its startToCloseTimeout of {}; "
+                    + "attempt cancelled", stepName, ctx.workflowId(), startToCloseTimeout);
+            throw new ActivityTimeoutException(ctx.workflowId(), stepName, startToCloseTimeout);
+        } catch (ExecutionException e) {
+            throw rethrowAttemptFailure(e);
+        } catch (InterruptedException e) {
+            // The engine never interrupts a workflow thread; a foreign interrupt
+            // used to reach the activity itself (it ran on this thread), so pass
+            // it on to the attempt and restore the flag, as before.
+            attempt.cancel(true);
+            Thread.currentThread().interrupt();
+            throw e;
+        }
+    }
+
+    /** The outcome of an attempt already known to be done and not cancelled. */
+    private static @Nullable Object completedOutcome(FutureTask<@Nullable Object> attempt) throws Exception {
+        try {
+            return attempt.get();
+        } catch (ExecutionException e) {
+            throw rethrowAttemptFailure(e);
+        }
+    }
+
+    /**
+     * Rethrows an attempt's failure: an {@link Error} first — see
+     * {@link #invokeActivity}: a control-flow signal must not be re-wrapped
+     * into a catchable, retryable {@code RuntimeException} — then an
+     * {@link Exception}, else a {@code RuntimeException} wrapping the cause.
+     * Never returns normally; declared to return an exception so call sites
+     * can {@code throw} it.
+     */
+    private static Exception rethrowAttemptFailure(ExecutionException e) throws Exception {
+        var cause = e.getCause();
+        if (cause instanceof Error err) {
+            throw err;
+        }
+        if (cause instanceof Exception ex) {
+            throw ex;
+        }
+        throw new RuntimeException(cause);
+    }
+
+    /** {@code d} in nanoseconds, saturating at {@code Long.MAX_VALUE} for a practically-infinite timeout. */
+    private static long saturatedNanos(Duration d) {
+        try {
+            return d.toNanos();
+        } catch (ArithmeticException overflow) {
+            return Long.MAX_VALUE;
         }
     }
 
@@ -456,14 +721,19 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     // ── Event persistence ─────────────────────────────────────────────
 
     /**
-     * Appends an event to the memoization log, handling {@link DuplicateEventException}
-     * for idempotency.
+     * Appends an event to the memoization log; a lost append race stands this
+     * run down.
      *
-     * @return the payload that was persisted. If a DuplicateEventException was caught,
-     *         returns the payload from the already-stored event (which may differ from
-     *         the provided payload). Returns the same payload reference on normal success.
+     * @throws DuplicateEventException if a concurrent runner already persisted
+     *                                 an event at {@code seq} — rethrown after
+     *                                 the winner's type has been checked, so
+     *                                 the run stands down as {@code STALE_RUN}
+     * @throws io.b2mash.maestro.core.exception.UnknownWorkflowHistoryException
+     *                                 if the winner's event type is one this
+     *                                 build does not define (RULING 9) — the
+     *                                 run stands down as {@code UNKNOWN_EVENT_TYPE}
      */
-    private @Nullable JsonNode appendEventSafe(
+    private void appendEventSafe(
             WorkflowContext ctx, int seq, EventType type,
             String stepName, @Nullable JsonNode payload
     ) {
@@ -479,34 +749,36 @@ public final class ActivityInvocationHandler implements InvocationHandler {
 
         try {
             store.appendEvent(event);
-            return payload;
         } catch (DuplicateEventException e) {
-            logger.debug("Event at seq {} already exists (idempotent), re-reading stored result", seq);
-            // Re-read the stored event and return its payload — but only after
-            // checking this build can interpret the winner's TYPE (RULING 9).
-            //
-            // This branch is reached with NO author error, from the engine's own
-            // normal tolerated state: locks are best-effort, so an old node can
-            // read sequence N empty, execute live, and lose the append race to a
-            // newer node whose event at N is a type this build does not define.
-            // Adopting that winner blindly then either deserializes a foreign
-            // payload as this activity's return type — a SerializationException
-            // that executeWorkflow's catch (Exception) records as FAILED *with
-            // compensation* — or, worse, succeeds and memoizes a silently wrong
-            // value. Standing down instead costs one re-adoption.
-            var stored = UnknownHistoryGuard.requireKnown(
+            // Lost the append race: a concurrent runner already persisted an
+            // outcome at this sequence (C5). Its payload is never adopted — the
+            // winner is alive and ahead — but its TYPE is still checked first
+            // (RULING 9): reached with no author error, from the engine's own
+            // tolerated state (locks are best-effort), the winner may be a
+            // newer node whose event type this build does not define, and that
+            // stands down as UNKNOWN_EVENT_TYPE — the reason an operator needs
+            // to see — rather than as a plain stale run.
+            UnknownHistoryGuard.requireKnown(
                     store.getEventBySequence(ctx.workflowInstanceId(), seq), ctx.workflowId());
-            return stored.map(WorkflowEvent::payload).orElse(payload);
+            logger.warn("Workflow '{}': {} append for '{}' at seq {} collided with a concurrent runner's "
+                            + "event — not adopting it; standing this stale run down",
+                    ctx.workflowId(), type, stepName, seq);
+            // Sticky (R29): should workflow code catch and swallow the
+            // duplicate, the run's next live activity still stands down
+            // (StaleRunException) before executing anything.
+            ctx.cancellation().requestStale("append collision at sequence " + seq);
+            throw e;
         }
     }
 
     /**
      * Persists an ACTIVITY_FAILED event with error details in the payload.
      *
-     * @return {@code true} if the failure event was actually persisted, {@code false}
-     *         if a prior event already exists at this sequence (DuplicateEventException)
+     * @throws DuplicateEventException if a concurrent runner already persisted
+     *                                 an outcome at {@code seq} — see
+     *                                 {@link #appendEventSafe}
      */
-    private boolean persistFailure(
+    private void persistFailure(
             WorkflowContext ctx, int seq, String stepName,
             ActivityExecutionException exception
     ) {
@@ -522,10 +794,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             errorPayload = null;
         }
 
-        var persisted = appendEventSafe(ctx, seq, EventType.ACTIVITY_FAILED, stepName, errorPayload);
-        // If appendEventSafe caught DuplicateEventException, persisted will differ from errorPayload
-        // (it returns the previously stored event's payload). This means the failure was NOT persisted.
-        return persisted == errorPayload;
+        appendEventSafe(ctx, seq, EventType.ACTIVITY_FAILED, stepName, errorPayload);
     }
 
     /**

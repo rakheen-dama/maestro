@@ -3,11 +3,13 @@ package io.b2mash.maestro.integration.workflows;
 import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.Compensate;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 /**
  * Activity fixtures whose invocations are counted.
@@ -52,6 +54,46 @@ public final class CountingActivities {
     @Activity(name = "flaky")
     public interface FlakyActivities {
         String attempt(String input);
+    }
+
+    /** Activity interface for the failure-replay fixtures (C15). */
+    @Activity(name = "failing")
+    public interface FailingActivities {
+        String explode(String input);
+    }
+
+    /** Exception type with a public {@code (String)} constructor: replays as itself. */
+    public static final class DomainFailure extends RuntimeException {
+        /** @param m the message */
+        public DomainFailure(String m) {
+            super(m);
+        }
+    }
+
+    /** Exception type without a {@code (String)} constructor: replays as a reconstructed failure. */
+    public static final class NoCtorFailure extends RuntimeException {
+        /**
+         * @param m    the message
+         * @param code an unused code
+         */
+        public NoCtorFailure(String m, int code) {
+            super(m);
+        }
+    }
+
+    /** Always throws the exception its supplier produces. */
+    public static final class ThrowingFailingActivities implements FailingActivities {
+        private final Supplier<RuntimeException> thrown;
+
+        /** @param thrown produces the exception to throw on each call */
+        public ThrowingFailingActivities(Supplier<RuntimeException> thrown) {
+            this.thrown = thrown;
+        }
+
+        @Override
+        public String explode(String input) {
+            throw thrown.get();
+        }
     }
 
     /**
@@ -202,6 +244,43 @@ public final class CountingActivities {
             var attempt = recorder.record("attempt");
             if (attempt <= failures) {
                 throw new IllegalStateException("Injected failure, attempt " + attempt);
+            }
+            return input + "-ok-after-" + attempt;
+        }
+    }
+
+    /**
+     * A flaky activity whose first invocation overruns any short
+     * {@code startToCloseTimeout} by sleeping, and whose later invocations
+     * return at once — the fixture for timeout-enforcement assertions (C11).
+     *
+     * <p>The sleep is interruptible: the timeout's cancel interrupts it, and the
+     * interrupted attempt then throws (its outcome is discarded by the engine
+     * either way).
+     */
+    public static final class SlowFirstAttemptActivities implements FlakyActivities {
+        private final Recorder recorder;
+        private final Duration slow;
+
+        /**
+         * @param recorder the shared recorder
+         * @param slow     how long the first invocation sleeps
+         */
+        public SlowFirstAttemptActivities(Recorder recorder, Duration slow) {
+            this.recorder = recorder;
+            this.slow = slow;
+        }
+
+        @Override
+        public String attempt(String input) {
+            var attempt = recorder.record("attempt");
+            if (attempt == 1) {
+                try {
+                    Thread.sleep(slow);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("first attempt interrupted", e);
+                }
             }
             return input + "-ok-after-" + attempt;
         }

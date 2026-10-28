@@ -1,0 +1,15 @@
+# Downloaded CI artifacts (chaos soak / PR-gate evidence) exceed the 5 MB
+# commit threshold set by plan 06 Task 2. Only `failures/` subtrees and the
+# `chaos-actions.jsonl` of a violating run are committed; node logs never are.
+#
+# Git cannot re-include a file whose parent directory is excluded, so the
+# contents (not the directory) are ignored, directories are re-included so git
+# descends into them, and then the wanted files are re-included.
+evidence/**
+!evidence/**/
+!evidence/**/failures/**
+# chaos-actions.jsonl only for runs that violated (one line per such run):
+!evidence/40674015602/soak/*/chaos-actions.jsonl
+# Gate logs of the whole-branch verification (plan 06 Task 6) are evidence of
+# record; re-include them over the repository-wide `*.log` ignore.
+!branch-logs/*.log

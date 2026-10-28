@@ -54,6 +54,9 @@ spring-boot-starter-webmvc = { module = "org.springframework.boot:spring-boot-st
 spring-boot-starter-actuator = { module = "org.springframework.boot:spring-boot-starter-actuator" }
 spring-boot-starter-thymeleaf = { module = "org.springframework.boot:spring-boot-starter-thymeleaf" }
 spring-boot-autoconfigure = { module = "org.springframework.boot:spring-boot-autoconfigure" }
+# Boot's database-initialization ordering (@DependsOnDatabaseInitialization) —
+# separate artifact since 4.0, pulled in by spring-boot-jdbc at runtime.
+spring-boot-sql = { module = "org.springframework.boot:spring-boot-sql" }
 spring-boot-configuration-processor = { module = "org.springframework.boot:spring-boot-configuration-processor" }
 spring-kafka = { module = "org.springframework.kafka:spring-kafka" }
 # Boot's Kafka autoconfigure jar (KafkaProperties, KafkaConnectionDetails,

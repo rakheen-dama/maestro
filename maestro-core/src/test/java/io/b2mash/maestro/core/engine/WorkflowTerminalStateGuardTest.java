@@ -4,6 +4,8 @@ import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.RecordingEngineObserver;
+import io.b2mash.maestro.core.observe.StandDownReason;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -12,7 +14,9 @@ import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -47,12 +51,14 @@ class WorkflowTerminalStateGuardTest {
 
     private VersionedInMemoryStore store;
     private PayloadSerializer serializer;
+    private RecordingEngineObserver observer;
     private WorkflowExecutor executor;
 
     @BeforeEach
     void setUp() {
         store = new VersionedInMemoryStore();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
+        observer = new RecordingEngineObserver();
         executor = newExecutor(Duration.ofMillis(200));
     }
 
@@ -65,7 +71,7 @@ class WorkflowTerminalStateGuardTest {
         return new WorkflowExecutor(
                 store, null, null, null, serializer, "test-service",
                 WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, Duration.ofSeconds(30),
-                false, Duration.ofSeconds(5), wakeRecheckInterval);
+                false, Duration.ofSeconds(5), wakeRecheckInterval, observer);
     }
 
     // ── Signal delivery ────────────────────────────────────────────────
@@ -75,7 +81,7 @@ class WorkflowTerminalStateGuardTest {
     void deliveredSignal_doesNotResurrectTerminatedInstance() throws Exception {
         var workflow = new AwaitingWorkflow();
         executor.startWorkflow("resurrect-signal", "AwaitingWorkflow", "default",
-                null, workflow, AwaitingWorkflow.class.getMethod("run"));
+                null, () -> workflow, AwaitingWorkflow.class.getMethod("run"));
         awaitStatus("resurrect-signal", WorkflowStatus.WAITING_SIGNAL);
 
         // Another node terminated it while this node's thread stayed parked.
@@ -101,7 +107,7 @@ class WorkflowTerminalStateGuardTest {
     void firedTimer_doesNotResurrectTerminatedInstance() throws Exception {
         var workflow = new SleepingWorkflow();
         executor.startWorkflow("resurrect-timer", "SleepingWorkflow", "default",
-                null, workflow, SleepingWorkflow.class.getMethod("run"));
+                null, () -> workflow, SleepingWorkflow.class.getMethod("run"));
         awaitStatus("resurrect-timer", WorkflowStatus.WAITING_TIMER);
 
         store.forceStatus("resurrect-timer", WorkflowStatus.TERMINATED);
@@ -128,7 +134,7 @@ class WorkflowTerminalStateGuardTest {
     void parkedAwait_standsDownWithinOneRecheckInterval() throws Exception {
         var workflow = new AwaitingWorkflow();
         executor.startWorkflow("resurrect-parked", "AwaitingWorkflow", "default",
-                null, workflow, AwaitingWorkflow.class.getMethod("run"));
+                null, () -> workflow, AwaitingWorkflow.class.getMethod("run"));
         awaitStatus("resurrect-parked", WorkflowStatus.WAITING_SIGNAL);
 
         // No signal, no timer — only the terminal row. The await's periodic
@@ -143,14 +149,14 @@ class WorkflowTerminalStateGuardTest {
                 .orElseThrow().status());
     }
 
-    // ── Non-TERMINATED terminal states still converge quietly ──────────
+    // ── Non-TERMINATED terminal states: the waking run stands down ─────
 
     @Test
-    @DisplayName("a COMPLETED row written by another runner is not overwritten either")
+    @DisplayName("a COMPLETED row written by another runner is not overwritten either — the run stands down as STALE_RUN")
     void completedElsewhere_isNotOverwrittenByAWakingRun() throws Exception {
         var workflow = new AwaitingWorkflow();
         executor.startWorkflow("resurrect-completed", "AwaitingWorkflow", "default",
-                null, workflow, AwaitingWorkflow.class.getMethod("run"));
+                null, () -> workflow, AwaitingWorkflow.class.getMethod("run"));
         awaitStatus("resurrect-completed", WorkflowStatus.WAITING_SIGNAL);
 
         store.forceStatus("resurrect-completed", WorkflowStatus.COMPLETED);
@@ -162,6 +168,26 @@ class WorkflowTerminalStateGuardTest {
         assertEquals(WorkflowStatus.COMPLETED, store.getInstance("resurrect-completed")
                         .orElseThrow().status(),
                 "another runner's COMPLETED must stand");
+        assertFalse(workflow.pastAwait.get(),
+                "the run must not continue past a fresh read of a finalised row");
+        assertEquals(List.of(StandDownReason.STALE_RUN), observer.standDownReasons("resurrect-completed"));
+    }
+
+    @Test
+    @DisplayName("a failing run that finds the row COMPLETED by another runner stands down instead of compensating")
+    void failingRunAgainstACompletedRow_standsDownWithoutCompensating() throws Exception {
+        var workflow = new FailingAfterPeerCompletesWorkflow(store, "failing-completed");
+        executor.startWorkflow("failing-completed", "FailingAfterPeerCompletesWorkflow", "default",
+                null, () -> workflow, FailingAfterPeerCompletesWorkflow.class.getMethod("run"));
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertFalse(executor.isRunning("failing-completed")));
+        assertEquals(WorkflowStatus.COMPLETED, store.getInstance("failing-completed").orElseThrow().status(),
+                "another runner's COMPLETED must stand");
+        assertEquals(0, workflow.compensations.get(), "a stale run must not compensate a finished workflow");
+        assertEquals(List.of(StandDownReason.STALE_RUN), observer.standDownReasons("failing-completed"),
+                "the COMPENSATING transition's stale read must reach the executor's stand-down arm");
+        assertEquals(List.of(), observer.failed(), "workflowFailed must not fire");
     }
 
     // ── Helpers ────────────────────────────────────────────────────────
@@ -188,6 +214,32 @@ class WorkflowTerminalStateGuardTest {
                     .awaitSignal(SIGNAL, String.class, Duration.ofSeconds(30));
             pastAwait.set(true);
             return decision;
+        }
+    }
+
+    /**
+     * Registers a compensation, lets "another runner" finalise the row as
+     * {@code COMPLETED}, then fails — so the failure path's transition to
+     * {@code COMPENSATING} meets a terminal row this run did not write.
+     */
+    @DurableWorkflow(name = "FailingAfterPeerCompletesWorkflow")
+    public static class FailingAfterPeerCompletesWorkflow {
+
+        final AtomicInteger compensations = new AtomicInteger();
+        private final VersionedInMemoryStore store;
+        private final String workflowId;
+
+        FailingAfterPeerCompletesWorkflow(VersionedInMemoryStore store, String workflowId) {
+            this.store = store;
+            this.workflowId = workflowId;
+        }
+
+        /** @return never — always fails */
+        @WorkflowMethod
+        public String run() {
+            WorkflowContext.current().addCompensation(compensations::incrementAndGet);
+            store.forceStatus(workflowId, WorkflowStatus.COMPLETED);
+            throw new IllegalStateException("genuine failure on the stale run");
         }
     }
 

@@ -100,7 +100,7 @@ class KafkaLifecycleEventLatencyIT extends PostgresIntegrationSupport {
         // it is the production default.
         var redelivery = MaestroProperties.RedeliveryProperties.defaults();
         var messagingConfig = new KafkaMessagingConfig(
-                null, null, missingTopic, "it-lifecycle-latency",
+                null, missingTopic, "it-lifecycle-latency",
                 redelivery.maxAttempts(), redelivery.initialInterval(), redelivery.multiplier(),
                 redelivery.maxInterval(), redelivery.deadLetterSuffix(), redelivery.enabled());
         var messaging = new KafkaWorkflowMessaging(kafkaTemplate, consumerFactory, objectMapper, messagingConfig);
@@ -109,7 +109,7 @@ class KafkaLifecycleEventLatencyIT extends PostgresIntegrationSupport {
                 .serviceName("lifecycle-latency")
                 .messaging(messaging)
                 .build()) {
-            harness.registerWorkflow(new KafkaTestWorkflows.ImmediateWorkflow());
+            harness.registerWorkflow(KafkaTestWorkflows.ImmediateWorkflow.class);
 
             var workflowId = MaestroEngineHarness.uniqueWorkflowId("lat");
             var start = System.nanoTime();

@@ -6,6 +6,12 @@ name: E2E (loan-origination)
 #
 # The PR loop keeps the fast integration suites: `./gradlew build` runs
 # maestro-integration-tests, which excludes @Tag("e2e").
+#
+# The schedule is subject to GitHub's 60-day inactivity disable (state
+# `disabled_inactivity`). build-test.yml's `keep-nightly-enabled` job re-enables
+# it on every push to main; manual recovery is `gh workflow enable
+# e2e-nightly.yml`. `gh workflow list --all` (not plain `gh workflow list`)
+# shows disabled workflows.
 
 on:
   schedule:

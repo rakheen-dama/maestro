@@ -10,10 +10,10 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.RecordingEngineObserver;
 import io.b2mash.maestro.core.observe.TraceContextHolder;
 import io.b2mash.maestro.core.spi.SignalMessage;
-import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.SignalNotifier;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
@@ -21,11 +21,14 @@ import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import java.lang.ScopedValue;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.InstantSource;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -33,14 +36,17 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import static io.b2mash.maestro.core.TestEventLogs.removeFailureEvents;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -133,14 +139,15 @@ class SignalManagerTest {
         var signals = store.getUnconsumedSignals("order-1", "payment.result");
         assertEquals(1, signals.size());
 
-        // Notifier was called
+        // Notifier was called — off the sender's thread, so await it (Issue 32)
+        await().atMost(Duration.ofSeconds(5)).until(() -> !notifier.published.isEmpty());
         assertEquals(1, notifier.published.size());
         assertEquals("order-1:payment.result", notifier.published.getFirst());
     }
 
     @Test
     @DisplayName("deliverSignal succeeds even if SignalNotifier.publish throws")
-    void deliverSignalSurvivesNotifierFailure() {
+    void deliverSignalSurvivesNotifierFailure() throws Exception {
         var failingNotifier = new FailingNotifier();
         var sm = new SignalManager(store, messaging, failingNotifier, serializer, parkingLot);
 
@@ -153,6 +160,107 @@ class SignalManagerTest {
         // Signal should still be persisted
         var signals = store.getUnconsumedSignals("order-1", "payment.result");
         assertEquals(1, signals.size(), "Signal must persist even when notifier fails");
+
+        // The throw happens on the hand-off thread: wait for it to run and end,
+        // then check the engine caught it rather than letting it escape.
+        await().atMost(Duration.ofSeconds(5)).until(() -> failingNotifier.publishThread.get() != null);
+        var handOff = failingNotifier.publishThread.get();
+        assertTrue(handOff.join(Duration.ofSeconds(5)), "the hand-off thread must finish");
+        assertEquals(List.of(), failingNotifier.escaped,
+                "the notifier's RuntimeException must be caught on the hand-off thread");
+    }
+
+    @Test
+    @DisplayName("R58: at most MAX_IN_FLIGHT_NOTIFICATIONS hand-offs run at once; the excess is dropped, not queued")
+    void notificationsBeyondTheInFlightCapAreDropped() throws Exception {
+        var entered = new java.util.concurrent.atomic.AtomicInteger();
+        var release = new CountDownLatch(1);
+        var blocking = new SignalNotifier() {
+            @Override
+            public void publish(String workflowId, String signalName) {
+                entered.incrementAndGet();
+                try {
+                    release.await(30, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+
+            @Override
+            public void subscribe(String workflowId, SignalCallback callback) {}
+
+            @Override
+            public void unsubscribe(String workflowId) {}
+        };
+        var sm = new SignalManager(store, messaging, blocking, serializer, parkingLot);
+        createInstance("order-1", UUID.randomUUID());
+        var cap = SignalManager.MAX_IN_FLIGHT_NOTIFICATIONS;
+
+        try {
+            for (int i = 0; i < cap + 5; i++) {
+                sm.deliverSignal("order-1", "payment.result", "paid-" + i);
+            }
+            assertEquals(cap + 5, store.getUnconsumedSignals("order-1", "payment.result").size(),
+                    "every signal is persisted — only its notification may be dropped");
+            await().atMost(Duration.ofSeconds(10)).until(() -> entered.get() == cap);
+            await().during(Duration.ofMillis(300)).atMost(Duration.ofSeconds(2))
+                    .until(() -> entered.get() == cap);
+        } finally {
+            release.countDown();
+        }
+
+        // Once the stalled hand-offs finish, notifications flow again.
+        await().atMost(Duration.ofSeconds(10)).until(() -> {
+            sm.deliverSignal("order-1", "payment.result", "after");
+            return entered.get() > cap;
+        });
+    }
+
+    @Test
+    @DisplayName("Issue 32: deliverSignal returns promptly when SignalNotifier.publish blocks — one row, notified off-thread")
+    void deliverSignalDoesNotWaitForABlockingNotifier() throws Exception {
+        // A notifier stuck on a brownout: publish parks until released (Lettuce's
+        // sync PUBLISH against a paused Valkey sits for its 60 s command timeout).
+        var publishEntered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var publishThread = new AtomicReference<Thread>();
+        var blocking = new SignalNotifier() {
+            @Override
+            public void publish(String workflowId, String signalName) {
+                publishThread.set(Thread.currentThread());
+                publishEntered.countDown();
+                try {
+                    release.await(30, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+
+            @Override
+            public void subscribe(String workflowId, SignalCallback callback) {}
+
+            @Override
+            public void unsubscribe(String workflowId) {}
+        };
+        var sm = new SignalManager(store, messaging, blocking, serializer, parkingLot);
+        createInstance("order-1", UUID.randomUUID());
+
+        try {
+            var started = System.nanoTime();
+            sm.deliverSignal("order-1", "payment.result", "paid");
+            var elapsed = Duration.ofNanos(System.nanoTime() - started);
+
+            assertTrue(elapsed.compareTo(Duration.ofSeconds(1)) < 0,
+                    "deliverSignal must not wait for the notifier; took " + elapsed);
+            assertEquals(1, store.getUnconsumedSignals("order-1", "payment.result").size(),
+                    "exactly one signal row — the store is the truth, the notification is extra");
+            // The notification is still sent — on another thread, never awaited.
+            assertTrue(publishEntered.await(5, TimeUnit.SECONDS), "publish must still be invoked");
+            assertFalse(publishThread.get() == Thread.currentThread(),
+                    "publish must not run on the signal sender's thread");
+        } finally {
+            release.countDown();
+        }
     }
 
     // ── awaitSignal — replay path ──────────────────────────────────────
@@ -289,6 +397,400 @@ class SignalManagerTest {
         assertTrue(completedLatch.await(5, TimeUnit.SECONDS));
         assertEquals(1, resultHolder.size(), "Pre-arrived signal should be consumed immediately");
         assertEquals("late-paid", resultHolder.getFirst());
+    }
+
+    // ── awaitSignal — durable deadline (C12 / F4) ──────────────────────
+
+    @Test
+    @DisplayName("a parked awaitSignal persists an await-signal-<seq> timer row and memoizes its deadline")
+    void awaitSignalParks_createsDurableTimerRowAndMemoizesDeadline() {
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+        var ctx = createContext(instanceId, "order-1", 0, false);
+        var before = Instant.now();
+        var worker = awaitInBackground(ctx, "payment.result", Duration.ofHours(1), new AtomicReference<>());
+        await().atMost(Duration.ofSeconds(5)).until(() -> store.findTimer(instanceId, "await-signal-1").isPresent());
+        var row = store.findTimer(instanceId, "await-signal-1").orElseThrow();
+        assertEquals(TimerStatus.PENDING, row.status());
+        assertFalse(row.fireAt().isBefore(before.plus(Duration.ofHours(1)).minusSeconds(5)));
+        var memo = store.getEventBySequence(instanceId, 1).orElseThrow();
+        assertEquals(EventType.TIMER_SCHEDULED, memo.eventType());
+        assertEquals("$maestro:awaitSignal:payment.result", memo.stepName());
+        assertEquals("await-signal-1", memo.payload().get("timerId").stringValue());
+        assertEquals(row.fireAt(), Instant.parse(memo.payload().get("deadline").stringValue()));
+        assertTrue(store.getEventBySequence(instanceId, 2).isEmpty());
+        worker.interrupt();
+    }
+
+    @Test
+    @DisplayName("a parked awaitSignal times out when its timer row transitions — not on the wall clock")
+    void awaitSignalTimeout_isDrivenByTheTimerTransition_notTheWallClock() throws Exception {
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+        var ctx = createContext(instanceId, "order-1", 0, false);
+        var outcome = new AtomicReference<Object>();
+        var worker = awaitInBackground(ctx, "payment.result", Duration.ofHours(1), outcome);
+        await().atMost(Duration.ofSeconds(5)).until(() -> store.findTimer(instanceId, "await-signal-1").isPresent());
+        var row = store.findTimer(instanceId, "await-signal-1").orElseThrow();
+        assertTrue(store.markTimerFired(row.id()));
+        signalManager.onTimerTransition("order-1", "await-signal-1");
+        worker.join(5_000);
+        assertInstanceOf(SignalTimeoutException.class, outcome.get());
+        assertEquals(EventType.SIGNAL_TIMEOUT, store.getEventBySequence(instanceId, 2).orElseThrow().eventType());
+    }
+
+    // ── awaitSignal — the deadline's clock is injectable (R59) ─────────
+
+    @Test
+    @DisplayName("every shorter constructor arms deadlines on the system clock")
+    void defaultInstantSource_isTheSystemClock() {
+        assertSame(InstantSource.system(), signalManager.instantSource());
+        assertSame(InstantSource.system(), new SignalManager(store, messaging, null, serializer, parkingLot,
+                Duration.ofSeconds(1), EngineObserver.NOOP, TaskQueueGovernor.UNBOUNDED).instantSource());
+    }
+
+    @Test
+    @DisplayName("a live await arms its deadline from the injected InstantSource and decides it there, not on the wall clock")
+    void liveAwait_armsAndDecidesItsDeadlineOnTheInstantSource() throws Exception {
+        // Frozen at the wall clock's "now": wall time then runs past the 100 ms
+        // deadline while the source does not, so deciding the deadline on the
+        // wall clock would time the await out.
+        var armedAt = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        signalManager = new SignalManager(store, messaging, null, serializer, parkingLot, Duration.ofMillis(50),
+                EngineObserver.NOOP, TaskQueueGovernor.UNBOUNDED, InstantSource.fixed(armedAt));
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+        var ctx = createContext(instanceId, "order-1", 0, false);
+        var outcome = new AtomicReference<Object>();
+        var worker = awaitInBackground(ctx, "payment.result", Duration.ofMillis(100), outcome);
+        await().atMost(Duration.ofSeconds(5)).until(() -> store.findTimer(instanceId, "await-signal-1").isPresent());
+
+        var row = store.findTimer(instanceId, "await-signal-1").orElseThrow();
+        assertEquals(armedAt.plusMillis(100), row.fireAt());
+        assertEquals(armedAt.plusMillis(100), Instant.parse(
+                store.getEventBySequence(instanceId, 1).orElseThrow().payload().get("deadline").stringValue()));
+
+        // Five timeouts' worth of wall time, re-checked every 50 ms: the source
+        // stands still, so the deadline has not passed and the await stays parked.
+        await().during(Duration.ofMillis(500)).atMost(Duration.ofSeconds(2)).until(() -> outcome.get() == null);
+        assertTrue(store.getEventBySequence(instanceId, 2).isEmpty(), "timed out on the wall clock");
+
+        assertTrue(store.markTimerFired(row.id()));
+        signalManager.onTimerTransition("order-1", "await-signal-1");
+        worker.join(5_000);
+        assertInstanceOf(SignalTimeoutException.class, outcome.get());
+    }
+
+    @Test
+    @DisplayName("replay of a parked await resumes from the memoized deadline and reuses the durable row")
+    void awaitSignalReplay_resumesFromTheMemoizedDeadline_withoutASecondTimerRow() {
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+        var deadline = Instant.now().plus(Duration.ofHours(1));
+        var rowId = seedAwaitMemo(instanceId, 1, "payment.result", deadline, TimerStatus.PENDING); // appends TIMER_SCHEDULED at 1 + saves the row
+        var ctx = createContext(instanceId, "order-1", 0, true);
+        var worker = awaitInBackground(ctx, "payment.result", Duration.ofHours(1), new AtomicReference<>());
+        await().atMost(Duration.ofSeconds(5)).until(() -> parkingLot.isParked("order-1:signal:payment.result"));
+        assertEquals(1, store.getAllTimers().size(), "replay must reuse the durable row, never re-arm");
+        assertEquals(rowId, store.getAllTimers().getFirst().id());
+        worker.interrupt();
+    }
+
+    @Test
+    @DisplayName("replay of an await whose row FIRED but whose outcome was never written heals to a timeout")
+    void awaitSignalReplay_firedRowWithoutOutcome_healsToTimeout() {
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+        seedAwaitMemo(instanceId, 1, "payment.result", Instant.now().minusSeconds(1), TimerStatus.FIRED);
+        var ctx = createContext(instanceId, "order-1", 0, true);
+        ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() ->
+                assertThrows(SignalTimeoutException.class,
+                        () -> signalManager.awaitSignal(ctx, "payment.result", String.class, Duration.ofHours(1))));
+        assertEquals(EventType.SIGNAL_TIMEOUT, store.getEventBySequence(instanceId, 2).orElseThrow().eventType());
+    }
+
+    @Test
+    @DisplayName("replay of an await whose row FIRED with no outcome — a visible signal still wins the open slot")
+    void awaitSignalReplay_firedRowWithoutOutcome_visibleSignalWins() {
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+        seedAwaitMemo(instanceId, 1, "payment.result", Instant.now().minusSeconds(1), TimerStatus.FIRED);
+        signalManager.deliverSignal("order-1", "payment.result", "paid-late");
+        var ctx = createContext(instanceId, "order-1", 0, true);
+        ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() ->
+                assertEquals("paid-late", signalManager.awaitSignal(ctx, "payment.result", String.class, Duration.ofHours(1))));
+        assertEquals(EventType.SIGNAL_RECEIVED, store.getEventBySequence(instanceId, 2).orElseThrow().eventType());
+        assertTrue(store.getAllSignals().getFirst().consumed());
+    }
+
+    @Test
+    @DisplayName("replay of a fully memoized await (TIMER_SCHEDULED + SIGNAL_TIMEOUT) needs no timer row")
+    void awaitSignalReplay_memoizedOutcome_needsNoTimerRow() {
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+        store.appendEvent(new WorkflowEvent(UUID.randomUUID(), instanceId, 1, EventType.TIMER_SCHEDULED,
+                "$maestro:awaitSignal:payment.result", awaitDetail("payment.result", "await-signal-1", Instant.EPOCH), Instant.now()));
+        store.appendEvent(new WorkflowEvent(UUID.randomUUID(), instanceId, 2, EventType.SIGNAL_TIMEOUT,
+                "$maestro:awaitSignal:payment.result", null, Instant.now()));
+        var ctx = createContext(instanceId, "order-1", 0, true);
+        ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() ->
+                assertThrows(SignalTimeoutException.class,
+                        () -> signalManager.awaitSignal(ctx, "payment.result", String.class, Duration.ofHours(1))));
+        assertEquals(0, store.getAllTimers().size());
+        assertEquals(2, ctx.currentSequence());
+    }
+
+    @Test
+    @DisplayName("awaitSignal with a zero timeout and no signal times out at once without a timer row (Review Focus 2)")
+    void awaitSignalZeroTimeout_timesOutWithoutATimerRow() {
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+        var ctx = createContext(instanceId, "order-1", 0, false);
+        ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() ->
+                assertThrows(SignalTimeoutException.class,
+                        () -> signalManager.awaitSignal(ctx, "payment.result", String.class, Duration.ZERO)));
+        assertEquals(0, store.getAllTimers().size());
+        assertEquals(EventType.SIGNAL_TIMEOUT, store.getEventBySequence(instanceId, 1).orElseThrow().eventType());
+    }
+
+    @Test
+    @DisplayName("cancelling an await-signal-* timer row ends the await with SignalTimeoutException (Review Focus 3)")
+    void cancelledAwaitTimer_timesOutTheAwait() throws Exception {
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+        var ctx = createContext(instanceId, "order-1", 0, false);
+        var outcome = new AtomicReference<Object>();
+        var worker = awaitInBackground(ctx, "payment.result", Duration.ofHours(1), outcome);
+        await().atMost(Duration.ofSeconds(5)).until(() -> store.findTimer(instanceId, "await-signal-1").isPresent());
+        assertTrue(store.markTimerCancelled(store.findTimer(instanceId, "await-signal-1").orElseThrow().id()));
+        signalManager.onTimerTransition("order-1", "await-signal-1");
+        worker.join(5_000);
+        assertInstanceOf(SignalTimeoutException.class, outcome.get());
+    }
+
+    @Test
+    @DisplayName("a live await reuses an existing row for its timer id and that row's fireAt — never a second row (M2)")
+    void liveAwait_reusesAnExistingTimerRow_andItsDeadline() {
+        // A crash between saveTimer and the TIMER_SCHEDULED memo (or a runner
+        // race) left a PENDING row for this await's timer id with no memo.
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+        var seededFireAt = Instant.now().plus(Duration.ofMinutes(10)).truncatedTo(ChronoUnit.MICROS);
+        var rowId = UUID.randomUUID();
+        store.saveTimer(new WorkflowTimer(rowId, instanceId, "order-1", "await-signal-1", seededFireAt,
+                TimerStatus.PENDING, Instant.now()));
+        var ctx = createContext(instanceId, "order-1", 0, false);
+
+        var worker = awaitInBackground(ctx, "payment.result", Duration.ofHours(1), new AtomicReference<>());
+        await().atMost(Duration.ofSeconds(5)).until(() -> parkingLot.isParked("order-1:signal:payment.result"));
+
+        assertEquals(1, store.getAllTimers().size(), "the existing row must be reused, not duplicated");
+        assertEquals(rowId, store.getAllTimers().getFirst().id());
+        var memo = store.getEventBySequence(instanceId, 1).orElseThrow();
+        assertEquals(seededFireAt, Instant.parse(memo.payload().get("deadline").stringValue()),
+                "the memoized deadline is the existing row's fireAt");
+        worker.interrupt();
+    }
+
+    @Test
+    @DisplayName("replay resumes from the MEMOIZED deadline, not Instant.now() + timeout (item 3)")
+    void replay_timesOutAtTheMemoizedDeadline_notAFreshOne() throws Exception {
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+        var rowId = seedAwaitMemo(instanceId, 1, "payment.result",
+                Instant.now().plusMillis(200).truncatedTo(ChronoUnit.MICROS), TimerStatus.PENDING);
+        var ctx = createContext(instanceId, "order-1", 0, true);
+        var outcome = new AtomicReference<Object>();
+
+        // The call's own timeout (1 h) must be ignored on replay.
+        var worker = awaitInBackground(ctx, "payment.result", Duration.ofHours(1), outcome);
+        worker.join(2_000);
+
+        assertInstanceOf(SignalTimeoutException.class, outcome.get(),
+                "the await must end at the memoized deadline (~200 ms), not in an hour");
+        assertEquals(EventType.SIGNAL_TIMEOUT, store.getEventBySequence(instanceId, 2).orElseThrow().eventType());
+        assertEquals(TimerStatus.FIRED, store.getAllTimers().stream()
+                .filter(t -> t.id().equals(rowId)).findFirst().orElseThrow().status(),
+                "the deadline self-fires its still-PENDING row");
+    }
+
+    @Test
+    @DisplayName("replay of a past-deadline await with a PENDING row self-fires the row and times out at once (item 3)")
+    void replay_pastDeadlinePendingRow_selfFiresAndTimesOut() {
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+        seedAwaitMemo(instanceId, 1, "payment.result", Instant.now().minusSeconds(5), TimerStatus.PENDING);
+        var ctx = createContext(instanceId, "order-1", 0, true);
+
+        ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() ->
+                assertThrows(SignalTimeoutException.class,
+                        () -> signalManager.awaitSignal(ctx, "payment.result", String.class, Duration.ofHours(1))));
+
+        assertEquals(EventType.SIGNAL_TIMEOUT, store.getEventBySequence(instanceId, 2).orElseThrow().eventType());
+        assertEquals(TimerStatus.FIRED, store.getAllTimers().getFirst().status());
+    }
+
+    @Test
+    @DisplayName("replay whose timer row is MISSING re-arms a row at the memoized deadline and keeps waiting (item 4)")
+    void replay_missingTimerRow_rearmsAtTheMemoizedDeadline() {
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+        var deadline = Instant.now().plus(Duration.ofHours(1)).truncatedTo(ChronoUnit.MICROS);
+        store.appendEvent(new WorkflowEvent(UUID.randomUUID(), instanceId, 1, EventType.TIMER_SCHEDULED,
+                "$maestro:awaitSignal:payment.result", awaitDetail("payment.result", "await-signal-1", deadline),
+                Instant.now()));
+        var ctx = createContext(instanceId, "order-1", 0, true);
+        var outcome = new AtomicReference<Object>();
+
+        var worker = awaitInBackground(ctx, "payment.result", Duration.ofHours(1), outcome);
+        await().atMost(Duration.ofSeconds(5)).until(() -> parkingLot.isParked("order-1:signal:payment.result"));
+
+        assertNull(outcome.get(), "a missing row is not a spent deadline — the await must keep waiting");
+        assertTrue(store.getEventBySequence(instanceId, 2).isEmpty());
+        var row = store.findTimer(instanceId, "await-signal-1").orElseThrow(
+                () -> new AssertionError("the deadline row must be re-armed"));
+        assertEquals(TimerStatus.PENDING, row.status());
+        assertEquals(deadline, row.fireAt(), "re-armed at the memoized deadline");
+
+        // ...and the re-armed row arbitrates like the original.
+        assertTrue(store.markTimerFired(row.id()));
+        signalManager.onTimerTransition("order-1", "await-signal-1");
+        await().atMost(Duration.ofSeconds(5)).until(() -> outcome.get() != null);
+        assertInstanceOf(SignalTimeoutException.class, outcome.get());
+        worker.interrupt();
+    }
+
+    // ── awaitSignal — store errors inside the timeout decision (R39) ───
+
+    @Test
+    @DisplayName("a store error on the deadline self-fire does not fail the await — it still times out (R39)")
+    void selfFireStoreError_stillTimesOut() throws Exception {
+        var faulty = useDeadlineFaultStore();
+        faulty.failNextSelfFire = true;
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+        var outcome = new AtomicReference<Object>();
+
+        var worker = awaitInBackground(createContext(instanceId, "order-1", 0, false), "payment.result",
+                Duration.ofMillis(200), outcome);
+        worker.join(5_000);
+
+        assertEquals(1, faulty.injected.get(), "the fault must actually have been hit");
+        assertInstanceOf(SignalTimeoutException.class, outcome.get(),
+                "a store blip at the deadline must not escape into workflow code");
+        assertEquals(EventType.SIGNAL_TIMEOUT, store.getEventBySequence(instanceId, 2).orElseThrow().eventType());
+    }
+
+    @Test
+    @DisplayName("a store error on the post-deadline signal re-read re-parks and retries — it still times out (R39)")
+    void lateSignalReadStoreError_reparksAndStillTimesOut() throws Exception {
+        var faulty = useDeadlineFaultStore();
+        faulty.failLateReadAfterSelfFire = true;
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+        var outcome = new AtomicReference<Object>();
+
+        var worker = awaitInBackground(createContext(instanceId, "order-1", 0, false), "payment.result",
+                Duration.ofMillis(200), outcome);
+        worker.join(5_000);
+
+        assertEquals(1, faulty.injected.get(), "the fault must actually have been hit");
+        assertInstanceOf(SignalTimeoutException.class, outcome.get());
+        assertEquals(EventType.SIGNAL_TIMEOUT, store.getEventBySequence(instanceId, 2).orElseThrow().eventType());
+    }
+
+    @Test
+    @DisplayName("a signal arriving during a post-deadline store error still wins the open slot (R39)")
+    void lateSignalReadStoreError_signalArrivingMeanwhileWins() throws Exception {
+        var faulty = useDeadlineFaultStore();
+        faulty.failLateReadAfterSelfFire = true;
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+        faulty.onLateReadFailure = () -> faulty.saveSignal(new WorkflowSignal(UUID.randomUUID(), instanceId,
+                "order-1", "payment.result", serializer.serialize("paid-during-blip"), false, Instant.now()));
+        var outcome = new AtomicReference<Object>();
+
+        var worker = awaitInBackground(createContext(instanceId, "order-1", 0, false), "payment.result",
+                Duration.ofMillis(200), outcome);
+        worker.join(5_000);
+
+        assertEquals(1, faulty.injected.get());
+        assertEquals("paid-during-blip", outcome.get());
+        assertEquals(EventType.SIGNAL_RECEIVED, store.getEventBySequence(instanceId, 2).orElseThrow().eventType());
+    }
+
+    // ── concurrent waiters share one acknowledged subscribe (item 23) ──
+
+    @Test
+    @DisplayName("a second concurrent waiter does not park before the first waiter's subscribe is acknowledged")
+    void secondWaiter_waitsForTheFirstWaitersSubscribe() throws Exception {
+        var release = new CountDownLatch(1);
+        var subscribeEntered = new CountDownLatch(1);
+        var notifier = new SubscribingNotifier() {
+            @Override
+            public void subscribe(String workflowId, SignalCallback callback) {
+                subscribeEntered.countDown();
+                try {
+                    release.await(10, TimeUnit.SECONDS); // the server has not acknowledged yet
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                super.subscribe(workflowId, callback);
+            }
+        };
+        signalManager = new SignalManager(store, messaging, notifier, serializer, parkingLot);
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+
+        var first = awaitInBackground(createContext(instanceId, "order-1", 0, false), "signal-a",
+                Duration.ofSeconds(30), new AtomicReference<>());
+        assertTrue(subscribeEntered.await(5, TimeUnit.SECONDS));
+        var second = awaitInBackground(createContext(instanceId, "order-1", 10, false), "signal-b",
+                Duration.ofSeconds(30), new AtomicReference<>());
+
+        // The second waiter must be held in subscribeForWake: it writes no
+        // deadline row and does not park while the subscribe is unacknowledged.
+        Thread.sleep(500);
+        assertTrue(store.findTimer(instanceId, "await-signal-11").isEmpty(),
+                "the second waiter passed subscribeForWake before the subscription was acknowledged");
+        assertFalse(parkingLot.isParked("order-1:signal:signal-b"));
+
+        release.countDown();
+        await().atMost(Duration.ofSeconds(5)).until(() ->
+                parkingLot.isParked("order-1:signal:signal-a") && parkingLot.isParked("order-1:signal:signal-b"));
+        assertEquals(List.of("order-1"), notifier.subscribeCalls, "still one physical subscription");
+        first.interrupt();
+        second.interrupt();
+    }
+
+    /** Swaps in a {@link DeadlineFaultStore} and a SignalManager with a 100 ms re-check. */
+    private DeadlineFaultStore useDeadlineFaultStore() {
+        var faulty = new DeadlineFaultStore();
+        store = faulty;
+        signalManager = new SignalManager(store, messaging, null, serializer, parkingLot, Duration.ofMillis(100));
+        return faulty;
+    }
+
+    /**
+     * Throws once from the timeout decision's own store calls: the deadline
+     * self-fire ({@code markTimerFired}), or the signal re-read that follows
+     * it. The per-pass probe reads before the decision are left alone — they
+     * are already advisory (Issue 20).
+     */
+    private static final class DeadlineFaultStore extends InMemoryWorkflowStore {
+        volatile boolean failNextSelfFire;
+        volatile boolean failLateReadAfterSelfFire;
+        volatile @org.jspecify.annotations.Nullable Runnable onLateReadFailure;
+        private volatile boolean selfFireSeen;
+        final java.util.concurrent.atomic.AtomicInteger injected = new java.util.concurrent.atomic.AtomicInteger();
+
+        @Override
+        public synchronized boolean markTimerFired(UUID timerId) {
+            selfFireSeen = true;
+            if (failNextSelfFire) {
+                failNextSelfFire = false;
+                injected.incrementAndGet();
+                throw new RuntimeException("store blip at the deadline (self-fire, injected)");
+            }
+            return super.markTimerFired(timerId);
+        }
+
+        @Override
+        public List<WorkflowSignal> getUnconsumedSignals(String workflowId, String signalName) {
+            if (failLateReadAfterSelfFire && selfFireSeen) {
+                failLateReadAfterSelfFire = false;
+                injected.incrementAndGet();
+                var hook = onLateReadFailure;
+                if (hook != null) {
+                    hook.run();
+                }
+                throw new RuntimeException("store blip at the deadline (late signal read, injected)");
+            }
+            return super.getUnconsumedSignals(workflowId, signalName);
+        }
     }
 
     // ── adoptOrphanedSignals ───────────────────────────────────────────
@@ -547,6 +1049,47 @@ class SignalManagerTest {
     }
 
     @Test
+    @DisplayName("a wake on a row another runner finalised (COMPLETED) stands down as stale WITHOUT consuming "
+            + "the signal (M7 / R30)")
+    void wakeOnCompletedRow_standsDownWithoutConsumingTheSignal() throws Exception {
+        var sm = new SignalManager(store, messaging, null, serializer, parkingLot, Duration.ofMillis(100));
+        var instanceId = UUID.randomUUID();
+        createInstance("order-1", instanceId);
+
+        var outcome = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var done = new CountDownLatch(1);
+        var ctx = createContext(instanceId, "order-1", 0, false);
+        Thread.ofVirtual().start(() -> {
+            ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() -> {
+                try {
+                    sm.awaitSignal(ctx, "payment.result", String.class, Duration.ofSeconds(30));
+                } catch (Throwable t) {
+                    outcome.set(t);
+                } finally {
+                    done.countDown();
+                }
+            });
+        });
+        await().atMost(Duration.ofSeconds(2)).until(() -> parkingLot.isParked("order-1:signal:payment.result"));
+
+        // Another runner finished the workflow; then a signal for it lands.
+        store.updateInstance(store.getInstance("order-1").orElseThrow().toBuilder()
+                .status(WorkflowStatus.COMPLETED).build());
+        store.saveSignal(new WorkflowSignal(UUID.randomUUID(), instanceId, "order-1",
+                "payment.result", serializer.serialize("late"), false, Instant.now()));
+
+        assertTrue(done.await(5, TimeUnit.SECONDS));
+        var stale = assertInstanceOf(io.b2mash.maestro.core.exception.StaleRunException.class, outcome.get());
+        assertEquals(WorkflowStatus.COMPLETED, stale.observedStatus());
+        assertEquals(1, store.getUnconsumedSignals("order-1", "payment.result").size(),
+                "a stale run must not consume a signal of a workflow another runner finished");
+        assertTrue(store.getEvents(instanceId).stream().noneMatch(e -> e.eventType() == EventType.SIGNAL_RECEIVED),
+                "no SIGNAL_RECEIVED may be memoized by the stale run");
+        assertEquals(io.b2mash.maestro.core.context.RunCancellation.Cause.STALE, ctx.cancellation().cause(),
+                "the wake's stand-down is sticky on the run (round 2, R33)");
+    }
+
+    @Test
     @DisplayName("spurious wake (notifier self-echo) re-parks instead of aborting the await")
     void spuriousWakeDoesNotAbortAwait() throws Exception {
         var instanceId = UUID.randomUUID();
@@ -789,6 +1332,45 @@ class SignalManagerTest {
 
     // ── Helpers ─────────────────────────────────────────────────────────
 
+    /**
+     * Runs {@code awaitSignal} under the workflow scoped value on a new
+     * virtual thread, storing the returned payload or the thrown exception.
+     */
+    private Thread awaitInBackground(WorkflowContext ctx, String name, Duration timeout,
+                                     AtomicReference<Object> outcome) {
+        return Thread.ofVirtual().start(() ->
+                ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() -> {
+                    try {
+                        outcome.set(signalManager.awaitSignal(ctx, name, String.class, timeout));
+                    } catch (Throwable t) {
+                        outcome.set(t);
+                    }
+                }));
+    }
+
+    /** The {@code TIMER_SCHEDULED} payload a parked await memoizes. */
+    private JsonNode awaitDetail(String signalName, String timerId, Instant deadline) {
+        return serializer.serialize(new SignalManager.AwaitSignalDetail(
+                signalName, timerId, Duration.ofHours(1).toString(), deadline.toString()));
+    }
+
+    /**
+     * Seeds the history of a parked await at {@code seq}: the
+     * {@code TIMER_SCHEDULED} memo plus its {@code await-signal-<seq>} row.
+     *
+     * @return the timer row's database id
+     */
+    private UUID seedAwaitMemo(UUID instanceId, int seq, String signalName, Instant deadline,
+                               TimerStatus rowStatus) {
+        var timerId = "await-signal-" + seq;
+        store.appendEvent(new WorkflowEvent(UUID.randomUUID(), instanceId, seq, EventType.TIMER_SCHEDULED,
+                "$maestro:awaitSignal:" + signalName, awaitDetail(signalName, timerId, deadline), Instant.now()));
+        var rowId = UUID.randomUUID();
+        store.saveTimer(new WorkflowTimer(rowId, instanceId, "order-1", timerId, deadline, rowStatus,
+                Instant.now()));
+        return rowId;
+    }
+
     private void createInstance(String workflowId, UUID instanceId) {
         store.createInstance(WorkflowInstance.builder()
                 .id(instanceId)
@@ -819,6 +1401,14 @@ class SignalManagerTest {
         private final CopyOnWriteArrayList<WorkflowEvent> events = new CopyOnWriteArrayList<>();
         private final CopyOnWriteArrayList<WorkflowSignal> signals = new CopyOnWriteArrayList<>();
         private final CopyOnWriteArrayList<WorkflowTimer> timers = new CopyOnWriteArrayList<>();
+
+        List<WorkflowTimer> getAllTimers() {
+            return List.copyOf(timers);
+        }
+
+        List<WorkflowSignal> getAllSignals() {
+            return List.copyOf(signals);
+        }
 
         @Override
         public WorkflowInstance createInstance(WorkflowInstance instance) {
@@ -854,6 +1444,15 @@ class SignalManagerTest {
         }
 
         @Override
+        public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+            // Test fixture: no CAS and one writer per instance, so composing the two
+            // writes is atomic enough here. Event first, so a duplicate writes nothing.
+            appendEvent(terminalEvent);
+            updateInstance(terminal);
+            return true;
+        }
+
+        @Override
         public Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int sequenceNumber) {
             return events.stream()
                     .filter(e -> e.workflowInstanceId().equals(instanceId)
@@ -870,7 +1469,7 @@ class SignalManagerTest {
 
         @Override
         public int deleteFailureEvents(UUID instanceId) {
-            return removeFailureEvents(events, instanceId);
+            return removeFailureEvents(events, timers, instanceId);
         }
 
         @Override
@@ -916,6 +1515,11 @@ class SignalManagerTest {
         }
 
         @Override
+        public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+            return 0;
+        }
+
+        @Override
         public void saveTimer(WorkflowTimer timer) {
             timers.add(timer);
         }
@@ -937,7 +1541,7 @@ class SignalManagerTest {
         }
 
         @Override
-        public boolean markTimerFired(UUID timerId) {
+        public synchronized boolean markTimerFired(UUID timerId) {
             for (int i = 0; i < timers.size(); i++) {
                 var t = timers.get(i);
                 if (t.id().equals(timerId) && t.status() == TimerStatus.PENDING) {
@@ -951,7 +1555,7 @@ class SignalManagerTest {
         }
 
         @Override
-        public boolean markTimerCancelled(UUID timerId) {
+        public synchronized boolean markTimerCancelled(UUID timerId) {
             for (int i = 0; i < timers.size(); i++) {
                 var t = timers.get(i);
                 if (t.id().equals(timerId) && t.status() == TimerStatus.PENDING) {
@@ -1005,10 +1609,20 @@ class SignalManagerTest {
         }
     }
 
+    /**
+     * Throws from {@code publish}. It records the hand-off thread and installs
+     * an uncaught-exception handler on it, so a test can join that thread and
+     * tell whether the engine caught the failure (nothing escapes) or not.
+     */
     private static class FailingNotifier implements SignalNotifier {
+
+        final AtomicReference<Thread> publishThread = new AtomicReference<>();
+        final CopyOnWriteArrayList<Throwable> escaped = new CopyOnWriteArrayList<>();
 
         @Override
         public void publish(String workflowId, String signalName) {
+            Thread.currentThread().setUncaughtExceptionHandler((t, e) -> escaped.add(e));
+            publishThread.set(Thread.currentThread());
             throw new RuntimeException("Simulated notifier failure");
         }
 
@@ -1026,18 +1640,12 @@ class SignalManagerTest {
         final CopyOnWriteArrayList<WorkflowLifecycleEvent> events = new CopyOnWriteArrayList<>();
 
         @Override
-        public void publishTask(String taskQueue, TaskMessage message) {}
-
-        @Override
         public void publishSignal(String serviceName, SignalMessage message) {}
 
         @Override
         public void publishLifecycleEvent(WorkflowLifecycleEvent event) {
             events.add(event);
         }
-
-        @Override
-        public void subscribe(String taskQueue, Consumer<TaskMessage> handler) {}
 
         @Override
         public void subscribeSignals(String serviceName, Consumer<SignalMessage> handler) {}

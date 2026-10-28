@@ -1,6 +1,8 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
+import io.b2mash.maestro.core.exception.StaleRunException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.spi.WorkflowStore;
@@ -38,9 +40,14 @@ import java.time.Instant;
  *       its own terminal-status check and its status write, formerly a narrow
  *       swallow (Issue 22, now fixed) — and the {@code Error} type keeps a
  *       workflow's own {@code catch (Exception)} from swallowing it.</li>
- *   <li>{@code COMPLETED} / {@code FAILED} log and stand down, preserving the
- *       existing "another runner finalised it first" convergence: that outcome
- *       is already the durable truth and this run has nothing to add.</li>
+ *   <li>{@code COMPLETED} / {@code FAILED} throw {@link StaleRunException}:
+ *       another runner finalised it first, that outcome is already the
+ *       durable truth, and this run has nothing to add — so it must stop, not
+ *       carry on. It used to log and return, letting the run continue past
+ *       the fresh read: consume a signal, execute live activities a finished
+ *       workflow should never run, and only converge at its own terminal
+ *       write (C5). {@code WorkflowExecutor} stands the run down as
+ *       {@code STALE_RUN}, writing nothing and compensating nothing.</li>
  * </ul>
  *
  * <h2>The version conflict</h2>
@@ -113,6 +120,31 @@ public final class InstanceStatusWriter {
     }
 
     /**
+     * {@link #write(WorkflowStore, String, WorkflowStatus)} for a running
+     * workflow's own status writes, making a stale-run stand-down
+     * <b>sticky</b>: when the fresh read finds the row finalised by another
+     * runner, the run's {@code RunCancellation} is set to {@code STALE} before
+     * the {@link StaleRunException} propagates. Should workflow code catch and
+     * swallow it, the run still stands down at its next stop point (live
+     * activity, {@code sleep()}, {@code awaitSignal()}, terminal write).
+     *
+     * @param store     the workflow store to write through
+     * @param ctx       the writing run's context
+     * @param newStatus the non-terminal status to write
+     * @throws WorkflowTerminatedException as for the {@code workflowId} overload
+     * @throws StaleRunException           as for the {@code workflowId} overload,
+     *                                     after requesting {@code STALE} on the run
+     */
+    static void write(WorkflowStore store, WorkflowContext ctx, WorkflowStatus newStatus) {
+        try {
+            write(store, ctx.workflowId(), newStatus);
+        } catch (StaleRunException stale) {
+            ctx.cancellation().requestStale(stale.detail());
+            throw stale;
+        }
+    }
+
+    /**
      * Moves a workflow to a non-terminal status, standing down if the instance
      * has since reached a terminal state, and retrying a lost compare-and-set
      * against a fresh read rather than turning it into a workflow outcome.
@@ -127,6 +159,11 @@ public final class InstanceStatusWriter {
      *                                     {@code MaestroException}, so a
      *                                     workflow's own {@code catch
      *                                     (Exception)} cannot swallow it
+     * @throws StaleRunException           if the instance is already
+     *                                     {@code COMPLETED} or {@code FAILED} —
+     *                                     another runner finalised it; nothing
+     *                                     is written and the caller's run must
+     *                                     stand down
      */
     static void write(WorkflowStore store, String workflowId, WorkflowStatus newStatus) {
         for (var attempt = 1; ; attempt++) {
@@ -143,9 +180,9 @@ public final class InstanceStatusWriter {
             }
             if (current.status().isTerminal()) {
                 logger.warn("Workflow '{}' is already {} — another runner finalised it first; "
-                                + "not overwriting with {}",
+                                + "not overwriting with {}; standing this run down",
                         workflowId, current.status(), newStatus);
-                return;
+                throw new StaleRunException(workflowId, current.status(), "status write of " + newStatus);
             }
             try {
                 store.updateInstance(current.toBuilder()

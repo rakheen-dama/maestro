@@ -18,7 +18,6 @@ import java.util.List;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -26,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * finished when its status says so, but when its terminal event is in the log.
  *
  * <h2>What broke</h2>
- * <p>{@code WorkflowExecutor} finalises a run with two separate,
+ * <p>{@code WorkflowExecutor} used to finalise a run with two separate,
  * non-transactional writes — instance row first, {@code WORKFLOW_COMPLETED}
  * event second. GitHub Actions run 30728290264 reddened {@code main} when
  * {@code EnginePostgresParallelIT} polled on the status, landed in that gap and
@@ -34,20 +33,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code 5001:WORKFLOW_COMPLETED}. That shape had been copy-pasted across six
  * suites.
  *
- * <h2>Why this test and not a repeat loop</h2>
- * <p>The window is one database round trip wide, so hammering the real engine
- * reproduces it at a low single-digit percent — useless as a regression pin.
- * {@link TerminalEventDelayStore} stretches the window to seconds instead, which
- * makes the race deterministic in both directions: the first test proves a
- * status-only predicate really does observe the missing event (a pin that cannot
- * observe the symptom proves nothing), and the rest prove the shipped predicates
- * do not.
+ * <h2>Issue 26: the gap is closed at the source</h2>
+ * <p>The engine now writes the terminal status and the terminal event in one
+ * transaction ({@code WorkflowStore.completeInstance}). The first test here
+ * used to prove a status-only poll <em>did</em> observe the missing event; it
+ * now proves the opposite. {@link TerminalEventDelayStore} holds the atomic
+ * write open for seconds, so a poller is guaranteed to be watching throughout
+ * the finalisation — and the instant it sees a terminal status, the event must
+ * already be durable. The remaining tests keep pinning the shipped event-gated
+ * waits, which stay correct and are still the recommended predicate.
  */
 @Tag("integration")
 @DisplayName("A terminal status is not a finished workflow")
 class TerminalEventRaceIT extends PostgresIntegrationSupport {
 
-    /** Long enough that any 50–100ms poller lands inside the window. */
+    /** Long enough that any 20–100ms poller is watching throughout the terminal write. */
     private static final Duration APPEND_DELAY = Duration.ofSeconds(3);
     private static final Duration BOUND = Duration.ofSeconds(30);
 
@@ -62,29 +62,19 @@ class TerminalEventRaceIT extends PostgresIntegrationSupport {
     }
 
     @Test
-    @DisplayName("a status-only wait observes a COMPLETED workflow whose terminal event is missing")
-    void statusOnlyWait_seesTheGap() {
-        var handle = startChain("terminal-gap");
+    @DisplayName("a status-only poll never observes a terminal status without its terminal event")
+    void statusOnlyWait_neverSeesTheGap() {
+        var handle = startChain("terminal-atomic");
 
-        // The predicate that reddened main: instance row only.
-        await().atMost(BOUND)
-                .pollInterval(Duration.ofMillis(50))
-                .until(() -> store.getInstance(handle.workflowId())
-                        .map(i -> i.status().isTerminal())
-                        .orElse(false));
+        // The predicate that reddened main before Issue 26: instance row only.
+        await().atMost(BOUND).pollInterval(Duration.ofMillis(20))
+                .until(() -> store.getInstance(handle.workflowId()).map(i -> i.status().isTerminal()).orElse(false));
 
         assertEquals(WorkflowStatus.COMPLETED, handle.status());
-        assertFalse(hasTerminalEvent(handle.instanceId()),
-                "the window must actually be open here — otherwise every assertion "
-                        + "below is vacuous and this suite proves nothing");
-        assertEquals(List.of(1, 2, 3),
-                store.getEvents(handle.instanceId()).stream().map(e -> e.sequenceNumber()).toList(),
-                "the three activity events are durable; the run-closing event is not yet");
-
-        // And it does land — the engine is correct, the predicate was not.
-        await().atMost(BOUND).until(() -> hasTerminalEvent(handle.instanceId()));
-        assertEquals(1, delayingStore.delayedAppends(),
-                "exactly one terminal append must have been held open");
+        assertTrue(hasTerminalEvent(handle.instanceId()),
+                "status is terminal, so the event must already be durable — Issue 26 is closed at the source");
+        assertEquals(1, delayingStore.delayedCompletions(),
+                "exactly one terminal write must have been held open, or the poll proved nothing");
     }
 
     @Test
@@ -130,8 +120,8 @@ class TerminalEventRaceIT extends PostgresIntegrationSupport {
     // ── fixtures ──────────────────────────────────────────────────────────
 
     /**
-     * Starts a three-activity chain on a node whose terminal event append is
-     * held open, so the finalisation gap is seconds rather than microseconds.
+     * Starts a three-activity chain on a node whose atomic terminal write is
+     * held open for seconds before it reaches Postgres.
      *
      * @param prefix workflow ID prefix
      * @return the handle
@@ -144,7 +134,7 @@ class TerminalEventRaceIT extends PostgresIntegrationSupport {
                 .build();
         harness.registerActivities(CountingActivities.ChainActivities.class,
                 new CountingActivities.RecordingChainActivities(new CountingActivities.Recorder()));
-        harness.registerWorkflow(new TestWorkflows.ChainWorkflow());
+        harness.registerWorkflow(TestWorkflows.ChainWorkflow.class);
         return harness.start(MaestroEngineHarness.uniqueWorkflowId(prefix),
                 TestWorkflows.ChainWorkflow.class, "seed");
     }

@@ -5,6 +5,7 @@ import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.engine.ActivityProxyFactory;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
+import io.b2mash.maestro.core.engine.TaskQueueLimits;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.engine.WorkflowRegistration;
 import io.b2mash.maestro.core.observe.EngineObserver;
@@ -24,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 /**
  * Wires a real {@link WorkflowExecutor} over real backend SPIs for integration
@@ -71,30 +73,24 @@ public final class MaestroEngineHarness implements AutoCloseable {
         this.messaging = builder.messaging;
         this.observer = builder.observer != null ? builder.observer : EngineObserver.NOOP;
         this.lockKeyPrefix = builder.lockKeyPrefix;
-        this.executor = builder.wakeRecheckInterval == null && builder.observer == null
-                ? new WorkflowExecutor(
-                        builder.store,
-                        builder.lock,
-                        builder.messaging,
-                        builder.signalNotifier,
-                        this.serializer,
-                        builder.serviceName,
-                        builder.lockKeyPrefix,
-                        builder.instanceLockTtl)
-                : new WorkflowExecutor(
-                        builder.store,
-                        builder.lock,
-                        builder.messaging,
-                        builder.signalNotifier,
-                        this.serializer,
-                        builder.serviceName,
-                        builder.lockKeyPrefix,
-                        builder.instanceLockTtl,
-                        true,
-                        Duration.ofSeconds(30),
-                        builder.wakeRecheckInterval != null
-                                ? builder.wakeRecheckInterval : DEFAULT_WAKE_RECHECK_INTERVAL,
-                        this.observer);
+        // The engine's defaults for everything the builder leaves unset —
+        // lifecycle events on, 30s shutdown timeout, 30s wake re-check, no
+        // observer, unbounded task queues.
+        this.executor = new WorkflowExecutor(
+                builder.store,
+                builder.lock,
+                builder.messaging,
+                builder.signalNotifier,
+                this.serializer,
+                builder.serviceName,
+                builder.lockKeyPrefix,
+                builder.instanceLockTtl,
+                true,
+                Duration.ofSeconds(30),
+                builder.wakeRecheckInterval != null
+                        ? builder.wakeRecheckInterval : DEFAULT_WAKE_RECHECK_INTERVAL,
+                this.observer,
+                builder.taskQueueLimits);
     }
 
     /**
@@ -123,22 +119,47 @@ public final class MaestroEngineHarness implements AutoCloseable {
     }
 
     /**
-     * Registers a workflow instance, wiring its activity stubs and resolving its
-     * workflow method. Registration is what makes a workflow recoverable — the
-     * same registrations are handed to {@link #recover()} and the recovery poller.
+     * Registers a workflow class, built reflectively through its no-arg
+     * constructor once per run — on every start, recovery and retry — exactly
+     * as the Spring starter builds a prototype bean per run. Registration is
+     * what makes a workflow recoverable — the same registrations are handed to
+     * {@link #recover()} and the recovery poller.
      *
-     * <p>Instances (not classes) are registered so a test can hold a reference
-     * and assert on counters the workflow touches.
-     *
-     * @param workflowImpl the workflow instance
+     * @param workflowClass the workflow class; must have an accessible-or-not
+     *                      no-arg constructor
      * @return this harness
      */
-    public MaestroEngineHarness registerWorkflow(Object workflowImpl) {
-        var type = workflowType(workflowImpl.getClass());
-        wireActivityStubs(workflowImpl);
+    public MaestroEngineHarness registerWorkflow(Class<?> workflowClass) {
+        return registerWorkflow(workflowClass, () -> instantiate(workflowClass));
+    }
+
+    /**
+     * Registers a workflow class whose per-run objects come from
+     * {@code factory}. The harness wires {@link ActivityStub} fields on every
+     * object the factory returns, each time it returns one.
+     *
+     * <p>Use this overload for fixtures with constructor arguments, or to
+     * hand back a pre-built object a test holds a reference to (to assert on
+     * counters or latches it touches). A factory that returns the same object
+     * on every call deliberately reintroduces the shared-object behaviour —
+     * acceptable for a single-run fixture, wrong for anything that asserts
+     * per-run isolation.
+     *
+     * @param workflowClass the workflow class (supplies type, task queue and
+     *                      workflow method)
+     * @param factory       builds the workflow object for each run; must
+     *                      return an instance of {@code workflowClass}
+     * @return this harness
+     */
+    public MaestroEngineHarness registerWorkflow(Class<?> workflowClass, Supplier<?> factory) {
+        var type = workflowType(workflowClass);
+        Supplier<Object> wiringFactory = () -> {
+            Object workflowImpl = workflowClass.cast(factory.get());
+            wireActivityStubs(workflowImpl);
+            return workflowImpl;
+        };
         registrations.put(type, new WorkflowRegistration(
-                type, taskQueue(workflowImpl.getClass()), workflowImpl,
-                workflowMethod(workflowImpl.getClass())));
+                type, taskQueue(workflowClass), wiringFactory, workflowMethod(workflowClass)));
         return this;
     }
 
@@ -157,7 +178,7 @@ public final class MaestroEngineHarness implements AutoCloseable {
                 registration.workflowType(),
                 registration.taskQueue(),
                 input,
-                registration.workflowImpl(),
+                registration.workflowFactory(),
                 registration.workflowMethod());
         return new WorkflowHandle(store, executor, serializer, workflowId, instanceId);
     }
@@ -171,6 +192,18 @@ public final class MaestroEngineHarness implements AutoCloseable {
      */
     public void deliverSignal(String workflowId, String signalName, @Nullable Object payload) {
         executor.deliverSignal(workflowId, signalName, payload);
+    }
+
+    /**
+     * Retries a {@code FAILED} workflow exactly as the admin {@code $maestro:retry}
+     * command does, with the workflow's own registration.
+     *
+     * @param workflowId    the business workflow ID
+     * @param workflowClass the workflow class (must have been registered)
+     * @return what the retry did
+     */
+    public WorkflowExecutor.RetryOutcome retry(String workflowId, Class<?> workflowClass) {
+        return executor.retryWorkflow(workflowId, requireRegistration(workflowClass));
     }
 
     /**
@@ -253,7 +286,8 @@ public final class MaestroEngineHarness implements AutoCloseable {
         if (registration == null) {
             throw new IllegalStateException(
                     "Workflow not registered: " + workflowClass.getName()
-                            + " — call registerWorkflow(instance) first");
+                            + " — call registerWorkflow(" + workflowClass.getSimpleName()
+                            + ".class) first");
         }
         return registration;
     }
@@ -269,6 +303,18 @@ public final class MaestroEngineHarness implements AutoCloseable {
     private static String taskQueue(Class<?> workflowClass) {
         var annotation = workflowClass.getAnnotation(DurableWorkflow.class);
         return annotation != null ? annotation.taskQueue() : "default";
+    }
+
+    private static Object instantiate(Class<?> workflowClass) {
+        try {
+            var constructor = workflowClass.getDeclaredConstructor();
+            constructor.setAccessible(true);
+            return constructor.newInstance();
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(
+                    "Cannot instantiate " + workflowClass.getName()
+                            + " through a no-arg constructor — use registerWorkflow(Class, Supplier)", e);
+        }
     }
 
     private static Method workflowMethod(Class<?> workflowClass) {
@@ -299,7 +345,7 @@ public final class MaestroEngineHarness implements AutoCloseable {
                 throw new IllegalStateException(
                         "No activity implementation registered for " + activityInterface.getName()
                                 + " required by " + workflowImpl.getClass().getName()
-                                + " — call registerActivities(...) before registerWorkflow(...)");
+                                + " — call registerActivities(...) before starting or recovering it");
             }
             var proxy = proxyFactory.createProxy(
                     (Class) activityInterface,
@@ -312,7 +358,8 @@ public final class MaestroEngineHarness implements AutoCloseable {
                     serializer,
                     retryExecutor,
                     lockKeyPrefix,
-                    observer);
+                    observer,
+                    executor.taskQueueGovernor());
             try {
                 field.setAccessible(true);
                 field.set(workflowImpl, proxy);
@@ -335,6 +382,7 @@ public final class MaestroEngineHarness implements AutoCloseable {
         private Duration instanceLockTtl = Duration.ofSeconds(30);
         private @Nullable Duration wakeRecheckInterval;
         private @Nullable EngineObserver observer;
+        private Map<String, TaskQueueLimits> taskQueueLimits = Map.of();
 
         private Builder(WorkflowStore store, ObjectMapper objectMapper) {
             this.store = store;
@@ -402,6 +450,18 @@ public final class MaestroEngineHarness implements AutoCloseable {
          */
         public Builder observer(@Nullable EngineObserver observer) {
             this.observer = observer;
+            return this;
+        }
+
+        /**
+         * @param taskQueueLimits per-task-queue concurrency limits
+         *                        ({@code maestro.worker.task-queues}) enforced by
+         *                        the executor and every activity proxy this
+         *                        harness builds; the default (empty) leaves
+         *                        every queue unbounded
+         */
+        public Builder taskQueueLimits(Map<String, TaskQueueLimits> taskQueueLimits) {
+            this.taskQueueLimits = Map.copyOf(taskQueueLimits);
             return this;
         }
 

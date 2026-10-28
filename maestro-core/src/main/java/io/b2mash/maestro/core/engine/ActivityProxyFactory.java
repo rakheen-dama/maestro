@@ -56,7 +56,8 @@ public final class ActivityProxyFactory {
      * @param distributedLock     optional distributed lock for dedup optimization
      * @param messaging           optional messaging for lifecycle events
      * @param retryPolicy         retry policy for failed invocations
-     * @param startToCloseTimeout timeout used as lock TTL hint
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
+     *                            base of the per-activity lock TTL
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live invocations
      * @return a proxy instance that implements {@code activityInterface}
@@ -89,7 +90,8 @@ public final class ActivityProxyFactory {
      * @param distributedLock     optional distributed lock for dedup optimization
      * @param messaging           optional messaging for lifecycle events
      * @param retryPolicy         retry policy for failed invocations
-     * @param startToCloseTimeout timeout used as lock TTL hint
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
+     *                            base of the per-activity lock TTL
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live invocations
      * @param lockKeyPrefix       prefix for the per-activity distributed lock key
@@ -127,7 +129,8 @@ public final class ActivityProxyFactory {
      * @param distributedLock     optional distributed lock for dedup optimization
      * @param messaging           optional messaging for lifecycle events
      * @param retryPolicy         retry policy for failed invocations
-     * @param startToCloseTimeout timeout used as lock TTL hint
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
+     *                            base of the per-activity lock TTL
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live invocations
      * @param lockKeyPrefix       prefix for the per-activity distributed lock key
@@ -152,6 +155,53 @@ public final class ActivityProxyFactory {
             String lockKeyPrefix,
             EngineObserver observer
     ) {
+        return createProxy(activityInterface, activityImpl, store, distributedLock, messaging,
+                retryPolicy, startToCloseTimeout, serializer, retryExecutor, lockKeyPrefix,
+                observer, TaskQueueGovernor.UNBOUNDED);
+    }
+
+    /**
+     * Creates a memoizing proxy for the given activity interface, with an
+     * explicit activity lock key prefix, an {@link EngineObserver} and the
+     * {@link TaskQueueGovernor} that bounds live executions per task queue.
+     *
+     * @param <T>                 the activity interface type
+     * @param activityInterface   the activity interface class (must be an interface)
+     * @param activityImpl        the real implementation to delegate live calls to
+     * @param store               the workflow store for memoization
+     * @param distributedLock     optional distributed lock for dedup optimization
+     * @param messaging           optional messaging for lifecycle events
+     * @param retryPolicy         retry policy for failed invocations
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
+     *                            base of the per-activity lock TTL
+     * @param serializer          Jackson serializer for payloads
+     * @param retryExecutor       retry executor for live invocations
+     * @param lockKeyPrefix       prefix for the per-activity distributed lock key
+     *                            (e.g. {@code maestro:lock:})
+     * @param observer            engine observation seam handed to the created
+     *                            handler; never {@code null} (pass {@link EngineObserver#NOOP})
+     * @param governor            bounds live executions per task queue
+     *                            ({@code maestro.worker.task-queues[].activity-concurrency});
+     *                            pass the executor's
+     *                            {@link WorkflowExecutor#taskQueueGovernor()}, or
+     *                            {@link TaskQueueGovernor#UNBOUNDED} for none
+     * @return a proxy instance that implements {@code activityInterface}
+     * @throws IllegalArgumentException if {@code activityInterface} is not an interface
+     */
+    public <T> T createProxy(
+            Class<T> activityInterface,
+            T activityImpl,
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            @Nullable WorkflowMessaging messaging,
+            RetryPolicy retryPolicy,
+            Duration startToCloseTimeout,
+            PayloadSerializer serializer,
+            RetryExecutor retryExecutor,
+            String lockKeyPrefix,
+            EngineObserver observer,
+            TaskQueueGovernor governor
+    ) {
         if (!activityInterface.isInterface()) {
             throw new IllegalArgumentException(
                     "Activity type must be an interface, got: " + activityInterface.getName());
@@ -172,7 +222,8 @@ public final class ActivityProxyFactory {
                 serializer,
                 retryExecutor,
                 lockKeyPrefix,
-                observer
+                observer,
+                governor
         );
 
         var proxy = Proxy.newProxyInstance(

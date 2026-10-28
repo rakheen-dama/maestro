@@ -3,6 +3,7 @@ package io.b2mash.maestro.core.observe;
 import org.jspecify.annotations.Nullable;
 
 import java.time.Duration;
+import java.util.concurrent.Callable;
 
 /**
  * Engine-internal observation seam: the engine invokes these callbacks
@@ -73,6 +74,36 @@ public interface EngineObserver {
     default void activityStarted(ActivityInfo a) {}
 
     /**
+     * Wraps one live activity attempt before it is handed to its own virtual
+     * thread.
+     *
+     * <p>Called on the <b>workflow thread</b>, after {@link #activityStarted}
+     * and once per attempt (retries included), just before the attempt is
+     * started on a fresh virtual thread bounded by {@code startToCloseTimeout};
+     * the returned callable runs on that <b>attempt thread</b>. Thread-local
+     * state the workflow thread holds — a tracing span or observation put in
+     * scope by {@code activityStarted} — is therefore not visible to activity
+     * code unless the observer re-establishes it here: capture it on the
+     * calling thread and scope it around {@code attempt.call()} in the returned
+     * callable, closing the scope on every exit path. Observers that only count
+     * (metrics) ignore this hook.
+     *
+     * <p>The returned callable must call {@code attempt} exactly once and
+     * propagate its result or exception unchanged, including {@link Error}s;
+     * it must not throw on its own account — anything it throws is
+     * indistinguishable from an activity failure. Never fired on replay.
+     *
+     * @param <T>     the attempt's result type
+     * @param a       the activity the attempt belongs to
+     * @param attempt the attempt to run
+     * @return the callable to run on the attempt thread — {@code attempt}
+     *         itself by default; never {@code null}
+     */
+    default <T> Callable<T> wrapActivityAttempt(ActivityInfo a, Callable<T> attempt) {
+        return attempt;
+    }
+
+    /**
      * An activity call yielded a successful result.
      *
      * @param duration wall time of the live execution, or {@link Duration#ZERO}
@@ -139,7 +170,9 @@ public interface EngineObserver {
 
     /**
      * A workflow's local run ended <b>on the workflow's own thread</b> without
-     * this node recording a terminal outcome, for a routine reason.
+     * this node recording a terminal outcome, for a reason that is not the
+     * workflow's — routine in every case but {@link AbandonReason#NODE_ERROR}
+     * (a broken node: alert on it).
      *
      * <p>Deliberately distinct from {@link #standDown}. A stand-down means
      * another runner's durable state governs this workflow; abandonment means

@@ -1,8 +1,10 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.model.EventType;
@@ -11,11 +13,16 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.observe.RecordingEngineObserver;
+import io.b2mash.maestro.core.observe.StandDownReason;
+import io.b2mash.maestro.core.retry.RetryExecutor;
+import io.b2mash.maestro.core.retry.RetryPolicy;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
@@ -28,6 +35,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static io.b2mash.maestro.core.TestEventLogs.removeFailureEvents;
 import static org.awaitility.Awaitility.await;
@@ -63,13 +71,17 @@ class WorkflowExecutorDuplicateEventStandDownTest {
 
     private ConflictingStore store;
     private PayloadSerializer serializer;
+    private RecordingEngineObserver observer;
     private WorkflowExecutor executor;
 
     @BeforeEach
     void setUp() {
         store = new ConflictingStore();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
-        executor = new WorkflowExecutor(store, null, null, null, serializer, "test-service");
+        observer = new RecordingEngineObserver();
+        executor = new WorkflowExecutor(store, null, null, null, serializer, "test-service",
+                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, Duration.ofSeconds(30), false,
+                Duration.ofSeconds(5), Duration.ofSeconds(30), observer);
     }
 
     @AfterEach
@@ -78,7 +90,7 @@ class WorkflowExecutorDuplicateEventStandDownTest {
     }
 
     @Test
-    @DisplayName("the loser adopts the winner's COMPLETED outcome: no FAILED write, no compensation")
+    @DisplayName("the loser stands down and the winner's COMPLETED outcome stands: no FAILED write, no compensation")
     void appendCollision_whenWinnerCompleted_standsDownWithoutFailureOrCompensation() {
         var compensations = new AtomicInteger();
         // The winner (the adopting node) already completed the workflow; this
@@ -150,13 +162,47 @@ class WorkflowExecutorDuplicateEventStandDownTest {
                 "the stale run must not write the terminal outcome");
     }
 
+    @Test
+    @DisplayName("an activity append collision stands the loser down before it runs the next activity")
+    void activityAppendCollision_standsDownWithoutRunningTheNextActivity() {
+        var secondActivityCalls = new AtomicInteger();
+        store.duplicateOnNextActivityAppend(serializer.serialize("winner-value"));
+        var workflowId = startTwoActivityWorkflow("standdown-activity", secondActivityCalls);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> !executor.isRunning(workflowId));
+
+        assertEquals(0, secondActivityCalls.get(), "the loser must not execute activity B — the winner is alive and ahead");
+        assertNotEquals(WorkflowStatus.FAILED, store.getInstance(workflowId).orElseThrow().status());
+        assertEquals(0, store.eventsOfType(EventType.WORKFLOW_FAILED));
+        assertEquals(List.of(StandDownReason.STALE_RUN), observer.standDownReasons(workflowId));
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────
+
+    private String startTwoActivityWorkflow(String workflowId, AtomicInteger secondActivityCalls) {
+        var factory = new ActivityProxyFactory();
+        var retryExecutor = new RetryExecutor();
+        var impl = new TwoActivityWorkflow(
+                factory.createProxy(StepA.class, input -> input + "-a", store, null, null,
+                        RetryPolicy.noRetry(), Duration.ofSeconds(5), serializer, retryExecutor),
+                factory.createProxy(StepB.class, input -> {
+                    secondActivityCalls.incrementAndGet();
+                    return input + "-b";
+                }, store, null, null, RetryPolicy.noRetry(), Duration.ofSeconds(5), serializer, retryExecutor));
+        try {
+            var method = TwoActivityWorkflow.class.getMethod("run");
+            executor.startWorkflow(workflowId, "TwoActivityWorkflow", "default", null, () -> impl, method);
+        } catch (NoSuchMethodException e) {
+            throw new IllegalStateException(e);
+        }
+        return workflowId;
+    }
 
     private String start(String workflowId, AtomicInteger compensations) {
         var impl = new CompensableWorkflow(compensations, false);
         try {
             var method = CompensableWorkflow.class.getMethod("run");
-            executor.startWorkflow(workflowId, "CompensableWorkflow", "default", null, impl, method);
+            executor.startWorkflow(workflowId, "CompensableWorkflow", "default", null, () -> impl, method);
         } catch (NoSuchMethodException e) {
             throw new IllegalStateException(e);
         }
@@ -167,7 +213,7 @@ class WorkflowExecutorDuplicateEventStandDownTest {
         var impl = new CompensableWorkflow(compensations, true);
         try {
             var method = CompensableWorkflow.class.getMethod("run");
-            executor.startWorkflow(workflowId, "CompensableWorkflow", "default", null, impl, method);
+            executor.startWorkflow(workflowId, "CompensableWorkflow", "default", null, () -> impl, method);
         } catch (NoSuchMethodException e) {
             throw new IllegalStateException(e);
         }
@@ -203,6 +249,45 @@ class WorkflowExecutorDuplicateEventStandDownTest {
         }
     }
 
+    /** First activity of {@link TwoActivityWorkflow} — the one whose append loses the race. */
+    @Activity
+    public interface StepA {
+        /**
+         * @param input the seed
+         * @return the step's result
+         */
+        String a(String input);
+    }
+
+    /** Second activity of {@link TwoActivityWorkflow} — a stale run must never reach it. */
+    @Activity
+    public interface StepB {
+        /**
+         * @param input the previous step's result
+         * @return the step's result
+         */
+        String b(String input);
+    }
+
+    /** Runs activity A then activity B through memoizing proxies. */
+    @DurableWorkflow(name = "TwoActivityWorkflow")
+    public static class TwoActivityWorkflow {
+
+        private final StepA stepA;
+        private final StepB stepB;
+
+        TwoActivityWorkflow(StepA stepA, StepB stepB) {
+            this.stepA = stepA;
+            this.stepB = stepB;
+        }
+
+        /** @return the accumulated result, when the run survives activity A's append */
+        @WorkflowMethod
+        public String run() {
+            return stepB.b(stepA.a("seed"));
+        }
+    }
+
     /**
      * An in-memory store whose {@code appendEvent} can be armed to throw
      * {@link DuplicateEventException} — the unique-index rejection a stale run
@@ -219,6 +304,7 @@ class WorkflowExecutorDuplicateEventStandDownTest {
         private final AtomicBoolean duplicateNextWorkflowAppend = new AtomicBoolean();
         private final AtomicBoolean duplicateNextCompensationAppend = new AtomicBoolean();
         private final AtomicBoolean winnerCompletes = new AtomicBoolean();
+        private final AtomicReference<JsonNode> pendingActivityWinner = new AtomicReference<>();
         private volatile String winnerOutput = "";
 
         void duplicateOnNextWorkflowAppend(boolean winnerCompleted, String output) {
@@ -231,6 +317,17 @@ class WorkflowExecutorDuplicateEventStandDownTest {
 
         void duplicateOnNextCompensationAppend() {
             duplicateNextCompensationAppend.set(true);
+        }
+
+        /**
+         * Arms a lost race on the next {@code ACTIVITY_COMPLETED} append: the
+         * winner's {@code ACTIVITY_COMPLETED} carrying {@code winnerPayload}
+         * lands at that sequence as this run appends, which then collides.
+         *
+         * @param winnerPayload the concurrent runner's persisted result
+         */
+        void duplicateOnNextActivityAppend(JsonNode winnerPayload) {
+            pendingActivityWinner.set(winnerPayload);
         }
 
         int eventsOfType(EventType type) {
@@ -268,6 +365,15 @@ class WorkflowExecutorDuplicateEventStandDownTest {
 
         @Override
         public synchronized void appendEvent(WorkflowEvent event) {
+            if (event.eventType() == EventType.ACTIVITY_COMPLETED) {
+                var winnerPayload = pendingActivityWinner.getAndSet(null);
+                if (winnerPayload != null) {
+                    events.add(new WorkflowEvent(UUID.randomUUID(), event.workflowInstanceId(),
+                            event.sequenceNumber(), EventType.ACTIVITY_COMPLETED, event.stepName(),
+                            winnerPayload, Instant.now()));
+                    throw new DuplicateEventException(event.workflowInstanceId(), event.sequenceNumber());
+                }
+            }
             boolean compensationEvent = event.eventType() == EventType.COMPENSATION_STARTED
                     || event.eventType() == EventType.COMPENSATION_STEP_COMPLETED;
             if (compensationEvent && duplicateNextCompensationAppend.compareAndSet(true, false)) {
@@ -280,6 +386,27 @@ class WorkflowExecutorDuplicateEventStandDownTest {
                 throw new DuplicateEventException(event.workflowInstanceId(), event.sequenceNumber());
             }
             events.add(event);
+        }
+
+        @Override
+        public synchronized boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+            // Test fixture: composes this store's own CAS and append under its monitor
+            // (so every hook on either still fires), undoing the status write if the
+            // append fails and the row is still ours — nothing is written unless both land.
+            var before = byWorkflowId.get(terminal.workflowId());
+            try {
+                updateInstance(terminal);
+            } catch (OptimisticLockException conflict) {
+                return false;
+            }
+            try {
+                appendEvent(terminalEvent);
+            } catch (RuntimeException appendFailed) {
+                // Restore only if the row is still ours — never clobber a later writer.
+                byWorkflowId.replace(terminal.workflowId(), terminal, before);
+                throw appendFailed;
+            }
+            return true;
         }
 
         /** The adopting node's finalisation: COMPLETED instance + terminal event. */
@@ -340,6 +467,11 @@ class WorkflowExecutorDuplicateEventStandDownTest {
         @Override
         public void adoptOrphanedSignals(String workflowId, UUID instanceId) {
             // no signals in these tests
+        }
+
+        @Override
+        public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+            return 0;
         }
 
         @Override

@@ -36,8 +36,8 @@ class TestTerminalWaitTest {
         var store = new FixedStore(List.of(event(1, EventType.ACTIVITY_COMPLETED)));
 
         assertFalse(TestTerminalWait.isFinalised(store, instance(WorkflowStatus.COMPLETED)),
-                "the instance row is written before the event is appended; waiting on the "
-                        + "status alone returns while the log is still one event short");
+                "a terminal status without its event is not finalised — the predicate must "
+                        + "never return on the status alone, whatever the store's write order");
         assertFalse(TestTerminalWait.isFinalised(store, instance(WorkflowStatus.FAILED)));
     }
 
@@ -146,6 +146,11 @@ class TestTerminalWaitTest {
         }
 
         @Override
+        public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
         public Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int sequenceNumber) {
             throw new UnsupportedOperationException();
         }
@@ -173,6 +178,11 @@ class TestTerminalWaitTest {
         @Override
         public void adoptOrphanedSignals(String workflowId, UUID instanceId) {
             throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+            return 0;
         }
 
         @Override

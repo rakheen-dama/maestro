@@ -32,6 +32,62 @@ class CompositeEngineObserverTest {
     private static final SignalInfo SIG = new SignalInfo("wf-1", "TestWorkflow", "go", null);
     private static final TimerInfo TIMER = new TimerInfo("wf-1", "TestWorkflow", "sleep-1");
 
+    // ── wrapActivityAttempt (R26) ─────────────────────────────────────
+
+    /** Wraps the attempt so that running it records {@code name} before and after. */
+    private static EngineObserver wrapping(String name, List<String> trace) {
+        return new EngineObserver() {
+            @Override
+            public <T> java.util.concurrent.Callable<T> wrapActivityAttempt(
+                    ActivityInfo a, java.util.concurrent.Callable<T> attempt) {
+                return () -> {
+                    trace.add(name + ":before");
+                    try {
+                        return attempt.call();
+                    } finally {
+                        trace.add(name + ":after");
+                    }
+                };
+            }
+        };
+    }
+
+    @Test
+    @DisplayName("wrapActivityAttempt applies every delegate's wrapper, first delegate OUTERMOST (so it runs "
+            + "first, like every fan-out callback), and passes the result through")
+    void wrapActivityAttemptAppliesEveryDelegate() throws Exception {
+        var trace = new CopyOnWriteArrayList<String>();
+        var composite = CompositeEngineObserver.of(List.of(
+                wrapping("a", trace), new RecordingEngineObserver(), wrapping("b", trace)));
+
+        var wrapped = composite.wrapActivityAttempt(ACT, () -> {
+            trace.add("attempt");
+            return "result";
+        });
+
+        assertEquals("result", wrapped.call());
+        assertEquals(List.of("a:before", "b:before", "attempt", "b:after", "a:after"), trace,
+                "both wrappers must run, the first delegate's outermost; the non-wrapping delegate is identity");
+    }
+
+    @Test
+    @DisplayName("a delegate throwing from wrapActivityAttempt is skipped; the other wrappers still apply")
+    void wrapActivityAttemptContainsThrowingDelegate() throws Exception {
+        var trace = new CopyOnWriteArrayList<String>();
+        var throwing = new EngineObserver() {
+            @Override
+            public <T> java.util.concurrent.Callable<T> wrapActivityAttempt(
+                    ActivityInfo a, java.util.concurrent.Callable<T> attempt) {
+                throw new IllegalStateException("broken adapter");
+            }
+        };
+        var composite = CompositeEngineObserver.of(List.of(wrapping("a", trace), throwing));
+
+        var wrapped = assertDoesNotThrow(() -> composite.wrapActivityAttempt(ACT, () -> "ok"));
+        assertEquals("ok", wrapped.call());
+        assertEquals(List.of("a:before", "a:after"), trace);
+    }
+
     // ── of(List) wrapping (Ruling 4) ──────────────────────────────────
 
     @Test

@@ -24,7 +24,9 @@ Read these before making architectural decisions:
 
 **Determinism constraint:** Code between activity calls must be deterministic. No `Math.random()`, `LocalDateTime.now()`, `UUID.randomUUID()`, or direct I/O. Use `workflow.currentTime()`, `workflow.randomUUID()`.
 
-**Parallel branches** partition the sequence space: branch *i* of a fork at parent seq `p` allocates from base `p*1000 + (i+1)*1000` (≤999 steps per branch).
+**Parallel branches** partition the sequence space: branch *i* of a fork at parent seq `p` allocates from base `p*1000 + (i+1)*1000` (≤999 steps per branch; the 1000th step fails the branch with `BranchSequenceExhaustedException`). When it PARKS, `awaitSignal` (and likewise `sleep()`) occupies TWO slots (TIMER_SCHEDULED memo at seq, outcome at seq+1); an already-arrived signal or a non-positive timeout writes only the outcome at seq. The per-branch budget stays 999 steps.
+
+**Workflow beans are prototype-scoped:** `@DurableWorkflow` beans get one workflow object per run, so instance fields are per-run state; `@QueryMethod` answers only on the node that owns the run. Sequence/replay mutators live on `WorkflowContextInternals`, not the public `WorkflowContext`.
 
 ## Tech Stack
 
@@ -56,6 +58,7 @@ Read these before making architectural decisions:
 
 ```
 maestro/
+├── maestro-bom                     ← Platform (BOM) aligning all Maestro module versions.
 ├── maestro-core                    ← Pure Java. NO Spring. Engine, memoization, timers, signals, saga.
 ├── maestro-spring-boot-starter     ← Auto-config, annotations, bean proxying, config binding.
 ├── maestro-store-jdbc              ← Abstract JDBC WorkflowStore SPI.
@@ -85,6 +88,7 @@ public interface WorkflowStore {
     Optional<WorkflowInstance> getInstance(String workflowId);
     List<WorkflowInstance> getRecoverableInstances();
     void updateInstance(WorkflowInstance instance);       // optimistic locking
+    boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent); // atomic terminal write (CAS + event in one transaction)
 
     void appendEvent(WorkflowEvent event);
     Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int seq);
@@ -94,6 +98,7 @@ public interface WorkflowStore {
     List<WorkflowSignal> getUnconsumedSignals(String workflowId, String signalName);
     boolean markSignalConsumed(UUID signalId);           // CAS: false if already consumed
     void adoptOrphanedSignals(String workflowId, UUID instanceId);
+    int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff); // janitor; COMPLETED/TERMINATED only
 
     void saveTimer(WorkflowTimer timer);
     List<WorkflowTimer> getDueTimers(Instant now, int batchSize);
@@ -103,10 +108,8 @@ public interface WorkflowStore {
 }
 
 public interface WorkflowMessaging {
-    void publishTask(String taskQueue, TaskMessage message);
     void publishSignal(String serviceName, SignalMessage message);
     void publishLifecycleEvent(WorkflowLifecycleEvent event);
-    void subscribe(String taskQueue, Consumer<TaskMessage> handler);
     void subscribeSignals(String serviceName, Consumer<SignalMessage> handler);
 }
 
@@ -164,12 +167,13 @@ io.b2mash.maestro.samples.payment            — Sample payment gateway (e-comme
 
 ## Database Tables
 
-Prefix `maestro_` (configurable). Flyway migrations in `maestro-store-postgres/src/main/resources/db/migration/`:
+Prefix `maestro_` (fixed; `maestro.store.table-prefix` was removed). Migrations live in `db/maestro/store` (store-postgres, V1–V5), `db/maestro/lock` (lock-postgres, V100) and `db/maestro/messaging` (messaging-postgres, V200–V202). They run through `MaestroSchemaInitializer` into Maestro's own history table `maestro_schema_history` (`maestro.store.schema.mode` = flyway | validate | none); the host's `flyway_schema_history` is untouched:
 
 - `maestro_workflow_instance`
 - `maestro_workflow_event` (unique on `workflow_instance_id, sequence_number`)
 - `maestro_workflow_timer`
 - `maestro_workflow_signal` (`workflow_instance_id` nullable for pre-delivery)
+- `maestro_signal_queue` (Postgres transport's only queue table; no task or lifecycle queue tables)
 
 ## State Machine
 
@@ -204,6 +208,8 @@ maestro:leader:timer-poller:{service}         — Timer leader (15s TTL)
 maestro:signal:{workflowId}                   — Pub/sub for immediate signal wake
 ```
 
+There are no `maestro.tasks.*` topics: `maestro.messaging.topics.tasks` fails startup. `taskQueue` on `@DurableWorkflow` is a per-node concurrency bucket (`maestro.worker.task-queues[]`), not a route.
+
 Locks are best-effort guards: if one expires or is lost, the unique event index dedups *persisted results*, not external side effects — activities must be idempotent.
 
 ## Configuration Namespace
@@ -217,7 +223,13 @@ policy, both transports), `maestro.admin.events.enabled` (now actually wired;
 `maestro.observability.metrics.enabled` / `maestro.observability.tracing.enabled`
 (both default `true`, both silently inert without a `MeterRegistry` / `Tracer`;
 the tracing flag gates the Kafka W3C header injection too — see
-`docs/observability.md`).
+`docs/observability.md`), `maestro.signal.janitor-interval` (default 1h) /
+`maestro.signal.terminal-retention` (default 7d) (the signal janitor purges
+unconsumed signals of workflows `COMPLETED`/`TERMINATED` longer ago than the
+retention; `FAILED` keeps them for retry), `maestro.worker.task-queues[].concurrency` /
+`activity-concurrency` (bound per node), `maestro.store.schema.mode`
+(flyway | validate | none). Removed (setting either fails startup):
+`maestro.store.table-prefix`, `maestro.messaging.topics.tasks`.
 
 ## Coding Standards
 

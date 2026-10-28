@@ -1,10 +1,17 @@
 package io.b2mash.maestro.messaging.kafka;
 
+import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.engine.ActivityProxyFactory;
+import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.observe.TraceContextHolder;
+import io.b2mash.maestro.core.observe.WorkflowInfo;
+import io.b2mash.maestro.core.retry.RetryExecutor;
+import io.b2mash.maestro.core.retry.RetryPolicy;
 import io.b2mash.maestro.core.spi.LifecycleEventType;
 import io.b2mash.maestro.core.spi.SignalMessage;
-import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
+import io.b2mash.maestro.core.spi.WorkflowStore;
+import io.b2mash.maestro.spring.observe.TracingEngineObserver;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
@@ -14,10 +21,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -82,7 +91,7 @@ class KafkaTracePropagationContractTest extends KafkaTestSupport {
 
     private KafkaMessagingConfig config() {
         return new KafkaMessagingConfig(
-                null, null,
+                null,
                 "maestro.admin.events." + testSuffix,
                 "trace-group-" + testSuffix,
                 2, Duration.ofMillis(50), 2.0, Duration.ofMillis(200), ".DLT", true);
@@ -123,27 +132,19 @@ class KafkaTracePropagationContractTest extends KafkaTestSupport {
     }
 
     @Test
-    @DisplayName("tasks and lifecycle events are injected on the same contract")
-    void publishedTaskAndLifecycleEventCarryTraceparent() throws Exception {
-        var queue = "q-" + testSuffix;
-        var taskTopic = "maestro.tasks." + queue;
+    @DisplayName("lifecycle events are injected on the same contract")
+    void publishedLifecycleEventCarriesTraceparent() throws Exception {
         var adminTopic = "maestro.admin.events." + testSuffix;
-        createTopics(taskTopic, adminTopic);
+        createTopics(adminTopic);
 
         var span = otel.tracer().nextSpan().name("publish").start();
         try (var ignored = otel.tracer().withSpan(span)) {
-            traced.publishTask(queue, new TaskMessage(
-                    UUID.randomUUID(), "order-1", "OrderWorkflow", UUID.randomUUID(), "svc", null));
             traced.publishLifecycleEvent(new WorkflowLifecycleEvent(
-                    UUID.randomUUID(), "order-1", "OrderWorkflow", "svc", queue,
+                    UUID.randomUUID(), "order-1", "OrderWorkflow", "svc", "default",
                     LifecycleEventType.WORKFLOW_STARTED, null, null, Instant.now()));
         } finally {
             span.end();
         }
-
-        var taskparent = header(readOne(taskTopic), TRACEPARENT);
-        assertNotNull(taskparent, "publishTask must inject");
-        assertTrue(TRACEPARENT_GRAMMAR.matcher(taskparent).matches());
 
         var adminparent = header(readOne(adminTopic), TRACEPARENT);
         assertNotNull(adminparent, "publishLifecycleEvent must inject");
@@ -179,6 +180,74 @@ class KafkaTracePropagationContractTest extends KafkaTestSupport {
 
         assertTrue(traceHeaderNames(readOne(topic)).isEmpty(),
                 "a build with no tracing beans must produce exactly the pre-tracing wire format");
+    }
+
+    @Test
+    @DisplayName("a signal published from INSIDE a live activity attempt — on its own attempt thread — "
+            + "carries the workflow's activity span as traceparent (R26)")
+    void publishFromActivityAttemptThreadCarriesActivitySpan() throws Exception {
+        var service = "svc-activity-" + testSuffix;
+        var topic = "maestro.signals." + service;
+        createTopics(topic);
+
+        var tracing = new TracingEngineObserver(otel.tracer(), otel.propagator());
+        var workflowThread = Thread.currentThread();
+        var publisherThread = new AtomicReference<Thread>();
+        PublishingActivities impl = () -> {
+            publisherThread.set(Thread.currentThread());
+            traced.publishSignal(service, new SignalMessage(
+                    "order-1", "approval", objectMapper.valueToTree("granted")));
+        };
+        var proxy = new ActivityProxyFactory().createProxy(
+                PublishingActivities.class, impl, emptyMemoizationStore(), null, null,
+                RetryPolicy.noRetry(), Duration.ofSeconds(30),
+                new PayloadSerializer(objectMapper), new RetryExecutor(),
+                "maestro:lock:", tracing);
+        var ctx = new WorkflowContext(UUID.randomUUID(), "order-1", UUID.randomUUID(),
+                "OrderWorkflow", "q", service, 0, false);
+        try {
+            ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(proxy::publish);
+            tracing.workflowCompleted(new WorkflowInfo("order-1", "OrderWorkflow", service));
+        } finally {
+            tracing.clearThreadState();
+        }
+
+        assertNotNull(publisherThread.get());
+        assertFalse(publisherThread.get() == workflowThread,
+                "the attempt must have run on its own thread, or this pin proves nothing");
+
+        var activitySpans = otel.spansNamed("maestro.activity");
+        var segments = otel.spansNamed("maestro.workflow.run");
+        assertEquals(1, activitySpans.size());
+        assertEquals(1, segments.size());
+        var activity = activitySpans.getFirst();
+
+        var traceparent = header(readOne(topic), TRACEPARENT);
+        assertNotNull(traceparent, "a publish from activity code must carry a traceparent");
+        assertTrue(TRACEPARENT_GRAMMAR.matcher(traceparent).matches(), traceparent);
+        assertEquals(segments.getFirst().getTraceId(), traceparent.substring(3, 35),
+                "trace-id field must be the workflow run's trace");
+        assertEquals(activity.getSpanId(), traceparent.substring(36, 52),
+                "span-id field must be the maestro.activity span the publish happened in");
+    }
+
+    /** Activity fixture for the attempt-thread publish pin. */
+    public interface PublishingActivities {
+        void publish();
+    }
+
+    /**
+     * A store with an empty memoization log that accepts every append — all
+     * one live activity call needs; any other method is a test bug.
+     */
+    private static WorkflowStore emptyMemoizationStore() {
+        return (WorkflowStore) Proxy.newProxyInstance(
+                WorkflowStore.class.getClassLoader(), new Class<?>[] {WorkflowStore.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "getEventBySequence" -> Optional.empty();
+                    case "appendEvent" -> null;
+                    default -> throw new UnsupportedOperationException(method.getName());
+                });
     }
 
     // ── Extraction (design §4.3(a)) ───────────────────────────────────
@@ -274,36 +343,6 @@ class KafkaTracePropagationContractTest extends KafkaTestSupport {
         await().atMost(Duration.ofSeconds(20)).until(() -> !received.isEmpty());
         assertEquals("approval", received.getFirst().signalName());
         assertNull(holder.get());
-    }
-
-    @Test
-    @DisplayName("task subscriptions restore the remote context too")
-    void consumedTaskRestoresRemoteContext() throws Exception {
-        var queue = "q-rt-" + testSuffix;
-        var topic = "maestro.tasks." + queue;
-        createTopics(topic);
-
-        var seenTraceId = new AtomicReference<String>();
-        var received = new CopyOnWriteArrayList<TaskMessage>();
-        traced.subscribe(queue, message -> {
-            var current = otel.tracer().currentSpan();
-            seenTraceId.set(current != null ? current.context().traceId() : null);
-            received.add(message);
-        });
-        Thread.sleep(500);
-
-        var span = otel.tracer().nextSpan().name("publish").start();
-        String publishedTraceId;
-        try (var ignored = otel.tracer().withSpan(span)) {
-            publishedTraceId = span.context().traceId();
-            traced.publishTask(queue, new TaskMessage(
-                    UUID.randomUUID(), "order-1", "OrderWorkflow", UUID.randomUUID(), "svc", null));
-        } finally {
-            span.end();
-        }
-
-        await().atMost(Duration.ofSeconds(20)).until(() -> !received.isEmpty());
-        assertEquals(publishedTraceId, seenTraceId.get());
     }
 
     // ── Hostile / malformed inbound headers (fix round 1, F1) ─────────
