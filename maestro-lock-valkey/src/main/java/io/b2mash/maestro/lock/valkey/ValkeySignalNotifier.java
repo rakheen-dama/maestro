@@ -109,7 +109,10 @@ public final class ValkeySignalNotifier extends RedisPubSubAdapter<String, Strin
      * workflow then still wakes, at the latest after
      * {@code maestro.signal.wake-recheck-interval}, from the store re-read. If
      * the waiting thread is interrupted, the interrupt flag is restored and the
-     * callback removed.
+     * callback removed. If the command cannot be issued at all (a
+     * {@link RuntimeException} from Lettuce, e.g. a closed connection), the
+     * callback is removed and the exception propagates; the engine's
+     * {@code SignalManager} logs it and falls back to the same re-check.
      *
      * <p>The remaining gap is unchanged: a notification published while this
      * connection is disconnected. Lettuce re-subscribes on reconnect but does
@@ -133,6 +136,11 @@ public final class ValkeySignalNotifier extends RedisPubSubAdapter<String, Strin
             Thread.currentThread().interrupt();
             callbacks.remove(workflowId, callback);
             logger.debug("Interrupted while subscribing to signal channel '{}'", channel);
+        } catch (RuntimeException e) {
+            // The command could not even be issued (e.g. the connection is
+            // closed): unregister, then let the caller fall back.
+            callbacks.remove(workflowId, callback);
+            throw e;
         }
     }
 

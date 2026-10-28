@@ -17,6 +17,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -45,6 +46,7 @@ class ValkeySignalNotifierAckTimeoutTest {
 
     private final CompletableFuture<Void> neverAcknowledged = new CompletableFuture<>();
     private final CountDownLatch never = new CountDownLatch(1);
+    private RedisPubSubAsyncCommands<String, String> async;
     private RedisFuture<Void> subscribeFuture;
     private RedisFuture<Void> unsubscribeFuture;
     private ValkeySignalNotifier notifier;
@@ -54,7 +56,7 @@ class ValkeySignalNotifierAckTimeoutTest {
     void setUp() throws Exception {
         StatefulRedisPubSubConnection<String, String> pubSub = mock(StatefulRedisPubSubConnection.class);
         StatefulRedisConnection<String, String> publish = mock(StatefulRedisConnection.class);
-        RedisPubSubAsyncCommands<String, String> async = mock(RedisPubSubAsyncCommands.class);
+        async = mock(RedisPubSubAsyncCommands.class);
         RedisPubSubCommands<String, String> sync = mock(RedisPubSubCommands.class);
         subscribeFuture = mock(RedisFuture.class);
         unsubscribeFuture = mock(RedisFuture.class);
@@ -128,6 +130,19 @@ class ValkeySignalNotifierAckTimeoutTest {
 
         notifier.message(CHANNEL, "approval");
         assertEquals(0, invoked.get());
+    }
+
+    @Test
+    @DisplayName("a subscribe command that throws synchronously propagates and leaves no callback registered")
+    void synchronouslyFailingSubscribe_propagates_andLeavesNoCallback() {
+        when(async.subscribe(anyString())).thenThrow(new IllegalStateException("connection closed"));
+        var invoked = new AtomicInteger();
+
+        assertThrows(IllegalStateException.class,
+                () -> notifier.subscribe("wf-brownout", (wf, name) -> invoked.incrementAndGet()));
+
+        notifier.message(CHANNEL, "approval");
+        assertEquals(0, invoked.get(), "a failed subscribe must not leave its callback registered");
     }
 
     @Test
