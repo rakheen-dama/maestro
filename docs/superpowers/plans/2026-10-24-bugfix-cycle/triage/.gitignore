@@ -10,3 +10,6 @@ evidence/**
 !evidence/**/failures/**
 # chaos-actions.jsonl only for runs that violated (one line per such run):
 !evidence/40674015602/soak/*/chaos-actions.jsonl
+# Gate logs of the whole-branch verification (plan 06 Task 6) are evidence of
+# record; re-include them over the repository-wide `*.log` ignore.
+!branch-logs/*.log

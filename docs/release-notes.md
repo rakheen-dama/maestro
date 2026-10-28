@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Verified — the whole bug-fix branch passes every gate with zero invariant violations
+
+All gates below ran at `ec9286d`:
+- `./gradlew build`, with every task re-run.
+- The integration suites against real Postgres, Kafka and Valkey: 147 tests, 0 failures.
+- The ten-scenario loan-origination E2E on both lock backends, Valkey and Postgres: 10/10 each.
+- Three consecutive fresh-seed chaos PR-gates.
+- A 75-minute local soak on the seed of the triaged Issue 32 failure.
+- The dispatched CI run [40762898010](https://github.com/rakheen-dama/maestro/actions/runs/40762898010). All four jobs succeeded: both E2E backends, three more PR-gates, and one 2 h chaos soak (2320 workflows).
+
+Across the 8 chaos runs there were zero invariant violations and zero unexplained duplicate side effects. Two blocked attempts came first: a test-clock flake (R59) and a retry-after-timeout regression (R61, R62). Both were fixed and the gate was re-run from the build.
+
+Evidence: `docs/superpowers/plans/2026-10-24-bugfix-cycle/triage/branch-verification.md` and `triage/branch-logs/`.
+
+The nightly E2E schedule is enabled again. It heals itself: `build-test.yml`'s `keep-nightly-enabled` job turns it back on after a push if GitHub's inactivity rule disabled it.
+
 ### Fixed — admin retry after an `awaitSignal` timeout waits the full timeout again (R61)
 
 - **Before:** with durable await deadlines (C12/F4, below), retrying a workflow that `FAILED` on an uncaught `SignalTimeoutException` deleted only the failing `SIGNAL_TIMEOUT` memo. The await's `TIMER_SCHEDULED` memo, which carries the absolute deadline, and its `FIRED` deadline row survived, so the retried run resumed the await past its old deadline and failed again within milliseconds — unless the signal had already arrived. The loan E2E's cross-node retry scenario (retry first, decision afterwards) failed this way 42 ms after the retry.

@@ -1,0 +1,39 @@
+# pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle head=ec9286dbf3e2fe6beab43e79486a150203929d30 main=4eb28e9ad68b13b39b748c651b0b28f8e05fdb80 started=2026-10-28T17:58:58Z
+# cmd: git diff --name-only main...HEAD -- '*IT.java' | xargs -r grep -ln 'awaitStatus(.*\(COMPLETED\|FAILED\)'
+--- file status (A=new on branch, M=modified) for hit files:
+A maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/engine/EnginePostgresDualExecutionIT.java
+   on main: 0 hits; on HEAD: 1 hits
+M maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/engine/EnginePostgresRecoveryIT.java
+   on main: 2 hits; on HEAD: 2 hits
+M maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/engine/TerminalEventRaceIT.java
+   on main: 1 hits; on HEAD: 1 hits
+M maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/kafka/KafkaAckOnFailureIT.java
+   on main: 1 hits; on HEAD: 1 hits
+M maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/multinode/MultiNodeLockContentionIT.java
+   on main: 1 hits; on HEAD: 1 hits
+M maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/multinode/MultiNodeNoLockBackendIT.java
+   on main: 2 hits; on HEAD: 2 hits
+M maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/multinode/MultiNodeOwnerDeathIT.java
+   on main: 1 hits; on HEAD: 1 hits
+A maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/multinode/MultiNodePerRunQueryIT.java
+   on main: 0 hits; on HEAD: 1 hits
+--- ADDED lines (+) on the branch matching the pattern:
++        awaitStatus(workflowId, WorkflowStatus.COMPLETED, BOUND);
++        awaitStatus(workflowId, WorkflowStatus.COMPLETED, Duration.ofSeconds(30));
+--- awaitTerminal / TerminalWait helpers present:
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/shutdown/ShutdownContractIT.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/KafkaTraceLinkageIT.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/ObserverReplayNoDoubleCountIT.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/TracingReplayNoSpansIT.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/TracingParallelBranchIT.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/support/TerminalWait.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/support/WorkflowHandle.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/support/EngineHarnessSmokeIT.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/support/PostgresIntegrationSupport.java
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/kafka/KafkaLifecycleEventLatencyIT.java
+# classification: the only two ADDED lines are EnginePostgresDualExecutionIT:107 and MultiNodePerRunQueryIT:90;
+#   both call PostgresIntegrationSupport.awaitStatus -> TerminalWait.awaitStatus, which for a terminal status
+#   additionally requires the matching WORKFLOW_COMPLETED/WORKFLOW_FAILED event (TerminalWait.matches/isFinalised).
+#   The other six hit files carry the identical line counts on main (pre-existing, not new on the branch).
+#   Genuine status-before-log polls introduced by the branch: 0.
+# exit=0 finished=2026-10-28T17:58:58Z
