@@ -7,6 +7,7 @@ import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.ActivityExecutionException;
 import io.b2mash.maestro.core.exception.ReconstructedActivityFailure;
+import io.b2mash.maestro.core.exception.SignalTimeoutException;
 import io.b2mash.maestro.core.exception.TimerCancelledException;
 import io.b2mash.maestro.integration.workflows.CountingActivities.ChainActivities;
 import io.b2mash.maestro.integration.workflows.CountingActivities.FlakyActivities;
@@ -147,6 +148,45 @@ public final class TestWorkflows {
             var decision = WorkflowContext.current()
                     .awaitSignal(SIGNAL, String.class, Duration.ofSeconds(30));
             return activities.stepTwo(one + ":" + decision);
+        }
+    }
+
+    /**
+     * Awaits one signal as its <em>first</em> step, with a caller-chosen
+     * timeout — the fixture for the durable {@code awaitSignal} deadline (C12 /
+     * F4) on a real store.
+     *
+     * <p>Because the await is the first sequenced call, its layout is fixed:
+     * the {@code TIMER_SCHEDULED} memo is at seq 1, the outcome
+     * ({@code SIGNAL_RECEIVED} or {@code SIGNAL_TIMEOUT}) at seq 2, and the
+     * deadline row's timer id is {@code "await-signal-1"}. A timeout is caught
+     * and returned as {@code "timed-out"}, so either outcome <em>completes</em>
+     * the workflow and the event log alone says which one won.
+     */
+    @DurableWorkflow(name = "PatientSignalWorkflow")
+    public static class PatientSignalWorkflow {
+
+        /** Signal name this workflow awaits. */
+        public static final String SIGNAL = "approval";
+
+        private final Duration timeout;
+
+        /** @param timeout the await's timeout — keep it far above any test bound */
+        public PatientSignalWorkflow(Duration timeout) {
+            this.timeout = timeout;
+        }
+
+        /**
+         * @param input unused seed
+         * @return the signal payload, or {@code "timed-out"} if the deadline won
+         */
+        @WorkflowMethod
+        public String run(String input) {
+            try {
+                return WorkflowContext.current().awaitSignal(SIGNAL, String.class, timeout);
+            } catch (SignalTimeoutException e) {
+                return "timed-out";
+            }
         }
     }
 
