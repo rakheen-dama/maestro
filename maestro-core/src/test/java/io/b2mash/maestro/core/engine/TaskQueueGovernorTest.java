@@ -4,9 +4,13 @@ import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.Map;
 import java.util.OptionalInt;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -105,6 +109,134 @@ class TaskQueueGovernorTest {
             return null;
         });
         assertEquals(OptionalInt.of(0), g.availableWorkflowSlots("q"), "a holds its slot again");
+    }
+
+    /**
+     * R49: two {@code parallel()} branches of one run ending a park at the same
+     * instant must not both wait on the semaphore. The old check-then-acquire
+     * let both see {@code held == false}; the loser then waited for a permit
+     * its own run already held and — the winner finishing its branch without
+     * parking again — waited forever, wedging the run (and, at concurrency 1,
+     * the whole queue). The scratch probe's shape: 2000 simultaneous wakes,
+     * neither branch parking again, each join bounded.
+     */
+    @Test
+    void twoBranchesWakingAtOnceNeverWaitOnTheirOwnRunsSlot() throws Exception {
+        var stuck = 0;
+        for (var i = 0; i < 2000; i++) {
+            var g = new TaskQueueGovernor(Map.of("q", new TaskQueueLimits(1, 10)));
+            g.acquireWorkflowSlot("q", "w"); // the run starts holding the only slot
+            var gate = new CountDownLatch(1);
+            var parkedBoth = new CountDownLatch(2);
+            Callable<Void> park = () -> {
+                parkedBoth.countDown();
+                gate.await();
+                return null;
+            };
+            var t1 = Thread.ofVirtual().start(() -> parkQuietly(g, park));
+            var t2 = Thread.ofVirtual().start(() -> parkQuietly(g, park));
+            parkedBoth.await();
+            gate.countDown(); // both branches wake at once; neither parks again
+            t1.join(Duration.ofSeconds(1));
+            t2.join(Duration.ofSeconds(1));
+            if (t1.isAlive() || t2.isAlive()) {
+                stuck++;
+            }
+            g.releaseWorkflowSlot("w"); // unwedges a stuck branch so the loop can go on
+            t1.join();
+            t2.join();
+        }
+        assertEquals(0, stuck, "iterations in which a branch waited forever for its own run's slot");
+    }
+
+    /**
+     * R49, deterministic form: both branches of a run wake while another run
+     * holds the queue's only slot, so both must wait. When that slot is freed
+     * the run takes it once and <em>both</em> branches proceed — the sibling
+     * must not stay queued on the semaphore behind its own run.
+     */
+    @Test
+    void twoBranchesWaitingBehindAnotherRunBothProceedOnOneSlot() throws Exception {
+        var g = new TaskQueueGovernor(Map.of("q", new TaskQueueLimits(1, 10)));
+        var branches = parkTwoBranchesBehindAnotherRun(g, new ConcurrentLinkedQueue<>());
+
+        g.releaseWorkflowSlot("other");
+        branches[0].join(Duration.ofSeconds(5));
+        branches[1].join(Duration.ofSeconds(5));
+        var wedged = branches[0].isAlive() || branches[1].isAlive();
+        g.releaseWorkflowSlot("w"); // cleanup either way
+        assertFalse(wedged, "a branch stayed queued for a slot its own run already held");
+        assertEquals(OptionalInt.of(1), g.availableWorkflowSlots("q"));
+    }
+
+    /**
+     * R49: whichever branch waits — on the semaphore, or on its run's lock
+     * behind the sibling that waits on the semaphore — an interrupt stands it
+     * down with the shutdown signal, and neither takes a slot.
+     */
+    @Test
+    void branchesInterruptedWhileWaitingBehindAnotherRunBecomeShutdownSignals() throws Exception {
+        var g = new TaskQueueGovernor(Map.of("q", new TaskQueueLimits(1, 10)));
+        var thrown = new ConcurrentLinkedQueue<Throwable>();
+        var branches = parkTwoBranchesBehindAnotherRun(g, thrown);
+
+        branches[0].interrupt();
+        branches[1].interrupt();
+        branches[0].join(5_000);
+        branches[1].join(5_000);
+        assertFalse(branches[0].isAlive() || branches[1].isAlive());
+        assertEquals(2, thrown.size(), thrown.toString());
+        for (var t : thrown) {
+            assertInstanceOf(ExecutorShutdownException.class, t);
+        }
+        g.releaseWorkflowSlot("other");
+        assertEquals(OptionalInt.of(1), g.availableWorkflowSlots("q"), "neither branch took a slot");
+        g.releaseWorkflowSlot("w");
+        assertEquals(OptionalInt.of(1), g.availableWorkflowSlots("q"));
+    }
+
+    /**
+     * Run "w" holds the only slot; two of its branches park (giving it back),
+     * run "other" takes it, then both branches wake and block reacquiring.
+     * Returns the two branch threads, both blocked; what they throw goes to
+     * {@code thrown}.
+     */
+    private static Thread[] parkTwoBranchesBehindAnotherRun(
+            TaskQueueGovernor g, ConcurrentLinkedQueue<Throwable> thrown) throws Exception {
+        g.acquireWorkflowSlot("q", "w");
+        var gate = new CountDownLatch(1);
+        var parkedBoth = new CountDownLatch(2);
+        var wokeBoth = new CountDownLatch(2);
+        Callable<Void> park = () -> {
+            parkedBoth.countDown();
+            gate.await();
+            wokeBoth.countDown();
+            return null;
+        };
+        Runnable branch = () -> {
+            try {
+                g.parked("w", park);
+            } catch (Throwable t) {
+                thrown.add(t);
+            }
+        };
+        var t1 = Thread.ofVirtual().start(branch);
+        var t2 = Thread.ofVirtual().start(branch);
+        parkedBoth.await();
+        g.acquireWorkflowSlot("q", "other"); // takes the slot "w" gave back
+        gate.countDown();
+        wokeBoth.await(); // both parks are over: all that is left is the reacquire
+        await().atMost(5, SECONDS).until(() ->
+                t1.getState() == Thread.State.WAITING && t2.getState() == Thread.State.WAITING);
+        return new Thread[] {t1, t2};
+    }
+
+    private static void parkQuietly(TaskQueueGovernor g, Callable<Void> park) {
+        try {
+            g.parked("w", park);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     @Test

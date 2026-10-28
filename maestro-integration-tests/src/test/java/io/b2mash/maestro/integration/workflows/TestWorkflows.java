@@ -451,6 +451,33 @@ public final class TestWorkflows {
     }
 
     /**
+     * Two {@code parallel()} branches that each sleep the same short duration
+     * and then end without parking again — the fixture for the R49 governor
+     * race (both branches waking from one batch of timer fires).
+     */
+    @DurableWorkflow(name = "ParallelSleepWorkflow")
+    public static class ParallelSleepWorkflow {
+
+        /**
+         * @param input the seed value
+         * @return the branch results joined in branch order
+         */
+        @WorkflowMethod
+        public String run(String input) {
+            List<Callable<String>> branches = List.of(
+                    () -> {
+                        WorkflowContext.current().sleep(Duration.ofMillis(50));
+                        return input + "-a";
+                    },
+                    () -> {
+                        WorkflowContext.current().sleep(Duration.ofMillis(50));
+                        return input + "-b";
+                    });
+            return String.join(",", WorkflowContext.current().parallel(branches));
+        }
+    }
+
+    /**
      * A saga whose third step fails, forcing LIFO compensation of the first two
      * — the fixture for COMPENSATING transitions on a real store.
      */

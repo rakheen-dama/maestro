@@ -13,6 +13,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Per-node, per-task-queue concurrency limits for workflow runs and live
@@ -68,9 +69,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <h2>Thread Safety</h2>
  * <p>Thread-safe. Any number of workflow, branch and activity threads may call
  * any method concurrently. Slots are handed out in FIFO order (fair
- * semaphores). A run's held/released state changes by compare-and-set, so two
- * branches of one run waking at once take exactly one slot between them, and
- * a branch reacquiring after its run already released for good gives the slot
+ * semaphores). At most one thread per run waits on the queue's semaphore: a
+ * reacquire runs under a per-run lock, so when two branches of one run wake at
+ * once, one waits for the slot and the other waits for that one, then sees the
+ * run already holds its slot and carries on — they take exactly one slot
+ * between them, and neither ever waits for a permit its own run holds. A
+ * branch reacquiring after its run already released for good gives the slot
  * straight back rather than leaking it.
  */
 public final class TaskQueueGovernor {
@@ -88,6 +92,13 @@ public final class TaskQueueGovernor {
         final AtomicBoolean held = new AtomicBoolean();
         /** Set once the run's local execution ended; a late reacquire gives back at once. */
         volatile boolean closed;
+        /**
+         * Serialises the run's reacquires (R49): only its holder waits on the
+         * semaphore, so a sibling branch never queues behind its own run.
+         * {@link #give} does not take it — a park or the run's end must never
+         * wait behind a reacquire.
+         */
+        final ReentrantLock reacquire = new ReentrantLock();
 
         RunSlot(Bucket bucket) {
             this.bucket = bucket;
@@ -262,20 +273,40 @@ public final class TaskQueueGovernor {
 
     // ── internals ──────────────────────────────────────────────────────
 
-    /** Takes a permit for {@code run} unless it already holds one or has ended. */
+    /**
+     * Takes a permit for {@code run} unless it already holds one or has ended.
+     *
+     * <p>R49: the check and the semaphore wait happen under the run's
+     * {@code reacquire} lock. Checking {@code held} and then waiting without it
+     * let two branches waking at once both see {@code false}; the loser then
+     * waited for the permit its own run had just taken — forever, if the
+     * winner finished its branch without parking again, wedging the run's
+     * {@code parallel()} join. Under the lock only {@code take} sets
+     * {@code held}, so a sibling that gets the lock after the holder sees
+     * {@code true} and returns without a second acquire.
+     */
     private static void take(RunSlot run) {
         if (run.closed || run.held.get()) {
-            return;
+            return; // fast path; re-checked under the lock
         }
-        acquire(run.bucket.workflowSlots(), "a workflow slot", run.bucket.name());
-        if (!run.held.compareAndSet(false, true)) {
-            // Another thread of the same run (a parallel branch) got there first.
-            run.bucket.workflowSlots().release();
-            return;
+        try {
+            run.reacquire.lockInterruptibly();
+        } catch (InterruptedException e) {
+            throw interrupted("a workflow slot", run.bucket.name());
         }
-        if (run.closed) {
-            // The run ended while this thread waited: hand the permit straight back.
-            give(run);
+        try {
+            if (run.closed || run.held.get()) {
+                return; // a sibling branch took the run's slot while this thread waited for the lock
+            }
+            acquire(run.bucket.workflowSlots(), "a workflow slot", run.bucket.name());
+            // Nobody else sets held (give only clears it), so this cannot lose a race.
+            run.held.set(true);
+            if (run.closed) {
+                // The run ended while this thread waited: hand the permit straight back.
+                give(run);
+            }
+        } finally {
+            run.reacquire.unlock();
         }
     }
 

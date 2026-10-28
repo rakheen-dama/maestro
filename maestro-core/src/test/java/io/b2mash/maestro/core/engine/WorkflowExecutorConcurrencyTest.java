@@ -16,8 +16,11 @@ import tools.jackson.databind.json.JsonMapper;
 
 import java.lang.reflect.Method;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.OptionalInt;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -134,6 +137,39 @@ class WorkflowExecutorConcurrencyTest {
         latch.countDown();
         awaitStatus("wf-b", WorkflowStatus.COMPLETED);
         assertEquals(WorkflowStatus.WAITING_TIMER, store.getInstance("wf-sleeper").orElseThrow().status());
+    }
+
+    /**
+     * R49: at concurrency 1, a {@code parallel()} of two equal sleeps whose
+     * timers fire in one batch must complete. Both branches wake while
+     * another run holds the only slot, so both wait to reacquire; once it is
+     * freed the run must take it once and let <em>both</em> branches carry
+     * on. Before the per-run lock the second branch queued on the semaphore
+     * for the permit its own run had just taken, the first finished its
+     * branch, and the parent's join never returned.
+     */
+    @Test
+    void parallelSleepsFiredTogetherCompleteAtConcurrencyOne() throws Exception {
+        newExecutor(Map.of("orders", new TaskQueueLimits(1, 10)));
+        var activities = proxy();
+
+        start("wf-parallel", "orders", new ParallelSleepWorkflow());
+        await().atMost(5, SECONDS).until(() -> executor.parkedCount() == 2); // both branches asleep
+        start("wf-blocker", "orders", new WorkWorkflow(activities));
+        await().atMost(5, SECONDS).until(() -> started.get() == 1); // the blocker holds the only slot
+
+        var due = store.getDueTimers(Instant.now().plus(Duration.ofDays(1)), 10);
+        assertEquals(2, due.size());
+        for (var timer : due) { // one batch, as the timer poller fires it
+            executor.fireTimer(timer.workflowId(), timer.timerId(), timer.id());
+        }
+        // Both branches are awake and waiting for the slot the blocker holds.
+        await().during(DURING).atMost(5, SECONDS).until(() -> executor.parkedCount() == 0);
+
+        latch.countDown(); // the blocker finishes and frees the slot
+        awaitStatus("wf-blocker", WorkflowStatus.COMPLETED);
+        awaitStatus("wf-parallel", WorkflowStatus.COMPLETED);
+        assertEquals(OptionalInt.of(1), executor.taskQueueGovernor().availableWorkflowSlots("orders"));
     }
 
     @Test
@@ -267,6 +303,25 @@ class WorkflowExecutorConcurrencyTest {
         public String run() {
             WorkflowContext.current().sleep(Duration.ofHours(1));
             return "woke";
+        }
+    }
+
+    /** Two {@code parallel()} branches, each sleeping the same duration. */
+    @DurableWorkflow(name = "ParallelSleepWorkflow")
+    public static final class ParallelSleepWorkflow {
+        /** @return the branch results, once both timers fired */
+        @WorkflowMethod
+        public String run() {
+            List<Callable<String>> branches = List.of(
+                    () -> {
+                        WorkflowContext.current().sleep(Duration.ofHours(1));
+                        return "a";
+                    },
+                    () -> {
+                        WorkflowContext.current().sleep(Duration.ofHours(1));
+                        return "b";
+                    });
+            return String.join(",", WorkflowContext.current().parallel(branches));
         }
     }
 
