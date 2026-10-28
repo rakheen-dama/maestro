@@ -69,10 +69,12 @@ class UnknownEventStandDownIT extends PostgresIntegrationSupport {
 
     /**
      * {@link TestWorkflows.SignalWorkflow} parks on {@code awaitSignal} at
-     * sequence 2 (sequence 1 is its pre-park activity), so 2 is the slot the
-     * recovering node's replay reads next — where the future event goes.
+     * sequence 2 (sequence 1 is its pre-park activity): a parked await
+     * memoizes its durable deadline ({@code TIMER_SCHEDULED}) at 2 and records
+     * its outcome at 3 (C12 / F4). So 3 is the open slot the recovering node's
+     * replay reads next — where the future event goes.
      */
-    private static final int PARKED_AWAIT_SEQUENCE = 2;
+    private static final int PARKED_AWAIT_SEQUENCE = 3;
 
     @Test
     @DisplayName("recovery stands down — status unchanged, zero compensations, lock free, observer "

@@ -264,6 +264,13 @@ class LoanApplicationWorkflowV2Test {
         var afterJoin = parentSeq * BRANCH_MULTIPLIER + 3 * BRANCH_MULTIPLIER;
 
         var verificationSeqs = sequences(verificationSignalEvents(run));
+        // Every event branch 0's awaits recorded, including the TIMER_SCHEDULED
+        // deadline memo a parked await writes at its own slot (C12 / F4).
+        var verificationSlots = events(run).stream()
+                .filter(e -> "$maestro:awaitSignal:verification.result".equals(e.stepName()))
+                .map(WorkflowEvent::sequenceNumber)
+                .sorted()
+                .toList();
         var documentSeqs = sequences(documentSignalEvents(run));
         var afterJoinSeqs = events(run).stream()
                 .map(WorkflowEvent::sequenceNumber)
@@ -277,11 +284,18 @@ class LoanApplicationWorkflowV2Test {
 
         assertAll(
                 // Branch 0 awaits verification.result three times, back to back,
-                // from the first slot of its own partition.
-                () -> assertEquals(
-                        List.of(branch0Base + 1, branch0Base + 2, branch0Base + 3),
-                        verificationSeqs,
-                        "branch 0 must allocate from parentSeq*1000 + 1*1000"),
+                // from the first slot of its own partition. A parked await takes
+                // two slots (deadline memo, then outcome) and one that finds its
+                // signal already waiting takes one, so pin the first slot and
+                // contiguity rather than exact outcome slots.
+                () -> assertEquals(branch0Base + 1, verificationSlots.getFirst(),
+                        "branch 0 must allocate from parentSeq*1000 + 1*1000, got " + verificationSlots),
+                () -> assertEquals(verificationSlots.getFirst() + verificationSlots.size() - 1,
+                        verificationSlots.getLast(),
+                        "branch 0's await slots must be back to back, got " + verificationSlots),
+                () -> assertEquals(3, verificationSeqs.size()),
+                () -> assertTrue(verificationSlots.getLast() < branch1Base,
+                        "branch 0 must stay inside its own partition, got " + verificationSlots),
                 // Branch 1's collectSignals interleaves currentTime side effects
                 // with its two awaits, so pin containment rather than exact slots.
                 () -> assertTrue(documentSeqs.stream()

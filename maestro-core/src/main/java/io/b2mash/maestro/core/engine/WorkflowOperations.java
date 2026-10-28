@@ -63,11 +63,23 @@ public sealed interface WorkflowOperations permits DefaultWorkflowOperations {
      * If none found, parks the virtual thread until a signal arrives or
      * the timeout elapses.
      *
-     * <p>During replay, a previously received signal is returned instantly.
+     * <p>The deadline of a parked await is durable: it is memoized as a
+     * {@code TIMER_SCHEDULED} event and persisted as a timer row
+     * ({@code await-signal-<seq>}), so a crash or restart resumes the wait
+     * from the original deadline instead of re-arming it, the timer poller
+     * fires it like any {@link #sleep(Duration)} timer, cancelling that row
+     * ends the wait with {@code SignalTimeoutException}, and
+     * {@code TestWorkflowEnvironment.advanceTime()} drives it. A signal that is
+     * already visible when the deadline is reached still wins.
+     *
+     * <p>During replay, a previously received signal is returned instantly,
+     * and a previously recorded timeout is re-raised.
      *
      * @param signalName the signal name to wait for (e.g., {@code "payment.result"})
      * @param type       the expected payload type
-     * @param timeout    maximum time to wait
+     * @param timeout    maximum time to wait; zero or negative consumes an
+     *                   already-arrived signal or times out immediately, with
+     *                   no timer row
      * @param <T>        the payload type
      * @return the signal payload
      * @throws io.b2mash.maestro.core.exception.SignalTimeoutException if the timeout elapses

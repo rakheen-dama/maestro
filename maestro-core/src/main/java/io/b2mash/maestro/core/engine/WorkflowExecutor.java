@@ -574,8 +574,13 @@ public final class WorkflowExecutor {
      * interval ({@code maestro.signal.wake-recheck-interval}) and resumes
      * within one interval of this call.
      *
+     * <p>An {@code await-signal-*} timer is an {@code awaitSignal} deadline;
+     * firing it ends the wait with
+     * {@link io.b2mash.maestro.core.exception.SignalTimeoutException} (unless
+     * a signal is already visible, which wins).
+     *
      * @param workflowId  the workflow's business ID
-     * @param timerId     the timer's logical ID (e.g., {@code "sleep-5"})
+     * @param timerId     the timer's logical ID (e.g., {@code "sleep-5"} or {@code "await-signal-7"})
      * @param timerDbId   the timer's database UUID (for store transition)
      */
     public void fireTimer(String workflowId, String timerId, UUID timerDbId) {
@@ -583,6 +588,9 @@ public final class WorkflowExecutor {
         if (fired) {
             var parkKey = workflowId + ":timer:" + timerId;
             parkingLot.unpark(parkKey, null);
+            // An await-signal-* row is an awaitSignal deadline: wake that await
+            // (a no-op for every other timer).
+            signalManager.onTimerTransition(workflowId, timerId);
             logger.debug("Fired timer '{}' for workflow '{}'", timerId, workflowId);
         } else {
             logger.debug("Timer '{}' for workflow '{}' already fired or cancelled — skipping unpark",
@@ -617,13 +625,19 @@ public final class WorkflowExecutor {
      * {@code sleep()}, or at the workflow's next recovery — the same
      * cross-node wake contract {@link #fireTimer} has.
      *
+     * <p>An {@code await-signal-*} timer is an {@code awaitSignal} deadline;
+     * cancelling it ends the wait with
+     * {@link io.b2mash.maestro.core.exception.SignalTimeoutException} (the row
+     * is the arbiter: a non-{@code PENDING} row means the deadline is spent),
+     * unless a signal is already visible, which wins.
+     *
      * <p>Cancelling a timer that has already fired, or was already
      * cancelled, is a {@code false} no-op: the row's outcome is already
      * decided and the caller is told it lost the race rather than being left
      * to guess.
      *
      * @param workflowId the workflow's business ID
-     * @param timerId    the timer's logical ID (e.g., {@code "sleep-5"})
+     * @param timerId    the timer's logical ID (e.g., {@code "sleep-5"} or {@code "await-signal-7"})
      * @param timerDbId  the timer's database UUID (for store transition)
      * @return {@code true} if this call transitioned the timer
      *         {@code PENDING → CANCELLED}; {@code false} if the timer had
@@ -634,6 +648,7 @@ public final class WorkflowExecutor {
         if (cancelled) {
             var parkKey = workflowId + ":timer:" + timerId;
             parkingLot.unpark(parkKey, null);
+            signalManager.onTimerTransition(workflowId, timerId);
             logger.debug("Cancelled timer '{}' for workflow '{}'", timerId, workflowId);
         } else {
             logger.debug("Timer '{}' for workflow '{}' already fired or cancelled — skipping unpark",

@@ -314,7 +314,7 @@ Left uncaught, `TimerCancelledException` propagates like any other exception: sa
 
 Cancellation is arbitrated the same way firing is: a compare-and-set on the timer row (`PENDING -> CANCELLED`). `cancelTimer` returns `true` if it won the race, `false` if the timer had already fired or was already cancelled -- the caller is told, rather than left to guess.
 
-`awaitSignal(name, timeout)` is unaffected by any of this: its timeout is an in-memory recheck loop, not a durable timer row, so there is nothing for `cancelTimer` to reach.
+`awaitSignal(name, timeout)` creates a durable timer row (`await-signal-<seq>`) when it has to park; the timer poller fires it like any `sleep()` timer, `cancelTimer` on it ends the wait with `SignalTimeoutException`, and `TestWorkflowEnvironment.advanceTime()` fires it.
 
 ---
 

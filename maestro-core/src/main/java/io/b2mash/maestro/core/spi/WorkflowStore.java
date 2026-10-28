@@ -240,7 +240,10 @@ public interface WorkflowStore {
      * now-delivered signal. Earlier <em>caught</em> gate timeouts sit at lower
      * sequences, are never that maximum, and must survive — deleting them
      * would let a retry replay consume a late-arrived signal at the gate and
-     * diverge from the pre-failure execution.
+     * diverge from the pre-failure execution. The retried await resumes from
+     * its memoized deadline, not a fresh one: its timer row is no longer
+     * {@code PENDING}, so it consumes a signal that has arrived since, or else
+     * times out again immediately.
      *
      * <p><b>Idempotent.</b> Called on an instance with no failure memos it
      * deletes nothing and returns {@code 0}.
@@ -353,12 +356,14 @@ public interface WorkflowStore {
      * and continues rather than parking forever.
      *
      * <p>A timer ID is unique within a workflow instance (it is derived from the
-     * sequence number of the {@code sleep()} that created it). If an
+     * sequence number of the {@code sleep()} or parked {@code awaitSignal()}
+     * that created it). If an
      * implementation somehow holds duplicates, it must return one of them
      * deterministically.
      *
      * @param workflowInstanceId the owning workflow instance
-     * @param timerId            the logical timer ID (e.g. {@code "sleep-2"}),
+     * @param timerId            the logical timer ID (e.g. {@code "sleep-2"} or
+     *                           {@code "await-signal-7"}),
      *                           not the timer's database UUID
      * @return the timer, or empty if this instance has no timer with that ID
      */

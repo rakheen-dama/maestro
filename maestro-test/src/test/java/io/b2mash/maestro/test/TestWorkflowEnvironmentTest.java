@@ -6,6 +6,7 @@ import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.QueryMethod;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.exception.SignalTimeoutException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import org.junit.jupiter.api.AfterEach;
@@ -108,6 +109,29 @@ class TestWorkflowEnvironmentTest {
         assertEquals("slept", result);
     }
 
+    @Test
+    void advanceTimeFiresAwaitSignalTimeout() throws TimeoutException {
+        env = TestWorkflowEnvironment.create();
+        var handle = env.startWorkflow(SevenDayApprovalWorkflow.class, "doc-1");
+        waitForStatus(handle, WorkflowStatus.WAITING_SIGNAL, Duration.ofSeconds(5));
+        // The test clock starts at create(); the deadline is set a few ms later
+        // when the await parks, so step just past exactly 7 days (as the sleep
+        // test above steps 6 minutes for a 5-minute sleep).
+        env.advanceTime(Duration.ofDays(7).plusSeconds(1));
+        assertEquals("timed-out", handle.getResult(String.class, Duration.ofSeconds(5)));
+        assertEquals(1, handle.getEvents().stream().filter(e -> e.eventType() == EventType.SIGNAL_TIMEOUT).count());
+    }
+
+    @Test
+    void signalBeforeTheAdvancedDeadlineWins() throws TimeoutException {
+        env = TestWorkflowEnvironment.create();
+        var handle = env.startWorkflow(SevenDayApprovalWorkflow.class, "doc-2");
+        waitForStatus(handle, WorkflowStatus.WAITING_SIGNAL, Duration.ofSeconds(5));
+        env.advanceTime(Duration.ofDays(6));
+        handle.signal("approval", "approved");
+        assertEquals("approved", handle.getResult(String.class, Duration.ofSeconds(5)));
+    }
+
     // ── Query method ────────────────────────────────────────────────────
 
     @Test
@@ -192,6 +216,18 @@ class TestWorkflowEnvironmentTest {
             var workflow = WorkflowContext.current();
             workflow.sleep(Duration.ofMinutes(5));
             return "slept";
+        }
+    }
+
+    @DurableWorkflow(name = "test-seven-day-approval", taskQueue = "test")
+    public static class SevenDayApprovalWorkflow {
+        @WorkflowMethod
+        public String awaitApproval(String documentId) {
+            try {
+                return WorkflowContext.current().awaitSignal("approval", String.class, Duration.ofDays(7));
+            } catch (SignalTimeoutException e) {
+                return "timed-out";
+            }
         }
     }
 

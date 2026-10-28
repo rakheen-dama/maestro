@@ -243,6 +243,8 @@ var result = handle.getResult(ReminderResult.class, Duration.ofSeconds(5));
 
 The method loops to handle cascading timers: if timer A fires and the workflow immediately creates timer B that is also due, timer B fires in the same `advanceTime` call. A safety limit of 1,000 iterations prevents infinite timer loops.
 
+`advanceTime` also fires `awaitSignal` deadlines: a parked `awaitSignal(name, type, timeout)` persists its deadline as a durable timer row, so a 7-day approval wait times out with one `advanceTime` call instead of seven days of wall clock — and a signal delivered before the advanced clock reaches the deadline still wins. The clock starts when the environment is created, while a timer's `fireAt` is taken when the workflow schedules it a few milliseconds later, so step just past the duration: `env.advanceTime(Duration.ofDays(7).plusSeconds(1))` (the same holds for `sleep()`).
+
 ### Direct Clock Access
 
 For advanced scenarios, access the clock directly:

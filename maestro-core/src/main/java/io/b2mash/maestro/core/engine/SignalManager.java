@@ -2,14 +2,17 @@ package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
+import io.b2mash.maestro.core.exception.SerializationException;
 import io.b2mash.maestro.core.exception.SignalTimeoutException;
 import io.b2mash.maestro.core.exception.StaleRunException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.EventType;
+import io.b2mash.maestro.core.model.TimerStatus;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.ParkKind;
 import io.b2mash.maestro.core.observe.SignalInfo;
@@ -27,6 +30,8 @@ import tools.jackson.databind.JsonNode;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -89,6 +94,15 @@ final class SignalManager {
      */
     static final Duration DEFAULT_WAKE_RECHECK_INTERVAL = Duration.ofSeconds(30);
 
+    /** Step-name prefix of every event an {@code awaitSignal} call records. */
+    static final String STEP_PREFIX = "$maestro:awaitSignal:";
+
+    /**
+     * Logical-ID prefix of a parked await's deadline timer row; the suffix is
+     * the sequence of the await's {@code TIMER_SCHEDULED} memo.
+     */
+    static final String TIMER_ID_PREFIX = "await-signal-";
+
     private final WorkflowStore store;
     private final @Nullable WorkflowMessaging messaging;
     private final @Nullable SignalNotifier signalNotifier;
@@ -114,6 +128,14 @@ final class SignalManager {
      * correctness requirement).
      */
     private final ConcurrentHashMap<String, Integer> wakeSubscriptions = new ConcurrentHashMap<>();
+
+    /**
+     * Bridge from a deadline-row transition to the parked await it belongs
+     * to: key {@code workflowId + ":" + timerId}, value the await's signal
+     * park key. Populated only while an await is inside its wait loop on this
+     * node, so {@link #onTimerTransition} is a no-op for every other timer.
+     */
+    private final ConcurrentHashMap<String, String> awaitWakeKeys = new ConcurrentHashMap<>();
 
     /**
      * Creates a new signal manager with the default wake re-check interval.
@@ -263,24 +285,38 @@ final class SignalManager {
     /**
      * Waits for a named signal to be delivered to the current workflow.
      *
-     * <p>Follows the hybrid memoization pattern:
-     * <ol>
-     *   <li><b>Replay:</b> If a {@code SIGNAL_RECEIVED} event exists at the
-     *       current sequence number, returns the stored payload immediately.</li>
-     *   <li><b>Live — signal already arrived:</b> Checks for unconsumed signals
-     *       in the store (self-recovery). If found, consumes immediately.</li>
-     *   <li><b>Live — no signal yet:</b> Updates instance status to
-     *       {@code WAITING_SIGNAL}, parks the virtual thread with the given
-     *       timeout, and consumes the signal on wake-up.</li>
-     * </ol>
+     * <p>Follows the hybrid memoization pattern. The event layout depends on
+     * whether the await had to park (C12 / F4):
+     * <table>
+     *   <caption>Event layout of one {@code awaitSignal} call</caption>
+     *   <tr><th>Path</th><th>Slot {@code seq}</th><th>Slot {@code seq+1}</th><th>Timer row</th></tr>
+     *   <tr><td>Signal already unconsumed at entry</td><td>{@code SIGNAL_RECEIVED}</td><td>—</td><td>none</td></tr>
+     *   <tr><td>{@code timeout <= 0} and no signal</td><td>{@code SIGNAL_TIMEOUT}</td><td>—</td><td>none</td></tr>
+     *   <tr><td>Had to park</td><td>{@code TIMER_SCHEDULED} ({@link AwaitSignalDetail})</td>
+     *       <td>{@code SIGNAL_RECEIVED} or {@code SIGNAL_TIMEOUT}</td>
+     *       <td>{@code await-signal-<seq>}, {@code fireAt = deadline}</td></tr>
+     * </table>
+     *
+     * <p>Every event is recorded under the step name
+     * {@code $maestro:awaitSignal:<signalName>}, and every replayed slot is
+     * checked against it ({@link ReplayGuard}, C10).
+     *
+     * <p>A parked await's deadline is a durable timer row, not an in-memory
+     * {@code Instant}: the timer poller fires it like any {@code sleep()}
+     * timer, {@code WorkflowExecutor.cancelTimer} on it ends the wait with
+     * {@link SignalTimeoutException}, a replay resumes from the memoized
+     * deadline (never from {@code Instant.now()}), and
+     * {@code TestWorkflowEnvironment.advanceTime()} drives it. See
+     * {@link #awaitOutcome} for the one rule that decides the outcome.
      *
      * @param ctx        the current workflow context (passed explicitly, not read from thread-local)
      * @param signalName the signal name to wait for
      * @param type       the expected payload type
-     * @param timeout    maximum time to wait
+     * @param timeout    maximum time to wait; zero or negative means "consume an
+     *                   already-arrived signal, otherwise time out now"
      * @param <T>        the payload type
      * @return the deserialized signal payload
-     * @throws SignalTimeoutException if the timeout elapses before a signal arrives
+     * @throws SignalTimeoutException if the deadline passes before a signal arrives
      */
     <T> T awaitSignal(WorkflowContext ctx, String signalName, Class<T> type, Duration timeout) {
         // A run already known to be stale (R33) — workflow code swallowed an
@@ -288,41 +324,22 @@ final class SignalManager {
         // consume a signal that belongs to the winner's run.
         ctx.cancellation().throwIfStale(ctx.workflowId());
         var seq = ctx.nextSequence();
-        var stepName = "$maestro:awaitSignal:" + signalName;
+        var stepName = STEP_PREFIX + signalName;
 
-        // Replay check: look for SIGNAL_RECEIVED at this sequence
         var storedEvent = UnknownHistoryGuard.requireKnown(
                 store.getEventBySequence(ctx.workflowInstanceId(), seq), ctx.workflowId());
         if (storedEvent.isPresent()) {
-            // Drift (C10): the slot must hold THIS await's outcome. Matching on
-            // type alone returned a renamed await's recorded payload as the
+            // Drift (C10): the slot must hold THIS await's first event. Matching
+            // on type alone returned a renamed await's recorded payload as the
             // answer to the new name; any other foreign event fell through to
             // the live path and could consume a waiting signal. Both are
-            // unreachable once this throws.
-            ReplayGuard.requireMatch(storedEvent.get(), ctx.workflowId(), stepName,
-                    EventType.SIGNAL_RECEIVED, EventType.SIGNAL_TIMEOUT);
-        }
-        if (storedEvent.isPresent() && storedEvent.get().eventType() == EventType.SIGNAL_RECEIVED) {
-            logger.debug("Replaying signal '{}' at seq {}", signalName, seq);
-            observer.signalConsumed(
-                    new SignalInfo(ctx.workflowId(), ctx.workflowType(), signalName, null), true);
-            return UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), seq,
-                    "payload of signal '%s'".formatted(signalName),
-                    () -> serializer.deserialize(storedEvent.get().payload(), type));
-        }
-        // Replay check: a memoized timeout re-raises deterministically — from
-        // the log alone, with no store read and no signal consumption. Without
-        // this (Issue 19), a replay whose awaited signal had ARRIVED since the
-        // original timeout consumed it at this slot and diverged from the
-        // original execution — observed as a saga compensating at the wrong
-        // gate and leaking its reserved resource after a routine rolling
-        // restart. The late signal stays durably unconsumed (never discarded);
-        // a later await of the same name (e.g. the loan sample's gate #2) will
-        // find and consume it. Mirrors Issue 13's TIMER_CANCELLED memoization.
-        if (storedEvent.isPresent() && storedEvent.get().eventType() == EventType.SIGNAL_TIMEOUT) {
-            logger.debug("Replaying timed-out await of '{}' at seq {} — re-raising deterministically",
-                    signalName, seq);
-            throw new SignalTimeoutException(ctx.workflowId(), signalName, timeout);
+            // unreachable once this throws — before any signal read.
+            var stored = ReplayGuard.requireMatch(storedEvent.get(), ctx.workflowId(), stepName,
+                    EventType.SIGNAL_RECEIVED, EventType.SIGNAL_TIMEOUT, EventType.TIMER_SCHEDULED);
+            if (stored.eventType() == EventType.TIMER_SCHEDULED) {
+                return resumeParkedAwait(ctx, seq, stepName, signalName, type, timeout, stored);
+            }
+            return replayOutcome(ctx, seq, signalName, type, timeout, stored);
         }
 
         // Live path
@@ -335,10 +352,18 @@ final class SignalManager {
             return consumeSignal(ctx, seq, stepName, signalName, signal, type);
         }
 
+        // Review Focus 2: nothing to wait for. Time out now, memoized, and
+        // write no timer row — a fireAt in the past would only be a junk row
+        // the next poll fires for nobody.
+        if (!timeout.isPositive()) {
+            appendTimeout(ctx, seq, stepName, signalName, timeout);
+            throw new SignalTimeoutException(ctx.workflowId(), signalName, timeout);
+        }
+
         // No signal yet — subscribe for cross-instance wake, then park.
         // Subscription is a performance optimisation: if it fails (or a
         // notification slips through before the park registers), the signal
-        // is still found via the periodic store re-check below.
+        // is still found via the periodic store re-check in awaitOutcome.
         subscribeForWake(ctx.workflowId());
         try {
             if (signalNotifier != null) {
@@ -351,50 +376,192 @@ final class SignalManager {
                 }
             }
 
-            updateInstanceStatus(ctx, WorkflowStatus.WAITING_SIGNAL);
+            // Schedule the durable deadline. The row is saved BEFORE the memo
+            // (mirrors sleep()): a crash between the two leaves an orphan
+            // PENDING row that fires for nobody, never a memo whose row is
+            // missing. Micros, so the memo and a Postgres timestamptz agree.
+            var timerId = TIMER_ID_PREFIX + seq;
+            var now = Instant.now();
+            var deadline = now.plus(timeout).truncatedTo(ChronoUnit.MICROS);
+            var timerDbId = UUID.randomUUID();
+            store.saveTimer(new WorkflowTimer(timerDbId, ctx.workflowInstanceId(), ctx.workflowId(),
+                    timerId, deadline, TimerStatus.PENDING, now));
+            appendEvent(ctx, seq, EventType.TIMER_SCHEDULED, stepName, serializer.serialize(
+                    new AwaitSignalDetail(signalName, timerId, timeout.toString(), deadline.toString())));
 
-            var parkKey = ctx.workflowId() + ":signal:" + signalName;
-            logger.debug("Workflow '{}' waiting for signal '{}' (timeout={})", ctx.workflowId(), signalName, timeout);
-            // Live park boundary (never replay — the replay branches returned
-            // above). Unparked fires only on the paths where the workflow
-            // thread actually resumes: signal consumed or await timeout. A
-            // shutdown or terminate emits neither — it emits
+            var outcomeSeq = ctx.nextSequence();
+            logger.debug("Workflow '{}' waiting for signal '{}' (timeout={}, timerId={})",
+                    ctx.workflowId(), signalName, timeout, timerId);
+            return awaitOutcome(ctx, outcomeSeq, stepName, signalName, type, timerId, timerDbId,
+                    deadline, timeout);
+        } finally {
+            unsubscribeForWake(ctx.workflowId());
+        }
+    }
+
+    /**
+     * Replays a memoized outcome — {@code SIGNAL_RECEIVED} returns its
+     * payload, {@code SIGNAL_TIMEOUT} re-raises — from the log alone, with no
+     * store read and no signal consumption.
+     *
+     * <p>Without the timeout branch (Issue 19), a replay whose awaited signal
+     * had ARRIVED since the original timeout consumed it and diverged from
+     * the original execution — observed as a saga compensating at the wrong
+     * gate and leaking its reserved resource after a routine rolling restart.
+     * The late signal stays durably unconsumed (never discarded); a later
+     * await of the same name will find and consume it. Mirrors Issue 13's
+     * {@code TIMER_CANCELLED} memoization.
+     */
+    private <T> T replayOutcome(WorkflowContext ctx, int seq, String signalName, Class<T> type,
+                                Duration timeout, WorkflowEvent outcome) {
+        if (outcome.eventType() == EventType.SIGNAL_TIMEOUT) {
+            logger.debug("Replaying timed-out await of '{}' at seq {} — re-raising deterministically",
+                    signalName, seq);
+            throw new SignalTimeoutException(ctx.workflowId(), signalName, timeout);
+        }
+        logger.debug("Replaying signal '{}' at seq {}", signalName, seq);
+        observer.signalConsumed(
+                new SignalInfo(ctx.workflowId(), ctx.workflowType(), signalName, null), true);
+        return UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), seq,
+                "payload of signal '%s'".formatted(signalName),
+                () -> serializer.deserialize(outcome.payload(), type));
+    }
+
+    /**
+     * Replays an await that parked: its {@code TIMER_SCHEDULED} memo is at
+     * {@code seq}, so the outcome belongs at {@code seq + 1}. A memoized
+     * outcome replays; an absent one resumes the durable wait from the
+     * memoized deadline and the existing timer row — never re-armed from
+     * {@code Instant.now()}, never a second row.
+     */
+    private <T> T resumeParkedAwait(WorkflowContext ctx, int seq, String stepName, String signalName,
+                                    Class<T> type, Duration timeout, WorkflowEvent scheduled) {
+        var outcomeSeq = ctx.nextSequence();
+        var outcome = UnknownHistoryGuard.requireKnown(
+                store.getEventBySequence(ctx.workflowInstanceId(), outcomeSeq), ctx.workflowId());
+        if (outcome.isPresent()) {
+            // Drift (C10) at the outcome slot: only this await's own outcome
+            // may sit there. Anything else stands down HERE, before the signal
+            // read below could consume a waiting signal.
+            var stored = ReplayGuard.requireMatch(outcome.get(), ctx.workflowId(), stepName,
+                    EventType.SIGNAL_RECEIVED, EventType.SIGNAL_TIMEOUT);
+            return replayOutcome(ctx, outcomeSeq, signalName, type, timeout, stored);
+        }
+
+        // The outcome slot is the live frontier. The detail is only needed
+        // from here on: a memoized outcome replays without reading it.
+        ctx.setReplaying(false);
+        var detail = readAwaitDetail(ctx.workflowId(), seq, signalName, scheduled);
+        var deadline = UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), seq,
+                "await deadline of signal '%s'".formatted(signalName),
+                () -> parseDeadline(detail.deadline()));
+        @Nullable UUID timerDbId = store.findTimer(ctx.workflowInstanceId(), detail.timerId())
+                .map(WorkflowTimer::id)
+                .orElse(null);
+        logger.debug("Replaying parked await of '{}' at seq {} — resuming the durable wait (deadline={})",
+                signalName, seq, deadline);
+        subscribeForWake(ctx.workflowId());
+        try {
+            return awaitOutcome(ctx, outcomeSeq, stepName, signalName, type, detail.timerId(), timerDbId,
+                    deadline, timeout);
+        } finally {
+            unsubscribeForWake(ctx.workflowId());
+        }
+    }
+
+    /**
+     * Waits for the outcome of a parked await and records it at
+     * {@code outcomeSeq} — shared by the live path and a resumed replay.
+     *
+     * <p>The one rule, applied on every pass:
+     * <ol>
+     *   <li>A visible unconsumed signal wins: consume it at the outcome slot,
+     *       best-effort cancel the deadline row, return.</li>
+     *   <li>Otherwise, if the timer row is no longer {@code PENDING} (fired by
+     *       a poller, or cancelled), or the deadline has passed: self-fire a
+     *       still-{@code PENDING} row (CAS; the result does not matter), re-read
+     *       the signals once more — any wins as in 1 — and otherwise memoize
+     *       {@code SIGNAL_TIMEOUT} and throw {@link SignalTimeoutException}.</li>
+     *   <li>Otherwise park on the signal key for
+     *       {@code min(deadline - now, wakeRecheckInterval)}, then stand down
+     *       if the row was terminated or finalised meanwhile, and loop.</li>
+     * </ol>
+     *
+     * <p>So a non-{@code PENDING} row with no signal always means timeout,
+     * and a visible signal always wins while the outcome slot is open. The
+     * stand-down check runs after each park, before the next signal read, so
+     * a wake on a terminated or finalised row never consumes a signal (M7).
+     *
+     * <p>The per-pass signal and row reads are advisory ({@link ParkProbe}):
+     * a store blip reads as "no signal, still pending" and the await keeps
+     * parking. The reads and writes of the timeout decision itself are not.
+     */
+    private <T> T awaitOutcome(WorkflowContext ctx, int outcomeSeq, String stepName, String signalName,
+                               Class<T> type, String timerId, @Nullable UUID timerDbId,
+                               Instant deadline, Duration timeout) {
+        var workflowId = ctx.workflowId();
+        var parkKey = workflowId + ":signal:" + signalName;
+        var wakeKey = workflowId + ":" + timerId;
+        awaitWakeKeys.put(wakeKey, parkKey);
+        try {
+            updateInstanceStatus(ctx, WorkflowStatus.WAITING_SIGNAL);
+            // Park boundary. Unparked fires only on the paths where the
+            // workflow thread actually resumes: signal consumed or await
+            // timeout. A shutdown or terminate emits neither — it emits
             // EngineObserver.runAbandoned instead (design §11, RULING 5), from
             // WorkflowExecutor's handleShutdownSuspension/handleTermination, so
             // a stateful observer still gets exactly one closing callback on
-            // this thread. Note the status write a few lines above can itself
-            // raise WorkflowTerminatedException before this park emission ever
-            // runs, which is precisely why that closing callback is needed.
+            // this thread. The status write just above can itself raise
+            // WorkflowTerminatedException before this emission ever runs,
+            // which is precisely why that closing callback is needed.
             observer.workflowParked(observed(ctx), ParkKind.SIGNAL);
-
-            // Park in re-check-interval chunks. Every wake OR chunk expiry
-            // re-reads the store, so a signal persisted without a notification
-            // reaching this instance (no notifier configured, notification
-            // gap, missed unpark) is delivered within one interval instead of
-            // stalling until the full await timeout.
-            var deadline = Instant.now().plus(timeout);
             while (true) {
-                var remaining = Duration.between(Instant.now(), deadline);
-                if (!remaining.isPositive()) {
-                    // Memoize the timeout BEFORE throwing (Issue 19): once any
-                    // later event exists, the timeout memo is durably ahead of
-                    // it, so replay re-raises here instead of consuming a
-                    // signal that arrived after the fact. A crash before this
-                    // append leaves no post-timeout history at all, so a
-                    // replay that then consumes a late signal is a legitimate
-                    // fresh choice, not divergence. A DuplicateEventException
-                    // from this append means another runner already owns this
-                    // slot — it propagates to the executor's Issue 18
-                    // stand-down, exactly like any other stale append.
-                    var timeoutDetail = serializer.serialize(
-                            new SignalTimeoutDetail(signalName, timeout.toString()));
-                    appendEvent(ctx, seq, EventType.SIGNAL_TIMEOUT, stepName, timeoutDetail);
+                // 1. A visible signal wins while the outcome slot is open.
+                var signals = ParkProbe.read("awaitSignal.getUnconsumedSignals", workflowId,
+                        () -> store.getUnconsumedSignals(workflowId, signalName),
+                        List.<WorkflowSignal>of());
+                if (!signals.isEmpty()) {
+                    return consumeOutcome(ctx, outcomeSeq, stepName, signalName, signals.getFirst(), type,
+                            timerDbId);
+                }
+
+                // 2. The durable row arbitrates the deadline. A blip reads as
+                // PENDING, so the await keeps parking until the wall clock
+                // passes the memoized deadline.
+                var rowStatus = ParkProbe.<@Nullable TimerStatus>read("awaitSignal.findTimer", workflowId,
+                        () -> store.findTimer(ctx.workflowInstanceId(), timerId)
+                                .map(WorkflowTimer::status)
+                                .orElse(null),
+                        TimerStatus.PENDING);
+                var now = Instant.now();
+                if (rowStatus != TimerStatus.PENDING || !now.isBefore(deadline)) {
+                    if (rowStatus == TimerStatus.PENDING && timerDbId != null) {
+                        // Self-fire: the row is non-PENDING either way after
+                        // this, so no poller fires it for nobody later.
+                        store.markTimerFired(timerDbId);
+                    }
+                    var late = store.getUnconsumedSignals(workflowId, signalName);
+                    if (!late.isEmpty()) {
+                        return consumeOutcome(ctx, outcomeSeq, stepName, signalName, late.getFirst(), type,
+                                timerDbId);
+                    }
+                    // Memoize the timeout BEFORE throwing (Issue 19): replay
+                    // re-raises it instead of consuming a signal that arrived
+                    // after the fact. A DuplicateEventException means another
+                    // runner owns this slot — it propagates to the executor's
+                    // Issue 18 stand-down, like any other stale append.
+                    appendTimeout(ctx, outcomeSeq, stepName, signalName, timeout);
                     updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
                     observer.workflowUnparked(observed(ctx), ParkKind.SIGNAL);
-                    throw new SignalTimeoutException(ctx.workflowId(), signalName, timeout);
+                    throw new SignalTimeoutException(workflowId, signalName, timeout);
                 }
-                var chunk = remaining.compareTo(wakeRecheckInterval) < 0 ? remaining : wakeRecheckInterval;
 
+                // 3. Park in re-check-interval chunks. Every wake OR chunk
+                // expiry re-reads the store, so a signal persisted without a
+                // notification reaching this instance — or a row fired by a
+                // remote poller leader — is seen within one interval.
+                var remaining = Duration.between(now, deadline);
+                var chunk = remaining.compareTo(wakeRecheckInterval) < 0 ? remaining : wakeRecheckInterval;
                 boolean woken;
                 try {
                     parkingLot.parkWithTimeout(parkKey, chunk);
@@ -410,29 +577,89 @@ final class SignalManager {
                 // stale and stands down before it can take the signal (M7).
                 standDownIfTerminated(ctx);
 
-                // Advisory probe (Issue 20 / Ruling 5): a store exception here
-                // must not tear down a healthy parked workflow — treat it as
-                // "no signal seen this interval" and try again next chunk.
-                var signals = ParkProbe.read("awaitSignal.getUnconsumedSignals", ctx.workflowId(),
-                        () -> store.getUnconsumedSignals(ctx.workflowId(), signalName),
-                        List.<WorkflowSignal>of());
-                if (!signals.isEmpty()) {
-                    var result = consumeSignal(ctx, seq, stepName, signalName, signals.getFirst(), type);
-                    updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
-                    observer.workflowUnparked(observed(ctx), ParkKind.SIGNAL);
-                    return result;
-                }
                 if (woken) {
-                    // Spurious wake — e.g. a pub/sub self-echo of a previous
-                    // delivery arriving after this key was consumed and
-                    // re-parked (loops like collectSignals await the same
-                    // name repeatedly). Re-park; the deadline still bounds us.
-                    logger.debug("Spurious wake for workflow '{}' signal '{}' — re-parking",
-                            ctx.workflowId(), signalName);
+                    // A signal, a timer transition — or a spurious wake, e.g. a
+                    // pub/sub self-echo of a previous delivery arriving after
+                    // this key was consumed and re-parked (collectSignals awaits
+                    // the same name repeatedly). The next pass decides.
+                    logger.debug("Workflow '{}' woke while awaiting signal '{}' — re-checking",
+                            workflowId, signalName);
                 }
             }
         } finally {
-            unsubscribeForWake(ctx.workflowId());
+            awaitWakeKeys.remove(wakeKey, parkKey);
+        }
+    }
+
+    /**
+     * Records a signal as the outcome of a parked await, best-effort cancels
+     * the now-moot deadline row (the {@code SIGNAL_RECEIVED} memo is the
+     * truth; a row left {@code PENDING} only fires later for nobody), and
+     * closes the park.
+     */
+    private <T> T consumeOutcome(WorkflowContext ctx, int outcomeSeq, String stepName, String signalName,
+                                 WorkflowSignal signal, Class<T> type, @Nullable UUID timerDbId) {
+        var result = consumeSignal(ctx, outcomeSeq, stepName, signalName, signal, type);
+        if (timerDbId != null) {
+            try {
+                store.markTimerCancelled(timerDbId);
+            } catch (RuntimeException e) {
+                logger.debug("Could not cancel the deadline row of workflow '{}' signal '{}' after "
+                        + "consuming it — the row fires later for nobody: {}",
+                        ctx.workflowId(), signalName, e.toString());
+            }
+        }
+        updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
+        observer.workflowUnparked(observed(ctx), ParkKind.SIGNAL);
+        return result;
+    }
+
+    /** Memoizes a {@code SIGNAL_TIMEOUT} outcome at {@code seq}. */
+    private void appendTimeout(WorkflowContext ctx, int seq, String stepName, String signalName,
+                               Duration timeout) {
+        var timeoutDetail = serializer.serialize(new SignalTimeoutDetail(signalName, timeout.toString()));
+        appendEvent(ctx, seq, EventType.SIGNAL_TIMEOUT, stepName, timeoutDetail);
+    }
+
+    /**
+     * Reads a parked await's {@link AwaitSignalDetail}. Unreadable means a
+     * newer node shaped it: stand down, never fail (RULING 9).
+     */
+    private AwaitSignalDetail readAwaitDetail(String workflowId, int seq, String signalName,
+                                              WorkflowEvent scheduled) {
+        return UnknownHistoryGuard.requireReadablePayload(workflowId, seq,
+                "await detail of signal '%s'".formatted(signalName),
+                () -> {
+                    var detail = serializer.deserialize(scheduled.payload(), AwaitSignalDetail.class);
+                    if (detail == null || detail.timerId() == null || detail.deadline() == null) {
+                        throw new SerializationException("await detail is missing its timerId or deadline",
+                                new IllegalArgumentException(String.valueOf(scheduled.payload())));
+                    }
+                    return detail;
+                });
+    }
+
+    private static Instant parseDeadline(String deadline) {
+        try {
+            return Instant.parse(deadline);
+        } catch (DateTimeParseException e) {
+            throw new SerializationException("await deadline is not an ISO-8601 instant", e);
+        }
+    }
+
+    /**
+     * Wakes a parked await whose deadline row just transitioned — called by
+     * {@code WorkflowExecutor.fireTimer}/{@code cancelTimer} after a
+     * successful compare-and-set. A no-op unless an await on this node is
+     * waiting on that row; the woken await reads the row and times out.
+     *
+     * @param workflowId the workflow's business ID
+     * @param timerId    the timer's logical ID (e.g. {@code "await-signal-7"})
+     */
+    void onTimerTransition(String workflowId, String timerId) {
+        var parkKey = awaitWakeKeys.get(workflowId + ":" + timerId);
+        if (parkKey != null) {
+            parkingLot.unpark(parkKey, null);
         }
     }
 
@@ -574,6 +801,17 @@ final class SignalManager {
      * await was waiting for and the timeout that elapsed (ISO-8601).
      */
     record SignalTimeoutDetail(String signalName, String timeout) {
+    }
+
+    /**
+     * Payload of the {@link EventType#TIMER_SCHEDULED} memo a parked
+     * {@code awaitSignal} writes at its first slot (C12 / F4): the awaited
+     * signal, the logical ID of its deadline timer row
+     * ({@code await-signal-<seq>}), the requested timeout and the absolute
+     * deadline (both ISO-8601). Replay resumes from {@code deadline} — never
+     * from {@code Instant.now()}.
+     */
+    record AwaitSignalDetail(String signalName, String timerId, String timeout, String deadline) {
     }
 
     private void appendEvent(WorkflowContext ctx, int seq, EventType type,
