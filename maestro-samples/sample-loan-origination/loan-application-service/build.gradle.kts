@@ -42,6 +42,12 @@ dependencies {
 
     testImplementation(project(":maestro-test"))
     testImplementation(libs.spring.boot.starter.test)
+    // The *ContextBootTest boots the real application context against a
+    // Testcontainers Postgres, with Postgres messaging and locking standing in
+    // for Kafka/Valkey so no broker or cache is needed: far enough for
+    // WorkflowRegistrar to validate every @DurableWorkflow bean (R55).
+    testImplementation(project(":maestro-messaging-postgres"))
+    testImplementation(libs.testcontainers.postgresql)
 }
 
 // ── The v2 deployment: parallel verification behind workflow.version() ────
