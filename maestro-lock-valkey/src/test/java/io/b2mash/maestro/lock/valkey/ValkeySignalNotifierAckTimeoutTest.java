@@ -2,6 +2,8 @@ package io.b2mash.maestro.lock.valkey;
 
 import io.lettuce.core.RedisFuture;
 import io.lettuce.core.api.StatefulRedisConnection;
+import io.lettuce.core.api.async.RedisAsyncCommands;
+import io.lettuce.core.api.sync.RedisCommands;
 import io.lettuce.core.pubsub.StatefulRedisPubSubConnection;
 import io.lettuce.core.pubsub.api.async.RedisPubSubAsyncCommands;
 import io.lettuce.core.pubsub.api.sync.RedisPubSubCommands;
@@ -49,6 +51,8 @@ class ValkeySignalNotifierAckTimeoutTest {
     private RedisPubSubAsyncCommands<String, String> async;
     private RedisFuture<Void> subscribeFuture;
     private RedisFuture<Void> unsubscribeFuture;
+    private final CompletableFuture<Long> neverPublished = new CompletableFuture<>();
+    private RedisAsyncCommands<String, String> publishAsync;
     private ValkeySignalNotifier notifier;
 
     @BeforeEach
@@ -79,6 +83,23 @@ class ValkeySignalNotifierAckTimeoutTest {
         };
         doAnswer(blockForever).when(sync).subscribe(anyString());
         doAnswer(blockForever).when(sync).unsubscribe(anyString());
+
+        // PUBLISH (Issue 32): the reply never arrives; the sync API blocks.
+        publishAsync = mock(RedisAsyncCommands.class);
+        RedisCommands<String, String> publishSync = mock(RedisCommands.class);
+        RedisFuture<Long> publishFuture = mock(RedisFuture.class);
+        when(publish.async()).thenReturn(publishAsync);
+        when(publish.sync()).thenReturn(publishSync);
+        when(publishAsync.publish(anyString(), anyString())).thenReturn(publishFuture);
+        when(publishFuture.whenComplete(any()))
+                .thenAnswer(inv -> neverPublished.whenComplete(inv.getArgument(0)));
+        when(publishFuture.get()).thenAnswer(inv -> neverPublished.get());
+        when(publishFuture.get(anyLong(), any(TimeUnit.class)))
+                .thenAnswer(inv -> neverPublished.get(inv.getArgument(0), inv.getArgument(1)));
+        when(publishSync.publish(anyString(), anyString())).thenAnswer(inv -> {
+            never.await();
+            return 0L;
+        });
 
         notifier = new ValkeySignalNotifier(pubSub, publish);
     }
@@ -149,5 +170,28 @@ class ValkeySignalNotifierAckTimeoutTest {
     @DisplayName("unsubscribe does not wait for the server")
     void unsubscribe_doesNotWait() {
         assertTimeoutPreemptively(Duration.ofSeconds(1), () -> notifier.unsubscribe("wf-brownout"));
+    }
+
+    @Test
+    @DisplayName("publish whose reply never arrives returns immediately (Issue 32)")
+    void unansweredPublish_returnsImmediately() {
+        assertTimeoutPreemptively(Duration.ofSeconds(1),
+                () -> notifier.publish("wf-brownout", "approval"));
+    }
+
+    @Test
+    @DisplayName("publish whose reply fails later, or that cannot be issued, never throws (Issue 32)")
+    void failedPublish_neverThrows() {
+        assertTimeoutPreemptively(Duration.ofSeconds(2), () -> {
+            notifier.publish("wf-brownout", "approval");
+            // The command timeout eventually fails the pending reply — logged, not thrown.
+            neverPublished.completeExceptionally(new IllegalStateException("Command timed out"));
+            notifier.publish("wf-brownout", "approval");
+
+            // The command cannot even be issued (e.g. the connection is closed).
+            when(publishAsync.publish(anyString(), anyString()))
+                    .thenThrow(new IllegalStateException("connection closed"));
+            notifier.publish("wf-brownout", "approval");
+        });
     }
 }

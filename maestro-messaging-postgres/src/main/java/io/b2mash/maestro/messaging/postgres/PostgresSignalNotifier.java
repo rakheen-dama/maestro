@@ -9,6 +9,8 @@ import javax.sql.DataSource;
 import java.sql.SQLException;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * PostgreSQL {@code LISTEN/NOTIFY} implementation of {@link SignalNotifier}.
@@ -23,7 +25,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * via Postgres persistence and discovered on replay/recovery.
  *
  * <h2>Thread Safety</h2>
- * <p>This class is thread-safe. Publish uses a pooled connection per call.
+ * <p>This class is thread-safe. Publish borrows a pooled connection per call,
+ * on a virtual thread of its own.
  * Subscriptions are tracked in a {@link ConcurrentHashMap} and dispatched
  * from the notification listener's polling thread.
  *
@@ -40,6 +43,13 @@ public final class PostgresSignalNotifier implements SignalNotifier, AutoCloseab
     private final PostgresNotificationListener notificationListener;
     private final Map<String, SignalCallback> callbacks = new ConcurrentHashMap<>();
 
+    /** Whether the last {@code NOTIFY} failed — rate-limits outage logging to one WARN. */
+    private final AtomicBoolean notifyFailing = new AtomicBoolean();
+
+    /** Virtual threads that carry each {@code NOTIFY} off the caller's thread (Issue 32). */
+    private static final ThreadFactory NOTIFY_THREADS =
+            Thread.ofVirtual().name("maestro-pg-notify-", 0).factory();
+
     /**
      * Creates a new Postgres-based signal notifier.
      *
@@ -51,16 +61,52 @@ public final class PostgresSignalNotifier implements SignalNotifier, AutoCloseab
         this.notificationListener = notificationListener;
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Hands the {@code NOTIFY} to a fresh virtual thread and returns without
+     * waiting for it (Issue 32): borrowing a pooled connection can park for the
+     * pool's connection timeout when the pool is exhausted or Postgres is
+     * unreachable, and the SPI requires {@code publish} not to block its
+     * caller. The first failure after a success logs one {@code WARN}; further
+     * failures log at {@code DEBUG} until a {@code NOTIFY} succeeds again,
+     * which logs one {@code INFO}. A missed notification is covered by the
+     * receiving await's {@code maestro.signal.wake-recheck-interval} store
+     * re-read. Never throws.
+     */
     @Override
     public void publish(String workflowId, String signalName) {
         var channel = channelFor(workflowId);
+        try {
+            NOTIFY_THREADS.newThread(() -> sendNotify(channel, signalName)).start();
+        } catch (RuntimeException e) {
+            onNotifyFailed(signalName, channel, e);
+        }
+    }
+
+    private void sendNotify(String channel, String signalName) {
         try (var conn = dataSource.getConnection();
              var stmt = conn.createStatement()) {
             stmt.execute("NOTIFY " + channel + ", '" + escapePayload(signalName) + "'");
-        } catch (SQLException e) {
+        } catch (SQLException | RuntimeException e) {
             // Best-effort — failures are tolerated per SPI contract
-            logger.warn("Failed to NOTIFY signal '{}' on channel '{}': {}",
-                    signalName, channel, e.getMessage());
+            onNotifyFailed(signalName, channel, e);
+            return;
+        }
+        if (notifyFailing.compareAndSet(true, false)) {
+            logger.info("Signal notifications over Postgres NOTIFY are being delivered again");
+        }
+    }
+
+    private void onNotifyFailed(String signalName, String channel, Exception e) {
+        if (notifyFailing.compareAndSet(false, true)) {
+            logger.warn("Failed to NOTIFY signal '{}' on channel '{}' ({}) — cross-node wakes fall "
+                            + "back to the maestro.signal.wake-recheck-interval store re-read; further "
+                            + "NOTIFY failures are logged at DEBUG until one succeeds",
+                    signalName, channel, e.toString());
+        } else {
+            logger.debug("Failed to NOTIFY signal '{}' on channel '{}': {}",
+                    signalName, channel, e.toString());
         }
     }
 

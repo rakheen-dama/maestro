@@ -199,7 +199,10 @@ With `maestro.lock.type: postgres`, the whole Valkey auto-config is disabled
 — **Postgres-lock deployments have no `SignalNotifier`**, so cross-node
 signal wake rides the wake-recheck interval alone (bounded ≤ the configured
 interval, by design — the recheck exists precisely so pub/sub is an
-optimisation, never a correctness dependency). See §7 below for the
+optimisation, never a correctness dependency). The notification itself is
+best-effort and bounded: `signal()` returns once the row is saved and never
+waits for the notifier, so a Valkey (or `NOTIFY`) outage delays the remote
+wake by at most one recheck interval instead of stalling the sender (Issue 32). See §7 below for the
 lock-backend matrix in full.
 
 ---

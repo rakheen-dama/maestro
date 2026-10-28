@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed — a Valkey brownout no longer stalls `signal()` or turns client retries into duplicate signals (Issue 32)
+
+- **Before:** `SignalManager.deliverSignal` saved the signal row and then called `SignalNotifier.publish` on the caller's thread, and `ValkeySignalNotifier.publish` was a synchronous `PUBLISH` bounded only by Lettuce's 60 s command timeout. While Valkey was unreachable every `WorkflowHandle.signal()` and `@MaestroSignalListener` delivery blocked for the outage although its signal was already durable; a caller with a shorter timeout retried and persisted a byte-identical duplicate row (nine in the triaged chaos soak, which exhausted the loan sample's `MAX_SIGNATURE_SIGNALS = 5` and failed the workflow).
+- **Now:** the engine hands the notification to a virtual thread it never awaits, after the row is saved, so a slow notifier cannot hold any sender. `ValkeySignalNotifier.publish` is asynchronous and `PostgresSignalNotifier.publish` hands its `NOTIFY` off the same way; both log one `WARN` per outage (then `DEBUG`, then one `INFO` on recovery) instead of one per signal. A lost notification is covered by the parked await's `maestro.signal.wake-recheck-interval` store re-read, as before.
+- **SPI:** `SignalNotifier.publish` (signature unchanged) is now documented to return promptly without waiting for the transport; delivery is best-effort. Custom notifiers that block should switch to an asynchronous send. Pinned by `SignalManagerTest.deliverSignalDoesNotWaitForABlockingNotifier`, `ValkeySignalNotifierTest.BrownoutTests`, `PostgresSignalNotifierTest.publishDoesNotWaitForAConnection` and `ValkeyBrownoutSignalDeliveryIT`.
+
 ### Added — maestro-bom platform
 
 - New published platform `io.b2mash.maestro:maestro-bom` constrains `maestro-core`, `maestro-spring-boot-starter`, `maestro-store-jdbc`, `maestro-store-postgres`, `maestro-messaging-kafka`, `maestro-messaging-postgres`, `maestro-lock-valkey`, `maestro-lock-postgres`, `maestro-admin-client` and `maestro-test` to one version. Import it with `implementation(platform("io.b2mash.maestro:maestro-bom:<version>"))` and declare the modules without versions. README, CONTRIBUTING and getting-started now show the BOM and the real build/test commands (`:maestro-integration-tests:test` / `:e2eTest`, `:maestro-store-postgres:test`; there is no `integrationTest` task), and the README's competitive table was rewritten.

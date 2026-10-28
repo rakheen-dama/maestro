@@ -9,10 +9,12 @@ import org.slf4j.LoggerFactory;
 
 import java.io.Closeable;
 import java.time.Duration;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Valkey/Redis implementation of {@link SignalNotifier} using pub/sub.
@@ -61,6 +63,9 @@ public final class ValkeySignalNotifier extends RedisPubSubAdapter<String, Strin
     private final StatefulRedisConnection<String, String> publishConnection;
     private final ConcurrentHashMap<String, SignalCallback> callbacks = new ConcurrentHashMap<>();
 
+    /** Whether the last publish outcome was a failure — rate-limits outage logging to one WARN. */
+    private final AtomicBoolean publishFailing = new AtomicBoolean();
+
     /**
      * Creates a new Valkey signal notifier.
      *
@@ -79,15 +84,55 @@ public final class ValkeySignalNotifier extends RedisPubSubAdapter<String, Strin
         this.pubSubConnection.addListener(this);
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Issues the {@code PUBLISH} asynchronously and returns without waiting
+     * for the server's reply (Issue 32). The synchronous form waited for
+     * Lettuce's command timeout (60 s by default) during a Valkey brownout,
+     * stalling every signal sender for the whole outage. The reply's outcome is
+     * logged from the command's future, on Lettuce's event loop: the first
+     * failure after a success logs one {@code WARN}, further failures log at
+     * {@code DEBUG} until a publish succeeds again, which logs one {@code INFO}
+     * — so an outage costs two log lines, not one per signal. A command that
+     * cannot be issued at all (e.g. a closed connection) is treated the same
+     * way; this method never throws. A missed notification is covered by the
+     * receiving await's {@code maestro.signal.wake-recheck-interval} store
+     * re-read.
+     */
     @Override
     public void publish(String workflowId, String signalName) {
         var channel = CHANNEL_PREFIX + workflowId;
         try {
-            publishConnection.sync().publish(channel, signalName);
-            logger.debug("Published signal '{}' to channel '{}'", signalName, channel);
-        } catch (Exception e) {
-            logger.warn("Failed to publish signal '{}' to channel '{}': {}",
-                    signalName, channel, e.getMessage());
+            publishConnection.async().publish(channel, signalName)
+                    .whenComplete((receivers, failure) -> {
+                        if (failure == null) {
+                            onPublished(signalName, channel);
+                        } else {
+                            onPublishFailed(signalName, channel, failure);
+                        }
+                    });
+        } catch (RuntimeException e) {
+            onPublishFailed(signalName, channel, e);
+        }
+    }
+
+    private void onPublished(String signalName, String channel) {
+        if (publishFailing.compareAndSet(true, false)) {
+            logger.info("Signal notifications to Valkey are being delivered again");
+        }
+        logger.debug("Published signal '{}' to channel '{}'", signalName, channel);
+    }
+
+    private void onPublishFailed(String signalName, String channel, Throwable failure) {
+        if (publishFailing.compareAndSet(false, true)) {
+            logger.warn("Failed to publish signal '{}' to channel '{}' ({}) — cross-node wakes fall "
+                            + "back to the maestro.signal.wake-recheck-interval store re-read; further "
+                            + "publish failures are logged at DEBUG until one succeeds",
+                    signalName, channel, describe(failure));
+        } else {
+            logger.debug("Failed to publish signal '{}' to channel '{}': {}",
+                    signalName, channel, describe(failure));
         }
     }
 
@@ -165,8 +210,9 @@ public final class ValkeySignalNotifier extends RedisPubSubAdapter<String, Strin
         }
     }
 
-    private static String describe(Exception e) {
-        var cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
+    private static String describe(Throwable e) {
+        var cause = (e instanceof ExecutionException || e instanceof CompletionException)
+                && e.getCause() != null ? e.getCause() : e;
         return cause.getClass().getSimpleName()
                 + (cause.getMessage() != null ? ": " + cause.getMessage() : "");
     }

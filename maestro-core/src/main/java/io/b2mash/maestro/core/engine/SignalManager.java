@@ -38,6 +38,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
@@ -106,6 +107,10 @@ final class SignalManager {
      * the sequence of the await's {@code TIMER_SCHEDULED} memo.
      */
     static final String TIMER_ID_PREFIX = "await-signal-";
+
+    /** Virtual threads that carry {@link SignalNotifier#publish} off the sender's thread (Issue 32). */
+    private static final ThreadFactory NOTIFY_THREADS =
+            Thread.ofVirtual().name("maestro-signal-notify-", 0).factory();
 
     private final WorkflowStore store;
     private final @Nullable WorkflowMessaging messaging;
@@ -272,6 +277,14 @@ final class SignalManager {
      * with a {@code null} instance ID (pre-delivery pattern) and adopted
      * when the instance is created via {@link #adoptOrphanedSignals}.
      *
+     * <p>The cross-instance {@link SignalNotifier} wake is sent only after the
+     * row is saved, on a separate virtual thread this method never awaits
+     * (Issue 32): a notifier stalled on a brownout cannot hold the sender, so a
+     * sender never times out on a signal that is already durable and retries it
+     * into a duplicate row. A notification that arrives late, or after the
+     * signal was consumed, is harmless — the wake path re-reads the store — and
+     * one that never arrives is covered by the parked await's wake-recheck.
+     *
      * @param workflowId the target workflow's business ID
      * @param signalName the signal name
      * @param payload    the signal payload, or {@code null}
@@ -326,17 +339,36 @@ final class SignalManager {
         var parkKey = workflowId + ":signal:" + signalName;
         parkingLot.unpark(parkKey, signalPayload);
 
-        // Notify other instances (best-effort)
+        // Notify other instances — best-effort, and never on this thread.
         if (signalNotifier != null) {
-            try {
-                signalNotifier.publish(workflowId, signalName);
-            } catch (Exception e) {
-                logger.warn("Failed to publish signal notification for workflow '{}': {}",
-                        workflowId, e.getMessage());
-            }
+            notifyOffThread(signalNotifier, workflowId, signalName);
         }
 
         logger.debug("Delivered signal '{}' to workflow '{}'", signalName, workflowId);
+    }
+
+    /**
+     * Hands the cross-instance wake to a fresh virtual thread and returns at
+     * once — the notification is never awaited (Issue 32). Called only after
+     * the signal row is saved, so whatever the notifier does, the signal is
+     * already durable.
+     *
+     * <p>A {@link RuntimeException} from the notifier is logged at {@code WARN}
+     * once per failed notification (the SPI asks implementations not to throw,
+     * so this is the exceptional path, not the outage path — a notifier that
+     * honours the contract rate-limits its own outage logging). An
+     * {@link Error} is deliberately not caught.
+     */
+    private static void notifyOffThread(SignalNotifier notifier, String workflowId, String signalName) {
+        NOTIFY_THREADS.newThread(() -> {
+            try {
+                notifier.publish(workflowId, signalName);
+            } catch (RuntimeException e) {
+                logger.warn("Failed to publish signal notification for workflow '{}' — a parked "
+                                + "await on another node wakes at its next wake-recheck: {}",
+                        workflowId, e.toString());
+            }
+        }).start();
     }
 
     // ── Await ───────────────────────────────────────────────────────────

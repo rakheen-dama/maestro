@@ -496,6 +496,9 @@ replay) — and across a Valkey brownout: if the acknowledgement does not arrive
 within 5 s the workflow parks anyway (a `WARN` names this fallback) and the
 recheck interval bounds its wake latency, rather than every `awaitSignal`
 stalling for Lettuce's 60 s command timeout.
+The sending side is bounded the same way: the cross-node notification is
+best-effort and never awaited by `signal()` (Issue 32) — a notification lost
+to a brownout is covered by this recheck, not retried.
 
 `maestro.lock.key-prefix` (see [Lock Configuration](#lock-configuration))
 now also applies to the activity execution lock, not just the instance

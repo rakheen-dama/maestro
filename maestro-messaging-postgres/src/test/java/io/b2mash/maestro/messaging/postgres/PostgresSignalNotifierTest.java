@@ -3,13 +3,19 @@ package io.b2mash.maestro.messaging.postgres;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import javax.sql.DataSource;
+import java.lang.reflect.Proxy;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -146,6 +152,32 @@ class PostgresSignalNotifierTest extends PostgresMessagingTestSupport {
                                           String signalName, ConcurrentLinkedQueue<String> woken) {
         notifier.publish(workflowId, signalName);
         await().atMost(BOUND).pollInterval(Duration.ofMillis(50)).until(() -> !woken.isEmpty());
+    }
+
+    @Test
+    @DisplayName("publish returns promptly when a connection cannot be had — the NOTIFY is handed off (Issue 32)")
+    void publishDoesNotWaitForAConnection() throws Exception {
+        // A pool that cannot hand out a connection (exhausted, or Postgres
+        // unreachable) parks getConnection() for its connection timeout.
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var stalled = (DataSource) Proxy.newProxyInstance(
+                DataSource.class.getClassLoader(), new Class<?>[] {DataSource.class},
+                (proxy, method, args) -> {
+                    if (method.getName().equals("getConnection")) {
+                        entered.countDown();
+                        release.await(30, TimeUnit.SECONDS);
+                        throw new SQLException("Connection is not available, request timed out");
+                    }
+                    throw new UnsupportedOperationException(method.getName());
+                });
+        try (var notifier = new PostgresSignalNotifier(stalled, notificationListener)) {
+            assertTimeoutPreemptively(Duration.ofSeconds(1),
+                    () -> notifier.publish("wf-stalled-" + unique(), "approval"));
+            assertTrue(entered.await(5, TimeUnit.SECONDS), "the NOTIFY must still be attempted");
+        } finally {
+            release.countDown();
+        }
     }
 
     @Test

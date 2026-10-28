@@ -136,7 +136,8 @@ class SignalManagerTest {
         var signals = store.getUnconsumedSignals("order-1", "payment.result");
         assertEquals(1, signals.size());
 
-        // Notifier was called
+        // Notifier was called — off the sender's thread, so await it (Issue 32)
+        await().atMost(Duration.ofSeconds(5)).until(() -> !notifier.published.isEmpty());
         assertEquals(1, notifier.published.size());
         assertEquals("order-1:payment.result", notifier.published.getFirst());
     }
@@ -156,6 +157,53 @@ class SignalManagerTest {
         // Signal should still be persisted
         var signals = store.getUnconsumedSignals("order-1", "payment.result");
         assertEquals(1, signals.size(), "Signal must persist even when notifier fails");
+    }
+
+    @Test
+    @DisplayName("Issue 32: deliverSignal returns promptly when SignalNotifier.publish blocks — one row, notified off-thread")
+    void deliverSignalDoesNotWaitForABlockingNotifier() throws Exception {
+        // A notifier stuck on a brownout: publish parks until released (Lettuce's
+        // sync PUBLISH against a paused Valkey sits for its 60 s command timeout).
+        var publishEntered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var publishThread = new AtomicReference<Thread>();
+        var blocking = new SignalNotifier() {
+            @Override
+            public void publish(String workflowId, String signalName) {
+                publishThread.set(Thread.currentThread());
+                publishEntered.countDown();
+                try {
+                    release.await(30, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+
+            @Override
+            public void subscribe(String workflowId, SignalCallback callback) {}
+
+            @Override
+            public void unsubscribe(String workflowId) {}
+        };
+        var sm = new SignalManager(store, messaging, blocking, serializer, parkingLot);
+        createInstance("order-1", UUID.randomUUID());
+
+        try {
+            var started = System.nanoTime();
+            sm.deliverSignal("order-1", "payment.result", "paid");
+            var elapsed = Duration.ofNanos(System.nanoTime() - started);
+
+            assertTrue(elapsed.compareTo(Duration.ofSeconds(1)) < 0,
+                    "deliverSignal must not wait for the notifier; took " + elapsed);
+            assertEquals(1, store.getUnconsumedSignals("order-1", "payment.result").size(),
+                    "exactly one signal row — the store is the truth, the notification is extra");
+            // The notification is still sent — on another thread, never awaited.
+            assertTrue(publishEntered.await(5, TimeUnit.SECONDS), "publish must still be invoked");
+            assertFalse(publishThread.get() == Thread.currentThread(),
+                    "publish must not run on the signal sender's thread");
+        } finally {
+            release.countDown();
+        }
     }
 
     // ── awaitSignal — replay path ──────────────────────────────────────

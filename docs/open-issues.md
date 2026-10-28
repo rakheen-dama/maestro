@@ -281,7 +281,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [29](#issue-29) | Shutdown never interrupts threads blocked waiting for a task-queue slot | Library gap — shutdown latency | Low | Open |
 | [30](#issue-30) | Recovery admission is not gated by task-queue capacity | Library gap — load distribution | Medium | Open |
 | [31](#issue-31) | Services sharing one set of `maestro_*` tables fire each other's timers | Library gap — multi-service wake latency | Low | Open |
-| [32](#issue-32) | A Valkey outage stalls every signal send after the signal is durable, so caller retries persist duplicate signals | Library defect | Medium | Open |
+| [32](#issue-32) | A Valkey outage stalls every signal send after the signal is durable, so caller retries persist duplicate signals | Library defect | Medium | **Resolved** |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -2699,13 +2699,32 @@ requirement and the latency cost of breaking it.
 
 ### Issue 32 — A Valkey outage stalls every signal send after the signal is durable, so caller retries persist duplicate signals {#issue-32}
 
-> **Open.** Filed from the 2026-10-24 bug-fix cycle's chaos triage (plan 06
+> **Resolved.** Commit `<hash>` ("fix(signals): signal notification is handed off and bounded — a Valkey brownout no longer stalls signal() or persists retry duplicates (Issue 32)"), plan 04 Task 8 (Ruling R56).
+> `SignalManager.deliverSignal` now hands `SignalNotifier.publish` to a virtual
+> thread it never awaits, after the signal row is saved, so the guarantee holds
+> for every notifier; `ValkeySignalNotifier.publish` issues `async().publish`
+> and logs the outcome from the future (one `WARN` per outage, `DEBUG` after,
+> one `INFO` on recovery); `PostgresSignalNotifier.publish` hands its `NOTIFY`
+> to a virtual thread the same way (a pool that cannot lend a connection parks
+> `getConnection()` for its connection timeout). The `SignalNotifier.publish`
+> contract now says it must return promptly and that delivery is best-effort,
+> covered by the wake-recheck (`maestro.signal.wake-recheck-interval`). Pinned by
+> `SignalManagerTest.deliverSignalDoesNotWaitForABlockingNotifier`,
+> `ValkeySignalNotifierTest.BrownoutTests` (paused container),
+> `ValkeySignalNotifierAckTimeoutTest.unansweredPublish_returnsImmediately` /
+> `failedPublish_neverThrows`, `PostgresSignalNotifierTest.publishDoesNotWaitForAConnection`
+> and `ValkeyBrownoutSignalDeliveryIT` (real Valkey paused, real Postgres:
+> `signal()` returns in well under 1 s, one row, and the parked workflow
+> completes from the store re-read while Valkey is still paused). Not changed:
+> the chaos driver's `post()` re-POST and a caller-supplied dedup key on
+> `signal()` (see "Proposed fix" below) — client retries of a signal that did
+> time out for another reason still persist duplicates.
+>
+> Filed from the 2026-10-24 bug-fix cycle's chaos triage (plan 06
 > Task 2): soak run 40674015602 (2026-10-28, `66cdf95`, seed
 > `-6945054112340787534`), workflow `loan-chaos-11501689961368764082-1145`,
 > the only I1 violation of that run. Dump, timeline and classification:
 > `docs/superpowers/plans/2026-10-24-bugfix-cycle/triage/ViolationTriageReport.md`.
-> The mechanism is unchanged at the cycle's HEAD. Recorded, not fixed, in that
-> cycle; task stub in plan 04 Task 8.
 
 **Kind:** Library defect. **Severity:** Medium (no signal is lost, but a 27 s
 Valkey pause turned one borrower's signature into nine identical signal rows,
@@ -2806,10 +2825,10 @@ deliberate design decision, but both now carry measured evidence from the
 same cycle — Issue 11's split-brain duplicate-side-effect count and Issue
 12's benchmark — appended to their sections (see "Known limitations" below).
 
-**From the 2026-10-24 bug-fix cycle:** Issue 32 first among the issues that
-cycle left open — it is small, in the signal hot path, has the same shape as
-Issue 3, and is the only one observed failing a workflow (chaos soak
-40674015602). Issues 29–31 are latency/load gaps with no correctness impact.
+**From the 2026-10-24 bug-fix cycle:** Issue 32 — small, in the signal hot
+path, the same shape as Issue 3, and the only one observed failing a workflow
+(chaos soak 40674015602) — was fixed in that cycle after all (plan 04 Task 8,
+R56). Issues 29–31 are latency/load gaps with no correctness impact.
 
 ---
 
