@@ -90,7 +90,7 @@ final class SignalJanitor {
      *
      * @throws IllegalStateException if already started
      */
-    void start() {
+    synchronized void start() {
         if (!started.compareAndSet(false, true)) {
             throw new IllegalStateException("Signal janitor already started");
         }
@@ -107,7 +107,7 @@ final class SignalJanitor {
      * <p>Interrupts the janitor thread and waits up to 5 seconds for it to
      * terminate. After stopping, the janitor cannot be restarted.
      */
-    void stop() {
+    synchronized void stop() {
         running = false;
         var thread = janitorThread;
         if (thread != null) {

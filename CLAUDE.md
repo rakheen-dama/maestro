@@ -24,7 +24,7 @@ Read these before making architectural decisions:
 
 **Determinism constraint:** Code between activity calls must be deterministic. No `Math.random()`, `LocalDateTime.now()`, `UUID.randomUUID()`, or direct I/O. Use `workflow.currentTime()`, `workflow.randomUUID()`.
 
-**Parallel branches** partition the sequence space: branch *i* of a fork at parent seq `p` allocates from base `p*1000 + (i+1)*1000` (≤999 steps per branch; the 1000th step fails the branch with `BranchSequenceExhaustedException`). `awaitSignal` occupies TWO slots (TIMER_SCHEDULED memo at seq, outcome at seq+1), so it spends two of a branch's 999 steps.
+**Parallel branches** partition the sequence space: branch *i* of a fork at parent seq `p` allocates from base `p*1000 + (i+1)*1000` (≤999 steps per branch; the 1000th step fails the branch with `BranchSequenceExhaustedException`). When it PARKS, `awaitSignal` (and likewise `sleep()`) occupies TWO slots (TIMER_SCHEDULED memo at seq, outcome at seq+1); an already-arrived signal or a non-positive timeout writes only the outcome at seq. The per-branch budget stays 999 steps.
 
 **Workflow beans are prototype-scoped:** `@DurableWorkflow` beans get one workflow object per run, so instance fields are per-run state; `@QueryMethod` answers only on the node that owns the run. Sequence/replay mutators live on `WorkflowContextInternals`, not the public `WorkflowContext`.
 

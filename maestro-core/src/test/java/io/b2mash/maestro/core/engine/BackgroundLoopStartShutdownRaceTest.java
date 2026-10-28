@@ -5,11 +5,16 @@ import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
 
 import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
  * Plan 04 open-issue item 19 (accepted, fixed in the plan 06 tidy): the timer
@@ -22,41 +27,68 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class BackgroundLoopStartShutdownRaceTest {
 
     private static final int ROUNDS = 400;
+    private static final Duration LOOP_INTERVAL = Duration.ofMillis(30);
 
     @Test
     @DisplayName("timer poller")
     void timerPoller() throws Exception {
-        assertEquals(0, leakedLoops(e -> e.startTimerPoller(Duration.ofSeconds(30), 10),
-                WorkflowExecutor::isTimerPollerRunning));
+        assertEquals(0, leakedLoops(e -> e.startTimerPoller(LOOP_INTERVAL, 10)));
     }
 
     @Test
     @DisplayName("recovery poller")
     void recoveryPoller() throws Exception {
-        assertEquals(0, leakedLoops(e -> e.startRecoveryPoller(Map.of(), Duration.ofSeconds(30)),
-                WorkflowExecutor::isRecoveryPollerRunning));
+        assertEquals(0, leakedLoops(e -> e.startRecoveryPoller(Map.of(), LOOP_INTERVAL)));
     }
 
     @Test
     @DisplayName("signal janitor")
     void signalJanitor() throws Exception {
-        assertEquals(0, leakedLoops(e -> e.startSignalJanitor(Duration.ofSeconds(30), Duration.ofDays(1)),
-                WorkflowExecutor::isSignalJanitorRunning));
+        assertEquals(0, leakedLoops(e -> e.startSignalJanitor(LOOP_INTERVAL, Duration.ofDays(1))));
     }
 
     private interface Starter {
         void start(WorkflowExecutor executor);
     }
 
-    private interface RunningProbe {
-        boolean running(WorkflowExecutor executor);
+    /** Counts every call a polling loop makes, whichever of the three loops it is. */
+    private static final class CountingStore extends VersionedInMemoryStore {
+        final AtomicInteger polls = new AtomicInteger();
+
+        @Override
+        public List<io.b2mash.maestro.core.model.WorkflowTimer> getDueTimers(Instant now, int batchSize) {
+            polls.incrementAndGet();
+            return super.getDueTimers(now, batchSize);
+        }
+
+        @Override
+        public List<io.b2mash.maestro.core.model.WorkflowInstance> getRecoverableInstances() {
+            polls.incrementAndGet();
+            return super.getRecoverableInstances();
+        }
+
+        @Override
+        public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+            polls.incrementAndGet();
+            return super.deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff);
+        }
     }
 
-    /** Races start against shutdown {@link #ROUNDS} times; returns how many left the loop running. */
-    private static int leakedLoops(Starter starter, RunningProbe probe) throws Exception {
-        var leaked = new AtomicInteger();
+    /**
+     * Races start against shutdown {@link #ROUNDS} times. A loop that outlived
+     * its executor is detected by what it does, not by what the executor
+     * reports: after {@code shutdown()} has returned and the starter has
+     * finished, the store must see no further polls.
+     *
+     * @return how many rounds left a loop polling
+     */
+    private static int leakedLoops(Starter starter) throws Exception {
+        var stores = new ArrayList<CountingStore>();
+        var snapshots = new ArrayList<Integer>();
+        var starterFailure = new AtomicReference<Throwable>();
         for (var i = 0; i < ROUNDS; i++) {
-            var executor = new WorkflowExecutor(new VersionedInMemoryStore(), null, null, null,
+            var store = new CountingStore();
+            var executor = new WorkflowExecutor(store, null, null, null,
                     new PayloadSerializer(new ObjectMapper()), "node", "maestro:lock:",
                     Duration.ofSeconds(30), true, Duration.ofSeconds(5), Duration.ofSeconds(30),
                     new io.b2mash.maestro.core.observe.RecordingEngineObserver());
@@ -67,17 +99,24 @@ class BackgroundLoopStartShutdownRaceTest {
                     starter.start(executor);
                 } catch (IllegalStateException expectedWhenShutdownWins) {
                     // fine — the executor was already shutting down
-                } catch (Exception e) {
-                    throw new AssertionError(e);
+                } catch (Throwable t) {
+                    starterFailure.set(t);
                 }
             });
             barrier.await();
             executor.shutdown();
             starting.join();
-            if (probe.running(executor)) {
-                leaked.incrementAndGet();
+            stores.add(store);
+            snapshots.add(store.polls.get());
+        }
+        assertNull(starterFailure.get(), () -> "starter thread failed: " + starterFailure.get());
+        Thread.sleep(LOOP_INTERVAL.multipliedBy(6));
+        var leaked = 0;
+        for (var i = 0; i < ROUNDS; i++) {
+            if (stores.get(i).polls.get() != snapshots.get(i)) {
+                leaked++;
             }
         }
-        return leaked.get();
+        return leaked;
     }
 }

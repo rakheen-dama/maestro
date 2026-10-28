@@ -108,7 +108,7 @@ final class TimerPoller {
      *
      * @throws IllegalStateException if already started
      */
-    void start() {
+    synchronized void start() {
         if (!started.compareAndSet(false, true)) {
             throw new IllegalStateException("Timer poller already started");
         }
@@ -126,7 +126,7 @@ final class TimerPoller {
      * <p>Interrupts the poller thread and waits up to 5 seconds for it
      * to terminate. After stopping, the poller cannot be restarted.
      */
-    void stop() {
+    synchronized void stop() {
         running = false;
         var thread = pollerThread;
         if (thread != null) {
