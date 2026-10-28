@@ -21,9 +21,11 @@ import java.util.function.Supplier;
  * Per-workflow-instance context bound to the workflow's virtual thread.
  *
  * <p>The activity proxy reads this context to obtain the current sequence
- * number for memoization lookups. The {@link #nextSequence()} method is
- * called once per activity invocation to deterministically assign a
- * sequence number to each step.
+ * number for memoization lookups. The engine assigns a sequence number to
+ * each step deterministically, once per activity invocation, through the
+ * package-private {@code nextSequence()} mutator. The sequence and replay
+ * mutators are engine-internal and reachable only via
+ * {@link WorkflowContextInternals}; workflow code must never call them.
  *
  * <h2>Lifecycle</h2>
  * <ol>
@@ -342,7 +344,7 @@ public final class WorkflowContext {
      * @throws BranchSequenceExhaustedException if this is a bounded branch
      *         context whose block is full
      */
-    public int nextSequence() {
+    int nextSequence() {
         var b = bound;
         if (b != null && sequenceCounter.get() == b.limitExclusive() - 1) {
             throw new BranchSequenceExhaustedException(
@@ -379,7 +381,7 @@ public final class WorkflowContext {
      *
      * @param replaying {@code true} if replaying, {@code false} if live
      */
-    public void setReplaying(boolean replaying) {
+    void setReplaying(boolean replaying) {
         this.replaying = replaying;
     }
 
@@ -432,16 +434,12 @@ public final class WorkflowContext {
     /**
      * Sets the sequence counter to a specific value.
      *
-     * <p><b>Engine-internal method — do not call from workflow code.</b>
-     * Calling this from a workflow method will corrupt the memoization
-     * sequence and break deterministic replay.
-     *
      * <p>Used by the engine for parallel branch contexts, where each
      * branch needs its own sequence space.
      *
      * @param sequence the sequence value to set
      */
-    public void setSequence(int sequence) {
+    void setSequence(int sequence) {
         sequenceCounter.set(sequence);
     }
 

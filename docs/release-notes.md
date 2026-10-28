@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed — WorkflowContext.nextSequence/setSequence/setReplaying are no longer public (F12)
+
+- **Before:** the engine's sequence and replay mutators were `public` on the user-facing `WorkflowContext`, so they showed up in `workflow.` autocomplete where calling one silently corrupts replay (the only guard was a Javadoc "do not call").
+- **Now:** all three are package-private. The engine reaches them through the new `io.b2mash.maestro.core.context.WorkflowContextInternals` (`nextSequence(ctx)`, `setSequence(ctx, n)`, `setReplaying(ctx, b)`), whose Javadoc states it is engine-internal. `currentSequence()`, `isReplaying()` and the identity accessors stay public. **Limitation:** this removes the methods from the workflow author's autocomplete but is not real encapsulation — `maestro-core` has no `module-info.java`, and the engine lives in other packages, so the accessor class must be public.
+- **Upgrade:** third-party `WorkflowOperations` implementers (and tests) that called `ctx.nextSequence()` / `ctx.setSequence(n)` / `ctx.setReplaying(b)` switch to the `WorkflowContextInternals` static equivalents. Pinned by `WorkflowContextSurfaceTest`.
+
 ### Added — WorkflowHandle.status()/result()/terminate(); startAndWait failures carry the cause
 
 - **Before (F11):** `WorkflowHandle` offered only `signal` and `query`, and `query` is answered only by the node running the workflow — so a caller had no way to read a workflow's status or result from an arbitrary node, or to terminate it, through the client. `WorkflowStub.startAndWait` on a failed or terminated workflow threw `WorkflowExecutionException` whose cause was a bare `RuntimeException("Workflow ended with status FAILED")`: the workflow's exception type, message and the termination reason were all discarded.

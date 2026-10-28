@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.saga;
 
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.context.WorkflowContextInternals;
 import io.b2mash.maestro.core.engine.InstanceStatusWriter;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
@@ -325,7 +326,7 @@ class SagaManagerTerminateRaceTest {
 
         // Recovery re-run: every entry is now durable, so each is replay-skipped.
         var replayCtx = newCtx(instance);
-        replayCtx.setReplaying(true);
+        WorkflowContextInternals.setReplaying(replayCtx, true);
         var replayStack = new CompensationStack(); // compensate() drained the first one
         replayStack.push("step-C", () -> { });
         replayStack.push("step-B", () -> { });

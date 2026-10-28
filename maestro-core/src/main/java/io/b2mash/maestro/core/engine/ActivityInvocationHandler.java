@@ -3,6 +3,7 @@ package io.b2mash.maestro.core.engine;
 import io.b2mash.maestro.core.annotation.Compensate;
 import io.b2mash.maestro.core.context.RunCancellation;
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.context.WorkflowContextInternals;
 import io.b2mash.maestro.core.exception.ActivityExecutionException;
 import io.b2mash.maestro.core.exception.ActivityTimeoutException;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
@@ -328,7 +329,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         }
 
         var ctx = WorkflowContext.current();
-        var seq = ctx.nextSequence();
+        var seq = WorkflowContextInternals.nextSequence(ctx);
         var stepName = activityName + "." + method.getName();
 
         // Activity-specific MDC keys (base workflow keys are set by the scoped executor)
@@ -366,7 +367,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             }
 
             // ── Live execution ────────────────────────────────────────
-            ctx.setReplaying(false);
+            WorkflowContextInternals.setReplaying(ctx, false);
             var result = executeLive(method, args, ctx, seq, stepName);
             // Register compensation after successful live execution
             registerCompensationIfAnnotated(proxy, method, args, result, ctx);

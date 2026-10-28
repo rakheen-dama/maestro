@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.saga;
 
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.context.WorkflowContextInternals;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.exception.BranchSequenceExhaustedException;
 import io.b2mash.maestro.core.exception.CompensationException;
@@ -267,7 +268,7 @@ class SagaManagerTest {
     @DisplayName("Parallel compensation: a branch that exhausts its block is recorded COMPENSATION_STEP_FAILED with the typed cause")
     void parallelCompensationBranchExhaustingItsBlock_isRecordedFailed() {
         var stack = new CompensationStack();
-        stack.push("greedy", () -> { for (int i = 0; i < 1000; i++) WorkflowContext.current().nextSequence(); });
+        stack.push("greedy", () -> { for (int i = 0; i < 1000; i++) WorkflowContextInternals.nextSequence(WorkflowContext.current()); });
 
         org.junit.jupiter.api.Assertions.assertThrows(CompensationException.class,
                 () -> sagaManager.compensate(ctx, instance, stack, true));
@@ -290,7 +291,7 @@ class SagaManagerTest {
         var bInvocations = new AtomicInteger();
         var stack = new CompensationStack();
         stack.push("step-B", bInvocations::incrementAndGet);
-        stack.push("step-A", () -> { for (int i = 0; i < 1000; i++) WorkflowContext.current().nextSequence(); });
+        stack.push("step-A", () -> { for (int i = 0; i < 1000; i++) WorkflowContextInternals.nextSequence(WorkflowContext.current()); });
 
         org.junit.jupiter.api.Assertions.assertThrows(CompensationException.class,
                 () -> ScopedValue.where(WorkflowContext.scopedValue(), ctx)
@@ -315,7 +316,7 @@ class SagaManagerTest {
         var bInvocations = new AtomicInteger();
         var stack = new CompensationStack();
         stack.push("step-B", bInvocations::incrementAndGet);
-        stack.push("step-A", () -> { for (int i = 0; i < 999; i++) WorkflowContext.current().nextSequence(); });
+        stack.push("step-A", () -> { for (int i = 0; i < 999; i++) WorkflowContextInternals.nextSequence(WorkflowContext.current()); });
 
         ScopedValue.where(WorkflowContext.scopedValue(), ctx)
                 .run(() -> sagaManager.compensate(ctx, instance, stack, false));

@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.context.WorkflowContextInternals;
 import io.b2mash.maestro.core.context.WorkflowMDC;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.MaestroControlFlowError;
@@ -260,7 +261,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         // the exception — stands down here, before it saves a timer row the
         // winner never scheduled.
         ctx.cancellation().throwIfStale(ctx.workflowId());
-        var seq = ctx.nextSequence();
+        var seq = WorkflowContextInternals.nextSequence(ctx);
         var stepName = "$maestro:sleep";
 
         // Replay check: look for TIMER_SCHEDULED at this sequence
@@ -294,13 +295,13 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             nextEvent.ifPresent(wake -> requireOwnWakeOutcome(wake, ctx.workflowId()));
             if (nextEvent.isPresent() && nextEvent.get().eventType() == EventType.TIMER_FIRED) {
                 // Both events exist — skip the sleep entirely
-                ctx.nextSequence(); // advance past TIMER_FIRED
+                WorkflowContextInternals.nextSequence(ctx); // advance past TIMER_FIRED
                 observer.timerFired(observedTimer(ctx, timerId), true);
                 logger.debug("Replaying completed sleep at seq {} (skipped)", seq);
                 return;
             }
             if (nextEvent.isPresent() && nextEvent.get().eventType() == EventType.TIMER_CANCELLED) {
-                ctx.nextSequence(); // advance past TIMER_CANCELLED
+                WorkflowContextInternals.nextSequence(ctx); // advance past TIMER_CANCELLED
                 observer.timerCancelled(observedTimer(ctx, timerId), true);
                 logger.debug("Replaying cancelled sleep at seq {} (skipped)", seq);
                 throw new TimerCancelledException(ctx.workflowId(), timerId);
@@ -350,7 +351,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         }
 
         // Live path: create and persist the timer
-        ctx.setReplaying(false);
+        WorkflowContextInternals.setReplaying(ctx, false);
         var timerId = "sleep-" + seq;
         var timer = new WorkflowTimer(
                 UUID.randomUUID(),
@@ -583,7 +584,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
      * poller itself is deliberately not instrumented.
      */
     private void recordTimerFired(WorkflowContext ctx, String timerId) {
-        var firedSeq = ctx.nextSequence();
+        var firedSeq = WorkflowContextInternals.nextSequence(ctx);
         appendEvent(ctx, firedSeq, EventType.TIMER_FIRED, TIMER_FIRED_STEP, null);
         observer.timerFired(observedTimer(ctx, timerId), false);
     }
@@ -606,7 +607,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
 
     /** Appends the {@code TIMER_CANCELLED} event and observes the cancel live. */
     private void recordTimerCancelled(WorkflowContext ctx, String timerId) {
-        var cancelledSeq = ctx.nextSequence();
+        var cancelledSeq = WorkflowContextInternals.nextSequence(ctx);
         appendEvent(ctx, cancelledSeq, EventType.TIMER_CANCELLED, TIMER_CANCELLED_STEP, null);
         observer.timerCancelled(observedTimer(ctx, timerId), false);
     }
@@ -683,7 +684,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         // computed from the consumed parentSeq below.
         SequenceSpace.nextParentSeq(ctx.workflowId(), ctx.currentSequence() + 1, tasks.size());
 
-        var parentSeq = ctx.nextSequence();
+        var parentSeq = WorkflowContextInternals.nextSequence(ctx);
         var branchCount = tasks.size();
         var nextParentSeq = SequenceSpace.nextParentSeq(ctx.workflowId(), parentSeq, branchCount);
 
@@ -696,7 +697,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         var joined = false;
 
         // The advance runs in finally so a branch failure leaves the counter past
-        // the branch space — SagaManager.compensate() anchors from ctx.nextSequence(),
+        // the branch space — SagaManager.compensate() anchors from WorkflowContextInternals.nextSequence(ctx),
         // and anchoring at p+1 would make entry i's block coincide with branch i+1's
         // base (C1). Applies to the forked path (n >= 2); the empty and single-task
         // fast paths return before any sequence is consumed.
@@ -719,7 +720,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                 ReplayGuard.requireBranchCount(storedEvent.get(), ctx.workflowId(), branchCount);
             } else {
                 // Live path: record the parallel fork point
-                ctx.setReplaying(false);
+                WorkflowContextInternals.setReplaying(ctx, false);
                 appendEvent(ctx, parentSeq, EventType.SIDE_EFFECT, "$maestro:parallel",
                         serializer.serialize(new ParallelDetail(branchCount)));
             }
@@ -826,7 +827,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             }
 
         } finally {
-            ctx.setSequence(nextParentSeq);
+            WorkflowContextInternals.setSequence(ctx, nextParentSeq);
             // Branch compensations are registered in branch-index order, never
             // in finish order: finish order is a thread race a recovery replay
             // need not reproduce, and SagaManager matches each entry to its
@@ -868,7 +869,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
     @Override
     public Instant currentTime() {
         var ctx = WorkflowContext.current();
-        var seq = ctx.nextSequence();
+        var seq = WorkflowContextInternals.nextSequence(ctx);
 
         // Replay check
         var storedEvent = UnknownHistoryGuard.requireKnown(
@@ -884,7 +885,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         }
 
         // Live path
-        ctx.setReplaying(false);
+        WorkflowContextInternals.setReplaying(ctx, false);
         var now = Instant.now();
         appendEvent(ctx, seq, EventType.SIDE_EFFECT, "$maestro:currentTime", serializer.serialize(now));
         return now;
@@ -895,7 +896,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
     @Override
     public String randomUUID() {
         var ctx = WorkflowContext.current();
-        var seq = ctx.nextSequence();
+        var seq = WorkflowContextInternals.nextSequence(ctx);
 
         // Replay check
         var storedEvent = UnknownHistoryGuard.requireKnown(
@@ -911,7 +912,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         }
 
         // Live path
-        ctx.setReplaying(false);
+        WorkflowContextInternals.setReplaying(ctx, false);
         var uuid = UUID.randomUUID().toString();
         appendEvent(ctx, seq, EventType.SIDE_EFFECT, "$maestro:randomUUID", serializer.serialize(uuid));
         return uuid;
@@ -966,7 +967,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         if (stored.isPresent()) {
             var recorded = recordedVersion(stored.get(), changeId, ctx.workflowId(), peekSeq);
             if (recorded != null) {
-                ctx.nextSequence(); // the marker is ours — consume the slot
+                WorkflowContextInternals.nextSequence(ctx); // the marker is ours — consume the slot
                 resolved = recorded;
                 logger.debug("Replaying version {} for change '{}' at seq {}",
                         resolved, changeId, peekSeq);
@@ -977,8 +978,8 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             }
         } else {
             // Live frontier: record the decision durably, then return it.
-            var seq = ctx.nextSequence();
-            ctx.setReplaying(false);
+            var seq = WorkflowContextInternals.nextSequence(ctx);
+            WorkflowContextInternals.setReplaying(ctx, false);
             appendEvent(ctx, seq, EventType.VERSION_MARKER, VERSION_STEP_PREFIX + changeId,
                     serializer.serialize(new VersionDetail(changeId, maxSupported)));
             resolved = maxSupported;

@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.saga;
 
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.context.WorkflowContextInternals;
 import io.b2mash.maestro.core.context.WorkflowMDC;
 import io.b2mash.maestro.core.exception.CompensationException;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
@@ -229,7 +230,7 @@ public final class SagaManager {
         // seq this call consumes doubles as the anchor for the sequential
         // loop's per-entry sequence blocks (see executeSequential). Its slot
         // was already read and guarded above, before anything durable changed.
-        var startedSeq = ctx.nextSequence();
+        var startedSeq = WorkflowContextInternals.nextSequence(ctx);
         if (startedRecorded) {
             logger.debug("Replaying COMPENSATION_STARTED at seq {} for workflow '{}' — already recorded",
                     startedSeq, ctx.workflowId());
@@ -259,7 +260,7 @@ public final class SagaManager {
         }
 
         // Record COMPENSATION_COMPLETED — same replay-skip guard.
-        var completedSeq = ctx.nextSequence();
+        var completedSeq = WorkflowContextInternals.nextSequence(ctx);
         if (isRecordedMarker(ctx, completedSeq, EventType.COMPENSATION_COMPLETED)) {
             logger.debug("Replaying COMPENSATION_COMPLETED at seq {} for workflow '{}' — already recorded",
                     completedSeq, ctx.workflowId());
@@ -410,7 +411,7 @@ public final class SagaManager {
             // The child shares ctx's operations (the action runs on the
             // workflow thread, so sleep/awaitSignal/parallel stay available);
             // the outcome events below are still written through ctx.
-            ctx.setReplaying(false);
+            WorkflowContextInternals.setReplaying(ctx, false);
             var entryCtx = WorkflowContext.bounded(ctx, i, stepBaseSeq,
                     stepBaseSeq + SequenceSpace.BRANCH_MULTIPLIER);
 
@@ -465,7 +466,7 @@ public final class SagaManager {
         // Advance past every entry's reserved block so COMPENSATION_COMPLETED
         // gets a deterministic sequence, independent of how many internal
         // sequence numbers each entry's action actually consumed.
-        ctx.setSequence(SequenceSpace.nextParentSeq(ctx.workflowId(), anchorSeq, entries.size()));
+        WorkflowContextInternals.setSequence(ctx, SequenceSpace.nextParentSeq(ctx.workflowId(), anchorSeq, entries.size()));
 
         return failures;
     }
@@ -512,7 +513,7 @@ public final class SagaManager {
         }
 
         // The fork point gives each branch a deterministic sequence space
-        var parentSeq = ctx.nextSequence();
+        var parentSeq = WorkflowContextInternals.nextSequence(ctx);
         var marker = UnknownHistoryGuard.requireKnown(
                 store.getEventBySequence(ctx.workflowInstanceId(), parentSeq), ctx.workflowId());
         if (marker.isPresent()) {
@@ -634,7 +635,7 @@ public final class SagaManager {
 
         // Advance parent sequence past all branch spaces
         var nextParentSeq = SequenceSpace.nextParentSeq(ctx.workflowId(), parentSeq, entries.size());
-        ctx.setSequence(nextParentSeq);
+        WorkflowContextInternals.setSequence(ctx, nextParentSeq);
 
         // A shutdown in any branch takes priority over recording outcomes: the
         // whole compensation attempt is being abandoned for a later node to

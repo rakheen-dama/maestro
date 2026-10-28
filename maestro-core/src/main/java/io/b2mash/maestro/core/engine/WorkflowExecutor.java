@@ -3,6 +3,7 @@ package io.b2mash.maestro.core.engine;
 import io.b2mash.maestro.core.annotation.Saga;
 import io.b2mash.maestro.core.context.RunCancellation;
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.context.WorkflowContextInternals;
 import io.b2mash.maestro.core.context.WorkflowMDC;
 import io.b2mash.maestro.core.exception.CompensationException;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
@@ -2322,7 +2323,7 @@ public final class WorkflowExecutor {
         // sequence the run consumed before finalising — and the terminal event
         // takes the next slot, exactly as when they were two writes.
         var lastStepSeq = ctx.currentSequence();
-        var seq = ctx.nextSequence();
+        var seq = WorkflowContextInternals.nextSequence(ctx);
         for (var attempt = 1; ; attempt++) {
             var latest = store.getInstance(ctx.workflowId()).orElse(fallback);
             if (latest.status().isTerminal()) {

@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.context.WorkflowContextInternals;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.SerializationException;
 import io.b2mash.maestro.core.exception.SignalTimeoutException;
@@ -381,7 +382,7 @@ final class SignalManager {
         // earlier collision or StaleRunException — stands down before it can
         // consume a signal that belongs to the winner's run.
         ctx.cancellation().throwIfStale(ctx.workflowId());
-        var seq = ctx.nextSequence();
+        var seq = WorkflowContextInternals.nextSequence(ctx);
         var stepName = STEP_PREFIX + signalName;
 
         var storedEvent = UnknownHistoryGuard.requireKnown(
@@ -401,7 +402,7 @@ final class SignalManager {
         }
 
         // Live path
-        ctx.setReplaying(false);
+        WorkflowContextInternals.setReplaying(ctx, false);
 
         // Check for already-arrived signals (self-recovery)
         var unconsumed = store.getUnconsumedSignals(ctx.workflowId(), signalName);
@@ -465,7 +466,7 @@ final class SignalManager {
             appendEvent(ctx, seq, EventType.TIMER_SCHEDULED, stepName, serializer.serialize(
                     new AwaitSignalDetail(signalName, timerId, timeout.toString(), deadline.toString())));
 
-            var outcomeSeq = ctx.nextSequence();
+            var outcomeSeq = WorkflowContextInternals.nextSequence(ctx);
             logger.debug("Workflow '{}' waiting for signal '{}' (timeout={}, timerId={})",
                     ctx.workflowId(), signalName, timeout, timerId);
             return awaitOutcome(ctx, outcomeSeq, stepName, signalName, type, timerId, timerDbId,
@@ -512,7 +513,7 @@ final class SignalManager {
      */
     private <T> T resumeParkedAwait(WorkflowContext ctx, int seq, String stepName, String signalName,
                                     Class<T> type, Duration timeout, WorkflowEvent scheduled) {
-        var outcomeSeq = ctx.nextSequence();
+        var outcomeSeq = WorkflowContextInternals.nextSequence(ctx);
         var outcome = UnknownHistoryGuard.requireKnown(
                 store.getEventBySequence(ctx.workflowInstanceId(), outcomeSeq), ctx.workflowId());
         if (outcome.isPresent()) {
@@ -526,7 +527,7 @@ final class SignalManager {
 
         // The outcome slot is the live frontier. The detail is only needed
         // from here on: a memoized outcome replays without reading it.
-        ctx.setReplaying(false);
+        WorkflowContextInternals.setReplaying(ctx, false);
         var detail = readAwaitDetail(ctx.workflowId(), seq, signalName, scheduled);
         var deadline = UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), seq,
                 "await deadline of signal '%s'".formatted(signalName),
