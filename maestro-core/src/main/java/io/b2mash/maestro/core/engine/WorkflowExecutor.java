@@ -651,7 +651,10 @@ public final class WorkflowExecutor {
                 } else {
                     logger.error("Skipping recovery of workflow '{}' (type={}) — its workflow object "
                                     + "could not be built (stack trace above): {}",
-                            instance.workflowId(), instance.workflowType(), e.getCause());
+                            instance.workflowId(), instance.workflowType(),
+                            // String, not Throwable: a trailing Throwable argument makes SLF4J
+                            // print the full stack trace again for every skipped instance.
+                            String.valueOf(e.getCause()));
                 }
             }
         }
