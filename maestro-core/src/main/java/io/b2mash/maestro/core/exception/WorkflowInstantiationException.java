@@ -21,9 +21,12 @@ package io.b2mash.maestro.core.exception;
  *       propagate it to their caller. Any instance row already written stays
  *       active, so the recovery poller adopts it once the factory works.</li>
  *   <li>{@code recoverWorkflows} catches <em>only</em> this exception per
- *       instance, logs it at {@code ERROR} and moves on to the next instance —
- *       one workflow type whose objects cannot be built must not starve the
- *       recovery of every other type. Every other exception still ends the
+ *       instance, logs it at {@code ERROR} (with the stack trace for the
+ *       first instance of each workflow type in the pass, as one line for the
+ *       rest) and moves on to the next instance — one workflow type whose
+ *       objects cannot be built must not starve the recovery of every other
+ *       type. The pass then logs one {@code WARN} summary counting the
+ *       skipped instances and types. Every other exception still ends the
  *       pass.</li>
  * </ul>
  *

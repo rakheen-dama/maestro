@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.QueryMethod;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowInstantiationException;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
@@ -135,6 +136,9 @@ class WorkflowExecutorPerRunInstanceTest {
                 "workflowStarted is emitted only once the run's object exists");
         assertEquals(WorkflowStatus.RUNNING, store.getInstance("p-x").orElseThrow().status(),
                 "the row stays active for the recovery poller to adopt");
+        assertThrows(WorkflowAlreadyExistsException.class,
+                () -> executor.startWorkflow("p-x", "probe", "default", "X", ProbeWorkflow::new, method),
+                "the row was not rolled back: a retried start with the same ID is a duplicate");
     }
 
     @Test
@@ -171,6 +175,36 @@ class WorkflowExecutorPerRunInstanceTest {
         assertFalse(second.isRunning("a-broken"));
         assertEquals(WorkflowStatus.WAITING_SIGNAL, store.getInstance("a-broken").orElseThrow().status(),
                 "the broken instance is left active for a later pass");
+    }
+
+    /**
+     * R51 (R44 follow-up): a pass counts what it skipped, per workflow type,
+     * so its summary line — and the decision to log a type's stack trace
+     * only once per pass — rests on a count, not on N full stack traces.
+     */
+    @Test
+    void aRecoveryPassCountsTheInstancesItSkippedPerType() throws Exception {
+        var method = ProbeWorkflow.class.getMethod("run", String.class);
+        for (var id : List.of("broken-1", "broken-2", "broken-3")) {
+            executor.startWorkflow(id, "broken", "default", "x", ProbeWorkflow::new, method);
+        }
+        executor.startWorkflow("other-1", "otherBroken", "default", "x", ProbeWorkflow::new, method);
+        executor.startWorkflow("healthy", "probe", "default", "x", ProbeWorkflow::new, method);
+        await().atMost(5, SECONDS).until(() -> executor.parkedCount() == 5);
+        executor.shutdown();
+        executor = null;
+
+        second = new WorkflowExecutor(store, null, null, null, serializer, "node-b");
+        Supplier<Object> broken = () -> { throw new IllegalStateException("broken wiring"); };
+        var pass = second.recoveryPass(Map.of(
+                "broken", new WorkflowRegistration("broken", "default", broken, method),
+                "otherBroken", new WorkflowRegistration("otherBroken", "default", broken, method),
+                "probe", new WorkflowRegistration("probe", "default", ProbeWorkflow::new, method)));
+
+        assertEquals(5, pass.scanned());
+        assertEquals(1, pass.adopted());
+        assertEquals(4, pass.skipped());
+        assertEquals(Map.of("broken", 3, "otherBroken", 1), pass.skippedByType());
     }
 
     // ── fixture ────────────────────────────────────────────────────────

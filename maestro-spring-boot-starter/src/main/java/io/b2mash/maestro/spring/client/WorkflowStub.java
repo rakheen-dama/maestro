@@ -74,10 +74,20 @@ public final class WorkflowStub<T> {
      *
      * @param input the workflow input, or {@code null} for no-arg workflows
      * @return the workflow instance UUID (primary key)
+     * @throws io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException if a
+     *         workflow with this ID already exists — including one whose earlier
+     *         start failed to build its bean (below)
      * @throws io.b2mash.maestro.core.exception.WorkflowInstantiationException if the
      *         workflow bean cannot be created (for example a Spring
      *         {@code BeanCreationException} from a broken dependency, available as
-     *         its {@linkplain Throwable#getCause() cause}); the run is not launched
+     *         its {@linkplain Throwable#getCause() cause}). The run is not launched,
+     *         but the instance row was already written and is left {@code RUNNING}:
+     *         it is <em>not</em> rolled back. The recovery poller runs it once the
+     *         bean can be built (after the dependency is fixed, typically by a
+     *         redeploy), and until then every recovery pass skips it. Retrying
+     *         {@code startAsync} with the same workflow ID therefore throws
+     *         {@code WorkflowAlreadyExistsException} — the workflow exists and
+     *         will run; it is not started a second time.
      */
     public UUID startAsync(@Nullable Object input) {
         return executor.startWorkflow(
@@ -109,8 +119,11 @@ public final class WorkflowStub<T> {
      *         original type when it has a public {@code (String)} constructor, otherwise a
      *         {@code ReconstructedActivityFailure}); or if it was terminated — the message
      *         names who terminated it and the reason, and there is no cause
+     * @throws io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException if a
+     *         workflow with this ID already exists (see {@link #startAsync})
      * @throws io.b2mash.maestro.core.exception.WorkflowInstantiationException if the
-     *         workflow bean cannot be created (see {@link #startAsync})
+     *         workflow bean cannot be created — the instance row stays
+     *         {@code RUNNING} for recovery (see {@link #startAsync})
      */
     public <R> @Nullable R startAndWait(
             @Nullable Object input,

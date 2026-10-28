@@ -49,6 +49,8 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -582,16 +584,45 @@ public final class WorkflowExecutor {
      * WAITING_SIGNAL, WAITING_TIMER) and re-invokes each in replay mode.
      *
      * <p>An instance whose registration's factory throws
-     * ({@link WorkflowInstantiationException}) is logged at {@code ERROR} and
-     * skipped, leaving it active for a later pass; the pass continues with the
-     * remaining instances. Any other exception ends the pass.
+     * ({@link WorkflowInstantiationException}) is skipped, leaving it active
+     * for a later pass; the pass continues with the remaining instances. Any
+     * other exception ends the pass. Per pass, the first skipped instance of
+     * each workflow type is logged at {@code ERROR} with the stack trace and
+     * every further one of that type as a one-line {@code ERROR} without it;
+     * a pass that skipped anything ends with one {@code WARN} summary —
+     * {@code "Recovery pass skipped N instance(s) of M workflow type(s) whose
+     * factory threw: {type=count, ...}"} — the line to alert on.
      *
      * @param registrations map of workflow type → registration metadata
      * @return the number of workflows recovered
      */
     public int recoverWorkflows(Map<String, WorkflowRegistration> registrations) {
+        return recoveryPass(registrations).adopted();
+    }
+
+    /**
+     * What one recovery pass did.
+     *
+     * @param scanned       recoverable instances the store returned
+     * @param adopted       instances launched on this node
+     * @param skippedByType instances skipped because their factory threw,
+     *                      counted per workflow type (in first-skip order)
+     */
+    record RecoveryPass(int scanned, int adopted, Map<String, Integer> skippedByType) {
+        /** @return instances skipped because their factory threw, across all types */
+        int skipped() {
+            return skippedByType.values().stream().mapToInt(Integer::intValue).sum();
+        }
+    }
+
+    /**
+     * {@link #recoverWorkflows}, returning the pass's full outcome rather than
+     * only the adopted count.
+     */
+    RecoveryPass recoveryPass(Map<String, WorkflowRegistration> registrations) {
         var recoverable = store.getRecoverableInstances();
         var count = 0;
+        var skippedByType = new LinkedHashMap<String, Integer>();
 
         for (var instance : recoverable) {
             var reg = registrations.get(instance.workflowType());
@@ -608,12 +639,28 @@ public final class WorkflowExecutor {
                 // R44: only a factory failure is isolated per instance — one
                 // type whose objects cannot be built must not starve every
                 // other type's recovery. Anything else still ends the pass.
-                logger.error("Skipping recovery of workflow '{}' (type={}) — its workflow object "
-                                + "could not be built; it stays active for a later pass",
-                        instance.workflowId(), instance.workflowType(), e);
+                // One stack trace per type per pass: a broken bean fails every
+                // instance of its type identically, on every pass, on every node.
+                var firstOfType = skippedByType.merge(instance.workflowType(), 1, Integer::sum) == 1;
+                if (firstOfType) {
+                    logger.error("Skipping recovery of workflow '{}' (type={}) — its workflow object "
+                                    + "could not be built; it stays active for a later pass. Further "
+                                    + "instances of this type skipped in this pass are logged without "
+                                    + "the stack trace",
+                            instance.workflowId(), instance.workflowType(), e);
+                } else {
+                    logger.error("Skipping recovery of workflow '{}' (type={}) — its workflow object "
+                                    + "could not be built (stack trace above): {}",
+                            instance.workflowId(), instance.workflowType(), e.getCause());
+                }
             }
         }
 
+        var pass = new RecoveryPass(recoverable.size(), count, Collections.unmodifiableMap(skippedByType));
+        if (pass.skipped() > 0) {
+            logger.warn("Recovery pass skipped {} instance(s) of {} workflow type(s) whose factory threw: {}",
+                    pass.skipped(), skippedByType.size(), skippedByType);
+        }
         if (count > 0) {
             logger.info("Recovered {} workflow(s) from {} recoverable instance(s)",
                     count, recoverable.size());
@@ -621,10 +668,8 @@ public final class WorkflowExecutor {
             logger.debug("Recovered 0 workflow(s) from {} recoverable instance(s)",
                     recoverable.size());
         }
-        var scanned = recoverable.size();
-        var adopted = count;
-        emit("recoveryPass", null, () -> observer.recoveryPass(scanned, adopted));
-        return count;
+        emit("recoveryPass", null, () -> observer.recoveryPass(pass.scanned(), pass.adopted()));
+        return pass;
     }
 
     // ── Signal delivery ────────────────────────────────────────────────
