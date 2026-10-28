@@ -388,7 +388,7 @@ calls counts against its run's queue.
 
 | Property                                            | Type                       | Default | Description                                                          |
 |-----------------------------------------------------|----------------------------|---------|----------------------------------------------------------------------|
-| `maestro.worker.task-queues`                        | `List<TaskQueueProperties>`| `[]`    | List of task queues this service listens on, with per-queue concurrency settings. |
+| `maestro.worker.task-queues`                        | `List<TaskQueueProperties>`| `[]`    | Task queues to bound on this node, each with its concurrency limits. Not a subscription: listing a queue routes nothing to this node. |
 | `maestro.worker.task-queues[].name`                 | `String`                   | --      | **Required.** Name of the task queue.                                |
 | `maestro.worker.task-queues[].concurrency`          | `int`                      | `10`    | Maximum number of concurrent workflow executions for this queue.     |
 | `maestro.worker.task-queues[].activity-concurrency` | `int`                      | `20`    | Maximum number of concurrent activity executions for this queue.     |
