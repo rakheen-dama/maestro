@@ -86,7 +86,7 @@ class EnginePostgresSignalTimeoutIT extends PostgresIntegrationSupport {
         assertEquals("timed-out", handle.result(String.class));
         assertEquals(List.of(EventType.TIMER_SCHEDULED, EventType.SIGNAL_TIMEOUT, EventType.WORKFLOW_COMPLETED),
                 handle.events().stream().map(WorkflowEvent::eventType).toList());
-        b.close();
+        assertEquals(1, countTimerRows(handle.instanceId()), "still one deadline row after the timeout");
     }
 
     @Test
@@ -98,9 +98,11 @@ class EnginePostgresSignalTimeoutIT extends PostgresIntegrationSupport {
         handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
         a.close();                                            // no node owns the workflow now
 
-        // Delivered by a bare store on its own connection source — no executor,
-        // no SignalManager, nothing to unpark: the row is the only trace.
-        new PostgresWorkflowStore(newDataSource(), objectMapper).saveSignal(new WorkflowSignal(
+        // Delivered by a bare store — no executor, no SignalManager, nothing to
+        // unpark: the row is the only trace. It reuses the test's unpooled
+        // PGSimpleDataSource (not Closeable; every connection the store opens
+        // is closed by the call), so there is nothing extra to close.
+        new PostgresWorkflowStore(dataSource, objectMapper).saveSignal(new WorkflowSignal(
                 UUID.randomUUID(), handle.instanceId(), workflowId, TestWorkflows.PatientSignalWorkflow.SIGNAL,
                 serializer.serialize("approved"), false, Instant.now()));
 
@@ -113,7 +115,7 @@ class EnginePostgresSignalTimeoutIT extends PostgresIntegrationSupport {
         var status = store.findTimer(handle.instanceId(), TIMER_ID).orElseThrow().status();
         assertTrue(Set.of(TimerStatus.CANCELLED, TimerStatus.FIRED).contains(status),
                 "the deadline row must be spent once the signal won, never left PENDING — was " + status);
-        b.close();
+        assertEquals(1, countTimerRows(handle.instanceId()), "recovery must not write a second deadline row");
     }
 
     // ── helpers ────────────────────────────────────────────────────────

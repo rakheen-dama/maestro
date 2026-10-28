@@ -15,6 +15,7 @@ import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
@@ -49,7 +50,14 @@ import static org.junit.jupiter.api.Assertions.fail;
  * <p>The race is placed by {@link RacingStore}, which delivers the signal from
  * <em>inside</em> {@code markTimerFired} on the test thread — immediately
  * before or after the fire's compare-and-set — so the signal is durable in the
- * same instant as the CAS, in both interleavings.
+ * same instant as the CAS, in both interleavings. Only the awaited deadline
+ * row's fire is raced, and the test asserts the delivery completed, not just
+ * that the racing branch was entered.
+ *
+ * <p>Two deterministic, un-raced scenarios cover what the CAS gate excludes:
+ * the signal winning outright (the await cancels its row, and the fire that
+ * follows finds nothing) and the deadline winning outright (a signal delivered
+ * only after the {@code SIGNAL_TIMEOUT} stays unconsumed).
  *
  * <h2>Thread Safety</h2>
  * <p>Per-test instance, confined to the JUnit test thread; {@link RacingStore}
@@ -60,6 +68,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 class AwaitSignalTimeoutRaceIT extends PostgresIntegrationSupport {
 
     private static final Duration BOUND = Duration.ofSeconds(15);
+    private static final String TIMER_ID = "await-signal-1";
 
     /** Where the signal lands relative to the fire's compare-and-set. */
     enum Order { SIGNAL_THEN_FIRE, FIRE_THEN_SIGNAL }
@@ -86,10 +95,12 @@ class AwaitSignalTimeoutRaceIT extends PostgresIntegrationSupport {
         harness.registerWorkflow(new TestWorkflows.PatientSignalWorkflow(Duration.ofHours(1)));
         var handle = harness.start(workflowId, TestWorkflows.PatientSignalWorkflow.class, "seed");
         handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
-        var row = store.findTimer(handle.instanceId(), "await-signal-1").orElseThrow();
+        var row = store.findTimer(handle.instanceId(), TIMER_ID).orElseThrow();
+        racing.target(row.id());
         makeDue(row.id());
         await().atMost(BOUND).pollInterval(Duration.ofMillis(50)).until(() -> harness.fireDueTimers(10) == 1);
-        assertTrue(racing.raced(), "the signal was never delivered inside the fire's CAS");
+        assertTrue(racing.raced(), "the deadline fire never reached the racing CAS");
+        assertTrue(racing.delivered(), "the signal was never delivered inside the fire's CAS");
 
         assertEquals(WorkflowStatus.COMPLETED, handle.awaitTerminal(BOUND));
         var outcomes = handle.events().stream().filter(e -> e.sequenceNumber() == 2).map(WorkflowEvent::eventType).toList();
@@ -100,12 +111,89 @@ class AwaitSignalTimeoutRaceIT extends PostgresIntegrationSupport {
             case SIGNAL_TIMEOUT  -> { assertEquals("timed-out", handle.result(String.class)); assertFalse(signalRow.consumed(), "never discard a signal"); }
             default -> fail("unexpected outcome " + outcomes);
         }
-        assertEquals(TimerStatus.FIRED, store.findTimer(handle.instanceId(), "await-signal-1").orElseThrow().status());
+        assertEquals(TimerStatus.FIRED, store.findTimer(handle.instanceId(), TIMER_ID).orElseThrow().status());
         assertEquals(1, handle.events().stream().filter(e -> e.eventType() == EventType.SIGNAL_RECEIVED || e.eventType() == EventType.SIGNAL_TIMEOUT).count());
-        harness.close();
+        assertEquals(1, countTimerRows(handle.instanceId()), "the race must never write a second deadline row");
+    }
+
+    /**
+     * The interleaving the CAS-gated scenarios above deliberately exclude: the
+     * signal reaches the parked await before the poller's fire, so the await
+     * consumes it and cancels its own deadline row, and the fire that follows
+     * finds nothing to fire.
+     */
+    @Test
+    @DisplayName("signal wins outright before the fire: SIGNAL_RECEIVED, row CANCELLED, the due fire finds nothing")
+    void signalBeforeTheFire_rowCancelled_fireFindsNothing() throws Exception {
+        var workflowId = MaestroEngineHarness.uniqueWorkflowId("await-race-signal-wins");
+        var harness = MaestroEngineHarness.builder(store, objectMapper).build();
+        this.harness = harness;
+        harness.registerWorkflow(new TestWorkflows.PatientSignalWorkflow(Duration.ofHours(1)));
+        var handle = harness.start(workflowId, TestWorkflows.PatientSignalWorkflow.class, "seed");
+        handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
+        var row = store.findTimer(handle.instanceId(), TIMER_ID).orElseThrow();
+        makeDue(row.id());
+
+        harness.deliverSignal(workflowId, TestWorkflows.PatientSignalWorkflow.SIGNAL, "approved");
+        assertEquals(WorkflowStatus.COMPLETED, handle.awaitTerminal(BOUND));
+        assertEquals(0, harness.fireDueTimers(10), "a CANCELLED deadline row is never fired");
+
+        assertEquals("approved", handle.result(String.class));
+        assertEquals(List.of(EventType.TIMER_SCHEDULED, EventType.SIGNAL_RECEIVED, EventType.WORKFLOW_COMPLETED),
+                handle.events().stream().map(WorkflowEvent::eventType).toList());
+        assertTrue(readSingleSignalRow(workflowId).consumed());
+        assertEquals(TimerStatus.CANCELLED, store.findTimer(handle.instanceId(), TIMER_ID).orElseThrow().status());
+        assertEquals(1, countTimerRows(handle.instanceId()));
+    }
+
+    /**
+     * The TIMEOUT arm, deterministically: the deadline fires with no signal
+     * anywhere, the await memoizes {@code SIGNAL_TIMEOUT} at {@code seq 2}, and
+     * a signal delivered only afterwards stays durably unconsumed — never
+     * discarded, never consumed by the finished await.
+     */
+    @Test
+    @DisplayName("deadline wins outright: SIGNAL_TIMEOUT at seq 2, and a signal delivered afterwards stays unconsumed")
+    void deadlineBeforeTheSignal_timesOut_lateSignalStaysUnconsumed() throws Exception {
+        var workflowId = MaestroEngineHarness.uniqueWorkflowId("await-race-deadline-wins");
+        var harness = MaestroEngineHarness.builder(store, objectMapper).build();
+        this.harness = harness;
+        harness.registerWorkflow(new TestWorkflows.PatientSignalWorkflow(Duration.ofHours(1)));
+        var handle = harness.start(workflowId, TestWorkflows.PatientSignalWorkflow.class, "seed");
+        handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
+        var row = store.findTimer(handle.instanceId(), TIMER_ID).orElseThrow();
+        makeDue(row.id());
+
+        await().atMost(BOUND).pollInterval(Duration.ofMillis(50)).until(() -> harness.fireDueTimers(10) == 1);
+        assertEquals(WorkflowStatus.COMPLETED, handle.awaitTerminal(BOUND));
+        assertEquals("timed-out", handle.result(String.class));
+        assertEquals(EventType.SIGNAL_TIMEOUT, handle.events().stream()
+                .filter(e -> e.sequenceNumber() == 2).findFirst().orElseThrow().eventType());
+
+        harness.deliverSignal(workflowId, TestWorkflows.PatientSignalWorkflow.SIGNAL, "approved-too-late");
+        assertFalse(readSingleSignalRow(workflowId).consumed(), "never discard a signal");
+        assertEquals(TimerStatus.FIRED, store.findTimer(handle.instanceId(), TIMER_ID).orElseThrow().status());
+        assertEquals(1, countTimerRows(handle.instanceId()));
     }
 
     // ── helpers ────────────────────────────────────────────────────────
+
+    /**
+     * Counts every timer row of an instance, whatever its status — the SPI only
+     * surfaces due pending rows or a lookup by timer id, neither of which can
+     * prove a second row was never written.
+     */
+    private int countTimerRows(UUID instanceId) throws SQLException {
+        try (var conn = dataSource.getConnection();
+             var ps = conn.prepareStatement(
+                     "SELECT count(*) FROM maestro_workflow_timer WHERE workflow_instance_id = ?")) {
+            ps.setObject(1, instanceId);
+            try (var rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getInt(1);
+            }
+        }
+    }
 
     /** Brings a timer row's {@code fire_at} forward to the database's {@code now()}. */
     private void makeDue(UUID timerDbId) throws SQLException {
@@ -172,8 +260,10 @@ class AwaitSignalTimeoutRaceIT extends PostgresIntegrationSupport {
         private final Order order;
         private final String workflowId;
         private final AtomicBoolean raced = new AtomicBoolean(false);
+        private final AtomicBoolean delivered = new AtomicBoolean(false);
         private final CountDownLatch fireCasDone = new CountDownLatch(1);
         private volatile @Nullable MaestroEngineHarness harness;
+        private volatile @Nullable UUID target;
 
         RacingStore(WorkflowStore delegate, Order order, String workflowId) {
             this.delegate = delegate;
@@ -186,14 +276,24 @@ class AwaitSignalTimeoutRaceIT extends PostgresIntegrationSupport {
             this.harness = harness;
         }
 
-        /** @return whether the racing delivery ran */
+        /** @param timerDbId the awaited deadline row — only its fire is raced */
+        void target(UUID timerDbId) {
+            this.target = timerDbId;
+        }
+
+        /** @return whether the targeted fire entered the racing branch */
         boolean raced() {
             return raced.get();
         }
 
+        /** @return whether the racing delivery actually completed (persisted and unparked) */
+        boolean delivered() {
+            return delivered.get();
+        }
+
         @Override
         public boolean markTimerFired(UUID timerId) {
-            if (!raced.compareAndSet(false, true)) {
+            if (!timerId.equals(target) || !raced.compareAndSet(false, true)) {
                 return delegate.markTimerFired(timerId);
             }
             try {
@@ -227,7 +327,9 @@ class AwaitSignalTimeoutRaceIT extends PostgresIntegrationSupport {
             if (node == null) {
                 throw new IllegalStateException("RacingStore.harness(...) was never set");
             }
-            node.deliverSignal(workflowId, TestWorkflows.PatientSignalWorkflow.SIGNAL, "approved");        }
+            node.deliverSignal(workflowId, TestWorkflows.PatientSignalWorkflow.SIGNAL, "approved");
+            delivered.set(true);
+        }
 
         // ── straight delegation ────────────────────────────────────────
 
