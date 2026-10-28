@@ -2,7 +2,7 @@ plugins {
     id("maestro.spring-app-conventions")
 }
 
-description = "Sample — Payment gateway proxy with durable retries and cross-service signalling"
+description = "Sample — Payment gateway proxy with retry policies and cross-service signalling"
 
 dependencies {
     implementation(project(":maestro-spring-boot-starter"))

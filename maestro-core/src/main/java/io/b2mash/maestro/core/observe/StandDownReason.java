@@ -27,10 +27,11 @@ public enum StandDownReason {
      * already finalised ({@code COMPLETED}/{@code FAILED}) by another runner
      * ({@code StaleRunException}) — at a park/wake status write, an
      * {@code awaitSignal()} wake, the transition to {@code COMPENSATING}, or
-     * before a sequential compensation entry. Also reported when the next
-     * live activity of a run whose earlier collision workflow code swallowed
-     * is stopped before it executes ({@code StaleRunException} from the run's
-     * cancellation latch).
+     * before a sequential compensation entry, or a parked {@code sleep()}'s
+     * wake. Also reported when a run whose earlier stand-down workflow code
+     * swallowed reaches its next stop point — a live activity,
+     * {@code sleep()}, {@code awaitSignal()} or the terminal write
+     * ({@code StaleRunException} from the run's cancellation latch).
      */
     STALE_RUN
 }

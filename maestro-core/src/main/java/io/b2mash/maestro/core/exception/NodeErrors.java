@@ -1,4 +1,4 @@
-package io.b2mash.maestro.core.engine;
+package io.b2mash.maestro.core.exception;
 
 /**
  * The engine's one definition of a <em>node-level</em> error: a throwable that
@@ -23,7 +23,17 @@ package io.b2mash.maestro.core.engine;
  * (spec C8). The engine's control-flow signals
  * ({@code MaestroControlFlowError}) are neither — they have their own arms.
  *
- * <p>Shared so the two call sites cannot drift: before it existed, a node
+ * <p>The two forks rank it the same way: {@code parallel()} and parallel saga
+ * compensation rethrow a node error from any branch raw, after a control-flow
+ * signal and ahead of a stale-run signal or a plain failure, so it reaches
+ * the executor's node-error arm instead of an earlier branch's failure being
+ * recorded and compensated.
+ *
+ * <p>It lives in {@code core.exception}, beside the throwable types it
+ * classifies, so the retry and engine packages can both use it without
+ * depending on each other.
+ *
+ * <p>Shared so the call sites cannot drift: before it existed, a node
  * error thrown <em>inside</em> an activity was wrapped and retried by the
  * retry executor and ended the workflow {@code FAILED} with compensation,
  * although the same error thrown from the workflow body abandoned the run.

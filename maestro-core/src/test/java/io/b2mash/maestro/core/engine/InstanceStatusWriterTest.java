@@ -42,6 +42,19 @@ class InstanceStatusWriterTest {
     }
 
     @Test
+    @DisplayName("the context overload makes the stale cause sticky: the run's RunCancellation is STALE before "
+            + "the StaleRunException propagates (round 2, R33)")
+    void contextOverload_requestsStaleBeforeThrowing() {
+        seed("w1c", WorkflowStatus.COMPLETED);
+        var ctx = new io.b2mash.maestro.core.context.WorkflowContext(UUID.randomUUID(), "w1c", UUID.randomUUID(),
+                "TestWorkflow", "default", "test-service", 0, false);
+        assertThrows(StaleRunException.class,
+                () -> InstanceStatusWriter.write(store, ctx, WorkflowStatus.RUNNING));
+        assertEquals(io.b2mash.maestro.core.context.RunCancellation.Cause.STALE, ctx.cancellation().cause(),
+                "a swallowed StaleRunException must still stop the run's next live activity");
+    }
+
+    @Test
     @DisplayName("a fresh read of FAILED throws StaleRunException")
     void freshReadFailed_throwsStaleRun() {
         seed("w2", WorkflowStatus.FAILED);

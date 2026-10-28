@@ -1,10 +1,10 @@
 package io.b2mash.maestro.core.retry;
 
 import io.b2mash.maestro.core.context.RunCancellation;
-import io.b2mash.maestro.core.engine.NodeErrors;
 import io.b2mash.maestro.core.exception.ActivityExecutionException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.MaestroControlFlowError;
+import io.b2mash.maestro.core.exception.NodeErrors;
 import io.b2mash.maestro.core.exception.StaleRunException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import org.slf4j.Logger;

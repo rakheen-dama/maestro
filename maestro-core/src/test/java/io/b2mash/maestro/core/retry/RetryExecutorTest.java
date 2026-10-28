@@ -488,7 +488,8 @@ class RetryExecutorTest {
     }
 
     @Test
-    @DisplayName("stale is first-wins against shutdown and itself, but a termination replaces it")
+    @DisplayName("stale is first-wins against itself and is never replaced by a shutdown, but a termination "
+            + "replaces it")
     void staleIsFirstWins_butTerminationReplacesIt() {
         var cancellation = new RunCancellation();
         assertTrue(cancellation.requestStale("append collision at sequence 2"));
@@ -497,13 +498,26 @@ class RetryExecutorTest {
         assertEquals(RunCancellation.Cause.STALE, cancellation.cause());
         assertEquals("append collision at sequence 2", cancellation.reason());
 
-        var shutdownFirst = new RunCancellation();
-        shutdownFirst.requestShutdown();
-        assertFalse(shutdownFirst.requestStale("x"), "stale is first-wins, like shutdown");
-        assertEquals(RunCancellation.Cause.SHUTDOWN, shutdownFirst.cause());
-
         assertTrue(cancellation.requestTermination("operator"), "a terminate replaces a stale request");
         assertThrows(WorkflowTerminatedException.class, () -> cancellation.throwIfTerminated("wf-s2"));
+    }
+
+    @Test
+    @DisplayName("a stale request after a shutdown REPLACES it (round 2, R33): the next attempt throws "
+            + "StaleRunException — shutdown lets an attempt run, a stale run must not")
+    void staleAfterShutdown_replacesIt_nextAttemptIsNotRun() {
+        var calls = new AtomicInteger();
+        var cancellation = new RunCancellation();
+        assertTrue(cancellation.requestShutdown());
+
+        assertTrue(cancellation.requestStale("append collision at sequence 5"),
+                "a stale request that replaces a shutdown must report that it took effect");
+        assertEquals(RunCancellation.Cause.STALE, cancellation.cause());
+
+        var thrown = assertThrows(StaleRunException.class, () -> executor.executeWithRetry(
+                fastPolicy(3), () -> calls.incrementAndGet(), "a", "wf-s4", cancellation));
+        assertEquals(0, calls.get(), "a known-stale run must not start an attempt during the shutdown drain");
+        assertEquals("append collision at sequence 5", thrown.detail());
     }
 
     @Test

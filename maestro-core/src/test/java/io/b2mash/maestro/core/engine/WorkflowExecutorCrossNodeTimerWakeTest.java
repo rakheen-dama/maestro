@@ -198,6 +198,45 @@ class WorkflowExecutorCrossNodeTimerWakeTest {
                         store.getInstance("local-fire-1").orElseThrow().status()));
     }
 
+    @Test
+    @DisplayName("a LOCAL timer wake on a row another runner finalised (COMPLETED) stands down: no TIMER_FIRED, "
+            + "no code after the sleep (round 2, R33)")
+    void localWake_onCompletedRow_standsDownWithoutRecordingTheFire() throws Exception {
+        assertWakeOnCompletedRowStandsDown("stale-local-1", true);
+    }
+
+    @Test
+    @DisplayName("a CROSS-NODE (recheck) timer wake on a row another runner finalised (COMPLETED) stands down: "
+            + "no TIMER_FIRED, no code after the sleep (round 2, R33)")
+    void recheckWake_onCompletedRow_standsDownWithoutRecordingTheFire() throws Exception {
+        assertWakeOnCompletedRowStandsDown("stale-xnode-1", false);
+    }
+
+    private void assertWakeOnCompletedRowStandsDown(String workflowId, boolean localFire) throws Exception {
+        var completed = new CountDownLatch(1);
+        var workflow = new SleepingWorkflow(Duration.ofMinutes(10), completed);
+        var method = SleepingWorkflow.class.getMethod("run", String.class);
+        var instanceId = executor.startWorkflow(workflowId, "SleepingWorkflow", "default", "hello", workflow, method);
+        await().atMost(Duration.ofSeconds(5)).until(() ->
+                store.getInstance(workflowId).map(i -> i.status() == WorkflowStatus.WAITING_TIMER).orElse(false));
+
+        // Another runner finished the workflow while this run was parked on its timer.
+        store.forceStatus(workflowId, WorkflowStatus.COMPLETED);
+        var timer = store.findTimer(instanceId, "sleep-1").orElseThrow();
+        if (localFire) {
+            executor.fireTimer(workflowId, "sleep-1", timer.id());
+        } else {
+            assertTrue(store.markTimerFired(timer.id()));
+        }
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> !executor.isRunning(workflowId));
+        assertEquals(1, completed.getCount(), "no workflow code after the sleep may run on a stale run");
+        assertEquals(0, store.getEvents(instanceId).stream()
+                        .filter(e -> e.eventType() == EventType.TIMER_FIRED).count(),
+                "a stale run must not memoize TIMER_FIRED for a workflow another runner finished");
+        assertEquals(WorkflowStatus.COMPLETED, store.getInstance(workflowId).orElseThrow().status());
+    }
+
     // ── fixtures ───────────────────────────────────────────────────────
 
     /** Sleeps once; the tests transition the timer row out from under it. */

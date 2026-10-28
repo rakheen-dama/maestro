@@ -300,6 +300,8 @@ class SagaManagerTerminateRaceTest {
         assertThrows(StaleRunException.class, () -> sagaManager.compensate(ctx, instance, stack, false));
 
         assertEquals(List.of("A"), runs);
+        assertEquals(io.b2mash.maestro.core.context.RunCancellation.Cause.STALE, ctx.cancellation().cause(),
+                "the fresh read's stand-down is sticky on the run (round 2, R33)");
         assertTrue(store.getEvents(instance.id()).stream()
                 .noneMatch(e -> e.eventType() == EventType.COMPENSATION_COMPLETED));
     }

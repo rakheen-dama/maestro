@@ -557,8 +557,8 @@ class SignalManagerTest {
 
         var outcome = new java.util.concurrent.atomic.AtomicReference<Throwable>();
         var done = new CountDownLatch(1);
+        var ctx = createContext(instanceId, "order-1", 0, false);
         Thread.ofVirtual().start(() -> {
-            var ctx = createContext(instanceId, "order-1", 0, false);
             ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() -> {
                 try {
                     sm.awaitSignal(ctx, "payment.result", String.class, Duration.ofSeconds(30));
@@ -584,9 +584,11 @@ class SignalManagerTest {
                 "a stale run must not consume a signal of a workflow another runner finished");
         assertTrue(store.getEvents(instanceId).stream().noneMatch(e -> e.eventType() == EventType.SIGNAL_RECEIVED),
                 "no SIGNAL_RECEIVED may be memoized by the stale run");
+        assertEquals(io.b2mash.maestro.core.context.RunCancellation.Cause.STALE, ctx.cancellation().cause(),
+                "the wake's stand-down is sticky on the run (round 2, R33)");
     }
 
-        @Test
+    @Test
     @DisplayName("spurious wake (notifier self-echo) re-parks instead of aborting the await")
     void spuriousWakeDoesNotAbortAwait() throws Exception {
         var instanceId = UUID.randomUUID();

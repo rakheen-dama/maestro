@@ -629,7 +629,30 @@ class SagaManagerTest {
                 "a stale attempt records no failure — the winner owns the compensation progress");
     }
 
-        // ── Replay drift during compensation (C10, ruling R4) ──────────────────
+    @Test
+    @DisplayName("Ranking (round 2, R33): a node error in a LATER parallel compensation branch outranks a plain "
+            + "failure in an earlier one — rethrown raw, nothing recorded as COMPENSATION_STEP_FAILED")
+    void parallelBranchNodeErrorOutranksEarlierPlainFailure() {
+        var nodeError = new NoClassDefFoundError("com/acme/Missing");
+        var stack = new CompensationStack();
+        // Pushed first → unwinds second: branch 1 hits the node error.
+        stack.push("node-error-branch", () -> {
+            throw nodeError;
+        });
+        // Pushed last → unwinds first: branch 0 fails plainly.
+        stack.push("failing-branch", () -> {
+            throw new IllegalStateException("refund rejected");
+        });
+
+        var thrown = org.junit.jupiter.api.Assertions.assertThrows(NoClassDefFoundError.class,
+                () -> sagaManager.compensate(ctx, instance, stack, true));
+        org.junit.jupiter.api.Assertions.assertSame(nodeError, thrown);
+        assertEquals(0, countEvents(EventType.COMPENSATION_STEP_FAILED),
+                "a node error is this node's problem — no reversal failed, so none may be recorded");
+        assertEquals(0, countEvents(EventType.COMPENSATION_COMPLETED));
+    }
+
+    // ── Replay drift during compensation (C10, ruling R4) ──────────────────
     //
     // Every guard slot read here used to treat ANY present event as "this
     // entry already ran": a renamed or reordered compensation entry skipped the

@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.StaleRunException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
@@ -139,6 +140,31 @@ public final class InstanceStatusWriter {
      *                                     is written and the caller's run must
      *                                     stand down
      */
+    /**
+     * {@link #write(WorkflowStore, String, WorkflowStatus)} for a running
+     * workflow's own status writes, making a stale-run stand-down
+     * <b>sticky</b>: when the fresh read finds the row finalised by another
+     * runner, the run's {@code RunCancellation} is set to {@code STALE} before
+     * the {@link StaleRunException} propagates. Should workflow code catch and
+     * swallow it, the run still stands down at its next stop point (live
+     * activity, {@code sleep()}, {@code awaitSignal()}, terminal write).
+     *
+     * @param store     the workflow store to write through
+     * @param ctx       the writing run's context
+     * @param newStatus the non-terminal status to write
+     * @throws WorkflowTerminatedException as for the {@code workflowId} overload
+     * @throws StaleRunException           as for the {@code workflowId} overload,
+     *                                     after requesting {@code STALE} on the run
+     */
+    static void write(WorkflowStore store, WorkflowContext ctx, WorkflowStatus newStatus) {
+        try {
+            write(store, ctx.workflowId(), newStatus);
+        } catch (StaleRunException stale) {
+            ctx.cancellation().requestStale(stale.detail());
+            throw stale;
+        }
+    }
+
     static void write(WorkflowStore store, String workflowId, WorkflowStatus newStatus) {
         for (var attempt = 1; ; attempt++) {
             var instance = store.getInstance(workflowId);

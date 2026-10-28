@@ -144,7 +144,7 @@ class ActivityFailureReconstructionTest {
                 () -> assertFalse(ex.causedBy(IllegalStateException.class)));
     }
 
-        @Test
+    @Test
     void storedNonThrowableName_isNotInitialised() {
         var cause = replayFailure(InitProbe.class.getName(), "boom").getCause();
         assertInstanceOf(ReconstructedActivityFailure.class, cause);

@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
@@ -196,6 +197,45 @@ class ParallelCompensationRegistrationOrderTest extends ParallelSagaTestSupport 
         };
 
         assertThrows(DuplicateEventException.class, () -> inScope(() -> ops.parallel(List.of(b0, b1))));
+    }
+
+    @Test
+    @DisplayName("a node error (NoClassDefFoundError) in a later branch wins over a plain failure in an earlier one, "
+            + "rethrown raw (round 2, R33)")
+    void nodeErrorWinsOverEarlierBranchFailure() {
+        freshRun();
+        var b1Done = new CountDownLatch(1);
+        var nodeError = new NoClassDefFoundError("com/acme/Missing");
+        Callable<String> b0 = () -> {
+            await(b1Done);
+            throw new IllegalStateException("plain failure in branch 0");
+        };
+        Callable<String> b1 = () -> {
+            b1Done.countDown();
+            throw nodeError;
+        };
+
+        var thrown = assertThrows(NoClassDefFoundError.class, () -> inScope(() -> ops.parallel(List.of(b0, b1))),
+                "index order would record branch 0's failure FAILED and compensate; the node error must reach "
+                        + "the executor's NODE_ERROR arm instead");
+        assertSame(nodeError, thrown);
+    }
+
+    @Test
+    @DisplayName("a node error in a later branch outranks a stale-run signal in an earlier one (round 2, R33)")
+    void nodeErrorWinsOverEarlierStaleRun() {
+        freshRun();
+        var b1Done = new CountDownLatch(1);
+        Callable<String> b0 = () -> {
+            await(b1Done);
+            throw new StaleRunException("wf", WorkflowStatus.COMPLETED, "test");
+        };
+        Callable<String> b1 = () -> {
+            b1Done.countDown();
+            throw new OutOfMemoryError("Java heap space");
+        };
+
+        assertThrows(OutOfMemoryError.class, () -> inScope(() -> ops.parallel(List.of(b0, b1))));
     }
 
     @Test

@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.context.WorkflowMDC;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.MaestroControlFlowError;
+import io.b2mash.maestro.core.exception.NodeErrors;
 import io.b2mash.maestro.core.exception.RetryExhaustedException;
 import io.b2mash.maestro.core.exception.SignalTimeoutException;
 import io.b2mash.maestro.core.exception.StaleRunException;
@@ -14,6 +15,7 @@ import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.model.TimerStatus;
 import io.b2mash.maestro.core.model.WorkflowEvent;
+import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.ParkKind;
@@ -213,6 +215,11 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
     @Override
     public void sleep(Duration duration) {
         var ctx = WorkflowContext.current();
+        // A run already known to be stale (R33) — one of its appends collided,
+        // or a fresh read found the row finalised, and workflow code swallowed
+        // the exception — stands down here, before it saves a timer row the
+        // winner never scheduled.
+        ctx.cancellation().throwIfStale(ctx.workflowId());
         var seq = ctx.nextSequence();
         var stepName = "$maestro:sleep";
 
@@ -372,14 +379,19 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         while (true) {
             try {
                 parkingLot.parkWithTimeout(parkKey, wakeRecheckInterval);
-                return; // locally unparked — a fire or cancel; the row decides which
+                // Locally unparked — a fire or cancel; the row decides which.
+                // But a row another runner finalised while this run was parked
+                // must not get a TIMER_FIRED from it (R33): stand down first.
+                standDownIfTerminated(ctx);
+                return;
             } catch (TimeoutException e) {
                 // No local wake this interval — fall through to the durable re-check
             }
 
             // Terminate outranks a wake: a terminate usually lands on a node
-            // that is not the owner, so nothing local unparks this thread.
-            standDownIfTerminated(ctx.workflowId());
+            // that is not the owner, so nothing local unparks this thread. So
+            // does a row another runner finalised (R33).
+            standDownIfTerminated(ctx);
 
             // Advisory probe (Issue 20 / Ruling 5): a store exception here
             // must not tear down a healthy parked sleep — fall back to
@@ -406,25 +418,47 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
      * terminate convergence for a parked {@code sleep()} to one
      * wake-recheck interval.
      *
+     * <p>Called on every wake of the park — a local unpark as well as each
+     * recheck-interval expiry — so the same read also catches the stale-run
+     * case (R33, the timer analogue of {@code SignalManager}'s M7 check): a
+     * row another runner finalised as {@code COMPLETED} or {@code FAILED}
+     * while this run was parked. Without it the wake would memoize
+     * {@code TIMER_FIRED} before the {@code RUNNING} status write's fresh read
+     * stood the run down. The stand-down is sticky: the run's
+     * {@code RunCancellation} is set to {@code STALE} first.
+     *
      * <p>The read itself is advisory (Issue 20 / Ruling 5, via {@link ParkProbe}):
      * if the store is unreachable this interval, that means "can't prove
-     * terminated" — fail open and keep parking rather than propagate the
+     * finalised" — fail open and keep parking rather than propagate the
      * store's exception. The instance is only ever actually stood down once a
-     * probe succeeds and observes {@code TERMINATED}.
+     * probe succeeds and observes a terminal status.
      *
-     * @param workflowId the workflow's business ID
+     * @param ctx the parked run's context
      * @throws WorkflowTerminatedException if the instance row is {@code TERMINATED}
+     * @throws StaleRunException           if the instance row is any other
+     *                                     terminal status — another runner
+     *                                     finalised it
      */
-    private void standDownIfTerminated(String workflowId) {
-        var terminated = ParkProbe.read("sleep.standDownIfTerminated", workflowId,
+    private void standDownIfTerminated(WorkflowContext ctx) {
+        var workflowId = ctx.workflowId();
+        @Nullable WorkflowStatus status = ParkProbe.<@Nullable WorkflowStatus>read(
+                "sleep.standDownIfTerminated", workflowId,
                 () -> store.getInstance(workflowId)
-                        .map(instance -> instance.status() == WorkflowStatus.TERMINATED)
-                        .orElse(false),
-                false);
-        if (terminated) {
+                        .map(WorkflowInstance::status)
+                        .orElse(null),
+                null);
+        if (status == WorkflowStatus.TERMINATED) {
             logger.info("Workflow '{}' was terminated while parked on a timer — abandoning this run",
                     workflowId);
             throw new WorkflowTerminatedException(workflowId, null);
+        }
+        if (status != null && status.isTerminal()) {
+            var detail = "timer wake while parked";
+            logger.warn("Workflow '{}' is already {} — another runner finalised it while this run was "
+                    + "parked on a timer; standing this stale run down without recording the wake",
+                    workflowId, status);
+            ctx.cancellation().requestStale(detail);
+            throw new StaleRunException(workflowId, status, detail);
         }
     }
 
@@ -692,6 +726,17 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             for (int i = 0; i < branchCount; i++) {
                 if (errors.get(i).get() instanceof MaestroControlFlowError signal) {
                     throw signal;
+                }
+            }
+
+            // Node-level errors next (R33): a LinkageError or a
+            // VirtualMachineError other than StackOverflowError in ANY branch
+            // means this node is broken. Rethrown raw so executeWorkflow's
+            // Error arm abandons the run as NODE_ERROR — index order would let
+            // an earlier branch's plain failure record FAILED and compensate.
+            for (int i = 0; i < branchCount; i++) {
+                if (errors.get(i).get() instanceof Error nodeError && NodeErrors.isNodeError(nodeError)) {
+                    throw nodeError;
                 }
             }
 
@@ -1056,11 +1101,18 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                 payload,
                 Instant.now()
         );
-        store.appendEvent(event);
+        try {
+            store.appendEvent(event);
+        } catch (DuplicateEventException staleRun) {
+            // Another runner owns this slot: the run stands down, and stays
+            // stale even if workflow code swallows the duplicate (R33).
+            ctx.cancellation().requestStale("append collision at sequence " + seq);
+            throw staleRun;
+        }
     }
 
     private void updateInstanceStatus(WorkflowContext ctx, WorkflowStatus newStatus) {
-        InstanceStatusWriter.write(store, ctx.workflowId(), newStatus);
+        InstanceStatusWriter.write(store, ctx, newStatus);
     }
 
     private void publishLifecycleEvent(WorkflowContext ctx, String stepName, LifecycleEventType eventType) {

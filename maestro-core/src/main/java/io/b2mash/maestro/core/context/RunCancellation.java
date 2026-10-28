@@ -31,13 +31,20 @@ import java.util.concurrent.atomic.AtomicReference;
  *       retry backoff wait returns as soon as it is set: terminate means stop
  *       now. A non-owning node cannot reach this latch; the owner converges via
  *       its terminal-status guards instead.</li>
- *   <li>{@link Cause#STALE} — set by the activity proxy when an activity's
- *       result append collides with a concurrent runner's event (Issue 18 /
- *       C5): another runner owns this workflow's progress. It is checked with
- *       the terminate check before every attempt, so a run whose author
- *       caught and swallowed the {@code DuplicateEventException} still cannot
- *       execute its <em>next</em> live activity — a side effect the winner
- *       also runs — and the backoff wait honours it too.</li>
+ *   <li>{@link Cause#STALE} — another runner owns this workflow's progress
+ *       (Issue 18 / C5). Set by every stale-run source before it throws: an
+ *       event append that collides with a concurrent runner's event (activity
+ *       proxy, {@code sleep()}/side-effect/fork appends, signal and
+ *       compensation appends), and a fresh read that finds the row finalised
+ *       by another runner (park/wake status writes, the {@code awaitSignal()}
+ *       and {@code sleep()} wake rechecks, the saga's reads). It is checked at
+ *       every stop point — before every activity attempt (with the terminate
+ *       check), on entry to {@code sleep()} and {@code awaitSignal()}, and
+ *       immediately before the run's terminal write — and the backoff wait
+ *       honours it too. So a run whose author caught and swallowed the
+ *       {@code DuplicateEventException} or {@code StaleRunException} still
+ *       cannot execute its next side effect, consume a signal, schedule a
+ *       timer or record an outcome the winner owns.</li>
  *   <li>{@link Cause#SHUTDOWN} — set by {@code WorkflowExecutor.shutdown()}.
  *       It is deliberately <em>not</em> checked before an attempt (shutdown
  *       lets in-flight work drain), but the retry backoff wait honours it, so a
@@ -46,12 +53,20 @@ import java.util.concurrent.atomic.AtomicReference;
  * </ul>
  *
  * <h2>Precedence</h2>
- * <p>{@code TERMINATED} is the strongest request and is final: it replaces a
- * prior {@code SHUTDOWN} or {@code STALE} request, and nothing replaces it. A
- * terminate must never be masked by an earlier shutdown — shutdown lets the
- * next attempt run, terminate must not. {@code SHUTDOWN} and {@code STALE} are
- * first-wins between themselves: whichever is requested first stays, and a
- * repeated request keeps the first one's detail.
+ * <p>The causes are ranked {@code TERMINATED} &gt; {@code STALE} &gt;
+ * {@code SHUTDOWN}, and a request replaces the current cause only if it ranks
+ * strictly higher:
+ * <ul>
+ *   <li>{@code TERMINATED} is final: it replaces a prior {@code STALE} or
+ *       {@code SHUTDOWN} request, and nothing replaces it.</li>
+ *   <li>{@code STALE} replaces a prior {@code SHUTDOWN} — shutdown lets the
+ *       next attempt run so in-flight work drains, but a run that is known to
+ *       be stale must not execute another side effect, drain or not.</li>
+ *   <li>{@code SHUTDOWN} never replaces anything.</li>
+ * </ul>
+ * A repeated request of the current cause is a no-op that keeps the first
+ * one's reason. In every case the weaker request is the one that gives way:
+ * a stronger stop is never masked by an earlier, weaker one.
  *
  * <h2>Why a latch, not {@code Thread.interrupt()}</h2>
  * <p>This mirrors how {@code ParkingLot} unblocks a parked workflow: shutdown
@@ -82,14 +97,22 @@ public final class RunCancellation {
     /** Why the run was asked to stop. */
     public enum Cause {
         /** An operator terminated the workflow; the {@code TERMINATED} row is already durable. */
-        TERMINATED,
+        TERMINATED(3),
         /** This node's executor is shutting down; the workflow stays recoverable. */
-        SHUTDOWN,
+        SHUTDOWN(1),
         /**
          * Another runner owns this workflow's progress — one of this run's
-         * appends collided with its event. The run must stand down.
+         * appends collided with its event, or a fresh read found the row
+         * finalised by it. The run must stand down.
          */
-        STALE
+        STALE(2);
+
+        /** Precedence: a request replaces the current cause only if its rank is strictly higher. */
+        private final int rank;
+
+        Cause(int rank) {
+            this.rank = rank;
+        }
     }
 
     /** The current request: its cause and reason are published together by one compare-and-set. */
@@ -113,17 +136,7 @@ public final class RunCancellation {
      *         {@code false} if the run was already terminated
      */
     public boolean requestTermination(@Nullable String reason) {
-        var terminated = new Request(Cause.TERMINATED, reason);
-        while (true) {
-            var current = request.get();
-            if (current != null && current.cause() == Cause.TERMINATED) {
-                return false;
-            }
-            if (request.compareAndSet(current, terminated)) {
-                latch.countDown();
-                return true;
-            }
-        }
+        return requestIfStronger(new Request(Cause.TERMINATED, reason));
     }
 
     /**
@@ -133,7 +146,7 @@ public final class RunCancellation {
      *         cause had already been requested (a shutdown never replaces one)
      */
     public boolean requestShutdown() {
-        return requestIfNone(new Request(Cause.SHUTDOWN, null));
+        return requestIfStronger(new Request(Cause.SHUTDOWN, null));
     }
 
     /**
@@ -141,26 +154,36 @@ public final class RunCancellation {
      * workflow's progress — called when one of this run's appends lost the
      * race on the {@code (workflow_instance_id, sequence_number)} guard.
      *
-     * <p>First-wins, like {@link #requestShutdown()}: it never replaces a
-     * cause already requested; a later {@link #requestTermination} replaces it.
+     * <p>Replaces a prior {@link Cause#SHUTDOWN} request (a shutdown drain must
+     * not let a known-stale run start another attempt); a repeated stale
+     * request keeps the first detail, and a later {@link #requestTermination}
+     * replaces it. Also called when a fresh read finds the row finalised by
+     * another runner, so the stand-down is sticky whatever workflow code does
+     * with the {@code StaleRunException}.
      *
-     * @param detail what collided, e.g. {@code "append collision at sequence 4"}
-     * @return {@code true} iff this call set the cause; {@code false} if any
-     *         cause had already been requested
+     * @param detail what made the run stale, e.g. {@code "append collision at sequence 4"}
+     * @return {@code true} iff this call set the cause or replaced a shutdown
+     *         request; {@code false} if the run was already stale or terminated
      */
     public boolean requestStale(String detail) {
-        return requestIfNone(new Request(Cause.STALE, detail));
+        return requestIfStronger(new Request(Cause.STALE, detail));
     }
 
-    private boolean requestIfNone(Request requested) {
-        // Compare-and-set null -> request. The cause and its reason travel in
-        // one record, so a reader never sees one without the other and a
-        // losing request cannot overwrite the winner's reason.
-        if (!request.compareAndSet(null, requested)) {
-            return false;
+    private boolean requestIfStronger(Request requested) {
+        // CAS loop: replace the current request only with a strictly stronger
+        // one (see the class Javadoc, "Precedence"). The cause and its reason
+        // travel in one record, so a reader never sees one without the other
+        // and a losing request cannot overwrite the winner's reason.
+        while (true) {
+            var current = request.get();
+            if (current != null && current.cause().rank >= requested.cause().rank) {
+                return false;
+            }
+            if (request.compareAndSet(current, requested)) {
+                latch.countDown();
+                return true;
+            }
         }
-        latch.countDown();
-        return true;
     }
 
     /**
@@ -215,9 +238,8 @@ public final class RunCancellation {
      * Any other cause is ignored here.
      *
      * <p>The exception's {@code observedStatus} is {@link WorkflowStatus#RUNNING}:
-     * the collision tells this run another runner is ahead, not that the row
-     * was finalised, so the last status this run itself knows is the one its
-     * live activity ran under.
+     * the latch keeps only the detail of what made the run stale, not a
+     * status, so the last status this run itself acted under is reported.
      *
      * @param workflowId the workflow ID, for the exception
      * @throws StaleRunException if the cause is {@link Cause#STALE}

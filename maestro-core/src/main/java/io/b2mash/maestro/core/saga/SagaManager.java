@@ -5,6 +5,7 @@ import io.b2mash.maestro.core.context.WorkflowMDC;
 import io.b2mash.maestro.core.exception.CompensationException;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.MaestroControlFlowError;
+import io.b2mash.maestro.core.exception.NodeErrors;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException;
 import io.b2mash.maestro.core.exception.StaleRunException;
@@ -644,11 +645,13 @@ public final class SagaManager {
         // this call replay-skipped never ran, so they cannot be the source
         // of a shutdown here.)
         //
-        // Two full passes, ranked like parallel()'s pre-scan (R27): a
-        // control-flow signal in ANY branch outranks a stale-run signal in an
-        // earlier one (M2) — a shutdown must leave the instance recoverable as
-        // a shutdown, not be reported as a stand-down because branch 0 happened
-        // to collide first — and either outranks a plain failure.
+        // Three full passes, ranked like parallel()'s pre-scan (R27, R33): a
+        // control-flow signal in ANY branch first, then a node-level error
+        // (rethrown raw, so the executor abandons the run as NODE_ERROR and no
+        // COMPENSATION_STEP_FAILED is recorded for a reversal that never
+        // failed), then a stale-run signal — so a shutdown is not reported as a
+        // stand-down because branch 0 happened to collide first (M2) — and all
+        // of them outrank a plain failure.
         for (var errorRef : errors) {
             // One check covers all three engine control-flow signals — a
             // shutdown, an operator terminate, or a stand-down because a branch
@@ -660,6 +663,14 @@ public final class SagaManager {
             // why MaestroControlFlowError exists.
             if (errorRef.get() instanceof MaestroControlFlowError controlFlow) {
                 throw controlFlow;
+            }
+        }
+        for (var errorRef : errors) {
+            // R33: this node is broken (bad deploy, resource exhaustion) — not
+            // a failed reversal. Recording it would durably claim the step was
+            // attempted and failed; a healthy node finishes the unwind.
+            if (errorRef.get() instanceof Error nodeError && NodeErrors.isNodeError(nodeError)) {
+                throw nodeError;
             }
         }
         for (var errorRef : errors) {
@@ -852,6 +863,9 @@ public final class SagaManager {
             logger.warn("Workflow '{}' is already {} — another runner finalised it first; "
                             + "abandoning this stale run without running {}",
                     ctx.workflowId(), status, action);
+            // Sticky (R33): the run stays stale whatever workflow code does
+            // with the exception — its next stop point stands it down too.
+            ctx.cancellation().requestStale(action);
             throw new StaleRunException(ctx.workflowId(), status, action);
         }
         return latest;
@@ -930,7 +944,9 @@ public final class SagaManager {
             // this workflow's compensation progress — swallowing it here (as
             // this method does for other append problems) would let a stale
             // run keep executing compensation ACTIONS the winner also runs.
-            // Propagate so the whole attempt stands down at the executor.
+            // Propagate so the whole attempt stands down at the executor —
+            // sticky (R33), so swallowing it cannot let the run carry on.
+            ctx.cancellation().requestStale("append collision at sequence " + seq);
             throw staleRun;
         } catch (Exception e) {
             logger.warn("Failed to append {} event for workflow '{}'", type, ctx.workflowId(), e);

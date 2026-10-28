@@ -222,8 +222,9 @@ compensation, the winner's outcome governs), mirroring the shutdown/
 termination control-flow pattern. Since C5 the loser also stands down when a
 fresh read at a status write, a signal wake, the `COMPENSATING` transition or a
 sequential compensation entry finds the row already finalised by the winner
-(`StaleRunException`), and a run whose collision workflow code swallowed is
-stopped before its next live activity — all reported as `stale_run`. See
+(`StaleRunException`), and a run whose stand-down workflow code swallowed is
+stopped at its next stop point (live activity, `sleep()`, `awaitSignal()`,
+terminal write) — all reported as `stale_run`. See
 `docs/open-issues.md` Issue 18 for the full defect and fix.
 
 **Measured consequence.** Under the chaos harness's mandated split-brain
@@ -481,8 +482,9 @@ for an event-append collision with that runner's history (Issue 18), and for a
 fresh read that finds the row already finalised (`COMPLETED`/`FAILED`) by it
 (`StaleRunException`, C5) — at a park/wake status write, an `awaitSignal()`
 wake, the transition to `COMPENSATING`, or before a sequential compensation
-entry — and before the next live activity of a run whose earlier collision the
-workflow code caught and swallowed.)
+entry — and at the next stop point (live activity, `sleep()`,
+`awaitSignal()`, terminal write) of a run whose earlier stand-down the workflow
+code caught and swallowed.)
 
 ### 10.4 The alarm that matters: `unknown_event_payload` on a homogeneous fleet
 

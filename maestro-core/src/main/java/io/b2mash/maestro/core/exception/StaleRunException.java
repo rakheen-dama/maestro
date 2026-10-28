@@ -26,11 +26,16 @@ import io.b2mash.maestro.core.model.WorkflowStatus;
  *   <li>{@code SignalManager}'s wake-recheck inside {@code awaitSignal()} on
  *       the same fresh read — a stale run must not consume a signal of a
  *       workflow a peer has already finished;</li>
- *   <li>the run's {@code RunCancellation}, before every live activity attempt
- *       once one of the run's appends has collided with a concurrent runner's
- *       event ({@code observedStatus} {@code RUNNING}): a workflow author who
- *       caught and swallowed the {@link DuplicateEventException} still cannot
- *       execute the next live activity — a side effect the winner also runs.</li>
+ *   <li>{@code sleep()}'s wake (local or recheck) on the same fresh read — a
+ *       stale run must not memoize {@code TIMER_FIRED} for it;</li>
+ *   <li>the run's {@code RunCancellation} ({@code observedStatus}
+ *       {@code RUNNING}), once any of the above — or an append collision — has
+ *       marked the run stale: before every live activity attempt, on entry to
+ *       {@code sleep()} and {@code awaitSignal()}, and before the terminal
+ *       write. A workflow author who caught and swallowed the
+ *       {@link DuplicateEventException} or this exception still cannot execute
+ *       the next side effect, schedule a timer, consume a signal, compensate,
+ *       or record an outcome the winner owns.</li>
  * </ul>
  * A fresh read of {@code TERMINATED} is <em>not</em> this exception: it raises
  * {@link WorkflowTerminatedException}, the operator's stop signal.

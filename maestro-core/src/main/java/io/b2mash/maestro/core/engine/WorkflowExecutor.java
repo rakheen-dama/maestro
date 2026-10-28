@@ -10,6 +10,7 @@ import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.MaestroControlFlowError;
 import io.b2mash.maestro.core.exception.MaestroException;
+import io.b2mash.maestro.core.exception.NodeErrors;
 import io.b2mash.maestro.core.exception.QueryNotDefinedException;
 import io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException;
 import io.b2mash.maestro.core.exception.StaleRunException;
@@ -1461,6 +1462,12 @@ public final class WorkflowExecutor {
             // are one atomic store write. A DuplicateEventException from it
             // (another runner already owns the terminal slot) wrote nothing
             // and reaches the stale-run stand-down arm below.
+            //
+            // R33: a run already known to be stale (workflow code swallowed an
+            // earlier collision or StaleRunException) must not reach its
+            // terminal write at all — the StaleRunException this raises takes
+            // the same stand-down arm.
+            ctx.cancellation().throwIfStale(ctx.workflowId());
             boolean completed;
             try {
                 completed = transitionToTerminal(ctx, instance, WorkflowStatus.COMPLETED,
@@ -1904,6 +1911,12 @@ public final class WorkflowExecutor {
     ) {
         logger.error("Workflow '{}' failed: {}", ctx.workflowId(), failure.getMessage(), failure);
 
+        // R33: a run already known to be stale (workflow code turned a
+        // swallowed collision or StaleRunException into this "failure") must
+        // neither compensate work the winner owns nor write FAILED over it.
+        // The StaleRunException reaches failAndCompensate's stand-down arm.
+        ctx.cancellation().throwIfStale(ctx.workflowId());
+
         // Run compensations via SagaManager if any are registered
         if (!compensationStack.isEmpty()) {
             try {
@@ -1929,6 +1942,12 @@ public final class WorkflowExecutor {
                         ctx.workflowId(), noRoom.getMessage(), noRoom);
             }
         }
+
+        // Re-checked after compensating (R33): an unwind can make the run
+        // stale too, and a stale run must not reach its terminal write. Outside
+        // the try below, whose catch (Exception) would misreport it as a
+        // failed terminal write.
+        ctx.cancellation().throwIfStale(ctx.workflowId());
 
         // Update instance to FAILED
         try {

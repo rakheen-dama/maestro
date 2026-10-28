@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.SignalTimeoutException;
 import io.b2mash.maestro.core.exception.StaleRunException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
@@ -282,6 +283,10 @@ final class SignalManager {
      * @throws SignalTimeoutException if the timeout elapses before a signal arrives
      */
     <T> T awaitSignal(WorkflowContext ctx, String signalName, Class<T> type, Duration timeout) {
+        // A run already known to be stale (R33) — workflow code swallowed an
+        // earlier collision or StaleRunException — stands down before it can
+        // consume a signal that belongs to the winner's run.
+        ctx.cancellation().throwIfStale(ctx.workflowId());
         var seq = ctx.nextSequence();
         var stepName = "$maestro:awaitSignal:" + signalName;
 
@@ -403,7 +408,7 @@ final class SignalManager {
                 // for a run that must not continue. So does a row another
                 // runner already finalised (COMPLETED/FAILED): this run is
                 // stale and stands down before it can take the signal (M7).
-                standDownIfTerminated(ctx.workflowId());
+                standDownIfTerminated(ctx);
 
                 // Advisory probe (Issue 20 / Ruling 5): a store exception here
                 // must not tear down a healthy parked workflow — treat it as
@@ -582,11 +587,18 @@ final class SignalManager {
                 payload,
                 Instant.now()
         );
-        store.appendEvent(event);
+        try {
+            store.appendEvent(event);
+        } catch (DuplicateEventException staleRun) {
+            // Another runner owns this slot: the run stands down, and stays
+            // stale even if workflow code swallows the duplicate (R33).
+            ctx.cancellation().requestStale("append collision at sequence " + seq);
+            throw staleRun;
+        }
     }
 
     private void updateInstanceStatus(WorkflowContext ctx, WorkflowStatus newStatus) {
-        InstanceStatusWriter.write(store, ctx.workflowId(), newStatus);
+        InstanceStatusWriter.write(store, ctx, newStatus);
     }
 
     /** Builds the identity-only observation record for the current context. */
@@ -618,13 +630,15 @@ final class SignalManager {
      * store's exception. The instance is only ever actually stood down once a
      * probe succeeds and observes a terminal status.
      *
-     * @param workflowId the workflow's business ID
+     * @param ctx the parked run's context; set to {@code STALE} before a
+     *            {@link StaleRunException} is thrown, so the stand-down is sticky
      * @throws WorkflowTerminatedException if the instance row is {@code TERMINATED}
      * @throws StaleRunException           if the instance row is any other
      *                                     terminal status — another runner
      *                                     finalised it
      */
-    private void standDownIfTerminated(String workflowId) {
+    private void standDownIfTerminated(WorkflowContext ctx) {
+        var workflowId = ctx.workflowId();
         // The same single read as before: it now returns the status rather
         // than a TERMINATED boolean, so no extra store read is added (R30).
         @Nullable WorkflowStatus status = ParkProbe.<@Nullable WorkflowStatus>read(
@@ -642,6 +656,8 @@ final class SignalManager {
             logger.warn("Workflow '{}' is already {} — another runner finalised it while this run was "
                     + "parked on a signal; standing this stale run down without consuming it",
                     workflowId, status);
+            // Sticky (R33): swallowing the exception cannot let the run carry on.
+            ctx.cancellation().requestStale("signal wake while parked");
             throw new StaleRunException(workflowId, status, "signal wake while parked");
         }
     }

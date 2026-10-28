@@ -171,7 +171,7 @@ try {
 }
 ```
 
-As a backstop, the engine stops the *next live activity* of a run it already knows is stale, whatever the workflow code did with the exception: after an append collision, that activity throws `StaleRunException` before it acquires a lock, publishes a start or executes anything. Only the code you run between the swallowed exception and that call is beyond the engine's reach.
+As a backstop, the engine remembers that a run is stale, whatever the workflow code did with the exception, and stands it down at its *next stop point*: the next live activity (before it acquires a lock, publishes a start or executes anything), the next `sleep()` (before it saves a timer), the next `awaitSignal()` (before it consumes a signal), and the terminal write (a stale run never records `COMPLETED` or `FAILED`, and never compensates). Each throws `StaleRunException`. Only the plain code you run between the swallowed exception and that point is beyond the engine's reach.
 
 ---
 
