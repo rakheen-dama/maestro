@@ -224,8 +224,9 @@ Durable timers are central to Maestro workflows. In production, `workflow.sleep(
 // Workflow calls workflow.sleep(Duration.ofDays(30))
 var handle = env.startWorkflow(ReminderWorkflow.class, input);
 
-// Workflow is now parked on a timer
-assertEquals(WorkflowStatus.WAITING_TIMER, handle.getStatus());
+// startWorkflow returns at once: wait until the workflow has armed its timer
+// and parked (waitForParkedStatus is under "Best Practices" below)
+waitForParkedStatus(handle, WorkflowStatus.WAITING_TIMER, Duration.ofSeconds(5));
 
 // Fast-forward 30 days -- the timer fires instantly. Its fireAt was armed
 // from the test clock (now + 30 days), so advancing exactly 30 days reaches it.
@@ -244,7 +245,7 @@ var result = handle.getResult(ReminderResult.class, Duration.ofSeconds(5));
 
 **Why an exact advance works.** The environment hands its `ControllableClock` to the engine, which arms every durable deadline from it: `sleep(d)` gets `fireAt = clock.now() + d`, and a parked `awaitSignal(name, type, timeout)` gets `deadline = clock.now() + timeout`, decided against the same clock. The wall clock plays no part, so a 1-second deadline cannot expire while a slow test is still getting ready, and `advanceTime(timeout)` lands exactly on the deadline — no `plusSeconds(1)` margin. `workflow.currentTime()` reads the same clock, so `collectSignals` budgets its overall timeout in test time too. (Production uses the system clock; only `TestWorkflowEnvironment` swaps it.)
 
-**What one call fires.** A workflow that a call wakes and that parks again arms its next timer from the advanced clock, at `target + d`. For any positive `d` that is after the target, so the same call never fires it — the next `advanceTime` does. Each `advanceTime` therefore moves every parked workflow forward by exactly one deadline per elapsed duration, never by an arbitrary number depending on thread timing. The loop inside the call repeats only while timers due by the target remain (more than one batch, or a zero-duration timer); a safety limit of 1,000 iterations prevents infinite timer loops.
+**What one call fires.** A workflow that a call wakes and that parks again arms its next timer from the advanced clock, at `target + d`. For any positive `d` that is after the target, so the same call never fires it — the next `advanceTime` does. So one `advanceTime` fires only timers that were already due at its target; it never chains on into a timer the woken workflow arms with a positive duration, however long that duration is relative to the advance. A zero- or negative-duration timer armed by a woken workflow is due at once, so whether this call or the next one fires it depends on thread timing — don't rely on either. The loop inside the call repeats while timers due by the target remain (more than one batch of 100, or such a timer); a safety limit of 1,000 iterations prevents infinite timer loops.
 
 `advanceTime` fires `awaitSignal` deadlines exactly as it fires `sleep()` timers: a 7-day approval wait times out with one `env.advanceTime(Duration.ofDays(7))` instead of seven days of wall clock — and a signal delivered before the advanced clock reaches the deadline still wins. Wait for the workflow to be parked (status `WAITING_SIGNAL`, or its `TIMER_SCHEDULED` memo in the event log) before advancing: advancing first moves the clock past nothing, and the await then arms its deadline from the already-advanced clock.
 
@@ -463,8 +464,9 @@ class OrderFulfilmentWorkflowTest {
         var handle = env.startWorkflow(
             OrderFollowUpWorkflow.class, orderInput);
 
-        // Workflow sleeps for 30 days before sending a follow-up
-        assertEquals(WorkflowStatus.WAITING_TIMER, handle.getStatus());
+        // Workflow sleeps for 30 days before sending a follow-up: wait until
+        // it has armed the timer and parked (see "Best Practices")
+        waitForParkedStatus(handle, WorkflowStatus.WAITING_TIMER, Duration.ofSeconds(5));
 
         // Fast-forward 30 days: the timer was armed from the test clock,
         // so the exact duration fires it (see "How It Works")

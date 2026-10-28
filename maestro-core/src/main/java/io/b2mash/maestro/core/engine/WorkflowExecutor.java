@@ -473,7 +473,13 @@ public final class WorkflowExecutor {
      *                               arms and decides its deadline on, and
      *                               {@code currentTime()} records — see
      *                               {@link #instantSource()}. Pass
-     *                               {@link InstantSource#system()} in production.
+     *                               {@link InstantSource#system()} in production:
+     *                               the timer poller ({@link #startTimerPoller})
+     *                               still compares due rows against the system
+     *                               clock, so a non-system source is only for a
+     *                               test harness that fires timers itself (as
+     *                               {@code TestWorkflowEnvironment.advanceTime}
+     *                               does) and never starts the poller.
      * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
      *                                  or {@code wakeRecheckInterval} is {@code null}, zero,
      *                                  or negative

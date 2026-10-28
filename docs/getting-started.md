@@ -530,15 +530,17 @@ package com.example.demo.workflow;
 
 import com.example.demo.activity.GreetingActivities;
 import com.example.demo.activity.GreetingActivitiesImpl;
+import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.test.TestWorkflowEnvironment;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
-import java.util.concurrent.TimeoutException;
+import java.time.Instant;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class WelcomeWorkflowTest {
 
@@ -556,11 +558,21 @@ class WelcomeWorkflowTest {
     }
 
     @Test
-    void shouldCompleteWelcomeWorkflow() throws TimeoutException {
+    void shouldCompleteWelcomeWorkflow() throws Exception {
         var handle = env.startWorkflow(WelcomeWorkflow.class, "Alice");
 
+        // startWorkflow returns at once; the workflow runs its activity on its
+        // own thread and only then arms the sleep. Wait until it is parked on
+        // the timer -- advancing earlier would move the clock past nothing,
+        // and the sleep would then arm from the already-advanced clock.
+        var deadline = Instant.now().plusSeconds(5);
+        while (handle.getStatus() != WorkflowStatus.WAITING_TIMER) {
+            assertTrue(Instant.now().isBefore(deadline), "workflow never parked on its sleep");
+            Thread.sleep(10);
+        }
+
         // Advance by the 5-second durable sleep: its fireAt was armed from
-        // the test clock, so the exact duration fires it
+        // the test clock (now + 5 s), so the exact duration fires it
         env.advanceTime(Duration.ofSeconds(5));
 
         String result = handle.getResult(String.class, Duration.ofSeconds(5));

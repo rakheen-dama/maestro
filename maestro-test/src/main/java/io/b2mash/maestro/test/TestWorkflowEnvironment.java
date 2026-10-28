@@ -232,9 +232,13 @@ public final class TestWorkflowEnvironment {
      * <p>The target is fixed when the call starts. A workflow woken by this
      * call that parks again arms its next timer from the advanced clock, at
      * {@code target + d}; for any positive {@code d} that is after the target,
-     * so this call never fires it — the next {@code advanceTime} does. The
-     * loop repeats only while timers due by the target remain (more than one
-     * batch, or a zero-duration timer armed meanwhile).
+     * so this call never fires it — the next {@code advanceTime} does. One
+     * call therefore fires only the timers already due at its target and
+     * never chains on into a positive-duration timer a woken workflow arms.
+     * A zero- or negative-duration timer armed by a woken workflow is due at
+     * once: whether this call or the next fires it depends on thread timing.
+     * The loop repeats while timers due by the target remain (more than one
+     * batch, or such a timer).
      *
      * @param duration the amount to advance (must be non-negative)
      */

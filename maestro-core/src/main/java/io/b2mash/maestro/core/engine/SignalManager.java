@@ -651,11 +651,12 @@ final class SignalManager {
     /**
      * Re-arms the deadline row of a parked await whose memo survived but whose
      * row did not (e.g. deleted out of band). A missing row is not a spent
-     * deadline: the memoized wall-clock deadline still governs, so the row is
+     * deadline: the memoized deadline still governs, so the row is
      * re-created PENDING at exactly that {@code fireAt} — the poller,
      * {@code cancelTimer} and {@code advanceTime()} can drive it again.
      * Best-effort: if the save fails, the await still times out on the
-     * memoized deadline by the wall clock.
+     * memoized deadline, decided by the executor's instant source (the system
+     * clock in production).
      *
      * @return the new row's id, or {@code null} if it could not be saved
      */
@@ -669,7 +670,7 @@ final class SignalManager {
             return rowId;
         } catch (RuntimeException e) {
             logger.warn("Workflow '{}' await deadline row '{}' is missing and could not be re-armed — "
-                            + "the memoized deadline {} still applies by the wall clock: {}",
+                            + "the memoized deadline {} still applies on the executor's instant source: {}",
                     ctx.workflowId(), timerId, deadline, e.toString());
             return null;
         }
@@ -701,7 +702,8 @@ final class SignalManager {
      * <p>The per-pass signal and row reads are advisory ({@link ParkProbe}):
      * a store blip reads as "no signal, still pending" and the await keeps
      * parking. A missing row reads as {@code PENDING} too — the memoized
-     * deadline then decides by the wall clock. Store errors inside the timeout
+     * deadline then decides, by the executor's instant source (the system
+     * clock in production). Store errors inside the timeout
      * decision never fail the run either (R39): the self-fire is best-effort,
      * and a failed post-deadline signal re-read parks one more re-check
      * interval and decides again. Only the {@code SIGNAL_TIMEOUT} append keeps
@@ -737,10 +739,11 @@ final class SignalManager {
                 }
 
                 // 2. The durable row arbitrates the deadline. A blip reads as
-                // PENDING, so the await keeps parking until the wall clock
-                // passes the memoized deadline. So does a MISSING row (item
-                // 4): absence is not a fire or a cancel, and the memoized
-                // deadline still governs by the wall clock.
+                // PENDING, so the await keeps parking until the executor's
+                // instant source (the system clock in production) passes the
+                // memoized deadline. So does a MISSING row (item 4): absence
+                // is not a fire or a cancel, and the memoized deadline still
+                // governs, decided by the same instant source.
                 var rowStatus = ParkProbe.read("awaitSignal.findTimer", workflowId,
                         () -> store.findTimer(ctx.workflowInstanceId(), timerId)
                                 .map(WorkflowTimer::status)
