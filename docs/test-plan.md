@@ -276,7 +276,7 @@ if that backend is kept.
   (`disabled_inactivity`); `build-test.yml`'s `keep-nightly-enabled` job
   re-enables it on every push to `main`. `gh workflow list --all` (not plain
   `gh workflow list`) shows disabled workflows.
-- <!-- Task 5 --> Coverage gate: to be rewritten by Task 5 Step 6.
+- Coverage gate: every subproject with `src/main/java` — libraries and samples alike — must carry ≥1 test class (`verifyModuleTestCoverage`, root `build.gradle.kts`); accepted debt is listed by name in `modulesWithoutTests` and printed on every run.
 
 ---
 
