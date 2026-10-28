@@ -23,8 +23,10 @@ import io.b2mash.maestro.core.exception.WorkflowNotFoundException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
+import io.b2mash.maestro.core.model.WorkflowFailureDetail;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.model.WorkflowTerminationDetail;
 import io.b2mash.maestro.core.observe.AbandonReason;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.StandDownReason;
@@ -867,7 +869,7 @@ public final class WorkflowExecutor {
             var now = Instant.now();
             var terminated = latest.toBuilder()
                     .status(WorkflowStatus.TERMINATED)
-                    .output(serializer.serialize(new TerminationDetail(reason, "admin")))
+                    .output(serializer.serialize(new WorkflowTerminationDetail(reason, "admin")))
                     .completedAt(now)
                     .updatedAt(now)
                     .version(latest.version() + 1)
@@ -2227,7 +2229,7 @@ public final class WorkflowExecutor {
 
         // Update instance to FAILED
         try {
-            var errorPayload = serializer.serialize(new ErrorDetail(
+            var errorPayload = serializer.serialize(new WorkflowFailureDetail(
                     failure.getClass().getName(),
                     failure.getMessage()
             ));
@@ -2522,15 +2524,4 @@ public final class WorkflowExecutor {
      */
     record RunningWorkflow(Thread thread, WorkflowInstance instance, String workflowType,
                            Object workflowImpl, RunCancellation cancellation) {}
-
-    /**
-     * Error detail stored in the workflow output on failure.
-     */
-    private record ErrorDetail(String exceptionType, @Nullable String message) {}
-
-    /**
-     * Termination detail stored in the workflow output when an admin terminates
-     * it — the audit trail for why an operator stopped this workflow.
-     */
-    private record TerminationDetail(@Nullable String reason, String terminatedBy) {}
 }

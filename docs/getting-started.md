@@ -438,6 +438,7 @@ package com.example.demo.controller;
 
 import com.example.demo.domain.ApprovalDecision;
 import com.example.demo.workflow.WelcomeWithApprovalWorkflow;
+import io.b2mash.maestro.core.exception.WorkflowNotQueryableException;
 import io.b2mash.maestro.spring.client.MaestroClient;
 import io.b2mash.maestro.spring.client.WorkflowOptions;
 import org.springframework.http.ResponseEntity;
@@ -480,8 +481,15 @@ public class WelcomeApprovalController {
 
     @GetMapping("/approval-welcome/{name}/status")
     public String status(@PathVariable String name) {
-        return maestro.getWorkflow("welcome-" + name)
-            .query("getStatus", String.class);
+        var handle = maestro.getWorkflow("welcome-" + name);
+        try {
+            // Live step from the running workflow -- answered by the owning node only
+            return handle.query("getStatus", String.class);
+        } catch (WorkflowNotQueryableException e) {
+            // Durable fallback: finished, or running on another node. status()
+            // reads the store, so it works on every node.
+            return handle.status().name();
+        }
     }
 }
 ```

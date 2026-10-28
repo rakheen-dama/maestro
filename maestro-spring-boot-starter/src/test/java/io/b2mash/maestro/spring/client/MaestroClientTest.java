@@ -25,6 +25,10 @@ import org.springframework.context.annotation.Scope;
 import tools.jackson.databind.ObjectMapper;
 
 import java.time.Duration;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -33,6 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -116,6 +121,50 @@ class MaestroClientTest {
                         () -> stub.startAndWait(null, Duration.ofMillis(500), String.class));
             });
         }
+
+        @Test
+        @DisplayName("startAndWait on a failed workflow carries the workflow's exception message and cause")
+        void startAndWaitFailureCarriesTheWorkflowsExceptionMessageAndCause() {
+            runner.run(context -> {
+                var client = context.getBean(MaestroClient.class);
+
+                var ex = assertThrows(WorkflowExecutionException.class,
+                        () -> client.newWorkflow(FailingWorkflow.class, options("f-1"))
+                                .startAndWait(null, Duration.ofSeconds(10), Void.class));
+
+                assertTrue(ex.getMessage().contains("IllegalStateException: boom"), ex.getMessage());
+                assertInstanceOf(IllegalStateException.class, ex.getCause(),
+                        "the cause must be the reconstructed workflow exception");
+                assertEquals("boom", ex.getCause().getMessage());
+            });
+        }
+
+        @Test
+        @DisplayName("startAndWait on a terminated workflow names who terminated it and why")
+        void startAndWaitOnTerminatedWorkflowCarriesTheReason() {
+            runner.run(context -> {
+                var client = context.getBean(MaestroClient.class);
+                var executor = context.getBean(WorkflowExecutor.class);
+
+                var waiting = CompletableFuture.supplyAsync(() -> {
+                    try {
+                        return client.newWorkflow(ParkingWorkflow.class, options("t-1"))
+                                .startAndWait(null, Duration.ofSeconds(20), String.class);
+                    } catch (TimeoutException e) {
+                        throw new CompletionException(e);
+                    }
+                });
+                awaitParked(executor, 1);
+
+                client.getWorkflow("t-1").terminate("maintenance window");
+
+                var thrown = assertThrows(Exception.class, () -> waiting.get(15, TimeUnit.SECONDS));
+                var ex = assertInstanceOf(WorkflowExecutionException.class, thrown.getCause());
+                assertTrue(ex.getMessage().contains("was terminated"), ex.getMessage());
+                assertTrue(ex.getMessage().contains("maintenance window"), ex.getMessage());
+                assertNull(ex.getCause(), "a termination is not a failure — there is no cause");
+            });
+        }
     }
 
     @Nested
@@ -166,6 +215,75 @@ class MaestroClientTest {
 
                 assertThrows(WorkflowNotFoundException.class,
                         () -> client.getWorkflow("no-such-workflow").query("state", String.class));
+            });
+        }
+
+        @Test
+        @DisplayName("status reports a parked workflow as WAITING_SIGNAL, then COMPLETED once signalled")
+        void statusReportsRunningThenCompleted() {
+            runner.run(context -> {
+                var client = context.getBean(MaestroClient.class);
+
+                client.newWorkflow(ParkingWorkflow.class, options("h-1")).startAsync(null);
+                var handle = client.getWorkflow("h-1");
+                await().atMost(Duration.ofSeconds(10))
+                        .until(() -> handle.status() == WorkflowStatus.WAITING_SIGNAL);
+
+                handle.signal(ParkingWorkflow.SIGNAL, "go");
+
+                await().atMost(Duration.ofSeconds(10))
+                        .until(() -> handle.status() == WorkflowStatus.COMPLETED);
+            });
+        }
+
+        @Test
+        @DisplayName("result is empty while the workflow runs and holds the typed output once it completes")
+        void resultIsEmptyWhileRunningAndPresentAfterCompletion() {
+            runner.run(context -> {
+                var client = context.getBean(MaestroClient.class);
+                var executor = context.getBean(WorkflowExecutor.class);
+
+                client.newWorkflow(ParkingWorkflow.class, options("h-2")).startAsync(null);
+                awaitParked(executor, 1);
+                var handle = client.getWorkflow("h-2", String.class);
+
+                assertTrue(handle.result().isEmpty(), "a running workflow has no result yet");
+
+                handle.signal(ParkingWorkflow.SIGNAL, "in");
+                await().atMost(Duration.ofSeconds(10))
+                        .until(() -> handle.status() == WorkflowStatus.COMPLETED);
+
+                assertEquals(Optional.of("in"), handle.result());
+            });
+        }
+
+        @Test
+        @DisplayName("terminate moves the workflow to TERMINATED")
+        void terminateMovesTheWorkflowToTerminated() {
+            runner.run(context -> {
+                var client = context.getBean(MaestroClient.class);
+                var executor = context.getBean(WorkflowExecutor.class);
+
+                client.newWorkflow(ParkingWorkflow.class, options("h-3")).startAsync(null);
+                awaitParked(executor, 1);
+
+                assertEquals(WorkflowExecutor.TerminateOutcome.TERMINATED,
+                        client.getWorkflow("h-3").terminate("ops"));
+                await().atMost(Duration.ofSeconds(10))
+                        .until(() -> client.getWorkflow("h-3").status() == WorkflowStatus.TERMINATED);
+                assertTrue(client.getWorkflow("h-3").result().isEmpty(),
+                        "a terminated workflow has no result");
+            });
+        }
+
+        @Test
+        @DisplayName("status on an unknown workflow id throws WorkflowNotFoundException")
+        void getWorkflowOnUnknownIdThrowsOnStatus() {
+            runner.run(context -> {
+                var client = context.getBean(MaestroClient.class);
+
+                assertThrows(WorkflowNotFoundException.class, () -> client.getWorkflow("nope").status());
+                assertThrows(WorkflowNotFoundException.class, () -> client.getWorkflow("nope").result());
             });
         }
 
@@ -288,7 +406,7 @@ class MaestroClientTest {
          */
         @WorkflowMethod
         public String run(String input) {
-            throw new IllegalStateException("workflow failed deliberately");
+            throw new IllegalStateException("boom");
         }
     }
 

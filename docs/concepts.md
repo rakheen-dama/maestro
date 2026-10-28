@@ -606,7 +606,7 @@ OrderResult result = maestro.newWorkflow(OrderFulfilmentWorkflow.class, options)
     .startAndWait(input, Duration.ofMinutes(5), OrderResult.class);
 ```
 
-`startAndWait` starts the workflow, then polls the store until it reaches a terminal state or the timeout elapses. Throws `TimeoutException` if the workflow does not complete in time, or `WorkflowExecutionException` if it fails.
+`startAndWait` starts the workflow, then polls the store until it reaches a terminal state or the timeout elapses. Throws `TimeoutException` if the workflow does not complete in time, or `WorkflowExecutionException` if it fails or is terminated. For a failure, the exception message names the failing exception (`Workflow 'order-abc' failed: java.lang.IllegalStateException: out of stock`) and the cause is that activity/workflow exception reconstructed from the store — its original type when it has a public `(String)` constructor, otherwise a `ReconstructedActivityFailure` carrying the original class name and message. For a termination, the message names who terminated it and the reason, and there is no cause.
 
 ### Sending a signal
 
@@ -629,6 +629,18 @@ For queries that accept an argument:
 DetailedStatus detail = maestro.getWorkflow("order-abc")
     .query("getDetail", "verbose", DetailedStatus.class);
 ```
+
+### Status, result and termination
+
+```java
+WorkflowStatus status = maestro.getWorkflow("order-abc").status();
+Optional<OrderResult> result = maestro.getWorkflow("order-abc", OrderResult.class).result();
+maestro.getWorkflow("order-abc").terminate("reason");
+```
+
+These read and write the store, so they work from any node; only `query` requires the owning node.
+
+`status()` throws `WorkflowNotFoundException` for an unknown workflow ID. `result()` is present only once the workflow is `COMPLETED` with a non-null output, deserialised to the type passed to `getWorkflow(id, type)`; it is empty while the workflow is active, and when it failed or was terminated. `terminate(reason)` marks the workflow `TERMINATED` and stops it without running compensations, returning a `TerminateOutcome` (`TERMINATED`, `ALREADY_TERMINAL` or `NOT_FOUND`).
 
 ---
 
