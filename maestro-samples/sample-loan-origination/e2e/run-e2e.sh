@@ -206,7 +206,9 @@ OWNER_SEARCH_MAX_ATTEMPTS="${OWNER_SEARCH_MAX_ATTEMPTS:-20}"
 # decision event reaches node B within it: a decision on a
 # loans.underwriting.decisions partition still assigned to the killed node A
 # waits for A's consumer-group eviction (session.timeout.ms, up to ~45s)
-# and the retried await times out again.
+# and the retried await times out again. The scenario therefore waits for the
+# group to settle at one member (A evicted, partitions reassigned to B) after
+# the kill and before the retry (R62).
 RETRY_DECISION_TIMEOUT="${RETRY_DECISION_TIMEOUT:-PT8S}"
 WAIT_FAILURE_SECS="${WAIT_FAILURE_SECS:-30}"
 # Observed empirically: a $maestro:* command published to a Kafka partition
@@ -712,6 +714,28 @@ wait_for_consumer_group() {
         sleep 2
     done
     err "Kafka consumer group '$group' not stable with >=$min_members member(s) within ${timeout}s (last: ${members:-0})"
+    return 1
+}
+
+# wait_for_consumer_group_members_exactly <group> <expected> <timeout> - polls
+# until the group is Stable with exactly <expected> members. Used after a
+# kill -9 of one of N loan nodes: the dead node's session is evicted only when
+# the broker's session.timeout.ms (up to ~45s) lapses, and the group is Stable
+# at <expected> members only once the rebalance has COMPLETED, i.e. every
+# partition (including those the dead node owned) is assigned to a live
+# member. A Kafka message sent before that lands on a partition nobody is
+# consuming. Fails loudly (return 1) on timeout.
+wait_for_consumer_group_members_exactly() {
+    local group="$1" expected="$2" timeout="$3" deadline=$((SECONDS + $3)) members=""
+    while (( SECONDS < deadline )); do
+        members="$(consumer_group_members "$group")"
+        if [[ "$members" =~ ^[0-9]+$ ]] && (( members == expected )); then
+            log "Kafka consumer group '$group' rebalanced: Stable with exactly $members member(s) - dead node's partitions are reassigned."
+            return 0
+        fi
+        sleep 2
+    done
+    err "Kafka consumer group '$group' did not settle at exactly $expected member(s) within ${timeout}s (last: ${members:-?}) - killed node's partitions never reassigned"
     return 1
 }
 
@@ -1930,11 +1954,27 @@ scenario_cross_node_admin() {
     # ── kill -9 node A; only node B is alive for both admin commands ────
     local kill_epoch
     kill_epoch=$(date +%s)
+    # Each node contributes several consumer-group members (one per listener
+    # container), so "node A gone" is half the pre-kill member count, not 1.
+    local members_before members_after
+    members_before="$(consumer_group_members "maestro-loan-application")"
+    [[ "$members_before" =~ ^[0-9]+$ ]] && (( members_before >= 2 && members_before % 2 == 0 )) \
+        || { err "Unexpected pre-kill member count '$members_before' for maestro-loan-application (need an even number >= 2 from two equal nodes)"; return 1; }
+    members_after=$(( members_before / 2 ))
     log "kill -9 loan-application-service (pid $pid_a, OWNER of $wfid_retry and $wfid_term) - will NOT be restarted until after assertions pass"
     kill -KILL "$pid_a"
     sleep 1
     if kill -0 "$pid_a" 2>/dev/null; then err "Process $pid_a survived kill -9"; return 1; fi
     rm -f "$PID_DIR/loan-application-service.pid"
+
+    # R62: wait for the killed node A's consumer-group membership to be
+    # evicted and its partitions reassigned to node B BEFORE publishing
+    # anything. Otherwise the decision (loans.underwriting.decisions) lands
+    # on a partition still assigned to dead node A and is not consumed until
+    # the session times out (up to ~45s) - longer than the retried await's
+    # fresh PT8S, so the retried run would time out again before B sees it.
+    # (The engine's retry re-arm is correct; this is a harness ordering race.)
+    wait_for_consumer_group_members_exactly "maestro-loan-application" "$members_after" "$WAIT_ADMIN_COMMAND_SECS" || return 1
 
     # ── $maestro:retry, published raw (see scenario header) ─────────────
     kafka_produce_signal "maestro.signals.loan-application" "$wfid_retry" \

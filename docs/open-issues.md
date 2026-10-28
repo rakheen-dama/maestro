@@ -282,6 +282,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [30](#issue-30) | Recovery admission is not gated by task-queue capacity | Library gap — load distribution | Medium | Open |
 | [31](#issue-31) | Services sharing one set of `maestro_*` tables fire each other's timers | Library gap — multi-service wake latency | Low | Open |
 | [32](#issue-32) | A Valkey outage stalls every signal send after the signal is durable, so caller retries persist duplicate signals | Library defect | Medium | **Resolved** |
+| [33](#issue-33) | Admin retry attributes the failure to the highest-sequenced `SIGNAL_TIMEOUT`, which can be a caught gate | Library defect — wrong failure attribution on retry | Medium | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -2776,6 +2777,50 @@ new depends on it. Separately, and not as a substitute: the chaos driver's
 within a bound far below a typical client timeout and persists exactly one row
 — pinned by a unit test with a blocking `SignalNotifier` fake and an
 `@Tag("integration")` test that pauses a real Valkey container.
+
+---
+
+### Issue 33 — Admin retry attributes the failure to the highest-sequenced `SIGNAL_TIMEOUT`, which can be a caught gate {#issue-33}
+
+> **Open.** Raised by the R61 implementer and sharpened by the R61 reviewer
+> (commit `53ca7e9`, "admin retry after an awaitSignal timeout re-arms a fresh
+> deadline instead of honouring the spent one"); filed under Rulings R62/R63.
+
+**Kind:** Library defect — wrong failure attribution on retry. **Severity:** Medium.
+
+**What's wrong.** Admin retry attributes the failure to the
+**highest-sequenced** `SIGNAL_TIMEOUT` (the Issue 19 heuristic). That is wrong
+when the propagated failure is a `SignalTimeoutException` from a
+**lower-sequenced** await while a **higher-sequenced, caught** gate holds the
+highest `SIGNAL_TIMEOUT`. Two shapes: (1) a main-sequence await after a
+`parallel()` whose branch caught a gate timeout (branch slots are
+`p*1000+...`, so they sort above later main-sequence slots); (2) a
+lower-index branch timing out uncaught while a higher-index branch caught a gate
+timeout (`parallel()` rethrows the branch error as-is). A second trigger:
+`collectSignals`' own `remaining <= 0` throw records no `SIGNAL_TIMEOUT`, so the
+highest one found is a caught gate's.
+
+Since R61, retry deletes the caught gate's outcome, memo and timer row while
+the real failing timeout survives. Consequences: (a) the retry fails again at
+once; (b) the caught gate re-runs live — a fresh full gate timeout, or, if its
+signal arrived meanwhile, it consumes that signal at its memo slot and the
+history after it diverges from the pre-failure history. That is the exact
+divergence Issue 19 exists to prevent: later branch slots no longer line up,
+causing re-execution or a stand-down.
+
+**Where.** The admin-retry path in `maestro-core` (Issue 19 outcome selection
+and the R61 memo/timer cleanup added in `53ca7e9`) and the failing-timeout
+delete in `AbstractJdbcWorkflowStore`.
+
+**Proposed fix.** Attribute the failure to the await that actually propagated:
+record the failing await's sequence in the `WORKFLOW_FAILED` payload and delete
+by it. Follow-ups: add `AND event_type = 'SIGNAL_TIMEOUT'` to the
+failing-timeout delete in `AbstractJdbcWorkflowStore` (safe today, defensive);
+add a second-retry core pin (retry, times out again, retry again).
+
+**Done when.** A workflow with a caught timed-out gate at a higher sequence than
+the propagated timeout is retried and only the propagated await's outcome, memo
+and timer row are cleared — pinned by a core test for each shape above.
 
 ---
 

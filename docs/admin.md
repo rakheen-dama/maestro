@@ -226,7 +226,10 @@ All actions produce a flash message confirming success or reporting failure, the
   **Await timeouts:** when the failure was an uncaught `awaitSignal`
   timeout, retry also discards that await's timeout and its spent deadline,
   so the retried await waits the **full timeout again**, counted from the
-  retry. A signal that arrived in the meantime is consumed at once, so the
+  retry. Inside `collectSignals` the re-armed await gets the **remaining
+  slice** of the overall timeout, recomputed from the memoized
+  `currentTime()`, not a fresh full timeout. A signal that arrived in the
+  meantime is consumed at once, so the
   operator can send the missing signal before or after retrying.
   **Compensated-saga caveat:** retrying a workflow whose saga already ran
   compensations is **not supported**. Its compensation events sit at
