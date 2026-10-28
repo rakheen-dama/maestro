@@ -18,6 +18,7 @@ import tools.jackson.databind.json.JsonMapper;
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -34,9 +35,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Why RULING 10's store fix has a wider blast radius than a single workflow:
- * {@link WorkflowExecutor#recoverWorkflows} wraps <b>none</b> of its per-instance
- * work in a {@code try}/{@code catch}, so anything thrown while adopting one
- * instance ends the pass for every instance behind it in the batch.
+ * {@link WorkflowExecutor#recoverWorkflows} contains only a throwing workflow
+ * factory per instance (R44, {@code WorkflowInstantiationException}); anything
+ * else thrown while adopting one instance — a store read included — ends the
+ * pass for every instance behind it in the batch.
  *
  * <p>Both halves are pinned here against the two possible store behaviours,
  * because the difference between them <em>is</em> RULING 10:
@@ -86,6 +88,10 @@ class RecoveryPassIsolationTest {
         // The fixed mapper's answer: this build cannot interpret that row, so
         // the instance is invisible.
         store.invisibleTo(Optional::empty, "poisoned-wf"::equals);
+        assertEquals(List.of("poisoned-wf", "healthy-wf"),
+                store.getRecoverableInstances().stream().map(WorkflowInstance::workflowId).toList(),
+                "the poisoned instance must be adopted FIRST, or skipping it proves nothing "
+                        + "about the healthy one behind it");
 
         var adopted = executor.recoverWorkflows(registrations(runs));
 
@@ -111,10 +117,14 @@ class RecoveryPassIsolationTest {
             throw new IllegalArgumentException(
                     "No enum constant WorkflowStatus.HIBERNATING_IN_A_NEWER_MAESTRO");
         }, "poisoned-wf"::equals);
+        assertEquals(List.of("poisoned-wf", "healthy-wf"),
+                store.getRecoverableInstances().stream().map(WorkflowInstance::workflowId).toList(),
+                "the poisoned instance must be adopted FIRST, or the healthy one is launched "
+                        + "before the throw and runs.get() races the assertion below");
 
         assertThrows(IllegalArgumentException.class,
                 () -> executor.recoverWorkflows(registrations(runs)),
-                "nothing in recoverWorkflows contains a per-instance failure");
+                "recoverWorkflows contains only factory failures per instance, not store-read failures");
 
         assertEquals(0, runs.get(),
                 "this is the damage RULING 10 removes: a workflow with no connection to the "
@@ -209,10 +219,12 @@ class RecoveryPassIsolationTest {
 
         @Override
         public List<WorkflowInstance> getRecoverableInstances() {
-            // Ordered so the poisoned instance is adopted FIRST — the healthy
-            // one behind it is what the abort costs.
+            // Poisoned instances first — ordered by the poison predicate, not by
+            // name — so the poisoned one is adopted FIRST and the healthy one
+            // behind it is what the abort costs.
             return byWorkflowId.values().stream()
-                    .sorted((a, b) -> a.workflowId().compareTo(b.workflowId()))
+                    .sorted(Comparator.comparing((WorkflowInstance i) -> poisoned.test(i.workflowId()) ? 0 : 1)
+                            .thenComparing(WorkflowInstance::workflowId))
                     .toList();
         }
 
