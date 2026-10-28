@@ -886,6 +886,30 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
             assertEquals(List.of(first, second),
                     store.getUnconsumedSignals("wf-order", "s").stream().map(WorkflowSignal::id).toList());
         }
+
+        @Test
+        @DisplayName("getUnconsumedSignals orders by received_at even when it disagrees with insertion order")
+        void getUnconsumedSignals_ordersByReceivedAt_notInsertionOrder() throws Exception {
+            // The test above cannot tell ORDER BY received_at from heap order:
+            // there, arrival order IS insertion order. Back-date the row
+            // inserted second, so only an ORDER BY received_at puts it first.
+            var created = store.createInstance(newInstance("wf-order-backdated"));
+            var insertedFirst = UUID.randomUUID();
+            var insertedSecond = UUID.randomUUID();
+            store.saveSignal(new WorkflowSignal(insertedFirst, created.id(), "wf-order-backdated", "s", null,
+                    false, Instant.now()));
+            store.saveSignal(new WorkflowSignal(insertedSecond, created.id(), "wf-order-backdated", "s", null,
+                    false, Instant.now()));
+            try (Connection conn = dataSource.getConnection();
+                 var ps = conn.prepareStatement("UPDATE maestro_workflow_signal "
+                         + "SET received_at = now() - interval '1 hour' WHERE id = ?")) {
+                ps.setObject(1, insertedSecond);
+                assertEquals(1, ps.executeUpdate());
+            }
+            assertEquals(List.of(insertedSecond, insertedFirst),
+                    store.getUnconsumedSignals("wf-order-backdated", "s").stream()
+                            .map(WorkflowSignal::id).toList());
+        }
     }
 
     // ── Signal janitor delete Tests (C14b) ────────────────────────────────
