@@ -19,6 +19,13 @@ Phase 3 (the docs this plan asked for). Results:
 - The stale "`e2eTest` matches nothing" note this plan's §4 flagged for
   removal is gone — `e2eTest` now runs the chaos/soak harness.
 
+**Update 2026-10-28.** The chaos soak has not been green on `main` since
+2026-08-02: five soak runs (31288365087, 31919632989, 33285262356,
+35481047255, 37169821147) and two PR-gate runs (33463346389, 34668175046)
+failed between 2026-08-09 and 2026-10-04. The nightly schedule was
+auto-disabled by GitHub's 60-day inactivity rule 2026-10-10 → 2026-10-24.
+Triage: `docs/superpowers/plans/2026-10-24-bugfix-cycle/triage/ViolationTriageReport.md`.
+
 This document is kept as the historical record of what was planned and why;
 read `docs/operations.md` and `docs/open-issues.md` for the current state.
 The rest of this file (below) is unchanged from when it was written.
@@ -41,7 +48,7 @@ executing.
 ## 1. What already exists — do not rebuild it
 
 **Logical multi-node, single JVM** — `maestro-integration-tests`
-`multinode/` package (4 suites, ~12 tests): two `MaestroEngineHarness`
+`multinode/` package (6 suites, 15 tests — `MultiNodeLockContentionIT`, `MultiNodeNoLockBackendIT`, `MultiNodeOwnerDeathIT`, `MultiNodePerRunQueryIT`, `MultiNodeSignalRoutingIT`, `MultiNodeTimerWakeIT`): two `MaestroEngineHarness`
 engine instances contend over one real Postgres + Kafka. Covers lock
 contention, owner-death → TTL → adoption, cross-node signal routing, and the
 no-lock-backend characterization (duplicate execution is real; activities
