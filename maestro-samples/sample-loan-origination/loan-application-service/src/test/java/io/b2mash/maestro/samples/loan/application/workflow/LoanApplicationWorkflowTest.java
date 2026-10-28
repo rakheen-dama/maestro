@@ -2,6 +2,7 @@ package io.b2mash.maestro.samples.loan.application.workflow;
 
 import io.b2mash.maestro.core.exception.SignalTimeoutException;
 import io.b2mash.maestro.core.model.EventType;
+import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.samples.loan.application.activity.FundingActivities;
 import io.b2mash.maestro.samples.loan.application.activity.LoanActivities;
@@ -26,6 +27,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeoutException;
@@ -41,10 +43,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * SPEC test matrix for the loan-application service, run against the
  * in-memory {@link TestWorkflowEnvironment} with SPEC timeouts crossed by
  * advancing the test clock, and an in-memory fake for the Kafka-publishing activities.
+ *
+ * <p>Every wait is on the test clock: the engine arms each deadline from it, so
+ * nothing here — not even a 1 s withdrawal gate — can expire on the wall clock
+ * while the test is slow (R59). A test waits for the workflow to be parked on an
+ * await (its {@code TIMER_SCHEDULED} memo is the newest event) before advancing
+ * the clock by exactly that await's timeout.
  */
 class LoanApplicationWorkflowTest {
 
     private static final Duration RESULT_TIMEOUT = Duration.ofSeconds(10);
+    /** Bound on waiting for the workflow to reach a state — generous for a loaded build. */
+    private static final Duration WAIT = Duration.ofSeconds(10);
     private static final String APP_ID = "app-1";
     private static final String WORKFLOW_ID = "loan-" + APP_ID;
     private static final String BORROWER_1 = "borrower-1";
@@ -209,7 +219,7 @@ class LoanApplicationWorkflowTest {
         // Wait until gate #1 has passed and the rate lock is reserved, so the
         // withdrawal cannot be consumed by gate #1.
         waitUntil(() -> "COLLECTING_SIGNATURES".equals(
-                handle.query("getStatus", null, String.class)), Duration.ofSeconds(5));
+                handle.query("getStatus", null, String.class)), WAIT);
 
         // Deliver the withdrawal BEFORE the signatures: it is persisted and
         // then consumed instantly at gate #2, after signature collection.
@@ -244,11 +254,9 @@ class LoanApplicationWorkflowTest {
         deliverRequiredDocuments(handle);
         deliverApprovedVerifications(handle);
         passGate(handle, "WITHDRAWAL_GATE_1");
-        waitUntil(() -> "UNDERWRITING_ROUND_1".equals(handle.query("getStatus", null, String.class))
-                && handle.getStatus() == WorkflowStatus.WAITING_SIGNAL, Duration.ofSeconds(5));
+        awaitParked(handle, "UNDERWRITING_ROUND_1", "underwriting.decision");
 
-        // +1s: see passGate — the test clock and the wall clock differ by a few ms.
-        env.advanceTime(LoanTimeoutPolicy.SPEC_DEFAULTS.decisionTimeout().plusSeconds(1));
+        env.advanceTime(LoanTimeoutPolicy.SPEC_DEFAULTS.decisionTimeout());
 
         var failure = assertThrows(RuntimeException.class,
                 () -> handle.awaitCompletion(Duration.ofSeconds(5)));
@@ -325,14 +333,33 @@ class LoanApplicationWorkflowTest {
 
     /**
      * Waits for the workflow to park at the named withdrawal gate, then advances
-     * the test clock past the gate timeout (timeout = not withdrawn).
+     * the test clock by exactly the gate timeout (timeout = not withdrawn). The
+     * gate's deadline was armed from the test clock, so the advance is exact.
      */
     private void passGate(TestWorkflowHandle handle, String gateStep) {
-        waitUntil(() -> gateStep.equals(handle.query("getStatus", null, String.class))
-                && handle.getStatus() == WorkflowStatus.WAITING_SIGNAL, Duration.ofSeconds(5));
-        // +1s: the test clock freezes at environment creation while core arms the
-        // timer from the wall clock a few ms later, so an exact advance can miss.
-        env.advanceTime(LoanTimeoutPolicy.SPEC_DEFAULTS.gateTimeout().plusSeconds(1));
+        awaitParked(handle, gateStep, "application.withdrawn");
+        env.advanceTime(LoanTimeoutPolicy.SPEC_DEFAULTS.gateTimeout());
+    }
+
+    /**
+     * Waits until the workflow, at {@code step}, is parked on an await of
+     * {@code signalName}: the newest event is that await's
+     * {@code TIMER_SCHEDULED} memo (its deadline row is armed and no outcome is
+     * recorded yet) and the instance is {@code WAITING_SIGNAL}.
+     */
+    private static void awaitParked(TestWorkflowHandle handle, String step, String signalName) {
+        var awaitStep = "$maestro:awaitSignal:" + signalName;
+        waitUntil(() -> {
+            if (!step.equals(handle.query("getStatus", null, String.class))) {
+                return false;
+            }
+            var newest = handle.getEvents().stream()
+                    .max(Comparator.comparingInt(WorkflowEvent::sequenceNumber));
+            return newest.isPresent()
+                    && newest.get().eventType() == EventType.TIMER_SCHEDULED
+                    && awaitStep.equals(newest.get().stepName())
+                    && handle.getStatus() == WorkflowStatus.WAITING_SIGNAL;
+        }, WAIT);
     }
 
     private static void deliverApprovedVerifications(TestWorkflowHandle handle) {

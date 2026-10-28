@@ -126,11 +126,11 @@ class UnderwritingWorkflowTest {
     void escalatesOnUnderwriterTimeoutThenAcceptsSeniorDecision() throws TimeoutException {
         var handle = start("loan-e1", 1, 400_000, 100_000, true);
         waitForStep(handle, "AWAITING_UNDERWRITER");
-        env.advanceTime(advancePast(UnderwritingTimeoutPolicy.SPEC_DEFAULTS.underwriterTimeout()));
+        env.advanceTime(UnderwritingTimeoutPolicy.SPEC_DEFAULTS.underwriterTimeout());
 
         // The escalate activity marks the registry before the senior await —
         // once visible, the underwriter desk has definitively timed out.
-        waitUntil(() -> registry.isEscalated("loan-e1", 1), Duration.ofSeconds(3));
+        waitUntil(() -> registry.isEscalated("loan-e1", 1), Duration.ofSeconds(10));
         assertTrue(registry.isEscalated("loan-e1", 1), "review should be escalated");
 
         handle.signal("senior.decision", new Decision(Verdict.APPROVED, List.of()));
@@ -144,9 +144,9 @@ class UnderwritingWorkflowTest {
     void rejectsWithNoDecisionWhenBothDesksTimeOut() throws TimeoutException {
         var handle = start("loan-e2", 1, 400_000, 100_000, true);
         waitForStep(handle, "AWAITING_UNDERWRITER");
-        env.advanceTime(advancePast(UnderwritingTimeoutPolicy.SPEC_DEFAULTS.underwriterTimeout()));
+        env.advanceTime(UnderwritingTimeoutPolicy.SPEC_DEFAULTS.underwriterTimeout());
         waitForStep(handle, "AWAITING_SENIOR");
-        env.advanceTime(advancePast(UnderwritingTimeoutPolicy.SPEC_DEFAULTS.seniorTimeout()));
+        env.advanceTime(UnderwritingTimeoutPolicy.SPEC_DEFAULTS.seniorTimeout());
 
         var result = handle.getResult(UnderwritingDecision.class, RESULT_TIMEOUT);
 
@@ -166,19 +166,14 @@ class UnderwritingWorkflowTest {
         return env.startWorkflow(workflowId, UnderwritingWorkflow.class, request);
     }
 
-    /** +1s: the test clock freezes at environment creation while core arms timers from the wall clock a few ms later. */
-    private static Duration advancePast(Duration timeout) {
-        return timeout.plusSeconds(1);
-    }
-
     /** Waits until the workflow is parked on the await for the named step. */
     private static void waitForStep(TestWorkflowHandle handle, String step) {
         waitUntil(() -> step.equals(handle.query("getStatus", null, String.class))
-                && handle.getStatus() == WorkflowStatus.WAITING_SIGNAL, Duration.ofSeconds(3));
+                && handle.getStatus() == WorkflowStatus.WAITING_SIGNAL, Duration.ofSeconds(10));
     }
 
     private static void waitForStatus(TestWorkflowHandle handle, WorkflowStatus expected) {
-        waitUntil(() -> handle.getStatus() == expected, Duration.ofSeconds(3));
+        waitUntil(() -> handle.getStatus() == expected, Duration.ofSeconds(10));
     }
 
     private static void waitUntil(java.util.function.BooleanSupplier condition, Duration timeout) {
