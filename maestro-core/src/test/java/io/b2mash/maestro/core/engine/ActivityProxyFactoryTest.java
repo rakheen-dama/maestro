@@ -345,6 +345,11 @@ class ActivityProxyFactoryTest {
         }
 
         @Override
+        public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+            throw new UnsupportedOperationException("stub");
+        }
+
+        @Override
         public Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int sequenceNumber) {
             throw new UnsupportedOperationException("stub");
         }

@@ -816,6 +816,11 @@ class ActivityInvocationHandlerTest {
         }
 
         @Override
+        public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
         public List<WorkflowEvent> getEvents(UUID instanceId) {
             return new ArrayList<>(eventsBySequence.values());
         }

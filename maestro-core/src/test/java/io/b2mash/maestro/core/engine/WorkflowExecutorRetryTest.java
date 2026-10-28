@@ -466,8 +466,8 @@ class WorkflowExecutorRetryTest {
      * Waits for a status and, when that status is terminal, for the terminal
      * <em>event</em> too.
      *
-     * <p>The row is written before the event is appended, so a status-only gate
-     * hands the test a log the engine has not finished writing. Two callers care
+     * <p>The status and the event are one atomic write since Issue 26, but the
+     * event is what these assertions depend on, so it is what is waited for. Two callers care
      * directly: {@code retryWorkflow_...} asserts {@code WORKFLOW_COMPLETED} is
      * present, and {@code deletedMemosOnStillFailed_isHarmless} calls
      * {@code deleteFailureEvents} and asserts it removed something — a delete

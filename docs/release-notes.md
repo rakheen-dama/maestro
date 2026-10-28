@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed — terminal status and terminal event are one transaction (Issue 26)
+
+- **Before:** a workflow's terminal transition was two independent store calls — the instance row's `COMPLETED`/`FAILED` status first, then the `WORKFLOW_COMPLETED`/`WORKFLOW_FAILED` event append, whose failure was only logged. A crash or store error between them left a finalised instance whose terminal event was missing forever, and every status-gated reader could observe a log one event short.
+- **Now:** the engine finalises through one new SPI call, `WorkflowStore.completeInstance(terminal, terminalEvent)`: a version-checked CAS exactly like `updateInstance`, with the terminal event appended **in the same transaction**. It returns `false` and writes nothing on a lost CAS, and throws `DuplicateEventException` (nothing written) when the terminal slot is already taken. A reader can never see a terminal status without its terminal event, nor the event without the status, so `getRecoverableInstances()` can never re-enter a finalised workflow. If the write fails, nothing is written and the workflow stays active and recoverable (`runAbandoned(TERMINAL_WRITE_FAILED)`); recovery replays the memoized steps and finalises it. A run that loses the terminal slot to another runner now writes nothing: on the success path it stands down as `STALE_RUN` and reports no `workflowCompleted`; on the failure path it is abandoned as `TERMINAL_WRITE_FAILED` and reports no `workflowFailed` (two observer pins in `WorkflowExecutorObserverTest` that asserted the old status-first behaviour were rewritten accordingly). Pinned by `TerminalWriteAtomicityIT` (fault-injected event insert inside the transaction, real Postgres), `TerminalEventRaceIT.statusOnlyWait_neverSeesTheGap`, `PostgresWorkflowStoreTest.CompleteInstanceTests`, `InMemoryWorkflowStoreTest` and `WorkflowExecutorTerminalTransitionTest`. Spec row C13.
+- **Breaking SPI addition for custom stores:** `completeInstance` is **abstract, with no default**. A non-atomic default that called `updateInstance` then `appendEvent` would let a third-party store silently keep the Issue 26 bug, so a compile error is the deliberate signal. Migration: implement it as one transaction around your existing instance `UPDATE` and event `INSERT` (see `AbstractJdbcWorkflowStore.completeInstance`); stores that extend `AbstractJdbcWorkflowStore` / `PostgresWorkflowStore` already have it.
+
 ### Fixed — Terminate during saga compensation now stops before the next sequential entry
 
 - **Before:** a terminate that landed while sequential compensation entry *i* was running did not stop the unwind: entries *i+1…n* still ran on the `TERMINATED` workflow and `COMPENSATION_COMPLETED` was recorded. Only the entry into compensation was guarded (Issue 22), although the Javadoc admitted "one open race" and the earlier note said Resolved. This applied most visibly to a terminate issued from a different node than the one running the workflow, and to manually registered compensation `Runnable`s.
@@ -442,6 +448,7 @@ Full reference: [`docs/concepts.md` → Versioning Workflow Code](concepts.md#ve
   fails loudly instead of handing you a truncated log. If a test starts timing
   out here, the fix is not a longer timeout. No signature changed;
   `TimeoutException` was already declared on both methods.
+- The underlying two-write gap is now closed at the source — see Issue 26 above; the event wait remains correct and unchanged.
 
 ### Database Migrations
 

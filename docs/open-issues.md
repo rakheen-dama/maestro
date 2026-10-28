@@ -275,7 +275,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [23](#issue-23) | Maestro's Kafka beans silently disable `spring.kafka.*`; `@MaestroSignalListener` drops trace context | Library defect | Critical | **Resolved** |
 | [24](#issue-24) | Redelivery is always on and always dead-letters, but nothing documents or creates the `.DLT` topics | Library gap — docs + config | Medium | **Resolved** |
 | [25](#issue-25) | `maestro.worker.*` is documented but wholly unimplemented | Library gap — docs + config | Medium | Open |
-| [26](#issue-26) | Terminal instance write and terminal event append are two non-transactional writes | Library gap — durability contract | Medium | Open |
+| [26](#issue-26) | Terminal instance write and terminal event append are two non-transactional writes | Library gap — durability contract | Medium | **Resolved** |
 | [27](#issue-27) | A redelivery status-write failure can let a disabled-redelivery row be reclaimed and reprocessed | Library gap — durability contract | Medium | Open |
 | [28](#issue-28) | ×1000 sequence partitioning bounds sequential/nested `parallel()` and compensation depth | Structural limitation | Medium | **Open by design** |
 
@@ -2251,7 +2251,28 @@ those lands, the section carries the warning added this cycle.
 
 ### Issue 26 — Terminal instance write and terminal event append are two non-transactional writes {#issue-26}
 
-> **Open.** Deferred from the demo-cycle handover
+> **Resolved.** The SPI gained an abstract
+> `boolean WorkflowStore.completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent)`
+> (CAS exactly like `updateInstance`; the terminal event appended in the same
+> transaction; `false` and nothing written on a lost CAS;
+> `DuplicateEventException` and nothing written when the terminal slot is
+> occupied). `AbstractJdbcWorkflowStore` implements it as one JDBC transaction
+> around the existing `UPDATE` and `INSERT`; `InMemoryWorkflowStore` under the
+> instance lock. `WorkflowExecutor.transitionToTerminal` is now the only
+> terminal write path and the two separate terminal `appendEvent` calls are
+> gone. Unlike this issue's original proposal, there is **no** non-atomic
+> default method — a compile error is the honest signal for a third-party
+> store. The "done when" is pinned on real Postgres by `TerminalWriteAtomicityIT`
+> (the event `INSERT` fault-injected inside the transaction: the instance stays
+> non-terminal and recoverable with no terminal event, and recovery then
+> finalises it exactly once), `TerminalEventRaceIT.statusOnlyWait_neverSeesTheGap`
+> (a status poll that sees a terminal status always finds the event) and
+> `PostgresWorkflowStoreTest.CompleteInstanceTests` (including the rollback of
+> the `UPDATE` when the `INSERT` fails). Commit: this commit — "fix(store):
+> write terminal status and terminal event in one transaction (Issue 26)".
+> The original report is kept below.
+>
+> **Original status — Open.** Deferred from the demo-cycle handover
 > (`tasks/next-cycle-handover-prompt.md`) rather than a new finding — the gap
 > is already documented as an *observable symptom* in `docs/testing.md:195`
 > and `docs/release-notes.md`'s "Changed — `maestro-test` waits for the

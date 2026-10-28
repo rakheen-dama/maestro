@@ -192,7 +192,7 @@ assertEquals(5, events.size());
 assertTrue(events.stream().anyMatch(e -> e.eventType() == EventType.ACTIVITY_COMPLETED));
 ```
 
-**Read the log only after `getResult` or `awaitCompletion` has returned** -- never after merely observing a terminal `getStatus()`. The engine finalises a run with two separate, non-transactional writes and the **instance row goes first**: there is a real interval in which the status reads `COMPLETED` while `WORKFLOW_COMPLETED` has not yet been appended. `getResult` and `awaitCompletion` wait for the event, so the log they hand you is complete; a status poll does not, so it can hand you a log one event short. That reads as a flaky test on a loaded CI machine and as data loss to anyone reading the snapshot.
+**Read the log after `getResult` or `awaitCompletion` has returned.** The engine writes a run's terminal status and its terminal event (`WORKFLOW_COMPLETED` / `WORKFLOW_FAILED`) in one atomic store write (`WorkflowStore.completeInstance`, a single transaction on Postgres), so a terminal status always comes with its event -- the old interval in which the status read `COMPLETED` while the event had not yet been appended is gone (Issue 26). `getResult` and `awaitCompletion` still wait for the event itself, and they remain the recommended wait: they say what the assertions that follow depend on, and they fail loudly with `TimeoutException` if the event never lands.
 
 ### Querying a Running Workflow
 
@@ -536,7 +536,7 @@ private static void waitForParkedStatus(TestWorkflowHandle handle,
 }
 ```
 
-**Never poll the status for a terminal one.** Parking is a single write, so the loop above is correct for `WAITING_SIGNAL` and `WAITING_TIMER`. Finishing is **two** writes -- the instance row first, then the `WORKFLOW_COMPLETED` / `WORKFLOW_FAILED` event -- so a loop that returns the moment the status reads `COMPLETED` returns while the event log is still one event short, and anything you assert on the log afterwards is a coin flip. Use `handle.awaitCompletion(timeout)` or `handle.getResult(type, timeout)`, which wait for the event itself:
+**Prefer the handle's waits for a terminal status.** Parking is a single write, so the loop above is correct for `WAITING_SIGNAL` and `WAITING_TIMER`. Finishing is one atomic write too -- the terminal status and the `WORKFLOW_COMPLETED` / `WORKFLOW_FAILED` event land together (Issue 26) -- so a status loop no longer returns with the log one event short. Still, use `handle.awaitCompletion(timeout)` or `handle.getResult(type, timeout)`, which wait for the event itself and so state exactly what your log assertions depend on:
 
 ```java
 // Right: waits for the durable terminal event, so the log is complete.

@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.model.EventType;
@@ -385,6 +386,26 @@ class WorkflowExecutorDuplicateEventStandDownTest {
                 throw new DuplicateEventException(event.workflowInstanceId(), event.sequenceNumber());
             }
             events.add(event);
+        }
+
+        @Override
+        public synchronized boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+            // Test fixture: composes this store's own CAS and append under its monitor
+            // (so every hook on either still fires), undoing the status write if the
+            // append fails — nothing is written unless both land.
+            var before = byWorkflowId.get(terminal.workflowId());
+            try {
+                updateInstance(terminal);
+            } catch (OptimisticLockException conflict) {
+                return false;
+            }
+            try {
+                appendEvent(terminalEvent);
+            } catch (RuntimeException appendFailed) {
+                byWorkflowId.put(terminal.workflowId(), before);
+                throw appendFailed;
+            }
+            return true;
         }
 
         /** The adopting node's finalisation: COMPLETED instance + terminal event. */

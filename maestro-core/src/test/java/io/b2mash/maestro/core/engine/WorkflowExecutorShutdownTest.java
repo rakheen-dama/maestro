@@ -607,8 +607,8 @@ class WorkflowExecutorShutdownTest {
 
     /**
      * Waits for a status and, when that status is terminal, for the terminal
-     * <em>event</em> too: the row is written before the event is appended, and
-     * four of the terminal callers here go on to assert
+     * <em>event</em> too: the event is what four of the terminal callers here
+     * depend on (status and event are one atomic write since Issue 26) — they go on to assert
      * {@code hasEvent(..., WORKFLOW_FAILED)}. See {@link TestTerminalWait}.
      */
     private void awaitStatus(String workflowId, WorkflowStatus expected) {
@@ -1055,6 +1055,15 @@ class WorkflowExecutorShutdownTest {
         @Override
         public void appendEvent(WorkflowEvent event) {
             events.add(event);
+        }
+
+        @Override
+        public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+            // Test fixture: no CAS and one writer per instance, so composing the two
+            // writes is atomic enough here. Event first, so a duplicate writes nothing.
+            appendEvent(terminalEvent);
+            updateInstance(terminal);
+            return true;
         }
 
         @Override

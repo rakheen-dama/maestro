@@ -1,6 +1,5 @@
 package io.b2mash.maestro.integration.support;
 
-import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
@@ -15,36 +14,30 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * A {@link WorkflowStore} decorator that holds the <em>terminal</em> event
- * append open for a fixed delay, turning an engine timing window into a
+ * A {@link WorkflowStore} decorator that holds the engine's <em>terminal</em>
+ * write open for a fixed delay, turning an engine timing window into a
  * deterministic one.
  *
- * <h2>The window this widens</h2>
- * <p>{@code WorkflowExecutor} finalises a run with two separate, non-transactional
- * store calls, instance row first:
+ * <h2>The window this used to widen, and what it proves now</h2>
+ * <p>Before Issue 26, {@code WorkflowExecutor} finalised a run with two separate,
+ * non-transactional store calls, instance row first: an {@code UPDATE} to
+ * {@code COMPLETED}/{@code FAILED}, then the {@code INSERT} of the matching
+ * {@code WORKFLOW_COMPLETED}/{@code WORKFLOW_FAILED} event. Between the two, a
+ * reader that gated on the status and then asserted on the event log could see
+ * one event too few — on CI often enough to redden {@code main} (GitHub Actions
+ * run 30728290264). This decorator used to delay the event append to stretch
+ * that gap to seconds.
  *
- * <pre>{@code
- * if (transitionToTerminal(ctx, instance, COMPLETED, output)) {  // UPDATE instance
- *     emit("workflowCompleted", ...);
- *     appendEvent(ctx, EventType.WORKFLOW_COMPLETED, null, output); // INSERT event
- * }
- * }</pre>
+ * <p>The engine now finalises with one atomic
+ * {@link WorkflowStore#completeInstance} call, so there is no gap to stretch.
+ * The delay moved onto that call, <em>before</em> it reaches the delegate: the
+ * run is held for seconds right at its finalisation, and a status poll that
+ * <em>does</em> observe a terminal status proves the terminal event landed in
+ * the same write — the regression pin for Issue 26.
  *
- * <p>Between the committed {@code UPDATE} and the committed {@code INSERT} the
- * instance row reads {@code COMPLETED}/{@code FAILED} while the matching
- * {@code WORKFLOW_COMPLETED}/{@code WORKFLOW_FAILED} event is still absent from
- * the log. Any reader that gates on the status and then asserts on the event log
- * can land in that gap and see one event too few. On a developer machine the gap
- * is one database round trip, so the failure surfaces perhaps once in hundreds of
- * runs; on CI it surfaces often enough to redden {@code main}.
- *
- * <p>Wrapping the store in this decorator stretches that gap to whatever the test
- * asks for, so the race is reproducible on demand rather than hoped for. A pin
- * that cannot observe the symptom proves nothing.
- *
- * <p>Only the two run-closing event types are delayed. Activity, signal, timer
- * and compensation events pass straight through, so a workflow under this
- * decorator runs at its normal speed right up to the moment it finishes.
+ * <p>Every other call — activity, signal, timer and compensation events, and
+ * non-terminal status writes — passes straight through, so a workflow under
+ * this decorator runs at its normal speed right up to the moment it finishes.
  *
  * <h2>Thread Safety</h2>
  * <p>Safe for concurrent use: the delay is immutable, the counter is an
@@ -55,13 +48,13 @@ public final class TerminalEventDelayStore implements WorkflowStore {
 
     private final WorkflowStore delegate;
     private final Duration delay;
-    private final AtomicInteger delayedAppends = new AtomicInteger();
+    private final AtomicInteger delayedCompletions = new AtomicInteger();
 
     /**
      * @param delegate the real store to write through
-     * @param delay    how long to hold each terminal event append before it
-     *                 reaches the delegate — make this comfortably longer than
-     *                 the polling interval of whatever is watching
+     * @param delay    how long to hold each terminal write before it reaches
+     *                 the delegate — make this comfortably longer than the
+     *                 polling interval of whatever is watching
      */
     public TerminalEventDelayStore(WorkflowStore delegate, Duration delay) {
         this.delegate = delegate;
@@ -69,34 +62,23 @@ public final class TerminalEventDelayStore implements WorkflowStore {
     }
 
     /**
-     * @return how many terminal event appends this decorator has delayed —
-     *         zero means the window was never actually opened, and any test
-     *         relying on it proved nothing
+     * @return how many terminal writes this decorator has delayed — zero means
+     *         the window was never actually opened, and any test relying on it
+     *         proved nothing
      */
-    public int delayedAppends() {
-        return delayedAppends.get();
-    }
-
-    /**
-     * @param type an event type
-     * @return whether the event closes a run, and so is written after the
-     *         instance row has already turned terminal
-     */
-    private static boolean isTerminal(EventType type) {
-        return type == EventType.WORKFLOW_COMPLETED || type == EventType.WORKFLOW_FAILED;
+    public int delayedCompletions() {
+        return delayedCompletions.get();
     }
 
     @Override
-    public void appendEvent(WorkflowEvent event) {
-        if (isTerminal(event.eventType())) {
-            delayedAppends.incrementAndGet();
-            try {
-                Thread.sleep(delay);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
+    public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+        delayedCompletions.incrementAndGet();
+        try {
+            Thread.sleep(delay);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
-        delegate.appendEvent(event);
+        return delegate.completeInstance(terminal, terminalEvent);
     }
 
     // ── straight delegation ───────────────────────────────────────────────
@@ -119,6 +101,11 @@ public final class TerminalEventDelayStore implements WorkflowStore {
     @Override
     public void updateInstance(WorkflowInstance instance) {
         delegate.updateInstance(instance);
+    }
+
+    @Override
+    public void appendEvent(WorkflowEvent event) {
+        delegate.appendEvent(event);
     }
 
     @Override

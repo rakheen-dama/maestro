@@ -170,6 +170,12 @@ class SignalSubscriptionRunnerTest {
         }
 
         @Override
+        public boolean completeInstance(io.b2mash.maestro.core.model.WorkflowInstance terminal,
+                                        io.b2mash.maestro.core.model.WorkflowEvent terminalEvent) {
+            throw new UnsupportedOperationException("stub");
+        }
+
+        @Override
         public java.util.Optional<io.b2mash.maestro.core.model.WorkflowEvent> getEventBySequence(
                 java.util.UUID instanceId, int sequenceNumber) {
             return java.util.Optional.empty();

@@ -380,6 +380,11 @@ class EnginePostgresParallelIT extends PostgresIntegrationSupport {
         }
 
         @Override
+        public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+            return delegate.completeInstance(terminal, terminalEvent);
+        }
+
+        @Override
         public Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int sequenceNumber) {
             return delegate.getEventBySequence(instanceId, sequenceNumber);
         }

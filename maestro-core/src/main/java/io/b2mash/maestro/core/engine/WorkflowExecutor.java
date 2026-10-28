@@ -1448,20 +1448,22 @@ public final class WorkflowExecutor {
 
             // Success — finalise, converging with any other writer
             var outputPayload = result != null ? serializer.serialize(result) : null;
-            if (transitionToTerminal(ctx, instance, WorkflowStatus.COMPLETED, outputPayload)) {
+            // Issue 26: the COMPLETED status and the WORKFLOW_COMPLETED event
+            // are one atomic store write. A DuplicateEventException from it
+            // (another runner already owns the terminal slot) wrote nothing
+            // and reaches the stale-run stand-down arm below.
+            if (transitionToTerminal(ctx, instance, WorkflowStatus.COMPLETED,
+                    EventType.WORKFLOW_COMPLETED, outputPayload)) {
                 // Only the winner of the terminal transition counts the
                 // outcome — a converged loser must not double-fire. Emitted
-                // BEFORE the event append and the lifecycle publish: winning
-                // the transition is what durably makes this run the completer,
-                // so nothing after it may decide whether the completion is
-                // observed. Contained, so a throwing observer cannot skip the
-                // append below or land in catch (Exception) — which would
-                // compensate a workflow that just succeeded.
+                // BEFORE the lifecycle publish: winning the transition is what
+                // durably makes this run the completer, so nothing after it
+                // may decide whether the completion is observed. Contained, so
+                // a throwing observer cannot land in catch (Exception) — which
+                // would compensate a workflow that just succeeded.
                 emit("workflowCompleted", ctx.workflowId(),
                         () -> observer.workflowCompleted(observed(instance)));
 
-                // Append WORKFLOW_COMPLETED event
-                appendEvent(ctx, EventType.WORKFLOW_COMPLETED, null, outputPayload);
                 publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_COMPLETED, null);
 
                 logger.info("Workflow '{}' completed successfully", ctx.workflowId());
@@ -1899,15 +1901,16 @@ public final class WorkflowExecutor {
                     failure.getClass().getName(),
                     failure.getMessage()
             ));
-            if (transitionToTerminal(ctx, instance, WorkflowStatus.FAILED, errorPayload)) {
-                // Winner-only, and emitted before the append for the same
-                // reason as the COMPLETED transition above: the durable
-                // outcome is already written, so nothing that follows may
-                // decide whether it is observed.
+            if (transitionToTerminal(ctx, instance, WorkflowStatus.FAILED,
+                    EventType.WORKFLOW_FAILED, errorPayload)) {
+                // Winner-only, and emitted before the lifecycle publish for
+                // the same reason as the COMPLETED transition above: the
+                // durable outcome (status and event, one write) is already
+                // in, so nothing that follows may decide whether it is
+                // observed.
                 emit("workflowFailed", ctx.workflowId(), () ->
                         observer.workflowFailed(observed(instance), failure.getClass().getName()));
 
-                appendEvent(ctx, EventType.WORKFLOW_FAILED, null, errorPayload);
                 publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_FAILED, null);
             } else {
                 // F4: converged loser on the failure path — same shape as the
@@ -1920,7 +1923,13 @@ public final class WorkflowExecutor {
             // F4: the terminal write itself failed, so no terminal callback
             // fired and the run is over on this thread regardless. Emitted
             // inside the catch so it cannot be skipped by the failure it
-            // reports on.
+            // reports on. Issue 26: the write is atomic, so this arm wrote
+            // NOTHING — the instance stays active and recoverable. That
+            // includes a DuplicateEventException (another runner already owns
+            // the terminal slot): reported here as TERMINAL_WRITE_FAILED
+            // rather than as a stale-run stand-down, which is acceptable
+            // because either way nothing is written and the durable winner
+            // governs.
             emitRunAbandoned(ctx, AbandonReason.TERMINAL_WRITE_FAILED);
         }
     }
@@ -1928,40 +1937,60 @@ public final class WorkflowExecutor {
     // ── Internal: terminal transition ──────────────────────────────────
 
     /**
-     * Writes a workflow's terminal status, converging with any other writer
-     * that touched the instance row first.
+     * Finalises a workflow — its terminal status <b>and</b> its terminal event
+     * in one atomic {@link WorkflowStore#completeInstance} write — converging
+     * with any other writer that touched the instance row first. This is the
+     * only terminal write path.
      *
-     * <p>The instance is read, stamped with {@code version + 1} and written.
-     * Anything that writes the row in between invalidates that version:
-     * another node running the same workflow (the documented no-lock-backend
-     * degradation, a lock lost mid-run, or a stale lock on a fresh start), or
-     * simply another status transition on this node. Before this converged,
-     * the resulting {@link io.b2mash.maestro.core.exception.OptimisticLockException}
-     * escaped into the caller's failure handling and a workflow that had
-     * <em>succeeded</em> was recorded as {@code FAILED} — with the conflict
-     * message as its output, contradicting its own {@code WORKFLOW_COMPLETED}
-     * event, and running a saga's compensations after a successful run.
+     * <p><b>One write (Issue 26).</b> The status and the event used to be two
+     * independent store calls, status first, with the event append's failure
+     * swallowed: a crash or an error between them left a terminal status with
+     * no terminal event, forever. Now both land or neither does, so a reader
+     * never sees one without the other, and a failed write leaves the instance
+     * active and recoverable rather than finalised with a short log.
      *
-     * <p>A persistence conflict is not a workflow outcome. It is resolved by
+     * <p><b>Convergence.</b> The instance is read, stamped with
+     * {@code version + 1} and written. Anything that writes the row in between
+     * invalidates that version: another node running the same workflow (the
+     * documented no-lock-backend degradation, a lock lost mid-run, or a stale
+     * lock on a fresh start), or simply another status transition on this
+     * node. Before this converged, the resulting version conflict escaped into
+     * the caller's failure handling and a workflow that had <em>succeeded</em>
+     * was recorded as {@code FAILED} — with the conflict message as its
+     * output, and running a saga's compensations after a successful run. A
+     * persistence conflict is not a workflow outcome: it is resolved by
      * retrying against a fresh read, and by standing down when another runner
-     * has already reached a terminal state — the event log at that sequence is
-     * then the durable truth and must not be contradicted.
+     * has already reached a terminal state.
      *
-     * @param ctx      the workflow context (supplies the final event sequence)
-     * @param fallback the instance to fall back on if the row cannot be re-read
-     * @param status   the terminal status to write
-     * @param output   the output or error payload to record
-     * @return {@code true} if this call wrote the transition and its caller
-     *         should record the matching event; {@code false} if another runner
-     *         had already finalised the workflow, or if the conflict persisted
-     *         across every attempt — in which case the instance is deliberately
-     *         left non-terminal and recoverable rather than being recorded with
-     *         an outcome this run could not persist
+     * <p>The terminal event's sequence is allocated <em>once</em>, before the
+     * retry loop, so every attempt targets the same slot. A
+     * {@link DuplicateEventException} from the store (that slot is already
+     * taken — another runner finalised first) wrote nothing and propagates to
+     * the caller.
+     *
+     * @param ctx          the workflow context (supplies the terminal event's sequence)
+     * @param fallback     the instance to fall back on if the row cannot be re-read
+     * @param status       the terminal status to write
+     * @param terminalType the matching terminal event type
+     *                     ({@code WORKFLOW_COMPLETED} or {@code WORKFLOW_FAILED})
+     * @param output       the output or error payload to record on the row and the event
+     * @return {@code true} if this call wrote the status and the event;
+     *         {@code false} if another runner had already finalised the
+     *         workflow, or if the conflict persisted across every attempt — in
+     *         which case nothing was written and the instance is deliberately
+     *         left non-terminal and recoverable
+     * @throws DuplicateEventException if the terminal event's sequence is
+     *         already occupied (nothing was written)
      */
     private boolean transitionToTerminal(
             WorkflowContext ctx, WorkflowInstance fallback,
-            WorkflowStatus status, @Nullable JsonNode output
+            WorkflowStatus status, EventType terminalType, @Nullable JsonNode output
     ) {
+        // The row's event_sequence keeps its established meaning — the last
+        // sequence the run consumed before finalising — and the terminal event
+        // takes the next slot, exactly as when they were two writes.
+        var lastStepSeq = ctx.currentSequence();
+        var seq = ctx.nextSequence();
         for (var attempt = 1; ; attempt++) {
             var latest = store.getInstance(ctx.workflowId()).orElse(fallback);
             if (latest.status().isTerminal()) {
@@ -1976,31 +2005,31 @@ public final class WorkflowExecutor {
                     .output(output)
                     .completedAt(now)
                     .updatedAt(now)
-                    .eventSequence(ctx.currentSequence())
+                    .eventSequence(lastStepSeq)
                     .version(latest.version() + 1)
                     .build();
-            try {
-                store.updateInstance(updated);
+            var terminalEvent = new WorkflowEvent(
+                    UUID.randomUUID(), ctx.workflowInstanceId(), seq, terminalType, null, output, now);
+            if (store.completeInstance(updated, terminalEvent)) {
                 return true;
-            } catch (OptimisticLockException e) {
-                if (attempt >= TERMINAL_TRANSITION_ATTEMPTS) {
-                    // Give up on the write, but do NOT turn a persistence
-                    // conflict into a workflow outcome. Propagating here would
-                    // land in the caller's failure handling and record a run
-                    // that SUCCEEDED as FAILED — the very bug this method
-                    // exists to prevent. Leaving the instance in its current,
-                    // non-terminal status keeps it recoverable: the next node
-                    // to pick it up replays the memoized steps and finalises it.
-                    logger.error("Could not finalise workflow '{}' as {} after {} attempts — "
-                                    + "the instance row is being written continuously. Leaving it "
-                                    + "non-terminal for recovery to finalise.",
-                            ctx.workflowId(), status, attempt);
-                    return false;
-                }
-                logger.debug("Version conflict finalising workflow '{}' as {} (attempt {}) — "
-                                + "retrying against a fresh read",
-                        ctx.workflowId(), status, attempt);
             }
+            if (attempt >= TERMINAL_TRANSITION_ATTEMPTS) {
+                // Give up on the write, but do NOT turn a persistence
+                // conflict into a workflow outcome. Propagating here would
+                // land in the caller's failure handling and record a run
+                // that SUCCEEDED as FAILED — the very bug this method
+                // exists to prevent. Leaving the instance in its current,
+                // non-terminal status keeps it recoverable: the next node
+                // to pick it up replays the memoized steps and finalises it.
+                logger.error("Could not finalise workflow '{}' as {} after {} attempts — "
+                                + "the instance row is being written continuously. Leaving it "
+                                + "non-terminal for recovery to finalise.",
+                        ctx.workflowId(), status, attempt);
+                return false;
+            }
+            logger.debug("Version conflict finalising workflow '{}' as {} (attempt {}) — "
+                            + "retrying against a fresh read",
+                    ctx.workflowId(), status, attempt);
         }
     }
 
@@ -2064,24 +2093,6 @@ public final class WorkflowExecutor {
         } catch (RuntimeException e) {
             logger.warn("EngineObserver.{} threw for workflow '{}' — ignoring: {}",
                     callback, workflowId, e.toString());
-        }
-    }
-
-    private void appendEvent(WorkflowContext ctx, EventType type,
-                             @Nullable String stepName, @Nullable JsonNode payload) {
-        try {
-            var event = new WorkflowEvent(
-                    UUID.randomUUID(),
-                    ctx.workflowInstanceId(),
-                    ctx.nextSequence(),
-                    type,
-                    stepName,
-                    payload,
-                    Instant.now()
-            );
-            store.appendEvent(event);
-        } catch (Exception e) {
-            logger.warn("Failed to append {} event for workflow '{}'", type, ctx.workflowId(), e);
         }
     }
 

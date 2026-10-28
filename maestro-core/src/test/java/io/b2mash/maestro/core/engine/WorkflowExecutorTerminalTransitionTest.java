@@ -11,7 +11,11 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.observe.AbandonReason;
+import io.b2mash.maestro.core.observe.EngineObserver;
+import io.b2mash.maestro.core.observe.RecordingEngineObserver;
 import io.b2mash.maestro.core.spi.WorkflowStore;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -138,7 +142,53 @@ class WorkflowExecutorTerminalTransitionTest {
         assertEquals(0, store.eventsOfType(EventType.WORKFLOW_FAILED));
     }
 
+    @Test
+    @DisplayName("Issue 26: a failed terminal write leaves the workflow recoverable and is reported as TERMINAL_WRITE_FAILED")
+    void completeInstanceFailure_leavesTheWorkflowRecoverable_andEmitsRunAbandoned() {
+        store.failAllCompleteInstanceCalls(new RuntimeException("store down"));
+        var observer = new RecordingEngineObserver();
+        executor.shutdown();
+        executor = newExecutor(observer);
+
+        var workflowId = start("terminal-write-fails");
+        await().atMost(Duration.ofSeconds(5)).until(() -> !executor.isRunning(workflowId));
+
+        var row = store.getInstance(workflowId).orElseThrow();
+        assertEquals(WorkflowStatus.RUNNING, row.status(),
+                "neither terminal write landed, so the row must still be active");
+        assertTrue(store.getEvents(row.id()).stream().noneMatch(e -> e.eventType() == EventType.WORKFLOW_COMPLETED
+                        || e.eventType() == EventType.WORKFLOW_FAILED),
+                "a terminal event without its terminal status is the other half of the Issue 26 gap");
+        assertTrue(store.getRecoverableInstances().stream().anyMatch(i -> i.workflowId().equals(workflowId)),
+                "recovery must be able to finalise it");
+        assertEquals(List.of(AbandonReason.TERMINAL_WRITE_FAILED),
+                observer.abandoned().stream().map(RecordingEngineObserver.AbandonCall::reason).toList());
+        assertEquals(0, observer.completed().size());
+        assertEquals(0, observer.failed().size());
+    }
+
+    @Test
+    @DisplayName("Issue 26: the terminal status and the terminal event are written by one store call")
+    void terminalEventAndStatus_areWrittenByOneStoreCall() {
+        executor.shutdown();
+        executor = newExecutor(EngineObserver.NOOP);
+
+        var workflowId = start("one-terminal-write");
+        awaitTerminal(workflowId);
+
+        assertEquals(1, store.completeInstanceCalls());
+        assertEquals(0, store.terminalAppendEventCalls(), "WORKFLOW_COMPLETED must never go through appendEvent");
+        assertEquals(1, store.eventsOfType(EventType.WORKFLOW_COMPLETED));
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────
+
+    private WorkflowExecutor newExecutor(EngineObserver observer) {
+        return new WorkflowExecutor(store, null, null, null, serializer, "test-service",
+                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
+                WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
+                false, WorkflowExecutor.DEFAULT_SHUTDOWN_TIMEOUT, Duration.ofMillis(200), observer);
+    }
 
     private String start(String workflowId) {
         var impl = new TrivialWorkflow();
@@ -188,7 +238,25 @@ class WorkflowExecutorTerminalTransitionTest {
         private final AtomicBoolean bumpOutOfBand = new AtomicBoolean();
         private final AtomicInteger conflictsRemaining = new AtomicInteger();
         private final AtomicInteger updateAttempts = new AtomicInteger();
+        private final AtomicInteger completeInstanceCalls = new AtomicInteger();
+        private final AtomicInteger terminalAppendEventCalls = new AtomicInteger();
+        private volatile @Nullable RuntimeException completeInstanceFailure;
         private volatile String outOfBandOutput = "";
+
+        /** Makes every {@code completeInstance} call throw {@code failure} — a store outage at the terminal write. */
+        void failAllCompleteInstanceCalls(RuntimeException failure) {
+            completeInstanceFailure = failure;
+        }
+
+        /** @return how many times the engine called {@code completeInstance} */
+        int completeInstanceCalls() {
+            return completeInstanceCalls.get();
+        }
+
+        /** @return how many {@code appendEvent} calls carried a terminal event type */
+        int terminalAppendEventCalls() {
+            return terminalAppendEventCalls.get();
+        }
 
         /** Makes another node finish the workflow just before the next update lands. */
         void completeOutOfBandOnNextUpdate(String output) {
@@ -238,6 +306,33 @@ class WorkflowExecutorTerminalTransitionTest {
 
         @Override
         public synchronized void updateInstance(WorkflowInstance instance) {
+            casWrite(instance);
+        }
+
+        /**
+         * The engine's terminal write. Routed through the same {@link #casWrite}
+         * as {@code updateInstance}, so every out-of-band hook above fires on it;
+         * the event is added only once the CAS has landed, so a lost CAS writes
+         * nothing.
+         */
+        @Override
+        public synchronized boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+            completeInstanceCalls.incrementAndGet();
+            var failure = completeInstanceFailure;
+            if (failure != null) {
+                throw failure;
+            }
+            try {
+                casWrite(terminal);
+            } catch (OptimisticLockException conflict) {
+                return false;
+            }
+            events.add(terminalEvent);
+            return true;
+        }
+
+        /** Applies the armed out-of-band hook, then the canonical version check and write. */
+        private void casWrite(WorkflowInstance instance) {
             updateAttempts.incrementAndGet();
             var stored = byWorkflowId.get(instance.workflowId());
             assertNotNull(stored, "cannot update an instance that was never created");
@@ -271,6 +366,9 @@ class WorkflowExecutorTerminalTransitionTest {
 
         @Override
         public void appendEvent(WorkflowEvent event) {
+            if (event.eventType() == EventType.WORKFLOW_COMPLETED || event.eventType() == EventType.WORKFLOW_FAILED) {
+                terminalAppendEventCalls.incrementAndGet();
+            }
             events.add(event);
         }
 

@@ -109,6 +109,78 @@ class InMemoryWorkflowStoreTest {
         assertTrue(recoverable.stream().anyMatch(i -> i.workflowId().equals("wf-waiting")));
     }
 
+    // ── completeInstance (Issue 26: atomic terminal status + terminal event) ──
+
+    @Test
+    void completeInstance_writesStatusAndEventTogether() {
+        var created = store.createInstance(buildInstance("wf-1"));
+        var terminal = created.toBuilder().status(WorkflowStatus.COMPLETED).version(1).build();
+        var event = event(created.id(), 5, EventType.WORKFLOW_COMPLETED);
+        assertTrue(store.completeInstance(terminal, event));
+        assertEquals(WorkflowStatus.COMPLETED, store.getInstance("wf-1").orElseThrow().status());
+        assertEquals(1, store.getInstance("wf-1").orElseThrow().version());
+        assertEquals(EventType.WORKFLOW_COMPLETED,
+                store.getEventBySequence(created.id(), 5).orElseThrow().eventType());
+    }
+
+    @Test
+    void completeInstance_staleVersion_writesNothing() {
+        var created = store.createInstance(buildInstance("wf-1"));
+        var stale = created.toBuilder().status(WorkflowStatus.COMPLETED).version(5).build(); // expects stored 4
+        assertFalse(store.completeInstance(stale, event(created.id(), 5, EventType.WORKFLOW_COMPLETED)));
+        assertEquals(WorkflowStatus.RUNNING, store.getInstance("wf-1").orElseThrow().status());
+        assertTrue(store.getEventBySequence(created.id(), 5).isEmpty());
+    }
+
+    @Test
+    void completeInstance_duplicateTerminalEvent_writesNothing() {
+        var created = store.createInstance(buildInstance("wf-1"));
+        store.appendEvent(event(created.id(), 5, EventType.WORKFLOW_COMPLETED)); // another runner got there first
+        var terminal = created.toBuilder().status(WorkflowStatus.FAILED).version(1).build();
+        assertThrows(DuplicateEventException.class,
+                () -> store.completeInstance(terminal, event(created.id(), 5, EventType.WORKFLOW_FAILED)));
+        assertEquals(WorkflowStatus.RUNNING, store.getInstance("wf-1").orElseThrow().status());
+        assertEquals(0, store.getInstance("wf-1").orElseThrow().version());
+        assertEquals(EventType.WORKFLOW_COMPLETED,
+                store.getEventBySequence(created.id(), 5).orElseThrow().eventType(),
+                "the incumbent event must be left untouched");
+    }
+
+    @Test
+    void completeInstance_rejectsNonTerminalStatus() {
+        var created = store.createInstance(buildInstance("wf-1"));
+        var notTerminal = created.toBuilder().status(WorkflowStatus.WAITING_SIGNAL).version(1).build();
+        assertThrows(IllegalArgumentException.class,
+                () -> store.completeInstance(notTerminal, event(created.id(), 5, EventType.WORKFLOW_COMPLETED)));
+        assertEquals(0, store.getInstance("wf-1").orElseThrow().version());
+    }
+
+    @Test
+    void completeInstance_rejectsNonTerminalEventType() {
+        var created = store.createInstance(buildInstance("wf-1"));
+        var terminal = created.toBuilder().status(WorkflowStatus.COMPLETED).version(1).build();
+        assertThrows(IllegalArgumentException.class,
+                () -> store.completeInstance(terminal, event(created.id(), 5, EventType.ACTIVITY_COMPLETED)));
+        assertTrue(store.getEventBySequence(created.id(), 5).isEmpty());
+    }
+
+    @Test
+    void completeInstance_rejectsEventForAnotherInstance() {
+        var created = store.createInstance(buildInstance("wf-1"));
+        var terminal = created.toBuilder().status(WorkflowStatus.COMPLETED).version(1).build();
+        assertThrows(IllegalArgumentException.class,
+                () -> store.completeInstance(terminal, event(UUID.randomUUID(), 5, EventType.WORKFLOW_COMPLETED)));
+        assertEquals(WorkflowStatus.RUNNING, store.getInstance("wf-1").orElseThrow().status());
+    }
+
+    @Test
+    void completeInstance_unknownWorkflow_throwsNotFound() {
+        var ghost = buildInstance("wf-ghost").toBuilder().status(WorkflowStatus.COMPLETED).version(1).build();
+        assertThrows(WorkflowNotFoundException.class,
+                () -> store.completeInstance(ghost, event(ghost.id(), 5, EventType.WORKFLOW_COMPLETED)));
+        assertTrue(store.getEventBySequence(ghost.id(), 5).isEmpty());
+    }
+
     // ── Event operations ─────────────────────────────────────────────────
 
     @Test
@@ -542,6 +614,10 @@ class InMemoryWorkflowStoreTest {
                 .updatedAt(Instant.now())
                 .version(0)
                 .build();
+    }
+
+    private static WorkflowEvent event(UUID instanceId, int sequenceNumber, EventType type) {
+        return new WorkflowEvent(UUID.randomUUID(), instanceId, sequenceNumber, type, null, null, Instant.now());
     }
 
     private static WorkflowTimer buildTimer(String workflowId, Instant fireAt, TimerStatus status) {

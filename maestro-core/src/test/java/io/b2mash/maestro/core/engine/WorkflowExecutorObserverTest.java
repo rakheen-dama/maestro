@@ -249,11 +249,18 @@ class WorkflowExecutorObserverTest {
         assertEquals(0, observer.standDowns().size());
     }
 
-    // ── Terminal-outcome emission vs. the event append ────────────────
+    // ── Terminal-outcome emission vs. the atomic terminal write ───────
+    //
+    // Issue 26: the terminal status and the terminal event are ONE store
+    // write (WorkflowStore.completeInstance). A collision on the terminal
+    // event's slot therefore writes nothing at all — no terminal status —
+    // so the run must not report a terminal outcome it never persisted.
+    // (Before Issue 26 the status landed first and these tests pinned that
+    // the completion/failure was still reported despite the lost append.)
 
     @Test
-    @DisplayName("terminal append collision: a run that durably completed still reports completion, never a stand-down")
-    void completedIsReportedEvenWhenTheTerminalAppendCollides() throws Exception {
+    @DisplayName("terminal slot collision on success: nothing is written, the run stands down, no completion is reported")
+    void completionCollisionOnTheTerminalSlot_standsDownWithoutReportingCompletion() throws Exception {
         var done = new CountDownLatch(1);
         var workflow = new TwoStepWorkflow(proxy(observer), done);
         var method = TwoStepWorkflow.class.getMethod("run", String.class);
@@ -265,21 +272,18 @@ class WorkflowExecutorObserverTest {
         assertTrue(done.await(5, TimeUnit.SECONDS));
         await().atMost(Duration.ofSeconds(5)).until(() -> !executor.isRunning("obs-collide-done"));
 
-        // The instance row is durably COMPLETED — this run won
-        // transitionToTerminal — so nothing after that win may decide whether
-        // the completion is observed.
-        assertEquals(WorkflowStatus.COMPLETED,
-                store.getInstance("obs-collide-done").orElseThrow().status());
-        await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
-                assertEquals(1, observer.completed().size(),
-                        "a durably completed run must report workflowCompleted"));
-        assertEquals(0, observer.standDowns().size(),
-                "a completion must never be counted as a stand-down");
+        assertTrue(store.getInstance("obs-collide-done").orElseThrow().status().isActive(),
+                "the atomic terminal write lost its event slot, so the status was not written either");
+        assertEquals(0, observer.completed().size(),
+                "a completion that was never persisted must not be reported");
+        assertEquals(List.of(StandDownReason.STALE_RUN),
+                observer.standDowns().stream().map(RecordingEngineObserver.StandDownCall::reason).toList(),
+                "an occupied terminal slot means another run owns the outcome — a stale-run stand-down");
     }
 
     @Test
-    @DisplayName("terminal append collision: a run that durably failed still reports the failure")
-    void failedIsReportedEvenWhenTheTerminalAppendCollides() throws Exception {
+    @DisplayName("terminal slot collision on failure: nothing is written and the run is abandoned as TERMINAL_WRITE_FAILED")
+    void failureCollisionOnTheTerminalSlot_isAbandonedWithoutReportingFailure() throws Exception {
         var workflow = new ThrowingWorkflow();
         var method = ThrowingWorkflow.class.getMethod("run", String.class);
         store.collideOnEventType(EventType.WORKFLOW_FAILED);
@@ -287,10 +291,13 @@ class WorkflowExecutorObserverTest {
         executor.startWorkflow("obs-collide-fail", "ThrowingWorkflow", "default", "in", workflow, method);
 
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
-                assertEquals(1, observer.failed().size(),
-                        "a durably failed run must report workflowFailed"));
-        assertEquals(WorkflowStatus.FAILED,
-                store.getInstance("obs-collide-fail").orElseThrow().status());
+                assertTrue(observer.abandoned().stream()
+                                .anyMatch(a -> a.reason() == AbandonReason.TERMINAL_WRITE_FAILED),
+                        "the failed terminal write must be reported as TERMINAL_WRITE_FAILED"));
+        assertTrue(store.getInstance("obs-collide-fail").orElseThrow().status().isActive(),
+                "the atomic terminal write lost its event slot, so FAILED was not written either");
+        assertEquals(0, observer.failed().size(),
+                "a failure that was never persisted must not be reported");
         assertEquals(0, observer.completed().size());
     }
 

@@ -404,6 +404,15 @@ class WorkflowExecutorQueryTest {
         public void appendEvent(WorkflowEvent event) { events.add(event); }
 
         @Override
+        public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+            // Test fixture: no CAS and one writer per instance, so composing the two
+            // writes is atomic enough here. Event first, so a duplicate writes nothing.
+            appendEvent(terminalEvent);
+            updateInstance(terminal);
+            return true;
+        }
+
+        @Override
         public Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int sequenceNumber) {
             return events.stream()
                     .filter(e -> e.workflowInstanceId().equals(instanceId)

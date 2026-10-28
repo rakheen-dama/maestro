@@ -407,6 +407,9 @@ class SagaManagerTerminateRaceTest {
             return delegate.getRecoverableInstances();
         }
         @Override public void appendEvent(WorkflowEvent event) { delegate.appendEvent(event); }
+        @Override public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+            return delegate.completeInstance(terminal, terminalEvent);
+        }
         @Override public Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int seq) {
             return delegate.getEventBySequence(instanceId, seq);
         }
@@ -554,6 +557,26 @@ class SagaManagerTerminateRaceTest {
         }
 
         @Override public void appendEvent(WorkflowEvent event) { events.add(event); }
+
+        @Override
+        public synchronized boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+            // Test fixture: composes this store's own CAS and append under its monitor
+            // (so every hook on either still fires), undoing the status write if the
+            // append fails — nothing is written unless both land.
+            var before = instancesByWorkflowId.get(terminal.workflowId());
+            try {
+                updateInstance(terminal);
+            } catch (OptimisticLockException conflict) {
+                return false;
+            }
+            try {
+                appendEvent(terminalEvent);
+            } catch (RuntimeException appendFailed) {
+                instancesByWorkflowId.put(terminal.workflowId(), before);
+                throw appendFailed;
+            }
+            return true;
+        }
 
         @Override public Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int seq) {
             return events.stream()

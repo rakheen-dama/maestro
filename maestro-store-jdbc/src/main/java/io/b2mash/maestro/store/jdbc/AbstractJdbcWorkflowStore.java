@@ -218,16 +218,101 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     public void updateInstance(WorkflowInstance instance) {
         Objects.requireNonNull(instance, "instance");
 
+        int updated;
+        try (var conn = dataSource.getConnection()) {
+            updated = updateInstanceRow(conn, instance);
+        } catch (SQLException e) {
+            throw new UncheckedSqlException("Update failed: " + updateInstanceSql(), e);
+        }
+
+        if (updated == 0) {
+            resolveUpdateFailure(instance);
+        }
+
+        log.debug("Updated workflow instance: workflowId={}, version={}→{}",
+                instance.workflowId(), instance.version() - 1, instance.version());
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One connection, one transaction ({@code autoCommit=false}): the
+     * version-checked {@code UPDATE} of the instance row and the
+     * {@code INSERT} of the terminal event commit together or roll back
+     * together. A zero-row {@code UPDATE} rolls back and probes whether the
+     * row exists ({@link WorkflowNotFoundException}) or merely moved on
+     * ({@code false}); a unique violation on the {@code INSERT} rolls the
+     * {@code UPDATE} back and surfaces as {@link DuplicateEventException};
+     * any other {@link SQLException} rolls back and surfaces as
+     * {@link UncheckedSqlException}.
+     */
+    @Override
+    public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+        Objects.requireNonNull(terminal, "terminal");
+        Objects.requireNonNull(terminalEvent, "terminalEvent");
+        requireTerminalWrite(terminal, terminalEvent);
+
+        boolean written;
+        try (var conn = dataSource.getConnection()) {
+            conn.setAutoCommit(false);
+            try {
+                written = updateInstanceRow(conn, terminal) > 0;
+                if (written) {
+                    insertEvent(conn, terminalEvent);
+                    conn.commit();
+                } else {
+                    conn.rollback();
+                }
+            } catch (SQLException | RuntimeException e) {
+                conn.rollback();
+                throw e;
+            }
+        } catch (SQLException e) {
+            if (UNIQUE_VIOLATION.equals(e.getSQLState())) {
+                var ex = new DuplicateEventException(terminalEvent.workflowInstanceId(),
+                        terminalEvent.sequenceNumber());
+                ex.initCause(e);
+                throw ex;
+            }
+            throw new UncheckedSqlException("Failed to complete workflow instance: "
+                    + terminal.workflowId(), e);
+        }
+
+        if (!written) {
+            // Probed after the transaction's connection is released, so a
+            // single-connection pool cannot deadlock on the nested borrow.
+            if (currentVersion(terminal).isEmpty()) {
+                throw new WorkflowNotFoundException(terminal.workflowId());
+            }
+            return false;
+        }
+
+        log.debug("Completed workflow instance: workflowId={}, status={}, version={}→{}, terminalSeq={}",
+                terminal.workflowId(), terminal.status(), terminal.version() - 1,
+                terminal.version(), terminalEvent.sequenceNumber());
+        return true;
+    }
+
+    private String updateInstanceSql() {
         // Canonical optimistic-lock convention: the caller has already built
         // the updated instance with version = current + 1, so the row is
         // persisted verbatim iff the stored version equals version - 1.
-        String sql = "UPDATE " + tableName("workflow_instance")
+        return "UPDATE " + tableName("workflow_instance")
                 + " SET run_id = ?, workflow_type = ?, task_queue = ?, status = ?, "
                 + "input = ?, output = ?, service_name = ?, event_sequence = ?, "
                 + "started_at = ?, completed_at = ?, updated_at = ?, version = ?"
                 + " WHERE id = ? AND version = ?";
+    }
 
-        int updated = update(sql, ps -> {
+    /**
+     * Executes the version-checked instance {@code UPDATE} on {@code conn},
+     * inside whatever transaction mode the caller set.
+     *
+     * @return the number of rows updated; {@code 0} means a missing row or a
+     *         version conflict
+     */
+    private int updateInstanceRow(Connection conn, WorkflowInstance instance) throws SQLException {
+        try (var ps = conn.prepareStatement(updateInstanceSql())) {
             ps.setObject(1, instance.runId());
             ps.setString(2, instance.workflowType());
             ps.setString(3, instance.taskQueue());
@@ -242,14 +327,27 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             ps.setInt(12, instance.version());
             ps.setObject(13, instance.id());
             ps.setInt(14, instance.version() - 1);
-        });
-
-        if (updated == 0) {
-            resolveUpdateFailure(instance);
+            return ps.executeUpdate();
         }
+    }
 
-        log.debug("Updated workflow instance: workflowId={}, version={}→{}",
-                instance.workflowId(), instance.version() - 1, instance.version());
+    private static void requireTerminalWrite(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+        if (!terminal.status().isTerminal()) {
+            throw new IllegalArgumentException(
+                    "completeInstance requires a terminal status, got %s (workflowId=%s)"
+                            .formatted(terminal.status(), terminal.workflowId()));
+        }
+        if (terminalEvent.eventType() != EventType.WORKFLOW_COMPLETED
+                && terminalEvent.eventType() != EventType.WORKFLOW_FAILED) {
+            throw new IllegalArgumentException(
+                    "completeInstance requires a WORKFLOW_COMPLETED or WORKFLOW_FAILED event, got %s (workflowId=%s)"
+                            .formatted(terminalEvent.eventType(), terminal.workflowId()));
+        }
+        if (!terminalEvent.workflowInstanceId().equals(terminal.id())) {
+            throw new IllegalArgumentException(
+                    "completeInstance event belongs to instance %s, not %s (workflowId=%s)"
+                            .formatted(terminalEvent.workflowInstanceId(), terminal.id(), terminal.workflowId()));
+        }
     }
 
     // ── Event operations ──────────────────────────────────────────────────
@@ -268,29 +366,41 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                                     .formatted(event.workflowInstanceId(), event.sequenceNumber()));
         }
 
-        String sql = "INSERT INTO " + tableName("workflow_event")
-                + " (id, workflow_instance_id, sequence_number, event_type, step_name,"
-                + " payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)";
-
-        try {
-            update(sql, ps -> {
-                ps.setObject(1, event.id());
-                ps.setObject(2, event.workflowInstanceId());
-                ps.setInt(3, event.sequenceNumber());
-                ps.setString(4, event.eventType().name());
-                setNullableString(ps, 5, event.stepName());
-                setJsonParameter(ps, 6, event.payload());
-                ps.setTimestamp(7, Timestamp.from(event.createdAt()));
-            });
-        } catch (UncheckedSqlException e) {
-            if (e.getCause() instanceof SQLException sqle
-                    && UNIQUE_VIOLATION.equals(sqle.getSQLState())) {
+        try (var conn = dataSource.getConnection()) {
+            insertEvent(conn, event);
+        } catch (SQLException e) {
+            if (UNIQUE_VIOLATION.equals(e.getSQLState())) {
                 var ex = new DuplicateEventException(event.workflowInstanceId(),
                         event.sequenceNumber());
-                ex.initCause(sqle);
+                ex.initCause(e);
                 throw ex;
             }
-            throw e;
+            throw new UncheckedSqlException("Update failed: " + insertEventSql(), e);
+        }
+    }
+
+    private String insertEventSql() {
+        return "INSERT INTO " + tableName("workflow_event")
+                + " (id, workflow_instance_id, sequence_number, event_type, step_name,"
+                + " payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)";
+    }
+
+    /**
+     * Executes the event {@code INSERT} on {@code conn}, inside whatever
+     * transaction mode the caller set. A duplicate
+     * {@code (workflow_instance_id, sequence_number)} surfaces as an
+     * {@link SQLException} whose SQL state is the unique-violation code.
+     */
+    private void insertEvent(Connection conn, WorkflowEvent event) throws SQLException {
+        try (var ps = conn.prepareStatement(insertEventSql())) {
+            ps.setObject(1, event.id());
+            ps.setObject(2, event.workflowInstanceId());
+            ps.setInt(3, event.sequenceNumber());
+            ps.setString(4, event.eventType().name());
+            setNullableString(ps, 5, event.stepName());
+            setJsonParameter(ps, 6, event.payload());
+            ps.setTimestamp(7, Timestamp.from(event.createdAt()));
+            ps.executeUpdate();
         }
     }
 
@@ -595,12 +705,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * or a version conflict, and throws the appropriate exception.
      */
     private void resolveUpdateFailure(WorkflowInstance instance) {
-        String sql = "SELECT version FROM " + tableName("workflow_instance")
-                + " WHERE id = ?";
-
-        Optional<Integer> currentVersion = querySingle(sql,
-                ps -> ps.setObject(1, instance.id()),
-                rs -> rs.getInt("version"));
+        Optional<Integer> currentVersion = currentVersion(instance);
 
         if (currentVersion.isEmpty()) {
             throw new WorkflowNotFoundException(instance.workflowId());
@@ -608,6 +713,15 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         // The caller expected the stored row to still be at version - 1
         throw new OptimisticLockException(instance.workflowId(),
                 instance.version() - 1, currentVersion.get());
+    }
+
+    /** Reads the instance row's stored version; empty when the row does not exist. */
+    private Optional<Integer> currentVersion(WorkflowInstance instance) {
+        String sql = "SELECT version FROM " + tableName("workflow_instance")
+                + " WHERE id = ?";
+        return querySingle(sql,
+                ps -> ps.setObject(1, instance.id()),
+                rs -> rs.getInt("version"));
     }
 
     // ── Row mappers ───────────────────────────────────────────────────────

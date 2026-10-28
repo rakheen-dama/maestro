@@ -296,6 +296,117 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
         }
     }
 
+    // ── completeInstance (Issue 26) ───────────────────────────────────────
+
+    @Nested
+    @DisplayName("completeInstance: terminal status and terminal event in one transaction (Issue 26)")
+    class CompleteInstanceTests {
+
+        @Test
+        @DisplayName("writes the terminal status and the terminal event together")
+        void completeInstance_writesStatusAndEventTogether() {
+            var created = store.createInstance(newInstance("wf-1"));
+            var terminal = created.toBuilder().status(WorkflowStatus.COMPLETED)
+                    .output(jsonNode("\"done\"")).completedAt(Instant.now().truncatedTo(ChronoUnit.MILLIS))
+                    .version(1).build();
+            var event = newEvent(created.id(), 5, EventType.WORKFLOW_COMPLETED);
+
+            assertTrue(store.completeInstance(terminal, event));
+
+            var row = store.getInstance("wf-1").orElseThrow();
+            assertEquals(WorkflowStatus.COMPLETED, row.status());
+            assertEquals(1, row.version());
+            assertEquals(jsonNode("\"done\""), row.output());
+            assertEquals(EventType.WORKFLOW_COMPLETED,
+                    store.getEventBySequence(created.id(), 5).orElseThrow().eventType());
+            assertTrue(store.getRecoverableInstances().stream().noneMatch(i -> i.workflowId().equals("wf-1")));
+        }
+
+        @Test
+        @DisplayName("a stale version returns false and writes nothing")
+        void completeInstance_staleVersion_writesNothing() {
+            var created = store.createInstance(newInstance("wf-1"));
+            var stale = created.toBuilder().status(WorkflowStatus.COMPLETED).version(5).build(); // expects stored 4
+
+            assertFalse(store.completeInstance(stale, newEvent(created.id(), 5, EventType.WORKFLOW_COMPLETED)));
+
+            assertEquals(WorkflowStatus.RUNNING, store.getInstance("wf-1").orElseThrow().status());
+            assertTrue(store.getEventBySequence(created.id(), 5).isEmpty());
+        }
+
+        @Test
+        @DisplayName("an occupied terminal slot throws DuplicateEventException and writes nothing")
+        void completeInstance_duplicateTerminalEvent_writesNothing() {
+            var created = store.createInstance(newInstance("wf-1"));
+            store.appendEvent(newEvent(created.id(), 5, EventType.WORKFLOW_COMPLETED)); // another runner got there first
+            var terminal = created.toBuilder().status(WorkflowStatus.FAILED).version(1).build();
+
+            assertThrows(DuplicateEventException.class,
+                    () -> store.completeInstance(terminal, newEvent(created.id(), 5, EventType.WORKFLOW_FAILED)));
+
+            var row = store.getInstance("wf-1").orElseThrow();
+            assertEquals(WorkflowStatus.RUNNING, row.status());
+            assertEquals(0, row.version());
+            assertEquals(EventType.WORKFLOW_COMPLETED,
+                    store.getEventBySequence(created.id(), 5).orElseThrow().eventType());
+        }
+
+        @Test
+        @DisplayName("rejects a non-terminal status")
+        void completeInstance_rejectsNonTerminalStatus() {
+            var created = store.createInstance(newInstance("wf-1"));
+            var notTerminal = created.toBuilder().status(WorkflowStatus.WAITING_SIGNAL).version(1).build();
+
+            assertThrows(IllegalArgumentException.class,
+                    () -> store.completeInstance(notTerminal, newEvent(created.id(), 5, EventType.WORKFLOW_COMPLETED)));
+
+            assertEquals(0, store.getInstance("wf-1").orElseThrow().version());
+            assertTrue(store.getEventBySequence(created.id(), 5).isEmpty());
+        }
+
+        @Test
+        @DisplayName("rejects a non-terminal event type and an event for another instance")
+        void completeInstance_rejectsMismatchedEvent() {
+            var created = store.createInstance(newInstance("wf-1"));
+            var terminal = created.toBuilder().status(WorkflowStatus.COMPLETED).version(1).build();
+
+            assertThrows(IllegalArgumentException.class,
+                    () -> store.completeInstance(terminal, newEvent(created.id(), 5, EventType.ACTIVITY_COMPLETED)));
+            assertThrows(IllegalArgumentException.class,
+                    () -> store.completeInstance(terminal, newEvent(UUID.randomUUID(), 5, EventType.WORKFLOW_COMPLETED)));
+
+            assertEquals(WorkflowStatus.RUNNING, store.getInstance("wf-1").orElseThrow().status());
+            assertTrue(store.getEvents(created.id()).isEmpty());
+        }
+
+        @Test
+        @DisplayName("an unknown workflow throws WorkflowNotFoundException")
+        void completeInstance_unknownWorkflow_throwsNotFound() {
+            var ghost = newInstance("wf-ghost").toBuilder().status(WorkflowStatus.COMPLETED).version(1).build();
+
+            assertThrows(WorkflowNotFoundException.class,
+                    () -> store.completeInstance(ghost, newEvent(ghost.id(), 5, EventType.WORKFLOW_COMPLETED)));
+        }
+
+        @Test
+        @DisplayName("a failed event INSERT rolls the status UPDATE back with it")
+        void completeInstance_rollsBackTheStatusWhenTheEventInsertFails() {
+            // An event already at the terminal seq makes the INSERT violate the unique index inside the txn.
+            var created = store.createInstance(newInstance("wf-atomic"));
+            store.appendEvent(newEvent(created.id(), 3, EventType.ACTIVITY_COMPLETED));
+            var terminal = created.toBuilder().status(WorkflowStatus.COMPLETED).version(1).build();
+
+            assertThrows(DuplicateEventException.class,
+                    () -> store.completeInstance(terminal, newEvent(created.id(), 3, EventType.WORKFLOW_COMPLETED)));
+
+            var row = store.getInstance("wf-atomic").orElseThrow();
+            assertEquals(WorkflowStatus.RUNNING, row.status());
+            assertEquals(0, row.version(), "the UPDATE must have been rolled back with the failed INSERT");
+            assertTrue(store.getRecoverableInstances().stream().anyMatch(i -> i.workflowId().equals("wf-atomic")),
+                    "a rolled-back terminal write leaves the workflow recoverable");
+        }
+    }
+
     // ── Event Tests ───────────────────────────────────────────────────────
 
     @Nested

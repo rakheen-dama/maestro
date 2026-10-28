@@ -28,6 +28,9 @@ import java.util.UUID;
  *       by {@link #updateInstance(WorkflowInstance)}.</li>
  *   <li>The {@code (workflow_instance_id, sequence_number)} uniqueness constraint on
  *       events must be enforced by {@link #appendEvent(WorkflowEvent)}.</li>
+ *   <li>{@link #completeInstance(WorkflowInstance, WorkflowEvent)} must be atomic:
+ *       the terminal status and the terminal event are written together or not
+ *       at all.</li>
  *   <li>Methods that return lists must never return {@code null} — return an
  *       empty list instead.</li>
  * </ul>
@@ -97,6 +100,67 @@ public interface WorkflowStore {
      *                                   {@code instance.version() - 1}
      */
     void updateInstance(WorkflowInstance instance);
+
+    /**
+     * Atomically finalises a workflow instance: writes its terminal status and
+     * appends its terminal event as <b>one</b> all-or-nothing operation.
+     *
+     * <p><b>Compare-and-set.</b> Exactly the {@link #updateInstance} version
+     * convention: {@code terminal} is the complete new row with its version
+     * already incremented, and it is written if and only if the stored row's
+     * version equals {@code terminal.version() - 1}. Unlike
+     * {@code updateInstance}, a version mismatch is reported by returning
+     * {@code false} rather than by throwing, because losing the CAS on a
+     * terminal write is an expected race the caller handles with a fresh read.
+     *
+     * <p><b>Atomicity.</b> {@code terminalEvent} is appended <em>in the same
+     * transaction</em> as the status write. When the CAS fails, or the append
+     * fails for any reason, <b>nothing</b> is written — neither the row nor the
+     * event. This closes Issue 26: because a reader can never observe a
+     * terminal status without its terminal event, nor the terminal event
+     * without the terminal status, {@link #getRecoverableInstances()} can never
+     * re-enter a workflow that has already been finalised, and no reader is
+     * ever handed a terminal workflow whose log is one event short.
+     *
+     * <p>The {@code (workflow_instance_id, sequence_number)} uniqueness
+     * {@link #appendEvent} enforces applies to {@code terminalEvent} too: if an
+     * event already occupies {@code terminalEvent.sequenceNumber()} (typically
+     * another runner finalised the workflow first), a
+     * {@link DuplicateEventException} is thrown and nothing is written.
+     *
+     * <p>Implementations must not provide this by calling
+     * {@link #updateInstance} and {@link #appendEvent} as two independent
+     * writes — that is precisely the non-atomic gap this method exists to
+     * remove. A relational store wraps the {@code UPDATE} and the
+     * {@code INSERT} in one transaction; an in-memory store performs both
+     * under the instance's lock and undoes the status write if the append
+     * fails.
+     *
+     * @param terminal      the fully-built terminal instance (version already
+     *                      incremented; {@link WorkflowInstance#status()} must be
+     *                      terminal)
+     * @param terminalEvent the {@link io.b2mash.maestro.core.model.EventType#WORKFLOW_COMPLETED}
+     *                      or {@link io.b2mash.maestro.core.model.EventType#WORKFLOW_FAILED}
+     *                      event to append; its
+     *                      {@link WorkflowEvent#workflowInstanceId()} must equal
+     *                      {@code terminal.id()}
+     * @return {@code true} if the status and the event were both written;
+     *         {@code false} if the stored version did not equal
+     *         {@code terminal.version() - 1} (nothing was written)
+     * @throws WorkflowNotFoundException if no row exists for the workflow
+     *                                   (nothing was written)
+     * @throws DuplicateEventException   if an event already exists at
+     *                                   {@code terminalEvent.sequenceNumber()}
+     *                                   for this instance (nothing was written)
+     * @throws IllegalArgumentException  if {@code terminal.status()} is not
+     *                                   {@linkplain io.b2mash.maestro.core.model.WorkflowStatus#isTerminal()
+     *                                   terminal}, if {@code terminalEvent.eventType()}
+     *                                   is neither {@code WORKFLOW_COMPLETED} nor
+     *                                   {@code WORKFLOW_FAILED}, or if
+     *                                   {@code terminalEvent.workflowInstanceId()}
+     *                                   differs from {@code terminal.id()}
+     */
+    boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent);
 
     // ── Event operations ─────────────────────────────────────────────────
 

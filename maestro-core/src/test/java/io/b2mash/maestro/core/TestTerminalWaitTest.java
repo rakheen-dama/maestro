@@ -36,8 +36,8 @@ class TestTerminalWaitTest {
         var store = new FixedStore(List.of(event(1, EventType.ACTIVITY_COMPLETED)));
 
         assertFalse(TestTerminalWait.isFinalised(store, instance(WorkflowStatus.COMPLETED)),
-                "the instance row is written before the event is appended; waiting on the "
-                        + "status alone returns while the log is still one event short");
+                "a terminal status without its event is not finalised — the predicate must "
+                        + "never return on the status alone, whatever the store's write order");
         assertFalse(TestTerminalWait.isFinalised(store, instance(WorkflowStatus.FAILED)));
     }
 
@@ -142,6 +142,11 @@ class TestTerminalWaitTest {
 
         @Override
         public void appendEvent(WorkflowEvent event) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
             throw new UnsupportedOperationException();
         }
 

@@ -105,6 +105,62 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Performed under the same per-workflow lock {@link #updateInstance}
+     * uses, so the version check and both writes are one critical section with
+     * respect to every other instance write: once the CAS has passed, nothing
+     * else can change the row before it is written. The event is claimed first
+     * (an atomic {@code putIfAbsent}, so even an unlocked concurrent
+     * {@link #appendEvent} cannot slip in) and the status second, so the write
+     * is all-or-nothing and a reader that sees the terminal status always also
+     * sees the terminal event. Reads are lock-free, so a reader interleaving its
+     * own two reads with this write may see the event a moment before the
+     * status — never the reverse.
+     */
+    @Override
+    public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+        requireTerminalWrite(terminal, terminalEvent);
+        var lock = instanceLocks.get(terminal.workflowId());
+        if (lock == null) {
+            throw new WorkflowNotFoundException(terminal.workflowId());
+        }
+
+        synchronized (lock) {
+            var current = instances.get(terminal.workflowId());
+            if (current == null) {
+                throw new WorkflowNotFoundException(terminal.workflowId());
+            }
+            if (current.version() != terminal.version() - 1) {
+                return false;
+            }
+            // Throws DuplicateEventException before the row is touched: nothing is written.
+            put(terminalEvent);
+            instances.put(terminal.workflowId(), terminal);
+            return true;
+        }
+    }
+
+    private static void requireTerminalWrite(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+        if (!terminal.status().isTerminal()) {
+            throw new IllegalArgumentException(
+                    "completeInstance requires a terminal status, got %s (workflowId=%s)"
+                            .formatted(terminal.status(), terminal.workflowId()));
+        }
+        if (terminalEvent.eventType() != EventType.WORKFLOW_COMPLETED
+                && terminalEvent.eventType() != EventType.WORKFLOW_FAILED) {
+            throw new IllegalArgumentException(
+                    "completeInstance requires a WORKFLOW_COMPLETED or WORKFLOW_FAILED event, got %s (workflowId=%s)"
+                            .formatted(terminalEvent.eventType(), terminal.workflowId()));
+        }
+        if (!terminalEvent.workflowInstanceId().equals(terminal.id())) {
+            throw new IllegalArgumentException(
+                    "completeInstance event belongs to instance %s, not %s (workflowId=%s)"
+                            .formatted(terminalEvent.workflowInstanceId(), terminal.id(), terminal.workflowId()));
+        }
+    }
+
     // ── Event operations ─────────────────────────────────────────────────
 
     @Override

@@ -205,6 +205,26 @@ class VersionedInMemoryStore implements WorkflowStore {
         }
     }
 
+    @Override
+    public synchronized boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+        // Test fixture: composes this store's own CAS and append under its monitor
+        // (so every hook on either still fires), undoing the status write if the
+        // append fails — nothing is written unless both land.
+        var before = byWorkflowId.get(terminal.workflowId());
+        try {
+            updateInstance(terminal);
+        } catch (OptimisticLockException conflict) {
+            return false;
+        }
+        try {
+            appendEvent(terminalEvent);
+        } catch (RuntimeException appendFailed) {
+            byWorkflowId.put(terminal.workflowId(), before);
+            throw appendFailed;
+        }
+        return true;
+    }
+
     /**
      * Plants an event without going through {@link #appendEvent} — the
      * in-memory counterpart of the integration suite's raw SQL {@code INSERT}

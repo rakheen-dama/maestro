@@ -176,10 +176,9 @@ abstract class KafkaSpringIntegrationSupport extends PostgresIntegrationSupport 
      * poll — the engine's in-memory state is never the subject of an assertion.
      *
      * <p>When {@code expected} is terminal this additionally waits for the
-     * terminal event to be appended: the instance row turns terminal one
-     * non-transactional write ahead of the log, so returning on the status alone
-     * hands the caller a log the engine has not finished writing. See
-     * {@code TerminalWait}.
+     * terminal event to be appended — the condition the caller's log
+     * assertions depend on (status and event are one atomic write since
+     * Issue 26). See {@code TerminalWait}.
      *
      * @param workflowId the business workflow ID
      * @param expected   the status to wait for

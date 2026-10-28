@@ -452,6 +452,11 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
         }
 
         @Override
+        public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+            return delegate.completeInstance(terminal, terminalEvent);
+        }
+
+        @Override
         public boolean markSignalConsumed(UUID signalId) {
             var applied = delegate.markSignalConsumed(signalId);
             engineCasResults.add(applied);
