@@ -498,13 +498,24 @@ public class MaestroProperties {
      *                            {@code SignalNotifier} (Kafka messaging
      *                            without Valkey). Bounds cross-node
      *                            signal latency in those cases.
+     * @param janitorInterval     how often the signal janitor purges
+     *                            unconsumed signals addressed to finished
+     *                            workflows. Every node runs it (the purge is
+     *                            idempotent).
+     * @param terminalRetention   how long after a workflow reaches
+     *                            {@code COMPLETED} or {@code TERMINATED} its
+     *                            unconsumed signals are kept before the
+     *                            janitor purges them. {@code FAILED} workflows
+     *                            keep theirs, because they can be retried.
      */
     public record SignalProperties(
-            @DefaultValue("30s") Duration wakeRecheckInterval
+            @DefaultValue("30s") Duration wakeRecheckInterval,
+            @DefaultValue("1h") Duration janitorInterval,
+            @DefaultValue("7d") Duration terminalRetention
     ) {
         /** @return the defaults documented above */
         public static SignalProperties defaults() {
-            return new SignalProperties(Duration.ofSeconds(30));
+            return new SignalProperties(Duration.ofSeconds(30), Duration.ofHours(1), Duration.ofDays(7));
         }
     }
 

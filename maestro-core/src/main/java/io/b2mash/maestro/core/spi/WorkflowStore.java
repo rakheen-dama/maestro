@@ -274,7 +274,19 @@ public interface WorkflowStore {
      * <p><b>Signals must never be discarded.</b> Even if the workflow doesn't
      * exist yet, the signal is persisted for later delivery.
      *
-     * @param signal the signal to persist
+     * <p><b>{@code receivedAt} is assigned by the store.</b> It is the order
+     * key of {@link #getUnconsumedSignals(String, String)}, so it must reflect
+     * the order in which the store accepted the signals. A store backed by a
+     * database shared between nodes <em>must</em> assign it from the database
+     * clock and ignore the caller's {@link WorkflowSignal#receivedAt()} — each
+     * node's JVM clock skews independently, and a caller-supplied value would
+     * let two same-name signals delivered through different nodes be consumed
+     * in skew order rather than arrival order. A single-process store (such as
+     * the in-memory test store) may keep the caller's value, because every
+     * caller shares one clock.
+     *
+     * @param signal the signal to persist; its {@code receivedAt} is advisory
+     *               (see above)
      */
     void saveSignal(WorkflowSignal signal);
 
@@ -318,6 +330,46 @@ public interface WorkflowStore {
      * @param instanceId the workflow instance UUID to assign
      */
     void adoptOrphanedSignals(String workflowId, UUID instanceId);
+
+    /**
+     * Purges unconsumed signals addressed to workflows that finished long ago,
+     * so the signal table does not grow without bound.
+     *
+     * <p>Deletes exactly the signals with {@code consumed = false} whose
+     * {@link WorkflowSignal#workflowInstanceId()} references an instance whose
+     * status is {@link io.b2mash.maestro.core.model.WorkflowStatus#COMPLETED
+     * COMPLETED} or {@link io.b2mash.maestro.core.model.WorkflowStatus#TERMINATED
+     * TERMINATED} and whose {@code completedAt} is strictly before
+     * {@code cutoff}. No such workflow can ever consume them. Everything else
+     * must survive:
+     * <ul>
+     *   <li><b>{@code FAILED} instances are excluded.</b> A failed workflow can
+     *       be resumed by
+     *       {@link io.b2mash.maestro.core.engine.WorkflowExecutor#retryWorkflow
+     *       retryWorkflow}, and the retried run may still consume the signals
+     *       that arrived after it failed (Issue 19) — purging them would make
+     *       the retry wait for a signal that was delivered and then
+     *       discarded.</li>
+     *   <li><b>Orphans are never touched.</b> A signal with a {@code null}
+     *       {@code workflowInstanceId} belongs to a workflow that has not
+     *       started yet (pre-delivery) and will be adopted when it does.</li>
+     *   <li><b>Consumed rows are never touched here.</b> Their retention is a
+     *       separate concern this method does not address.</li>
+     *   <li>Instances with a {@code null} {@code completedAt}, or one at or
+     *       after {@code cutoff}, keep their signals.</li>
+     * </ul>
+     *
+     * <p><b>Idempotent and safe to run concurrently.</b> The engine's signal
+     * janitor calls this periodically on every node without leader election;
+     * a second call with the same cutoff deletes nothing and returns
+     * {@code 0}. Shared-database implementations should compare against the
+     * stored {@code completed_at} in a single statement.
+     *
+     * @param cutoff signals of instances completed strictly before this instant
+     *               are purged
+     * @return the number of signal rows deleted
+     */
+    int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff);
 
     // ── Timer operations ─────────────────────────────────────────────────
 

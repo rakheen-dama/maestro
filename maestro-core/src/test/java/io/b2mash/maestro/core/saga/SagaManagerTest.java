@@ -940,6 +940,7 @@ class SagaManagerTest {
         @Override public List<WorkflowSignal> getUnconsumedSignals(String wfId, String name) { return List.of(); }
         @Override public boolean markSignalConsumed(UUID signalId) { return true; }
         @Override public void adoptOrphanedSignals(String wfId, UUID instanceId) {}
+        @Override public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) { return 0; }
         @Override public void saveTimer(WorkflowTimer timer) {}
         @Override public List<WorkflowTimer> getDueTimers(Instant now, int batchSize) { return List.of(); }
         @Override public Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId) { return Optional.empty(); }

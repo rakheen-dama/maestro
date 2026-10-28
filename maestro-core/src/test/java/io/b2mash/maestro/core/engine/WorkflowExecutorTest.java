@@ -46,6 +46,7 @@ import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -973,6 +974,23 @@ class WorkflowExecutorTest {
     }
 
     @Test
+    @DisplayName("startSignalJanitor() exposes its settings, rejects a second start, and stops on shutdown")
+    void startSignalJanitor_exposesSettingsAndStopsOnShutdown() {
+        assertNull(executor.signalJanitorSettings(), "no janitor started yet");
+        executor.startSignalJanitor(Duration.ofHours(2), Duration.ofDays(3));
+        assertTrue(executor.isSignalJanitorRunning());
+        assertEquals(new WorkflowExecutor.SignalJanitorSettings(Duration.ofHours(2), Duration.ofDays(3)),
+                executor.signalJanitorSettings());
+        assertThrows(IllegalStateException.class,
+                () -> executor.startSignalJanitor(Duration.ofHours(2), Duration.ofDays(3)));
+        executor.shutdown();
+        assertFalse(executor.isSignalJanitorRunning());
+        assertThrows(IllegalStateException.class,
+                () -> executor.startSignalJanitor(Duration.ofHours(2), Duration.ofDays(3)),
+                "a shutting-down executor must not start a janitor");
+    }
+
+    @Test
     @DisplayName("isRecoveryPollerRunning() reflects the recovery poller's lifecycle")
     void isRecoveryPollerRunningReflectsLifecycle() {
         assertFalse(executor.isRecoveryPollerRunning(), "no poller started yet");
@@ -1491,6 +1509,11 @@ class WorkflowExecutorTest {
                             s.signalName(), s.payload(), s.consumed(), s.receivedAt()));
                 }
             }
+        }
+
+        @Override
+        public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+            return 0;
         }
 
         @Override

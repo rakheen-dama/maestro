@@ -297,6 +297,11 @@ class AwaitSignalTimeoutRaceIT extends PostgresIntegrationSupport {
         }
 
         @Override
+        public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+            return delegate.deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff);
+        }
+
+        @Override
         public void saveTimer(WorkflowTimer timer) {
             delegate.saveTimer(timer);
         }

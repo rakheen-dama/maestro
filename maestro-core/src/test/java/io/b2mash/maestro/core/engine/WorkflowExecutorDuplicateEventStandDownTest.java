@@ -470,6 +470,11 @@ class WorkflowExecutorDuplicateEventStandDownTest {
         }
 
         @Override
+        public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+            return 0;
+        }
+
+        @Override
         public void saveTimer(WorkflowTimer timer) {
             // no timers in these tests
         }

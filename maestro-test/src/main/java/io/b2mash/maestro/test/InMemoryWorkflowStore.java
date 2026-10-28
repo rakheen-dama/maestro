@@ -9,6 +9,7 @@ import io.b2mash.maestro.core.model.TimerStatus;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
+import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.spi.TerminalWrites;
 import io.b2mash.maestro.core.spi.WorkflowStore;
@@ -16,6 +17,7 @@ import io.b2mash.maestro.core.spi.WorkflowStore;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -255,6 +257,13 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
 
     // ── Signal operations ────────────────────────────────────────────────
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Keeps the caller's {@link WorkflowSignal#receivedAt()}: every caller
+     * of this single-process store shares one clock, so the clock-skew hazard
+     * the SPI guards against cannot arise.
+     */
     @Override
     public void saveSignal(WorkflowSignal signal) {
         synchronized (signalLock) {
@@ -317,6 +326,33 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
                     ));
                 }
             }
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Evaluated under the signal lock against the current instance map.
+     */
+    @Override
+    public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+        synchronized (signalLock) {
+            var purgeable = new HashSet<UUID>();
+            for (var instance : instances.values()) {
+                var status = instance.status();
+                var completedAt = instance.completedAt();
+                if ((status == WorkflowStatus.COMPLETED || status == WorkflowStatus.TERMINATED)
+                        && completedAt != null && completedAt.isBefore(cutoff)) {
+                    purgeable.add(instance.id());
+                }
+            }
+            int before = signals.size();
+            // FAILED instances, orphans (null instance id) and consumed rows are
+            // never purged — see the SPI Javadoc.
+            signals.removeIf(s -> !s.consumed()
+                    && s.workflowInstanceId() != null
+                    && purgeable.contains(s.workflowInstanceId()));
+            return before - signals.size();
         }
     }
 

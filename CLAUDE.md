@@ -94,6 +94,7 @@ public interface WorkflowStore {
     List<WorkflowSignal> getUnconsumedSignals(String workflowId, String signalName);
     boolean markSignalConsumed(UUID signalId);           // CAS: false if already consumed
     void adoptOrphanedSignals(String workflowId, UUID instanceId);
+    int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff); // janitor; COMPLETED/TERMINATED only
 
     void saveTimer(WorkflowTimer timer);
     List<WorkflowTimer> getDueTimers(Instant now, int batchSize);
@@ -217,7 +218,10 @@ policy, both transports), `maestro.admin.events.enabled` (now actually wired;
 `maestro.observability.metrics.enabled` / `maestro.observability.tracing.enabled`
 (both default `true`, both silently inert without a `MeterRegistry` / `Tracer`;
 the tracing flag gates the Kafka W3C header injection too — see
-`docs/observability.md`).
+`docs/observability.md`), `maestro.signal.janitor-interval` (default 1h) /
+`maestro.signal.terminal-retention` (default 7d) (the signal janitor purges
+unconsumed signals of workflows `COMPLETED`/`TERMINATED` longer ago than the
+retention; `FAILED` keeps them for retry).
 
 ## Coding Standards
 

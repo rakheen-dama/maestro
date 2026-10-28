@@ -175,6 +175,11 @@ class TimerManagerTest {
             }
         }
 
+        @Override
+        public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+            return 0;
+        }
+
         @Override public void saveTimer(WorkflowTimer timer) { timers.add(timer); }
 
         @Override public List<WorkflowTimer> getDueTimers(Instant now, int batchSize) {

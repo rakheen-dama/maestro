@@ -210,6 +210,11 @@ class SignalSubscriptionRunnerTest {
         public void adoptOrphanedSignals(String workflowId, java.util.UUID instanceId) {}
 
         @Override
+        public int deleteUnconsumedSignalsForTerminalInstancesBefore(java.time.Instant cutoff) {
+            return 0;
+        }
+
+        @Override
         public void saveTimer(io.b2mash.maestro.core.model.WorkflowTimer timer) {
             throw new UnsupportedOperationException("stub");
         }

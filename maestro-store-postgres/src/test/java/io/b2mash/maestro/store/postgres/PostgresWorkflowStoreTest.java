@@ -13,11 +13,13 @@ import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import tools.jackson.databind.JsonNode;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
@@ -735,27 +737,9 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
             assertEquals(s2.id(), signals.getFirst().id());
         }
 
-        @Test
-        @DisplayName("getUnconsumedSignals ordered by receivedAt ascending")
-        void getUnconsumedSignals_orderedByReceivedAt() {
-            var instance = newInstance("order-sig-order");
-            store.createInstance(instance);
-
-            var now = Instant.now().truncatedTo(ChronoUnit.MILLIS);
-            var later = new WorkflowSignal(
-                    UUID.randomUUID(), instance.id(), "order-sig-order", "sig",
-                    null, false, now.plusSeconds(10));
-            var earlier = new WorkflowSignal(
-                    UUID.randomUUID(), instance.id(), "order-sig-order", "sig",
-                    null, false, now.minusSeconds(10));
-            store.saveSignal(later);
-            store.saveSignal(earlier);
-
-            var signals = store.getUnconsumedSignals("order-sig-order", "sig");
-            assertEquals(2, signals.size());
-            assertEquals(earlier.id(), signals.get(0).id());
-            assertEquals(later.id(), signals.get(1).id());
-        }
+        // Ordering by receivedAt is pinned by SignalClockTests: since V5 the
+        // store, not the caller, assigns it, so the old caller-clock ordering
+        // test asserted the very skew bug C14a removes and was deleted.
 
         @Test
         @DisplayName("markSignalConsumed transitions unconsumed→consumed exactly once")
@@ -871,6 +855,135 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
             var signals = store.getUnconsumedSignals("order-trace-long", "payment.result");
             assertEquals(1, signals.size());
             assertEquals(wide, signals.getFirst().traceContext());
+        }
+    }
+
+    // ── Signal clock Tests (C14a) ─────────────────────────────────────────
+
+    @Nested
+    @DisplayName("Signal received_at is the database clock (V5)")
+    class SignalClockTests {
+
+        @Test
+        @DisplayName("saveSignal ignores the caller's receivedAt in favour of the database's now()")
+        void saveSignal_receivedAtComesFromTheDatabaseClock() {
+            var created = store.createInstance(newInstance("wf-clock"));
+            store.saveSignal(new WorkflowSignal(UUID.randomUUID(), created.id(), "wf-clock", "s", null, false, Instant.EPOCH));
+            var stored = store.getUnconsumedSignals("wf-clock", "s").getFirst();
+            assertTrue(Duration.between(stored.receivedAt(), Instant.now()).abs().compareTo(Duration.ofMinutes(1)) < 0,
+                    "the caller's EPOCH must be ignored in favour of now()");
+        }
+
+        @Test
+        @DisplayName("getUnconsumedSignals orders by store arrival, not by the caller's clock")
+        void getUnconsumedSignals_ordersByStoreArrival_notCallerClock() {
+            var created = store.createInstance(newInstance("wf-order"));
+            var first = UUID.randomUUID();
+            var second = UUID.randomUUID();
+            store.saveSignal(new WorkflowSignal(first, created.id(), "wf-order", "s", null, false,
+                    Instant.now().plus(Duration.ofDays(1))));
+            store.saveSignal(new WorkflowSignal(second, created.id(), "wf-order", "s", null, false, Instant.EPOCH));
+            assertEquals(List.of(first, second),
+                    store.getUnconsumedSignals("wf-order", "s").stream().map(WorkflowSignal::id).toList());
+        }
+    }
+
+    // ── Signal janitor delete Tests (C14b) ────────────────────────────────
+
+    /**
+     * {@code deleteUnconsumedSignalsForTerminalInstancesBefore}: one instance
+     * per {@link WorkflowStatus}, each completed 10 days ago with one
+     * unconsumed signal; a consumed signal on the COMPLETED instance; an
+     * orphan signal; and a COMPLETED instance completed 1 day ago. The cutoff
+     * is 7 days ago, so exactly the old COMPLETED and TERMINATED unconsumed
+     * signals qualify.
+     */
+    @Nested
+    @DisplayName("Signal janitor delete")
+    class SignalJanitorDeleteTests {
+
+        private final Instant now = Instant.now().truncatedTo(ChronoUnit.MILLIS);
+        private final Instant cutoff = now.minus(Duration.ofDays(7));
+        private final String orphanWorkflowId = "wf-orphan";
+        private final String recentCompletedId = "wf-recent-completed";
+        private UUID consumedSignalId;
+
+        @BeforeEach
+        void fixture() {
+            for (var status : WorkflowStatus.values()) {
+                var instance = store.createInstance(newInstance(idFor(status), status).toBuilder()
+                        .completedAt(now.minus(Duration.ofDays(10)))
+                        .build());
+                store.saveSignal(newSignal(instance.workflowId(), instance.id(), "s"));
+            }
+            var completed = store.getInstance(idFor(WorkflowStatus.COMPLETED)).orElseThrow();
+            var consumed = newSignal(completed.workflowId(), completed.id(), "s");
+            consumedSignalId = consumed.id();
+            store.saveSignal(consumed);
+            assertTrue(store.markSignalConsumed(consumedSignalId));
+
+            store.saveSignal(newSignal(orphanWorkflowId, null, "s"));
+
+            var recent = store.createInstance(newInstance(recentCompletedId, WorkflowStatus.COMPLETED).toBuilder()
+                    .completedAt(now.minus(Duration.ofDays(1)))
+                    .build());
+            store.saveSignal(newSignal(recentCompletedId, recent.id(), "s"));
+        }
+
+        @Test
+        @DisplayName("deletes unconsumed signals of COMPLETED and TERMINATED instances completed before the cutoff")
+        void deleteUnconsumedSignals_deletesCompletedAndTerminatedOlderThanCutoff() {
+            assertEquals(2, store.deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff));
+            assertEquals(0, unconsumed(idFor(WorkflowStatus.COMPLETED)));
+            assertEquals(0, unconsumed(idFor(WorkflowStatus.TERMINATED)));
+        }
+
+        @Test
+        @DisplayName("keeps the unconsumed signals of FAILED instances (retryWorkflow may consume them)")
+        void deleteUnconsumedSignals_keepsSignalsOfFailedInstances() {
+            store.deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff);
+            assertEquals(1, store.getUnconsumedSignals(idFor(WorkflowStatus.FAILED), "s").size(),
+                    "a FAILED workflow may be retried and consume its signals (Issue 19)");
+        }
+
+        @Test
+        @DisplayName("keeps active-instance, recently-completed, consumed and orphan signals")
+        void deleteUnconsumedSignals_keepsActiveNewerConsumedAndOrphanSignals() throws Exception {
+            store.deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff);
+            for (var status : WorkflowStatus.values()) {
+                if (status.isActive()) {
+                    assertEquals(1, unconsumed(idFor(status)), status + " signal must survive");
+                }
+            }
+            assertEquals(1, unconsumed(recentCompletedId));
+            assertTrue(consumedRowStillExists(consumedSignalId), "consumed rows are out of the janitor's scope");
+            assertEquals(1, unconsumed(orphanWorkflowId));
+        }
+
+        @Test
+        @DisplayName("is idempotent")
+        void deleteUnconsumedSignals_isIdempotent() {
+            store.deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff);
+            assertEquals(0, store.deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff));
+        }
+
+        private static String idFor(WorkflowStatus status) {
+            return "wf-" + status.name().toLowerCase();
+        }
+
+        private int unconsumed(String workflowId) {
+            return store.getUnconsumedSignals(workflowId, "s").size();
+        }
+
+        private boolean consumedRowStillExists(UUID signalId) throws Exception {
+            try (Connection conn = dataSource.getConnection();
+                 var ps = conn.prepareStatement(
+                         "SELECT consumed FROM maestro_workflow_signal WHERE id = ?")) {
+                ps.setObject(1, signalId);
+                try (var rs = ps.executeQuery()) {
+                    return rs.next() && rs.getBoolean(1);
+                }
+            }
         }
     }
 

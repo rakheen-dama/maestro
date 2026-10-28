@@ -170,18 +170,20 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
         try (var conn = dataSource.getConnection()) {
             conn.setAutoCommit(false);
+            boolean settled = false; // committed or rolled back — see endTransaction
             try {
                 insertInstance(conn, instance);
                 doAdoptOrphanedSignals(conn, instance.workflowId(), instance.id());
                 conn.commit();
+                settled = true;
                 log.debug("Created workflow instance: workflowId={}, id={}",
                         instance.workflowId(), instance.id());
                 return instance;
             } catch (SQLException | RuntimeException e) {
-                rollbackAfter(conn, e);
+                settled = rollbackAfter(conn, e);
                 throw e;
             } finally {
-                restoreAutoCommit(conn);
+                endTransaction(conn, settled);
             }
         } catch (SQLException e) {
             if (UNIQUE_VIOLATION.equals(e.getSQLState())) {
@@ -258,6 +260,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         boolean written;
         try (var conn = dataSource.getConnection()) {
             conn.setAutoCommit(false);
+            boolean settled = false; // committed or rolled back — see endTransaction
             try {
                 written = updateInstanceRow(conn, terminal) > 0;
                 if (written) {
@@ -266,11 +269,12 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                 } else {
                     conn.rollback();
                 }
+                settled = true;
             } catch (SQLException | RuntimeException e) {
-                rollbackAfter(conn, e);
+                settled = rollbackAfter(conn, e);
                 throw e;
             } finally {
-                restoreAutoCommit(conn);
+                endTransaction(conn, settled);
             }
         } catch (SQLException e) {
             if (UNIQUE_VIOLATION.equals(e.getSQLState())) {
@@ -302,26 +306,56 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * Rolls back {@code conn} after {@code original} aborted its transaction. A
      * rollback failure is attached to {@code original} as suppressed rather
      * than replacing it, so the caller still sees — and maps — the real cause.
+     *
+     * @return {@code true} if the rollback succeeded (the transaction is
+     *         settled); {@code false} if it failed and the transaction may
+     *         still be open — the caller must then not restore auto-commit
+     *         (see {@link #endTransaction})
      */
-    private static void rollbackAfter(Connection conn, Throwable original) {
+    private static boolean rollbackAfter(Connection conn, Throwable original) {
         try {
             conn.rollback();
+            return true;
         } catch (SQLException rollbackFailed) {
             original.addSuppressed(rollbackFailed);
+            return false;
         }
     }
 
     /**
-     * Restores auto-commit before a transactional connection is closed, so a
-     * pooled connection is never handed to the next borrower mid-mode. A
-     * failure here cannot change the transaction's outcome (already committed
-     * or rolled back), so it is logged, not thrown.
+     * Ends a transactional borrow before the connection is closed.
+     *
+     * <p>When the transaction is {@code settled} (committed or rolled back),
+     * auto-commit is restored so a pooled connection is never handed to the
+     * next borrower mid-mode; a failure there cannot change the outcome, so
+     * it is logged, not thrown.
+     *
+     * <p>When it is <b>not</b> settled — the {@code rollback()} itself failed,
+     * or an {@link Error} escaped mid-transaction — the transaction may still
+     * be open on a live connection, and JDBC specifies that
+     * {@code setAutoCommit(true)} mid-transaction <em>commits</em> it: the
+     * half-done write (an instance row without its adopted signals, a terminal
+     * status without its terminal event) would become durable. So auto-commit
+     * is deliberately left off and the connection is
+     * {@linkplain Connection#abort aborted}: the database rolls the
+     * transaction back when the session ends, and a pool evicts the dead
+     * connection rather than resetting and reusing it (R34).
      */
-    private static void restoreAutoCommit(Connection conn) {
+    private static void endTransaction(Connection conn, boolean settled) {
+        if (settled) {
+            try {
+                conn.setAutoCommit(true);
+            } catch (SQLException e) {
+                log.warn("Could not restore auto-commit on a store connection before closing it: {}",
+                        e.toString());
+            }
+            return;
+        }
         try {
-            conn.setAutoCommit(true);
-        } catch (SQLException e) {
-            log.warn("Could not restore auto-commit on a store connection before closing it: {}", e.toString());
+            conn.abort(Runnable::run);
+        } catch (SQLException | RuntimeException e) {
+            log.warn("Could not abort a store connection whose transaction failed to roll back; "
+                    + "closing it without restoring auto-commit: {}", e.toString());
         }
     }
 
@@ -527,13 +561,22 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
     // ── Signal operations ─────────────────────────────────────────────────
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The {@code INSERT} omits {@code received_at}, so the column's
+     * {@code DEFAULT now()} (migration V5) assigns it from the database clock;
+     * the caller's {@link WorkflowSignal#receivedAt()} is ignored. A store with
+     * a custom table prefix must carry an equivalent default on its signal
+     * table, or the {@code NOT NULL} column rejects the insert.
+     */
     @Override
     public void saveSignal(WorkflowSignal signal) {
         Objects.requireNonNull(signal, "signal");
 
         String sql = "INSERT INTO " + tableName("workflow_signal")
                 + " (id, workflow_instance_id, workflow_id, signal_name, payload,"
-                + " consumed, received_at, trace_context) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+                + " consumed, trace_context) VALUES (?, ?, ?, ?, ?, ?, ?)";
 
         update(sql, ps -> {
             ps.setObject(1, signal.id());
@@ -542,9 +585,8 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             ps.setString(4, signal.signalName());
             setJsonParameter(ps, 5, signal.payload());
             ps.setBoolean(6, signal.consumed());
-            ps.setTimestamp(7, Timestamp.from(signal.receivedAt()));
             // Opaque metadata (migration V4): written verbatim, never parsed.
-            ps.setString(8, signal.traceContext());
+            ps.setString(7, signal.traceContext());
         });
     }
 
@@ -585,6 +627,26 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             throw new UncheckedSqlException("Failed to adopt orphaned signals for workflow: "
                     + workflowId, e);
         }
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One dialect-neutral statement — a {@code DELETE} with an
+     * {@code IN (SELECT ...)} subquery rather than a vendor-specific
+     * {@code DELETE ... USING} join.
+     */
+    @Override
+    public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+        Objects.requireNonNull(cutoff, "cutoff");
+
+        String sql = "DELETE FROM " + tableName("workflow_signal")
+                + " WHERE consumed = FALSE AND workflow_instance_id IN (SELECT id FROM "
+                + tableName("workflow_instance")
+                + " WHERE status IN ('" + WorkflowStatus.COMPLETED.name() + "', '"
+                + WorkflowStatus.TERMINATED.name() + "') AND completed_at < ?)";
+
+        return update(sql, ps -> ps.setTimestamp(1, Timestamp.from(cutoff)));
     }
 
     // ── Timer operations ──────────────────────────────────────────────────

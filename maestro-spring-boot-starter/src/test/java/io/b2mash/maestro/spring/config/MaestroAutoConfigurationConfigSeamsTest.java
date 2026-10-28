@@ -17,6 +17,7 @@ import io.b2mash.maestro.spring.client.WorkflowOptions;
 import io.b2mash.maestro.test.InMemoryWorkflowStore;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.DefaultApplicationArguments;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
@@ -43,7 +44,9 @@ import static org.awaitility.Awaitility.await;
  * {@code maestro.lock.key-prefix} for the per-activity lock (in addition
  * to the instance lock, which already honoured it), and
  * {@code maestro.retry.default-*} for the default {@code @ActivityStub}
- * retry policy.
+ * retry policy. {@code maestro.signal.janitor-interval} and
+ * {@code maestro.signal.terminal-retention} (C14b) are pinned the same way,
+ * through {@link StartupRecoveryRunner}.
  *
  * <p>Before this fix, all four had a hardcoded value baked into
  * {@link WorkflowExecutor} / {@code ActivityInvocationHandler} /
@@ -208,6 +211,25 @@ class MaestroAutoConfigurationConfigSeamsTest {
                                     + "maestro.retry.default-max-attempts=1 — the annotation was explicitly "
                                     + "customized, so it must not resolve to the configured default")
                             .isEqualTo(5);
+                });
+    }
+
+    @Test
+    @DisplayName("maestro.signal.janitor-interval and maestro.signal.terminal-retention reach the executor's signal janitor")
+    void signalJanitorSettingsReachTheExecutor() {
+        runner.withPropertyValues("maestro.signal.janitor-interval=2h", "maestro.signal.terminal-retention=3d")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    // ApplicationContextRunner never invokes ApplicationRunner beans
+                    // itself, so drive the starter's runner explicitly.
+                    context.getBean(StartupRecoveryRunner.class).run(new DefaultApplicationArguments());
+                    var executor = context.getBean(WorkflowExecutor.class);
+                    assertThat(executor.isSignalJanitorRunning()).isTrue();
+                    assertThat(executor.signalJanitorSettings())
+                            .as("the configured 2h/3d must reach the engine, not the 1h/7d defaults")
+                            .isEqualTo(new WorkflowExecutor.SignalJanitorSettings(Duration.ofHours(2), Duration.ofDays(3)));
+                    executor.shutdown();
+                    assertThat(executor.isSignalJanitorRunning()).isFalse();
                 });
     }
 

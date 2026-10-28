@@ -137,6 +137,8 @@ public final class WorkflowExecutor {
     private final AtomicReference<RecoveryPoller> recoveryPoller = new AtomicReference<>();
     private final AtomicBoolean timerPollerStarted = new AtomicBoolean(false);
     private final AtomicBoolean recoveryPollerStarted = new AtomicBoolean(false);
+    private final AtomicReference<SignalJanitor> signalJanitor = new AtomicReference<>();
+    private volatile @Nullable SignalJanitorSettings signalJanitorSettings;
 
     /**
      * Creates a new workflow executor with the default lock key prefix
@@ -1096,6 +1098,56 @@ public final class WorkflowExecutor {
         recoveryPollerStarted.set(true);
     }
 
+    // ── Signal janitor ──────────────────────────────────────────────────
+
+    /**
+     * The settings a signal janitor was started with — see
+     * {@link #startSignalJanitor(Duration, Duration)}.
+     *
+     * @param interval  time between sweeps
+     * @param retention how long after a workflow reached {@code COMPLETED} or
+     *                  {@code TERMINATED} its unconsumed signals are kept
+     */
+    public record SignalJanitorSettings(Duration interval, Duration retention) {
+    }
+
+    /**
+     * Starts the background signal janitor.
+     *
+     * <p>Every {@code interval} the janitor purges the unconsumed signals of
+     * workflows that reached {@code COMPLETED} or {@code TERMINATED} more than
+     * {@code retention} ago, via
+     * {@link WorkflowStore#deleteUnconsumedSignalsForTerminalInstancesBefore(Instant)}
+     * (see its Javadoc for what survives — notably {@code FAILED} workflows,
+     * which may still be retried). Every node runs one; the delete is
+     * idempotent, so no leader election is involved. A store failure is
+     * logged and retried on the next interval. {@link #shutdown()} stops it.
+     *
+     * <p>If this method is never called, nothing is purged. The Spring Boot
+     * starter calls it automatically ({@code maestro.signal.janitor-interval},
+     * {@code maestro.signal.terminal-retention}).
+     *
+     * @param interval  time between sweeps; must be positive
+     * @param retention how long after a workflow finished its unconsumed
+     *                  signals are kept; must be positive
+     * @throws IllegalArgumentException if either duration is {@code null},
+     *                                  zero or negative
+     * @throws IllegalStateException    if the janitor is already started or
+     *                                  the executor is shutting down
+     */
+    public void startSignalJanitor(Duration interval, Duration retention) {
+        if (shuttingDown.get()) {
+            throw new IllegalStateException(
+                    "WorkflowExecutor is shutting down — cannot start signal janitor");
+        }
+        var janitor = new SignalJanitor(store, interval, retention);
+        if (!signalJanitor.compareAndSet(null, janitor)) {
+            throw new IllegalStateException("Signal janitor already started");
+        }
+        signalJanitorSettings = new SignalJanitorSettings(interval, retention);
+        janitor.start();
+    }
+
     // ── Shutdown ───────────────────────────────────────────────────────
 
     /**
@@ -1147,6 +1199,10 @@ public final class WorkflowExecutor {
         var recovery = recoveryPoller.getAndSet(null);
         if (recovery != null) {
             recovery.stop();
+        }
+        var janitor = signalJanitor.getAndSet(null);
+        if (janitor != null) {
+            janitor.stop();
         }
 
         logger.info("Shutting down WorkflowExecutor, {} workflow(s) in-flight",
@@ -1343,6 +1399,34 @@ public final class WorkflowExecutor {
      */
     public boolean hasRecoveryPollerStarted() {
         return recoveryPollerStarted.get();
+    }
+
+    /**
+     * Returns whether the background signal janitor is currently running on
+     * this executor.
+     *
+     * @return {@code true} if {@link #startSignalJanitor(Duration, Duration)}
+     *         has been called and the janitor has not since stopped (e.g. via
+     *         {@link #shutdown()})
+     */
+    public boolean isSignalJanitorRunning() {
+        var janitor = signalJanitor.get();
+        return janitor != null && janitor.isRunning();
+    }
+
+    /**
+     * Returns the settings the signal janitor was started with.
+     *
+     * <p>Lets a caller (such as the Spring Boot starter's configuration tests)
+     * verify which interval and retention actually reached the engine. The
+     * value is retained after {@link #shutdown()} stops the janitor.
+     *
+     * @return the settings passed to
+     *         {@link #startSignalJanitor(Duration, Duration)}, or {@code null}
+     *         if it has never been called successfully
+     */
+    public @Nullable SignalJanitorSettings signalJanitorSettings() {
+        return signalJanitorSettings;
     }
 
     // ── Internal: workflow launch ──────────────────────────────────────

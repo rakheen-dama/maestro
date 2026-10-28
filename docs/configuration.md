@@ -384,10 +384,17 @@ per-instance distributed lock guarantees only one of them wins each workflow.
 |----------------------------------------|------------|---------|------------------------------------------------------------------------------------------------------------------|
 | `maestro.shutdown.timeout`            | `Duration` | `30s`   | How long graceful shutdown waits for in-flight workflows to drain before forcing through. |
 | `maestro.signal.wake-recheck-interval`| `Duration` | `30s`   | How often a parked workflow re-reads the store for a wake it may have missed — a signal ingested elsewhere, or a timer fired/cancelled by a remote timer-poller leader. |
+| `maestro.signal.janitor-interval`     | `Duration` | `1h`    | How often unconsumed signals addressed to finished workflows are purged. Every node runs the janitor (the purge is idempotent; no leader election). |
+| `maestro.signal.terminal-retention`   | `Duration` | `7d`    | How long after a workflow reaches `COMPLETED`/`TERMINATED` its unconsumed signals are kept; `FAILED` workflows keep theirs because they can be retried. Orphaned (pre-delivery) and consumed signals are never purged by the janitor. |
 
-Both were previously hardcoded 30-second constants with no configuration
-seam; they now bind under `maestro.*` like every other property, with the
-same 30s defaults, so unset deployments are unaffected.
+The first two were previously hardcoded 30-second constants with no
+configuration seam; they now bind under `maestro.*` like every other property,
+with the same 30s defaults, so unset deployments are unaffected.
+
+Since migration `V5`, a signal's `received_at` — the order in which same-name
+signals are consumed — is assigned by the database clock (`DEFAULT now()`), not
+by the JVM clock of the node that ingested it, so clock skew between nodes can
+no longer reorder signals.
 
 `maestro.signal.wake-recheck-interval` is a real operational knob, not just a
 test seam: it bounds cross-node signal latency for any deployment running

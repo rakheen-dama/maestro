@@ -321,6 +321,11 @@ class VersionedInMemoryStore implements WorkflowStore {
         }
     }
 
+    @Override
+    public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+        return 0;
+    }
+
     /** @return every signal row ever saved, oldest first */
     List<WorkflowSignal> allSignals() {
         return List.copyOf(signals);

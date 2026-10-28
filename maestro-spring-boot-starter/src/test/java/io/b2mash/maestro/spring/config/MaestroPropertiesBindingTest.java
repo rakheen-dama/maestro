@@ -102,7 +102,9 @@ class MaestroPropertiesBindingTest {
                         "maestro.admin.events.enabled=false",
                         "maestro.admin.events.topic=custom.admin",
                         "maestro.shutdown.timeout=15s",
-                        "maestro.signal.wake-recheck-interval=5s")
+                        "maestro.signal.wake-recheck-interval=5s",
+                        "maestro.signal.janitor-interval=2h",
+                        "maestro.signal.terminal-retention=3d")
                 .run(context -> {
                     var properties = context.getBean(MaestroProperties.class);
                     assertThat(properties.getStore().tablePrefix()).isEqualTo("custom_");
@@ -118,6 +120,8 @@ class MaestroPropertiesBindingTest {
                     assertThat(properties.getAdmin().events().topic()).isEqualTo("custom.admin");
                     assertThat(properties.getShutdown().timeout()).isEqualTo(Duration.ofSeconds(15));
                     assertThat(properties.getSignal().wakeRecheckInterval()).isEqualTo(Duration.ofSeconds(5));
+                    assertThat(properties.getSignal().janitorInterval()).isEqualTo(Duration.ofHours(2));
+                    assertThat(properties.getSignal().terminalRetention()).isEqualTo(Duration.ofDays(3));
                 });
     }
 
@@ -163,6 +167,8 @@ class MaestroPropertiesBindingTest {
             assertThat(properties.getAdmin().events().topic()).isEqualTo("maestro.admin.events");
             assertThat(properties.getShutdown().timeout()).isEqualTo(Duration.ofSeconds(30));
             assertThat(properties.getSignal().wakeRecheckInterval()).isEqualTo(Duration.ofSeconds(30));
+            assertThat(properties.getSignal().janitorInterval()).isEqualTo(Duration.ofHours(1));
+            assertThat(properties.getSignal().terminalRetention()).isEqualTo(Duration.ofDays(7));
             assertThat(properties.getObservability().metrics().enabled()).isTrue();
             assertThat(properties.getObservability().tracing().enabled()).isTrue();
         });

@@ -607,6 +607,19 @@ smoke test that never delivers a signal.
 Default-prefix deployments need no action: Flyway applies `V4` at startup like
 `V1`–`V3`.
 
+A later change adds **`V5__signal_received_at_default.sql`**: the signal row's
+`received_at` is now assigned by the database clock, and `saveSignal` omits the
+column from its `INSERT`.
+
+```sql
+ALTER TABLE <your_prefix>workflow_signal ALTER COLUMN received_at SET DEFAULT now();
+```
+
+**Apply it before starting a node on this version**, for the same reason as
+`V4`: `received_at` is `NOT NULL`, so without the default every signal insert
+fails inside the transport listener and the signal is dead-lettered.
+Default-prefix deployments need no action.
+
 ### 10.7 Replay drift: `nondeterministic_history`
 
 **What it means.** Recovery replays the workflow method against the current

@@ -12,10 +12,12 @@ import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -396,6 +398,93 @@ class InMemoryWorkflowStoreTest {
     @Test
     void markSignalConsumedUnknownIdReturnsFalse() {
         assertFalse(store.markSignalConsumed(UUID.randomUUID()));
+    }
+
+    // ── Signal janitor delete (C14b) ─────────────────────────────────────
+
+    /**
+     * {@link InMemoryWorkflowStore#deleteUnconsumedSignalsForTerminalInstancesBefore}:
+     * one instance per {@link WorkflowStatus}, each completed 10 days ago with
+     * one unconsumed signal; a consumed signal on the COMPLETED instance; an
+     * orphan signal; and a COMPLETED instance completed 1 day ago. The cutoff
+     * is 7 days ago, so exactly the old COMPLETED and TERMINATED unconsumed
+     * signals qualify.
+     */
+    @Nested
+    class SignalJanitorDeleteTests {
+
+        private final Instant now = Instant.now();
+        private final Instant cutoff = now.minus(Duration.ofDays(7));
+        private final String orphanWorkflowId = "wf-orphan";
+        private final String recentCompletedId = "wf-recent-completed";
+        private UUID consumedSignalId;
+
+        @BeforeEach
+        void fixture() {
+            for (var status : WorkflowStatus.values()) {
+                var instance = store.createInstance(buildInstance(idFor(status), status).toBuilder()
+                        .completedAt(now.minus(Duration.ofDays(10)))
+                        .build());
+                store.saveSignal(signal(instance.workflowId(), instance.id(), false));
+            }
+            var completed = store.getInstance(idFor(WorkflowStatus.COMPLETED)).orElseThrow();
+            var consumed = signal(completed.workflowId(), completed.id(), true);
+            consumedSignalId = consumed.id();
+            store.saveSignal(consumed);
+
+            store.saveSignal(signal(orphanWorkflowId, null, false));
+
+            var recent = store.createInstance(buildInstance(recentCompletedId, WorkflowStatus.COMPLETED).toBuilder()
+                    .completedAt(now.minus(Duration.ofDays(1)))
+                    .build());
+            store.saveSignal(signal(recentCompletedId, recent.id(), false));
+        }
+
+        @Test
+        void deleteUnconsumedSignals_deletesCompletedAndTerminatedOlderThanCutoff() {
+            assertEquals(2, store.deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff));
+            assertEquals(0, unconsumed(idFor(WorkflowStatus.COMPLETED)));
+            assertEquals(0, unconsumed(idFor(WorkflowStatus.TERMINATED)));
+        }
+
+        @Test
+        void deleteUnconsumedSignals_keepsSignalsOfFailedInstances() {
+            store.deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff);
+            assertEquals(1, store.getUnconsumedSignals(idFor(WorkflowStatus.FAILED), "s").size(),
+                    "a FAILED workflow may be retried and consume its signals (Issue 19)");
+        }
+
+        @Test
+        void deleteUnconsumedSignals_keepsActiveNewerConsumedAndOrphanSignals() {
+            store.deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff);
+            for (var status : WorkflowStatus.values()) {
+                if (status.isActive()) {
+                    assertEquals(1, unconsumed(idFor(status)), status + " signal must survive");
+                }
+            }
+            assertEquals(1, unconsumed(recentCompletedId));
+            assertTrue(store.getAllSignals().stream().anyMatch(s -> s.id().equals(consumedSignalId)),
+                    "consumed rows are out of the janitor's scope");
+            assertEquals(1, unconsumed(orphanWorkflowId));
+        }
+
+        @Test
+        void deleteUnconsumedSignals_isIdempotent() {
+            store.deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff);
+            assertEquals(0, store.deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff));
+        }
+
+        private static String idFor(WorkflowStatus status) {
+            return "wf-" + status.name().toLowerCase();
+        }
+
+        private int unconsumed(String workflowId) {
+            return store.getUnconsumedSignals(workflowId, "s").size();
+        }
+
+        private WorkflowSignal signal(String workflowId, UUID instanceId, boolean consumed) {
+            return new WorkflowSignal(UUID.randomUUID(), instanceId, workflowId, "s", null, consumed, Instant.now());
+        }
     }
 
     // ── trace_context (design §4.3(b), RULING 2) ─────────────────────────
