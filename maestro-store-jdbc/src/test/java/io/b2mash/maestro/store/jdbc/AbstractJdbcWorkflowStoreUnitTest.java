@@ -72,16 +72,7 @@ class AbstractJdbcWorkflowStoreUnitTest {
     }
 
     @Test
-    @DisplayName("tableName() prefixes with the configured table prefix")
-    void tableName_usesConfiguredPrefix() {
-        var store = new TestStore(neverUsedDataSource,
-                new JdbcStoreConfiguration("custom_", mapper));
-
-        assertEquals("custom_workflow_instance", store.tableName("workflow_instance"));
-    }
-
-    @Test
-    @DisplayName("tableName() defaults to the 'maestro_' prefix")
+    @DisplayName("tableName() always uses the 'maestro_' prefix")
     void tableName_defaultsToMaestroPrefix() {
         var store = new TestStore(neverUsedDataSource, JdbcStoreConfiguration.withDefaults(mapper));
 
@@ -110,7 +101,7 @@ class AbstractJdbcWorkflowStoreUnitTest {
     void toJsonString_wrapsFailureAsSerializationException() {
         var throwingMapper = new ThrowingObjectMapper();
         var store = new TestStore(neverUsedDataSource,
-                new JdbcStoreConfiguration("maestro_", throwingMapper));
+                new JdbcStoreConfiguration(throwingMapper));
         JsonNode node = JsonNodeFactory.instance.objectNode().put("key", "value");
 
         var ex = assertThrows(SerializationException.class, () -> store.toJsonString(node));

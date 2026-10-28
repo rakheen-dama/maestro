@@ -37,9 +37,10 @@ import javax.sql.DataSource;
  * {@code @ConditionalOnBean(WorkflowStore.class)}, so the store bean
  * definition has to be contributed first or the entire engine backs off.
  *
- * <p>The table prefix is resolved from {@code maestro.store.table-prefix}
- * (default {@code "maestro_"}), matching the Flyway migrations shipped in
- * this module.
+ * <p>Tables are always named {@code maestro_*}, matching the Flyway
+ * migrations shipped in this module. The removed
+ * {@code maestro.store.table-prefix} property fails startup if set; isolate
+ * services with one Postgres schema each instead.
  *
  * @see PostgresWorkflowStore
  * @see MaestroAutoConfiguration
@@ -63,7 +64,6 @@ import javax.sql.DataSource;
 public class PostgresStoreAutoConfiguration {
 
     private static final String TABLE_PREFIX_PROPERTY = "maestro.store.table-prefix";
-    private static final String DEFAULT_TABLE_PREFIX = "maestro_";
 
     @Bean
     @ConditionalOnMissingBean(WorkflowStore.class)
@@ -73,7 +73,13 @@ public class PostgresStoreAutoConfiguration {
         // Environment (not MaestroProperties) on purpose: MaestroProperties is
         // registered by MaestroAutoConfiguration, which evaluates after this
         // auto-configuration and may back off entirely.
-        var tablePrefix = env.getProperty(TABLE_PREFIX_PROPERTY, DEFAULT_TABLE_PREFIX);
-        return new PostgresWorkflowStore(dataSource, new JdbcStoreConfiguration(tablePrefix, objectMapper));
+        if (env.containsProperty(TABLE_PREFIX_PROPERTY)) {
+            throw new IllegalStateException(
+                    "maestro.store.table-prefix has been removed: Maestro tables are always named maestro_*. "
+                            + "To isolate services sharing one database, give each service its own Postgres schema "
+                            + "(JDBC URL ...?currentSchema=<schema> or spring.datasource.hikari.schema=<schema>). "
+                            + "See docs/configuration.md \u00a7 Store Configuration.");
+        }
+        return new PostgresWorkflowStore(dataSource, new JdbcStoreConfiguration(objectMapper));
     }
 }

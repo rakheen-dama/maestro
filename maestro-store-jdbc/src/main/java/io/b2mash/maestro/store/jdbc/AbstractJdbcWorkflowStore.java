@@ -151,7 +151,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * @return the prefixed table name (e.g., {@code "maestro_workflow_instance"})
      */
     protected final String tableName(String suffix) {
-        return config.tablePrefix() + suffix;
+        return JdbcStoreConfiguration.TABLE_PREFIX + suffix;
     }
 
     /**

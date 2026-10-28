@@ -168,6 +168,7 @@ in [`docs/configuration.md` § Valkey Connection Resolution](configuration.md#va
 
 ### Removed
 
+- **`maestro.store.table-prefix`** — startup now fails with a message naming the replacement if the property is set. Reason: it only changed the JDBC store's table names; the Flyway migrations and the lock/messaging SQL always used `maestro_*`, so a custom prefix never worked end to end (spec F6). To isolate services sharing a database, give each service its own Postgres schema (`?currentSchema=<schema>` or `spring.datasource.hikari.schema`). `StoreProperties` and `JdbcStoreConfiguration` lose their prefix component; `JdbcStoreConfiguration.TABLE_PREFIX` is the fixed `maestro_`.
 - **RabbitMQ messaging support has been removed** — the `maestro-messaging-rabbitmq`
   module and the `sample-rabbitmq-order-service` sample are deleted. Nothing has
   been published under this artifact yet, so this is a deletion, not a

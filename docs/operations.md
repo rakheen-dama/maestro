@@ -609,47 +609,9 @@ by a newer node; skipping this instance so the rest of this query, and any
 recovery pass it feeds, still completes
 ```
 
-### 10.6 Schema migrations and a custom `table-prefix`
+### 10.6 Schema migrations
 
-Maestro's Flyway migrations hardcode the `maestro_` table prefix. `V1` says so
-in its header, and the consequence is that a deployment configuring
-`maestro.store.table-prefix` to anything else runs on **hand-maintained
-migrations** and does not receive new ones automatically. That is a supported
-configuration — `docs/cross-service.md` recommends a unique prefix per service
-— so new migrations are an upgrade step for those deployments.
-
-This cycle adds one: **`V4__signal_trace_context.sql`**, a nullable
-`trace_context VARCHAR(128)` column on `maestro_workflow_signal`.
-
-```sql
-ALTER TABLE <your_prefix>workflow_signal ADD COLUMN trace_context VARCHAR(128);
-```
-
-**Apply it before starting a node on this version.** The column is not
-optional at runtime even with tracing switched off:
-`AbstractJdbcWorkflowStore` names `trace_context` unconditionally in the signal
-`INSERT` and `SELECT`, with no feature detection and no fallback. Against a
-signal table without the column, `saveSignal` throws — inside the transport
-listener, so the record is never acked, bounded redelivery exhausts, and the
-signal is **dead-lettered**. The symptom is lost signals and a rising
-dead-letter count, not a failure at startup, so it will not be caught by a
-smoke test that never delivers a signal.
-
-Default-prefix deployments need no action: Flyway applies `V4` at startup like
-`V1`–`V3`.
-
-A later change adds **`V5__signal_received_at_default.sql`**: the signal row's
-`received_at` is now assigned by the database clock, and `saveSignal` omits the
-column from its `INSERT`.
-
-```sql
-ALTER TABLE <your_prefix>workflow_signal ALTER COLUMN received_at SET DEFAULT now();
-```
-
-**Apply it before starting a node on this version**, for the same reason as
-`V4`: `received_at` is `NOT NULL`, so without the default every signal insert
-fails inside the transport listener and the signal is dead-lettered.
-Default-prefix deployments need no action.
+Maestro's migrations always target `maestro_*` tables and are applied by Maestro itself at startup in the connection's current schema, so upgrades need no manual SQL. The former custom-prefix mode (`maestro.store.table-prefix`) is gone; to isolate services sharing a database, give each its own Postgres schema (see `docs/configuration.md` § Store Configuration).
 
 ### 10.7 Replay drift: `nondeterministic_history`
 

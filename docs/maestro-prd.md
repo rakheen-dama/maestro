@@ -388,7 +388,6 @@ maestro:
 
   store:
     type: postgres
-    table-prefix: maestro_
     schema: maestro
 
   messaging:

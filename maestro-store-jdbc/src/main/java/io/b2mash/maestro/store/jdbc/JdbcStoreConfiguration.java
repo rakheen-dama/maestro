@@ -7,32 +7,34 @@ import java.util.Objects;
 /**
  * Configuration for {@link AbstractJdbcWorkflowStore}.
  *
- * <p>Bundles the table prefix and Jackson {@link ObjectMapper} needed by
- * the JDBC store. Immutable after construction.
+ * <p>Bundles the Jackson {@link ObjectMapper} needed by the JDBC store.
+ * Immutable after construction. Maestro tables are always named
+ * {@value #TABLE_PREFIX}{@code *}; to isolate services sharing a database,
+ * give each its own Postgres schema (JDBC {@code currentSchema}).
  *
- * @param tablePrefix  prefix for all Maestro database tables (e.g., {@code "maestro_"})
  * @param objectMapper Jackson 3 {@link ObjectMapper} for JSON serialization
  */
 public record JdbcStoreConfiguration(
-        String tablePrefix,
         ObjectMapper objectMapper
 ) {
 
+    /** Fixed prefix of every Maestro table name. */
+    public static final String TABLE_PREFIX = "maestro_";
+
     /**
-     * Validates that neither parameter is {@code null}.
+     * Validates that the mapper is not {@code null}.
      */
     public JdbcStoreConfiguration {
-        Objects.requireNonNull(tablePrefix, "tablePrefix");
         Objects.requireNonNull(objectMapper, "objectMapper");
     }
 
     /**
-     * Creates a configuration with the default {@code "maestro_"} table prefix.
+     * Creates a configuration for the given mapper.
      *
      * @param objectMapper Jackson 3 {@link ObjectMapper}
-     * @return a new configuration with default prefix
+     * @return a new configuration
      */
     public static JdbcStoreConfiguration withDefaults(ObjectMapper objectMapper) {
-        return new JdbcStoreConfiguration("maestro_", objectMapper);
+        return new JdbcStoreConfiguration(objectMapper);
     }
 }

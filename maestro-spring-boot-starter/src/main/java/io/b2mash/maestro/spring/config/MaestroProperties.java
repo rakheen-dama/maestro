@@ -204,16 +204,14 @@ public class MaestroProperties {
      * <p>Tables live in the connection's default schema; use the JDBC URL's
      * {@code currentSchema} parameter to relocate them.
      *
-     * @param type        store implementation type (e.g., {@code "postgres"})
-     * @param tablePrefix prefix for database tables
+     * @param type store implementation type (e.g., {@code "postgres"})
      */
     public record StoreProperties(
-            @DefaultValue("postgres") String type,
-            @DefaultValue("maestro_") String tablePrefix
+            @DefaultValue("postgres") String type
     ) {
         /** @return the defaults documented above */
         public static StoreProperties defaults() {
-            return new StoreProperties("postgres", "maestro_");
+            return new StoreProperties("postgres");
         }
     }
 

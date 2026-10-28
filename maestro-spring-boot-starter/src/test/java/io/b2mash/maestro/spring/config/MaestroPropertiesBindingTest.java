@@ -90,7 +90,6 @@ class MaestroPropertiesBindingTest {
     void remainingBlocksBind() {
         runner.withPropertyValues(
                         "maestro.service-name=binding-test",
-                        "maestro.store.table-prefix=custom_",
                         "maestro.lock.type=postgres",
                         "maestro.lock.key-prefix=custom:lock:",
                         "maestro.lock.ttl=45s",
@@ -107,7 +106,6 @@ class MaestroPropertiesBindingTest {
                         "maestro.signal.terminal-retention=3d")
                 .run(context -> {
                     var properties = context.getBean(MaestroProperties.class);
-                    assertThat(properties.getStore().tablePrefix()).isEqualTo("custom_");
                     assertThat(properties.getLock().type()).isEqualTo("postgres");
                     assertThat(properties.getLock().keyPrefix()).isEqualTo("custom:lock:");
                     assertThat(properties.getLock().ttl()).isEqualTo(Duration.ofSeconds(45));
@@ -145,7 +143,6 @@ class MaestroPropertiesBindingTest {
         runner.withPropertyValues("maestro.service-name=binding-test").run(context -> {
             var properties = context.getBean(MaestroProperties.class);
             assertThat(properties.getStore().type()).isEqualTo("postgres");
-            assertThat(properties.getStore().tablePrefix()).isEqualTo("maestro_");
             assertThat(properties.getMessaging().type()).isEqualTo("kafka");
             assertThat(properties.getMessaging().consumerGroup()).isNull();
             assertThat(properties.getMessaging().topics().tasks()).isNull();

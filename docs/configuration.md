@@ -44,23 +44,8 @@ Properties under `maestro.store.*` control the workflow persistence layer.
 | Property                   | Type     | Default     | Description                                                                                              |
 |----------------------------|----------|-------------|----------------------------------------------------------------------------------------------------------|
 | `maestro.store.type`       | `String` | `"postgres"`| Store implementation type. Currently only `postgres` is supported.                                       |
-| `maestro.store.table-prefix`| `String`| `"maestro_"`| Prefix applied to all database table names (e.g., `maestro_workflow_instance`, `maestro_workflow_event`). |
 
-The table prefix lets you run multiple Maestro instances in the same database by
-giving each a unique prefix. To target a non-default PostgreSQL schema, set it
-on the JDBC connection (e.g. `currentSchema` in the datasource URL) — Maestro
-does not manage schemas itself.
-
-> **A custom prefix means you own the schema, including every future
-> migration.** Maestro's shipped Flyway migrations hardcode `maestro_`, so
-> changing this property means Maestro's own migrations no longer apply to your
-> tables and you maintain equivalents yourself — for new releases as well as the
-> initial schema. The store issues the same SQL either way, so a column Maestro
-> adds and then uses is required, not optional: this release adds
-> `trace_context VARCHAR(128)` to `<prefix>workflow_signal`, and without it
-> `saveSignal` fails inside the transport listener and the signal is eventually
-> dead-lettered. See [`docs/operations.md` §10.6](operations.md#106-schema-migrations-and-a-custom-table-prefix)
-> and the release notes' Database Migrations section before upgrading.
+**Isolating services that share a database.** Maestro's tables are always named `maestro_*`. Two services must never share a `maestro_workflow_instance` table, so give each service its own Postgres schema and point its datasource at it — `jdbc:postgresql://host/db?currentSchema=order_service` or `spring.datasource.hikari.schema: order_service`. Maestro's migrations (see [Schema management](#schema-management)) run in the connection's current schema, so no further configuration is needed. `maestro.store.table-prefix` was removed; setting it fails startup.
 
 ---
 
@@ -552,7 +537,6 @@ maestro:
   service-name: order-service
   store:
     type: postgres
-    table-prefix: maestro_
   messaging:
     type: kafka
     topics:

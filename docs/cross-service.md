@@ -484,10 +484,7 @@ auto-creation. Include topic creation in your infrastructure-as-code alongside
 database migrations and Valkey configuration. See
 [Topic Pre-Creation](#topic-pre-creation) above.
 
-**Give each service its own Postgres schema.** At minimum, use a unique
-`maestro.store.table-prefix` per service. This prevents workflow ID collisions,
-keeps event tables smaller, and allows independent backup and migration
-schedules. Two services should never share a `maestro_workflow_instance` table.
+**Give each service its own Postgres schema.** Set `currentSchema` in the JDBC URL (or `spring.datasource.hikari.schema`) so each service's `maestro_*` tables live apart. This prevents workflow ID collisions, keeps event tables smaller, and allows independent backup and migration schedules. Two services should never share a `maestro_workflow_instance` table.
 
 **Design for signal reordering.** Signals may arrive in any order relative to
 the workflow's execution progress. Maestro handles this correctly -- signals
