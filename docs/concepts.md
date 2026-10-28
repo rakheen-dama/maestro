@@ -199,6 +199,8 @@ Because the engine replays the workflow method during crash recovery, any non-de
 
 Editing the workflow method itself is the other way to break replay -- an in-flight instance resumes into code that no longer matches what it recorded. Gate the change with [`workflow.version()`](#versioning-workflow-code).
 
+Since this release the engine checks the recorded step name on every replayed step: a renamed, removed or reordered activity no longer silently replays another step's payload — the run stands down with `StandDownReason.NONDETERMINISTIC_HISTORY` (metric tag `nondeterministic_history`), nothing is written, the `maestro.standdown` meter increments and the WARN names the expected and recorded step. Gate such edits behind `workflow.version()` (below).
+
 ```java
 @WorkflowMethod
 public OrderResult fulfil(OrderInput input) {
@@ -249,6 +251,8 @@ try {
     return OrderResult.failed("Payment timed out");
 }
 ```
+
+The timeout is durable: it is a timer row in `maestro_workflow_timer`, so a crash does not restart the clock, and in tests advancing the test clock just past the timeout (`env.advanceTime(timeout.plusSeconds(1))`) fires it deterministically — see docs/testing.md.
 
 ### Collecting multiple signals
 
@@ -315,7 +319,7 @@ Left uncaught, `TimerCancelledException` propagates like any other exception: sa
 
 Cancellation is arbitrated the same way firing is: a compare-and-set on the timer row (`PENDING -> CANCELLED`). `cancelTimer` returns `true` if it won the race, `false` if the timer had already fired or was already cancelled -- the caller is told, rather than left to guess.
 
-`awaitSignal(name, timeout)` creates a durable timer row (`await-signal-<seq>`) when it has to park; the timer poller fires it like any `sleep()` timer, `cancelTimer` on it ends the wait with `SignalTimeoutException`, and `TestWorkflowEnvironment.advanceTime()` fires it.
+`awaitSignal(name, timeout)` arms a durable timer row for its timeout (timer ID `await-signal-<seq>`, where `seq` is the sequence the await allocated), so the deadline survives restarts and is honoured from the original arming time. `cancelTimer` does reach it: a cancelled await timer ends the await with `SignalTimeoutException` on its next wake, because the timer row is the arbiter and a non-`PENDING` row means the deadline is spent.
 
 ---
 

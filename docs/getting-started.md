@@ -43,6 +43,7 @@ repositories {
 
 dependencies {
     // Maestro
+    implementation(platform("io.b2mash.maestro:maestro-bom:<version>"))
     implementation("io.b2mash.maestro:maestro-spring-boot-starter")
     implementation("io.b2mash.maestro:maestro-store-postgres")
     implementation("io.b2mash.maestro:maestro-messaging-kafka")
@@ -57,6 +58,8 @@ dependencies {
     testImplementation("org.springframework.boot:spring-boot-starter-test")
 }
 ```
+
+Replace `<version>` with the Maestro release you are adopting (`gradle.properties` on `main` holds the snapshot under development). Nothing is published to Maven Central yet; build and `publishToMavenLocal` from source.
 
 Create your main application class:
 

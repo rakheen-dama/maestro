@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added — maestro-bom platform
+
+- New published platform `io.b2mash.maestro:maestro-bom` constrains `maestro-core`, `maestro-spring-boot-starter`, `maestro-store-jdbc`, `maestro-store-postgres`, `maestro-messaging-kafka`, `maestro-messaging-postgres`, `maestro-lock-valkey`, `maestro-lock-postgres`, `maestro-admin-client` and `maestro-test` to one version. Import it with `implementation(platform("io.b2mash.maestro:maestro-bom:<version>"))` and declare the modules without versions. README, CONTRIBUTING and getting-started now show the BOM and the real build/test commands (`:maestro-integration-tests:test` / `:e2eTest`, `:maestro-store-postgres:test`; there is no `integrationTest` task), and the README's competitive table was rewritten.
+
 ### Changed — WorkflowContext.nextSequence/setSequence/setReplaying are no longer public (F12)
 
 - **Before:** the engine's sequence and replay mutators were `public` on the user-facing `WorkflowContext`, so they showed up in `workflow.` autocomplete where calling one silently corrupts replay (the only guard was a Javadoc "do not call").

@@ -232,7 +232,7 @@ while auditing the same Kafka path, is **now resolved** too — see its
 section. Three more (25, 26, 27), found by the open-issues cycle's own
 inert-config audit (`tasks/audit-2026-08-05-inert-config.md`), by a deferred
 item from the demo cycle, and by an external review of PR #34 respectively,
-are filed **open** — see their sections.
+are filed **open** — see their sections. Issue 25 (`maestro.worker.*` inert) is **now resolved** — implemented, see its section.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
