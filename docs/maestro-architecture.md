@@ -463,8 +463,8 @@ All topics are pre-created and declared in `application.yml`.
 
 Consumer group per service: `maestro-{serviceName}`.
 
-A dead-letter topic is required for every topic Maestro *consumes* — the task
-topics, the signal topics, and each `@MaestroSignalListener` topic — and is
+A dead-letter topic is required for every topic Maestro *consumes* — the signal
+topics and each `@MaestroSignalListener` topic — and is
 declared by the operator like every other topic; Maestro auto-creates none. If
 one is missing, the exhausted record cannot be published, the offset is not
 committed and consumption stalls noisily rather than dropping the message. The

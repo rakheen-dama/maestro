@@ -81,7 +81,8 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * Creates a new JDBC workflow store.
      *
      * @param dataSource the JDBC data source (expected to be a connection pool)
-     * @param config     store configuration (table prefix, Jackson ObjectMapper)
+     * @param config     store configuration (the Jackson ObjectMapper; table names are
+     *                   always {@code maestro_*})
      */
     protected AbstractJdbcWorkflowStore(DataSource dataSource, JdbcStoreConfiguration config) {
         this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
@@ -145,10 +146,11 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     // ── Protected utilities ───────────────────────────────────────────────
 
     /**
-     * Returns the fully qualified table name with the configured prefix.
+     * Returns the table name for {@code suffix} — always prefixed
+     * {@value JdbcStoreConfiguration#TABLE_PREFIX}; the prefix is not configurable.
      *
      * @param suffix the table name suffix (e.g., {@code "workflow_instance"})
-     * @return the prefixed table name (e.g., {@code "maestro_workflow_instance"})
+     * @return the table name (e.g., {@code "maestro_workflow_instance"})
      */
     protected final String tableName(String suffix) {
         return JdbcStoreConfiguration.TABLE_PREFIX + suffix;
@@ -566,9 +568,9 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      *
      * <p>The {@code INSERT} omits {@code received_at}, so the column's
      * {@code DEFAULT now()} (migration V5) assigns it from the database clock;
-     * the caller's {@link WorkflowSignal#receivedAt()} is ignored. A store with
-     * a custom table prefix must carry an equivalent default on its signal
-     * table, or the {@code NOT NULL} column rejects the insert.
+     * the caller's {@link WorkflowSignal#receivedAt()} is ignored. A database
+     * whose schema is managed by hand ({@code maestro.store.schema.mode: none})
+     * must have V5 applied, or the {@code NOT NULL} column rejects the insert.
      */
     @Override
     public void saveSignal(WorkflowSignal signal) {

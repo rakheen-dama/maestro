@@ -2187,7 +2187,7 @@ stall.
 
 ### Issue 25 — `maestro.worker.*` is documented but wholly unimplemented {#issue-25}
 
-> **Resolved.** Implemented as per-node `Semaphore`s in `TaskQueueGovernor` (maestro-core), bound from `maestro.worker.task-queues` by `MaestroAutoConfiguration`. Commit "feat(core): per-task-queue workflow and activity concurrency via TaskQueueGovernor (F8, Issue 25)". Pinned by `WorkflowExecutorConcurrencyTest`, `MaestroAutoConfigurationConfigSeamsTest.workerConcurrencyReachesTheGovernor`, `TaskQueueConcurrencyIT`.
+> **Resolved.** Implemented as per-node `Semaphore`s in `TaskQueueGovernor` (maestro-core), bound from `maestro.worker.task-queues` by `MaestroAutoConfiguration`. Commit `4aaeaa0` ("feat(core): per-task-queue workflow and activity concurrency via TaskQueueGovernor (F8, Issue 25)"), fixed by `1374d88` (activity-slot waiters stand down on shutdown; corrected `parallel()` slot docs) and `85b6cc0` (two `parallel()` branches waking at once no longer wedge their run, R49). Pinned by `TaskQueueGovernorTest`, `WorkflowExecutorConcurrencyTest`, `MaestroAutoConfigurationConfigSeamsTest.workerConcurrencyReachesTheGovernor`, `TaskQueueConcurrencyIT`.
 
 **Kind:** Library gap — an entire documented configuration section binds and
 does nothing. **Severity:** Medium. Nobody loses data, but every operator who

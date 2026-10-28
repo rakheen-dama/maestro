@@ -32,7 +32,7 @@ public final class WorkflowContextInternals {
      * @return the next sequence number (1-based: first call returns 1)
      * @throws io.b2mash.maestro.core.exception.BranchSequenceExhaustedException
      *         if {@code ctx} is a bounded branch context whose block is full
-     * @see WorkflowContext#bounded
+     * @see WorkflowContext#bounded(WorkflowContext, int, int, int, io.b2mash.maestro.core.engine.WorkflowOperations)
      */
     public static int nextSequence(WorkflowContext ctx) {
         return ctx.nextSequence();

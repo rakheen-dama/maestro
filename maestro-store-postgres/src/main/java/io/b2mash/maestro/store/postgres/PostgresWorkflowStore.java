@@ -37,14 +37,16 @@ public final class PostgresWorkflowStore extends AbstractJdbcWorkflowStore {
      * Creates a Postgres workflow store with full configuration.
      *
      * @param dataSource the JDBC data source (typically a HikariCP pool)
-     * @param config     store configuration (table prefix, ObjectMapper)
+     * @param config     store configuration (the ObjectMapper; table names are always
+     *                   {@code maestro_*})
      */
     public PostgresWorkflowStore(DataSource dataSource, JdbcStoreConfiguration config) {
         super(dataSource, config);
     }
 
     /**
-     * Creates a Postgres workflow store with the default {@code "maestro_"} table prefix.
+     * Creates a Postgres workflow store from a Jackson mapper alone. Tables are
+     * always prefixed {@code "maestro_"}.
      *
      * @param dataSource   the JDBC data source
      * @param objectMapper Jackson 3 {@link ObjectMapper} for JSON serialization

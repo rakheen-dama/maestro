@@ -258,8 +258,9 @@ public final class WorkflowContext {
      * the run reaches every branch — and the counter starts at
      * {@code baseSeq}. The branch may take at most
      * {@code limitExclusive - baseSeq - 1} sequence slots: its
-     * {@link #nextSequence()} throws {@link BranchSequenceExhaustedException}
-     * on the 1000th direct step instead of spilling into the sibling's block.
+     * (package-private) {@code nextSequence()} throws
+     * {@link BranchSequenceExhaustedException} on the 1000th direct step
+     * instead of spilling into the sibling's block.
      *
      * <p><b>Thread safety:</b> the returned context is used by exactly one
      * virtual thread (the branch), which is what makes the bound's
@@ -330,11 +331,12 @@ public final class WorkflowContext {
      * <p>Called once per activity invocation. The returned value is used
      * as the memoization key: {@code (workflowInstanceId, sequence)}.
      *
-     * <p><b>Bounded branch contexts</b> (see {@link #bounded}): the rule is
+     * <p><b>Bounded branch contexts</b> (see
+     * {@link #bounded(WorkflowContext, int, int, int, WorkflowOperations)}): the rule is
      * "the 1000th direct step throws" — if the counter currently stands at
      * {@code limitExclusive - 1} the call throws
      * {@link BranchSequenceExhaustedException} and leaves the counter
-     * untouched. {@link #setSequence(int)} is deliberately not bounded: a
+     * untouched. {@code setSequence(int)} is deliberately not bounded: a
      * nested {@code parallel()} join rebases the counter past the block on
      * purpose, and a rebased counter never equals {@code limitExclusive - 1},
      * so nesting keeps working. The compare-then-increment is not atomic, which
