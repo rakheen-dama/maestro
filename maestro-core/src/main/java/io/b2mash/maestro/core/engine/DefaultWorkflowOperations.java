@@ -423,6 +423,14 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                 // when the chunk ends in a wake or an expiry. A control-flow
                 // Error from the park (shutdown, terminate) propagates without
                 // reacquiring.
+                //
+                // The per-CHUNK give is load-bearing for parallel(): a branch
+                // that woke may take the run's slot back and finish while this
+                // branch stays parked, so the run holds a slot with nothing
+                // executing — bounded only because this loop's next chunk gives
+                // it again. Wrapping the whole loop once instead would make that
+                // over-hold permanent, deadlocking concurrency=1 whenever the
+                // wake depends on another run of the same queue.
                 governor.parked(ctx.workflowId(), () -> {
                     parkingLot.parkWithTimeout(parkKey, wakeRecheckInterval);
                     return null;

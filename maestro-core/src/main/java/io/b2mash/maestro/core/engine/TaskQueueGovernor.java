@@ -10,6 +10,7 @@ import java.util.OptionalInt;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -39,10 +40,18 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *       workflow therefore never starves the queue, and a workflow whose wake
  *       depends on another run of the same queue cannot deadlock it.</li>
  *   <li>A run's slot is tracked by its {@code workflowId}, so every thread of
- *       the run — {@code parallel()} branches included — shares it: while any
- *       branch is parked the run's slot is given back, and the first branch to
- *       wake takes it back for the whole run. Branches that keep executing
- *       meanwhile are bounded by their activity slots only.</li>
+ *       the run — {@code parallel()} branches included — shares the one slot.
+ *       The slot is given back by whichever thread parks while the run holds
+ *       it, and taken back by the first thread whose park chunk ends. So a run
+ *       can briefly hold its slot with no thread executing — e.g. branch 2
+ *       parks (gives), branch 1 parks (nothing to give), branch 1 wakes (takes)
+ *       and finishes, leaving the parent in its join and branch 2 parked — but
+ *       for at most one park chunk ({@code maestro.signal.wake-recheck-interval}),
+ *       because every chunk gives the slot again. Conversely, branches still
+ *       executing while a sibling gave the slot back are bounded only by their
+ *       activity slots. A run never holds more than one slot (no over-limit),
+ *       and the per-chunk give means no wait for a slot can deadlock on a
+ *       parked run.</li>
  * </ul>
  *
  * <h2>Activity slots</h2>
@@ -190,14 +199,30 @@ public final class TaskQueueGovernor {
      * with exactly one {@link #releaseActivitySlot} in a {@code finally}.
      *
      * @param taskQueue the calling run's task queue
+     * @return {@code true} if no slot was free and the call had to wait for
+     *         one — the caller should then re-check whether its run was asked
+     *         to stop meanwhile; {@code false} if a slot was free at once or
+     *         the queue is unbounded
      * @throws ExecutorShutdownException if the waiting thread is interrupted
      *         (the thread's interrupt status is restored)
      */
-    public void acquireActivitySlot(String taskQueue) {
+    public boolean acquireActivitySlot(String taskQueue) {
         var bucket = buckets.get(taskQueue);
-        if (bucket != null) {
-            acquire(bucket.activitySlots(), "an activity slot", taskQueue);
+        if (bucket == null) {
+            return false;
         }
+        var slots = bucket.activitySlots();
+        try {
+            // Timed form, not tryAcquire(): it honours the fair FIFO order
+            // instead of barging past runs already waiting.
+            if (slots.tryAcquire(0, TimeUnit.SECONDS)) {
+                return false;
+            }
+        } catch (InterruptedException e) {
+            throw interrupted("an activity slot", taskQueue);
+        }
+        acquire(slots, "an activity slot", taskQueue);
+        return true;
     }
 
     /**
@@ -265,9 +290,14 @@ public final class TaskQueueGovernor {
         try {
             slots.acquire();
         } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new ExecutorShutdownException(
-                    "interrupted while waiting for " + what + " on queue '" + taskQueue + "'");
+            throw interrupted(what, taskQueue);
         }
+    }
+
+    /** Restores the interrupt status and builds the stop signal for an interrupted wait. */
+    private static ExecutorShutdownException interrupted(String what, String taskQueue) {
+        Thread.currentThread().interrupt();
+        return new ExecutorShutdownException(
+                "interrupted while waiting for " + what + " on queue '" + taskQueue + "'");
     }
 }

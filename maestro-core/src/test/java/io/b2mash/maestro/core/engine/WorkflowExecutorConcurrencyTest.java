@@ -168,6 +168,30 @@ class WorkflowExecutorConcurrencyTest {
         assertFalse(executor.isRunning("wf-queued"));
     }
 
+    @Test
+    void aRunStillWaitingForAnActivitySlotAtShutdownStandsDownRecoverable() throws Exception {
+        executor = new WorkflowExecutor(store, null, null, null, serializer, "node-a",
+                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
+                false, Duration.ofMillis(200), Duration.ofMillis(200), EngineObserver.NOOP,
+                Map.of("orders", new TaskQueueLimits(10, 1)));
+        var activities = proxy();
+        start("wf-holding", "orders", new WorkWorkflow(activities));
+        await().atMost(5, SECONDS).until(() -> started.get() == 1);
+        start("wf-waiting", "orders", new WorkWorkflow(activities));
+        await().during(DURING).atMost(5, SECONDS).until(() -> started.get() == 1); // queued on the activity slot
+
+        executor.shutdown(); // wf-holding overruns the drain; wf-waiting still waits for the slot
+        latch.countDown(); // wf-holding's activity returns and hands the slot over
+
+        awaitStatus("wf-holding", WorkflowStatus.COMPLETED);
+        await().atMost(5, SECONDS).until(() -> !executor.isRunning("wf-waiting"));
+        assertEquals(1, started.get(), "an activity that got its slot only after shutdown began must not run");
+        assertEquals(WorkflowStatus.RUNNING, store.getInstance("wf-waiting").orElseThrow().status(),
+                "the run stays recoverable, not failed");
+        assertEquals(OptionalInt.of(1), executor.taskQueueGovernor().availableActivitySlots("orders"),
+                "the slot it took is given back");
+    }
+
     // ── helpers ────────────────────────────────────────────────────────
 
     private void newExecutor(Map<String, TaskQueueLimits> limits) {

@@ -365,9 +365,19 @@ calls counts against its run's queue.
 
 A run waiting for a slot holds its instance lock (so no other node adopts it)
 but has executed nothing; if the node begins shutting down before a slot frees,
-it stands down and stays recoverable. An activity slot is held from the
+it stands down and stays recoverable. The same goes for a run waiting for an
+activity slot: the activity does not run. An activity slot is held from the
 activity's dedup lock through every retry attempt and backoff to its persisted
 outcome. Every limit must be `>= 1`, and naming a queue twice fails startup.
+
+On a saturated queue, a parked run's periodic re-check (which picks up a
+terminate issued on another node and is the fallback for a missed wake) waits
+for a free slot too, so convergence is bounded by slot availability rather than
+by `maestro.signal.wake-recheck-interval`. An activity that calls
+`startAndWait` on a workflow of its **own** queue can deadlock at
+`concurrency: 1` until the wait times out — the waiting run holds the only
+slot the started workflow needs — so start such workflows asynchronously or
+give them another queue.
 
 **Example:**
 

@@ -1,10 +1,12 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.annotation.Compensate;
+import io.b2mash.maestro.core.context.RunCancellation;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.ActivityExecutionException;
 import io.b2mash.maestro.core.exception.ActivityTimeoutException;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
+import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.SerializationException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
@@ -464,8 +466,21 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         // — blocking while the queue is at its activity-concurrency limit —
         // from here through the lock, every retry attempt and backoff, to the
         // persisted outcome. Replays never reach this method, so never take one.
-        governor.acquireActivitySlot(ctx.taskQueue());
+        var waited = governor.acquireActivitySlot(ctx.taskQueue());
         try {
+            if (waited) {
+                // R47: a run that queued for its slot has not started this
+                // activity, so a stop requested meanwhile — shutdown included,
+                // which is otherwise not checked before an attempt so that
+                // in-flight work drains — stands it down here, before any
+                // side effect. Terminate and stale are checked first thing in
+                // executeLiveHoldingSlot, so only shutdown needs a check here.
+                if (ctx.cancellation().cause() == RunCancellation.Cause.SHUTDOWN) {
+                    throw new ExecutorShutdownException(("Executor is shutting down — activity '%s' of "
+                            + "workflow '%s' got its task-queue slot only after shutdown began; it did not "
+                            + "run and the workflow stays recoverable").formatted(stepName, ctx.workflowId()));
+                }
+            }
             return executeLiveHoldingSlot(method, args, ctx, seq, stepName);
         } finally {
             governor.releaseActivitySlot(ctx.taskQueue());

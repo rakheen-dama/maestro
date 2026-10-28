@@ -14,6 +14,7 @@ import static io.b2mash.maestro.core.engine.TaskQueueGovernor.UNBOUNDED;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -115,6 +116,18 @@ class TaskQueueGovernorTest {
         g.releaseActivitySlot("q");
         assertEquals(OptionalInt.of(1), g.availableActivitySlots("q"));
         assertEquals(OptionalInt.of(5), g.availableWorkflowSlots("q"), "the two pools are independent");
+    }
+
+    @Test
+    void acquireActivitySlotReportsWhetherItHadToWait() throws Exception {
+        var g = new TaskQueueGovernor(Map.of("q", new TaskQueueLimits(1, 1)));
+        assertFalse(g.acquireActivitySlot("q"), "a free slot is taken without waiting");
+        assertFalse(UNBOUNDED.acquireActivitySlot("q"), "an unbounded queue never waits");
+        var waited = new CompletableFuture<Boolean>();
+        var waiter = Thread.ofVirtual().start(() -> waited.complete(g.acquireActivitySlot("q")));
+        await().atMost(5, SECONDS).until(() -> waiter.getState() == Thread.State.WAITING);
+        g.releaseActivitySlot("q");
+        assertTrue(waited.get(5, SECONDS), "the second caller had to wait for the slot");
     }
 
     @Test

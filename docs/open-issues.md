@@ -278,6 +278,8 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [26](#issue-26) | Terminal instance write and terminal event append are two non-transactional writes | Library gap — durability contract | Medium | **Resolved** |
 | [27](#issue-27) | A redelivery status-write failure can let a disabled-redelivery row be reclaimed and reprocessed | Library gap — durability contract | Medium | **Resolved** |
 | [28](#issue-28) | ×1000 sequence partitioning bounds sequential/nested `parallel()` and compensation depth | Structural limitation | Medium | **Open by design** |
+| [29](#issue-29) | Shutdown never interrupts threads blocked waiting for a task-queue slot | Library gap — shutdown latency | Low | Open |
+| [30](#issue-30) | Recovery admission is not gated by task-queue capacity | Library gap — load distribution | Medium | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -2592,6 +2594,66 @@ redesign is chosen:
 followed by a failing step compensates fully on real Postgres, and
 `SequenceSpaceExhaustedException` is either unreachable for realistic depth or
 removed.
+
+---
+
+### Issue 29 — Shutdown never interrupts threads blocked waiting for a task-queue slot {#issue-29}
+
+> **Open.** Filed by the 2026-10-24 bug-fix cycle's review of the Issue 25
+> fix (plan 05 Task 5, ruling R47). Recorded, not fixed, in that cycle.
+
+**Kind:** Library gap — shutdown latency. **Severity:** Low (nothing is
+written or lost; a waiting run either stands down once it gets a slot or dies
+with the JVM).
+
+**What's wrong.** `TaskQueueGovernor.acquireWorkflowSlot` and
+`acquireActivitySlot` block on a `Semaphore`, and `WorkflowExecutor.shutdown()`
+wakes parks (`ParkingLot.shutdown`) and retry backoffs (`RunCancellation`) but
+nothing that waits on those semaphores. A run queued behind
+`maestro.worker.task-queues[].concurrency` / `activity-concurrency` therefore
+keeps waiting until a slot frees; it then stands down (the post-acquire
+cancellation checks in `executeWorkflow` and `ActivityInvocationHandler`), but
+if no slot frees within `maestro.shutdown.timeout` the drain simply times out
+around it. The governor's `InterruptedException → ExecutorShutdownException`
+conversion is unreachable in production — nothing interrupts these threads.
+
+**How to tackle it.** Track the threads currently waiting in the governor
+(per queue) and, on shutdown, interrupt only those — never a thread inside
+user activity code. Their wait then ends at once with the existing
+`ExecutorShutdownException`, which the executor already treats as a
+recoverable stand-down.
+
+**Done when.** A run waiting for a workflow or activity slot at shutdown exits
+within the drain even when no slot ever frees, pinned on the in-memory
+executor.
+
+---
+
+### Issue 30 — Recovery admission is not gated by task-queue capacity {#issue-30}
+
+> **Open.** Filed by the 2026-10-24 bug-fix cycle's review of the Issue 25
+> fix (plan 05 Task 5, ruling R47). Recorded, not fixed, in that cycle.
+
+**Kind:** Library gap — multi-node load distribution. **Severity:** Medium
+(no correctness impact, but a backlog can sit on one busy node while others
+idle).
+
+**What's wrong.** `WorkflowExecutor.recoverWorkflows` (and the recovery
+poller) adopts every recoverable instance it can lock, regardless of
+`maestro.worker.task-queues[].concurrency`. Each adopted run takes the
+instance lock immediately and then queues behind the limit in
+`executeWorkflow`, renewing the lock while it waits. So one node can hoard a
+queue's whole recovery backlog — far more runs than it can execute — while
+other nodes, which would find every instance locked, sit idle.
+
+**How to tackle it.** Gate adoption on capacity: skip (leave for another node
+or a later pass) an instance whose task queue has no free workflow slot on
+this node, e.g. via `TaskQueueGovernor.availableWorkflowSlots`, or reserve the
+slot before taking the instance lock.
+
+**Done when.** With two nodes sharing a store and `concurrency: 1`, a
+recovery backlog of N runs is executed by both nodes rather than queued on the
+first one to poll.
 
 ---
 

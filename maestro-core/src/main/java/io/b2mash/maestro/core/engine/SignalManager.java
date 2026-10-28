@@ -701,6 +701,14 @@ final class SignalManager {
             // and takes one again — blocking if the queue is full — when the
             // chunk ends in a wake or an expiry. A control-flow Error from the
             // park (shutdown, terminate) propagates without reacquiring.
+            //
+            // The per-CHUNK give is load-bearing for parallel(): a branch that
+            // woke may take the run's slot back and finish while a sibling
+            // stays parked, so the run holds a slot with nothing executing —
+            // bounded only because the sibling's next chunk gives it again.
+            // Wrapping the whole await loop once instead would make that
+            // over-hold permanent, deadlocking concurrency=1 whenever a branch
+            // waits on a signal produced by another run of the same queue.
             governor.parked(ctx.workflowId(), () -> {
                 parkingLot.parkWithTimeout(parkKey, chunk);
                 return null;
