@@ -40,7 +40,9 @@ public interface SignalNotifier {
      * is durably persisted, and additionally on a thread of its own that it
      * never awaits, so a misbehaving implementation cannot stall
      * {@code signal()} (Issue 32) — but it would still park one thread per
-     * signal for as long as it blocks. Implementations should rate-limit
+     * signal for as long as it blocks, and once the engine's in-flight cap
+     * (1,000 per node) is reached further notifications are dropped
+     * outright. Implementations should rate-limit
      * their outage logging (for example one {@code WARN} per outage, not one
      * per signal).
      *

@@ -15,6 +15,8 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongSupplier;
 
 /**
  * Valkey/Redis implementation of {@link SignalNotifier} using pub/sub.
@@ -63,8 +65,20 @@ public final class ValkeySignalNotifier extends RedisPubSubAdapter<String, Strin
     private final StatefulRedisConnection<String, String> publishConnection;
     private final ConcurrentHashMap<String, SignalCallback> callbacks = new ConcurrentHashMap<>();
 
-    /** Whether the last publish outcome was a failure — rate-limits outage logging to one WARN. */
+    /**
+     * While publishes keep failing, how often the outage {@code WARN} is
+     * repeated (R58) — so a notifier that never recovers does not go silent
+     * after its first line.
+     */
+    static final Duration FAILURE_WARN_INTERVAL = Duration.ofMinutes(5);
+
+    /** Whether the last publish outcome was a failure — rate-limits outage logging. */
     private final AtomicBoolean publishFailing = new AtomicBoolean();
+
+    /** {@link #nanoClock} reading at the last outage {@code WARN}. */
+    private final AtomicLong lastFailureWarnNanos = new AtomicLong();
+
+    private final LongSupplier nanoClock;
 
     /**
      * Creates a new Valkey signal notifier.
@@ -79,8 +93,22 @@ public final class ValkeySignalNotifier extends RedisPubSubAdapter<String, Strin
             StatefulRedisPubSubConnection<String, String> pubSubConnection,
             StatefulRedisConnection<String, String> publishConnection
     ) {
+        this(pubSubConnection, publishConnection, System::nanoTime);
+    }
+
+    /**
+     * Test seam: as {@link #ValkeySignalNotifier(StatefulRedisPubSubConnection,
+     * StatefulRedisConnection)}, with the monotonic clock that paces the
+     * outage {@code WARN} ({@link #FAILURE_WARN_INTERVAL}).
+     */
+    ValkeySignalNotifier(
+            StatefulRedisPubSubConnection<String, String> pubSubConnection,
+            StatefulRedisConnection<String, String> publishConnection,
+            LongSupplier nanoClock
+    ) {
         this.pubSubConnection = pubSubConnection;
         this.publishConnection = publishConnection;
+        this.nanoClock = nanoClock;
         this.pubSubConnection.addListener(this);
     }
 
@@ -92,9 +120,12 @@ public final class ValkeySignalNotifier extends RedisPubSubAdapter<String, Strin
      * Lettuce's command timeout (60 s by default) during a Valkey brownout,
      * stalling every signal sender for the whole outage. The reply's outcome is
      * logged from the command's future, on Lettuce's event loop: the first
-     * failure after a success logs one {@code WARN}, further failures log at
-     * {@code DEBUG} until a publish succeeds again, which logs one {@code INFO}
-     * — so an outage costs two log lines, not one per signal. A command that
+     * failure after a success logs one {@code WARN}, repeated at most every
+     * {@link #FAILURE_WARN_INTERVAL} (5 min) while failures persist; other
+     * failures log at {@code DEBUG}, and the first success afterwards logs one
+     * {@code INFO} — an outage costs a few log lines, not one per signal. A
+     * brownout shorter than Lettuce's command timeout logs nothing at all: the
+     * queued commands complete late, once the server answers again. A command that
      * cannot be issued at all (e.g. a closed connection) is treated the same
      * way; this method never throws. A missed notification is covered by the
      * receiving await's {@code maestro.signal.wake-recheck-interval} store
@@ -125,11 +156,16 @@ public final class ValkeySignalNotifier extends RedisPubSubAdapter<String, Strin
     }
 
     private void onPublishFailed(String signalName, String channel, Throwable failure) {
-        if (publishFailing.compareAndSet(false, true)) {
+        var now = nanoClock.getAsLong();
+        var lastWarn = lastFailureWarnNanos.get();
+        var newOutage = publishFailing.compareAndSet(false, true);
+        if ((newOutage || now - lastWarn >= FAILURE_WARN_INTERVAL.toNanos())
+                && lastFailureWarnNanos.compareAndSet(lastWarn, now)) {
             logger.warn("Failed to publish signal '{}' to channel '{}' ({}) — cross-node wakes fall "
-                            + "back to the maestro.signal.wake-recheck-interval store re-read; further "
-                            + "publish failures are logged at DEBUG until one succeeds",
-                    signalName, channel, describe(failure));
+                            + "back to the maestro.signal.wake-recheck-interval store re-read; other "
+                            + "publish failures are logged at DEBUG, and this WARN repeats every {} "
+                            + "until one succeeds",
+                    signalName, channel, describe(failure), FAILURE_WARN_INTERVAL);
         } else {
             logger.debug("Failed to publish signal '{}' to channel '{}': {}",
                     signalName, channel, describe(failure));

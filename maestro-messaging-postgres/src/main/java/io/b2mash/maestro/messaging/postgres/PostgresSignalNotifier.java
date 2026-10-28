@@ -7,10 +7,13 @@ import org.slf4j.LoggerFactory;
 
 import javax.sql.DataSource;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongSupplier;
 
 /**
  * PostgreSQL {@code LISTEN/NOTIFY} implementation of {@link SignalNotifier}.
@@ -43,8 +46,20 @@ public final class PostgresSignalNotifier implements SignalNotifier, AutoCloseab
     private final PostgresNotificationListener notificationListener;
     private final Map<String, SignalCallback> callbacks = new ConcurrentHashMap<>();
 
-    /** Whether the last {@code NOTIFY} failed — rate-limits outage logging to one WARN. */
+    /**
+     * While {@code NOTIFY}s keep failing, how often the outage {@code WARN} is
+     * repeated (R58) — so a notifier that never recovers does not go silent
+     * after its first line.
+     */
+    static final Duration FAILURE_WARN_INTERVAL = Duration.ofMinutes(5);
+
+    /** Whether the last {@code NOTIFY} failed — rate-limits outage logging. */
     private final AtomicBoolean notifyFailing = new AtomicBoolean();
+
+    /** {@link #nanoClock} reading at the last outage {@code WARN}. */
+    private final AtomicLong lastFailureWarnNanos = new AtomicLong();
+
+    private final LongSupplier nanoClock;
 
     /** Virtual threads that carry each {@code NOTIFY} off the caller's thread (Issue 32). */
     private static final ThreadFactory NOTIFY_THREADS =
@@ -57,8 +72,19 @@ public final class PostgresSignalNotifier implements SignalNotifier, AutoCloseab
      * @param notificationListener the shared notification listener for LISTEN channels
      */
     public PostgresSignalNotifier(DataSource dataSource, PostgresNotificationListener notificationListener) {
+        this(dataSource, notificationListener, System::nanoTime);
+    }
+
+    /**
+     * Test seam: as {@link #PostgresSignalNotifier(DataSource, PostgresNotificationListener)},
+     * with the monotonic clock that paces the outage {@code WARN}
+     * ({@link #FAILURE_WARN_INTERVAL}).
+     */
+    PostgresSignalNotifier(DataSource dataSource, PostgresNotificationListener notificationListener,
+                           LongSupplier nanoClock) {
         this.dataSource = dataSource;
         this.notificationListener = notificationListener;
+        this.nanoClock = nanoClock;
     }
 
     /**
@@ -68,9 +94,11 @@ public final class PostgresSignalNotifier implements SignalNotifier, AutoCloseab
      * waiting for it (Issue 32): borrowing a pooled connection can park for the
      * pool's connection timeout when the pool is exhausted or Postgres is
      * unreachable, and the SPI requires {@code publish} not to block its
-     * caller. The first failure after a success logs one {@code WARN}; further
-     * failures log at {@code DEBUG} until a {@code NOTIFY} succeeds again,
-     * which logs one {@code INFO}. A missed notification is covered by the
+     * caller. The first failure after a success logs one {@code WARN},
+     * repeated at most every {@link #FAILURE_WARN_INTERVAL} (5 min) while
+     * failures persist; other failures log at {@code DEBUG}, and the first
+     * {@code NOTIFY} that succeeds afterwards logs one {@code INFO}. A missed
+     * notification is covered by the
      * receiving await's {@code maestro.signal.wake-recheck-interval} store
      * re-read. Never throws.
      */
@@ -99,11 +127,16 @@ public final class PostgresSignalNotifier implements SignalNotifier, AutoCloseab
     }
 
     private void onNotifyFailed(String signalName, String channel, Exception e) {
-        if (notifyFailing.compareAndSet(false, true)) {
+        var now = nanoClock.getAsLong();
+        var lastWarn = lastFailureWarnNanos.get();
+        var newOutage = notifyFailing.compareAndSet(false, true);
+        if ((newOutage || now - lastWarn >= FAILURE_WARN_INTERVAL.toNanos())
+                && lastFailureWarnNanos.compareAndSet(lastWarn, now)) {
             logger.warn("Failed to NOTIFY signal '{}' on channel '{}' ({}) — cross-node wakes fall "
-                            + "back to the maestro.signal.wake-recheck-interval store re-read; further "
-                            + "NOTIFY failures are logged at DEBUG until one succeeds",
-                    signalName, channel, e.toString());
+                            + "back to the maestro.signal.wake-recheck-interval store re-read; other "
+                            + "NOTIFY failures are logged at DEBUG, and this WARN repeats every {} "
+                            + "until one succeeds",
+                    signalName, channel, e.toString(), FAILURE_WARN_INTERVAL);
         } else {
             logger.debug("Failed to NOTIFY signal '{}' on channel '{}': {}",
                     signalName, channel, e.toString());

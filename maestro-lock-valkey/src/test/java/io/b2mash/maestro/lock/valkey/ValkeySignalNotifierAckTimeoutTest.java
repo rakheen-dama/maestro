@@ -1,5 +1,9 @@
 package io.b2mash.maestro.lock.valkey;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import io.lettuce.core.RedisFuture;
 import io.lettuce.core.api.StatefulRedisConnection;
 import io.lettuce.core.api.async.RedisAsyncCommands;
@@ -11,12 +15,15 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.stubbing.Answer;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -53,6 +60,8 @@ class ValkeySignalNotifierAckTimeoutTest {
     private RedisFuture<Void> unsubscribeFuture;
     private final CompletableFuture<Long> neverPublished = new CompletableFuture<>();
     private RedisAsyncCommands<String, String> publishAsync;
+    /** The notifier's monotonic clock, advanced by hand. */
+    private final AtomicLong nanos = new AtomicLong(1_000_000_000L);
     private ValkeySignalNotifier notifier;
 
     @BeforeEach
@@ -101,7 +110,7 @@ class ValkeySignalNotifierAckTimeoutTest {
             return 0L;
         });
 
-        notifier = new ValkeySignalNotifier(pubSub, publish);
+        notifier = new ValkeySignalNotifier(pubSub, publish, nanos::get);
     }
 
     @Test
@@ -193,5 +202,36 @@ class ValkeySignalNotifierAckTimeoutTest {
                     .thenThrow(new IllegalStateException("connection closed"));
             notifier.publish("wf-brownout", "approval");
         });
+    }
+
+    @Test
+    @DisplayName("a publish failure that never clears re-arms the outage WARN every FAILURE_WARN_INTERVAL (R58)")
+    void persistentPublishFailure_rewarnsEveryInterval() {
+        when(publishAsync.publish(anyString(), anyString()))
+                .thenThrow(new IllegalStateException("connection closed"));
+        var logger = (Logger) LoggerFactory.getLogger(ValkeySignalNotifier.class);
+        var previousLevel = logger.getLevel();
+        var appender = new ListAppender<ILoggingEvent>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.DEBUG);
+        try {
+            var interval = ValkeySignalNotifier.FAILURE_WARN_INTERVAL.toNanos();
+            notifier.publish("wf-brownout", "approval");           // new outage: WARN
+            nanos.addAndGet(interval / 2);
+            notifier.publish("wf-brownout", "approval");           // inside the interval: DEBUG
+            nanos.addAndGet(interval / 2);
+            notifier.publish("wf-brownout", "approval");           // interval elapsed: WARN again
+            notifier.publish("wf-brownout", "approval");           // re-armed window: DEBUG
+
+            assertEquals(List.of(Level.WARN, Level.DEBUG, Level.WARN, Level.DEBUG),
+                    appender.list.stream()
+                            .filter(e -> e.getFormattedMessage().startsWith("Failed to publish"))
+                            .map(ILoggingEvent::getLevel)
+                            .toList());
+        } finally {
+            logger.detachAppender(appender);
+            logger.setLevel(previousLevel);
+        }
     }
 }

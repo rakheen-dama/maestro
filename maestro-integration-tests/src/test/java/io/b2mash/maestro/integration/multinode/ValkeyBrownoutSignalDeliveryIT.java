@@ -10,6 +10,7 @@ import io.b2mash.maestro.lock.postgres.PostgresDistributedLock;
 import io.b2mash.maestro.lock.valkey.ValkeySignalNotifier;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.RedisURI;
+import io.lettuce.core.pubsub.RedisPubSubAdapter;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -115,6 +116,9 @@ class ValkeyBrownoutSignalDeliveryIT extends PostgresIntegrationSupport {
         // WAITING_SIGNAL is written after the wake subscribe settled — the
         // subscription is in place before the brownout starts.
         handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, Duration.ofSeconds(15));
+        // A bystander subscriber on the workflow's wake channel: it sees node B's
+        // late PUBLISH arrive, so the post-unpause assertions run after it.
+        var latePublishSeen = probeWakeChannel(workflowId);
 
         pause();
 
@@ -133,8 +137,12 @@ class ValkeyBrownoutSignalDeliveryIT extends PostgresIntegrationSupport {
         assertEquals("seed-one:APPROVED-two", handle.result(String.class));
 
         // Back up: the publish Lettuce queued during the pause is now delivered
-        // late, for a signal already consumed — harmless.
+        // late, for a signal already consumed — harmless. Wait until it has
+        // actually been delivered before asserting it changed nothing.
+        assertEquals(1, latePublishSeen.getCount(), "nothing is delivered while Valkey is paused");
         unpause();
+        assertTrue(latePublishSeen.await(10, TimeUnit.SECONDS),
+                "node B's PUBLISH, queued during the pause, must be delivered once Valkey answers");
         assertEquals(1, handle.events().stream()
                         .filter(e -> e.eventType() == EventType.SIGNAL_RECEIVED)
                         .count(),
@@ -149,11 +157,7 @@ class ValkeyBrownoutSignalDeliveryIT extends PostgresIntegrationSupport {
 
     private MaestroEngineHarness node(String serviceName, CountingActivities.Recorder recorder,
                                       Object workflowImpl) {
-        var client = RedisClient.create(RedisURI.builder()
-                .withHost(valkey.getHost())
-                .withPort(valkey.getMappedPort(6379))
-                .build());
-        clients.add(client);
+        var client = newClient();
         var notifier = new ValkeySignalNotifier(client.connectPubSub(), client.connect());
         notifiers.add(notifier);
 
@@ -168,6 +172,33 @@ class ValkeyBrownoutSignalDeliveryIT extends PostgresIntegrationSupport {
                 new CountingActivities.RecordingChainActivities(recorder));
         harness.registerWorkflow(workflowImpl.getClass(), () -> workflowImpl);
         return harness;
+    }
+
+    /**
+     * Subscribes a bystander pub/sub connection to the workflow's wake channel
+     * (acknowledged before returning) and counts down on the first message.
+     */
+    private CountDownLatch probeWakeChannel(String workflowId) throws Exception {
+        var client = newClient();
+        var probe = client.connectPubSub();
+        var seen = new CountDownLatch(1);
+        probe.addListener(new RedisPubSubAdapter<>() {
+            @Override
+            public void message(String channel, String message) {
+                seen.countDown();
+            }
+        });
+        probe.async().subscribe("maestro:signal:" + workflowId).get(5, TimeUnit.SECONDS);
+        return seen;
+    }
+
+    private RedisClient newClient() {
+        var client = RedisClient.create(RedisURI.builder()
+                .withHost(valkey.getHost())
+                .withPort(valkey.getMappedPort(6379))
+                .build());
+        clients.add(client);
+        return client;
     }
 
     private void pause() {

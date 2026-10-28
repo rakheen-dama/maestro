@@ -1,16 +1,23 @@
 package io.b2mash.maestro.messaging.postgres;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 import javax.sql.DataSource;
 import java.lang.reflect.Proxy;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -178,6 +185,58 @@ class PostgresSignalNotifierTest extends PostgresMessagingTestSupport {
         } finally {
             release.countDown();
         }
+    }
+
+    @Test
+    @DisplayName("a NOTIFY failure that never clears re-arms the outage WARN every FAILURE_WARN_INTERVAL (R58)")
+    void persistentNotifyFailure_rewarnsEveryInterval() {
+        var unreachable = (DataSource) Proxy.newProxyInstance(
+                DataSource.class.getClassLoader(), new Class<?>[] {DataSource.class},
+                (proxy, method, args) -> {
+                    if (method.getName().equals("getConnection")) {
+                        throw new SQLException("Connection refused");
+                    }
+                    throw new UnsupportedOperationException(method.getName());
+                });
+        var nanos = new AtomicLong(1_000_000_000L);
+        var logger = (Logger) LoggerFactory.getLogger(PostgresSignalNotifier.class);
+        var previousLevel = logger.getLevel();
+        var appender = new ListAppender<ILoggingEvent>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.DEBUG);
+        try (var notifier = new PostgresSignalNotifier(unreachable, notificationListener, nanos::get)) {
+            var interval = PostgresSignalNotifier.FAILURE_WARN_INTERVAL.toNanos();
+            // Each NOTIFY runs on its own thread: wait for its log line before moving the clock.
+            publishAndAwaitFailureLine(notifier, appender, 1);    // new outage: WARN
+            nanos.addAndGet(interval / 2);
+            publishAndAwaitFailureLine(notifier, appender, 2);    // inside the interval: DEBUG
+            nanos.addAndGet(interval / 2);
+            publishAndAwaitFailureLine(notifier, appender, 3);    // interval elapsed: WARN again
+            publishAndAwaitFailureLine(notifier, appender, 4);    // re-armed window: DEBUG
+
+            assertEquals(List.of(Level.WARN, Level.DEBUG, Level.WARN, Level.DEBUG),
+                    failureLines(appender).stream().map(ILoggingEvent::getLevel).toList());
+        } finally {
+            logger.detachAppender(appender);
+            logger.setLevel(previousLevel);
+        }
+    }
+
+    private static void publishAndAwaitFailureLine(PostgresSignalNotifier notifier,
+                                                   ListAppender<ILoggingEvent> appender, int expected) {
+        notifier.publish("wf-unreachable", "approval");
+        // ListAppender's list is not thread-safe; a copy racing an append may throw — retry.
+        await().atMost(Duration.ofSeconds(5)).ignoreExceptions()
+                .until(() -> failureLines(appender).size() == expected);
+    }
+
+    private static List<ILoggingEvent> failureLines(ListAppender<ILoggingEvent> appender) {
+        // Only this test's channel: another test's stalled NOTIFY may log late.
+        return List.copyOf(appender.list).stream()
+                .filter(e -> e.getFormattedMessage().startsWith("Failed to NOTIFY")
+                        && e.getFormattedMessage().contains("unreachable"))
+                .toList();
     }
 
     @Test

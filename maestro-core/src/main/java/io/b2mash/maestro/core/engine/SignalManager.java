@@ -41,6 +41,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Owns the complete lifecycle of workflow signals: delivery, persistence,
@@ -111,6 +112,16 @@ final class SignalManager {
     /** Virtual threads that carry {@link SignalNotifier#publish} off the sender's thread (Issue 32). */
     private static final ThreadFactory NOTIFY_THREADS =
             Thread.ofVirtual().name("maestro-signal-notify-", 0).factory();
+
+    /**
+     * Most hand-off notifications one node keeps in flight (R58). Beyond it a
+     * notification is dropped — which the best-effort SPI allows; the
+     * receiving await's wake-recheck covers it — so a notifier that blocks
+     * through an outage cannot accumulate one parked thread per signal.
+     */
+    static final int MAX_IN_FLIGHT_NOTIFICATIONS = 1000;
+
+    private final AtomicInteger notificationsInFlight = new AtomicInteger();
 
     private final WorkflowStore store;
     private final @Nullable WorkflowMessaging messaging;
@@ -358,8 +369,18 @@ final class SignalManager {
      * so this is the exceptional path, not the outage path — a notifier that
      * honours the contract rate-limits its own outage logging). An
      * {@link Error} is deliberately not caught.
+     *
+     * <p>At most {@link #MAX_IN_FLIGHT_NOTIFICATIONS} run at once; a
+     * notification beyond that is dropped and logged at {@code DEBUG}.
      */
-    private static void notifyOffThread(SignalNotifier notifier, String workflowId, String signalName) {
+    private void notifyOffThread(SignalNotifier notifier, String workflowId, String signalName) {
+        if (notificationsInFlight.incrementAndGet() > MAX_IN_FLIGHT_NOTIFICATIONS) {
+            notificationsInFlight.decrementAndGet();
+            logger.debug("Dropping signal notification for workflow '{}' — {} are already in flight; "
+                    + "a parked await on another node wakes at its next wake-recheck",
+                    workflowId, MAX_IN_FLIGHT_NOTIFICATIONS);
+            return;
+        }
         NOTIFY_THREADS.newThread(() -> {
             try {
                 notifier.publish(workflowId, signalName);
@@ -367,6 +388,8 @@ final class SignalManager {
                 logger.warn("Failed to publish signal notification for workflow '{}' — a parked "
                                 + "await on another node wakes at its next wake-recheck: {}",
                         workflowId, e.toString());
+            } finally {
+                notificationsInFlight.decrementAndGet();
             }
         }).start();
     }

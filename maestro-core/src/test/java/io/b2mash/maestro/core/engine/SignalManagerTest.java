@@ -144,7 +144,7 @@ class SignalManagerTest {
 
     @Test
     @DisplayName("deliverSignal succeeds even if SignalNotifier.publish throws")
-    void deliverSignalSurvivesNotifierFailure() {
+    void deliverSignalSurvivesNotifierFailure() throws Exception {
         var failingNotifier = new FailingNotifier();
         var sm = new SignalManager(store, messaging, failingNotifier, serializer, parkingLot);
 
@@ -157,6 +157,60 @@ class SignalManagerTest {
         // Signal should still be persisted
         var signals = store.getUnconsumedSignals("order-1", "payment.result");
         assertEquals(1, signals.size(), "Signal must persist even when notifier fails");
+
+        // The throw happens on the hand-off thread: wait for it to run and end,
+        // then check the engine caught it rather than letting it escape.
+        await().atMost(Duration.ofSeconds(5)).until(() -> failingNotifier.publishThread.get() != null);
+        var handOff = failingNotifier.publishThread.get();
+        assertTrue(handOff.join(Duration.ofSeconds(5)), "the hand-off thread must finish");
+        assertEquals(List.of(), failingNotifier.escaped,
+                "the notifier's RuntimeException must be caught on the hand-off thread");
+    }
+
+    @Test
+    @DisplayName("R58: at most MAX_IN_FLIGHT_NOTIFICATIONS hand-offs run at once; the excess is dropped, not queued")
+    void notificationsBeyondTheInFlightCapAreDropped() throws Exception {
+        var entered = new java.util.concurrent.atomic.AtomicInteger();
+        var release = new CountDownLatch(1);
+        var blocking = new SignalNotifier() {
+            @Override
+            public void publish(String workflowId, String signalName) {
+                entered.incrementAndGet();
+                try {
+                    release.await(30, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+
+            @Override
+            public void subscribe(String workflowId, SignalCallback callback) {}
+
+            @Override
+            public void unsubscribe(String workflowId) {}
+        };
+        var sm = new SignalManager(store, messaging, blocking, serializer, parkingLot);
+        createInstance("order-1", UUID.randomUUID());
+        var cap = SignalManager.MAX_IN_FLIGHT_NOTIFICATIONS;
+
+        try {
+            for (int i = 0; i < cap + 5; i++) {
+                sm.deliverSignal("order-1", "payment.result", "paid-" + i);
+            }
+            assertEquals(cap + 5, store.getUnconsumedSignals("order-1", "payment.result").size(),
+                    "every signal is persisted — only its notification may be dropped");
+            await().atMost(Duration.ofSeconds(10)).until(() -> entered.get() == cap);
+            await().during(Duration.ofMillis(300)).atMost(Duration.ofSeconds(2))
+                    .until(() -> entered.get() == cap);
+        } finally {
+            release.countDown();
+        }
+
+        // Once the stalled hand-offs finish, notifications flow again.
+        await().atMost(Duration.ofSeconds(10)).until(() -> {
+            sm.deliverSignal("order-1", "payment.result", "after");
+            return entered.get() > cap;
+        });
     }
 
     @Test
@@ -1511,10 +1565,20 @@ class SignalManagerTest {
         }
     }
 
+    /**
+     * Throws from {@code publish}. It records the hand-off thread and installs
+     * an uncaught-exception handler on it, so a test can join that thread and
+     * tell whether the engine caught the failure (nothing escapes) or not.
+     */
     private static class FailingNotifier implements SignalNotifier {
+
+        final AtomicReference<Thread> publishThread = new AtomicReference<>();
+        final CopyOnWriteArrayList<Throwable> escaped = new CopyOnWriteArrayList<>();
 
         @Override
         public void publish(String workflowId, String signalName) {
+            Thread.currentThread().setUncaughtExceptionHandler((t, e) -> escaped.add(e));
+            publishThread.set(Thread.currentThread());
             throw new RuntimeException("Simulated notifier failure");
         }
 

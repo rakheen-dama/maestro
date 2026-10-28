@@ -202,7 +202,16 @@ interval, by design — the recheck exists precisely so pub/sub is an
 optimisation, never a correctness dependency). The notification itself is
 best-effort and bounded: `signal()` returns once the row is saved and never
 waits for the notifier, so a Valkey (or `NOTIFY`) outage delays the remote
-wake by at most one recheck interval instead of stalling the sender (Issue 32). See §7 below for the
+wake by at most one recheck interval instead of stalling the sender (Issue 32).
+During an outage, notifications back up in proportion to the signal rate: up
+to *rate × 60 s* (Lettuce's command timeout) pending `PUBLISH`es on each
+Valkey publish connection, or *rate × the pool's `connectionTimeout`* (Hikari
+default 30 s) parked `NOTIFY` threads for Postgres. Each node also keeps at
+most 1,000 notification hand-offs in flight and drops the excess, logged at
+`DEBUG`. A dropped or failed notification costs latency (one recheck
+interval), never a signal. A brownout shorter than the command timeout logs
+nothing from the Valkey notifier — the queued `PUBLISH`es simply complete
+late. While failures persist, the outage `WARN` repeats every 5 minutes. See §7 below for the
 lock-backend matrix in full.
 
 ---
