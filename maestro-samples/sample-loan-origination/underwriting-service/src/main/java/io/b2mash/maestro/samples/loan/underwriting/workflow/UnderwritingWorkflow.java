@@ -68,7 +68,7 @@ public class UnderwritingWorkflow {
     @ActivityStub(startToCloseTimeout = "PT10S")
     private UnderwritingPolicyActivities policy;
 
-    // Volatile: read by @QueryMethod from caller's thread, written by workflow's virtual thread
+    // Per-run state: Maestro creates a new workflow object for every run. Volatile because @QueryMethod runs on the caller's thread.
     private volatile String currentStep = "RECEIVED";
 
     @WorkflowMethod

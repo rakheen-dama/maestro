@@ -52,7 +52,7 @@ class AdminCommandDispatcherTest {
         executor = new WorkflowExecutor(store, null, null, null, serializer, "test-service");
         registrar = new StubRegistrar(executor);
         registrar.register(WORKFLOW_TYPE, new WorkflowRegistration(
-                WORKFLOW_TYPE, "default", new SimpleWorkflow(), SimpleWorkflow.class.getMethod("run", String.class)));
+                WORKFLOW_TYPE, "default", SimpleWorkflow::new, SimpleWorkflow.class.getMethod("run", String.class)));
         dispatcher = new AdminCommandDispatcher(executor, store, registrar);
     }
 

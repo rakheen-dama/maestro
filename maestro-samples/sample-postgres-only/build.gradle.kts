@@ -16,4 +16,6 @@ dependencies {
     // starter and must be declared explicitly.
     runtimeOnly(libs.spring.boot.starter.jdbc)
     runtimeOnly(libs.spring.boot.starter.flyway)
+
+    testImplementation(project(":maestro-test"))
 }

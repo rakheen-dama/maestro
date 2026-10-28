@@ -312,7 +312,7 @@ class LoanApplicationWorkflowV2Test {
         var node = node("node-same-name");
         var workflowId = "same-name-1";
         node.startWorkflow(workflowId, "same-name-branches", "test", null,
-                workflowImpl(SameSignalNameBranchesWorkflow.class),
+                () -> workflowImpl(SameSignalNameBranchesWorkflow.class),
                 workflowMethod(SameSignalNameBranchesWorkflow.class));
 
         await().atMost(SETTLE).until(() ->
@@ -367,7 +367,7 @@ class LoanApplicationWorkflowV2Test {
         // reach their await and neither of them parks.
         node.deliverSignal(workflowId, "dup", "only-one");
         node.startWorkflow(workflowId, "same-name-branches", "test", null,
-                workflowImpl(SameSignalNameBranchesWorkflow.class),
+                () -> workflowImpl(SameSignalNameBranchesWorkflow.class),
                 workflowMethod(SameSignalNameBranchesWorkflow.class));
 
         await().atMost(SETTLE).until(() ->

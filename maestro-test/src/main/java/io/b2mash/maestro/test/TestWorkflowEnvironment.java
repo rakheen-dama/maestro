@@ -21,9 +21,11 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
@@ -76,6 +78,9 @@ public final class TestWorkflowEnvironment {
     // activityInterface → activityImpl
     private final Map<Class<?>, Object> activityImpls = new LinkedHashMap<>();
     private final AtomicInteger workflowCounter = new AtomicInteger(0);
+
+    // Workflow types whose @QueryMethods are registered with the executor; guarded by itself.
+    private final Set<String> queryRegisteredTypes = new HashSet<>();
 
     private TestWorkflowEnvironment(ObjectMapper objectMapper) {
         this.clock = new ControllableClock();
@@ -186,8 +191,15 @@ public final class TestWorkflowEnvironment {
             return workflowImpl;
         };
 
-        // Register query methods
-        executor.registerQueries(workflowType, workflowClass);
+        // Register query methods once per workflow type — the registry rejects a
+        // second registration, so re-registering on every start would make a second
+        // instance of any type with a @QueryMethod impossible to start.
+        synchronized (queryRegisteredTypes) {
+            if (!queryRegisteredTypes.contains(workflowType)) {
+                executor.registerQueries(workflowType, workflowClass);
+                queryRegisteredTypes.add(workflowType);
+            }
+        }
 
         // Start
         var instanceId = executor.startWorkflow(

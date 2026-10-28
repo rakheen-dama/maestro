@@ -59,6 +59,7 @@ public class OrderFulfilmentWorkflow {
 - `taskQueue` defaults to `"default"`. Only workers subscribed to a matching queue execute workflows of this type.
 - The `@WorkflowMethod` may accept zero or one parameter (the workflow input) and its return type is serialized as the workflow output.
 - **One `@WorkflowMethod` per class.** Multiple workflow types require separate classes.
+- **One object per run.** The engine instantiates the workflow class for every start, recovery and retry. Instance fields are per-run state; never put per-instance state in `static` fields.
 
 ---
 
@@ -361,6 +362,8 @@ int progress = maestro.getWorkflow("order-abc")
 ```
 
 **Thread safety:** Query methods are invoked from the **caller's thread**, not the workflow's virtual thread. Use `volatile` fields, `AtomicReference`, or explicit synchronization to ensure visibility of state written by the workflow thread.
+
+**Single-node contract:** A query is answered by the node whose engine is currently running the workflow — the one holding its instance lock. Any other node, and any node after the workflow reaches `COMPLETED`/`FAILED`/`TERMINATED`, throws `WorkflowNotQueryableException`. A load-balanced `GET /status` on a multi-node service therefore fails on the non-owning nodes; route the request to the owner, or serve status from `WorkflowHandle.status()`/`result()` (durable, any node) or your own projection. Cross-node query routing is not implemented.
 
 **Read-only contract:** Query methods must not modify workflow state or trigger side effects. Doing so will corrupt determinism and break replay.
 

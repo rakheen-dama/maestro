@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.BeanInitializationException;
+import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.beans.factory.support.BeanDefinitionRegistry;
 import org.springframework.beans.factory.support.BeanDefinitionRegistryPostProcessor;
@@ -18,9 +19,15 @@ import org.springframework.util.ClassUtils;
 import java.util.List;
 
 /**
- * Registers classes annotated with {@link DurableWorkflow} as singleton Spring
- * bean definitions by scanning the classpath, so that users do not have to add
- * {@code @Component} to workflow classes.
+ * Registers classes annotated with {@link DurableWorkflow} as prototype-scoped
+ * Spring bean definitions by scanning the classpath, so that users do not have
+ * to add {@code @Component} to workflow classes.
+ *
+ * <p>Prototype, not singleton, because Maestro creates a new workflow object
+ * for every run (start, recovery, retry): {@link WorkflowRegistrar} hands the
+ * engine a factory that calls {@code getBean(beanName)} once per run. Instance
+ * fields are therefore per-run state, and two concurrent runs of the same
+ * workflow type never share them.
  *
  * <p>{@code @DurableWorkflow} is a plain maestro-core annotation (never a Spring
  * stereotype — maestro-core must not depend on Spring), so Spring's component
@@ -41,10 +48,13 @@ import java.util.List;
  *
  * <p>Registration is idempotent: a workflow class that is already a bean
  * (annotated {@code @Component}, registered via {@code @Bean}, etc.) is
- * skipped, so both styles may be mixed freely.
+ * skipped, so both styles may be mixed. A workflow bean the user declares
+ * must itself be prototype-scoped ({@code @Scope("prototype")});
+ * {@link WorkflowRegistrar} fails startup on a singleton one.
  *
- * <p>Registered definitions are ordinary singleton bean definitions, so
- * scanned workflow beans pass through the regular bean lifecycle — including
+ * <p>Registered definitions are ordinary prototype bean definitions, so every
+ * workflow object built for a run passes through the regular bean lifecycle —
+ * dependency injection and every {@code BeanPostProcessor}, including
  * {@link io.b2mash.maestro.spring.proxy.ActivityStubBeanPostProcessor}, which
  * injects memoizing activity proxies into {@code @ActivityStub} fields.
  *
@@ -96,6 +106,8 @@ public class DurableWorkflowBeanRegistrar implements BeanDefinitionRegistryPostP
                     continue;
                 }
                 var beanName = nameGenerator.generateBeanName(candidate, registry);
+                // One workflow object per run — see the class Javadoc.
+                candidate.setScope(BeanDefinition.SCOPE_PROTOTYPE);
                 registry.registerBeanDefinition(beanName, candidate);
                 registered++;
                 logger.debug("Registered @DurableWorkflow class '{}' as bean '{}'",

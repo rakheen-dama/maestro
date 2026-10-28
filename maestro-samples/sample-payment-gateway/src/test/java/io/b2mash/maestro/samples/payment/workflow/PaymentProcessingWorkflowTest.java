@@ -16,7 +16,11 @@ import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -80,6 +84,41 @@ class PaymentProcessingWorkflowTest {
         assertEquals(List.of(PaymentResult.success("txn-1")), messaging.published);
     }
 
+    @Test
+    void approvedCard_publishesTheResultUnderItsOrderId() throws TimeoutException {
+        var request = new PaymentRequest("order-3", "VISA-OK", new BigDecimal("7.50"));
+        var handle = env.startWorkflow("payment-order-3", PaymentProcessingWorkflow.class, request);
+
+        var result = handle.getResult(PaymentProcessingResult.class, Duration.ofSeconds(5));
+
+        assertEquals(PaymentProcessingResult.success("txn-1"), result);
+        assertEquals(List.of("order-3"), messaging.publishedOrderIds);
+    }
+
+    @Test
+    void twoConcurrentPaymentsCompleteIndependently() throws TimeoutException {
+        // The provider has no order ID, so the fake tells runs apart by payment method.
+        var wedging = new WedgingProvider();
+        env.registerActivities(PaymentProviderActivities.class, wedging);
+        wedging.block("card-B");
+
+        var a = env.startWorkflow("payment-A", PaymentProcessingWorkflow.class,
+                new PaymentRequest("A", "card-A", new BigDecimal("1.00")));
+        var b = env.startWorkflow("payment-B", PaymentProcessingWorkflow.class,
+                new PaymentRequest("B", "card-B", new BigDecimal("2.00")));
+
+        var resultA = a.getResult(PaymentProcessingResult.class, Duration.ofSeconds(10));
+        assertEquals(PaymentProcessingResult.success("txn-card-A"), resultA,
+                "A completes with its own transaction while B is still charging");
+        assertEquals(WorkflowStatus.RUNNING, b.getStatus());
+
+        wedging.release("card-B");
+        var resultB = b.getResult(PaymentProcessingResult.class, Duration.ofSeconds(10));
+        assertEquals(PaymentProcessingResult.success("txn-card-B"), resultB);
+        assertEquals(Set.of("A", "B"), Set.copyOf(messaging.publishedOrderIds));
+        assertEquals(2, messaging.publishedOrderIds.size(), "one result published per order");
+    }
+
     // ── Fixtures ─────────────────────────────────────────────────────────
 
     static class CountingProvider implements PaymentProviderActivities {
@@ -97,10 +136,41 @@ class PaymentProcessingWorkflowTest {
 
     static class RecordingMessaging implements PaymentMessagingActivities {
         final List<PaymentResult> published = new CopyOnWriteArrayList<>();
+        final List<String> publishedOrderIds = new CopyOnWriteArrayList<>();
 
         @Override
         public void publishPaymentResult(String orderId, PaymentResult result) {
             published.add(result);
+            publishedOrderIds.add(orderId);
+        }
+    }
+
+    /**
+     * Charges successfully with a transaction ID derived from the payment method,
+     * blocking while that payment method is {@linkplain #block held}.
+     */
+    static class WedgingProvider implements PaymentProviderActivities {
+        private final ConcurrentHashMap<String, CountDownLatch> gates = new ConcurrentHashMap<>();
+
+        void block(String paymentMethod) {
+            gates.put(paymentMethod, new CountDownLatch(1));
+        }
+
+        void release(String paymentMethod) {
+            gates.get(paymentMethod).countDown();
+        }
+
+        @Override
+        public PaymentConfirmation charge(String paymentMethod, BigDecimal amount) {
+            var gate = gates.get(paymentMethod);
+            if (gate != null) {
+                try {
+                    gate.await(20, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            return new PaymentConfirmation("txn-" + paymentMethod);
         }
     }
 }

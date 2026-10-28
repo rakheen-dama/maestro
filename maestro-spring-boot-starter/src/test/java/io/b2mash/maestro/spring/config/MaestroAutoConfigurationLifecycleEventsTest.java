@@ -13,10 +13,12 @@ import io.b2mash.maestro.test.InMemoryWorkflowMessaging;
 import io.b2mash.maestro.test.InMemoryWorkflowStore;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Scope;
 import tools.jackson.databind.ObjectMapper;
 
 import java.time.Duration;
@@ -145,16 +147,21 @@ class MaestroAutoConfigurationLifecycleEventsTest {
         return WorkflowOptions.builder().workflowId(workflowId).build();
     }
 
-    /** Registers the workflow beans the client resolves through WorkflowRegistrar. */
+    /**
+     * Registers the workflow beans the client resolves through WorkflowRegistrar.
+     * Workflow beans are prototype-scoped: Maestro creates one object per run.
+     */
     @Configuration(proxyBeanMethods = false)
     static class TestWorkflowConfiguration {
 
         @Bean
+        @Scope(BeanDefinition.SCOPE_PROTOTYPE)
         EchoWorkflow echoWorkflow() {
             return new EchoWorkflow();
         }
 
         @Bean
+        @Scope(BeanDefinition.SCOPE_PROTOTYPE)
         ActivityWorkflow activityWorkflow() {
             return new ActivityWorkflow();
         }

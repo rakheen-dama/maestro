@@ -97,6 +97,8 @@ public class WelcomeWorkflow {
 }
 ```
 
+Maestro creates a new `WelcomeWorkflow` object for every workflow run, so instance fields are per-instance state — two concurrent runs never share them. Fields read by a `@QueryMethod` are still `volatile`, because queries run on the caller's thread.
+
 ### 4. Start it from a REST endpoint
 
 ```java

@@ -29,6 +29,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Scans beans annotated with {@link DurableWorkflow} and injects memoizing
@@ -46,9 +47,21 @@ import java.util.Objects;
  * resolved lazily from the {@link ApplicationContext} because {@code BeanPostProcessor}
  * instances are created before regular application beans.
  *
+ * <h2>Prototype workflow beans</h2>
+ * <p>{@code @DurableWorkflow} beans are prototype-scoped — Maestro creates a new
+ * workflow object for every run — so this processor runs once per run, not once
+ * per application. Field validation and proxy construction are done once per
+ * workflow class and cached: every object of that class receives the same proxy
+ * per field. Sharing is safe because the memoizing proxy holds no per-run state;
+ * it resolves the running workflow from the calling thread's workflow context.
+ *
  * <h2>Thread Safety</h2>
- * <p>This processor is invoked during the single-threaded bean creation phase.
- * The lazily resolved dependencies are set once and read thereafter.
+ * <p>Thread-safe. Because workflow beans are prototypes, this processor is
+ * invoked whenever the engine builds a workflow object — concurrently, from
+ * any thread that starts, recovers or retries a run. Dependencies are resolved
+ * once under a lock and published through a volatile flag; the per-class
+ * injection plans live in a {@link ConcurrentHashMap} (a plan built twice by a
+ * race is equivalent, and only one is kept).
  */
 public class ActivityStubBeanPostProcessor implements BeanPostProcessor, ApplicationContextAware {
 
@@ -57,7 +70,7 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
     private @Nullable ApplicationContext applicationContext;
 
     // Lazily resolved from ApplicationContext on first @DurableWorkflow bean.
-    // Written once during the single-threaded bean creation phase, then read-only.
+    // Written once under the monitor, published by the volatile flag, then read-only.
     private volatile boolean dependenciesResolved;
     private @Nullable ActivityProxyFactory proxyFactory;
     private @Nullable WorkflowStore store;
@@ -68,6 +81,12 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
     private @Nullable String lockKeyPrefix;
     private MaestroProperties.@Nullable RetryProperties retryDefaults;
     private EngineObserver observer = EngineObserver.NOOP;
+
+    /** Workflow class → the proxies to inject into its {@code @ActivityStub} fields. */
+    private final ConcurrentHashMap<Class<?>, List<StubInjection>> injectionPlans = new ConcurrentHashMap<>();
+
+    /** One {@code @ActivityStub} field and the memoizing proxy injected into it. */
+    private record StubInjection(Field field, Object proxy) {}
 
     @Override
     public void setApplicationContext(ApplicationContext applicationContext) {
@@ -91,7 +110,14 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
         if (dependenciesResolved) {
             return;
         }
+        synchronized (this) {
+            if (!dependenciesResolved) {
+                resolveDependencies();
+            }
+        }
+    }
 
+    private void resolveDependencies() {
         var ctx = Objects.requireNonNull(applicationContext,
                 "ApplicationContext not set — ActivityStubBeanPostProcessor requires ApplicationContextAware");
 
@@ -121,13 +147,43 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
         dependenciesResolved = true;
     }
 
-    @SuppressWarnings("unchecked")
     private void processWorkflowBean(Object bean, Class<?> targetClass, String beanName) {
-        var ctx = Objects.requireNonNull(applicationContext);
-        var fields = getAllFields(targetClass);
-        var injectedCount = 0;
+        var plan = injectionPlans.get(targetClass);
+        if (plan == null) {
+            // Built outside the map: building resolves activity beans, which must not
+            // run inside ConcurrentHashMap.computeIfAbsent (re-entrant bean creation).
+            var built = buildInjectionPlan(targetClass, beanName);
+            var raced = injectionPlans.putIfAbsent(targetClass, built);
+            plan = raced != null ? raced : built;
+        }
 
-        for (var field : fields) {
+        for (var injection : plan) {
+            var field = injection.field();
+            try {
+                field.set(bean, injection.proxy());
+            } catch (IllegalAccessException e) {
+                throw new BeanInitializationException(
+                        "Failed to inject activity proxy into field '%s' on %s"
+                                .formatted(field.getName(), targetClass.getName()), e);
+            }
+        }
+
+        if (!plan.isEmpty()) {
+            logger.debug("Injected {} activity proxy(ies) into @DurableWorkflow bean '{}' ({})",
+                    plan.size(), beanName, targetClass.getSimpleName());
+        }
+    }
+
+    /**
+     * Validates every {@code @ActivityStub} field of {@code targetClass} and builds
+     * its memoizing proxy — once per workflow class, however many workflow objects
+     * (one per run) are later created from it.
+     */
+    private List<StubInjection> buildInjectionPlan(Class<?> targetClass, String beanName) {
+        var ctx = Objects.requireNonNull(applicationContext);
+        var plan = new ArrayList<StubInjection>();
+
+        for (var field : getAllFields(targetClass)) {
             var stub = field.getAnnotation(ActivityStub.class);
             if (stub == null) {
                 continue;
@@ -160,7 +216,7 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
 
             // Create memoizing proxy
             @SuppressWarnings({"rawtypes", "unchecked"})
-            var proxy = proxyFactory.createProxy(
+            var proxy = Objects.requireNonNull(proxyFactory).createProxy(
                     (Class) activityInterface,
                     activityImpl,
                     store,
@@ -174,25 +230,17 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
                     observer
             );
 
-            // Inject the proxy into the field
             field.setAccessible(true);
-            try {
-                field.set(bean, proxy);
-            } catch (IllegalAccessException e) {
-                throw new BeanInitializationException(
-                        "Failed to inject activity proxy into field '%s' on %s"
-                                .formatted(field.getName(), targetClass.getName()), e);
-            }
-
-            injectedCount++;
-            logger.debug("Injected memoizing proxy for @ActivityStub field '{}' ({}) on bean '{}'",
-                    field.getName(), activityInterface.getSimpleName(), beanName);
+            plan.add(new StubInjection(field, proxy));
+            logger.debug("Created memoizing proxy for @ActivityStub field '{}' ({}) on {}",
+                    field.getName(), activityInterface.getSimpleName(), targetClass.getName());
         }
 
-        if (injectedCount > 0) {
+        if (!plan.isEmpty()) {
             logger.info("Processed @DurableWorkflow bean '{}': injected {} activity proxy(ies)",
-                    beanName, injectedCount);
+                    beanName, plan.size());
         }
+        return List.copyOf(plan);
     }
 
     /**

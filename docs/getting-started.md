@@ -393,6 +393,7 @@ public class WelcomeWithApprovalWorkflow {
     @ActivityStub(startToCloseTimeout = "PT30S")
     private GreetingActivities greetings;
 
+    // Per-run state: Maestro creates a new workflow object for every run. Volatile because @QueryMethod runs on the caller's thread.
     private volatile String currentStep = "PENDING";
 
     @WorkflowMethod
@@ -433,7 +434,7 @@ public class WelcomeWithApprovalWorkflow {
 Key details:
 - `workflow.awaitSignal(name, type, timeout)` parks the workflow's virtual thread until a matching signal arrives or the timeout elapses. The state is persisted -- the signal can arrive while the service is down.
 - `SignalTimeoutException` is thrown if no signal arrives within the timeout.
-- `@QueryMethod` exposes `getStatus()` for external callers. Query methods run on the caller's thread, so fields they read must be `volatile` or otherwise thread-safe.
+- `@QueryMethod` exposes `getStatus()` for external callers. A new workflow object is created per run, so `currentStep` is this run's state and never another instance's. Query methods run on the caller's thread, so fields they read must be `volatile` or otherwise thread-safe. A query is answered by the node currently running the workflow; see [Queries](concepts.md#queries).
 
 Add endpoints for approval and status:
 

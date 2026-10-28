@@ -17,11 +17,14 @@ import io.b2mash.maestro.spring.client.WorkflowOptions;
 import io.b2mash.maestro.test.InMemoryWorkflowStore;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.config.BeanDefinition;
+import org.springframework.beans.factory.config.BeanDefinitionCustomizer;
 import org.springframework.boot.DefaultApplicationArguments;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Scope;
 import tools.jackson.databind.ObjectMapper;
 
 import java.time.Duration;
@@ -75,11 +78,11 @@ class MaestroAutoConfigurationConfigSeamsTest {
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     var client = context.getBean(MaestroClient.class);
-                    var workflow = context.getBean(BlockingWorkflow.class);
+                    var probe = context.getBean(BlockingProbe.class);
                     var executor = context.getBean(WorkflowExecutor.class);
 
                     client.newWorkflow(BlockingWorkflow.class, options("shutdown-timeout-1")).startAsync(null);
-                    assertThat(workflow.entered.await(10, TimeUnit.SECONDS))
+                    assertThat(probe.entered.await(10, TimeUnit.SECONDS))
                             .as("the workflow must be in-flight before shutdown")
                             .isTrue();
 
@@ -102,10 +105,10 @@ class MaestroAutoConfigurationConfigSeamsTest {
                     assertThat(context).hasNotFailed();
                     var client = context.getBean(MaestroClient.class);
                     var store = context.getBean(WorkflowStore.class);
-                    var workflow = context.getBean(ParkingWorkflow.class);
+                    var executor = context.getBean(WorkflowExecutor.class);
 
                     client.newWorkflow(ParkingWorkflow.class, options("wake-recheck-1")).startAsync(null);
-                    assertThat(workflow.parked.await(10, TimeUnit.SECONDS)).isTrue();
+                    await().atMost(Duration.ofSeconds(10)).until(() -> executor.parkedCount() == 1);
                     await().atMost(Duration.ofSeconds(2)).until(() ->
                             store.getInstance("wake-recheck-1")
                                     .map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL)
@@ -158,7 +161,7 @@ class MaestroAutoConfigurationConfigSeamsTest {
     void defaultMaxAttemptsReachesDefaultActivityStubRetryPolicy() {
         var activity = new AlwaysFailingActivitiesImpl();
         runner.withBean(AlwaysFailingActivities.class, () -> activity)
-                .withBean(DefaultRetryWorkflow.class, DefaultRetryWorkflow::new)
+                .withBean(DefaultRetryWorkflow.class, DefaultRetryWorkflow::new, PROTOTYPE)
                 .withPropertyValues("maestro.retry.default-max-attempts=1")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
@@ -188,7 +191,7 @@ class MaestroAutoConfigurationConfigSeamsTest {
     void explicitRetryPolicyOverridesConfiguredDefault() {
         var activity = new AlwaysFailingActivitiesImpl();
         runner.withBean(AlwaysFailingActivities.class, () -> activity)
-                .withBean(CustomRetryWorkflow.class, CustomRetryWorkflow::new)
+                .withBean(CustomRetryWorkflow.class, CustomRetryWorkflow::new, PROTOTYPE)
                 .withPropertyValues("maestro.retry.default-max-attempts=1")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
@@ -233,25 +236,40 @@ class MaestroAutoConfigurationConfigSeamsTest {
                 });
     }
 
+    /** Workflow beans must be prototype-scoped: Maestro creates one object per run. */
+    private static final BeanDefinitionCustomizer PROTOTYPE =
+            bd -> bd.setScope(BeanDefinition.SCOPE_PROTOTYPE);
+
     private static WorkflowOptions options(String workflowId) {
         return WorkflowOptions.builder().workflowId(workflowId).build();
     }
 
-    /** Registers the workflow beans the client resolves through WorkflowRegistrar. */
+    /**
+     * Registers the workflow beans the client resolves through WorkflowRegistrar.
+     * Workflow beans are prototype-scoped: Maestro creates one object per run.
+     */
     @Configuration(proxyBeanMethods = false)
     static class TestWorkflowConfiguration {
 
         @Bean
-        BlockingWorkflow blockingWorkflow() {
-            return new BlockingWorkflow();
+        BlockingProbe blockingProbe() {
+            return new BlockingProbe();
         }
 
         @Bean
+        @Scope(BeanDefinition.SCOPE_PROTOTYPE)
+        BlockingWorkflow blockingWorkflow(BlockingProbe probe) {
+            return new BlockingWorkflow(probe);
+        }
+
+        @Bean
+        @Scope(BeanDefinition.SCOPE_PROTOTYPE)
         ParkingWorkflow parkingWorkflow() {
             return new ParkingWorkflow();
         }
 
         @Bean
+        @Scope(BeanDefinition.SCOPE_PROTOTYPE)
         ActivityCallingWorkflow activityCallingWorkflow() {
             return new ActivityCallingWorkflow();
         }
@@ -262,12 +280,26 @@ class MaestroAutoConfigurationConfigSeamsTest {
         }
     }
 
+    /**
+     * Context-scoped (singleton) rendezvous for {@link BlockingWorkflow}: the workflow
+     * object is a per-run prototype, so the test cannot read a latch off a bean it
+     * looks up itself.
+     */
+    static final class BlockingProbe {
+
+        /** Counted down once the workflow body is running. */
+        final CountDownLatch entered = new CountDownLatch(1);
+    }
+
     /** Blocks forever inside the workflow body — an in-flight, undrained workflow. */
     @DurableWorkflow(name = "ConfigSeamsBlockingWorkflow")
     public static class BlockingWorkflow {
 
-        /** Counted down once the workflow body is running. */
-        final CountDownLatch entered = new CountDownLatch(1);
+        private final BlockingProbe probe;
+
+        BlockingWorkflow(BlockingProbe probe) {
+            this.probe = probe;
+        }
 
         /**
          * @param input ignored
@@ -275,7 +307,7 @@ class MaestroAutoConfigurationConfigSeamsTest {
          */
         @WorkflowMethod
         public String run(String input) {
-            entered.countDown();
+            probe.entered.countDown();
             try {
                 new CountDownLatch(1).await(20, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
@@ -292,16 +324,12 @@ class MaestroAutoConfigurationConfigSeamsTest {
         /** The signal this workflow waits for. */
         public static final String SIGNAL = "go";
 
-        /** Counted down once the workflow has reached its await point. */
-        final CountDownLatch parked = new CountDownLatch(1);
-
         /**
          * @param input ignored
          * @return a constant once the signal arrives
          */
         @WorkflowMethod
         public String run(String input) {
-            parked.countDown();
             WorkflowContext.current().awaitSignal(SIGNAL, String.class, Duration.ofSeconds(30));
             return "done";
         }

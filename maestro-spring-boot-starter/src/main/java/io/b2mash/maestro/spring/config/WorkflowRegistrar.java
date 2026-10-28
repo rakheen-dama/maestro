@@ -25,8 +25,24 @@ import java.util.concurrent.ConcurrentHashMap;
  * with the {@link WorkflowExecutor}.
  *
  * <p>Runs during the {@link SmartInitializingSingleton} phase — after all
- * singleton beans are created (including activity proxy injection) but
- * before {@link org.springframework.boot.ApplicationRunner} fires.
+ * singleton beans are created but before
+ * {@link org.springframework.boot.ApplicationRunner} fires.
+ *
+ * <h2>One workflow object per run</h2>
+ * <p>Workflow beans must be prototype-scoped (scanned ones are, see
+ * {@link DurableWorkflowBeanRegistrar}). Discovery reads bean definitions by
+ * name and type only — it never instantiates a workflow. Each registration's
+ * {@link WorkflowRegistration#workflowFactory() workflowFactory} is
+ * {@code () -> applicationContext.getBean(beanName)}, so the engine gets a new,
+ * fully wired object (dependency injection, {@code @ActivityStub} proxies)
+ * for every start, recovery and retry. A singleton-scoped
+ * {@code @DurableWorkflow} bean — one object shared by every run, leaking
+ * instance fields between concurrent workflows — fails startup with a
+ * {@link BeanInitializationException}.
+ *
+ * <p>A prototype whose wiring is broken fails only when a run first builds
+ * it: the engine wraps the {@code BeansException} in
+ * {@link io.b2mash.maestro.core.exception.WorkflowInstantiationException}.
  *
  * <h2>Thread Safety</h2>
  * <p>Registration happens once during the single-threaded initialization phase.
@@ -58,20 +74,31 @@ public class WorkflowRegistrar implements SmartInitializingSingleton, Applicatio
     @Override
     public void afterSingletonsInstantiated() {
         var ctx = Objects.requireNonNull(applicationContext);
-        var workflowBeans = ctx.getBeansWithAnnotation(DurableWorkflow.class);
 
-        for (var entry : workflowBeans.entrySet()) {
-            var beanName = entry.getKey();
-            var bean = entry.getValue();
-            var targetClass = ClassUtils.getUserClass(bean.getClass());
-            registerWorkflow(beanName, bean, targetClass);
+        // By name and type only: getBeansWithAnnotation would instantiate every
+        // (prototype) workflow bean just to discover it.
+        for (var beanName : ctx.getBeanNamesForAnnotation(DurableWorkflow.class)) {
+            var beanType = ctx.getType(beanName);
+            if (beanType == null) {
+                throw new BeanInitializationException(
+                        "Cannot determine the type of @DurableWorkflow bean '%s'".formatted(beanName));
+            }
+            var targetClass = ClassUtils.getUserClass(beanType);
+            if (ctx.isSingleton(beanName)) {
+                throw new BeanInitializationException(
+                        ("@DurableWorkflow bean '%s' (%s) must be prototype-scoped: a new workflow object is "
+                                + "created per run. Remove @Component (the starter registers the class itself) "
+                                + "or add @Scope(\"prototype\").")
+                                .formatted(beanName, targetClass.getName()));
+            }
+            registerWorkflow(ctx, beanName, targetClass);
         }
 
         logger.info("Registered {} workflow type(s): {}", registrations.size(),
                 registrations.keySet());
     }
 
-    private void registerWorkflow(String beanName, Object bean, Class<?> targetClass) {
+    private void registerWorkflow(ApplicationContext ctx, String beanName, Class<?> targetClass) {
         var annotation = targetClass.getAnnotation(DurableWorkflow.class);
         if (annotation == null) {
             return;
@@ -83,8 +110,10 @@ public class WorkflowRegistrar implements SmartInitializingSingleton, Applicatio
 
         var workflowMethod = findWorkflowMethod(targetClass, workflowType);
 
+        // getBean of a prototype is thread-safe and builds a new object per call,
+        // as the factory contract (called once per run, possibly concurrently) requires.
         var registration = new WorkflowRegistration(
-                workflowType, taskQueue, bean, workflowMethod
+                workflowType, taskQueue, () -> ctx.getBean(beanName), workflowMethod
         );
 
         var existing = registrations.putIfAbsent(workflowType, registration);

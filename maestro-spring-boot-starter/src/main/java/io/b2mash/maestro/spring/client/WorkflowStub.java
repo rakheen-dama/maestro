@@ -60,8 +60,16 @@ public final class WorkflowStub<T> {
     /**
      * Starts the workflow asynchronously and returns immediately.
      *
+     * <p>Builds a new workflow object for this run from the registration's
+     * {@linkplain WorkflowRegistration#workflowFactory() factory} — a fresh
+     * prototype bean, so instance fields are this run's state alone.
+     *
      * @param input the workflow input, or {@code null} for no-arg workflows
      * @return the workflow instance UUID (primary key)
+     * @throws io.b2mash.maestro.core.exception.WorkflowInstantiationException if the
+     *         workflow bean cannot be created (for example a Spring
+     *         {@code BeanCreationException} from a broken dependency, available as
+     *         its {@linkplain Throwable#getCause() cause}); the run is not launched
      */
     public UUID startAsync(@Nullable Object input) {
         return executor.startWorkflow(
@@ -69,7 +77,7 @@ public final class WorkflowStub<T> {
                 registration.workflowType(),
                 registration.taskQueue(),
                 input,
-                registration.workflowImpl(),
+                registration.workflowFactory(),
                 registration.workflowMethod()
         );
     }
@@ -88,6 +96,8 @@ public final class WorkflowStub<T> {
      * @return the workflow output, or {@code null} if the workflow returned void/null
      * @throws TimeoutException if the timeout elapses before completion
      * @throws io.b2mash.maestro.core.exception.WorkflowExecutionException if the workflow failed
+     * @throws io.b2mash.maestro.core.exception.WorkflowInstantiationException if the
+     *         workflow bean cannot be created (see {@link #startAsync})
      */
     public <R> @Nullable R startAndWait(
             @Nullable Object input,

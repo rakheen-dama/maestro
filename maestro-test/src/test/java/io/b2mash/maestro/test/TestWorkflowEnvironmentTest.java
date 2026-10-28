@@ -152,6 +152,21 @@ class TestWorkflowEnvironmentTest {
         assertEquals("go", result);
     }
 
+    @Test
+    void secondInstanceOfAQueryableWorkflowTypeCanStart() {
+        env = TestWorkflowEnvironment.create();
+
+        // Query methods are registered per workflow type, not per start: a second
+        // start of the same type must not fail with "already registered".
+        var first = env.startWorkflow(QueryableWorkflow.class, null);
+        var second = env.startWorkflow(QueryableWorkflow.class, null);
+        waitForStatus(first, WorkflowStatus.WAITING_SIGNAL, Duration.ofSeconds(2));
+        waitForStatus(second, WorkflowStatus.WAITING_SIGNAL, Duration.ofSeconds(2));
+
+        assertEquals("waiting-for-signal", first.query("getProgress", null, String.class));
+        assertEquals("waiting-for-signal", second.query("getProgress", null, String.class));
+    }
+
     // ── @MaestroTest annotation ─────────────────────────────────────────
 
     @Test
