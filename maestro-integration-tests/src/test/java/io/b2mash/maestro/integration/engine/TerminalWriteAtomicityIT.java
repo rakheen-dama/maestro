@@ -27,12 +27,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>{@link FaultInjectingDataSource} fails the event {@code INSERT} inside
  * {@code completeInstance}'s transaction, <em>after</em> the status
- * {@code UPDATE} has executed on the same connection. Every terminal write the
- * run attempts (the {@code COMPLETED} one, and the {@code FAILED} one its
- * failure handling then tries) therefore fails mid-transaction. The pin is that
- * the instance stays non-terminal and recoverable with no terminal event, and
- * that once the fault clears, ordinary recovery replays the memoized steps and
- * finalises the workflow exactly once.
+ * {@code UPDATE} has executed on the same connection, so the run's
+ * {@code COMPLETED} write fails mid-transaction. Exactly one terminal write is
+ * attempted: a store error on the {@code COMPLETED} write abandons the run as
+ * {@code TERMINAL_WRITE_FAILED} (R31) — it is never routed into failure
+ * handling, so no compensation runs and no {@code FAILED} write is tried. The
+ * pin is that the instance stays non-terminal and recoverable with no terminal
+ * event, and that once the fault clears, ordinary recovery replays the memoized
+ * steps and finalises the workflow exactly once.
  */
 @Tag("integration")
 @DisplayName("Issue 26: the terminal write is atomic against a real mid-transaction failure")
@@ -61,6 +63,10 @@ class TerminalWriteAtomicityIT extends PostgresIntegrationSupport {
                     TestWorkflows.ChainWorkflow.class, "seed");
 
             await().atMost(BOUND).until(() -> faulty.injectedFailures() >= 1);
+            await().atMost(BOUND).until(() -> !harness.executor().isRunning(handle.workflowId()));
+            assertEquals(1, faulty.injectedFailures(),
+                    "only the COMPLETED write may be attempted — a store error there must not "
+                            + "fall through to failure handling and a second (FAILED) terminal write");
             await().during(Duration.ofSeconds(2)).atMost(Duration.ofSeconds(5))
                     .until(() -> !store.getInstance(handle.workflowId()).orElseThrow().status().isTerminal());
             assertTrue(store.getEvents(handle.instanceId()).stream()
@@ -72,7 +78,6 @@ class TerminalWriteAtomicityIT extends PostgresIntegrationSupport {
                     "a workflow whose terminal write failed must stay recoverable");
 
             faulty.disarm();
-            await().atMost(BOUND).until(() -> !harness.executor().isRunning(handle.workflowId()));
             assertEquals(1, harness.recover());
             assertEquals(WorkflowStatus.COMPLETED, handle.awaitTerminal(BOUND));
             assertEquals(1, handle.events().stream()

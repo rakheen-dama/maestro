@@ -12,6 +12,7 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.spi.TerminalWrites;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -176,9 +177,11 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                 log.debug("Created workflow instance: workflowId={}, id={}",
                         instance.workflowId(), instance.id());
                 return instance;
-            } catch (SQLException e) {
-                conn.rollback();
+            } catch (SQLException | RuntimeException e) {
+                rollbackAfter(conn, e);
                 throw e;
+            } finally {
+                restoreAutoCommit(conn);
             }
         } catch (SQLException e) {
             if (UNIQUE_VIOLATION.equals(e.getSQLState())) {
@@ -250,7 +253,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
         Objects.requireNonNull(terminal, "terminal");
         Objects.requireNonNull(terminalEvent, "terminalEvent");
-        requireTerminalWrite(terminal, terminalEvent);
+        TerminalWrites.requireValid(terminal, terminalEvent);
 
         boolean written;
         try (var conn = dataSource.getConnection()) {
@@ -264,8 +267,10 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                     conn.rollback();
                 }
             } catch (SQLException | RuntimeException e) {
-                conn.rollback();
+                rollbackAfter(conn, e);
                 throw e;
+            } finally {
+                restoreAutoCommit(conn);
             }
         } catch (SQLException e) {
             if (UNIQUE_VIOLATION.equals(e.getSQLState())) {
@@ -291,6 +296,33 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                 terminal.workflowId(), terminal.status(), terminal.version() - 1,
                 terminal.version(), terminalEvent.sequenceNumber());
         return true;
+    }
+
+    /**
+     * Rolls back {@code conn} after {@code original} aborted its transaction. A
+     * rollback failure is attached to {@code original} as suppressed rather
+     * than replacing it, so the caller still sees — and maps — the real cause.
+     */
+    private static void rollbackAfter(Connection conn, Throwable original) {
+        try {
+            conn.rollback();
+        } catch (SQLException rollbackFailed) {
+            original.addSuppressed(rollbackFailed);
+        }
+    }
+
+    /**
+     * Restores auto-commit before a transactional connection is closed, so a
+     * pooled connection is never handed to the next borrower mid-mode. A
+     * failure here cannot change the transaction's outcome (already committed
+     * or rolled back), so it is logged, not thrown.
+     */
+    private static void restoreAutoCommit(Connection conn) {
+        try {
+            conn.setAutoCommit(true);
+        } catch (SQLException e) {
+            log.warn("Could not restore auto-commit on a store connection before closing it: {}", e.toString());
+        }
     }
 
     private String updateInstanceSql() {
@@ -328,25 +360,6 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             ps.setObject(13, instance.id());
             ps.setInt(14, instance.version() - 1);
             return ps.executeUpdate();
-        }
-    }
-
-    private static void requireTerminalWrite(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
-        if (!terminal.status().isTerminal()) {
-            throw new IllegalArgumentException(
-                    "completeInstance requires a terminal status, got %s (workflowId=%s)"
-                            .formatted(terminal.status(), terminal.workflowId()));
-        }
-        if (terminalEvent.eventType() != EventType.WORKFLOW_COMPLETED
-                && terminalEvent.eventType() != EventType.WORKFLOW_FAILED) {
-            throw new IllegalArgumentException(
-                    "completeInstance requires a WORKFLOW_COMPLETED or WORKFLOW_FAILED event, got %s (workflowId=%s)"
-                            .formatted(terminalEvent.eventType(), terminal.workflowId()));
-        }
-        if (!terminalEvent.workflowInstanceId().equals(terminal.id())) {
-            throw new IllegalArgumentException(
-                    "completeInstance event belongs to instance %s, not %s (workflowId=%s)"
-                            .formatted(terminalEvent.workflowInstanceId(), terminal.id(), terminal.workflowId()));
         }
     }
 

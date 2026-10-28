@@ -34,10 +34,11 @@ import static org.awaitility.Awaitility.await;
  * (GitHub Actions run 30728290264: five events expected, four observed, the
  * missing one being {@code 5001:WORKFLOW_COMPLETED}).
  *
- * <p>The fix is not a sleep and not a longer timeout — those only move the odds.
- * The fix is to wait for the condition the assertion actually depends on: the
- * terminal event being present in the durable log. The event log is the truth;
- * the status column is an advisory hint that runs ahead of it.
+ * <p>The fix for that was not a sleep and not a longer timeout — those only
+ * moved the odds. It was to wait for the condition the assertion actually
+ * depends on: the terminal event being present in the durable log. Before
+ * Issue 26 the status column was an advisory hint that ran ahead of the log;
+ * it no longer does, and waiting on the event remains the precise predicate.
  *
  * <h2>The {@code TERMINATED} exemption</h2>
  * <p>{@code terminate()} moves the instance row to {@link WorkflowStatus#TERMINATED}

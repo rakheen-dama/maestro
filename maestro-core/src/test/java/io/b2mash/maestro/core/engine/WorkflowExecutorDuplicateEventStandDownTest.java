@@ -392,7 +392,7 @@ class WorkflowExecutorDuplicateEventStandDownTest {
         public synchronized boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
             // Test fixture: composes this store's own CAS and append under its monitor
             // (so every hook on either still fires), undoing the status write if the
-            // append fails — nothing is written unless both land.
+            // append fails and the row is still ours — nothing is written unless both land.
             var before = byWorkflowId.get(terminal.workflowId());
             try {
                 updateInstance(terminal);
@@ -402,7 +402,8 @@ class WorkflowExecutorDuplicateEventStandDownTest {
             try {
                 appendEvent(terminalEvent);
             } catch (RuntimeException appendFailed) {
-                byWorkflowId.put(terminal.workflowId(), before);
+                // Restore only if the row is still ours — never clobber a later writer.
+                byWorkflowId.replace(terminal.workflowId(), terminal, before);
                 throw appendFailed;
             }
             return true;

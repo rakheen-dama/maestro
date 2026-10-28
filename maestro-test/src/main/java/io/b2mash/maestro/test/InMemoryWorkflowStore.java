@@ -10,6 +10,7 @@ import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.spi.TerminalWrites;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 
 import java.time.Instant;
@@ -121,7 +122,7 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
      */
     @Override
     public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
-        requireTerminalWrite(terminal, terminalEvent);
+        TerminalWrites.requireValid(terminal, terminalEvent);
         var lock = instanceLocks.get(terminal.workflowId());
         if (lock == null) {
             throw new WorkflowNotFoundException(terminal.workflowId());
@@ -139,25 +140,6 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
             put(terminalEvent);
             instances.put(terminal.workflowId(), terminal);
             return true;
-        }
-    }
-
-    private static void requireTerminalWrite(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
-        if (!terminal.status().isTerminal()) {
-            throw new IllegalArgumentException(
-                    "completeInstance requires a terminal status, got %s (workflowId=%s)"
-                            .formatted(terminal.status(), terminal.workflowId()));
-        }
-        if (terminalEvent.eventType() != EventType.WORKFLOW_COMPLETED
-                && terminalEvent.eventType() != EventType.WORKFLOW_FAILED) {
-            throw new IllegalArgumentException(
-                    "completeInstance requires a WORKFLOW_COMPLETED or WORKFLOW_FAILED event, got %s (workflowId=%s)"
-                            .formatted(terminalEvent.eventType(), terminal.workflowId()));
-        }
-        if (!terminalEvent.workflowInstanceId().equals(terminal.id())) {
-            throw new IllegalArgumentException(
-                    "completeInstance event belongs to instance %s, not %s (workflowId=%s)"
-                            .formatted(terminalEvent.workflowInstanceId(), terminal.id(), terminal.workflowId()));
         }
     }
 

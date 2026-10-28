@@ -1461,8 +1461,31 @@ public final class WorkflowExecutor {
             // are one atomic store write. A DuplicateEventException from it
             // (another runner already owns the terminal slot) wrote nothing
             // and reaches the stale-run stand-down arm below.
-            if (transitionToTerminal(ctx, instance, WorkflowStatus.COMPLETED,
-                    EventType.WORKFLOW_COMPLETED, outputPayload)) {
+            boolean completed;
+            try {
+                completed = transitionToTerminal(ctx, instance, WorkflowStatus.COMPLETED,
+                        EventType.WORKFLOW_COMPLETED, outputPayload);
+            } catch (DuplicateEventException | StaleRunException | OptimisticLockException routed) {
+                throw routed; // keep their existing arms below
+            } catch (RuntimeException terminalWriteFailed) {
+                // R31: any other store error here (a DB blip surfacing as an
+                // unchecked SQL exception, a failed re-read) is NOT a workflow
+                // failure — the workflow body already succeeded. Letting it
+                // reach catch (Exception e) would run a successful saga's
+                // compensations and could durably record FAILED. The atomic
+                // write means nothing terminal landed, so the instance stays
+                // active and recoverable: abandon the local run (finally
+                // releases the lock) and let the next recovery replay the
+                // memoized steps and complete it. Only the store call is
+                // contained — result serialization above stays outside, so a
+                // non-serializable result is still a workflow failure.
+                logger.error("Could not persist the COMPLETED outcome of workflow '{}' — leaving it "
+                                + "non-terminal for recovery to finalise",
+                        ctx.workflowId(), terminalWriteFailed);
+                emitRunAbandoned(ctx, AbandonReason.TERMINAL_WRITE_FAILED);
+                return;
+            }
+            if (completed) {
                 // Only the winner of the terminal transition counts the
                 // outcome — a converged loser must not double-fire. Emitted
                 // BEFORE the lifecycle publish: winning the transition is what

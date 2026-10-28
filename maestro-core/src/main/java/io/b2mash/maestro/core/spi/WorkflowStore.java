@@ -133,8 +133,7 @@ public interface WorkflowStore {
      * writes — that is precisely the non-atomic gap this method exists to
      * remove. A relational store wraps the {@code UPDATE} and the
      * {@code INSERT} in one transaction; an in-memory store performs both
-     * under the instance's lock and undoes the status write if the append
-     * fails.
+     * under the instance's lock so nothing is written unless both land.
      *
      * @param terminal      the fully-built terminal instance (version already
      *                      incremented; {@link WorkflowInstance#status()} must be

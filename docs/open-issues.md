@@ -2271,8 +2271,13 @@ those lands, the section carries the warning added this cycle.
 > finalises it exactly once), `TerminalEventRaceIT.statusOnlyWait_neverSeesTheGap`
 > (a status poll that sees a terminal status always finds the event) and
 > `PostgresWorkflowStoreTest.CompleteInstanceTests` (including the rollback of
-> the `UPDATE` when the `INSERT` fails). Commit: this commit — "fix(store):
-> write terminal status and terminal event in one transaction (Issue 26)".
+> the `UPDATE` when the `INSERT` fails). Commit: `b85c1b8` — "fix(store):
+> write terminal status and terminal event in one transaction (Issue 26)";
+> follow-up "fix(engine): a store error on the COMPLETED write abandons the
+> run as TERMINAL_WRITE_FAILED instead of compensating it (plan 04 Task 1
+> review, R31)" routes a store error on the `COMPLETED` write to
+> `runAbandoned(TERMINAL_WRITE_FAILED)` instead of failure handling, so a
+> successful saga is never compensated or recorded `FAILED` on a DB blip.
 > The original report is kept below.
 >
 > **Original status — Open.** Deferred from the demo-cycle handover

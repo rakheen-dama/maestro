@@ -3,6 +3,7 @@ package io.b2mash.maestro.core.engine;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.TestTerminalWait;
+import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.model.EventType;
@@ -26,6 +27,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -168,6 +170,39 @@ class WorkflowExecutorTerminalTransitionTest {
     }
 
     @Test
+    @DisplayName("R31: a store error on the COMPLETED write abandons the run — a successful saga is never compensated or failed")
+    void storeErrorOnTheCompletedWrite_abandonsTheRun_withoutCompensatingIt() throws Exception {
+        store.failNextCompleteInstanceCalls(1, new RuntimeException("store blip"));
+        var observer = new RecordingEngineObserver();
+        executor.shutdown();
+        executor = newExecutor(observer);
+        var compensations = new AtomicInteger();
+        var workflowId = "saga-terminal-blip";
+        var impl = new CompensatedWorkflow(compensations);
+        var method = CompensatedWorkflow.class.getMethod("run");
+
+        executor.startWorkflow(workflowId, "CompensatedWorkflow", "default", null, impl, method);
+        await().atMost(Duration.ofSeconds(5)).until(() -> !executor.isRunning(workflowId));
+
+        var row = store.getInstance(workflowId).orElseThrow();
+        assertEquals(0, compensations.get(), "a workflow that SUCCEEDED must never be compensated");
+        assertEquals(0, store.eventsOfType(EventType.WORKFLOW_FAILED), "a store blip is not a workflow failure");
+        assertEquals(WorkflowStatus.RUNNING, row.status(), "nothing terminal was written; the run stays recoverable");
+        assertEquals(List.of(AbandonReason.TERMINAL_WRITE_FAILED),
+                observer.abandoned().stream().map(RecordingEngineObserver.AbandonCall::reason).toList());
+        assertEquals(0, observer.completed().size());
+        assertEquals(0, observer.failed().size());
+
+        // The store has recovered: ordinary recovery replays the run and finalises it.
+        assertEquals(1, executor.recoverWorkflows(Map.of("CompensatedWorkflow",
+                new WorkflowRegistration("CompensatedWorkflow", "default", impl, method))));
+        awaitTerminal(workflowId);
+        assertEquals(WorkflowStatus.COMPLETED, store.getInstance(workflowId).orElseThrow().status());
+        assertEquals(1, store.eventsOfType(EventType.WORKFLOW_COMPLETED));
+        assertEquals(0, compensations.get(), "recovery must not compensate either");
+    }
+
+    @Test
     @DisplayName("Issue 26: the terminal status and the terminal event are written by one store call")
     void terminalEventAndStatus_areWrittenByOneStoreCall() {
         executor.shutdown();
@@ -221,6 +256,24 @@ class WorkflowExecutorTerminalTransitionTest {
         }
     }
 
+    /** Registers one compensation, then succeeds — the saga R31 must never compensate. */
+    @DurableWorkflow(name = "CompensatedWorkflow")
+    public static class CompensatedWorkflow {
+
+        private final AtomicInteger compensations;
+
+        CompensatedWorkflow(AtomicInteger compensations) {
+            this.compensations = compensations;
+        }
+
+        /** @return a fixed result */
+        @WorkflowMethod
+        public String run() {
+            WorkflowContext.current().addCompensation(compensations::incrementAndGet);
+            return "ok";
+        }
+    }
+
     /**
      * An in-memory store that enforces the canonical optimistic-locking
      * convention and can inject a competing write immediately before a
@@ -241,11 +294,19 @@ class WorkflowExecutorTerminalTransitionTest {
         private final AtomicInteger completeInstanceCalls = new AtomicInteger();
         private final AtomicInteger terminalAppendEventCalls = new AtomicInteger();
         private volatile @Nullable RuntimeException completeInstanceFailure;
+        private final AtomicInteger completeInstanceFailuresRemaining = new AtomicInteger();
         private volatile String outOfBandOutput = "";
 
         /** Makes every {@code completeInstance} call throw {@code failure} — a store outage at the terminal write. */
         void failAllCompleteInstanceCalls(RuntimeException failure) {
             completeInstanceFailure = failure;
+            completeInstanceFailuresRemaining.set(Integer.MAX_VALUE);
+        }
+
+        /** Makes the next {@code n} {@code completeInstance} calls throw {@code failure}, then the store recovers. */
+        void failNextCompleteInstanceCalls(int n, RuntimeException failure) {
+            completeInstanceFailure = failure;
+            completeInstanceFailuresRemaining.set(n);
         }
 
         /** @return how many times the engine called {@code completeInstance} */
@@ -319,7 +380,7 @@ class WorkflowExecutorTerminalTransitionTest {
         public synchronized boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
             completeInstanceCalls.incrementAndGet();
             var failure = completeInstanceFailure;
-            if (failure != null) {
+            if (failure != null && completeInstanceFailuresRemaining.getAndUpdate(n -> n > 0 ? n - 1 : 0) > 0) {
                 throw failure;
             }
             try {
