@@ -2,9 +2,11 @@ package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.context.WorkflowMDC;
+import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.MaestroControlFlowError;
 import io.b2mash.maestro.core.exception.RetryExhaustedException;
 import io.b2mash.maestro.core.exception.SignalTimeoutException;
+import io.b2mash.maestro.core.exception.StaleRunException;
 import io.b2mash.maestro.core.exception.TimerCancelledException;
 import io.b2mash.maestro.core.exception.UnsupportedWorkflowVersionException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
@@ -690,6 +692,17 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             for (int i = 0; i < branchCount; i++) {
                 if (errors.get(i).get() instanceof MaestroControlFlowError signal) {
                     throw signal;
+                }
+            }
+
+            // Stale-run signals next (R27): a DuplicateEventException or
+            // StaleRunException means another runner owns this workflow's
+            // progress, so this run must stand down — not record FAILED and
+            // compensate because an earlier branch happened to throw first.
+            for (int i = 0; i < branchCount; i++) {
+                var error = errors.get(i).get();
+                if (error instanceof DuplicateEventException || error instanceof StaleRunException) {
+                    throw (RuntimeException) error;
                 }
             }
 

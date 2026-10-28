@@ -1,8 +1,11 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
+import io.b2mash.maestro.core.exception.StaleRunException;
 import io.b2mash.maestro.core.model.EventType;
+import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.saga.CompensationEntry;
 import io.b2mash.maestro.core.saga.CompensationStack;
 import org.junit.jupiter.api.DisplayName;
@@ -159,6 +162,40 @@ class ParallelCompensationRegistrationOrderTest extends ParallelSagaTestSupport 
         // recorded workflow failure with compensations.
         assertThrows(ExecutorShutdownException.class,
                 () -> inScope(() -> ops.parallel(List.of(b0, b1))));
+    }
+
+    @Test
+    @DisplayName("a StaleRunException in a later branch wins over a plain failure in an earlier one (R27)")
+    void staleRunWinsOverEarlierBranchFailure() {
+        freshRun();
+        var b1Done = new CountDownLatch(1);
+        Callable<String> b0 = () -> {
+            await(b1Done);
+            throw new IllegalStateException("plain failure in branch 0");
+        };
+        Callable<String> b1 = () -> {
+            b1Done.countDown();
+            throw new StaleRunException("wf", WorkflowStatus.COMPLETED, "test");
+        };
+
+        assertThrows(StaleRunException.class, () -> inScope(() -> ops.parallel(List.of(b0, b1))));
+    }
+
+    @Test
+    @DisplayName("a DuplicateEventException in a later branch wins over a plain failure in an earlier one (R27)")
+    void duplicateEventWinsOverEarlierBranchFailure() {
+        freshRun();
+        var b1Done = new CountDownLatch(1);
+        Callable<String> b0 = () -> {
+            await(b1Done);
+            throw new IllegalStateException("plain failure in branch 0");
+        };
+        Callable<String> b1 = () -> {
+            b1Done.countDown();
+            throw new DuplicateEventException(java.util.UUID.randomUUID(), 1);
+        };
+
+        assertThrows(DuplicateEventException.class, () -> inScope(() -> ops.parallel(List.of(b0, b1))));
     }
 
     @Test

@@ -249,6 +249,113 @@ class SagaManagerTerminateRaceTest {
                 base.getInstance("recovering-workflow").orElseThrow().status());
     }
 
+    // ── C7: the per-entry guard ──────────────────────────────────────────
+
+    @Test
+    @DisplayName("a terminate landing while entry 0 runs stops the loop before entry 1")
+    void terminateDuringEntryZero_stopsBeforeEntryOne() {
+        var store = new RaceableStore();
+        var sagaManager = new SagaManager(store, new RecordingMessaging(),
+                new PayloadSerializer(new ObjectMapper()), "test-service");
+        var instance = newInstance(store, "per-entry");
+        var ctx = newCtx(instance);
+        var runs = new CopyOnWriteArrayList<String>();
+        var stack = new CompensationStack();
+        stack.push("step-C", () -> runs.add("C"));
+        stack.push("step-B", () -> runs.add("B"));
+        stack.push("step-A", () -> { // LIFO: A runs first
+            runs.add("A");
+            forceStatus(store, "per-entry", WorkflowStatus.TERMINATED);
+        });
+
+        assertThrows(WorkflowTerminatedException.class,
+                () -> sagaManager.compensate(ctx, instance, stack, false));
+
+        assertEquals(List.of("A"), runs, "entries 1..n must not run once the instance reads TERMINATED");
+        var events = store.getEvents(instance.id());
+        assertEquals(1, events.stream()
+                        .filter(e -> e.eventType() == EventType.COMPENSATION_STEP_COMPLETED).count(),
+                "entry 0 ran to completion and its outcome stays durable");
+        assertTrue(events.stream().noneMatch(e -> e.eventType() == EventType.COMPENSATION_COMPLETED));
+        assertEquals(WorkflowStatus.TERMINATED, store.getInstance("per-entry").orElseThrow().status());
+    }
+
+    @Test
+    @DisplayName("another runner finalising the workflow mid-compensation stands this run down as stale")
+    void otherRunnerFinalisedDuringEntryZero_standsDownAsStale() {
+        var store = new RaceableStore();
+        var sagaManager = new SagaManager(store, new RecordingMessaging(),
+                new PayloadSerializer(new ObjectMapper()), "test-service");
+        var instance = newInstance(store, "per-entry-stale");
+        var ctx = newCtx(instance);
+        var runs = new CopyOnWriteArrayList<String>();
+        var stack = new CompensationStack();
+        stack.push("step-C", () -> runs.add("C"));
+        stack.push("step-B", () -> runs.add("B"));
+        stack.push("step-A", () -> {
+            runs.add("A");
+            forceStatus(store, "per-entry-stale", WorkflowStatus.FAILED);
+        });
+
+        assertThrows(StaleRunException.class, () -> sagaManager.compensate(ctx, instance, stack, false));
+
+        assertEquals(List.of("A"), runs);
+        assertTrue(store.getEvents(instance.id()).stream()
+                .noneMatch(e -> e.eventType() == EventType.COMPENSATION_COMPLETED));
+    }
+
+    @Test
+    @DisplayName("exactly one instance read per live entry; replay-skipped entries read nothing")
+    void perEntryGuard_costsOneReadPerLiveEntry() {
+        var counting = new CountingStore(new RaceableStore());
+        var sagaManager = new SagaManager(counting, new RecordingMessaging(),
+                new PayloadSerializer(new ObjectMapper()), "test-service");
+        var instance = newInstance(counting, "per-entry-reads");
+        var ctx = newCtx(instance);
+        var stack = new CompensationStack();
+        stack.push("step-C", () -> { });
+        stack.push("step-B", () -> { });
+        stack.push("step-A", () -> { });
+
+        counting.instanceReads.set(0);
+        sagaManager.compensate(ctx, instance, stack, false);
+        assertEquals(1 + 3, counting.instanceReads.get(),
+                "1 (transitionToCompensating) + one per live entry");
+
+        // Recovery re-run: every entry is now durable, so each is replay-skipped.
+        var replayCtx = newCtx(instance);
+        replayCtx.setReplaying(true);
+        var replayStack = new CompensationStack(); // compensate() drained the first one
+        replayStack.push("step-C", () -> { });
+        replayStack.push("step-B", () -> { });
+        replayStack.push("step-A", () -> { });
+        counting.instanceReads.set(0);
+        sagaManager.compensate(replayCtx, instance, replayStack, false);
+        assertEquals(1, counting.instanceReads.get(),
+                "replay-skipped entries run nothing, so they read nothing");
+    }
+
+    private static void forceStatus(RaceableStore store, String workflowId, WorkflowStatus status) {
+        var latest = store.getInstance(workflowId).orElseThrow();
+        store.updateInstance(latest.toBuilder().status(status).version(latest.version() + 1).build());
+    }
+
+    /** Counts {@code getInstance} calls; everything else passes through. */
+    private static final class CountingStore extends DelegatingStore {
+        final AtomicInteger instanceReads = new AtomicInteger();
+
+        CountingStore(WorkflowStore delegate) {
+            super(delegate);
+        }
+
+        @Override public Optional<WorkflowInstance> getInstance(String workflowId) {
+            instanceReads.incrementAndGet();
+            return delegate.getInstance(workflowId);
+        }
+
+        @Override public void updateInstance(WorkflowInstance instance) { delegate.updateInstance(instance); }
+    }
+
     // ── Fixtures ─────────────────────────────────────────────────────────
 
     private WorkflowInstance newInstance(WorkflowStore store, String workflowId) {

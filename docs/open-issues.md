@@ -1820,6 +1820,24 @@ that had **enshrined this defect as "an engine-level limitation"**.
 > the guard and the swallow lived **before** the fix and are no longer
 > current — see `SagaManager.transitionToCompensating`'s Javadoc for the
 > present-day mechanism.
+>
+> **Residual closed (this cycle).** The entry gap was closed earlier (above);
+> a second, per-entry gap remained: a terminate landing while sequential
+> compensation entry *i* ran let entries *i+1…n* run on the terminated
+> workflow, while this section said Resolved. `SagaManager.requireNotFinalised`
+> (one `store.getInstance` read) now runs before **each live** sequential
+> entry — `TERMINATED` throws `WorkflowTerminatedException`, any other
+> terminal status throws `StaleRunException` — and `transitionToCompensating`
+> uses the same helper on every CAS attempt. Only the entry already executing
+> can still complete after a terminate. Pinned by
+> `SagaManagerTerminateRaceTest` (`terminateDuringEntryZero_stopsBeforeEntryOne`,
+> the stale-run twin, and the exact-read-count pin) and by
+> `EnginePostgresSagaIT.remoteTerminateDuringFirstCompensation_stopsBeforeTheSecond`
+> (a second harness on the same store terminates from the non-owning node,
+> so the in-memory cancellation flag plays no part). Parallel compensation is
+> unchanged (its branches start together; `@Compensate` entries are stopped
+> locally by the activity path), so a manually registered `Runnable` in
+> parallel mode is the one uncovered case.
 
 **Kind:** Library defect. **Severity:** Medium (narrow window, but the
 outcome contradicted a documented guarantee).

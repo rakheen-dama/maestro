@@ -69,8 +69,11 @@ import java.util.concurrent.atomic.AtomicReference;
  *   <li><b>Terminate:</b> Marks a workflow {@code TERMINATED} from any node and
  *       stops it — without compensation — evicting its virtual thread if this
  *       node happens to own it. ("Without compensation" means terminate never
- *       starts one; one open race can still let a compensation that was
- *       already starting run to completion — {@code docs/open-issues.md}
+ *       starts one: {@code SagaManager} re-checks the instance before entering
+ *       compensation and before each sequential entry, so a terminate observed
+ *       at any of those points stops the unwind. The only compensation work
+ *       that can still complete after a terminate is the entry (or parallel
+ *       branch set) already executing — {@code docs/open-issues.md}
  *       Issue 22.)</li>
  *   <li><b>Shutdown:</b> Stops accepting new work, waits for in-flight
  *       workflows to drain, and leaves parked workflows in their
@@ -693,13 +696,14 @@ public final class WorkflowExecutor {
      *   <li><b>No compensation.</b> Terminate marks and stops; it does not
      *       unwind a saga. Compensation steps that already ran stay memoized,
      *       pending ones never run. ("Cancel", which compensates, is a
-     *       different and larger feature.) <b>One open exception:</b> terminate
-     *       never <em>starts</em> a compensation, but a narrow documented race
-     *       — this method's write landing between
-     *       {@code SagaManager.transitionToCompensating}'s terminal-status
-     *       check and its own status write — can let a compensation that was
-     *       already starting run to completion on the terminated workflow. See
-     *       {@code docs/open-issues.md} Issue 22.</li>
+     *       different and larger feature.) <b>Compensation guards:</b>
+     *       terminate never <em>starts</em> a compensation, and
+     *       {@code SagaManager} re-checks the instance before entering
+     *       compensation (on every CAS attempt) and before each sequential
+     *       entry, so a terminate observed at any of those points stops the
+     *       unwind. The only compensation work that can still complete after a
+     *       terminate is the entry (or parallel branch set) already executing.
+     *       See {@code docs/open-issues.md} Issue 22.</li>
      *   <li><b>No interruption of an in-flight activity attempt.</b> The
      *       attempt that is executing finishes and memoizes its result
      *       (harmless); but no further attempt starts, a retry backoff in

@@ -308,6 +308,23 @@ public final class SagaManager {
     /**
      * Runs compensations one at a time, in LIFO order.
      *
+     * <p><b>Per-entry terminate guard (C7).</b> Before each <em>live</em> entry
+     * (after the replay-skip, before the entry's context is created) the
+     * instance row is re-read via {@link #requireNotFinalised}: a
+     * {@code TERMINATED} row throws {@link WorkflowTerminatedException}, any
+     * other terminal row throws {@link StaleRunException}. So a terminate that
+     * lands while entry <i>i</i> runs stops the unwind before entry
+     * <i>i+1</i>; only the entry already executing completes. Cost: exactly one
+     * {@code getInstance} read per live entry (none for replay-skipped
+     * entries). This covers a terminate issued from a <em>non-owning</em> node
+     * and manually registered {@code Runnable}s, neither of which the owning
+     * node's in-memory cancellation flag can reach. Parallel compensation is
+     * deliberately unchanged: its branches all start in the same instant, so
+     * there is no "next entry" to stop, and every {@code @Compensate} entry
+     * already passes through the activity invocation handler, where the local
+     * cancellation flag stops a local terminate; only manually registered
+     * {@code Runnable}s in parallel mode remain uncovered.
+     *
      * <p>Each entry gets its own reserved sequence block —
      * {@code SequenceSpace.branchBase(anchorSeq, i)} — the same isolation
      * scheme {@code executeParallel} uses for branches. The block's base
@@ -373,6 +390,13 @@ public final class SagaManager {
                 continue;
             }
 
+            // C7: re-check the instance before every live entry. A terminate
+            // (from any node) or another runner's finalisation that landed
+            // while the previous entry ran must stop the unwind here, not
+            // after entries i+1..n have run. Replay-skipped entries above run
+            // nothing, so they read nothing.
+            requireNotFinalised(ctx, "compensation entry " + i + " '" + entry.stepName() + "'");
+
             // Live path: run the action under a context bounded to this
             // entry's reserved block, so any sequence numbers it consumes
             // internally (e.g. a nested @Compensate activity call) are
@@ -401,7 +425,8 @@ public final class SagaManager {
                 // compensations are left for a recovering node, which replays
                 // this one's memoized side effects and continues; for a
                 // terminate they are simply never run, which is terminate's
-                // contract; for a stand-down an upgraded node finishes the job.
+                // contract (a terminate is also caught BETWEEN entries, by
+                // requireNotFinalised above, not only when an action parks); for a stand-down an upgraded node finishes the job.
                 // Any entry already recorded COMPLETED earlier in this same
                 // call (i.e. before the entry that threw) stays durable —
                 // its append already happened, in an earlier loop iteration.
@@ -750,18 +775,7 @@ public final class SagaManager {
      */
     private void transitionToCompensating(WorkflowContext ctx, WorkflowInstance instance) {
         for (var attempt = 1; attempt <= InstanceStatusWriter.STATUS_WRITE_ATTEMPTS; attempt++) {
-            var latest = store.getInstance(ctx.workflowId()).orElse(instance);
-            if (latest.status() == WorkflowStatus.TERMINATED) {
-                logger.info("Workflow '{}' is TERMINATED — not starting compensation; abandoning this run",
-                        ctx.workflowId());
-                throw new WorkflowTerminatedException(ctx.workflowId(), null);
-            }
-            if (latest.status().isTerminal()) {
-                logger.warn("Workflow '{}' is already {} — another runner finalised it first; "
-                                + "abandoning this stale run without compensating",
-                        ctx.workflowId(), latest.status());
-                throw new StaleRunException(ctx.workflowId(), latest.status(), "COMPENSATING write");
-            }
+            var latest = requireNotFinalised(ctx, "COMPENSATING write").orElse(instance);
             try {
                 var compensating = latest.toBuilder()
                         .status(WorkflowStatus.COMPENSATING)
@@ -794,6 +808,47 @@ public final class SagaManager {
                 throw e;
             }
         }
+    }
+
+    /**
+     * The single "is this run still the one that should be acting?" read shared
+     * by the COMPENSATING transition (once per CAS attempt) and the sequential
+     * compensation loop (once before each live entry).
+     *
+     * <p>Performs exactly one {@link WorkflowStore#getInstance} read and then:
+     * <ul>
+     *   <li>{@link WorkflowStatus#TERMINATED} &rarr; throws
+     *       {@link WorkflowTerminatedException} (an operator, possibly on
+     *       another node, asked this workflow to stop);</li>
+     *   <li>any other terminal status &rarr; throws {@link StaleRunException}
+     *       (another runner finalised the workflow; this run is stale);</li>
+     *   <li>no row &rarr; {@link Optional#empty()}; otherwise the fresh row.</li>
+     * </ul>
+     *
+     * @param ctx    the workflow context
+     * @param action what the caller is about to do, for the stale-run detail
+     * @return the freshly read, non-terminal instance, or empty if the row is gone
+     * @throws WorkflowTerminatedException if the instance reads {@code TERMINATED}
+     * @throws StaleRunException           if it reads any other terminal status
+     */
+    private Optional<WorkflowInstance> requireNotFinalised(WorkflowContext ctx, String action) {
+        var latest = store.getInstance(ctx.workflowId());
+        if (latest.isEmpty()) {
+            return latest;
+        }
+        var status = latest.get().status();
+        if (status == WorkflowStatus.TERMINATED) {
+            logger.info("Workflow '{}' is TERMINATED — not running {}; abandoning this run",
+                    ctx.workflowId(), action);
+            throw new WorkflowTerminatedException(ctx.workflowId(), null);
+        }
+        if (status.isTerminal()) {
+            logger.warn("Workflow '{}' is already {} — another runner finalised it first; "
+                            + "abandoning this stale run without running {}",
+                    ctx.workflowId(), status, action);
+            throw new StaleRunException(ctx.workflowId(), status, action);
+        }
+        return latest;
     }
 
     /**
