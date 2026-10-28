@@ -136,8 +136,9 @@ on the node that started it.
 | `maestro.messaging.topics.admin-events`  | `String` | `"maestro.admin.events"` | Topic for lifecycle events consumed by the admin dashboard.       |
 
 `maestro.messaging.topics.tasks` has been removed. It configured a task topic
-nothing ever consumed; setting it now **fails startup** on the Kafka transport
-with a message telling you to delete it and the `maestro.tasks.*` topics.
+nothing ever consumed; setting it now **fails startup** — on either transport,
+or with none — with a message telling you to delete it and the `maestro.tasks.*`
+topics.
 
 When `consumer-group` is not explicitly set, Maestro derives it from the service
 name as `maestro-{serviceName}`. This ensures each service gets its own consumer

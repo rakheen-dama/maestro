@@ -140,6 +140,21 @@ class MaestroClientTest {
         }
 
         @Test
+        @DisplayName("startAndWait on a failure with no message names the exception type alone, not ': null'")
+        void startAndWaitFailureWithoutAMessageOmitsTheMessageSuffix() {
+            runner.run(context -> {
+                var client = context.getBean(MaestroClient.class);
+
+                var ex = assertThrows(WorkflowExecutionException.class,
+                        () -> client.newWorkflow(MessagelessFailingWorkflow.class, options("f-2"))
+                                .startAndWait(null, Duration.ofSeconds(10), Void.class));
+
+                assertTrue(ex.getMessage().endsWith("failed: java.lang.IllegalStateException"), ex.getMessage());
+                assertInstanceOf(IllegalStateException.class, ex.getCause());
+            });
+        }
+
+        @Test
         @DisplayName("startAndWait on a terminated workflow names who terminated it and why")
         void startAndWaitOnTerminatedWorkflowCarriesTheReason() {
             runner.run(context -> {
@@ -365,6 +380,12 @@ class MaestroClientTest {
 
         @Bean
         @Scope(BeanDefinition.SCOPE_PROTOTYPE)
+        MessagelessFailingWorkflow messagelessFailingWorkflow() {
+            return new MessagelessFailingWorkflow();
+        }
+
+        @Bean
+        @Scope(BeanDefinition.SCOPE_PROTOTYPE)
         ParkingWorkflow parkingWorkflow() {
             return new ParkingWorkflow();
         }
@@ -407,6 +428,20 @@ class MaestroClientTest {
         @WorkflowMethod
         public String run(String input) {
             throw new IllegalStateException("boom");
+        }
+    }
+
+    /** Throws an exception with no message. */
+    @DurableWorkflow(name = "MessagelessFailingWorkflow")
+    public static class MessagelessFailingWorkflow {
+
+        /**
+         * @param input ignored
+         * @return never returns
+         */
+        @WorkflowMethod
+        public String run(String input) {
+            throw new IllegalStateException();
         }
     }
 

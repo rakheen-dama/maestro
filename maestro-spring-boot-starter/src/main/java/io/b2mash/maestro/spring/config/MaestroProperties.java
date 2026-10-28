@@ -325,8 +325,8 @@ public class MaestroProperties {
      *
      * <p>There is no task topic: workflows start in-process, so nothing is
      * dispatched over the transport. The former
-     * {@code maestro.messaging.topics.tasks} property fails Kafka-transport
-     * startup if it is still set.
+     * {@code maestro.messaging.topics.tasks} property fails startup if it is
+     * still set, whichever transport is in use ({@code MaestroAutoConfiguration}).
      *
      * @param signals     topic for cross-service signal delivery
      * @param adminEvents topic for admin dashboard lifecycle events

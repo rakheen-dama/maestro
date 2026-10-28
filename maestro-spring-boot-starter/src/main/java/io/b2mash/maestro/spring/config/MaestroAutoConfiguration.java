@@ -145,12 +145,43 @@ public class MaestroAutoConfiguration {
      * Registers bare {@code @DurableWorkflow} classes as Spring beans via
      * classpath scanning. Static because {@code BeanDefinitionRegistryPostProcessor}
      * beans are instantiated very early, before this configuration class itself.
+     *
+     * <p>Also the engine's earliest unconditional hook, so it is where removed
+     * properties are rejected (see {@link #rejectRemovedProperties}) — before
+     * any other bean, transport included, is created, and whatever beans the
+     * application overrides.
+     *
+     * @throws IllegalStateException if a removed {@code maestro.*} property is set
      */
     @Bean
     public static DurableWorkflowBeanRegistrar maestroDurableWorkflowBeanRegistrar(
             Environment environment
     ) {
+        rejectRemovedProperties(environment);
         return new DurableWorkflowBeanRegistrar(environment);
+    }
+
+    /**
+     * Fails startup when a removed property is still set, rather than letting
+     * it bind to nothing and be silently ignored. Transport-neutral: checked
+     * whichever messaging module (or none) is on the classpath.
+     *
+     * <ul>
+     *   <li>{@code maestro.messaging.topics.tasks} — Maestro no longer
+     *       dispatches work over a task topic (workflows start in-process), so
+     *       the property and the operator's pre-created {@code maestro.tasks.*}
+     *       topics would otherwise go silently unused.</li>
+     * </ul>
+     *
+     * <p>({@code maestro.store.table-prefix} is rejected by the Postgres store
+     * module, before any DDL runs.)
+     */
+    static void rejectRemovedProperties(Environment environment) {
+        if (environment.containsProperty("maestro.messaging.topics.tasks")) {
+            throw new IllegalStateException("maestro.messaging.topics.tasks has been removed: Maestro no longer "
+                    + "dispatches work over a task topic (workflows start in-process). Delete the property "
+                    + "and the maestro.tasks.* topics.");
+        }
     }
 
     @Bean

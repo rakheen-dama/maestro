@@ -171,8 +171,9 @@ public final class WorkflowStub<T> {
             return new WorkflowExecutionException(id, "Workflow '%s' failed".formatted(id), null);
         }
         var reconstructed = FailureReconstruction.reconstruct(detail.exceptionType(), detail.message());
+        var message = detail.message() == null ? "" : ": " + detail.message();
         return new WorkflowExecutionException(id,
-                "Workflow '%s' failed: %s: %s".formatted(id, detail.exceptionType(), detail.message()),
+                "Workflow '%s' failed: %s%s".formatted(id, detail.exceptionType(), message),
                 reconstructed);
     }
 

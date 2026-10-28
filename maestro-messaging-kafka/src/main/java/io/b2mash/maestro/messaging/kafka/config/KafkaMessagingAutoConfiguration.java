@@ -210,25 +210,17 @@ public class KafkaMessagingAutoConfiguration {
     /**
      * Resolves the Kafka messaging configuration from {@link MaestroProperties}.
      *
-     * <p>Fails startup when the removed {@code maestro.messaging.topics.tasks}
-     * property is still set: Maestro no longer has a task-dispatch channel, so
-     * the property would otherwise bind to nothing and be silently ignored —
-     * along with the operator's pre-created {@code maestro.tasks.*} topics.
+     * <p>(The removed {@code maestro.messaging.topics.tasks} property is
+     * rejected transport-neutrally by {@code MaestroAutoConfiguration}, so a
+     * user-supplied {@link KafkaMessagingConfig} cannot bypass it.)
      *
      * @param properties the bound Maestro configuration
-     * @param env        the environment, checked for removed properties
      * @return the resolved configuration
-     * @throws IllegalStateException if {@code maestro.messaging.topics.tasks} is set,
-     *                               or neither a consumer group nor a service name is configured
+     * @throws IllegalStateException if neither a consumer group nor a service name is configured
      */
     @Bean
     @ConditionalOnMissingBean
-    public KafkaMessagingConfig maestroKafkaMessagingConfig(MaestroProperties properties, Environment env) {
-        if (env.containsProperty("maestro.messaging.topics.tasks")) {
-            throw new IllegalStateException("maestro.messaging.topics.tasks has been removed: Maestro no longer "
-                    + "dispatches work over a task topic (workflows start in-process). Delete the property "
-                    + "and the maestro.tasks.* topics.");
-        }
+    public KafkaMessagingConfig maestroKafkaMessagingConfig(MaestroProperties properties) {
         var messaging = properties.getMessaging();
         var topics = messaging.topics();
         var consumerGroup = messaging.consumerGroup();

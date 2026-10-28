@@ -19,6 +19,7 @@ import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.BeanInitializationException;
+import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
@@ -243,7 +244,16 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
             }
 
             // Resolve the Spring bean implementing the activity interface
-            var activityImpl = ctx.getBean(activityInterface);
+            Object activityImpl;
+            try {
+                activityImpl = ctx.getBean(activityInterface);
+            } catch (NoSuchBeanDefinitionException e) {
+                // Also covers NoUniqueBeanDefinitionException (several candidates).
+                throw new BeanInitializationException(
+                        "@ActivityStub field '%s' on %s needs exactly one bean implementing %s: %s"
+                                .formatted(field.getName(), targetClass.getName(),
+                                        activityInterface.getName(), e.getMessage()), e);
+            }
 
             // Build RetryPolicy from the annotation, or from maestro.retry.default-*
             // when the annotation was left at its defaults (see resolveRetryPolicy).

@@ -141,9 +141,13 @@ class WorkflowRegistrarPrototypeTest {
         runner.withPropertyValues("maestro.workflow-packages=" + INVALID_FIXTURES + ".missingactivity")
                 .run(ctx -> {
                     assertThat(ctx).hasFailed();
+                    // Same shape as the bad-timeout message: names the field and the workflow class.
                     assertThat(ctx.getStartupFailure())
-                            .isInstanceOf(NoSuchBeanDefinitionException.class)
-                            .hasMessageContaining(MissingActivityWorkflow.UnimplementedActivities.class.getName());
+                            .isInstanceOf(BeanInitializationException.class)
+                            .hasMessageContaining("'activities'")
+                            .hasMessageContaining(MissingActivityWorkflow.class.getName())
+                            .hasMessageContaining(MissingActivityWorkflow.UnimplementedActivities.class.getName())
+                            .hasRootCauseInstanceOf(NoSuchBeanDefinitionException.class);
                 });
         assertThat(ScannedApprovalWorkflow.CONSTRUCTED.get()).isEqualTo(before);
     }
