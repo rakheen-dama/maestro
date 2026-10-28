@@ -2699,7 +2699,7 @@ requirement and the latency cost of breaking it.
 
 ### Issue 32 — A Valkey outage stalls every signal send after the signal is durable, so caller retries persist duplicate signals {#issue-32}
 
-> **Resolved.** Commit `<hash>` ("fix(signals): signal notification is handed off and bounded — a Valkey brownout no longer stalls signal() or persists retry duplicates (Issue 32)"), plan 04 Task 8 (Ruling R56).
+> **Resolved.** Commit `1da4f1a` ("fix(signals): signal notification is handed off and bounded — a Valkey brownout no longer stalls signal() or persists retry duplicates (Issue 32)"), plan 04 Task 8 (Ruling R56).
 > `SignalManager.deliverSignal` now hands `SignalNotifier.publish` to a virtual
 > thread it never awaits, after the signal row is saved, so the guarantee holds
 > for every notifier; `ValkeySignalNotifier.publish` issues `async().publish`
