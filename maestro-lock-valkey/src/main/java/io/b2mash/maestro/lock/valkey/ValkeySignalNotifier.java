@@ -8,7 +8,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.Closeable;
+import java.time.Duration;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Valkey/Redis implementation of {@link SignalNotifier} using pub/sub.
@@ -47,6 +51,12 @@ public final class ValkeySignalNotifier extends RedisPubSubAdapter<String, Strin
 
     private static final String CHANNEL_PREFIX = "maestro:signal:";
 
+    /**
+     * Longest {@link #subscribe} waits for the server's acknowledgement before
+     * falling back to the wake-recheck interval (Ruling R37).
+     */
+    static final Duration SUBSCRIBE_ACK_TIMEOUT = Duration.ofSeconds(5);
+
     private final StatefulRedisPubSubConnection<String, String> pubSubConnection;
     private final StatefulRedisConnection<String, String> publishConnection;
     private final ConcurrentHashMap<String, SignalCallback> callbacks = new ConcurrentHashMap<>();
@@ -84,29 +94,73 @@ public final class ValkeySignalNotifier extends RedisPubSubAdapter<String, Strin
     /**
      * {@inheritDoc}
      *
-     * <p>Uses Lettuce's synchronous pub/sub command, so this method returns
-     * only after the server has acknowledged the subscription (bounded by the
-     * connection's command timeout). A {@link #publish} issued after this
-     * returns is therefore always delivered, which is what makes the caller's
-     * check-then-subscribe race closure real. The remaining gap is a
-     * notification published while this connection is disconnected: Lettuce
-     * re-subscribes on reconnect but does not replay, and the
-     * {@code maestro.signal.wake-recheck-interval} store re-read covers it.
+     * <p>Waits for the server to acknowledge the subscription, bounded by
+     * {@link #SUBSCRIBE_ACK_TIMEOUT} (5 s), before returning. Once
+     * acknowledged, a {@link #publish} issued after this returns is always
+     * delivered, which is what makes the caller's check-then-subscribe race
+     * closure real.
+     *
+     * <p>The bound is deliberately far below Lettuce's command timeout (60 s
+     * by default): this runs on every {@code awaitSignal} entry, and a
+     * synchronous subscribe during a Valkey brownout would stall each one past
+     * the shutdown drain. If the acknowledgement does not arrive in time, or
+     * the command fails, the callback is removed, a {@code WARN} is logged and
+     * this returns normally — it never throws into the workflow thread. The
+     * workflow then still wakes, at the latest after
+     * {@code maestro.signal.wake-recheck-interval}, from the store re-read. If
+     * the waiting thread is interrupted, the interrupt flag is restored and the
+     * callback removed.
+     *
+     * <p>The remaining gap is unchanged: a notification published while this
+     * connection is disconnected. Lettuce re-subscribes on reconnect but does
+     * not replay, and the wake-recheck store re-read covers it.
      */
     @Override
     public void subscribe(String workflowId, SignalCallback callback) {
         var channel = CHANNEL_PREFIX + workflowId;
         callbacks.put(workflowId, callback);
-        pubSubConnection.sync().subscribe(channel);
-        logger.debug("Subscribed to signal channel '{}'", channel);
+        try {
+            pubSubConnection.async().subscribe(channel)
+                    .get(SUBSCRIBE_ACK_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+            logger.debug("Subscribed to signal channel '{}'", channel);
+        } catch (TimeoutException | ExecutionException e) {
+            callbacks.remove(workflowId, callback);
+            logger.warn("Subscription to signal channel '{}' was not acknowledged within {} ({}) — "
+                            + "cross-node wake for workflow '{}' falls back to the "
+                            + "maestro.signal.wake-recheck-interval store re-read",
+                    channel, SUBSCRIBE_ACK_TIMEOUT, describe(e), workflowId);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            callbacks.remove(workflowId, callback);
+            logger.debug("Interrupted while subscribing to signal channel '{}'", channel);
+        }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Removes the callback first, so no further notification is delivered
+     * for this workflow, then issues the {@code UNSUBSCRIBE} without waiting
+     * for the server: nothing depends on its acknowledgement, and waiting
+     * would stall the workflow thread's exit from {@code awaitSignal} during a
+     * brownout.
+     */
     @Override
     public void unsubscribe(String workflowId) {
         var channel = CHANNEL_PREFIX + workflowId;
         callbacks.remove(workflowId);
-        pubSubConnection.sync().unsubscribe(channel);
-        logger.debug("Unsubscribed from signal channel '{}'", channel);
+        try {
+            pubSubConnection.async().unsubscribe(channel);
+            logger.debug("Unsubscribed from signal channel '{}'", channel);
+        } catch (RuntimeException e) {
+            logger.debug("Failed to issue unsubscribe for '{}': {}", channel, e.getMessage());
+        }
+    }
+
+    private static String describe(Exception e) {
+        var cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
+        return cause.getClass().getSimpleName()
+                + (cause.getMessage() != null ? ": " + cause.getMessage() : "");
     }
 
     /**
@@ -141,7 +195,9 @@ public final class ValkeySignalNotifier extends RedisPubSubAdapter<String, Strin
         for (var workflowId : callbacks.keySet()) {
             var channel = CHANNEL_PREFIX + workflowId;
             try {
-                pubSubConnection.sync().unsubscribe(channel);
+                // Not awaited: the connection is closed right after, and a
+                // brownout must not stall shutdown for the command timeout.
+                pubSubConnection.async().unsubscribe(channel);
             } catch (Exception e) {
                 logger.debug("Failed to unsubscribe from '{}' during close: {}", channel, e.getMessage());
             }

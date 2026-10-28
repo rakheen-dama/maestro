@@ -429,9 +429,13 @@ timer poller runs on the elected leader only, so a timer fired (or cancelled)
 by a node that does not own the parked `workflow.sleep()` thread is observed
 via the sleeping node's periodic re-read of the durable timer row
 (`docs/open-issues.md` Issue 17).
-With Valkey, the wake subscription is acknowledged by the server before the
-workflow parks, so the recheck interval only bounds latency across a pub/sub
-disconnect (Lettuce re-subscribes on reconnect but does not replay).
+With Valkey, the wake subscription is acknowledged (bounded 5 s) by the
+server before the workflow parks, so the recheck interval only bounds latency
+across a pub/sub disconnect (Lettuce re-subscribes on reconnect but does not
+replay) — and across a Valkey brownout: if the acknowledgement does not arrive
+within 5 s the workflow parks anyway (a `WARN` names this fallback) and the
+recheck interval bounds its wake latency, rather than every `awaitSignal`
+stalling for Lettuce's 60 s command timeout.
 
 `maestro.lock.key-prefix` (see [Lock Configuration](#lock-configuration))
 now also applies to the activity execution lock, not just the instance
