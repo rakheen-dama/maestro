@@ -1,0 +1,7 @@
+# Downloaded CI artifacts (chaos soak / PR-gate evidence) exceed the 5 MB
+# commit threshold set by plan 06 Task 2. Only `failures/` subtrees and
+# `chaos-actions.jsonl` of a violating run are committed, by hand, when triage
+# needs them; node logs never are.
+evidence/
+!evidence/**/failures/
+!evidence/**/chaos-actions.jsonl
