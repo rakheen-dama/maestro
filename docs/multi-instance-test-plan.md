@@ -26,6 +26,11 @@ failed between 2026-08-09 and 2026-10-04. The nightly schedule was
 auto-disabled by GitHub's 60-day inactivity rule 2026-10-10 → 2026-10-24.
 Triage: `docs/superpowers/plans/2026-10-24-bugfix-cycle/triage/ViolationTriageReport.md`.
 
+Dispatched runs since then:
+- Baseline 40593820947 (2026-10-27, `main` at 66cdf95): wholly green.
+- 40674015602 (2026-10-28, same SHA): red. The soak hit one I1 workflow, which was triaged as Issue 32 and fixed in `1da4f1a`.
+- 40762898010 (2026-10-28, the bug-fix branch at ec9286d): green. All four jobs succeeded, and the 2 h soak ran 2320 workflows with 0 violations. Evidence: `docs/superpowers/plans/2026-10-24-bugfix-cycle/triage/branch-verification.md`.
+
 This document is kept as the historical record of what was planned and why;
 read `docs/operations.md` and `docs/open-issues.md` for the current state.
 The rest of this file (below) is unchanged from when it was written.

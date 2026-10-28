@@ -11,3 +11,13 @@ Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-10-28T20:36:03.2713892Z     [ch
 Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-10-28T20:46:20.6664177Z     [chaos] side-effect duplicates: total=0 explained=0 unexplained=0
 Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-10-28T20:46:40.7104808Z     [chaos] mode=PR_GATE seed=-73465594660931068 runId=20261028-204639--73465594660931068
 Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-10-28T20:55:06.6196910Z     [chaos] side-effect duplicates: total=0 explained=0 unexplained=0
+# R64 append: written=2026-10-28T22:46:51Z head=1b8b82cb1467983bc663dedea1d4c6c0020aa098 source=gh run view 40762898010 --log (re-fetched, 4337 lines)
+# grep -c 'VIOLATION \[I' <full run log> = 0
+Chaos soak (2h window)	Run the chaos soak	2026-10-28T22:30:04.6065577Z     [chaos] VERDICT: PASS
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-10-28T20:35:40.5608238Z     [chaos] VERDICT: PASS
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-10-28T20:46:20.6663498Z     [chaos] VERDICT: PASS
+Chaos PR-gate (3x consecutive)	UNKNOWN STEP	2026-10-28T20:55:06.6195918Z     [chaos] VERDICT: PASS
+# run-summary: triage/evidence/40762898010/soak/20261028-202525-1244514203603819719/run-summary.json mode=SOAK seed=1244514203603819719 verdict=PASS workflowsSubmitted=2320 unexplainedDuplicates=0
+# run-summary: triage/evidence/40762898010/pr-gate/20261028-202512--6377535298286138660/run-summary.json mode=PR_GATE seed=-6377535298286138660 verdict=PASS workflowsSubmitted=90 unexplainedDuplicates=0
+# run-summary: triage/evidence/40762898010/pr-gate/20261028-203602--6808601341710573991/run-summary.json mode=PR_GATE seed=-6808601341710573991 verdict=PASS workflowsSubmitted=66 unexplainedDuplicates=0
+# run-summary: triage/evidence/40762898010/pr-gate/20261028-204639--73465594660931068/run-summary.json mode=PR_GATE seed=-73465594660931068 verdict=PASS workflowsSubmitted=54 unexplainedDuplicates=0
