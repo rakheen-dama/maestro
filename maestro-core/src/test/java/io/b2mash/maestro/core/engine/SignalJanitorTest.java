@@ -41,8 +41,29 @@ class SignalJanitorTest {
     }
 
     @Test
-    @DisplayName("a store failure is logged and the loop keeps running")
-    void storeFailure_isLoggedAndTheLoopKeepsRunning() throws Exception {
+    @DisplayName("stop() ends the loop promptly even when the store swallows the interrupt mid-sweep (item 17)")
+    void stop_whileTheStoreSwallowsTheInterrupt_endsTheLoopPromptly() throws Exception {
+        var store = new RecordingStore();
+        store.swallowInterruptOnNextCall();
+        var janitor = new SignalJanitor(store, Duration.ofMinutes(10), Duration.ofDays(7));
+        janitor.start();
+        assertTrue(store.sweepEntered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+
+        var started = System.nanoTime();
+        janitor.stop();
+        var elapsed = Duration.ofNanos(System.nanoTime() - started);
+
+        // A JDBC driver that swallows the interrupt returns normally; without
+        // a running re-check before the sleep the thread would then sleep a
+        // full interval after stop(), and stop()'s 5 s join would time out.
+        var thread = store.sweepThread.get();
+        assertTrue(thread != null && !thread.isAlive(), "the janitor thread must have exited");
+        assertTrue(elapsed.compareTo(Duration.ofSeconds(2)) < 0, "stop() took " + elapsed);
+    }
+
+    @Test
+    @DisplayName("a store failure is swallowed and the loop keeps running")
+    void storeFailure_isSwallowedAndTheLoopKeepsRunning() throws Exception {
         var store = new RecordingStore();
         store.failNextWith(new IllegalStateException("db down"));
         var janitor = new SignalJanitor(store, Duration.ofMillis(20), Duration.ofDays(7));
@@ -89,10 +110,30 @@ class SignalJanitorTest {
             return cutoff;
         }
 
+        private volatile boolean swallowInterrupt;
+        final java.util.concurrent.CountDownLatch sweepEntered = new java.util.concurrent.CountDownLatch(1);
+        final AtomicReference<@Nullable Thread> sweepThread = new AtomicReference<>();
+
+        /** The next call blocks until interrupted and then swallows the interrupt, like some JDBC drivers. */
+        void swallowInterruptOnNextCall() {
+            swallowInterrupt = true;
+        }
+
         @Override
         public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
             calls.incrementAndGet();
             lastCutoff.set(cutoff);
+            if (swallowInterrupt) {
+                swallowInterrupt = false;
+                sweepThread.set(Thread.currentThread());
+                sweepEntered.countDown();
+                try {
+                    Thread.sleep(Duration.ofMinutes(1));
+                } catch (InterruptedException swallowed) {
+                    // deliberately not restored
+                }
+                return 0;
+            }
             var failure = nextFailure.getAndSet(null);
             if (failure != null) {
                 throw failure;

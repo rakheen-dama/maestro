@@ -162,6 +162,13 @@ final class SignalJanitor {
     private void sweepLoop() {
         while (running) {
             sweepOnce();
+            // stop() interrupts this thread, but a store call (e.g. a JDBC
+            // driver) may swallow that interrupt and return normally; without
+            // this re-check the loop would then sleep a full interval after
+            // stop() and outlive its 5 s join.
+            if (!running) {
+                break;
+            }
             try {
                 Thread.sleep(interval);
             } catch (InterruptedException e) {
