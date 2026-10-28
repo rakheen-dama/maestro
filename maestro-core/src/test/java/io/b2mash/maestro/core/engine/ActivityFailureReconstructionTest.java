@@ -5,8 +5,10 @@ import io.b2mash.maestro.core.engine.ActivityInvocationHandlerTest.InMemoryWorkf
 import io.b2mash.maestro.core.engine.ActivityInvocationHandlerTest.RecordingLock;
 import io.b2mash.maestro.core.engine.ActivityInvocationHandlerTest.RecordingMessaging;
 import io.b2mash.maestro.core.exception.ActivityExecutionException;
+import io.b2mash.maestro.core.exception.ActivityTimeoutException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.MaestroControlFlowError;
+import io.b2mash.maestro.core.exception.MaestroException;
 import io.b2mash.maestro.core.exception.ReconstructedActivityFailure;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
@@ -125,6 +127,24 @@ class ActivityFailureReconstructionTest {
     }
 
     @Test
+    void recordedTimeout_replaysAsReconstructed_andCausedByStillMatches() {
+        // I2: the determinism hinge of C11's catch contract. ActivityTimeoutException
+        // has no public (String) constructor, so replay rebuilds it as a
+        // ReconstructedActivityFailure — and causedBy(ActivityTimeoutException.class)
+        // must still answer true, or a workflow branching on a timeout takes the
+        // other branch on recovery.
+        var ex = replayFailure(ActivityTimeoutException.class.getName(),
+                "Activity 'ExplodingActivities.explode' exceeded its startToCloseTimeout of PT0.3S");
+        var cause = assertInstanceOf(ReconstructedActivityFailure.class, ex.getCause());
+        assertAll(
+                () -> assertEquals(ActivityTimeoutException.class.getName(), cause.originalClassName()),
+                () -> assertTrue(ex.causedBy(ActivityTimeoutException.class),
+                        "causedBy must match the recorded type on replay exactly as it does live"),
+                () -> assertTrue(ex.causedBy(MaestroException.class), "a supertype matches too"),
+                () -> assertFalse(ex.causedBy(IllegalStateException.class)));
+    }
+
+        @Test
     void storedNonThrowableName_isNotInitialised() {
         var cause = replayFailure(InitProbe.class.getName(), "boom").getCause();
         assertInstanceOf(ReconstructedActivityFailure.class, cause);

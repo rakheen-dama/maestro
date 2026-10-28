@@ -34,9 +34,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Issue 11 lost-lock window (a node frozen past its instance-lock TTL while a
  * peer adopts the workflow) made permanent, so nothing but the store's unique
  * index stands between the two runs. Node A starts the workflow and is held
- * inside {@code stepOne}; node B recovers the still-{@code RUNNING} instance
- * and runs it to completion; then node A's {@code stepOne} returns and its
- * append at sequence 1 collides with node B's.
+ * inside {@code stepOne}; node B recovers the still-{@code RUNNING} instance,
+ * persists {@code stepOne} and is held inside {@code stepTwo}; then node A's
+ * {@code stepOne} returns and its append at sequence 1 collides with node B's.
+ * Only once node A has finished is node B released to complete the workflow.
+ *
+ * <h2>Why node B is held in {@code stepTwo}</h2>
+ * <p>It is what makes the {@code stepTwo} count discriminate. Under the
+ * pre-C5 behaviour the loser <em>adopted</em> the winner's {@code stepOne}
+ * value and carried on: had node B already completed, node A's {@code stepTwo}
+ * would merely have replayed node B's memoized result and the count would read
+ * 1 either way. With node B's {@code stepTwo} not yet persisted, an adopting
+ * loser runs {@code stepTwo} live — count 2 — while a loser that stands down
+ * at its collision never reaches it — count 1.
  *
  * <h2>What the loser must do</h2>
  * <p>Accept the winner's record and stop: no adoption of the winner's value,
@@ -54,14 +64,16 @@ class EnginePostgresDualExecutionIT extends PostgresIntegrationSupport {
     private final RecordingObserver observerA = new RecordingObserver();
     private final RecordingObserver observerB = new RecordingObserver();
     private final CountDownLatch release = new CountDownLatch(1);
+    private final CountDownLatch releaseB = new CountDownLatch(1);
 
     private MaestroEngineHarness nodeA;
     private MaestroEngineHarness nodeB;
 
     @AfterEach
     void closeNodes() {
-        // Never leave node A's attempt wedged, whatever the assertions did.
+        // Never leave either node's attempt wedged, whatever the assertions did.
         release.countDown();
+        releaseB.countDown();
         if (nodeB != null) {
             nodeB.close();
         }
@@ -73,24 +85,31 @@ class EnginePostgresDualExecutionIT extends PostgresIntegrationSupport {
     @Test
     @DisplayName("with the lock lost, the loser stands down at its first append collision and runs no further activity")
     void lostLock_loserStandsDownAtFirstCollision() throws Exception {
-        var entered = new CountDownLatch(1);
-        var gated = new GatedChainActivities(new CountingActivities.RecordingChainActivities(recorder), entered, release);
+        var enteredA = new CountDownLatch(1);
+        var enteredB = new CountDownLatch(1);
+        var gated = new GatedChainActivities(new CountingActivities.RecordingChainActivities(recorder),
+                enteredA, release, enteredB, releaseB);
         nodeA = newNode(observerA).registerActivities(ChainActivities.class, gated)
-                .registerWorkflow(new TestWorkflows.ChainWorkflow());
+                .registerWorkflow(new TestWorkflows.LongTimeoutChainWorkflow());
         nodeB = newNode(observerB).registerActivities(ChainActivities.class, gated)
-                .registerWorkflow(new TestWorkflows.ChainWorkflow());
+                .registerWorkflow(new TestWorkflows.LongTimeoutChainWorkflow());
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("dual");
-        var handle = nodeA.start(workflowId, TestWorkflows.ChainWorkflow.class, "x");
-        assertTrue(entered.await(30, TimeUnit.SECONDS), "node A must be inside stepOne");
+        var handle = nodeA.start(workflowId, TestWorkflows.LongTimeoutChainWorkflow.class, "x");
+        assertTrue(enteredA.await(30, TimeUnit.SECONDS), "node A must be inside stepOne");
 
         assertEquals(1, nodeB.recover(), "node B adopts the RUNNING instance — no lock to stop it");
-        awaitStatus(workflowId, WorkflowStatus.COMPLETED, BOUND);          // B runs all three steps
+        assertTrue(enteredB.await(30, TimeUnit.SECONDS),
+                "node B must have persisted stepOne and be inside stepTwo");
         release.countDown();                                              // A's stepOne returns; its append at seq 1 collides
         await().atMost(BOUND).until(() -> !nodeA.executor().isRunning(workflowId));
+        releaseB.countDown();                                             // only now may B persist stepTwo and finish
+        awaitStatus(workflowId, WorkflowStatus.COMPLETED, BOUND);
 
         assertEquals(2, recorder.count("stepOne"), "both nodes executed stepOne — the double execution the lock normally prevents");
-        assertEquals(1, recorder.count("stepTwo"), "the loser must not go on to stepTwo");
+        assertEquals(1, recorder.count("stepTwo"),
+                "the loser must not go on to stepTwo — with B's stepTwo still unpersisted, a loser that "
+                        + "adopted B's stepOne value would have run it live (count 2)");
         assertEquals(1, recorder.count("stepThree"));
         assertEquals("x-one-two-three", handle.result(String.class));
         assertEquals(3, handle.events().stream().filter(e -> e.eventType() == EventType.ACTIVITY_COMPLETED).count(),
@@ -119,8 +138,11 @@ class EnginePostgresDualExecutionIT extends PostgresIntegrationSupport {
 
     /**
      * Chain activities whose {@code stepOne} holds its <em>first</em> caller
-     * (node A) until {@code release} opens; every later caller and every other
-     * step delegates straight through.
+     * (node A) until {@code releaseOne} opens, and whose {@code stepTwo} holds
+     * its first caller (node B — the stood-down node A never reaches it) until
+     * {@code releaseTwo} opens; every later caller and every other step
+     * delegates straight through. The gates are held for less than the
+     * fixture workflow's {@code PT10M} attempt timeout.
      *
      * <h2>Thread Safety</h2>
      * <p>Thread-safe: shared by both nodes' attempt threads.
@@ -128,33 +150,47 @@ class EnginePostgresDualExecutionIT extends PostgresIntegrationSupport {
     private static final class GatedChainActivities implements ChainActivities {
 
         private final ChainActivities delegate;
-        private final CountDownLatch entered;
-        private final CountDownLatch release;
-        private final AtomicBoolean firstCaller = new AtomicBoolean(true);
+        private final CountDownLatch enteredOne;
+        private final CountDownLatch releaseOne;
+        private final CountDownLatch enteredTwo;
+        private final CountDownLatch releaseTwo;
+        private final AtomicBoolean firstStepOneCaller = new AtomicBoolean(true);
+        private final AtomicBoolean firstStepTwoCaller = new AtomicBoolean(true);
 
-        GatedChainActivities(ChainActivities delegate, CountDownLatch entered, CountDownLatch release) {
+        GatedChainActivities(ChainActivities delegate, CountDownLatch enteredOne, CountDownLatch releaseOne,
+                             CountDownLatch enteredTwo, CountDownLatch releaseTwo) {
             this.delegate = delegate;
-            this.entered = entered;
-            this.release = release;
+            this.enteredOne = enteredOne;
+            this.releaseOne = releaseOne;
+            this.enteredTwo = enteredTwo;
+            this.releaseTwo = releaseTwo;
         }
 
         @Override
         public String stepOne(String input) {
             var result = delegate.stepOne(input);
-            if (firstCaller.compareAndSet(true, false)) {
-                entered.countDown();
-                try {
-                    release.await();
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
+            if (firstStepOneCaller.compareAndSet(true, false)) {
+                hold(enteredOne, releaseOne);
             }
             return result;
         }
 
         @Override
         public String stepTwo(String input) {
-            return delegate.stepTwo(input);
+            var result = delegate.stepTwo(input);
+            if (firstStepTwoCaller.compareAndSet(true, false)) {
+                hold(enteredTwo, releaseTwo);
+            }
+            return result;
+        }
+
+        private static void hold(CountDownLatch entered, CountDownLatch release) {
+            entered.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
 
         @Override

@@ -823,8 +823,9 @@ logs an error and drops the handle, and the workflow keeps running.
 
 **Why it matters.** Two nodes can then execute the same workflow. Duplicate
 *persisted results* are still prevented by the unique event index — the loser's
-writes fail and it adopts the winner's results. Duplicate *side effects* are
-not: both nodes can call a payment API.
+writes fail and it stands down, leaving the winner's results as the record
+(since spec row C5 it no longer adopts the winner's value and carries on).
+Duplicate *side effects* are not prevented: both nodes can call a payment API.
 
 This is currently **accepted by design** (the architecture doc says split-brain
 is tolerated until fencing lands, and activities must be idempotent). Treat it
@@ -864,8 +865,9 @@ containing at least one mandated split-brain window.
 lose fast rather than merely lose eventually:
 
 1. **The unique event index was always the store-correctness backstop** this
-   section describes ("the loser's writes fail and it adopts the winner's
-   results") — that part of the contract was never in doubt.
+   section describes ("the loser's writes fail and it stands down, leaving
+   the winner's results as the record") — that part of the contract was never
+   in doubt.
 2. **Issue 18's fix makes that failure cheap and immediate.** Before Issue 18
    was fixed, the loser's colliding append threw `DuplicateEventException`
    into the generic failure handler, which durably marked the (already-won)
@@ -1512,7 +1514,7 @@ with two engine instances.
 > only an append that escapes to the executor's top level means the whole
 > local run is stale. Commit `0fe8bd7`, reproduced RED-first in `73af765`.
 > Pinned by `WorkflowExecutorDuplicateEventStandDownTest` (three tests: the
-> loser adopts a winner's COMPLETED outcome — no FAILED write, no
+> loser leaves a winner's COMPLETED outcome standing — no FAILED write, no
 > compensation; with no winner the instance stays active and recoverable;
 > a duplicate landing mid-compensation stands the whole attempt down
 > without recording a step failure). The rest of this section is the record
@@ -1544,8 +1546,9 @@ reversing side effects of work that had **succeeded** on the winner.
 stale run could also march through compensation actions the winner was
 concurrently running.
 
-**Why it matters.** The architecture's documented split-brain contract is
-"the loser's writes fail and it adopts the winner's results" — duplicate
+**Why it matters.** The architecture's documented split-brain contract was
+then "the loser's writes fail and it adopts the winner's results" (since C5:
+"... and it stands down, leaving the winner's results as the record") — duplicate
 *side effects* are the tolerated Issue 11 consequence, store-level
 correctness is not negotiable. This path instead produced a durably wrong
 terminal state (a funded loan recorded `FAILED`) and real compensation-side

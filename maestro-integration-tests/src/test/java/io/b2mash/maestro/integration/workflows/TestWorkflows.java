@@ -52,6 +52,30 @@ public final class TestWorkflows {
         }
     }
 
+    /**
+     * {@link ChainWorkflow} with a {@code startToCloseTimeout} far above any
+     * test bound — for fixtures that hold an activity attempt on a gate while
+     * the test drives another node. Under the {@code PT30S} default a gate held
+     * past 30 s would time the attempt out and change what is being tested.
+     */
+    @DurableWorkflow(name = "LongTimeoutChainWorkflow")
+    public static class LongTimeoutChainWorkflow {
+
+        @ActivityStub(startToCloseTimeout = "PT10M")
+        ChainActivities activities;
+
+        /**
+         * @param input the seed value
+         * @return the accumulated result of all three steps
+         */
+        @WorkflowMethod
+        public String run(String input) {
+            var one = activities.stepOne(input);
+            var two = activities.stepTwo(one);
+            return activities.stepThree(two);
+        }
+    }
+
     /** Runs one activity, then throws a JVM Error — the fixture for C8. */
     @DurableWorkflow(name = "ErrorThrowingWorkflow")
     public static class ErrorThrowingWorkflow {
@@ -123,6 +147,55 @@ public final class TestWorkflows {
             var decision = WorkflowContext.current()
                     .awaitSignal(SIGNAL, String.class, Duration.ofSeconds(30));
             return activities.stepTwo(one + ":" + decision);
+        }
+    }
+
+    /**
+     * Branches on {@code causedBy(ActivityTimeoutException.class)} — the C11
+     * catch contract — then parks: the fixture for pinning that the replayed
+     * branch equals the live one (plan 03 final review I2). The only attempt
+     * times out (0.3 s against the fixture's slow first attempt); a timeout
+     * returns {@code "timeout"}, anything else is rethrown (and would FAIL
+     * the workflow).
+     */
+    @DurableWorkflow(name = "TimeoutBranchWorkflow")
+    public static class TimeoutBranchWorkflow {
+
+        @ActivityStub(startToCloseTimeout = "PT0.3S",
+                retryPolicy = @io.b2mash.maestro.core.annotation.RetryPolicy(maxAttempts = 1))
+        FlakyActivities activities;
+
+        private final List<String> observations;
+        private final CountDownLatch parked;
+
+        /**
+         * @param observations receives the branch taken, once per run (live, then replay)
+         * @param parked       counted down once the workflow reaches its await point
+         */
+        public TimeoutBranchWorkflow(List<String> observations, CountDownLatch parked) {
+            this.observations = observations;
+            this.parked = parked;
+        }
+
+        /**
+         * @param input the seed value
+         * @return {@code "timeout"} when the activity timed out, else its result
+         */
+        @WorkflowMethod
+        public String run(String input) {
+            String outcome;
+            try {
+                outcome = activities.attempt(input);
+            } catch (ActivityExecutionException e) {
+                if (!e.causedBy(io.b2mash.maestro.core.exception.ActivityTimeoutException.class)) {
+                    throw e;
+                }
+                outcome = "timeout";
+            }
+            observations.add(outcome);
+            parked.countDown();
+            WorkflowContext.current().awaitSignal("go", String.class, Duration.ofSeconds(60));
+            return outcome;
         }
     }
 

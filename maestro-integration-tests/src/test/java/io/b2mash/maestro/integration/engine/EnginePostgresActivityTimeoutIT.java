@@ -5,6 +5,7 @@ import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.integration.support.MaestroEngineHarness;
 import io.b2mash.maestro.integration.support.PostgresIntegrationSupport;
+import io.b2mash.maestro.integration.support.WorkflowHandle;
 import io.b2mash.maestro.integration.workflows.CountingActivities;
 import io.b2mash.maestro.integration.workflows.CountingActivities.FlakyActivities;
 import io.b2mash.maestro.integration.workflows.TestWorkflows;
@@ -16,6 +17,10 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -89,6 +94,55 @@ class EnginePostgresActivityTimeoutIT extends PostgresIntegrationSupport {
         assertEquals(ActivityTimeoutException.class.getName(),
                 failed.get(0).payload().get("exceptionType").stringValue());
         assertEquals(1, recorder.count("attempt"));
+    }
+
+    @Test
+    @DisplayName("causedBy(ActivityTimeoutException) takes the same branch on replay: a timeout caught live as "
+            + "'timeout' replays as 'timeout' on a second node (I2)")
+    void timeoutBranch_replaysIdenticallyOnAnotherNode() throws Exception {
+        var workflowId = MaestroEngineHarness.uniqueWorkflowId("timeout-branch");
+        var live = new CopyOnWriteArrayList<String>();
+        var replay = new CopyOnWriteArrayList<String>();
+
+        var parkedA = new CountDownLatch(1);
+        WorkflowHandle handle;
+        try (var nodeA = branchingNode("timeout-branch-a", live, parkedA)) {
+            handle = nodeA.start(workflowId, TestWorkflows.TimeoutBranchWorkflow.class, "x");
+            assertTrue(parkedA.await(30, TimeUnit.SECONDS));
+            handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, Duration.ofSeconds(30));
+        }
+
+        var parkedB = new CountDownLatch(1);
+        try (var nodeB = branchingNode("timeout-branch-b", replay, parkedB)) {
+            assertEquals(1, nodeB.recover());
+            assertTrue(parkedB.await(30, TimeUnit.SECONDS));
+            handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, Duration.ofSeconds(30));
+            nodeB.deliverSignal(workflowId, "go", "now");
+            assertEquals(WorkflowStatus.COMPLETED, handle.awaitTerminal(Duration.ofSeconds(30)),
+                    "a replay where causedBy answered false would rethrow and FAIL the workflow");
+        }
+
+        assertEquals(List.of("timeout"), live, "the live run took the timeout branch");
+        assertEquals(List.of("timeout"), replay, "the replay must take the same branch (determinism hinge)");
+        assertEquals("timeout", handle.result(String.class));
+        assertEquals(1, recorder.count("attempt"), "the replay re-executed nothing");
+        var failed = handle.events().stream().filter(e -> e.eventType() == EventType.ACTIVITY_FAILED).toList();
+        assertEquals(1, failed.size());
+        assertEquals(ActivityTimeoutException.class.getName(),
+                failed.get(0).payload().get("exceptionType").stringValue());
+    }
+
+    /** @return a node running {@link TestWorkflows.TimeoutBranchWorkflow} over the slow-first-attempt fixture */
+    private MaestroEngineHarness branchingNode(String serviceName, List<String> observations, CountDownLatch parked) {
+        var node = MaestroEngineHarness.builder(store, objectMapper)
+                .serviceName(serviceName)
+                .lock(newLock())
+                .instanceLockTtl(Duration.ofSeconds(10))
+                .build();
+        node.registerActivities(FlakyActivities.class,
+                new CountingActivities.SlowFirstAttemptActivities(recorder, Duration.ofSeconds(5)));
+        node.registerWorkflow(new TestWorkflows.TimeoutBranchWorkflow(observations, parked));
+        return node;
     }
 
     /** @return a single-node harness with a Postgres-backed instance lock */

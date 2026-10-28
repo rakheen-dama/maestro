@@ -90,7 +90,7 @@ class WorkflowExecutorDuplicateEventStandDownTest {
     }
 
     @Test
-    @DisplayName("the loser adopts the winner's COMPLETED outcome: no FAILED write, no compensation")
+    @DisplayName("the loser stands down and the winner's COMPLETED outcome stands: no FAILED write, no compensation")
     void appendCollision_whenWinnerCompleted_standsDownWithoutFailureOrCompensation() {
         var compensations = new AtomicInteger();
         // The winner (the adopting node) already completed the workflow; this
