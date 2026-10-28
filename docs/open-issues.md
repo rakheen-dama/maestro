@@ -281,6 +281,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [29](#issue-29) | Shutdown never interrupts threads blocked waiting for a task-queue slot | Library gap — shutdown latency | Low | Open |
 | [30](#issue-30) | Recovery admission is not gated by task-queue capacity | Library gap — load distribution | Medium | Open |
 | [31](#issue-31) | Services sharing one set of `maestro_*` tables fire each other's timers | Library gap — multi-service wake latency | Low | Open |
+| [32](#issue-32) | A Valkey outage stalls every signal send after the signal is durable, so caller retries persist duplicate signals | Library defect | Medium | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -2696,6 +2697,69 @@ requirement and the latency cost of breaking it.
 
 ---
 
+### Issue 32 — A Valkey outage stalls every signal send after the signal is durable, so caller retries persist duplicate signals {#issue-32}
+
+> **Open.** Filed from the 2026-10-24 bug-fix cycle's chaos triage (plan 06
+> Task 2): soak run 40674015602 (2026-10-28, `66cdf95`, seed
+> `-6945054112340787534`), workflow `loan-chaos-11501689961368764082-1145`,
+> the only I1 violation of that run. Dump, timeline and classification:
+> `docs/superpowers/plans/2026-10-24-bugfix-cycle/triage/ViolationTriageReport.md`.
+> The mechanism is unchanged at the cycle's HEAD. Recorded, not fixed, in that
+> cycle; task stub in plan 04 Task 8.
+
+**Kind:** Library defect. **Severity:** Medium (no signal is lost, but a 27 s
+Valkey pause turned one borrower's signature into nine identical signal rows,
+and a workflow whose duplicate tolerance was five failed and compensated).
+
+**What's wrong.** `SignalManager.deliverSignal` persists the signal row,
+unparks a local waiter, and then calls `SignalNotifier.publish`
+**synchronously on the caller's thread**. `ValkeySignalNotifier.publish` is
+`publishConnection.sync().publish(...)` on a `RedisClient` built with no
+timeout, so it can wait Lettuce's default 60 s command timeout. The call is
+treated as best-effort (it sits inside a `catch`), but that only covers
+*failure*, not *latency*: while Valkey is unreachable, every
+`WorkflowHandle.signal()` (and every `@MaestroSignalListener` delivery) blocks
+for the whole outage even though its signal is already durable. Any caller with
+a timeout shorter than that sees a failure and retries, and because a signal
+send carries no idempotency key, each retry persists another byte-identical
+row. In the triaged run the chaos driver's 3 s HTTP timeout produced nine
+`package.signed` rows for one signer inside the outage; the loan sample's
+signature loop consumed five of them, hit its `MAX_SIGNATURE_SIGNALS = 5`
+bound and failed with `LoanRejectedException` — while the second borrower's
+signature waited behind the stalled first one. Starts stall the same way (the
+instance lock is taken on Valkey), but their retries are harmless because the
+`workflow_id` unique key rejects them (75 `WorkflowAlreadyExistsException`s
+when Valkey healed). Plan 04 Task 6 (R37) bounded `subscribe` at 5 s for
+exactly this reason; `publish` was left unbounded. Same shape as Issue 3.
+
+**Where.** `maestro-core/src/main/java/io/b2mash/maestro/core/engine/SignalManager.java:322`
+(save) then `:329-337` (synchronous publish);
+`maestro-lock-valkey/src/main/java/io/b2mash/maestro/lock/valkey/ValkeySignalNotifier.java:83-92`
+(`sync().publish`); `maestro-lock-valkey/src/main/java/io/b2mash/maestro/lock/valkey/config/ValkeyLockAutoConfiguration.java:67`
+(`RedisClient.create(RedisURI.create(uri))`, no timeout). Amplifiers, not
+defects in themselves: `maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/WorkloadDriver.java:702-731`
+(`post()` re-POSTs on its 3 s timeout without the store check `signAll`,
+`:479`, applies between its own re-posts) and the sample's bound,
+`LoanApplicationWorkflow.java:49`.
+
+**Proposed fix (sketch, not committed to).** Make the notification genuinely
+fire-and-forget at the engine: `SignalManager` hands `publish` to a virtual
+thread and never awaits it, so the guarantee holds for every `SignalNotifier`;
+and `ValkeySignalNotifier` uses `publishConnection.async().publish(...)`
+(logging a failure from the future) so that thread is not parked either. A lost notification is already covered by the
+wake-recheck store re-read (`maestro.signal.wake-recheck-interval`), so nothing
+new depends on it. Separately, and not as a substitute: the chaos driver's
+`post()` for signal endpoints should re-check the store before re-POSTing
+(workload behaviour, not invariant semantics). A caller-supplied dedup key on
+`signal()` is the general answer to client retries and a larger API decision.
+
+**Done when.** With Valkey unreachable, `WorkflowHandle.signal()` returns
+within a bound far below a typical client timeout and persists exactly one row
+— pinned by a unit test with a blocking `SignalNotifier` fake and an
+`@Tag("integration")` test that pauses a real Valkey container.
+
+---
+
 ## 6. Suggested order
 
 **Historical note:** the order below was the plan followed by the
@@ -2741,6 +2805,11 @@ as failure" defect the cycle found. Issues 11 and 12 remain open by
 deliberate design decision, but both now carry measured evidence from the
 same cycle — Issue 11's split-brain duplicate-side-effect count and Issue
 12's benchmark — appended to their sections (see "Known limitations" below).
+
+**From the 2026-10-24 bug-fix cycle:** Issue 32 first among the issues that
+cycle left open — it is small, in the signal hot path, has the same shape as
+Issue 3, and is the only one observed failing a workflow (chaos soak
+40674015602). Issues 29–31 are latency/load gaps with no correctness impact.
 
 ---
 
