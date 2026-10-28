@@ -113,6 +113,7 @@ final class SignalManager {
     private final ParkingLot parkingLot;
     private final Duration wakeRecheckInterval;
     private final EngineObserver observer;
+    private final TaskQueueGovernor governor;
 
     /**
      * Ref-counted cross-instance wake subscriptions, keyed by workflow ID.
@@ -221,6 +222,31 @@ final class SignalManager {
             Duration wakeRecheckInterval,
             EngineObserver observer
     ) {
+        this(store, messaging, signalNotifier, serializer, parkingLot, wakeRecheckInterval, observer,
+                TaskQueueGovernor.UNBOUNDED);
+    }
+
+    /**
+     * Creates a new signal manager with a custom wake re-check interval, an
+     * {@link EngineObserver} and a {@link TaskQueueGovernor}.
+     *
+     * @param observer engine observation seam; never {@code null}
+     *                 (pass {@link EngineObserver#NOOP})
+     * @param governor per-task-queue concurrency limits — every park of an
+     *                 await gives the run's workflow slot back for its
+     *                 duration ({@link TaskQueueGovernor#parked}); pass
+     *                 {@link TaskQueueGovernor#UNBOUNDED} for none
+     */
+    SignalManager(
+            WorkflowStore store,
+            @Nullable WorkflowMessaging messaging,
+            @Nullable SignalNotifier signalNotifier,
+            PayloadSerializer serializer,
+            ParkingLot parkingLot,
+            Duration wakeRecheckInterval,
+            EngineObserver observer,
+            TaskQueueGovernor governor
+    ) {
         this.store = store;
         this.messaging = messaging;
         this.signalNotifier = signalNotifier;
@@ -228,6 +254,7 @@ final class SignalManager {
         this.parkingLot = parkingLot;
         this.wakeRecheckInterval = wakeRecheckInterval;
         this.observer = observer;
+        this.governor = governor;
     }
 
     // ── Delivery ────────────────────────────────────────────────────────
@@ -670,10 +697,22 @@ final class SignalManager {
     private void parkChunk(WorkflowContext ctx, String parkKey, String signalName, Duration chunk) {
         boolean woken;
         try {
-            parkingLot.parkWithTimeout(parkKey, chunk);
+            // F8: the run gives its task-queue workflow slot back while parked
+            // and takes one again — blocking if the queue is full — when the
+            // chunk ends in a wake or an expiry. A control-flow Error from the
+            // park (shutdown, terminate) propagates without reacquiring.
+            governor.parked(ctx.workflowId(), () -> {
+                parkingLot.parkWithTimeout(parkKey, chunk);
+                return null;
+            });
             woken = true;
         } catch (TimeoutException e) {
             woken = false;
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            // Unreachable: parkWithTimeout throws no other checked exception.
+            throw new IllegalStateException("Unexpected exception while parked at key: " + parkKey, e);
         }
 
         // Terminate outranks a signal: if the instance is TERMINATED,

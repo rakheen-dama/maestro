@@ -2,6 +2,7 @@ package io.b2mash.maestro.spring.config;
 
 import io.b2mash.maestro.core.engine.ActivityProxyFactory;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
+import io.b2mash.maestro.core.engine.TaskQueueLimits;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.observe.CompositeEngineObserver;
 import io.b2mash.maestro.core.observe.EngineObserver;
@@ -24,6 +25,9 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.env.Environment;
 import tools.jackson.databind.ObjectMapper;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * Auto-configuration for the Maestro durable workflow engine.
@@ -104,8 +108,37 @@ public class MaestroAutoConfiguration {
         return new WorkflowExecutor(
                 store, distributedLock, messaging, signalNotifier, serializer, serviceName,
                 lock.keyPrefix(), lock.ttl(), lifecycleEventsEnabled,
-                shutdownTimeout, wakeRecheckInterval, observer
+                shutdownTimeout, wakeRecheckInterval, observer,
+                taskQueueLimits(properties.getWorker())
         );
+    }
+
+    /**
+     * Builds the executor's per-task-queue limits from {@code maestro.worker.task-queues}
+     * (F8 / Issue 25). Fails startup on an entry without a name, a queue named
+     * twice, or a limit below 1 — a silently ignored or merged entry would bound
+     * a queue differently from what the operator wrote.
+     */
+    static Map<String, TaskQueueLimits> taskQueueLimits(MaestroProperties.WorkerProperties worker) {
+        var limits = new LinkedHashMap<String, TaskQueueLimits>();
+        for (var queue : worker.taskQueues()) {
+            var name = queue.name();
+            if (name == null || name.isBlank()) {
+                throw new IllegalStateException("maestro.worker.task-queues has an entry without a name");
+            }
+            TaskQueueLimits queueLimits;
+            try {
+                queueLimits = new TaskQueueLimits(queue.concurrency(), queue.activityConcurrency());
+            } catch (IllegalArgumentException e) {
+                throw new IllegalStateException(
+                        "maestro.worker.task-queues '%s': %s".formatted(name, e.getMessage()), e);
+            }
+            if (limits.putIfAbsent(name, queueLimits) != null) {
+                throw new IllegalStateException(
+                        "maestro.worker.task-queues names a queue twice: '%s'".formatted(name));
+            }
+        }
+        return limits;
     }
 
     /**

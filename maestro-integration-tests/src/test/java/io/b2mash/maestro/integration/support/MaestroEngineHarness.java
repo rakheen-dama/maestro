@@ -5,6 +5,7 @@ import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.engine.ActivityProxyFactory;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
+import io.b2mash.maestro.core.engine.TaskQueueLimits;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.engine.WorkflowRegistration;
 import io.b2mash.maestro.core.observe.EngineObserver;
@@ -72,30 +73,24 @@ public final class MaestroEngineHarness implements AutoCloseable {
         this.messaging = builder.messaging;
         this.observer = builder.observer != null ? builder.observer : EngineObserver.NOOP;
         this.lockKeyPrefix = builder.lockKeyPrefix;
-        this.executor = builder.wakeRecheckInterval == null && builder.observer == null
-                ? new WorkflowExecutor(
-                        builder.store,
-                        builder.lock,
-                        builder.messaging,
-                        builder.signalNotifier,
-                        this.serializer,
-                        builder.serviceName,
-                        builder.lockKeyPrefix,
-                        builder.instanceLockTtl)
-                : new WorkflowExecutor(
-                        builder.store,
-                        builder.lock,
-                        builder.messaging,
-                        builder.signalNotifier,
-                        this.serializer,
-                        builder.serviceName,
-                        builder.lockKeyPrefix,
-                        builder.instanceLockTtl,
-                        true,
-                        Duration.ofSeconds(30),
-                        builder.wakeRecheckInterval != null
-                                ? builder.wakeRecheckInterval : DEFAULT_WAKE_RECHECK_INTERVAL,
-                        this.observer);
+        // The engine's defaults for everything the builder leaves unset —
+        // lifecycle events on, 30s shutdown timeout, 30s wake re-check, no
+        // observer, unbounded task queues.
+        this.executor = new WorkflowExecutor(
+                builder.store,
+                builder.lock,
+                builder.messaging,
+                builder.signalNotifier,
+                this.serializer,
+                builder.serviceName,
+                builder.lockKeyPrefix,
+                builder.instanceLockTtl,
+                true,
+                Duration.ofSeconds(30),
+                builder.wakeRecheckInterval != null
+                        ? builder.wakeRecheckInterval : DEFAULT_WAKE_RECHECK_INTERVAL,
+                this.observer,
+                builder.taskQueueLimits);
     }
 
     /**
@@ -351,7 +346,8 @@ public final class MaestroEngineHarness implements AutoCloseable {
                     serializer,
                     retryExecutor,
                     lockKeyPrefix,
-                    observer);
+                    observer,
+                    executor.taskQueueGovernor());
             try {
                 field.setAccessible(true);
                 field.set(workflowImpl, proxy);
@@ -374,6 +370,7 @@ public final class MaestroEngineHarness implements AutoCloseable {
         private Duration instanceLockTtl = Duration.ofSeconds(30);
         private @Nullable Duration wakeRecheckInterval;
         private @Nullable EngineObserver observer;
+        private Map<String, TaskQueueLimits> taskQueueLimits = Map.of();
 
         private Builder(WorkflowStore store, ObjectMapper objectMapper) {
             this.store = store;
@@ -441,6 +438,18 @@ public final class MaestroEngineHarness implements AutoCloseable {
          */
         public Builder observer(@Nullable EngineObserver observer) {
             this.observer = observer;
+            return this;
+        }
+
+        /**
+         * @param taskQueueLimits per-task-queue concurrency limits
+         *                        ({@code maestro.worker.task-queues}) enforced by
+         *                        the executor and every activity proxy this
+         *                        harness builds; the default (empty) leaves
+         *                        every queue unbounded
+         */
+        public Builder taskQueueLimits(Map<String, TaskQueueLimits> taskQueueLimits) {
+            this.taskQueueLimits = Map.copyOf(taskQueueLimits);
             return this;
         }
 

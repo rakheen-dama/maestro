@@ -274,7 +274,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [22](#issue-22) | Compensations can run on an operator-terminated workflow | Library defect | Medium | **Resolved** |
 | [23](#issue-23) | Maestro's Kafka beans silently disable `spring.kafka.*`; `@MaestroSignalListener` drops trace context | Library defect | Critical | **Resolved** |
 | [24](#issue-24) | Redelivery is always on and always dead-letters, but nothing documents or creates the `.DLT` topics | Library gap — docs + config | Medium | **Resolved** |
-| [25](#issue-25) | `maestro.worker.*` is documented but wholly unimplemented | Library gap — docs + config | Medium | Open |
+| [25](#issue-25) | `maestro.worker.*` is documented but wholly unimplemented | Library gap — docs + config | Medium | **Resolved** |
 | [26](#issue-26) | Terminal instance write and terminal event append are two non-transactional writes | Library gap — durability contract | Medium | **Resolved** |
 | [27](#issue-27) | A redelivery status-write failure can let a disabled-redelivery row be reclaimed and reprocessed | Library gap — durability contract | Medium | **Resolved** |
 | [28](#issue-28) | ×1000 sequence partitioning bounds sequential/nested `parallel()` and compensation depth | Structural limitation | Medium | **Open by design** |
@@ -2184,12 +2184,7 @@ stall.
 
 ### Issue 25 — `maestro.worker.*` is documented but wholly unimplemented {#issue-25}
 
-> **Open.** Found by the open-issues cycle's own inert-config audit
-> (`tasks/audit-2026-08-05-inert-config.md` finding F7). Filed rather than
-> fixed: whether to implement task-queue concurrency or retract the docs is
-> a product decision, not a quick patch — see "How to tackle it." The one
-> part of this that could not wait, and was done in this same cycle, is the
-> interim documentation warning below.
+> **Resolved.** Implemented as per-node `Semaphore`s in `TaskQueueGovernor` (maestro-core), bound from `maestro.worker.task-queues` by `MaestroAutoConfiguration`. Commit "feat(core): per-task-queue workflow and activity concurrency via TaskQueueGovernor (F8, Issue 25)". Pinned by `WorkflowExecutorConcurrencyTest`, `MaestroAutoConfigurationConfigSeamsTest.workerConcurrencyReachesTheGovernor`, `TaskQueueConcurrencyIT`.
 
 **Kind:** Library gap — an entire documented configuration section binds and
 does nothing. **Severity:** Medium. Nobody loses data, but every operator who

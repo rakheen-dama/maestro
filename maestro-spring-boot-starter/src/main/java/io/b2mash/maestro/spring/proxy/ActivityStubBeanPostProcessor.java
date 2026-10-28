@@ -5,6 +5,8 @@ import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.engine.ActivityProxyFactory;
 import io.b2mash.maestro.core.engine.GatedWorkflowMessaging;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
+import io.b2mash.maestro.core.engine.TaskQueueGovernor;
+import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.observe.CompositeEngineObserver;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.retry.RetryExecutor;
@@ -83,6 +85,7 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
     private @Nullable String lockKeyPrefix;
     private MaestroProperties.@Nullable RetryProperties retryDefaults;
     private EngineObserver observer = EngineObserver.NOOP;
+    private TaskQueueGovernor governor = TaskQueueGovernor.UNBOUNDED;
 
     /** Workflow class → the proxies to inject into its {@code @ActivityStub} fields. */
     private final ConcurrentHashMap<Class<?>, List<StubInjection>> injectionPlans = new ConcurrentHashMap<>();
@@ -165,6 +168,12 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
         // EngineObserver bean in the context, wrapped so a throwing adapter
         // can never corrupt activity execution (coordinator Ruling 4).
         observer = CompositeEngineObserver.of(ctx.getBeanProvider(EngineObserver.class).orderedStream().toList());
+
+        // F8: the executor's governor, so maestro.worker.task-queues[].activity-concurrency
+        // bounds live executions of these proxies. Without an executor bean no
+        // workflow can run here at all, so unbounded is the only meaningful fallback.
+        var executor = ctx.getBeanProvider(WorkflowExecutor.class).getIfAvailable();
+        governor = executor != null ? executor.taskQueueGovernor() : TaskQueueGovernor.UNBOUNDED;
 
         dependenciesResolved = true;
     }
@@ -262,7 +271,8 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
                     serializer,
                     retryExecutor,
                     lockKeyPrefix,
-                    observer
+                    observer,
+                    governor
             );
 
             field.setAccessible(true);

@@ -141,6 +141,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     private final RetryExecutor retryExecutor;
     private final String lockKeyPrefix;
     private final EngineObserver observer;
+    private final TaskQueueGovernor governor;
 
     /**
      * Creates a new handler with the default lock key prefix
@@ -249,6 +250,52 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             String lockKeyPrefix,
             EngineObserver observer
     ) {
+        this(activityImpl, activityName, store, distributedLock, messaging, retryPolicy,
+                startToCloseTimeout, serializer, retryExecutor, lockKeyPrefix, observer,
+                TaskQueueGovernor.UNBOUNDED);
+    }
+
+    /**
+     * Creates a new handler with an explicit lock key prefix, an
+     * {@link EngineObserver} and a {@link TaskQueueGovernor}.
+     *
+     * @param activityImpl        the real activity implementation to delegate to
+     * @param activityName        the activity group name (for step name prefix)
+     * @param store               the workflow store for memoization lookups and event persistence
+     * @param distributedLock     optional distributed lock for dedup optimization
+     * @param messaging           optional messaging for lifecycle event publishing
+     * @param retryPolicy         retry policy for failed activity invocations
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
+     *                            base of the per-activity lock TTL
+     * @param serializer          Jackson serializer for payloads
+     * @param retryExecutor       retry executor for live activity invocations
+     * @param lockKeyPrefix       prefix for the per-activity distributed lock key
+     *                            (e.g. {@code maestro:lock:})
+     * @param observer            engine observation seam; never {@code null}
+     *                            (pass {@link EngineObserver#NOOP})
+     * @param governor            bounds live executions per task queue: a live
+     *                            execution holds one activity slot of its run's
+     *                            queue from the dedup lock through every retry
+     *                            attempt to its persisted outcome; a replay takes
+     *                            none. Pass {@link TaskQueueGovernor#UNBOUNDED} for none.
+     * @throws IllegalArgumentException if {@code startToCloseTimeout} is zero or
+     *                                  negative — every attempt would time out
+     *                                  before it could run
+     */
+    public ActivityInvocationHandler(
+            Object activityImpl,
+            String activityName,
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            @Nullable WorkflowMessaging messaging,
+            RetryPolicy retryPolicy,
+            Duration startToCloseTimeout,
+            PayloadSerializer serializer,
+            RetryExecutor retryExecutor,
+            String lockKeyPrefix,
+            EngineObserver observer,
+            TaskQueueGovernor governor
+    ) {
         Objects.requireNonNull(startToCloseTimeout, "startToCloseTimeout must not be null");
         if (startToCloseTimeout.isZero() || startToCloseTimeout.isNegative()) {
             throw new IllegalArgumentException(
@@ -266,6 +313,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         this.retryExecutor = retryExecutor;
         this.lockKeyPrefix = lockKeyPrefix;
         this.observer = observer;
+        this.governor = governor;
     }
 
     @Override
@@ -412,8 +460,27 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             Method method, @Nullable Object @Nullable [] args,
             WorkflowContext ctx, int seq, String stepName
     ) throws Throwable {
-        // A terminated run stops here — before the lock, the ACTIVITY_STARTED
-        // lifecycle event and observer.activityStarted — so it never opens an
+        // F8: a live execution holds one activity slot of its run's task queue
+        // — blocking while the queue is at its activity-concurrency limit —
+        // from here through the lock, every retry attempt and backoff, to the
+        // persisted outcome. Replays never reach this method, so never take one.
+        governor.acquireActivitySlot(ctx.taskQueue());
+        try {
+            return executeLiveHoldingSlot(method, args, ctx, seq, stepName);
+        } finally {
+            governor.releaseActivitySlot(ctx.taskQueue());
+        }
+    }
+
+    /** {@link #executeLive}'s body, run while holding the activity slot. */
+    private @Nullable Object executeLiveHoldingSlot(
+            Method method, @Nullable Object @Nullable [] args,
+            WorkflowContext ctx, int seq, String stepName
+    ) throws Throwable {
+        // A terminated run stops here (checked after the slot wait, so one
+        // terminated while it waited for a slot stops too) — before the lock,
+        // the ACTIVITY_STARTED lifecycle event and observer.activityStarted —
+        // so it never opens an
         // activity span (or publishes a start) that no completion would close.
         // So does a run already known to be stale (R29): one of its appends
         // collided with another runner's event, and the author caught and

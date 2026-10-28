@@ -331,20 +331,11 @@ implementation("io.b2mash.maestro:maestro-lock-postgres")
 
 ## Worker Configuration
 
-> **Not yet implemented.** `maestro.worker.*` binds without error and shows
-> up in `/actuator/configprops`, but nothing in the engine reads
-> `concurrency` or `activity-concurrency` — no queue is registered, no
-> execution is capped. Setting these properties today has **no effect
-> whatsoever**: every workflow and activity in the service runs with no
-> queue-level concurrency limit, regardless of what you configure below.
-> This includes the minimal-configuration example further down this page,
-> which is a no-op block end to end. Tracked as
-> [Issue 25](open-issues.md#issue-25) pending a product decision to either
-> implement task-queue concurrency or remove this section. Do not rely on
-> this configuration to bound load.
-
-Properties under `maestro.worker.*` configure the task queue workers that execute
-workflows and activities.
+Properties under `maestro.worker.*` bound how many workflow runs and live
+activity executions each task queue may have in flight at once on this node.
+A task queue is the bucket a workflow names in
+`@DurableWorkflow(taskQueue = "...")` (default `default`); every activity a run
+calls counts against its run's queue.
 
 | Property                                            | Type                       | Default | Description                                                          |
 |-----------------------------------------------------|----------------------------|---------|----------------------------------------------------------------------|
@@ -353,10 +344,13 @@ workflows and activities.
 | `maestro.worker.task-queues[].concurrency`          | `int`                      | `10`    | Maximum number of concurrent workflow executions for this queue.     |
 | `maestro.worker.task-queues[].activity-concurrency` | `int`                      | `20`    | Maximum number of concurrent activity executions for this queue.     |
 
-Each task queue entry defines a named queue with independent concurrency limits.
-Workflow concurrency controls how many workflow methods can run in parallel, while
-activity concurrency controls how many activity invocations can execute
-simultaneously.
+`concurrency` caps how many workflow runs on this queue execute at once on this node; a run holds its slot from start until it parks on `sleep()`/`awaitSignal()` or reaches a terminal status, and reacquires one before resuming. `activity-concurrency` caps live activity executions per queue on this node; replayed (memoized) steps never take a slot. Queues not listed here are unbounded. Limits are per node — three nodes with `concurrency: 10` run up to 30 at once.
+
+A run waiting for a slot holds its instance lock (so no other node adopts it)
+but has executed nothing; if the node begins shutting down before a slot frees,
+it stands down and stays recoverable. An activity slot is held from the
+activity's dedup lock through every retry attempt and backoff to its persisted
+outcome. Every limit must be `>= 1`, and naming a queue twice fails startup.
 
 **Example:**
 

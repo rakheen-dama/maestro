@@ -102,6 +102,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
     private final SignalManager signalManager;
     private final Duration wakeRecheckInterval;
     private final EngineObserver observer;
+    private final TaskQueueGovernor governor;
 
     /**
      * Version decisions already resolved in this run, {@code changeId → version}.
@@ -199,6 +200,44 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             Duration wakeRecheckInterval,
             EngineObserver observer
     ) {
+        this(store, distributedLock, messaging, serializer, parkingLot, compensationStack,
+                signalManager, wakeRecheckInterval, observer, TaskQueueGovernor.UNBOUNDED);
+    }
+
+    /**
+     * Creates workflow operations with an explicit wake re-check interval, an
+     * {@link EngineObserver} and a {@link TaskQueueGovernor}.
+     *
+     * @param store               workflow store for event persistence and signal management
+     * @param distributedLock     optional distributed lock backend
+     * @param messaging           optional messaging for lifecycle event publishing
+     * @param serializer          Jackson serializer for payloads
+     * @param parkingLot          virtual thread parking mechanism
+     * @param compensationStack   LIFO compensation stack (shared with WorkflowExecutor)
+     * @param signalManager       signal lifecycle manager for await/consume operations
+     * @param wakeRecheckInterval how often a live {@link #sleep(Duration)} park
+     *                            re-reads the durable timer row for a fire or
+     *                            cancel that happened on another node
+     * @param observer            engine observation seam; never {@code null}
+     *                            (pass {@link EngineObserver#NOOP})
+     * @param governor            per-task-queue concurrency limits — every park of
+     *                            a {@link #sleep(Duration)} gives the run's
+     *                            workflow slot back for its duration
+     *                            ({@link TaskQueueGovernor#parked}); pass
+     *                            {@link TaskQueueGovernor#UNBOUNDED} for none
+     */
+    public DefaultWorkflowOperations(
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            @Nullable WorkflowMessaging messaging,
+            PayloadSerializer serializer,
+            ParkingLot parkingLot,
+            CompensationStack compensationStack,
+            SignalManager signalManager,
+            Duration wakeRecheckInterval,
+            EngineObserver observer,
+            TaskQueueGovernor governor
+    ) {
         this.store = store;
         this.distributedLock = distributedLock;
         this.messaging = messaging;
@@ -208,6 +247,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         this.signalManager = signalManager;
         this.wakeRecheckInterval = wakeRecheckInterval;
         this.observer = observer;
+        this.governor = governor;
     }
 
     // ── sleep ──────────────────────────────────────────────────────────
@@ -378,7 +418,15 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         var parkKey = ctx.workflowId() + ":timer:" + timerId;
         while (true) {
             try {
-                parkingLot.parkWithTimeout(parkKey, wakeRecheckInterval);
+                // F8: the run gives its task-queue workflow slot back while
+                // parked and takes one again — blocking if the queue is full —
+                // when the chunk ends in a wake or an expiry. A control-flow
+                // Error from the park (shutdown, terminate) propagates without
+                // reacquiring.
+                governor.parked(ctx.workflowId(), () -> {
+                    parkingLot.parkWithTimeout(parkKey, wakeRecheckInterval);
+                    return null;
+                });
                 // Locally unparked — a fire or cancel; the row decides which.
                 // But a row another runner finalised while this run was parked
                 // must not get a TIMER_FIRED from it (R33): stand down first.
@@ -386,6 +434,11 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                 return;
             } catch (TimeoutException e) {
                 // No local wake this interval — fall through to the durable re-check
+            } catch (RuntimeException e) {
+                throw e;
+            } catch (Exception e) {
+                // Unreachable: parkWithTimeout throws no other checked exception.
+                throw new IllegalStateException("Unexpected exception while parked at key: " + parkKey, e);
             }
 
             // Terminate outranks a wake: a terminate usually lands on a node

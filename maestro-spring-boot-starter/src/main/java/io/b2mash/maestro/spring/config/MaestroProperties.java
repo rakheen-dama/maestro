@@ -357,7 +357,12 @@ public class MaestroProperties {
     }
 
     /**
-     * Worker pool configuration.
+     * Worker concurrency configuration ({@code maestro.worker.*}).
+     *
+     * <p>Each entry bounds one task queue on this node, enforced by the
+     * executor's {@code TaskQueueGovernor}. Queues not listed are unbounded.
+     * Limits are per node — three nodes with {@code concurrency: 10} run up to
+     * 30 workflows of that queue at once. Naming a queue twice fails startup.
      *
      * @param taskQueues per-queue concurrency settings
      */
@@ -373,9 +378,16 @@ public class MaestroProperties {
     /**
      * Per-task-queue concurrency configuration.
      *
-     * @param name                the task queue name
-     * @param concurrency         max concurrent workflow executions
-     * @param activityConcurrency max concurrent activity executions
+     * @param name                the task queue name — the bucket a workflow names in
+     *                            {@code @DurableWorkflow(taskQueue = ...)}
+     * @param concurrency         max workflow runs of this queue executing at once on
+     *                            this node; a run holds its slot from start until it
+     *                            parks on {@code sleep()}/{@code awaitSignal()} or
+     *                            reaches a terminal status, and reacquires one before
+     *                            resuming — must be {@code >= 1}
+     * @param activityConcurrency max live activity executions of this queue at once on
+     *                            this node; replayed (memoized) steps never take a
+     *                            slot — must be {@code >= 1}
      */
     public record TaskQueueProperties(
             String name,

@@ -124,6 +124,7 @@ public final class WorkflowExecutor {
     private final PayloadSerializer serializer;
     private final String serviceName;
     private final ParkingLot parkingLot;
+    private final TaskQueueGovernor taskQueueGovernor;
     private final SignalManager signalManager;
     private final SagaManager sagaManager;
     private final QueryRegistry queryRegistry;
@@ -341,6 +342,62 @@ public final class WorkflowExecutor {
             Duration wakeRecheckInterval,
             EngineObserver observer
     ) {
+        this(store, distributedLock, messaging, signalNotifier, serializer, serviceName,
+                lockKeyPrefix, instanceLockTtl, lifecycleEventsEnabled,
+                shutdownTimeout, wakeRecheckInterval, observer, Map.of());
+    }
+
+    /**
+     * Creates a new workflow executor with every setting of the 12-argument
+     * constructor plus per-task-queue concurrency limits (F8 / Issue 25).
+     *
+     * @param store                  workflow store for persistence
+     * @param distributedLock        optional distributed lock backend
+     * @param messaging              optional messaging for lifecycle events
+     * @param signalNotifier         optional cross-instance signal notification
+     * @param serializer             Jackson serializer for payloads
+     * @param serviceName            the name of the owning service
+     * @param lockKeyPrefix          prefix for distributed lock keys (e.g. {@code maestro:lock:})
+     * @param instanceLockTtl        TTL for the per-workflow instance lock; renewed
+     *                               at one third of this interval — must be strictly
+     *                               positive
+     * @param lifecycleEventsEnabled whether {@code WORKFLOW_*} lifecycle events are
+     *                               published at all. Corresponds to
+     *                               {@code maestro.admin.events.enabled}.
+     * @param shutdownTimeout        how long {@link #shutdown()} waits for in-flight
+     *                               workflows to drain — must be strictly positive.
+     *                               Corresponds to {@code maestro.shutdown.timeout}.
+     * @param wakeRecheckInterval    how often a parked {@code awaitSignal()} or
+     *                               {@code sleep()} re-checks the store — must be
+     *                               strictly positive. Corresponds to
+     *                               {@code maestro.signal.wake-recheck-interval}.
+     * @param observer               engine observation seam; pass
+     *                               {@link EngineObserver#NOOP} (never {@code null})
+     *                               when no observation is wanted
+     * @param taskQueueLimits        per-node concurrency limits keyed by task-queue
+     *                               name, enforced by this executor's
+     *                               {@link #taskQueueGovernor()}; queues not listed
+     *                               are unbounded. Corresponds to
+     *                               {@code maestro.worker.task-queues}.
+     * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
+     *                                  or {@code wakeRecheckInterval} is {@code null}, zero,
+     *                                  or negative
+     */
+    public WorkflowExecutor(
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            @Nullable WorkflowMessaging messaging,
+            @Nullable SignalNotifier signalNotifier,
+            PayloadSerializer serializer,
+            String serviceName,
+            String lockKeyPrefix,
+            Duration instanceLockTtl,
+            boolean lifecycleEventsEnabled,
+            Duration shutdownTimeout,
+            Duration wakeRecheckInterval,
+            EngineObserver observer,
+            Map<String, TaskQueueLimits> taskQueueLimits
+    ) {
         if (instanceLockTtl == null || instanceLockTtl.isNegative() || instanceLockTtl.isZero()) {
             throw new IllegalArgumentException(
                     "instanceLockTtl must be positive, got " + instanceLockTtl);
@@ -367,9 +424,12 @@ public final class WorkflowExecutor {
         this.serializer = serializer;
         this.serviceName = serviceName;
         this.parkingLot = new ParkingLot();
+        this.taskQueueGovernor = taskQueueLimits.isEmpty()
+                ? TaskQueueGovernor.UNBOUNDED
+                : new TaskQueueGovernor(taskQueueLimits);
         this.signalManager = new SignalManager(
                 store, this.messaging, signalNotifier, serializer, parkingLot, wakeRecheckInterval,
-                observer);
+                observer, taskQueueGovernor);
         this.sagaManager = new SagaManager(store, this.messaging, serializer, serviceName, observer);
         this.instanceLockManager = new WorkflowInstanceLockManager(
                 distributedLock, serviceName, lockKeyPrefix, instanceLockTtl,
@@ -1400,6 +1460,23 @@ public final class WorkflowExecutor {
     }
 
     /**
+     * Returns the governor that enforces this executor's per-task-queue
+     * concurrency limits ({@code maestro.worker.task-queues}).
+     *
+     * <p>Workflow slots are enforced by the executor itself. Activity slots
+     * apply only to proxies created with this governor — pass it to the
+     * {@code ActivityProxyFactory.createProxy} overload that takes a
+     * {@link TaskQueueGovernor}. Also exposes the free-slot counts, for tests
+     * and diagnostics.
+     *
+     * @return the governor; {@link TaskQueueGovernor#UNBOUNDED} when no limits
+     *         were configured
+     */
+    public TaskQueueGovernor taskQueueGovernor() {
+        return taskQueueGovernor;
+    }
+
+    /**
      * Returns whether the background timer poller is currently running on
      * this executor.
      *
@@ -1531,7 +1608,7 @@ public final class WorkflowExecutor {
         var compensationStack = new CompensationStack();
         var operations = new DefaultWorkflowOperations(
                 store, distributedLock, messaging, serializer, parkingLot, compensationStack,
-                signalManager, wakeRecheckInterval, observer);
+                signalManager, wakeRecheckInterval, observer, taskQueueGovernor);
 
         var cancellation = new RunCancellation();
         var ctx = new WorkflowContext(
@@ -1623,6 +1700,26 @@ public final class WorkflowExecutor {
             boolean parallelCompensation
     ) {
         try {
+            // F8: take this run's workflow slot on its task queue — blocking
+            // while the queue is at its maestro.worker concurrency limit (a
+            // no-op for an unbounded queue). Released first in finally below.
+            taskQueueGovernor.acquireWorkflowSlot(ctx.taskQueue(), ctx.workflowId());
+            if (taskQueueGovernor.availableWorkflowSlots(ctx.taskQueue()).isPresent()) {
+                // A bounded run may have waited for its slot while this node
+                // began shutting down, or while the workflow was terminated.
+                // It has executed nothing yet, so it stands down here —
+                // shutdown leaves it recoverable, terminate writes nothing —
+                // instead of starting a run nobody wants. An unbounded queue
+                // never waits, so its behaviour is unchanged.
+                var cancellation = ctx.cancellation();
+                cancellation.throwIfTerminated(ctx.workflowId());
+                cancellation.throwIfStale(ctx.workflowId());
+                if (cancellation.cause() == RunCancellation.Cause.SHUTDOWN) {
+                    throw new ExecutorShutdownException(("Executor is shutting down — workflow '%s' got its "
+                            + "task-queue slot only after shutdown began; it did not start and stays "
+                            + "recoverable").formatted(ctx.workflowId()));
+                }
+            }
             // Deserialize input and invoke the workflow method
             Object result = invokeWorkflowMethod(ctx, workflowImpl, workflowMethod, inputPayload);
 
@@ -1765,6 +1862,10 @@ public final class WorkflowExecutor {
         } catch (Exception e) {
             failAndCompensate(ctx, instance, e, compensationStack, parallelCompensation);
         } finally {
+            // F8: give the slot back first, so a run waiting on this queue can
+            // start while the bookkeeping below completes. Idempotent — a park
+            // that ended in a control-flow Error already gave it back.
+            taskQueueGovernor.releaseWorkflowSlot(ctx.workflowId());
             // Remove-then-release: a concurrent recovery attempt in the gap
             // still sees the lock held and skips — retried by the next poll
             runningWorkflows.remove(ctx.workflowId());
