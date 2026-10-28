@@ -2404,9 +2404,13 @@ inherit the same proof obligation.
 > retire sweep (`retireStaleClaims`), run before the claim in the same
 > transaction in both poll loops, moves a stale `PROCESSING` row with no budget
 > left (`attempts >= maxAttempts`, or `attempts >= 1` with redelivery disabled)
-> straight to `DEAD_LETTER` / `FAILED` with `last_error = "finalisation write
-> lost after attempt <n>; outcome unknown — retired without re-invoking the
-> handler"`. The guarantee is uniform across all three status-write sites
+> straight to `DEAD_LETTER` — in both redelivery modes, since an "outcome
+> unknown" row always needs triage (Ruling R36) — with `last_error =
+> "finalisation write lost after attempt <n>; outcome unknown — retired
+> without re-invoking the handler"`. The sweep selects with `FOR UPDATE SKIP
+> LOCKED`, and the claim's stale-reclaim branch requires `attempts <
+> threshold`, so correctness does not depend on the sweep having retired a row
+> first. The guarantee is uniform across all three status-write sites
 > (`COMPLETED`, enabled `PENDING`/`DEAD_LETTER`, disabled `FAILED`): with
 > budget left the stale reclaim re-invokes the handler (the documented,
 > accepted double delivery under a double fault); with none left the handler
@@ -2416,9 +2420,19 @@ inherit the same proof obligation.
 > `maxAttempts` crashes instead of looping forever). The "done when" is pinned
 > on real Postgres by `PostgresWorkflowMessagingTest.StatusWriteFailureTests`
 > (a `FaultInjectingDataSource` refuses connections exactly on the status
-> write after the handler). Resolved in "fix(messaging-postgres): count
-> attempts at claim time; retire stale claims with no budget instead of
-> re-invoking (Issue 27)". The original report is kept below.
+> write after the handler). Resolved in `b3768fe` ("fix(messaging-postgres):
+> count attempts at claim time; retire stale claims with no budget instead of
+> re-invoking (Issue 27)"), with the DEAD_LETTER-in-both-modes and SKIP LOCKED
+> follow-ups in the plan 04 final fix wave. The original report is kept below.
+>
+> **Follow-up (not yet done) — partial index.** Both the retire sweep and the
+> claim's stale-reclaim branch filter on `status = 'PROCESSING' AND
+> processed_at < now() - interval '5 minutes'` per qualifier. A partial index
+> `(service_name, processed_at) WHERE status = 'PROCESSING'` on
+> `maestro_signal_queue` (and `(task_queue, processed_at) WHERE status =
+> 'PROCESSING'` on `maestro_task_queue`) would serve both without scanning the
+> queue's `PENDING` backlog. No migration ships with this fix; add one if
+> queue-table size makes the per-poll sweep show up in `pg_stat_statements`.
 >
 > **Original status — Open.** Filed from a PR #34 external review finding (CodeRabbit,
 > deferred rather than fixed in that PR — the fix needs a unified redesign

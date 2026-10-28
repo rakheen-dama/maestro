@@ -74,10 +74,20 @@ import java.util.function.Consumer;
  *   <li><b>No budget left</b> ({@code attempts >= maxAttempts} with
  *       redelivery enabled; {@code attempts >= 1} with it disabled — exactly
  *       one attempt): a retire sweep, run before every claim in the same
- *       transaction, moves the row straight to {@code DEAD_LETTER} (enabled)
- *       or {@code FAILED} (disabled) with a {@code last_error} saying the
- *       outcome is unknown, and never invokes the handler again.</li>
+ *       transaction, moves the row straight to {@code DEAD_LETTER} — in
+ *       <i>both</i> redelivery modes — with a {@code last_error} saying the
+ *       outcome is unknown, and never invokes the handler again. The claim's
+ *       stale-reclaim branch independently refuses such a row, so a sweep
+ *       that skipped it (another node held it locked) cannot let it be
+ *       re-invoked.</li>
  * </ul>
+ * <p>A retired row always needs human triage — the handler may or may not
+ * have run to completion — so it is parked where triage happens:
+ * {@code DEAD_LETTER} is listable via {@link #listDeadLetterSignals}/{@link
+ * #listDeadLetterTasks}, never purged by {@link PostgresMessageCleaner}, and
+ * replayed only deliberately. With redelivery disabled this is the one case
+ * that does not end {@code FAILED}: {@code FAILED} would be purged after
+ * retention and swept up by the blanket {@code FAILED} rescue statement.
  * <p>Consequence, deliberately: a consumer that crashes mid-handler consumes
  * an attempt. A poison message that crashes the JVM therefore dead-letters
  * after {@code maxAttempts} crashes instead of looping forever, and with
@@ -314,8 +324,9 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
         // next_attempt_at into the future rather than retiring the row. The
         // claim itself counts the attempt, so a consumer that crashed (or lost
         // its final status write) mid-handler has consumed one: a stale
-        // PROCESSING row is re-claimed only while budget remains, and
-        // retireStaleClaims parks it first once the budget is spent (Issue 27).
+        // PROCESSING row is re-claimed only while budget remains (the
+        // `attempts < ?` guard, so this does not depend on the sweep having
+        // run), and retireStaleClaims parks it once the budget is spent (Issue 27).
         var claimSql = """
                 UPDATE maestro_task_queue
                 SET status = 'PROCESSING', attempts = attempts + 1, processed_at = now()
@@ -323,7 +334,8 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
                     SELECT id FROM maestro_task_queue
                     WHERE task_queue = ?
                       AND ((status = 'PENDING' AND next_attempt_at <= now())
-                           OR (status = 'PROCESSING' AND processed_at < now() - interval '5 minutes'))
+                           OR (status = 'PROCESSING' AND processed_at < now() - interval '5 minutes'
+                               AND attempts < ?))
                     ORDER BY created_at
                     LIMIT 1
                     FOR UPDATE SKIP LOCKED
@@ -340,6 +352,7 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
                     try (var stmt = conn.prepareStatement(claimSql)) {
                         retireStaleClaims(conn, "maestro_task_queue", "task_queue", taskQueue);
                         stmt.setString(1, taskQueue);
+                        stmt.setInt(2, attemptThreshold());
                         try (var rs = stmt.executeQuery()) {
                             if (rs.next()) {
                                 processed = true;
@@ -387,7 +400,8 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
                     SELECT id FROM maestro_signal_queue
                     WHERE service_name = ?
                       AND ((status = 'PENDING' AND next_attempt_at <= now())
-                           OR (status = 'PROCESSING' AND processed_at < now() - interval '5 minutes'))
+                           OR (status = 'PROCESSING' AND processed_at < now() - interval '5 minutes'
+                               AND attempts < ?))
                     ORDER BY created_at
                     LIMIT 1
                     FOR UPDATE SKIP LOCKED
@@ -403,6 +417,7 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
                     try (var stmt = conn.prepareStatement(claimSql)) {
                         retireStaleClaims(conn, "maestro_signal_queue", "service_name", serviceName);
                         stmt.setString(1, serviceName);
+                        stmt.setInt(2, attemptThreshold());
                         try (var rs = stmt.executeQuery()) {
                             if (rs.next()) {
                                 processed = true;
@@ -490,36 +505,53 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
      * consumer crashed, or the store was unreachable when the handler
      * returned. Its attempt was counted at claim time; when that was the last
      * one ({@code attempts >= maxAttempts}, or {@code attempts >= 1} with
-     * redelivery disabled), the row moves to {@code DEAD_LETTER} (enabled) or
-     * {@code FAILED} (disabled) without the handler being invoked again. The
-     * handler may or may not have run to completion — hence "outcome unknown".
+     * redelivery disabled), the row moves to {@code DEAD_LETTER} in either
+     * mode without the handler being invoked again. The handler may or may not
+     * have run to completion — hence "outcome unknown", and hence
+     * {@code DEAD_LETTER}: the row needs triage, not purging. Rows locked by
+     * another transaction are skipped ({@code FOR UPDATE SKIP LOCKED}) and
+     * retired by a later sweep.
      *
      * @return the number of rows retired
      */
     private int retireStaleClaims(Connection conn, String table, String qualifierColumn, String qualifier)
             throws SQLException {
         // last_error = "finalisation write lost after attempt <n>; outcome unknown — ..."
-        var sql = "UPDATE " + table + " SET status = ?, "
+        // SKIP LOCKED: a row another node holds is skipped rather than waited
+        // on, so concurrent sweeps neither stall the poll loop nor deadlock;
+        // the skipped row is retired by a later sweep (the claim cannot take
+        // it meanwhile — its stale branch requires attempts < threshold).
+        var sql = "UPDATE " + table + " SET status = 'DEAD_LETTER', "
                 + "last_error = 'finalisation write lost after attempt ' || attempts || ?, "
                 + "processed_at = now() "
+                + "WHERE id IN (SELECT id FROM " + table + " "
                 + "WHERE " + qualifierColumn + " = ? AND status = 'PROCESSING' "
-                + "AND processed_at < now() - interval '5 minutes' AND attempts >= ?";
-        var status = redelivery.enabled() ? "DEAD_LETTER" : "FAILED";
-        var threshold = redelivery.enabled() ? redelivery.maxAttempts() : 1;
+                + "AND processed_at < now() - interval '5 minutes' AND attempts >= ? "
+                + "FOR UPDATE SKIP LOCKED)";
         int retired;
         try (var stmt = conn.prepareStatement(sql)) {
-            stmt.setString(1, status);
-            stmt.setString(2, "; outcome unknown — retired without re-invoking the handler");
-            stmt.setString(3, qualifier);
-            stmt.setInt(4, threshold);
+            stmt.setString(1, "; outcome unknown — retired without re-invoking the handler");
+            stmt.setString(2, qualifier);
+            stmt.setInt(3, attemptThreshold());
             retired = stmt.executeUpdate();
         }
         if (retired > 0) {
-            logger.warn("Retired {} stale PROCESSING claim(s) in {} for '{}' as {} — attempt budget "
-                            + "spent and the final status write was lost; the handler is not "
-                            + "invoked again", retired, table, qualifier, status);
+            logger.error("Retired {} stale PROCESSING claim(s) in {} for '{}' as DEAD_LETTER — attempt "
+                            + "budget spent and the final status write was lost; outcome unknown, "
+                            + "the handler is not invoked again — triage via listDeadLetter*",
+                    retired, table, qualifier);
         }
         return retired;
+    }
+
+    /**
+     * The number of attempts after which a stale claim is retired instead of
+     * re-claimed: {@code maxAttempts} with redelivery enabled, exactly one with
+     * it disabled. Shared by {@link #retireStaleClaims} and the claim query's
+     * stale-reclaim branch so the two can never disagree.
+     */
+    private int attemptThreshold() {
+        return redelivery.enabled() ? redelivery.maxAttempts() : 1;
     }
 
     /**
@@ -589,8 +621,9 @@ public final class PostgresWorkflowMessaging implements WorkflowMessaging, AutoC
      * the same rescue statement documented for legacy {@code FAILED} rows in
      * {@code docs/configuration.md}. If this write itself fails, the row stays
      * {@code PROCESSING} with {@code attempts = 1} from the claim, and
-     * {@link #retireStaleClaims} marks it {@code FAILED} without a second
-     * invocation — "exactly one attempt" holds under that double fault too.
+     * {@link #retireStaleClaims} parks it in {@code DEAD_LETTER} (outcome
+     * unknown — not {@code FAILED}) without a second invocation — "exactly one
+     * attempt" holds under that double fault too.
      */
     private void recordSingleAttemptFailure(String table, UUID rowId, int attempts,
                                             String workflowId, Exception failure) {

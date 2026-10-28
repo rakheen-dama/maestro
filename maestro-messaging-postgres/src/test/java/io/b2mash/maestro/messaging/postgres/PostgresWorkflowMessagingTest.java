@@ -341,7 +341,7 @@ class PostgresWorkflowMessagingTest extends PostgresMessagingTestSupport {
         }
 
         @Test
-        @DisplayName("redelivery disabled: COMPLETED write fails → row retired FAILED, handler never re-invoked")
+        @DisplayName("redelivery disabled: COMPLETED write fails → row retired DEAD_LETTER, handler never re-invoked")
         void completedWriteFails_disabled_retiredWithoutReinvocation() throws Exception {
             var calls = new AtomicInteger();
             var consumer = consumer(false, 10);
@@ -356,7 +356,7 @@ class PostgresWorkflowMessagingTest extends PostgresMessagingTestSupport {
                 faulty.disarm();
                 ageProcessingClaim("maestro_signal_queue", wf);
 
-                await().atMost(BOUND).until(() -> "FAILED".equals(statusOf("maestro_signal_queue", wf)));
+                await().atMost(BOUND).until(() -> "DEAD_LETTER".equals(statusOf("maestro_signal_queue", wf)));
                 assertEquals(1, intColumnOf("maestro_signal_queue", "attempts", wf));
                 assertTrue(columnOf("maestro_signal_queue", "last_error", wf).contains("outcome unknown"));
                 await().during(Duration.ofSeconds(3)).atMost(Duration.ofSeconds(8))
@@ -367,7 +367,7 @@ class PostgresWorkflowMessagingTest extends PostgresMessagingTestSupport {
         }
 
         @Test
-        @DisplayName("redelivery disabled: FAILED write fails → row retired FAILED, handler never re-invoked")
+        @DisplayName("redelivery disabled: FAILED write fails → row retired DEAD_LETTER, handler never re-invoked")
         void failureWriteFails_disabled_retiredWithoutReinvocation() throws Exception {
             var calls = new AtomicInteger();
             var consumer = consumer(false, 10);
@@ -383,7 +383,7 @@ class PostgresWorkflowMessagingTest extends PostgresMessagingTestSupport {
                 faulty.disarm();
                 ageProcessingClaim("maestro_signal_queue", wf);
 
-                await().atMost(BOUND).until(() -> "FAILED".equals(statusOf("maestro_signal_queue", wf)));
+                await().atMost(BOUND).until(() -> "DEAD_LETTER".equals(statusOf("maestro_signal_queue", wf)));
                 assertEquals(1, intColumnOf("maestro_signal_queue", "attempts", wf));
                 assertTrue(columnOf("maestro_signal_queue", "last_error", wf).contains("outcome unknown"));
                 await().during(Duration.ofSeconds(3)).atMost(Duration.ofSeconds(8))
@@ -439,11 +439,113 @@ class PostgresWorkflowMessagingTest extends PostgresMessagingTestSupport {
 
                 await().atMost(BOUND).until(() -> "DEAD_LETTER".equals(statusOf("maestro_signal_queue", wf)));
                 assertEquals(1, calls.get());
+                assertEquals(1, intColumnOf("maestro_signal_queue", "attempts", wf),
+                        "retirement must not count another attempt");
                 assertTrue(columnOf("maestro_signal_queue", "last_error", wf).contains("outcome unknown"));
                 await().during(Duration.ofSeconds(3)).atMost(Duration.ofSeconds(8))
                         .until(() -> calls.get() == 1);
             } finally {
                 consumer.close();
+            }
+        }
+
+        @Test
+        @DisplayName("task queue, redelivery disabled: COMPLETED write fails → row retired DEAD_LETTER, handler never re-invoked")
+        void taskQueue_completedWriteFails_disabled_retiredWithoutReinvocation() throws Exception {
+            // Pins that the retire sweep runs in the task loop too, not only the signal loop.
+            var queue = "queue-swf-" + unique();
+            var calls = new AtomicInteger();
+            var consumer = consumer(false, 10);
+            try {
+                consumer.subscribe(queue, m -> {
+                    calls.incrementAndGet();
+                    faulty.arm();
+                });
+                messaging.publishTask(queue, newTask(wf));
+
+                await().atMost(BOUND).until(() -> faulty.failedConnections() >= 1);
+                faulty.disarm();
+                ageProcessingClaim("maestro_task_queue", wf);
+
+                await().atMost(BOUND).until(() -> "DEAD_LETTER".equals(statusOf("maestro_task_queue", wf)));
+                assertEquals(1, intColumnOf("maestro_task_queue", "attempts", wf));
+                assertTrue(columnOf("maestro_task_queue", "last_error", wf).contains("outcome unknown"));
+                await().during(Duration.ofSeconds(3)).atMost(Duration.ofSeconds(8))
+                        .until(() -> calls.get() == 1);
+            } finally {
+                consumer.close();
+            }
+        }
+
+        @Test
+        @DisplayName("a stale claim with no budget left is retired DEAD_LETTER and never re-invoked")
+        void staleClaimWithoutBudget_retiredNeverReinvoked() throws Exception {
+            var calls = new AtomicInteger();
+            messaging.publishSignal(service, new SignalMessage(wf, "approval", null));
+            markStaleClaim(wf, 3);
+
+            var consumer = consumer(true, 3);
+            try {
+                consumer.subscribeSignals(service, m -> calls.incrementAndGet());
+
+                await().atMost(BOUND).until(() -> "DEAD_LETTER".equals(statusOf("maestro_signal_queue", wf)));
+                assertEquals(3, intColumnOf("maestro_signal_queue", "attempts", wf),
+                        "retirement must not count another attempt");
+                assertTrue(columnOf("maestro_signal_queue", "last_error", wf).contains("outcome unknown"));
+                await().during(Duration.ofSeconds(2)).atMost(Duration.ofSeconds(6))
+                        .until(() -> calls.get() == 0);
+            } finally {
+                consumer.close();
+            }
+        }
+
+        @Test
+        @DisplayName("the retire sweep skips a row another transaction holds locked instead of stalling the poll loop")
+        void retireSweep_skipsLockedRows() throws Exception {
+            var delivered = new ConcurrentLinkedQueue<String>();
+            var lockedWf = wf + "-locked";
+            var freeWf = wf + "-free";
+            messaging.publishSignal(service, new SignalMessage(lockedWf, "approval", null));
+            markStaleClaim(lockedWf, 3);
+
+            // Another node's transaction holds the stale, no-budget row locked.
+            var locker = dataSource.getConnection();
+            try {
+                locker.setAutoCommit(false);
+                try (var stmt = locker.prepareStatement(
+                        "SELECT id FROM maestro_signal_queue WHERE workflow_id = ? FOR UPDATE")) {
+                    stmt.setString(1, lockedWf);
+                    stmt.executeQuery().close();
+                }
+                messaging.publishSignal(service, new SignalMessage(freeWf, "approval", null));
+
+                var consumer = consumer(true, 3);
+                try {
+                    consumer.subscribeSignals(service, m -> delivered.add(m.workflowId()));
+
+                    // A sweep that waits on the row lock stalls the loop and delivers nothing.
+                    await().atMost(Duration.ofSeconds(10)).until(() -> delivered.contains(freeWf));
+
+                    locker.rollback();
+                    await().atMost(BOUND).until(
+                            () -> "DEAD_LETTER".equals(statusOf("maestro_signal_queue", lockedWf)));
+                    assertTrue(!delivered.contains(lockedWf), "the no-budget row must never be re-invoked");
+                } finally {
+                    locker.rollback();
+                    consumer.close();
+                }
+            } finally {
+                locker.close();
+            }
+        }
+
+        private void markStaleClaim(String workflowId, int attempts) throws SQLException {
+            try (var conn = dataSource.getConnection();
+                 var stmt = conn.prepareStatement("UPDATE maestro_signal_queue SET status = 'PROCESSING', "
+                         + "attempts = ?, processed_at = now() - interval '6 minutes' WHERE workflow_id = ?")) {
+                stmt.setInt(1, attempts);
+                stmt.setString(2, workflowId);
+                assertEquals(1, stmt.executeUpdate());
             }
         }
 

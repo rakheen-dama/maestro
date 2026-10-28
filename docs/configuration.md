@@ -238,17 +238,20 @@ down right after the handler returned, has consumed that attempt. A
 re-invoked only while attempt budget remains (the accepted double delivery
 under a double fault — handlers must be idempotent). Once the budget is spent
 (`attempts >= max-attempts`; with `maestro.messaging.redelivery.enabled=false`,
-after its single attempt) the row is instead **retired** to `DEAD_LETTER`
-(redelivery enabled) or `FAILED` (disabled) with
+after its single attempt) the row is instead **retired** to `DEAD_LETTER` —
+in *both* redelivery modes — with
 `last_error = 'finalisation write lost after attempt <n>; outcome unknown —
-retired without re-invoking the handler'`. *Outcome unknown* means exactly
-that: the handler may or may not have run to completion, and Maestro will not
-guess by invoking it again. Check the downstream effect before re-queueing; a
-retired `DEAD_LETTER` row replays like any other, and a retired `FAILED` row is
-re-queued deliberately by the rescue `UPDATE ... SET status = 'PENDING',
-next_attempt_at = now()` above. A consequence worth knowing: a poison message
-that crashes the JVM dead-letters after `max-attempts` crashes instead of
-looping forever.
+retired without re-invoking the handler'`, logged at `ERROR`. *Outcome
+unknown* means exactly that: the handler may or may not have run to
+completion, and Maestro will not guess by invoking it again. A retired row
+always needs triage, so with redelivery disabled it still goes to
+`DEAD_LETTER`, not `FAILED`: it shows up in `listDeadLetterSignals` /
+`listDeadLetterTasks`, `PostgresMessageCleaner` never purges it, and the
+blanket `FAILED` rescue statement above does not touch it (that rescue applies
+only to handler failures recorded as `FAILED`, never to retired rows). Check
+the downstream effect, then replay it deliberately with `replaySignal` /
+`replayTask`. A consequence worth knowing: a poison message that crashes the
+JVM dead-letters after `max-attempts` crashes instead of looping forever.
 
 ---
 
