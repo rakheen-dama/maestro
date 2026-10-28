@@ -3,6 +3,7 @@ package io.b2mash.maestro.core.retry;
 import io.b2mash.maestro.core.context.RunCancellation;
 import io.b2mash.maestro.core.exception.ActivityExecutionException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
+import io.b2mash.maestro.core.exception.StaleRunException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -18,6 +19,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -433,5 +435,160 @@ class RetryExecutorTest {
         var aee = assertInstanceOf(ActivityExecutionException.class, run.outcome().get());
         assertInstanceOf(InterruptedException.class, aee.getCause().getCause());
         assertEquals(1, run.calls().get());
+    }
+
+    // ── RunCancellation precedence (plan 03 final review I1 / R22(2)) ────
+
+    @Test
+    @DisplayName("a termination requested after a shutdown REPLACES it: the next attempt throws "
+            + "WorkflowTerminatedException")
+    void terminationAfterShutdown_replacesIt_nextAttemptIsNotRun() {
+        var calls = new AtomicInteger();
+        var cancellation = new RunCancellation();
+        assertTrue(cancellation.requestShutdown());
+
+        assertTrue(cancellation.requestTermination("operator"),
+                "a terminate that replaces a shutdown request must report that it took effect");
+        assertEquals(RunCancellation.Cause.TERMINATED, cancellation.cause());
+        assertEquals("operator", cancellation.reason());
+
+        var thrown = assertThrows(WorkflowTerminatedException.class, () -> executor.executeWithRetry(
+                fastPolicy(3), () -> calls.incrementAndGet(), "a", "wf-p1", cancellation));
+        assertEquals(0, calls.get(), "a terminate must not be masked by an earlier shutdown request");
+        assertEquals("operator", thrown.reason());
+    }
+
+    @Test
+    @DisplayName("TERMINATED is final: a later shutdown, stale request or second terminate does not replace it")
+    void terminationIsFinal() {
+        var cancellation = new RunCancellation();
+        assertTrue(cancellation.requestTermination("first"));
+
+        assertFalse(cancellation.requestShutdown());
+        assertFalse(cancellation.requestTermination("second"));
+        assertFalse(cancellation.requestStale("append collision at sequence 3"));
+        assertEquals(RunCancellation.Cause.TERMINATED, cancellation.cause());
+        assertEquals("first", cancellation.reason());
+    }
+
+    // ── Sticky stale-run cause (plan 03 final review I4 / R29) ─────────
+
+    @Test
+    @DisplayName("a stale request stops the next attempt with StaleRunException before the task runs")
+    void staleBeforeAttempt_isNotAttempted() {
+        var calls = new AtomicInteger();
+        var cancellation = new RunCancellation();
+        assertTrue(cancellation.requestStale("append collision at sequence 4"));
+
+        var thrown = assertThrows(StaleRunException.class, () -> executor.executeWithRetry(
+                fastPolicy(3), () -> calls.incrementAndGet(), "a", "wf-s1", cancellation));
+        assertEquals(0, calls.get());
+        assertEquals("wf-s1", thrown.workflowId());
+        assertEquals("append collision at sequence 4", thrown.detail());
+    }
+
+    @Test
+    @DisplayName("stale is first-wins against shutdown and itself, but a termination replaces it")
+    void staleIsFirstWins_butTerminationReplacesIt() {
+        var cancellation = new RunCancellation();
+        assertTrue(cancellation.requestStale("append collision at sequence 2"));
+        assertFalse(cancellation.requestShutdown(), "a shutdown never replaces a stale request");
+        assertFalse(cancellation.requestStale("append collision at sequence 9"), "the first stale detail wins");
+        assertEquals(RunCancellation.Cause.STALE, cancellation.cause());
+        assertEquals("append collision at sequence 2", cancellation.reason());
+
+        var shutdownFirst = new RunCancellation();
+        shutdownFirst.requestShutdown();
+        assertFalse(shutdownFirst.requestStale("x"), "stale is first-wins, like shutdown");
+        assertEquals(RunCancellation.Cause.SHUTDOWN, shutdownFirst.cause());
+
+        assertTrue(cancellation.requestTermination("operator"), "a terminate replaces a stale request");
+        assertThrows(WorkflowTerminatedException.class, () -> cancellation.throwIfTerminated("wf-s2"));
+    }
+
+    @Test
+    @DisplayName("a stale request during the backoff wait abandons it with StaleRunException")
+    void staleDuringBackoff_abandonsTheWait() throws Exception {
+        var cancellation = new RunCancellation();
+        var run = startInBackoff("wf-s3", cancellation);
+
+        cancellation.requestStale("append collision at sequence 7");
+
+        assertTrue(run.worker().join(Duration.ofSeconds(5)), "the 30s backoff must be abandoned promptly");
+        assertInstanceOf(StaleRunException.class, run.outcome().get());
+        assertEquals(1, run.calls().get());
+    }
+
+    // ── Node errors propagate untouched (plan 03 final review I3 / R28) ─
+
+    @Test
+    @DisplayName("a node-level error (NoClassDefFoundError) thrown by the task propagates unwrapped and "
+            + "is not retried")
+    void nodeErrorFromTask_propagatesUnwrappedWithoutRetry() {
+        var calls = new AtomicInteger();
+        var nodeError = new NoClassDefFoundError("com/acme/Missing");
+        var thrown = assertThrows(NoClassDefFoundError.class, () -> executor.executeWithRetry(
+                fastPolicy(5), () -> {
+                    calls.incrementAndGet();
+                    throw nodeError;
+                }, "a", "wf-n1"));
+        assertSame(nodeError, thrown);
+        assertEquals(1, calls.get(), "a node error must not be retried");
+    }
+
+    @Test
+    @DisplayName("a node-level error inside an InvocationTargetException is unwrapped and propagated, "
+            + "not retried")
+    void nodeErrorInsideInvocationTarget_propagatesWithoutRetry() {
+        var calls = new AtomicInteger();
+        var nodeError = new OutOfMemoryError("Java heap space");
+        var thrown = assertThrows(OutOfMemoryError.class, () -> executor.executeWithRetry(
+                fastPolicy(5), () -> {
+                    calls.incrementAndGet();
+                    throw new InvocationTargetException(nodeError);
+                }, "a", "wf-n2"));
+        assertSame(nodeError, thrown);
+        assertEquals(1, calls.get());
+    }
+
+    @Test
+    @DisplayName("StackOverflowError is NOT a node error: it is wrapped and retried like any failure")
+    void stackOverflowError_isStillAnActivityFailure() {
+        var calls = new AtomicInteger();
+        var thrown = assertThrows(ActivityExecutionException.class, () -> executor.executeWithRetry(
+                fastPolicy(2), () -> {
+                    calls.incrementAndGet();
+                    throw new StackOverflowError("deep");
+                }, "a", "wf-n3"));
+        assertInstanceOf(StackOverflowError.class, thrown.getCause());
+        assertEquals(2, calls.get());
+    }
+
+    // ── A failed attempt after a terminate is not surfaced (M6 / R30) ──
+
+    @Test
+    @DisplayName("a terminate landing while the final attempt runs: its failure is not surfaced — "
+            + "WorkflowTerminatedException instead")
+    void terminateDuringFinalAttempt_failureIsNotSurfaced() {
+        var cancellation = new RunCancellation();
+        assertThrows(WorkflowTerminatedException.class, () -> executor.executeWithRetry(
+                RetryPolicy.noRetry(), () -> {
+                    cancellation.requestTermination("operator");
+                    throw new IllegalStateException("boom");
+                }, "a", "wf-m6", cancellation),
+                "an ActivityExecutionException here would be persisted as ACTIVITY_FAILED on a TERMINATED run");
+    }
+
+    @Test
+    @DisplayName("a terminate landing while an attempt runs: a non-retryable failure is not surfaced either")
+    void terminateDuringAttempt_nonRetryableFailureIsNotSurfaced() {
+        var cancellation = new RunCancellation();
+        var policy = RetryPolicy.builder().maxAttempts(5)
+                .nonRetryableExceptions(List.of(IllegalStateException.class)).build();
+        assertThrows(WorkflowTerminatedException.class, () -> executor.executeWithRetry(
+                policy, () -> {
+                    cancellation.requestTermination(null);
+                    throw new IllegalStateException("boom");
+                }, "a", "wf-m6b", cancellation));
     }
 }

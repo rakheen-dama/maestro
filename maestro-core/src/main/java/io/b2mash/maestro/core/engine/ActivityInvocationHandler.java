@@ -70,6 +70,13 @@ import java.util.concurrent.TimeoutException;
  * {@code STALE_RUN} stand-down. The observer still sees the attempt this node
  * genuinely executed — it measures executions, not the durable record.
  *
+ * <p>The stand-down is <b>sticky</b>: before rethrowing, the handler sets the
+ * run's {@code RunCancellation} to {@code STALE}. Should workflow code catch
+ * and swallow the {@link DuplicateEventException}, the run's next live
+ * activity throws {@code StaleRunException} before it acquires a lock,
+ * publishes a start or executes anything (R29). Replayed activities are not
+ * affected — they execute nothing.
+ *
  * <p><b>Why not adopt the winner's value.</b> This handler used to return the
  * winner's stored payload and let the workflow carry on. But the winner is
  * alive and ahead: every later live activity of the loser would either collide
@@ -408,9 +415,14 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         // A terminated run stops here — before the lock, the ACTIVITY_STARTED
         // lifecycle event and observer.activityStarted — so it never opens an
         // activity span (or publishes a start) that no completion would close.
-        // RetryExecutor repeats the check before every attempt; this one only
-        // moves the first check ahead of the side effects.
+        // So does a run already known to be stale (R29): one of its appends
+        // collided with another runner's event, and the author caught and
+        // carried on past the DuplicateEventException — this activity is a
+        // side effect the winner also runs. RetryExecutor repeats both checks
+        // before every attempt; this only moves the first ahead of the side
+        // effects.
         ctx.cancellation().throwIfTerminated(ctx.workflowId());
+        ctx.cancellation().throwIfStale(ctx.workflowId());
 
         LockHandle lockHandle = null;
         var info = new ActivityInfo(ctx.workflowId(), ctx.workflowType(), stepName, seq);
@@ -668,6 +680,10 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             logger.warn("Workflow '{}': {} append for '{}' at seq {} collided with a concurrent runner's "
                             + "event — not adopting it; standing this stale run down",
                     ctx.workflowId(), type, stepName, seq);
+            // Sticky (R29): should workflow code catch and swallow the
+            // duplicate, the run's next live activity still stands down
+            // (StaleRunException) before executing anything.
+            ctx.cancellation().requestStale("append collision at sequence " + seq);
             throw e;
         }
     }

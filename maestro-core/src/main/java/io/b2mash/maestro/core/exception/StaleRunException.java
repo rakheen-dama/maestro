@@ -5,21 +5,29 @@ import io.b2mash.maestro.core.model.WorkflowStatus;
 /**
  * Thrown when a fresh read of a workflow's instance row shows a
  * <b>terminal status this run did not write</b> — another runner of the same
- * workflow has already finalised it. The meaning is: <em>write nothing,
- * compensate nothing, stand down.</em>
+ * workflow has already finalised it — and, before a live activity attempt, when
+ * one of this run's appends has already collided with another runner's event.
+ * The meaning is: <em>write nothing, compensate nothing, stand down.</em>
  *
  * <h2>Where it comes from</h2>
  * <p>Instance locks are best-effort (Issue 11): a node frozen past its lock
  * TTL, partitioned, or running without a lock backend can execute a workflow
  * a peer has also adopted. The peer's outcome is the durable truth. This
- * exception is raised by the engine's status writers when they find it:
+ * exception is raised by the engine's status writers when they find it, and
+ * by the run's cancellation latch once a collision has proved it:
  * <ul>
  *   <li>{@code InstanceStatusWriter} — a park/wake status write
  *       ({@code WAITING_SIGNAL}/{@code WAITING_TIMER}/{@code RUNNING}) whose
  *       fresh read is {@code COMPLETED} or {@code FAILED};</li>
- *   <li>{@code SagaManager}'s transition to {@code COMPENSATING} on the same
+ *   <li>{@code SagaManager}'s transition to {@code COMPENSATING}, and its
+ *       re-read before every sequential compensation entry, on the same
  *       fresh read — a stale run must never compensate a workflow a peer has
- *       already finished.</li>
+ *       already finished;</li>
+ *   <li>the run's {@code RunCancellation}, before every live activity attempt
+ *       once one of the run's appends has collided with a concurrent runner's
+ *       event ({@code observedStatus} {@code RUNNING}): a workflow author who
+ *       caught and swallowed the {@link DuplicateEventException} still cannot
+ *       execute the next live activity — a side effect the winner also runs.</li>
  * </ul>
  * A fresh read of {@code TERMINATED} is <em>not</em> this exception: it raises
  * {@link WorkflowTerminatedException}, the operator's stop signal.
@@ -52,16 +60,29 @@ public final class StaleRunException extends MaestroException {
 
     /**
      * @param workflowId     the workflow's business ID
-     * @param observedStatus the terminal status the fresh read returned
+     * @param observedStatus the terminal status the fresh read returned — or,
+     *                       for the sticky stand-down after an append
+     *                       collision, the non-terminal status the run last
+     *                       observed ({@code RUNNING})
      * @param detail         what this run was about to do when it found the
-     *                       row finalised (e.g. {@code "status write of RUNNING"})
+     *                       row finalised (e.g. {@code "status write of RUNNING"}),
+     *                       or the collision that made it stale (e.g.
+     *                       {@code "append collision at sequence 4"})
      */
     public StaleRunException(String workflowId, WorkflowStatus observedStatus, String detail) {
-        super("Workflow '%s' is already %s — another runner finalised it; this run is stale (%s)"
-                .formatted(workflowId, observedStatus, detail));
+        super(message(workflowId, observedStatus, detail));
         this.workflowId = workflowId;
         this.observedStatus = observedStatus;
         this.detail = detail;
+    }
+
+    private static String message(String workflowId, WorkflowStatus observedStatus, String detail) {
+        if (observedStatus.isTerminal()) {
+            return "Workflow '%s' is already %s — another runner finalised it; this run is stale (%s)"
+                    .formatted(workflowId, observedStatus, detail);
+        }
+        return "Workflow '%s': another runner owns its progress; this run is stale and stands down (%s)"
+                .formatted(workflowId, detail);
     }
 
     /** @return the workflow's business ID */
@@ -69,7 +90,11 @@ public final class StaleRunException extends MaestroException {
         return workflowId;
     }
 
-    /** @return the terminal status another runner wrote */
+    /**
+     * @return the terminal status another runner wrote, or — for the sticky
+     *         stand-down raised before a live activity after an append
+     *         collision — {@code RUNNING}, the status this run last observed
+     */
     public WorkflowStatus observedStatus() {
         return observedStatus;
     }

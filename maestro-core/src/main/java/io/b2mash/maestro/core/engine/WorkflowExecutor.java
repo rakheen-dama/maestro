@@ -1417,6 +1417,15 @@ public final class WorkflowExecutor {
         var running = new RunningWorkflow(thread, instance, instance.workflowType(), workflowImpl,
                 cancellation);
         runningWorkflows.put(instance.workflowId(), running);
+        // R22(1): shutdown() requests a shutdown on every run it finds
+        // registered. A launch that passed its shuttingDown check before
+        // shutdown began but registers only after that loop ran would be
+        // missed — and would then wait out a full retry backoff. Re-checking
+        // after the put closes the window: either the loop sees this run, or
+        // this check sees the flag (the flag is set before the loop starts).
+        if (shuttingDown.get()) {
+            cancellation.requestShutdown();
+        }
         try {
             thread.start();
         } catch (RuntimeException | Error e) {
@@ -1531,7 +1540,7 @@ public final class WorkflowExecutor {
             // released the lock and left the row RUNNING, so the recovery poller
             // re-adopted it every pass forever — no log, no workflowFailed callback.
             if (e instanceof MaestroControlFlowError) throw e; // owned by the arms above
-            if (isNodeError(e)) {
+            if (NodeErrors.isNodeError(e)) {
                 // R20: a LinkageError (bad deploy: NoClassDefFoundError,
                 // ExceptionInInitializerError...) or a VirtualMachineError other
                 // than StackOverflowError (OutOfMemoryError, InternalError...) is
@@ -1638,24 +1647,6 @@ public final class WorkflowExecutor {
     }
 
     // ── Internal: node-level Error (R20) ────────────────────────────────
-
-    /**
-     * Whether an escaping non-control-flow {@link Error} is a <em>node</em>
-     * failure rather than a workflow failure: any {@link LinkageError}, and any
-     * {@link VirtualMachineError} except {@link StackOverflowError}.
-     *
-     * <p>{@code StackOverflowError} stays a workflow failure: unbounded
-     * recursion is a property of the workflow's code and recurs identically on
-     * every node, so re-adopting it forever would heal nothing.
-     * {@code AssertionError} and every other {@code Error} stay failures for the
-     * same reason (spec C8).
-     */
-    static boolean isNodeError(Error e) {
-        if (e instanceof StackOverflowError) {
-            return false;
-        }
-        return e instanceof LinkageError || e instanceof VirtualMachineError;
-    }
 
     /**
      * Ends a local run on a node-level {@link Error} without recording an
@@ -1857,6 +1848,21 @@ public final class WorkflowExecutor {
             // write inside a compensation action) found the row already
             // finalised by another runner, which then stands as written.
             handleStaleRunStandDown(ctx, staleDuringCompensation);
+        } catch (Error nodeErrorDuringCompensation) {
+            // R28: a node-level error from a compensation action — thrown by
+            // the action itself, or by a compensation activity, which the
+            // retry executor no longer wraps — means this node cannot run the
+            // unwind, not that a reversal failed. Abandon loudly exactly like
+            // the body-level node-error arm: nothing written, the instance
+            // stays COMPENSATING (active, recoverable) for a healthy node to
+            // finish. Without this arm the Error escaped the workflow thread
+            // uncaught — no log line, no observer callback — and recovery
+            // re-adopted it silently. Any other Error keeps propagating as
+            // before (the control-flow signals are caught above).
+            if (!NodeErrors.isNodeError(nodeErrorDuringCompensation)) {
+                throw nodeErrorDuringCompensation;
+            }
+            handleNodeError(ctx, nodeErrorDuringCompensation);
         }
     }
 

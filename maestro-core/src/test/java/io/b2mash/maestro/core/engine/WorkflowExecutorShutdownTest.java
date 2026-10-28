@@ -492,6 +492,25 @@ class WorkflowExecutorShutdownTest {
     }
 
     @Test
+    @DisplayName("A run registered AFTER shutdown's request loop still abandons its retry backoff (R22 part 1)")
+    void runRegisteredAfterShutdownLoop_stillAbandonsItsBackoff() throws Exception {
+        var invocations = new AtomicInteger();
+        var workflow = new WorkflowExecutorTerminateTest.BackoffWorkflow(failingProxy(invocations));
+        // startWorkflow has passed its shuttingDown check when createInstance
+        // runs; shutting down here completes shutdown's requestShutdown() loop
+        // before launchWorkflow registers the run — the exact window M1 closes.
+        store.afterCreateInstance = executor::shutdown;
+
+        executor.startWorkflow("late-registered", "BackoffWorkflow", "default", null, workflow,
+                WorkflowExecutorTerminateTest.BackoffWorkflow.class.getMethod("run"));
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> !executor.isRunning("late-registered"));
+        assertEquals(1, invocations.get(), "the 30s backoff must be abandoned, not waited out");
+        assertEquals(WorkflowStatus.RUNNING, store.getInstance("late-registered").orElseThrow().status());
+        assertFalse(hasEvent("late-registered", EventType.ACTIVITY_FAILED));
+    }
+
+    @Test
     @DisplayName("Shutdown while a retried activity is in backoff abandons the wait and leaves the workflow RUNNING and recoverable")
     void shutdown_duringRetryBackoff_abandonsBackoffAndLeavesItRecoverable() throws Exception {
         var invocations = new AtomicInteger();
@@ -1028,12 +1047,15 @@ class WorkflowExecutorShutdownTest {
         private final CopyOnWriteArrayList<WorkflowEvent> events = new CopyOnWriteArrayList<>();
         private final CopyOnWriteArrayList<WorkflowSignal> signals = new CopyOnWriteArrayList<>();
         private final CopyOnWriteArrayList<WorkflowTimer> timers = new CopyOnWriteArrayList<>();
+        /** Runs after the row is created — a seam inside startWorkflow, past its shuttingDown check. */
+        private volatile Runnable afterCreateInstance = () -> { };
 
         @Override
         public WorkflowInstance createInstance(WorkflowInstance instance) {
             if (byWorkflowId.putIfAbsent(instance.workflowId(), instance) != null) {
                 throw new WorkflowAlreadyExistsException(instance.workflowId());
             }
+            afterCreateInstance.run();
             return instance;
         }
 

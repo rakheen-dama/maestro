@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.TestTerminalWait;
+import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
@@ -9,6 +10,8 @@ import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.observe.AbandonReason;
 import io.b2mash.maestro.core.observe.RecordingEngineObserver;
+import io.b2mash.maestro.core.retry.RetryExecutor;
+import io.b2mash.maestro.core.retry.RetryPolicy;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -43,12 +46,13 @@ class WorkflowExecutorErrorEscapeTest {
     private VersionedInMemoryStore store;
     private RecordingEngineObserver observer;
     private WorkflowExecutor executor;
+    private PayloadSerializer serializer;
 
     @BeforeEach
     void setUp() {
         store = new VersionedInMemoryStore();
         observer = new RecordingEngineObserver();
-        var serializer = new PayloadSerializer(JsonMapper.builder().build());
+        serializer = new PayloadSerializer(JsonMapper.builder().build());
         executor = new WorkflowExecutor(store, null, null, null, serializer, "node",
                 "maestro:lock:", Duration.ofSeconds(30), true,
                 Duration.ofSeconds(5), Duration.ofSeconds(30), observer);
@@ -147,6 +151,67 @@ class WorkflowExecutorErrorEscapeTest {
     }
 
     @Test
+    @DisplayName("NoClassDefFoundError thrown INSIDE an activity: not retried, no ACTIVITY_FAILED, "
+            + "abandoned as NODE_ERROR, instance stays RUNNING (plan 03 final review I3 / R28)")
+    void nodeErrorInsideActivity_abandonsAsNodeErrorWithoutRecordingAFailure() throws Exception {
+        var attempts = new AtomicInteger();
+        var compensations = new AtomicInteger();
+        var policy = RetryPolicy.builder().maxAttempts(5)
+                .initialInterval(Duration.ofMillis(1)).maxInterval(Duration.ofMillis(5)).build();
+        var proxy = new ActivityProxyFactory().createProxy(LinkingActivity.class, () -> {
+            attempts.incrementAndGet();
+            throw new NoClassDefFoundError("com/acme/Missing");
+        }, store, null, null, policy, Duration.ofSeconds(30), serializer, new RetryExecutor());
+        var workflowId = "error-activity-ncdfe";
+        var instanceId = executor.startWorkflow(workflowId, "ActivityCallingWorkflow", "default", null,
+                new ActivityCallingWorkflow(compensations, proxy),
+                ActivityCallingWorkflow.class.getMethod("run"));
+        await().atMost(BOUND).until(() -> !executor.isRunning(workflowId));
+        await().atMost(BOUND).until(() -> !observer.abandoned().isEmpty() || !observer.failed().isEmpty());
+
+        assertAll(
+                () -> assertEquals(1, attempts.get(), "a node error must not be retried"),
+                () -> assertEquals(WorkflowStatus.RUNNING, store.getInstance(workflowId).orElseThrow().status()),
+                () -> assertEquals(0, countOfType(instanceId, EventType.ACTIVITY_FAILED),
+                        "a node error is not an activity outcome — nothing may be memoized"),
+                () -> assertEquals(0, countOfType(instanceId, EventType.WORKFLOW_FAILED)),
+                () -> assertEquals(0, compensations.get()),
+                () -> assertTrue(observer.failed().isEmpty()),
+                () -> assertEquals(List.of(AbandonReason.NODE_ERROR), observer.abandonReasons()),
+                () -> assertTrue(store.getRecoverableInstances().stream()
+                        .anyMatch(i -> i.workflowId().equals(workflowId))));
+    }
+
+    @Test
+    @DisplayName("NoClassDefFoundError thrown by a COMPENSATION activity: the unwind is abandoned as "
+            + "NODE_ERROR, no COMPENSATION_STEP_FAILED, instance left COMPENSATING and recoverable (R28)")
+    void nodeErrorInsideCompensationActivity_abandonsAsNodeError() throws Exception {
+        var attempts = new AtomicInteger();
+        var policy = RetryPolicy.builder().maxAttempts(5)
+                .initialInterval(Duration.ofMillis(1)).maxInterval(Duration.ofMillis(5)).build();
+        var proxy = new ActivityProxyFactory().createProxy(LinkingActivity.class, () -> {
+            attempts.incrementAndGet();
+            throw new NoClassDefFoundError("com/acme/Missing");
+        }, store, null, null, policy, Duration.ofSeconds(30), serializer, new RetryExecutor());
+        var workflowId = "error-compensation-ncdfe";
+        var instanceId = executor.startWorkflow(workflowId, "CompensatingViaActivityWorkflow", "default", null,
+                new CompensatingViaActivityWorkflow(proxy),
+                CompensatingViaActivityWorkflow.class.getMethod("run"));
+        await().atMost(BOUND).until(() -> !executor.isRunning(workflowId));
+
+        assertAll(
+                () -> assertEquals(List.of(AbandonReason.NODE_ERROR), observer.abandonReasons(),
+                        "a node error during the unwind must abandon the run loudly, not escape the thread"),
+                () -> assertEquals(1, attempts.get(), "a node error must not be retried"),
+                () -> assertEquals(WorkflowStatus.COMPENSATING,
+                        store.getInstance(workflowId).orElseThrow().status()),
+                () -> assertEquals(0, countOfType(instanceId, EventType.COMPENSATION_STEP_FAILED)),
+                () -> assertEquals(0, countOfType(instanceId, EventType.WORKFLOW_FAILED)),
+                () -> assertTrue(store.getRecoverableInstances().stream()
+                        .anyMatch(i -> i.workflowId().equals(workflowId))));
+    }
+
+    @Test
     @DisplayName("a control-flow Error from the body still stands down: nothing written, nothing compensated")
     void controlFlowErrorFromBody_stillStandsDown() {
         var compensations = new AtomicInteger();
@@ -174,6 +239,46 @@ class WorkflowExecutorErrorEscapeTest {
 
     private int countOfType(UUID instanceId, EventType type) {
         return (int) store.getEvents(instanceId).stream().filter(e -> e.eventType() == type).count();
+    }
+
+    /** One activity; its implementation throws a node-level error. */
+    @Activity(name = "LinkingActivity")
+    public interface LinkingActivity {
+        String link();
+    }
+
+    /** Registers a compensation, then calls one activity. */
+    @DurableWorkflow(name = "ActivityCallingWorkflow")
+    public static class ActivityCallingWorkflow {
+        private final AtomicInteger compensations;
+        private final LinkingActivity activity;
+
+        public ActivityCallingWorkflow(AtomicInteger compensations, LinkingActivity activity) {
+            this.compensations = compensations;
+            this.activity = activity;
+        }
+
+        @WorkflowMethod
+        public String run() {
+            WorkflowContext.current().addCompensation(compensations::incrementAndGet);
+            return activity.link();
+        }
+    }
+
+    /** Registers an activity-backed compensation, then fails with an ordinary exception. */
+    @DurableWorkflow(name = "CompensatingViaActivityWorkflow")
+    public static class CompensatingViaActivityWorkflow {
+        private final LinkingActivity activity;
+
+        public CompensatingViaActivityWorkflow(LinkingActivity activity) {
+            this.activity = activity;
+        }
+
+        @WorkflowMethod
+        public String run() {
+            WorkflowContext.current().addCompensation(activity::link);
+            throw new IllegalStateException("business failure");
+        }
     }
 
     /** Registers a compensation, performs one memoized step, then throws whatever it was given. */

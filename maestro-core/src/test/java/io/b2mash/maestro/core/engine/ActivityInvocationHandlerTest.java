@@ -6,6 +6,7 @@ import io.b2mash.maestro.core.exception.ActivityExecutionException;
 import io.b2mash.maestro.core.exception.ActivityTimeoutException;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
+import io.b2mash.maestro.core.exception.StaleRunException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowNotFoundException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
@@ -246,6 +247,46 @@ class ActivityInvocationHandlerTest {
         });
         assertTrue(messaging.publishedEvents.stream().noneMatch(e -> e.eventType() == LifecycleEventType.ACTIVITY_FAILED));
         assertTrue(store.appendedEvents.isEmpty(), "the loser persisted nothing");
+    }
+
+    @Test
+    @DisplayName("Stale run: after one collision, a SWALLOWED DuplicateEventException does not let the next "
+            + "live activity run — it throws StaleRunException before executing anything (R29)")
+    void swallowedDuplicate_nextLiveActivityStandsDownBeforeExecuting() {
+        store.preloadForDuplication(1, new WorkflowEvent(UUID.randomUUID(), INSTANCE_ID, 1,
+                EventType.ACTIVITY_COMPLETED, "GreetingActivities.greet",
+                MAPPER.valueToTree(new Greeting("winner")), Instant.now()));
+        var calls = new AtomicInteger();
+        var observer = new RecordingEngineObserver();
+        GreetingActivities counting = new GreetingActivitiesImpl() {
+            @Override
+            public Greeting greet(String name) {
+                calls.incrementAndGet();
+                return super.greet(name);
+            }
+        };
+        withContext(() -> {
+            var proxy = createProxy(GreetingActivities.class, counting, RetryPolicy.noRetry(),
+                    Duration.ofSeconds(30), observer);
+            try {
+                proxy.greet("first");
+            } catch (DuplicateEventException swallowed) {
+                // An author's catch-and-continue — exactly what the stand-down contract forbids.
+            }
+            assertEquals(1, calls.get());
+            var thrown = assertThrows(StaleRunException.class, () -> proxy.greet("second"),
+                    "the engine must stop the next live activity of a run it already knows is stale");
+            assertEquals(WORKFLOW_ID, thrown.workflowId());
+            assertEquals("append collision at sequence 1", thrown.detail());
+        });
+        assertEquals(1, calls.get(), "the second activity must not execute — the winner runs that side effect");
+        assertEquals(1, lock.acquiredKeys.size(), "no activity lock for the stood-down call");
+        assertEquals(1, messaging.publishedEvents.stream()
+                        .filter(e -> e.eventType() == LifecycleEventType.ACTIVITY_STARTED).count(),
+                "no ACTIVITY_STARTED for the stood-down call");
+        assertEquals(1, observer.callbackNames().stream().filter("activityStarted"::equals).count(),
+                "no activityStarted (no span opened) for the stood-down call: " + observer.callbackNames());
+        assertTrue(store.appendedEvents.isEmpty(), "the stale run persisted nothing");
     }
 
     // ── Lock behavior tests ───────────────────────────────────────────

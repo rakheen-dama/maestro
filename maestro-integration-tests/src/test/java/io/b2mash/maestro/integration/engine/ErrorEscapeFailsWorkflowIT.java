@@ -8,6 +8,7 @@ import io.b2mash.maestro.integration.support.PostgresIntegrationSupport;
 import io.b2mash.maestro.integration.support.RecordingObserver;
 import io.b2mash.maestro.integration.workflows.CountingActivities;
 import io.b2mash.maestro.integration.workflows.CountingActivities.ChainActivities;
+import io.b2mash.maestro.integration.workflows.CountingActivities.FlakyActivities;
 import io.b2mash.maestro.integration.workflows.TestWorkflows;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -102,6 +103,42 @@ class ErrorEscapeFailsWorkflowIT extends PostgresIntegrationSupport {
                     () -> assertEquals(WorkflowStatus.RUNNING,
                             store.getInstance(workflowId).orElseThrow().status()),
                     () -> assertEquals(1, recorder.count("stepOne"), "replayed, never re-executed"));
+        }
+    }
+
+    @Test
+    @DisplayName("NoClassDefFoundError thrown INSIDE an activity (R28): not retried, no ACTIVITY_FAILED, "
+            + "stays RUNNING, abandoned as NODE_ERROR")
+    void nodeErrorInsideActivityAbandonsWithoutRecordingAFailureOnPostgres() throws Exception {
+        var recorder = new CountingActivities.Recorder();
+        var observer = new RecordingObserver();
+        var workflowId = MaestroEngineHarness.uniqueWorkflowId("node-error-activity");
+        try (var node = MaestroEngineHarness.builder(store, objectMapper).serviceName("node-a")
+                .lock(newLock()).observer(observer).build()) {
+            // RetryWorkflow's stub uses the default policy (3 attempts, 1 s backoff):
+            // before R28 the error was wrapped, retried twice, memoized as
+            // ACTIVITY_FAILED and the workflow ended FAILED.
+            node.registerActivities(FlakyActivities.class, input -> {
+                recorder.record("attempt");
+                throw new NoClassDefFoundError("com/acme/RemovedDependency");
+            });
+            node.registerWorkflow(new TestWorkflows.RetryWorkflow());
+            var handle = node.start(workflowId, TestWorkflows.RetryWorkflow.class, "seed");
+
+            await().atMost(BOUND).until(() -> !observer.abandoned().isEmpty() || !observer.failed().isEmpty());
+            await().atMost(BOUND).until(() -> !node.executor().isRunning(workflowId));
+            assertAll(
+                    () -> assertEquals(List.of(AbandonReason.NODE_ERROR), observer.abandoned()),
+                    () -> assertEquals(1, recorder.count("attempt"), "a node error is never retried"),
+                    () -> assertEquals(WorkflowStatus.RUNNING,
+                            store.getInstance(workflowId).orElseThrow().status()),
+                    () -> assertEquals(0, store.getEvents(handle.instanceId()).stream()
+                            .filter(e -> e.eventType() == EventType.ACTIVITY_FAILED
+                                    || e.eventType() == EventType.WORKFLOW_FAILED).count(),
+                            "nothing about the node error may be memoized"),
+                    () -> assertTrue(observer.failed().isEmpty()),
+                    () -> assertTrue(observer.compensating().isEmpty()),
+                    () -> assertFalse(lockRowHeld(workflowId)));
         }
     }
 
