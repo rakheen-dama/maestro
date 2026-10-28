@@ -175,6 +175,11 @@ public final class TestWorkflowEnvironment {
         // One workflow object per run (F1): the executor calls this factory on
         // every launch of this workflow, each call building and wiring a fresh
         // instance — exactly as the Spring starter does with prototype beans.
+        // Fail fast — before the instance row exists — on the wiring errors the
+        // factory would otherwise only hit inside the engine (where they arrive
+        // wrapped in WorkflowInstantiationException), keeping this method's
+        // documented exceptions unchanged.
+        validateWiring(workflowClass);
         Supplier<Object> workflowFactory = () -> {
             var workflowImpl = instantiate(workflowClass);
             wireActivityStubs(workflowImpl);
@@ -350,6 +355,44 @@ public final class TestWorkflowEnvironment {
         }
     }
 
+    /**
+     * Checks, without instantiating anything, that {@code workflowClass} has a
+     * no-arg constructor and that every {@link ActivityStub} field has a
+     * registered implementation.
+     */
+    private void validateWiring(Class<?> workflowClass) {
+        try {
+            workflowClass.getDeclaredConstructor();
+        } catch (NoSuchMethodException e) {
+            throw new IllegalArgumentException(
+                    "Class %s must have a no-arg constructor".formatted(workflowClass.getName()), e);
+        }
+        for (var field : getAllFields(workflowClass)) {
+            if (field.isAnnotationPresent(ActivityStub.class)) {
+                requireActivityImpl(field, workflowClass);
+            }
+        }
+    }
+
+    private Object requireActivityImpl(Field field, Class<?> workflowClass) {
+        var activityInterface = field.getType();
+        if (!activityInterface.isInterface()) {
+            throw new IllegalArgumentException(
+                    "@ActivityStub field '%s' in %s must be an interface type, got: %s"
+                            .formatted(field.getName(), workflowClass.getSimpleName(),
+                                    activityInterface.getName()));
+        }
+        var activityImpl = activityImpls.get(activityInterface);
+        if (activityImpl == null) {
+            throw new IllegalStateException(
+                    "No activity implementation registered for %s. "
+                            .formatted(activityInterface.getName())
+                            + "Call registerActivities(%s.class, impl) before startWorkflow()."
+                                    .formatted(activityInterface.getSimpleName()));
+        }
+        return activityImpl;
+    }
+
     @SuppressWarnings("unchecked")
     private void wireActivityStubs(Object workflowImpl) {
         for (var field : getAllFields(workflowImpl.getClass())) {
@@ -359,21 +402,7 @@ public final class TestWorkflowEnvironment {
             }
 
             var activityInterface = field.getType();
-            if (!activityInterface.isInterface()) {
-                throw new IllegalArgumentException(
-                        "@ActivityStub field '%s' in %s must be an interface type, got: %s"
-                                .formatted(field.getName(), workflowImpl.getClass().getSimpleName(),
-                                        activityInterface.getName()));
-            }
-
-            var activityImpl = activityImpls.get(activityInterface);
-            if (activityImpl == null) {
-                throw new IllegalStateException(
-                        "No activity implementation registered for %s. "
-                                .formatted(activityInterface.getName())
-                                + "Call registerActivities(%s.class, impl) before startWorkflow()."
-                                        .formatted(activityInterface.getSimpleName()));
-            }
+            var activityImpl = requireActivityImpl(field, workflowImpl.getClass());
 
             var retryPolicy = RetryPolicy.fromAnnotation(stub.retryPolicy());
             var timeout = Duration.parse(stub.startToCloseTimeout());

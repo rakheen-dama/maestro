@@ -136,7 +136,7 @@ var harness = MaestroEngineHarness.builder(store, objectMapper)
         .build();
 
 harness.registerActivities(GreetActivities.class, activityImpl);
-harness.registerWorkflow(new ChainWorkflow());        // instance, so tests can hold counters
+harness.registerWorkflow(ChainWorkflow.class);       // built per run; (Class, Supplier) for ctor args
 var handle = harness.start("wf-1", ChainWorkflow.class, input);
 handle.awaitTerminal(Duration.ofSeconds(10));
 assertEquals(WorkflowStatus.COMPLETED, handle.status());

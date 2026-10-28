@@ -94,6 +94,8 @@ class MultiNodePerRunQueryIT extends PostgresIntegrationSupport {
         assertThrows(WorkflowNotQueryableException.class,
                 () -> nodeA.executor().queryWorkflow(workflowId, "tag", null, String.class));
         assertEquals(1, recorderB.count("stepTwo"), "node B ran step two exactly once");
+        assertEquals(WorkflowStatus.COMPLETED, store.getInstance(workflowId).orElseThrow().status(),
+                "A's released zombie stood down — it did not overwrite B's completion");
     }
 
     // ── crash simulation ──────────────────────────────────────────────────

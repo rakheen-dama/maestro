@@ -17,6 +17,7 @@ import io.b2mash.maestro.core.exception.StaleRunException;
 import io.b2mash.maestro.core.exception.UnknownWorkflowHistoryException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowExecutionException;
+import io.b2mash.maestro.core.exception.WorkflowInstantiationException;
 import io.b2mash.maestro.core.exception.WorkflowNotQueryableException;
 import io.b2mash.maestro.core.exception.WorkflowNotFoundException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
@@ -397,13 +398,15 @@ public final class WorkflowExecutor {
      * @param input        the workflow input, or {@code null}
      * @param workflowFactory builds the workflow implementation object for this
      *                     run; called exactly once, on the calling thread, before
-     *                     the run's virtual thread is created. An exception it
-     *                     throws propagates to the caller (the instance row is
-     *                     left active for the recovery poller to adopt)
+     *                     the run's virtual thread is created
      * @param workflowMethod the entry-point method
      * @return the workflow instance UUID
      * @throws IllegalStateException        if the executor is shutting down
      * @throws WorkflowAlreadyExistsException if a workflow with this ID exists
+     * @throws WorkflowInstantiationException if the factory throws — the
+     *         instance row already exists and is left {@code RUNNING} for the
+     *         recovery poller to adopt; no {@code WORKFLOW_STARTED} event or
+     *         {@code workflowStarted} observer callback is emitted for it
      * @see WorkflowRegistration#workflowFactory()
      */
     public UUID startWorkflow(
@@ -456,11 +459,8 @@ public final class WorkflowExecutor {
             throw e;
         }
 
-        // Publish WORKFLOW_STARTED lifecycle event
-        publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_STARTED, null);
-        emit("workflowStarted", workflowId, () -> observer.workflowStarted(observed(instance)));
-
-        // Launch on virtual thread
+        // Launch on virtual thread (WORKFLOW_STARTED is published inside, once
+        // the run's workflow object has been built)
         launchWorkflow(instance, workflowFactory, workflowMethod, inputPayload, false, acquisition);
 
         logger.info("Started workflow '{}' (type={}, id={})", workflowId, workflowType, instanceId);
@@ -480,8 +480,8 @@ public final class WorkflowExecutor {
      * @param instance       the workflow instance to resume
      * @param workflowFactory builds a fresh workflow implementation object for
      *                       this run; called exactly once if — and only if — the
-     *                       run is launched. An exception it throws propagates to
-     *                       the caller
+     *                       run is launched. A {@code RuntimeException} it throws
+     *                       propagates as {@link WorkflowInstantiationException}
      * @param workflowMethod the entry-point method
      * @return {@code true} if the workflow was launched; {@code false} if it
      *         was skipped (already running locally, instance lock held by
@@ -518,6 +518,11 @@ public final class WorkflowExecutor {
      * <p>Queries the store for recoverable instances (status IN RUNNING,
      * WAITING_SIGNAL, WAITING_TIMER) and re-invokes each in replay mode.
      *
+     * <p>An instance whose registration's factory throws
+     * ({@link WorkflowInstantiationException}) is logged at {@code ERROR} and
+     * skipped, leaving it active for a later pass; the pass continues with the
+     * remaining instances. Any other exception ends the pass.
+     *
      * @param registrations map of workflow type → registration metadata
      * @return the number of workflows recovered
      */
@@ -532,8 +537,17 @@ public final class WorkflowExecutor {
                         instance.workflowType(), instance.workflowId());
                 continue;
             }
-            if (resumeWorkflow(instance, reg.workflowFactory(), reg.workflowMethod())) {
-                count++;
+            try {
+                if (resumeWorkflow(instance, reg.workflowFactory(), reg.workflowMethod())) {
+                    count++;
+                }
+            } catch (WorkflowInstantiationException e) {
+                // R44: only a factory failure is isolated per instance — one
+                // type whose objects cannot be built must not starve every
+                // other type's recovery. Anything else still ends the pass.
+                logger.error("Skipping recovery of workflow '{}' (type={}) — its workflow object "
+                                + "could not be built; it stays active for a later pass",
+                        instance.workflowId(), instance.workflowType(), e);
             }
         }
 
@@ -938,7 +952,7 @@ public final class WorkflowExecutor {
      *       transport redelivers the command against fresh state rather than
      *       this call guessing what the fresh state now means.</li>
      *   <li>Relaunch via the same internal path
-     *       {@link #resumeWorkflow(WorkflowInstance, Object, Method)} uses
+     *       {@link #resumeWorkflow(WorkflowInstance, Supplier, Method)} uses
      *       ({@code replaying = true}) — identical to crash recovery: every
      *       memoized event before the failure point replays for free, and the
      *       step that failed (now memo-free) executes live with a fresh
@@ -973,7 +987,7 @@ public final class WorkflowExecutor {
      * thread, including several nodes at once.
      *
      * @param workflowId   the business workflow ID to retry
-     * @param registration the registration (implementation instance and
+     * @param registration the registration (workflow factory and
      *                     entry-point method) for this workflow's type — the
      *                     same one recovery would use
      * @return what this call did — see {@link RetryOutcome}
@@ -983,6 +997,12 @@ public final class WorkflowExecutor {
      *                                 should <em>not</em> acknowledge, so the
      *                                 command is redelivered against fresh
      *                                 state.
+     * @throws WorkflowInstantiationException if the registration's factory
+     *                                 throws while relaunching. The
+     *                                 compare-and-set has already happened, so
+     *                                 the row is left {@code RUNNING} and the
+     *                                 recovery poller adopts it once the
+     *                                 factory works.
      */
     public RetryOutcome retryWorkflow(String workflowId, WorkflowRegistration registration) {
         var existing = store.getInstance(workflowId);
@@ -1308,6 +1328,10 @@ public final class WorkflowExecutor {
      * reached a terminal status, throws {@link WorkflowNotQueryableException}.
      * Cross-node query routing is out of scope; route the request to the
      * owning node or read durable state via {@code WorkflowHandle.status()}/{@code result()}.
+     * "Owning node" means the lock holder in the normal case only: a node that
+     * has lost its instance lock (frozen past the TTL, partitioned) keeps
+     * answering from its own, possibly stale, object until that run exits —
+     * the same zombie window the stand-down machinery closes for writes.
      *
      * @param workflowId the workflow's business ID
      * @param queryName  the query name (from {@code @QueryMethod.name()} or the method name)
@@ -1532,7 +1556,19 @@ public final class WorkflowExecutor {
             // F1: one workflow object per run, built on the launching thread
             // before the run's virtual thread exists — a throwing factory
             // surfaces to the caller and releases the lock in the catch below.
-            var workflowImpl = workflowFactory.get();
+            Object workflowImpl;
+            try {
+                workflowImpl = workflowFactory.get();
+            } catch (RuntimeException e) {
+                throw new WorkflowInstantiationException(instance.workflowId(), instance.workflowType(), e);
+            }
+            if (!replaying) {
+                // A fresh start reports itself only once its object exists, so a
+                // throwing factory leaves no unmatched WORKFLOW_STARTED behind.
+                publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_STARTED, null);
+                emit("workflowStarted", instance.workflowId(),
+                        () -> observer.workflowStarted(observed(instance)));
+            }
             var thread = Thread.ofVirtual()
                     .name("maestro-workflow-%s-%s".formatted(instance.workflowType(), instance.workflowId()))
                     .unstarted(() -> {

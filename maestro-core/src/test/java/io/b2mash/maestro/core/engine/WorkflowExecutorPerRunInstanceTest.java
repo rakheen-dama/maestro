@@ -4,7 +4,12 @@ import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.QueryMethod;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.exception.WorkflowInstantiationException;
+import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.RecordingEngineObserver;
+import io.b2mash.maestro.core.spi.DistributedLock;
+import io.b2mash.maestro.core.spi.LockHandle;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -12,13 +17,22 @@ import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
+import java.time.Instant;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -98,17 +112,97 @@ class WorkflowExecutorPerRunInstanceTest {
 
     @Test
     void aThrowingFactorySurfacesToTheCallerAndLeavesNoRunBehind() throws Exception {
+        var lock = new MapLock();
+        var observer = new RecordingEngineObserver();
+        executor.shutdown();
+        executor = new WorkflowExecutor(store, lock, null, null, serializer, "node-a",
+                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
+                WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
+                false, WorkflowExecutor.DEFAULT_SHUTDOWN_TIMEOUT, Duration.ofMillis(200), observer);
         var method = ProbeWorkflow.class.getMethod("run", String.class);
-        Supplier<Object> factory = () -> { throw new IllegalStateException("no bean"); };
+        var cause = new IllegalStateException("no bean");
+        Supplier<Object> factory = () -> { throw cause; };
 
-        var thrown = assertThrows(IllegalStateException.class,
+        var thrown = assertThrows(WorkflowInstantiationException.class,
                 () -> executor.startWorkflow("p-x", "probe", "default", "X", factory, method));
 
-        assertEquals("no bean", thrown.getMessage());
-        assertEquals(false, executor.isRunning("p-x"), "no running-workflow record is left behind");
+        assertSame(cause, thrown.getCause(), "the factory's exception is preserved as the cause");
+        assertEquals("p-x", thrown.workflowId());
+        assertEquals("probe", thrown.workflowType());
+        assertFalse(executor.isRunning("p-x"), "no running-workflow record is left behind");
+        assertTrue(lock.locks.isEmpty(), "the instance lock is released when the factory throws");
+        assertTrue(observer.started().isEmpty(),
+                "workflowStarted is emitted only once the run's object exists");
+        assertEquals(WorkflowStatus.RUNNING, store.getInstance("p-x").orElseThrow().status(),
+                "the row stays active for the recovery poller to adopt");
+    }
+
+    @Test
+    void aRecoveryPassSkipsAnInstanceWhoseFactoryThrowsAndAdoptsTheRest() throws Exception {
+        // Deterministic order: the broken instance is always offered first.
+        store = new VersionedInMemoryStore() {
+            @Override
+            public List<WorkflowInstance> getRecoverableInstances() {
+                return super.getRecoverableInstances().stream()
+                        .sorted(Comparator.comparing(WorkflowInstance::workflowId))
+                        .toList();
+            }
+        };
+        executor.shutdown();
+        executor = new WorkflowExecutor(store, null, null, null, serializer, "node-a");
+        var method = ProbeWorkflow.class.getMethod("run", String.class);
+        executor.startWorkflow("a-broken", "broken", "default", "A", ProbeWorkflow::new, method);
+        executor.startWorkflow("b-healthy", "probe", "default", "B", ProbeWorkflow::new, method);
+        await().atMost(5, SECONDS).until(() -> executor.parkedCount() == 2);
+        executor.shutdown();
+        executor = null;
+
+        second = new WorkflowExecutor(store, null, null, null, serializer, "node-b");
+        Supplier<Object> broken = () -> { throw new IllegalStateException("broken wiring"); };
+        var recovered = second.recoverWorkflows(Map.of(
+                "broken", new WorkflowRegistration("broken", "default", broken, method),
+                "probe", new WorkflowRegistration("probe", "default", ProbeWorkflow::new, method)));
+
+        assertEquals(1, recovered, "the healthy instance behind the broken one is still adopted");
+        await().atMost(5, SECONDS).until(() -> second.parkedCount() == 1);
+        second.deliverSignal("b-healthy", "go", "done");
+        await().atMost(5, SECONDS).until(() ->
+                store.getInstance("b-healthy").orElseThrow().status() == WorkflowStatus.COMPLETED);
+        assertFalse(second.isRunning("a-broken"));
+        assertEquals(WorkflowStatus.WAITING_SIGNAL, store.getInstance("a-broken").orElseThrow().status(),
+                "the broken instance is left active for a later pass");
     }
 
     // ── fixture ────────────────────────────────────────────────────────
+
+    /** Minimal in-memory lock: one holder per key, no expiry. */
+    private static final class MapLock implements DistributedLock {
+
+        final ConcurrentHashMap<String, LockHandle> locks = new ConcurrentHashMap<>();
+
+        @Override
+        public Optional<LockHandle> tryAcquire(String key, Duration ttl) {
+            var handle = new LockHandle(key, UUID.randomUUID().toString(), Instant.now().plus(ttl));
+            return locks.putIfAbsent(key, handle) != null ? Optional.empty() : Optional.of(handle);
+        }
+
+        @Override
+        public void release(LockHandle handle) {
+            locks.computeIfPresent(handle.key(), (_, current) ->
+                    current.token().equals(handle.token()) ? null : current);
+        }
+
+        @Override
+        public boolean renew(LockHandle handle, Duration ttl) {
+            var current = locks.get(handle.key());
+            return current != null && current.token().equals(handle.token());
+        }
+
+        @Override
+        public boolean trySetLeader(String electionKey, String candidateId, Duration ttl) {
+            return false;
+        }
+    }
 
     /** Records its input in an instance field, then parks on a signal. */
     @DurableWorkflow(name = "probe")
