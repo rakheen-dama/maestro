@@ -147,9 +147,12 @@ class OrderFulfilmentWorkflowTest {
             if (gate != null) {
                 arrivals.get(orderId).countDown();
                 try {
-                    gate.await(20, TimeUnit.SECONDS);
+                    if (!gate.await(20, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("reserve for order '" + orderId + "' was never released by the test");
+                    }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
+                    throw new IllegalStateException(e);
                 }
             }
             var total = items.stream()

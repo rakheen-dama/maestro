@@ -136,9 +136,12 @@ class DocumentApprovalWorkflowTest {
             if (gate != null) {
                 arrivals.get(title).countDown();
                 try {
-                    gate.await(20, TimeUnit.SECONDS);
+                    if (!gate.await(20, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("assignReviewer for '" + title + "' was never released by the test");
+                    }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
+                    throw new IllegalStateException(e);
                 }
             }
             return "reviewer-alice";

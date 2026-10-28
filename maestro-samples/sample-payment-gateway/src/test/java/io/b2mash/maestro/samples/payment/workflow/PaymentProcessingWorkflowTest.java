@@ -38,6 +38,7 @@ class PaymentProcessingWorkflowTest {
     private TestWorkflowEnvironment env;
     private CountingProvider provider;
     private RecordingMessaging messaging;
+    private WedgingProvider wedging;
 
     @BeforeEach
     void setUp() {
@@ -50,6 +51,9 @@ class PaymentProcessingWorkflowTest {
 
     @AfterEach
     void tearDown() {
+        if (wedging != null) {
+            wedging.releaseAll();
+        }
         if (env != null) {
             env.shutdown();
         }
@@ -98,7 +102,7 @@ class PaymentProcessingWorkflowTest {
     @Test
     void twoConcurrentPaymentsCompleteIndependently() throws TimeoutException {
         // The provider has no order ID, so the fake tells runs apart by payment method.
-        var wedging = new WedgingProvider();
+        wedging = new WedgingProvider();
         env.registerActivities(PaymentProviderActivities.class, wedging);
         wedging.block("card-B");
 
@@ -106,6 +110,7 @@ class PaymentProcessingWorkflowTest {
                 new PaymentRequest("A", "card-A", new BigDecimal("1.00")));
         var b = env.startWorkflow("payment-B", PaymentProcessingWorkflow.class,
                 new PaymentRequest("B", "card-B", new BigDecimal("2.00")));
+        wedging.awaitBlocked("card-B");
 
         var resultA = a.getResult(PaymentProcessingResult.class, Duration.ofSeconds(10));
         assertEquals(PaymentProcessingResult.success("txn-card-A"), resultA,
@@ -151,9 +156,26 @@ class PaymentProcessingWorkflowTest {
      */
     static class WedgingProvider implements PaymentProviderActivities {
         private final ConcurrentHashMap<String, CountDownLatch> gates = new ConcurrentHashMap<>();
+        private final ConcurrentHashMap<String, CountDownLatch> arrivals = new ConcurrentHashMap<>();
 
         void block(String paymentMethod) {
             gates.put(paymentMethod, new CountDownLatch(1));
+            arrivals.put(paymentMethod, new CountDownLatch(1));
+        }
+
+        /** Waits until a run is blocked inside {@code charge} for {@code paymentMethod}. */
+        void awaitBlocked(String paymentMethod) {
+            try {
+                assertTrue(arrivals.get(paymentMethod).await(10, TimeUnit.SECONDS),
+                        "no run ever reached charge for '" + paymentMethod + "'");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(e);
+            }
+        }
+
+        void releaseAll() {
+            gates.values().forEach(CountDownLatch::countDown);
         }
 
         void release(String paymentMethod) {
@@ -164,10 +186,14 @@ class PaymentProcessingWorkflowTest {
         public PaymentConfirmation charge(String paymentMethod, BigDecimal amount) {
             var gate = gates.get(paymentMethod);
             if (gate != null) {
+                arrivals.get(paymentMethod).countDown();
                 try {
-                    gate.await(20, TimeUnit.SECONDS);
+                    if (!gate.await(20, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("charge for '" + paymentMethod + "' was never released by the test");
+                    }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
+                    throw new IllegalStateException(e);
                 }
             }
             return new PaymentConfirmation("txn-" + paymentMethod);

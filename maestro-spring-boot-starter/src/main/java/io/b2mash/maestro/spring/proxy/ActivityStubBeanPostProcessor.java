@@ -25,6 +25,7 @@ import org.springframework.util.ClassUtils;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.time.Duration;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -51,8 +52,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>{@code @DurableWorkflow} beans are prototype-scoped — Maestro creates a new
  * workflow object for every run — so this processor runs once per run, not once
  * per application. Field validation and proxy construction are done once per
- * workflow class and cached: every object of that class receives the same proxy
- * per field. Sharing is safe because the memoizing proxy holds no per-run state;
+ * workflow class — at discovery, through {@link #prepare(Class)}, so a mis-wired
+ * stub fails context startup — and cached: every object of that class receives
+ * the same proxy per field. Sharing is safe because the memoizing proxy holds no per-run state;
  * it resolves the running workflow from the calling thread's workflow context.
  *
  * <h2>Thread Safety</h2>
@@ -101,9 +103,29 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
             return bean;
         }
 
-        ensureDependenciesResolved();
         processWorkflowBean(bean, targetClass, beanName);
         return bean;
+    }
+
+    /**
+     * Validates the {@code @ActivityStub} fields of a workflow class and builds
+     * (and caches) their memoizing proxies, without instantiating the workflow.
+     *
+     * <p>Workflow beans are prototypes, so nothing builds a workflow object at
+     * context startup. {@link io.b2mash.maestro.spring.config.WorkflowRegistrar}
+     * calls this for every discovered workflow class, so that a mis-wired stub —
+     * a non-interface or {@code final} field, a missing activity bean, an
+     * unparsable {@code startToCloseTimeout} — fails startup instead of every
+     * run. Idempotent; the plan it builds is the one later injected into every
+     * workflow object of that class.
+     *
+     * @param targetClass the user class of a {@code @DurableWorkflow} bean
+     * @throws org.springframework.beans.BeansException if a stub's activity bean
+     *         cannot be resolved, a stub field is invalid, or a stub's
+     *         {@code startToCloseTimeout} is not an ISO-8601 duration
+     */
+    public void prepare(Class<?> targetClass) {
+        injectionPlanFor(targetClass);
     }
 
     private void ensureDependenciesResolved() {
@@ -147,15 +169,21 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
         dependenciesResolved = true;
     }
 
-    private void processWorkflowBean(Object bean, Class<?> targetClass, String beanName) {
+    private List<StubInjection> injectionPlanFor(Class<?> targetClass) {
         var plan = injectionPlans.get(targetClass);
         if (plan == null) {
+            ensureDependenciesResolved();
             // Built outside the map: building resolves activity beans, which must not
             // run inside ConcurrentHashMap.computeIfAbsent (re-entrant bean creation).
-            var built = buildInjectionPlan(targetClass, beanName);
+            var built = buildInjectionPlan(targetClass);
             var raced = injectionPlans.putIfAbsent(targetClass, built);
             plan = raced != null ? raced : built;
         }
+        return plan;
+    }
+
+    private void processWorkflowBean(Object bean, Class<?> targetClass, String beanName) {
+        var plan = injectionPlanFor(targetClass);
 
         for (var injection : plan) {
             var field = injection.field();
@@ -179,7 +207,7 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
      * its memoizing proxy — once per workflow class, however many workflow objects
      * (one per run) are later created from it.
      */
-    private List<StubInjection> buildInjectionPlan(Class<?> targetClass, String beanName) {
+    private List<StubInjection> buildInjectionPlan(Class<?> targetClass) {
         var ctx = Objects.requireNonNull(applicationContext);
         var plan = new ArrayList<StubInjection>();
 
@@ -212,7 +240,14 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
             // when the annotation was left at its defaults (see resolveRetryPolicy).
             var retryPolicy = resolveRetryPolicy(stub.retryPolicy(),
                     Objects.requireNonNull(retryDefaults));
-            var timeout = Duration.parse(stub.startToCloseTimeout());
+            Duration timeout;
+            try {
+                timeout = Duration.parse(stub.startToCloseTimeout());
+            } catch (DateTimeParseException e) {
+                throw new BeanInitializationException(
+                        "@ActivityStub field '%s' on %s has startToCloseTimeout '%s', which is not an ISO-8601 duration (e.g. PT30S)"
+                                .formatted(field.getName(), targetClass.getName(), stub.startToCloseTimeout()), e);
+            }
 
             // Create memoizing proxy
             @SuppressWarnings({"rawtypes", "unchecked"})
@@ -237,8 +272,8 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
         }
 
         if (!plan.isEmpty()) {
-            logger.info("Processed @DurableWorkflow bean '{}': injected {} activity proxy(ies)",
-                    beanName, plan.size());
+            logger.info("Prepared @DurableWorkflow {}: {} activity proxy(ies)",
+                    targetClass.getName(), plan.size());
         }
         return List.copyOf(plan);
     }
