@@ -588,11 +588,7 @@ public final class WorkflowExecutor {
     public void fireTimer(String workflowId, String timerId, UUID timerDbId) {
         var fired = store.markTimerFired(timerDbId);
         if (fired) {
-            var parkKey = workflowId + ":timer:" + timerId;
-            parkingLot.unpark(parkKey, null);
-            // An await-signal-* row is an awaitSignal deadline: wake that await
-            // (a no-op for every other timer).
-            signalManager.onTimerTransition(workflowId, timerId);
+            wakeTimerWaiter(workflowId, timerId);
             logger.debug("Fired timer '{}' for workflow '{}'", timerId, workflowId);
         } else {
             logger.debug("Timer '{}' for workflow '{}' already fired or cancelled — skipping unpark",
@@ -648,15 +644,30 @@ public final class WorkflowExecutor {
     public boolean cancelTimer(String workflowId, String timerId, UUID timerDbId) {
         var cancelled = store.markTimerCancelled(timerDbId);
         if (cancelled) {
-            var parkKey = workflowId + ":timer:" + timerId;
-            parkingLot.unpark(parkKey, null);
-            signalManager.onTimerTransition(workflowId, timerId);
+            wakeTimerWaiter(workflowId, timerId);
             logger.debug("Cancelled timer '{}' for workflow '{}'", timerId, workflowId);
         } else {
             logger.debug("Timer '{}' for workflow '{}' already fired or cancelled — skipping unpark",
                     timerId, workflowId);
         }
         return cancelled;
+    }
+
+    /**
+     * Wakes whoever waits on a timer row that just transitioned. A
+     * {@code sleep()} parks on {@code <workflowId>:timer:<timerId>}; an
+     * {@code await-signal-*} row is an {@code awaitSignal} deadline, whose
+     * await parks on its signal key and is woken through
+     * {@link SignalManager#onTimerTransition}. Unparking the {@code :timer:}
+     * key for an await would only store a one-shot permit nobody ever
+     * consumes, so it is skipped.
+     */
+    private void wakeTimerWaiter(String workflowId, String timerId) {
+        if (timerId.startsWith(SignalManager.TIMER_ID_PREFIX)) {
+            signalManager.onTimerTransition(workflowId, timerId);
+        } else {
+            parkingLot.unpark(workflowId + ":timer:" + timerId, null);
+        }
     }
 
     // ── Terminate ──────────────────────────────────────────────────────
@@ -1571,12 +1582,17 @@ public final class WorkflowExecutor {
             try {
                 completed = transitionToTerminal(ctx, instance, WorkflowStatus.COMPLETED,
                         EventType.WORKFLOW_COMPLETED, outputPayload);
-            } catch (DuplicateEventException | StaleRunException | OptimisticLockException routed) {
-                throw routed; // keep their existing arms below
+            } catch (DuplicateEventException | StaleRunException routed) {
+                throw routed; // keep their stale-run stand-down arm below
             } catch (RuntimeException terminalWriteFailed) {
                 // R31: any other store error here (a DB blip surfacing as an
                 // unchecked SQL exception, a failed re-read) is NOT a workflow
-                // failure — the workflow body already succeeded. Letting it
+                // failure — the workflow body already succeeded. That includes
+                // an OptimisticLockException (R34 a): the SPI reports a version
+                // conflict as `false`, which transitionToTerminal retries, so a
+                // store that throws one instead is a persistence fault like any
+                // other — there is no dedicated arm for it below, and letting
+                // it through would reach catch (Exception e). Letting it
                 // reach catch (Exception e) would run a successful saga's
                 // compensations and could durably record FAILED. The atomic
                 // write means nothing terminal landed, so the instance stays

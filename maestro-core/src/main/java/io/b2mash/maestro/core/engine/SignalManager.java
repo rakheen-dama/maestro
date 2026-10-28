@@ -34,7 +34,10 @@ import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /**
@@ -126,8 +129,36 @@ final class SignalManager {
      * up without an active physical subscription; the periodic store re-check
      * bounds the resulting wake delay (the notifier is an optimisation, not a
      * correctness requirement).
+     *
+     * <p>Each entry also carries the first waiter's subscribe outcome
+     * ({@link WakeSubscription#settled}). A later concurrent waiter of the same
+     * workflow joins the count and then waits on it — bounded by
+     * {@link #WAKE_SUBSCRIBE_JOIN_TIMEOUT} — so it never parks before the
+     * shared subscription has been acknowledged (item 23).
      */
-    private final ConcurrentHashMap<String, Integer> wakeSubscriptions = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, WakeSubscription> wakeSubscriptions = new ConcurrentHashMap<>();
+
+    /**
+     * Longest a concurrent waiter waits for the first waiter's wake subscribe
+     * to settle before parking anyway (the periodic re-check covers it). Matches
+     * the Valkey notifier's own acknowledgement bound.
+     */
+    static final Duration WAKE_SUBSCRIBE_JOIN_TIMEOUT = Duration.ofSeconds(5);
+
+    /**
+     * One workflow's shared wake subscription: the number of awaits using it,
+     * and the future the first waiter completes once its subscribe call
+     * returned (acknowledged, timed out, or failed — joiners only need to know
+     * it is no longer in flight).
+     *
+     * <p>{@code count} is read and written only inside
+     * {@link ConcurrentHashMap#compute} on {@link #wakeSubscriptions}, whose
+     * per-key lock provides the necessary happens-before.
+     */
+    private static final class WakeSubscription {
+        int count = 1;
+        final CompletableFuture<Void> settled = new CompletableFuture<>();
+    }
 
     /**
      * Bridge from a deadline-row transition to the parked await it belongs
@@ -380,12 +411,30 @@ final class SignalManager {
             // (mirrors sleep()): a crash between the two leaves an orphan
             // PENDING row that fires for nobody, never a memo whose row is
             // missing. Micros, so the memo and a Postgres timestamptz agree.
+            //
+            // M2: a row for this timer id may already exist with no memo — a
+            // crash between saveTimer and the append, or a runner race. Reuse
+            // it and its fireAt rather than writing a second row under the same
+            // id (findTimer could then pick either). A non-PENDING leftover
+            // means that deadline is already spent (fired, or cancelled by an
+            // operator): reusing it makes the await time out unless a signal
+            // is visible — the row arbitrates, exactly as on replay.
             var timerId = TIMER_ID_PREFIX + seq;
-            var now = Instant.now();
-            var deadline = now.plus(timeout).truncatedTo(ChronoUnit.MICROS);
-            var timerDbId = UUID.randomUUID();
-            store.saveTimer(new WorkflowTimer(timerDbId, ctx.workflowInstanceId(), ctx.workflowId(),
-                    timerId, deadline, TimerStatus.PENDING, now));
+            var existing = store.findTimer(ctx.workflowInstanceId(), timerId);
+            Instant deadline;
+            UUID timerDbId;
+            if (existing.isPresent()) {
+                deadline = existing.get().fireAt();
+                timerDbId = existing.get().id();
+                logger.debug("Workflow '{}' await of '{}' reuses existing deadline row '{}' ({}, fireAt={})",
+                        ctx.workflowId(), signalName, timerId, existing.get().status(), deadline);
+            } else {
+                var now = Instant.now();
+                deadline = now.plus(timeout).truncatedTo(ChronoUnit.MICROS);
+                timerDbId = UUID.randomUUID();
+                store.saveTimer(new WorkflowTimer(timerDbId, ctx.workflowInstanceId(), ctx.workflowId(),
+                        timerId, deadline, TimerStatus.PENDING, now));
+            }
             appendEvent(ctx, seq, EventType.TIMER_SCHEDULED, stepName, serializer.serialize(
                     new AwaitSignalDetail(signalName, timerId, timeout.toString(), deadline.toString())));
 
@@ -457,7 +506,7 @@ final class SignalManager {
                 () -> parseDeadline(detail.deadline()));
         @Nullable UUID timerDbId = store.findTimer(ctx.workflowInstanceId(), detail.timerId())
                 .map(WorkflowTimer::id)
-                .orElse(null);
+                .orElseGet(() -> rearmDeadlineRow(ctx, detail.timerId(), deadline));
         logger.debug("Replaying parked await of '{}' at seq {} — resuming the durable wait (deadline={})",
                 signalName, seq, deadline);
         subscribeForWake(ctx.workflowId());
@@ -466,6 +515,33 @@ final class SignalManager {
                     deadline, timeout);
         } finally {
             unsubscribeForWake(ctx.workflowId());
+        }
+    }
+
+    /**
+     * Re-arms the deadline row of a parked await whose memo survived but whose
+     * row did not (e.g. deleted out of band). A missing row is not a spent
+     * deadline: the memoized wall-clock deadline still governs, so the row is
+     * re-created PENDING at exactly that {@code fireAt} — the poller,
+     * {@code cancelTimer} and {@code advanceTime()} can drive it again.
+     * Best-effort: if the save fails, the await still times out on the
+     * memoized deadline by the wall clock.
+     *
+     * @return the new row's id, or {@code null} if it could not be saved
+     */
+    private @Nullable UUID rearmDeadlineRow(WorkflowContext ctx, String timerId, Instant deadline) {
+        var rowId = UUID.randomUUID();
+        try {
+            store.saveTimer(new WorkflowTimer(rowId, ctx.workflowInstanceId(), ctx.workflowId(),
+                    timerId, deadline, TimerStatus.PENDING, Instant.now()));
+            logger.warn("Workflow '{}' await deadline row '{}' was missing on replay — re-armed it at the "
+                    + "memoized deadline {}", ctx.workflowId(), timerId, deadline);
+            return rowId;
+        } catch (RuntimeException e) {
+            logger.warn("Workflow '{}' await deadline row '{}' is missing and could not be re-armed — "
+                            + "the memoized deadline {} still applies by the wall clock: {}",
+                    ctx.workflowId(), timerId, deadline, e.toString());
+            return null;
         }
     }
 
@@ -494,7 +570,12 @@ final class SignalManager {
      *
      * <p>The per-pass signal and row reads are advisory ({@link ParkProbe}):
      * a store blip reads as "no signal, still pending" and the await keeps
-     * parking. The reads and writes of the timeout decision itself are not.
+     * parking. A missing row reads as {@code PENDING} too — the memoized
+     * deadline then decides by the wall clock. Store errors inside the timeout
+     * decision never fail the run either (R39): the self-fire is best-effort,
+     * and a failed post-deadline signal re-read parks one more re-check
+     * interval and decides again. Only the {@code SIGNAL_TIMEOUT} append keeps
+     * the semantics of every other memo append.
      */
     private <T> T awaitOutcome(WorkflowContext ctx, int outcomeSeq, String stepName, String signalName,
                                Class<T> type, String timerId, @Nullable UUID timerDbId,
@@ -527,20 +608,33 @@ final class SignalManager {
 
                 // 2. The durable row arbitrates the deadline. A blip reads as
                 // PENDING, so the await keeps parking until the wall clock
-                // passes the memoized deadline.
-                var rowStatus = ParkProbe.<@Nullable TimerStatus>read("awaitSignal.findTimer", workflowId,
+                // passes the memoized deadline. So does a MISSING row (item
+                // 4): absence is not a fire or a cancel, and the memoized
+                // deadline still governs by the wall clock.
+                var rowStatus = ParkProbe.read("awaitSignal.findTimer", workflowId,
                         () -> store.findTimer(ctx.workflowInstanceId(), timerId)
                                 .map(WorkflowTimer::status)
-                                .orElse(null),
+                                .orElse(TimerStatus.PENDING),
                         TimerStatus.PENDING);
                 var now = Instant.now();
                 if (rowStatus != TimerStatus.PENDING || !now.isBefore(deadline)) {
                     if (rowStatus == TimerStatus.PENDING && timerDbId != null) {
-                        // Self-fire: the row is non-PENDING either way after
-                        // this, so no poller fires it for nobody later.
-                        store.markTimerFired(timerDbId);
+                        selfFire(workflowId, signalName, timerDbId);
                     }
-                    var late = store.getUnconsumedSignals(workflowId, signalName);
+                    // R39: a store error on this re-read is a blip, not a
+                    // workflow failure — it must not escape into workflow code
+                    // (FAILED + compensations). Park one more re-check interval
+                    // and decide again; a signal arriving meanwhile wakes it.
+                    List<WorkflowSignal> late;
+                    try {
+                        late = store.getUnconsumedSignals(workflowId, signalName);
+                    } catch (RuntimeException e) {
+                        logger.warn("Workflow '{}' could not re-read signal '{}' at its deadline — parking "
+                                        + "one more re-check interval ({}) before deciding the timeout: {}",
+                                workflowId, signalName, wakeRecheckInterval, e.toString());
+                        parkChunk(ctx, parkKey, signalName, wakeRecheckInterval);
+                        continue;
+                    }
                     if (!late.isEmpty()) {
                         return consumeOutcome(ctx, outcomeSeq, stepName, signalName, late.getFirst(), type,
                                 timerDbId);
@@ -562,32 +656,56 @@ final class SignalManager {
                 // remote poller leader — is seen within one interval.
                 var remaining = Duration.between(now, deadline);
                 var chunk = remaining.compareTo(wakeRecheckInterval) < 0 ? remaining : wakeRecheckInterval;
-                boolean woken;
-                try {
-                    parkingLot.parkWithTimeout(parkKey, chunk);
-                    woken = true;
-                } catch (TimeoutException e) {
-                    woken = false;
-                }
-
-                // Terminate outranks a signal: if the instance is TERMINATED,
-                // consuming a signal now would memoize a SIGNAL_RECEIVED event
-                // for a run that must not continue. So does a row another
-                // runner already finalised (COMPLETED/FAILED): this run is
-                // stale and stands down before it can take the signal (M7).
-                standDownIfTerminated(ctx);
-
-                if (woken) {
-                    // A signal, a timer transition — or a spurious wake, e.g. a
-                    // pub/sub self-echo of a previous delivery arriving after
-                    // this key was consumed and re-parked (collectSignals awaits
-                    // the same name repeatedly). The next pass decides.
-                    logger.debug("Workflow '{}' woke while awaiting signal '{}' — re-checking",
-                            workflowId, signalName);
-                }
+                parkChunk(ctx, parkKey, signalName, chunk);
             }
         } finally {
             awaitWakeKeys.remove(wakeKey, parkKey);
+        }
+    }
+
+    /**
+     * Parks once on the await's signal key for at most {@code chunk}, then
+     * stands down if the instance was terminated or finalised meanwhile.
+     */
+    private void parkChunk(WorkflowContext ctx, String parkKey, String signalName, Duration chunk) {
+        boolean woken;
+        try {
+            parkingLot.parkWithTimeout(parkKey, chunk);
+            woken = true;
+        } catch (TimeoutException e) {
+            woken = false;
+        }
+
+        // Terminate outranks a signal: if the instance is TERMINATED,
+        // consuming a signal now would memoize a SIGNAL_RECEIVED event
+        // for a run that must not continue. So does a row another
+        // runner already finalised (COMPLETED/FAILED): this run is
+        // stale and stands down before it can take the signal (M7).
+        standDownIfTerminated(ctx);
+
+        if (woken) {
+            // A signal, a timer transition — or a spurious wake, e.g. a
+            // pub/sub self-echo of a previous delivery arriving after
+            // this key was consumed and re-parked (collectSignals awaits
+            // the same name repeatedly). The next pass decides.
+            logger.debug("Workflow '{}' woke while awaiting signal '{}' — re-checking",
+                    ctx.workflowId(), signalName);
+        }
+    }
+
+    /**
+     * Self-fires a still-{@code PENDING} deadline row once the await decides
+     * it timed out, so no poller later fires it for nobody. Best-effort, like
+     * the cancel in {@link #consumeOutcome}: the {@code SIGNAL_TIMEOUT} memo is
+     * the truth, a row left {@code PENDING} only fires later for nobody, and a
+     * store blip here must not fail the run (R39).
+     */
+    private void selfFire(String workflowId, String signalName, UUID timerDbId) {
+        try {
+            store.markTimerFired(timerDbId);
+        } catch (RuntimeException e) {
+            logger.warn("Could not self-fire the deadline row of workflow '{}' signal '{}' — the row "
+                    + "fires later for nobody: {}", workflowId, signalName, e.toString());
         }
     }
 
@@ -670,22 +788,59 @@ final class SignalManager {
      * workflow. The notifier I/O happens outside the map lock; on subscribe
      * failure the count is rolled back and the await falls back to the
      * periodic store re-check.
+     *
+     * <p>Only the first concurrent waiter subscribes. A later waiter joins the
+     * count and waits — at most {@link #WAKE_SUBSCRIBE_JOIN_TIMEOUT} — for that
+     * subscribe to settle, so its own check-then-subscribe race closure holds
+     * too: it never parks while the shared subscription is still unacknowledged.
      */
     private void subscribeForWake(String workflowId) {
         if (signalNotifier == null) {
             return;
         }
-        var count = wakeSubscriptions.merge(workflowId, 1, Integer::sum);
-        if (count > 1) {
-            return; // subscription already active (or being set up concurrently)
+        var joined = new boolean[1];
+        var subscription = wakeSubscriptions.compute(workflowId, (id, existing) -> {
+            if (existing == null) {
+                return new WakeSubscription();
+            }
+            existing.count++;
+            joined[0] = true;
+            return existing;
+        });
+        if (joined[0]) {
+            awaitSharedSubscribe(workflowId, subscription.settled);
+            return;
         }
         try {
             signalNotifier.subscribe(workflowId, this::onRemoteSignal);
-        } catch (Exception e) {
+        } catch (RuntimeException e) {
             logger.warn("Failed to subscribe for cross-instance wake of workflow '{}' — "
                             + "periodic store re-check remains the fallback: {}",
                     workflowId, e.getMessage());
             removeWakeCount(workflowId);
+        } finally {
+            subscription.settled.complete(null);
+        }
+    }
+
+    /**
+     * Waits for the first waiter's subscribe to settle, bounded by
+     * {@link #WAKE_SUBSCRIBE_JOIN_TIMEOUT}. Never throws: on timeout the
+     * periodic store re-check is the fallback, and an interrupt is restored.
+     */
+    private void awaitSharedSubscribe(String workflowId, CompletableFuture<Void> settled) {
+        try {
+            settled.get(WAKE_SUBSCRIBE_JOIN_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            logger.warn("Shared wake subscription of workflow '{}' did not settle within {} — "
+                            + "periodic store re-check remains the fallback",
+                    workflowId, WAKE_SUBSCRIBE_JOIN_TIMEOUT);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (ExecutionException e) {
+            // Unreachable: the future is only ever completed normally.
+            logger.debug("Shared wake subscription of workflow '{}' settled exceptionally: {}",
+                    workflowId, e.toString());
         }
     }
 
@@ -715,15 +870,16 @@ final class SignalManager {
      */
     private boolean removeWakeCount(String workflowId) {
         var reachedZero = new boolean[1];
-        wakeSubscriptions.compute(workflowId, (id, count) -> {
-            if (count == null) {
+        wakeSubscriptions.compute(workflowId, (id, subscription) -> {
+            if (subscription == null) {
                 return null;
             }
-            if (count <= 1) {
+            if (subscription.count <= 1) {
                 reachedZero[0] = true;
                 return null;
             }
-            return count - 1;
+            subscription.count--;
+            return subscription;
         });
         return reachedZero[0];
     }

@@ -203,6 +203,33 @@ class WorkflowExecutorTerminalTransitionTest {
     }
 
     @Test
+    @DisplayName("R34 (a): an OptimisticLockException from the COMPLETED write is contained like any store error — never FAILED, never compensated")
+    void optimisticLockOnTheCompletedWrite_abandonsTheRun_withoutCompensatingIt() throws Exception {
+        // The SPI reports a version mismatch as `false`; a store that throws
+        // OptimisticLockException instead is still a persistence fault, not a
+        // workflow outcome.
+        store.failNextCompleteInstanceCalls(1, new OptimisticLockException("saga-terminal-ole", 1, 2));
+        var observer = new RecordingEngineObserver();
+        executor.shutdown();
+        executor = newExecutor(observer);
+        var compensations = new AtomicInteger();
+        var workflowId = "saga-terminal-ole";
+        var impl = new CompensatedWorkflow(compensations);
+        var method = CompensatedWorkflow.class.getMethod("run");
+
+        executor.startWorkflow(workflowId, "CompensatedWorkflow", "default", null, impl, method);
+        await().atMost(Duration.ofSeconds(5)).until(() -> !executor.isRunning(workflowId));
+
+        assertEquals(0, compensations.get(), "a workflow that SUCCEEDED must never be compensated");
+        assertEquals(0, store.eventsOfType(EventType.WORKFLOW_FAILED), "a store conflict is not a workflow failure");
+        assertEquals(WorkflowStatus.RUNNING, store.getInstance(workflowId).orElseThrow().status(),
+                "nothing terminal was written; the run stays recoverable");
+        assertEquals(List.of(AbandonReason.TERMINAL_WRITE_FAILED),
+                observer.abandoned().stream().map(RecordingEngineObserver.AbandonCall::reason).toList());
+        assertEquals(0, observer.failed().size());
+    }
+
+    @Test
     @DisplayName("Issue 26: the terminal status and the terminal event are written by one store call")
     void terminalEventAndStatus_areWrittenByOneStoreCall() {
         executor.shutdown();

@@ -27,6 +27,7 @@ import tools.jackson.databind.ObjectMapper;
 import java.lang.ScopedValue;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -411,6 +412,240 @@ class SignalManagerTest {
         signalManager.onTimerTransition("order-1", "await-signal-1");
         worker.join(5_000);
         assertInstanceOf(SignalTimeoutException.class, outcome.get());
+    }
+
+    @Test
+    @DisplayName("a live await reuses an existing row for its timer id and that row's fireAt — never a second row (M2)")
+    void liveAwait_reusesAnExistingTimerRow_andItsDeadline() {
+        // A crash between saveTimer and the TIMER_SCHEDULED memo (or a runner
+        // race) left a PENDING row for this await's timer id with no memo.
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+        var seededFireAt = Instant.now().plus(Duration.ofMinutes(10)).truncatedTo(ChronoUnit.MICROS);
+        var rowId = UUID.randomUUID();
+        store.saveTimer(new WorkflowTimer(rowId, instanceId, "order-1", "await-signal-1", seededFireAt,
+                TimerStatus.PENDING, Instant.now()));
+        var ctx = createContext(instanceId, "order-1", 0, false);
+
+        var worker = awaitInBackground(ctx, "payment.result", Duration.ofHours(1), new AtomicReference<>());
+        await().atMost(Duration.ofSeconds(5)).until(() -> parkingLot.isParked("order-1:signal:payment.result"));
+
+        assertEquals(1, store.getAllTimers().size(), "the existing row must be reused, not duplicated");
+        assertEquals(rowId, store.getAllTimers().getFirst().id());
+        var memo = store.getEventBySequence(instanceId, 1).orElseThrow();
+        assertEquals(seededFireAt, Instant.parse(memo.payload().get("deadline").stringValue()),
+                "the memoized deadline is the existing row's fireAt");
+        worker.interrupt();
+    }
+
+    @Test
+    @DisplayName("replay resumes from the MEMOIZED deadline, not Instant.now() + timeout (item 3)")
+    void replay_timesOutAtTheMemoizedDeadline_notAFreshOne() throws Exception {
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+        var rowId = seedAwaitMemo(instanceId, 1, "payment.result",
+                Instant.now().plusMillis(200).truncatedTo(ChronoUnit.MICROS), TimerStatus.PENDING);
+        var ctx = createContext(instanceId, "order-1", 0, true);
+        var outcome = new AtomicReference<Object>();
+
+        // The call's own timeout (1 h) must be ignored on replay.
+        var worker = awaitInBackground(ctx, "payment.result", Duration.ofHours(1), outcome);
+        worker.join(2_000);
+
+        assertInstanceOf(SignalTimeoutException.class, outcome.get(),
+                "the await must end at the memoized deadline (~200 ms), not in an hour");
+        assertEquals(EventType.SIGNAL_TIMEOUT, store.getEventBySequence(instanceId, 2).orElseThrow().eventType());
+        assertEquals(TimerStatus.FIRED, store.getAllTimers().stream()
+                .filter(t -> t.id().equals(rowId)).findFirst().orElseThrow().status(),
+                "the deadline self-fires its still-PENDING row");
+    }
+
+    @Test
+    @DisplayName("replay of a past-deadline await with a PENDING row self-fires the row and times out at once (item 3)")
+    void replay_pastDeadlinePendingRow_selfFiresAndTimesOut() {
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+        seedAwaitMemo(instanceId, 1, "payment.result", Instant.now().minusSeconds(5), TimerStatus.PENDING);
+        var ctx = createContext(instanceId, "order-1", 0, true);
+
+        ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() ->
+                assertThrows(SignalTimeoutException.class,
+                        () -> signalManager.awaitSignal(ctx, "payment.result", String.class, Duration.ofHours(1))));
+
+        assertEquals(EventType.SIGNAL_TIMEOUT, store.getEventBySequence(instanceId, 2).orElseThrow().eventType());
+        assertEquals(TimerStatus.FIRED, store.getAllTimers().getFirst().status());
+    }
+
+    @Test
+    @DisplayName("replay whose timer row is MISSING re-arms a row at the memoized deadline and keeps waiting (item 4)")
+    void replay_missingTimerRow_rearmsAtTheMemoizedDeadline() {
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+        var deadline = Instant.now().plus(Duration.ofHours(1)).truncatedTo(ChronoUnit.MICROS);
+        store.appendEvent(new WorkflowEvent(UUID.randomUUID(), instanceId, 1, EventType.TIMER_SCHEDULED,
+                "$maestro:awaitSignal:payment.result", awaitDetail("payment.result", "await-signal-1", deadline),
+                Instant.now()));
+        var ctx = createContext(instanceId, "order-1", 0, true);
+        var outcome = new AtomicReference<Object>();
+
+        var worker = awaitInBackground(ctx, "payment.result", Duration.ofHours(1), outcome);
+        await().atMost(Duration.ofSeconds(5)).until(() -> parkingLot.isParked("order-1:signal:payment.result"));
+
+        assertNull(outcome.get(), "a missing row is not a spent deadline — the await must keep waiting");
+        assertTrue(store.getEventBySequence(instanceId, 2).isEmpty());
+        var row = store.findTimer(instanceId, "await-signal-1").orElseThrow(
+                () -> new AssertionError("the deadline row must be re-armed"));
+        assertEquals(TimerStatus.PENDING, row.status());
+        assertEquals(deadline, row.fireAt(), "re-armed at the memoized deadline");
+
+        // ...and the re-armed row arbitrates like the original.
+        assertTrue(store.markTimerFired(row.id()));
+        signalManager.onTimerTransition("order-1", "await-signal-1");
+        await().atMost(Duration.ofSeconds(5)).until(() -> outcome.get() != null);
+        assertInstanceOf(SignalTimeoutException.class, outcome.get());
+        worker.interrupt();
+    }
+
+    // ── awaitSignal — store errors inside the timeout decision (R39) ───
+
+    @Test
+    @DisplayName("a store error on the deadline self-fire does not fail the await — it still times out (R39)")
+    void selfFireStoreError_stillTimesOut() throws Exception {
+        var faulty = useDeadlineFaultStore();
+        faulty.failNextSelfFire = true;
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+        var outcome = new AtomicReference<Object>();
+
+        var worker = awaitInBackground(createContext(instanceId, "order-1", 0, false), "payment.result",
+                Duration.ofMillis(200), outcome);
+        worker.join(5_000);
+
+        assertEquals(1, faulty.injected.get(), "the fault must actually have been hit");
+        assertInstanceOf(SignalTimeoutException.class, outcome.get(),
+                "a store blip at the deadline must not escape into workflow code");
+        assertEquals(EventType.SIGNAL_TIMEOUT, store.getEventBySequence(instanceId, 2).orElseThrow().eventType());
+    }
+
+    @Test
+    @DisplayName("a store error on the post-deadline signal re-read re-parks and retries — it still times out (R39)")
+    void lateSignalReadStoreError_reparksAndStillTimesOut() throws Exception {
+        var faulty = useDeadlineFaultStore();
+        faulty.failLateReadAfterSelfFire = true;
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+        var outcome = new AtomicReference<Object>();
+
+        var worker = awaitInBackground(createContext(instanceId, "order-1", 0, false), "payment.result",
+                Duration.ofMillis(200), outcome);
+        worker.join(5_000);
+
+        assertEquals(1, faulty.injected.get(), "the fault must actually have been hit");
+        assertInstanceOf(SignalTimeoutException.class, outcome.get());
+        assertEquals(EventType.SIGNAL_TIMEOUT, store.getEventBySequence(instanceId, 2).orElseThrow().eventType());
+    }
+
+    @Test
+    @DisplayName("a signal arriving during a post-deadline store error still wins the open slot (R39)")
+    void lateSignalReadStoreError_signalArrivingMeanwhileWins() throws Exception {
+        var faulty = useDeadlineFaultStore();
+        faulty.failLateReadAfterSelfFire = true;
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+        faulty.onLateReadFailure = () -> faulty.saveSignal(new WorkflowSignal(UUID.randomUUID(), instanceId,
+                "order-1", "payment.result", serializer.serialize("paid-during-blip"), false, Instant.now()));
+        var outcome = new AtomicReference<Object>();
+
+        var worker = awaitInBackground(createContext(instanceId, "order-1", 0, false), "payment.result",
+                Duration.ofMillis(200), outcome);
+        worker.join(5_000);
+
+        assertEquals(1, faulty.injected.get());
+        assertEquals("paid-during-blip", outcome.get());
+        assertEquals(EventType.SIGNAL_RECEIVED, store.getEventBySequence(instanceId, 2).orElseThrow().eventType());
+    }
+
+    // ── concurrent waiters share one acknowledged subscribe (item 23) ──
+
+    @Test
+    @DisplayName("a second concurrent waiter does not park before the first waiter's subscribe is acknowledged")
+    void secondWaiter_waitsForTheFirstWaitersSubscribe() throws Exception {
+        var release = new CountDownLatch(1);
+        var subscribeEntered = new CountDownLatch(1);
+        var notifier = new SubscribingNotifier() {
+            @Override
+            public void subscribe(String workflowId, SignalCallback callback) {
+                subscribeEntered.countDown();
+                try {
+                    release.await(10, TimeUnit.SECONDS); // the server has not acknowledged yet
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                super.subscribe(workflowId, callback);
+            }
+        };
+        signalManager = new SignalManager(store, messaging, notifier, serializer, parkingLot);
+        var instanceId = UUID.randomUUID(); createInstance("order-1", instanceId);
+
+        var first = awaitInBackground(createContext(instanceId, "order-1", 0, false), "signal-a",
+                Duration.ofSeconds(30), new AtomicReference<>());
+        assertTrue(subscribeEntered.await(5, TimeUnit.SECONDS));
+        var second = awaitInBackground(createContext(instanceId, "order-1", 10, false), "signal-b",
+                Duration.ofSeconds(30), new AtomicReference<>());
+
+        // The second waiter must be held in subscribeForWake: it writes no
+        // deadline row and does not park while the subscribe is unacknowledged.
+        Thread.sleep(500);
+        assertTrue(store.findTimer(instanceId, "await-signal-11").isEmpty(),
+                "the second waiter passed subscribeForWake before the subscription was acknowledged");
+        assertFalse(parkingLot.isParked("order-1:signal:signal-b"));
+
+        release.countDown();
+        await().atMost(Duration.ofSeconds(5)).until(() ->
+                parkingLot.isParked("order-1:signal:signal-a") && parkingLot.isParked("order-1:signal:signal-b"));
+        assertEquals(List.of("order-1"), notifier.subscribeCalls, "still one physical subscription");
+        first.interrupt();
+        second.interrupt();
+    }
+
+    /** Swaps in a {@link DeadlineFaultStore} and a SignalManager with a 100 ms re-check. */
+    private DeadlineFaultStore useDeadlineFaultStore() {
+        var faulty = new DeadlineFaultStore();
+        store = faulty;
+        signalManager = new SignalManager(store, messaging, null, serializer, parkingLot, Duration.ofMillis(100));
+        return faulty;
+    }
+
+    /**
+     * Throws once from the timeout decision's own store calls: the deadline
+     * self-fire ({@code markTimerFired}), or the signal re-read that follows
+     * it. The per-pass probe reads before the decision are left alone — they
+     * are already advisory (Issue 20).
+     */
+    private static final class DeadlineFaultStore extends InMemoryWorkflowStore {
+        volatile boolean failNextSelfFire;
+        volatile boolean failLateReadAfterSelfFire;
+        volatile @org.jspecify.annotations.Nullable Runnable onLateReadFailure;
+        private volatile boolean selfFireSeen;
+        final java.util.concurrent.atomic.AtomicInteger injected = new java.util.concurrent.atomic.AtomicInteger();
+
+        @Override
+        public synchronized boolean markTimerFired(UUID timerId) {
+            selfFireSeen = true;
+            if (failNextSelfFire) {
+                failNextSelfFire = false;
+                injected.incrementAndGet();
+                throw new RuntimeException("store blip at the deadline (self-fire, injected)");
+            }
+            return super.markTimerFired(timerId);
+        }
+
+        @Override
+        public List<WorkflowSignal> getUnconsumedSignals(String workflowId, String signalName) {
+            if (failLateReadAfterSelfFire && selfFireSeen) {
+                failLateReadAfterSelfFire = false;
+                injected.incrementAndGet();
+                var hook = onLateReadFailure;
+                if (hook != null) {
+                    hook.run();
+                }
+                throw new RuntimeException("store blip at the deadline (late signal read, injected)");
+            }
+            return super.getUnconsumedSignals(workflowId, signalName);
+        }
     }
 
     // ── adoptOrphanedSignals ───────────────────────────────────────────

@@ -154,8 +154,11 @@ public interface WorkflowStore {
      * @throws IllegalArgumentException  if {@code terminal.status()} is not
      *                                   {@linkplain io.b2mash.maestro.core.model.WorkflowStatus#isTerminal()
      *                                   terminal}, if {@code terminalEvent.eventType()}
-     *                                   is neither {@code WORKFLOW_COMPLETED} nor
-     *                                   {@code WORKFLOW_FAILED}, or if
+     *                                   is not the type paired with the status
+     *                                   ({@code COMPLETED} ↔ {@code WORKFLOW_COMPLETED},
+     *                                   {@code FAILED} ↔ {@code WORKFLOW_FAILED};
+     *                                   {@code TERMINATED} is never accepted —
+     *                                   see {@link TerminalWrites#requireValid}), or if
      *                                   {@code terminalEvent.workflowInstanceId()}
      *                                   differs from {@code terminal.id()}
      */

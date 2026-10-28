@@ -20,10 +20,19 @@ public final class TerminalWrites {
      *
      * @param terminal      the terminal instance about to be written
      * @param terminalEvent the terminal event about to be appended
+     * <p>The status and the event must describe the same outcome:
+     * {@code COMPLETED} pairs only with {@link EventType#WORKFLOW_COMPLETED} and
+     * {@code FAILED} only with {@link EventType#WORKFLOW_FAILED}. A mismatched
+     * pair would leave a row whose own log contradicts it. {@code TERMINATED}
+     * is rejected outright: there is no {@code WORKFLOW_TERMINATED} event type
+     * to pair it with, and a terminate is not written through
+     * {@code completeInstance}.
+     *
      * @throws IllegalArgumentException if {@code terminal.status()} is not
-     *         terminal, if {@code terminalEvent.eventType()} is neither
-     *         {@link EventType#WORKFLOW_COMPLETED} nor {@link EventType#WORKFLOW_FAILED},
-     *         or if {@code terminalEvent.workflowInstanceId()} differs from
+     *         terminal, if {@code terminalEvent.eventType()} is not the event
+     *         type paired with {@code terminal.status()} (including any
+     *         {@code TERMINATED} status), or if
+     *         {@code terminalEvent.workflowInstanceId()} differs from
      *         {@code terminal.id()}
      */
     public static void requireValid(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
@@ -32,11 +41,21 @@ public final class TerminalWrites {
                     "completeInstance requires a terminal status, got %s (workflowId=%s)"
                             .formatted(terminal.status(), terminal.workflowId()));
         }
-        if (terminalEvent.eventType() != EventType.WORKFLOW_COMPLETED
-                && terminalEvent.eventType() != EventType.WORKFLOW_FAILED) {
+        var expected = switch (terminal.status()) {
+            case COMPLETED -> EventType.WORKFLOW_COMPLETED;
+            case FAILED -> EventType.WORKFLOW_FAILED;
+            default -> null; // TERMINATED: no terminal event type exists
+        };
+        if (expected == null) {
             throw new IllegalArgumentException(
-                    "completeInstance requires a WORKFLOW_COMPLETED or WORKFLOW_FAILED event, got %s (workflowId=%s)"
-                            .formatted(terminalEvent.eventType(), terminal.workflowId()));
+                    "completeInstance does not write status %s — it has no terminal event type (workflowId=%s)"
+                            .formatted(terminal.status(), terminal.workflowId()));
+        }
+        if (terminalEvent.eventType() != expected) {
+            throw new IllegalArgumentException(
+                    "completeInstance status %s requires a %s event, got %s (workflowId=%s)"
+                            .formatted(terminal.status(), expected, terminalEvent.eventType(),
+                                    terminal.workflowId()));
         }
         if (!terminalEvent.workflowInstanceId().equals(terminal.id())) {
             throw new IllegalArgumentException(
