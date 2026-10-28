@@ -69,7 +69,7 @@
        ```
 
        Do not skip V4 or V5: this build names `trace_context` in every signal insert and leaves `received_at` to the column default, so without them every `saveSignal` fails — inside the transport listener, so each signal is redelivered until it is dead-lettered.
-  3. **Delete Maestro's rows from your `flyway_schema_history`** — on either path; skip this step only if the table does not exist. The statement matches each row by version **and** script name, so none of your own migrations can match, and rows your database never had are simply not matched:
+  3. **Delete Maestro's rows from your `flyway_schema_history`** (or the table `spring.flyway.table` names) — on either path; skip this step only if the table does not exist. The statement matches each row by version **and** script name, so none of your own migrations can match, and rows your database never had are simply not matched:
 
      ```sql
      DELETE FROM flyway_schema_history

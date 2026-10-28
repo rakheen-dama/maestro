@@ -147,7 +147,7 @@ public class MaestroAutoConfiguration {
      * beans are instantiated very early, before this configuration class itself.
      *
      * <p>Also the engine's earliest unconditional hook, so it is where removed
-     * properties are rejected (see {@link #rejectRemovedProperties}) — before
+     * properties are rejected ({@code rejectRemovedProperties}) — before
      * any other bean, transport included, is created, and whatever beans the
      * application overrides.
      *
