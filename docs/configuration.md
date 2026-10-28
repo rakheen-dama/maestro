@@ -68,18 +68,50 @@ The initializer belongs to `maestro-store-postgres` and runs only when `maestro.
 
 **`validate` and `none`.** With `maestro.store.schema.mode: validate` Maestro applies nothing and fails startup — naming the pending versions — if any migration is pending, or if an applied one no longer matches the shipped SQL; it reads `maestro_schema_history`, so whoever applies the SQL out of band must record it there (e.g. the Flyway CLI with `-table=maestro_schema_history`, the locations above, and — on a schema that already holds your tables — `-baselineOnMigrate=true -baselineVersion=0`, exactly as Maestro's own run does). With `none` Maestro does nothing and reads no history: you apply the SQL under the locations above yourself, in version order, before deploying the build that ships it. A build at or past V5 omits `received_at` from signal inserts, so a self-managed database must have V5 applied (`ALTER TABLE maestro_workflow_signal ALTER COLUMN received_at SET DEFAULT now()`) before that build is deployed, or every signal insert fails.
 
-**Upgrading an existing database.** A database migrated by an earlier Maestro build (before Maestro owned its history) has Maestro's rows in your `flyway_schema_history` and no `maestro_schema_history`, and the new build's first start fails either way:
+**Upgrading an existing database.** A database migrated by an earlier Maestro build, before Maestro owned its history (0.4.0 applied `V1`–`V3`, `V100`, `V200` and `V201`), has Maestro's rows in your `flyway_schema_history` and no `maestro_schema_history`, and the new build's first start fails either way:
 
-- if your application still runs its own Flyway (even with no migrations of its own), *your* Flyway fails first — `Detected applied migration not resolved locally` — because Maestro's rows remain in `flyway_schema_history` while their scripts are no longer in `classpath:db/migration` (Flyway's default `ignore-migration-patterns` is `*:future` only);
-- if it does not, Maestro's `V1` fails because its tables already exist.
+- if your application still runs its own Flyway with migrations of its own, *your* Flyway fails first — `Detected applied migration not resolved locally` — because Maestro's rows remain in `flyway_schema_history` while their scripts are no longer in `classpath:db/migration` (Flyway's default `ignore-migration-patterns` is `*:future` only);
+- otherwise — no Flyway, or a Flyway that resolves no migrations and so validates nothing — Maestro's `V1` fails because its tables already exist.
 
-Maestro is pre-1.0 and there is no data-preserving path that keeps Maestro's schema managed: drop the `maestro_*` tables, delete Maestro's rows from `flyway_schema_history`, then restart and let Maestro recreate its schema:
+Upgrade such a database once, with this procedure, in order (the same text is in `docs/release-notes.md` → "Maestro owns its schema migrations"):
 
-```sql
-DELETE FROM flyway_schema_history WHERE version IN ('1','2','3','4','5','100','200','201');
-```
+1. **Stop every node** of every service that uses the database — no node running an earlier build may stay connected. This upgrade cannot roll: `V202` drops `maestro_task_queue` and `maestro_lifecycle_event_queue`, which an earlier build's Postgres transport still reads and writes, and an earlier node must not adopt workflows this build has run (`docs/operations.md` §10.1).
+2. **Either drop Maestro's tables or keep them** — pick one:
+   - **Fresh start (discards every workflow, signal and timer).** Drop the tables and leave `maestro.store.schema.mode` at its default, `flyway`; the new build recreates the schema and records it in `maestro_schema_history`:
 
-(Those versions could only ever have been Maestro's: under the old layout a host migration with the same version collided with Maestro's and could not be applied. Versions your database never reached are simply not matched.) Alternatively keep the existing tables and set `maestro.store.schema.mode: none`, taking over Maestro's DDL from then on — but if your application runs its own Flyway you must **also** delete those rows from `flyway_schema_history` (the `DELETE` above), or set `spring.flyway.ignore-migration-patterns: "*:missing"`, or your Flyway still fails on the unresolved applied migrations.
+     ```sql
+     DROP TABLE IF EXISTS maestro_workflow_signal, maestro_workflow_timer, maestro_workflow_event,
+         maestro_workflow_instance, maestro_distributed_lock, maestro_leader_election,
+         maestro_signal_queue, maestro_task_queue, maestro_lifecycle_event_queue;
+     ```
+
+   - **Keep the data.** Set `maestro.store.schema.mode: none` on every node — you own Maestro's DDL from then on, applying each later migration by hand before deploying the build that ships it — and apply by hand the three migrations a 0.4.0 database lacks: `V4__signal_trace_context.sql` and `V5__signal_received_at_default.sql` (`maestro-store-postgres`, `classpath:db/maestro/store`) and `V202__drop_task_and_lifecycle_queues.sql` (`maestro-messaging-postgres`, `classpath:db/maestro/messaging`). Run all three whichever modules you use; as written here they are safe to re-run, including on a database a pre-release build already took to V4 or V5:
+
+     ```sql
+     ALTER TABLE maestro_workflow_signal ADD COLUMN IF NOT EXISTS trace_context VARCHAR(128);  -- V4
+     ALTER TABLE maestro_workflow_signal ALTER COLUMN received_at SET DEFAULT now();         -- V5
+     DROP TABLE IF EXISTS maestro_task_queue;                                                 -- V202
+     DROP TABLE IF EXISTS maestro_lifecycle_event_queue;                                      -- V202
+     ```
+
+     Do not skip V4 or V5: this build names `trace_context` in every signal insert and leaves `received_at` to the column default, so without them every `saveSignal` fails — inside the transport listener, so each signal is redelivered until it is dead-lettered.
+3. **Delete Maestro's rows from your `flyway_schema_history`** — on either path; skip this step only if the table does not exist. The statement matches each row by version **and** script name, so none of your own migrations can match, and rows your database never had are simply not matched:
+
+   ```sql
+   DELETE FROM flyway_schema_history
+   WHERE (version, script) IN (
+       ('1',   'V1__create_maestro_schema.sql'),
+       ('2',   'V2__create_indexes.sql'),
+       ('3',   'V3__timer_lookup_index.sql'),
+       ('4',   'V4__signal_trace_context.sql'),
+       ('5',   'V5__signal_received_at_default.sql'),
+       ('100', 'V100__maestro_lock_postgres.sql'),
+       ('200', 'V200__maestro_messaging_postgres.sql'),
+       ('201', 'V201__redelivery_dead_letter.sql'));
+   ```
+
+   Without this, an application whose own Flyway has migrations fails startup with `Detected applied migration not resolved locally` — and one whose Flyway has none yet fails the day it adds its first.
+4. **Start the new build** on every node.
 
 ---
 
