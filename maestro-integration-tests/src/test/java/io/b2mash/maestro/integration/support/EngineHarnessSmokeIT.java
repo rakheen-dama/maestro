@@ -47,7 +47,7 @@ class EngineHarnessSmokeIT extends PostgresIntegrationSupport {
                 .build();
         harness.registerActivities(CountingActivities.ChainActivities.class,
                 new CountingActivities.RecordingChainActivities(recorder));
-        harness.registerWorkflow(new TestWorkflows.ChainWorkflow());
+        harness.registerWorkflow(TestWorkflows.ChainWorkflow.class);
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("smoke");
         var handle = harness.start(workflowId, TestWorkflows.ChainWorkflow.class, "seed");

@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 /**
  * Wires a real {@link WorkflowExecutor} over real backend SPIs for integration
@@ -123,22 +124,47 @@ public final class MaestroEngineHarness implements AutoCloseable {
     }
 
     /**
-     * Registers a workflow instance, wiring its activity stubs and resolving its
-     * workflow method. Registration is what makes a workflow recoverable — the
-     * same registrations are handed to {@link #recover()} and the recovery poller.
+     * Registers a workflow class, built reflectively through its no-arg
+     * constructor once per run — on every start, recovery and retry — exactly
+     * as the Spring starter builds a prototype bean per run. Registration is
+     * what makes a workflow recoverable — the same registrations are handed to
+     * {@link #recover()} and the recovery poller.
      *
-     * <p>Instances (not classes) are registered so a test can hold a reference
-     * and assert on counters the workflow touches.
-     *
-     * @param workflowImpl the workflow instance
+     * @param workflowClass the workflow class; must have an accessible-or-not
+     *                      no-arg constructor
      * @return this harness
      */
-    public MaestroEngineHarness registerWorkflow(Object workflowImpl) {
-        var type = workflowType(workflowImpl.getClass());
-        wireActivityStubs(workflowImpl);
+    public MaestroEngineHarness registerWorkflow(Class<?> workflowClass) {
+        return registerWorkflow(workflowClass, () -> instantiate(workflowClass));
+    }
+
+    /**
+     * Registers a workflow class whose per-run objects come from
+     * {@code factory}. The harness wires {@link ActivityStub} fields on every
+     * object the factory returns, each time it returns one.
+     *
+     * <p>Use this overload for fixtures with constructor arguments, or to
+     * hand back a pre-built object a test holds a reference to (to assert on
+     * counters or latches it touches). A factory that returns the same object
+     * on every call deliberately reintroduces the shared-object behaviour —
+     * acceptable for a single-run fixture, wrong for anything that asserts
+     * per-run isolation.
+     *
+     * @param workflowClass the workflow class (supplies type, task queue and
+     *                      workflow method)
+     * @param factory       builds the workflow object for each run; must
+     *                      return an instance of {@code workflowClass}
+     * @return this harness
+     */
+    public MaestroEngineHarness registerWorkflow(Class<?> workflowClass, Supplier<?> factory) {
+        var type = workflowType(workflowClass);
+        Supplier<Object> wiringFactory = () -> {
+            Object workflowImpl = workflowClass.cast(factory.get());
+            wireActivityStubs(workflowImpl);
+            return workflowImpl;
+        };
         registrations.put(type, new WorkflowRegistration(
-                type, taskQueue(workflowImpl.getClass()), workflowImpl,
-                workflowMethod(workflowImpl.getClass())));
+                type, taskQueue(workflowClass), wiringFactory, workflowMethod(workflowClass)));
         return this;
     }
 
@@ -157,7 +183,7 @@ public final class MaestroEngineHarness implements AutoCloseable {
                 registration.workflowType(),
                 registration.taskQueue(),
                 input,
-                registration.workflowImpl(),
+                registration.workflowFactory(),
                 registration.workflowMethod());
         return new WorkflowHandle(store, executor, serializer, workflowId, instanceId);
     }
@@ -253,7 +279,8 @@ public final class MaestroEngineHarness implements AutoCloseable {
         if (registration == null) {
             throw new IllegalStateException(
                     "Workflow not registered: " + workflowClass.getName()
-                            + " — call registerWorkflow(instance) first");
+                            + " — call registerWorkflow(" + workflowClass.getSimpleName()
+                            + ".class) first");
         }
         return registration;
     }
@@ -269,6 +296,18 @@ public final class MaestroEngineHarness implements AutoCloseable {
     private static String taskQueue(Class<?> workflowClass) {
         var annotation = workflowClass.getAnnotation(DurableWorkflow.class);
         return annotation != null ? annotation.taskQueue() : "default";
+    }
+
+    private static Object instantiate(Class<?> workflowClass) {
+        try {
+            var constructor = workflowClass.getDeclaredConstructor();
+            constructor.setAccessible(true);
+            return constructor.newInstance();
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(
+                    "Cannot instantiate " + workflowClass.getName()
+                            + " through a no-arg constructor — use registerWorkflow(Class, Supplier)", e);
+        }
     }
 
     private static Method workflowMethod(Class<?> workflowClass) {
@@ -299,7 +338,7 @@ public final class MaestroEngineHarness implements AutoCloseable {
                 throw new IllegalStateException(
                         "No activity implementation registered for " + activityInterface.getName()
                                 + " required by " + workflowImpl.getClass().getName()
-                                + " — call registerActivities(...) before registerWorkflow(...)");
+                                + " — call registerActivities(...) before starting or recovering it");
             }
             var proxy = proxyFactory.createProxy(
                     (Class) activityInterface,

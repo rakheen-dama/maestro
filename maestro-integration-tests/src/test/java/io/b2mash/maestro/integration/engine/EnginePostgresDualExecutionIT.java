@@ -90,9 +90,9 @@ class EnginePostgresDualExecutionIT extends PostgresIntegrationSupport {
         var gated = new GatedChainActivities(new CountingActivities.RecordingChainActivities(recorder),
                 enteredA, release, enteredB, releaseB);
         nodeA = newNode(observerA).registerActivities(ChainActivities.class, gated)
-                .registerWorkflow(new TestWorkflows.LongTimeoutChainWorkflow());
+                .registerWorkflow(TestWorkflows.LongTimeoutChainWorkflow.class);
         nodeB = newNode(observerB).registerActivities(ChainActivities.class, gated)
-                .registerWorkflow(new TestWorkflows.LongTimeoutChainWorkflow());
+                .registerWorkflow(TestWorkflows.LongTimeoutChainWorkflow.class);
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("dual");
         var handle = nodeA.start(workflowId, TestWorkflows.LongTimeoutChainWorkflow.class, "x");

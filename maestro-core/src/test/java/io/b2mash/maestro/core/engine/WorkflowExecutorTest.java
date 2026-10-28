@@ -88,7 +88,7 @@ class WorkflowExecutorTest {
 
         var instanceId = executor.startWorkflow(
                 "order-1", "SimpleWorkflow", "default",
-                "hello", workflow, method);
+                "hello", () -> workflow, method);
 
         assertNotNull(instanceId);
         assertTrue(latch.await(5, TimeUnit.SECONDS), "Workflow should complete within timeout");
@@ -109,7 +109,7 @@ class WorkflowExecutorTest {
         var method = NoInputWorkflow.class.getMethod("run");
 
         executor.startWorkflow("order-2", "NoInputWorkflow", "default",
-                null, workflow, method);
+                null, () -> workflow, method);
 
         assertTrue(latch.await(5, TimeUnit.SECONDS));
 
@@ -130,7 +130,7 @@ class WorkflowExecutorTest {
         var method = FailingWorkflow.class.getMethod("run", String.class);
 
         executor.startWorkflow("order-3", "FailingWorkflow", "default",
-                "input", workflow, method);
+                "input", () -> workflow, method);
 
         assertTrue(latch.await(5, TimeUnit.SECONDS));
 
@@ -152,7 +152,7 @@ class WorkflowExecutorTest {
         var method = SignalWorkflow.class.getMethod("run", String.class);
 
         executor.startWorkflow("order-4", "SignalWorkflow", "default",
-                "input", workflow, method);
+                "input", () -> workflow, method);
 
         // Wait for workflow to reach awaitSignal and park
         assertTrue(waitingLatch.await(5, TimeUnit.SECONDS), "Workflow should reach await point");
@@ -184,7 +184,7 @@ class WorkflowExecutorTest {
         var workflow = new SignalWorkflow(waitingLatch, completedLatch);
         var method = SignalWorkflow.class.getMethod("run", String.class);
 
-        executor.startWorkflow("wake-recheck", "SignalWorkflow", "default", "input", workflow, method);
+        executor.startWorkflow("wake-recheck", "SignalWorkflow", "default", "input", () -> workflow, method);
         assertTrue(waitingLatch.await(5, TimeUnit.SECONDS), "Workflow should reach await point");
         await().atMost(Duration.ofSeconds(2)).until(() ->
                 store.getInstance("wake-recheck")
@@ -215,7 +215,7 @@ class WorkflowExecutorTest {
 
         assertThrows(IllegalStateException.class, () ->
                 executor.startWorkflow("order-5", "SimpleWorkflow", "default",
-                        "input", workflow, method));
+                        "input", () -> workflow, method));
     }
 
     @Test
@@ -227,7 +227,7 @@ class WorkflowExecutorTest {
         var method = BlockingWorkflow.class.getMethod("run", String.class);
 
         executor.startWorkflow("order-6", "BlockingWorkflow", "default",
-                "input", workflow, method);
+                "input", () -> workflow, method);
 
         assertTrue(startedLatch.await(5, TimeUnit.SECONDS));
         assertTrue(executor.isRunning("order-6"));
@@ -258,7 +258,7 @@ class WorkflowExecutorTest {
         var latch = new CountDownLatch(1);
         var workflow = new SimpleWorkflow(latch);
         var method = SimpleWorkflow.class.getMethod("run", String.class);
-        var reg = new WorkflowRegistration("SimpleWorkflow", "default", workflow, method);
+        var reg = new WorkflowRegistration("SimpleWorkflow", "default", () -> workflow, method);
 
         var count = executor.recoverWorkflows(Map.of("SimpleWorkflow", reg));
 
@@ -278,7 +278,7 @@ class WorkflowExecutorTest {
         var method = SleepingWorkflow.class.getMethod("run", String.class);
 
         var instanceId = executor.startWorkflow("timer-heal-1", "SleepingWorkflow", "default",
-                "hello", nodeAWorkflow, method);
+                "hello", () -> nodeAWorkflow, method);
 
         await().atMost(Duration.ofSeconds(5)).until(() ->
                 store.getInstance("timer-heal-1")
@@ -294,7 +294,7 @@ class WorkflowExecutorTest {
         var completed = new CountDownLatch(1);
         var nodeBWorkflow = new SleepingWorkflow(Duration.ofMinutes(10), completed);
         var registration = new WorkflowRegistration(
-                "SleepingWorkflow", "default", nodeBWorkflow, method);
+                "SleepingWorkflow", "default", () -> nodeBWorkflow, method);
         var nodeB = new WorkflowExecutor(store, null, messaging, null, serializer, "node-b");
         try {
             assertEquals(1, nodeB.recoverWorkflows(Map.of("SleepingWorkflow", registration)));
@@ -324,7 +324,7 @@ class WorkflowExecutorTest {
         var method = SleepingWorkflow.class.getMethod("run", String.class);
 
         var instanceId = executor.startWorkflow("timer-pending-1", "SleepingWorkflow", "default",
-                "hello", nodeAWorkflow, method);
+                "hello", () -> nodeAWorkflow, method);
         await().atMost(Duration.ofSeconds(5)).until(() ->
                 store.getInstance("timer-pending-1")
                         .map(i -> i.status() == WorkflowStatus.WAITING_TIMER)
@@ -333,7 +333,7 @@ class WorkflowExecutorTest {
         var completed = new CountDownLatch(1);
         var nodeBWorkflow = new SleepingWorkflow(Duration.ofMinutes(10), completed);
         var registration = new WorkflowRegistration(
-                "SleepingWorkflow", "default", nodeBWorkflow, method);
+                "SleepingWorkflow", "default", () -> nodeBWorkflow, method);
         var nodeB = new WorkflowExecutor(store, null, messaging, null, serializer, "node-b");
         try {
             assertEquals(1, nodeB.recoverWorkflows(Map.of("SleepingWorkflow", registration)));
@@ -369,7 +369,7 @@ class WorkflowExecutorTest {
         var method = SleepingWorkflow.class.getMethod("run", String.class);
 
         var instanceId = executor.startWorkflow("timer-cancel-1", "SleepingWorkflow", "default",
-                "hello", workflow, method);
+                "hello", () -> workflow, method);
 
         await().atMost(Duration.ofSeconds(5)).until(() ->
                 store.getInstance("timer-cancel-1")
@@ -402,7 +402,7 @@ class WorkflowExecutorTest {
         var method = CancellableSleepWorkflow.class.getMethod("run", String.class);
 
         var instanceId = executor.startWorkflow("timer-cancel-catch-1", "CancellableSleepWorkflow", "default",
-                "hello", workflow, method);
+                "hello", () -> workflow, method);
 
         await().atMost(Duration.ofSeconds(5)).until(() ->
                 store.getInstance("timer-cancel-catch-1")
@@ -428,7 +428,7 @@ class WorkflowExecutorTest {
         var method = SleepingWorkflow.class.getMethod("run", String.class);
 
         var instanceId = executor.startWorkflow("timer-cancel-2", "SleepingWorkflow", "default",
-                "hello", workflow, method);
+                "hello", () -> workflow, method);
 
         await().atMost(Duration.ofSeconds(5)).until(() ->
                 store.getInstance("timer-cancel-2")
@@ -461,7 +461,7 @@ class WorkflowExecutorTest {
         var method = CancellableSleepWorkflow.class.getMethod("run", String.class);
 
         var instanceId = executor.startWorkflow("timer-cancel-heal-1", "CancellableSleepWorkflow", "default",
-                "hello", nodeAWorkflow, method);
+                "hello", () -> nodeAWorkflow, method);
 
         await().atMost(Duration.ofSeconds(5)).until(() ->
                 store.getInstance("timer-cancel-heal-1")
@@ -476,7 +476,7 @@ class WorkflowExecutorTest {
         var completed = new CountDownLatch(1);
         var nodeBWorkflow = new CancellableSleepWorkflow(Duration.ofMinutes(10), completed);
         var registration = new WorkflowRegistration(
-                "CancellableSleepWorkflow", "default", nodeBWorkflow, method);
+                "CancellableSleepWorkflow", "default", () -> nodeBWorkflow, method);
         var nodeB = new WorkflowExecutor(store, null, messaging, null, serializer, "node-b");
         try {
             assertEquals(1, nodeB.recoverWorkflows(Map.of("CancellableSleepWorkflow", registration)));
@@ -528,7 +528,7 @@ class WorkflowExecutorTest {
         store.appendEvent(new WorkflowEvent(UUID.randomUUID(), instance.id(), 2,
                 EventType.TIMER_CANCELLED, "$maestro:timer-cancelled", null, Instant.now()));
 
-        var registration = new WorkflowRegistration("SleepingWorkflow", "default", workflow, method);
+        var registration = new WorkflowRegistration("SleepingWorkflow", "default", () -> workflow, method);
         assertEquals(1, executor.recoverWorkflows(Map.of("SleepingWorkflow", registration)));
 
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
@@ -602,7 +602,7 @@ class WorkflowExecutorTest {
                 serializer.serialize(memoizedOutcome), Instant.now()));
 
         var registration = new WorkflowRegistration(
-                "CancellableSleepWorkflowWithActivity", "default", workflow, method);
+                "CancellableSleepWorkflowWithActivity", "default", () -> workflow, method);
         assertEquals(1, executor.recoverWorkflows(Map.of("CancellableSleepWorkflowWithActivity", registration)));
 
         assertTrue(completed.await(5, TimeUnit.SECONDS), "the handler must run to completion on replay");
@@ -641,7 +641,7 @@ class WorkflowExecutorTest {
             var method = SimpleWorkflow.class.getMethod("run", String.class);
 
             lockedExecutor.startWorkflow("lock-1", "SimpleWorkflow", "default",
-                    "hello", workflow, method);
+                    "hello", () -> workflow, method);
 
             assertTrue(latch.await(5, TimeUnit.SECONDS));
             assertTrue(lock.acquiredKeys.contains("maestro:lock:workflow:lock-1"),
@@ -673,7 +673,7 @@ class WorkflowExecutorTest {
             var method = SimpleWorkflow.class.getMethod("run", String.class);
 
             lockedExecutor.startWorkflow("lock-pre", "SimpleWorkflow", "default",
-                    "hello", workflow, method);
+                    "hello", () -> workflow, method);
 
             assertTrue(latch.await(5, TimeUnit.SECONDS));
             assertEquals(List.of(true), lockHeldDuringCreate,
@@ -695,14 +695,14 @@ class WorkflowExecutorTest {
             var method = SimpleWorkflow.class.getMethod("run", String.class);
 
             lockedExecutor.startWorkflow("dup-1", "SimpleWorkflow", "default",
-                    "hello", workflow, method);
+                    "hello", () -> workflow, method);
             assertTrue(latch.await(5, TimeUnit.SECONDS));
             await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
                     assertFalse(lock.isHeld("maestro:lock:workflow:dup-1")));
 
             assertThrows(WorkflowAlreadyExistsException.class, () ->
                     lockedExecutor.startWorkflow("dup-1", "SimpleWorkflow", "default",
-                            "hello", workflow, method));
+                            "hello", () -> workflow, method));
             assertFalse(lock.isHeld("maestro:lock:workflow:dup-1"),
                     "a failed start must not leak the pre-acquired instance lock");
         } finally {
@@ -721,7 +721,7 @@ class WorkflowExecutorTest {
             var method = FailingWorkflow.class.getMethod("run", String.class);
 
             lockedExecutor.startWorkflow("lock-2", "FailingWorkflow", "default",
-                    "input", workflow, method);
+                    "input", () -> workflow, method);
 
             assertTrue(latch.await(5, TimeUnit.SECONDS));
             await().atMost(Duration.ofSeconds(2)).untilAsserted(() -> {
@@ -746,7 +746,7 @@ class WorkflowExecutorTest {
             var method = SignalWorkflow.class.getMethod("run", String.class);
 
             lockedExecutor.startWorkflow("lock-3", "SignalWorkflow", "default",
-                    "input", workflow, method);
+                    "input", () -> workflow, method);
 
             assertTrue(waitingLatch.await(5, TimeUnit.SECONDS));
             assertTrue(lock.isHeld("maestro:lock:workflow:lock-3"),
@@ -773,7 +773,7 @@ class WorkflowExecutorTest {
             var latch = new CountDownLatch(1);
             var workflow = new SimpleWorkflow(latch);
             var method = SimpleWorkflow.class.getMethod("run", String.class);
-            var reg = new WorkflowRegistration("SimpleWorkflow", "default", workflow, method);
+            var reg = new WorkflowRegistration("SimpleWorkflow", "default", () -> workflow, method);
 
             var count = lockedExecutor.recoverWorkflows(Map.of("SimpleWorkflow", reg));
 
@@ -805,7 +805,7 @@ class WorkflowExecutorTest {
             var workflow = new SimpleWorkflow(latch);
             var method = SimpleWorkflow.class.getMethod("run", String.class);
 
-            var resumed = lockedExecutor.resumeWorkflow(stale, workflow, method);
+            var resumed = lockedExecutor.resumeWorkflow(stale, () -> workflow, method);
 
             assertFalse(resumed, "terminal instance must not be resumed");
             assertFalse(latch.await(300, TimeUnit.MILLISECONDS));
@@ -834,7 +834,7 @@ class WorkflowExecutorTest {
         var workflow = new SimpleWorkflow(latch);
         var method = SimpleWorkflow.class.getMethod("run", String.class);
 
-        var resumed = executor.resumeWorkflow(stale, workflow, method);
+        var resumed = executor.resumeWorkflow(stale, () -> workflow, method);
 
         assertFalse(resumed, "terminal instance must not be resumed without a lock backend");
         assertFalse(latch.await(300, TimeUnit.MILLISECONDS),
@@ -901,7 +901,7 @@ class WorkflowExecutorTest {
             var method = SimpleWorkflow.class.getMethod("run", String.class);
 
             lockedExecutor.startWorkflow("lock-4", "SimpleWorkflow", "default",
-                    "hello", workflow, method);
+                    "hello", () -> workflow, method);
 
             assertTrue(latch.await(5, TimeUnit.SECONDS),
                     "a fresh start must proceed despite a stale foreign lock — "
@@ -925,7 +925,7 @@ class WorkflowExecutorTest {
             var latch = new CountDownLatch(1);
             var workflow = new SimpleWorkflow(latch);
             var method = SimpleWorkflow.class.getMethod("run", String.class);
-            var reg = new WorkflowRegistration("SimpleWorkflow", "default", workflow, method);
+            var reg = new WorkflowRegistration("SimpleWorkflow", "default", () -> workflow, method);
             var registrations = Map.of("SimpleWorkflow", reg);
 
             // Startup recovery: skipped (foreign lock)
@@ -1041,7 +1041,7 @@ class WorkflowExecutorTest {
         var method = SimpleWorkflow.class.getMethod("run", String.class);
 
         executor.startWorkflow("order-7", "SimpleWorkflow", "default",
-                "hello", workflow, method);
+                "hello", () -> workflow, method);
 
         assertTrue(latch.await(5, TimeUnit.SECONDS));
 
@@ -1061,7 +1061,7 @@ class WorkflowExecutorTest {
         var method = CompensatingWorkflow.class.getMethod("run", String.class);
 
         executor.startWorkflow("comp-1", "CompensatingWorkflow", "default",
-                "input", workflow, method);
+                "input", () -> workflow, method);
 
         assertTrue(failedLatch.await(5, TimeUnit.SECONDS));
 
@@ -1096,7 +1096,7 @@ class WorkflowExecutorTest {
         var method = SagaAnnotatedWorkflow.class.getMethod("run", String.class);
 
         executor.startWorkflow("saga-1", "SagaWorkflow", "default",
-                "input", workflow, method);
+                "input", () -> workflow, method);
 
         assertTrue(failedLatch.await(5, TimeUnit.SECONDS));
 

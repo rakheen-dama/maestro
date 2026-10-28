@@ -73,7 +73,7 @@ class WorkflowExecutorQueryTest {
 
         executor.registerQueries("QueryableWorkflow", QueryableWorkflow.class);
         executor.startWorkflow("order-q1", "QueryableWorkflow", "default",
-                "processing", workflow, method);
+                "processing", () -> workflow, method);
 
         // Wait for workflow to reach awaitSignal and park
         assertTrue(waitingLatch.await(5, TimeUnit.SECONDS), "Workflow should reach await point");
@@ -95,7 +95,7 @@ class WorkflowExecutorQueryTest {
 
         executor.registerQueries("BlockingQueryableWorkflow", BlockingQueryableWorkflow.class);
         executor.startWorkflow("order-q2", "BlockingQueryableWorkflow", "default",
-                "active", workflow, method);
+                "active", () -> workflow, method);
 
         try {
             assertTrue(startedLatch.await(5, TimeUnit.SECONDS));
@@ -118,7 +118,7 @@ class WorkflowExecutorQueryTest {
 
         executor.registerQueries("WorkflowWithArgQuery", WorkflowWithArgQuery.class);
         executor.startWorkflow("order-q3", "WorkflowWithArgQuery", "default",
-                "input", workflow, method);
+                "input", () -> workflow, method);
 
         try {
             assertTrue(startedLatch.await(5, TimeUnit.SECONDS));
@@ -141,7 +141,7 @@ class WorkflowExecutorQueryTest {
 
         executor.registerQueries("CustomNameWorkflow", WorkflowWithCustomQueryName.class);
         executor.startWorkflow("order-q4", "CustomNameWorkflow", "default",
-                "input", workflow, method);
+                "input", () -> workflow, method);
 
         try {
             assertTrue(startedLatch.await(5, TimeUnit.SECONDS));
@@ -196,7 +196,7 @@ class WorkflowExecutorQueryTest {
 
         executor.registerQueries("BlockingQueryableWorkflow", BlockingQueryableWorkflow.class);
         executor.startWorkflow("order-q5", "BlockingQueryableWorkflow", "default",
-                "input", workflow, method);
+                "input", () -> workflow, method);
 
         try {
             assertTrue(startedLatch.await(5, TimeUnit.SECONDS));
@@ -218,7 +218,7 @@ class WorkflowExecutorQueryTest {
 
         executor.registerQueries("FastQueryableWorkflow", FastQueryableWorkflow.class);
         executor.startWorkflow("order-q6", "FastQueryableWorkflow", "default",
-                "input", workflow, method);
+                "input", () -> workflow, method);
 
         // Wait for workflow to complete and be removed from runningWorkflows
         assertTrue(completedLatch.await(5, TimeUnit.SECONDS));

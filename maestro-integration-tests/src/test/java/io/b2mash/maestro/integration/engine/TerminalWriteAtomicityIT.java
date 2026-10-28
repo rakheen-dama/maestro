@@ -58,7 +58,7 @@ class TerminalWriteAtomicityIT extends PostgresIntegrationSupport {
         try (var harness = MaestroEngineHarness.builder(faultyStore, objectMapper).build()) {
             harness.registerActivities(CountingActivities.ChainActivities.class,
                     new CountingActivities.RecordingChainActivities(recorder));
-            harness.registerWorkflow(new TestWorkflows.ChainWorkflow());
+            harness.registerWorkflow(TestWorkflows.ChainWorkflow.class);
             var handle = harness.start(MaestroEngineHarness.uniqueWorkflowId("atomic"),
                     TestWorkflows.ChainWorkflow.class, "seed");
 

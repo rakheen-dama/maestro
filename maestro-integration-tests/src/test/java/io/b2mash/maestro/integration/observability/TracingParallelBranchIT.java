@@ -65,7 +65,7 @@ class TracingParallelBranchIT extends PostgresIntegrationSupport {
                     .build();
             node.registerActivities(ChainActivities.class,
                     new CountingActivities.RecordingChainActivities(recorder));
-            node.registerWorkflow(new TestWorkflows.ParallelWorkflow());
+            node.registerWorkflow(TestWorkflows.ParallelWorkflow.class);
 
             var workflowId = MaestroEngineHarness.uniqueWorkflowId("tracing-fanout");
             var handle = node.start(workflowId, TestWorkflows.ParallelWorkflow.class, "seed");
@@ -126,7 +126,7 @@ class TracingParallelBranchIT extends PostgresIntegrationSupport {
                     .build();
             node.registerActivities(ChainActivities.class,
                     new CountingActivities.RecordingChainActivities(recorder));
-            node.registerWorkflow(new ParkingBranchWorkflow());
+            node.registerWorkflow(ParkingBranchWorkflow.class);
             node.startTimerPoller(Duration.ofMillis(100), 20);
 
             var workflowId = MaestroEngineHarness.uniqueWorkflowId("tracing-fanout-park");

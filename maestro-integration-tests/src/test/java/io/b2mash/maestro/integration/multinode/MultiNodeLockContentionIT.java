@@ -223,7 +223,7 @@ class MultiNodeLockContentionIT extends PostgresIntegrationSupport {
                 .instanceLockTtl(LOCK_TTL)
                 .build();
         harness.registerActivities(CountingActivities.ChainActivities.class, activities);
-        harness.registerWorkflow(new TestWorkflows.ChainWorkflow());
+        harness.registerWorkflow(TestWorkflows.ChainWorkflow.class);
         return harness;
     }
 

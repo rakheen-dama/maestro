@@ -83,7 +83,7 @@ class ParkedProbeStoreOutageTest {
         var method = AwaitingWorkflow.class.getMethod("run", String.class);
 
         var instanceId = executor.startWorkflow("probe-await-1", "AwaitingWorkflow", "default",
-                "hello", workflow, method);
+                "hello", () -> workflow, method);
 
         await().atMost(Duration.ofSeconds(5)).until(() ->
                 store.getInstance("probe-await-1")
@@ -131,7 +131,7 @@ class ParkedProbeStoreOutageTest {
         var method = SleepingWorkflow.class.getMethod("run", String.class);
 
         var instanceId = executor.startWorkflow("probe-sleep-1", "SleepingWorkflow", "default",
-                "hello", workflow, method);
+                "hello", () -> workflow, method);
 
         await().atMost(Duration.ofSeconds(5)).until(() ->
                 store.getInstance("probe-sleep-1")
@@ -173,7 +173,7 @@ class ParkedProbeStoreOutageTest {
         var method = AwaitingWorkflow.class.getMethod("run", String.class);
 
         var instanceId = executor.startWorkflow("probe-term-1", "AwaitingWorkflow", "default",
-                "hello", workflow, method);
+                "hello", () -> workflow, method);
 
         await().atMost(Duration.ofSeconds(5)).until(() ->
                 store.getInstance("probe-term-1")

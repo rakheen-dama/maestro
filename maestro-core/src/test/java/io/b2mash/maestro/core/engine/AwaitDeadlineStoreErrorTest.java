@@ -64,7 +64,7 @@ class AwaitDeadlineStoreErrorTest {
     private void assertCompletesWithTimeoutOutcome(String workflowId) throws Exception {
         var compensations = new AtomicInteger();
         var impl = new TimingOutSaga(compensations);
-        var instanceId = executor.startWorkflow(workflowId, "TimingOutSaga", "default", null, impl,
+        var instanceId = executor.startWorkflow(workflowId, "TimingOutSaga", "default", null, () -> impl,
                 TimingOutSaga.class.getMethod("run"));
 
         await().atMost(Duration.ofSeconds(10)).until(() -> !executor.isRunning(workflowId));

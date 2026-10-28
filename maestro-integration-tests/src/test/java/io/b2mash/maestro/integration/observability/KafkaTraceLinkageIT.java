@@ -112,7 +112,7 @@ class KafkaTraceLinkageIT extends PostgresIntegrationSupport {
                     .build();
             nodeB.registerActivities(ChainActivities.class,
                     new CountingActivities.RecordingChainActivities(recorder));
-            nodeB.registerWorkflow(new TestWorkflows.SignalWorkflow(parked));
+            nodeB.registerWorkflow(TestWorkflows.SignalWorkflow.class, () -> new TestWorkflows.SignalWorkflow(parked));
 
             // B's inbound signal channel — the production ingestion path:
             // KafkaWorkflowMessaging restores the remote context around this
@@ -210,7 +210,7 @@ class KafkaTraceLinkageIT extends PostgresIntegrationSupport {
                     .build();
             nodeB.registerActivities(ChainActivities.class,
                     new CountingActivities.RecordingChainActivities(recorder));
-            nodeB.registerWorkflow(new TestWorkflows.SignalWorkflow(parked));
+            nodeB.registerWorkflow(TestWorkflows.SignalWorkflow.class, () -> new TestWorkflows.SignalWorkflow(parked));
 
             messagingB.subscribeSignals(serviceB, message ->
                     nodeB.deliverSignal(message.workflowId(), message.signalName(),
@@ -271,7 +271,7 @@ class KafkaTraceLinkageIT extends PostgresIntegrationSupport {
                     .build();
             node.registerActivities(ChainActivities.class,
                     new CountingActivities.RecordingChainActivities(recorder));
-            node.registerWorkflow(new TestWorkflows.SignalWorkflow(parked));
+            node.registerWorkflow(TestWorkflows.SignalWorkflow.class, () -> new TestWorkflows.SignalWorkflow(parked));
 
             var workflowId = MaestroEngineHarness.uniqueWorkflowId("holder-guard");
             var handle = node.start(workflowId, TestWorkflows.SignalWorkflow.class, "seed");

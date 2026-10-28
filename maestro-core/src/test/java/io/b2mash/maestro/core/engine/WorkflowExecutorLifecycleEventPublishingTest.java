@@ -97,7 +97,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
 
         var start = System.nanoTime();
         executor.startWorkflow("blocking-topic-1", "ImmediateWorkflow", "default",
-                "hello", workflow, method);
+                "hello", () -> workflow, method);
         var elapsed = Duration.ofNanos(System.nanoTime() - start);
 
         assertTrue(elapsed.compareTo(Duration.ofMillis(500)) < 0,
@@ -122,7 +122,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         var workflow = new ImmediateWorkflow(latch);
         var method = ImmediateWorkflow.class.getMethod("run", String.class);
 
-        executor.startWorkflow("disabled-1", "ImmediateWorkflow", "default", "hello", workflow, method);
+        executor.startWorkflow("disabled-1", "ImmediateWorkflow", "default", "hello", () -> workflow, method);
         assertTrue(latch.await(5, TimeUnit.SECONDS));
 
         await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
@@ -150,7 +150,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         var workflow = new ImmediateWorkflow(latch);
         var method = ImmediateWorkflow.class.getMethod("run", String.class);
 
-        executor.startWorkflow("enabled-1", "ImmediateWorkflow", "default", "hello", workflow, method);
+        executor.startWorkflow("enabled-1", "ImmediateWorkflow", "default", "hello", () -> workflow, method);
         assertTrue(latch.await(5, TimeUnit.SECONDS));
 
         await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
@@ -169,7 +169,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         var workflow = new ImmediateWorkflow(latch);
         var method = ImmediateWorkflow.class.getMethod("run", String.class);
 
-        executor.startWorkflow("shutdown-1", "ImmediateWorkflow", "default", "hello", workflow, method);
+        executor.startWorkflow("shutdown-1", "ImmediateWorkflow", "default", "hello", () -> workflow, method);
         assertTrue(latch.await(5, TimeUnit.SECONDS));
         await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
                 assertEquals(WorkflowStatus.COMPLETED, store.getInstance("shutdown-1").orElseThrow().status()));
@@ -209,7 +209,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         var method = FullLifecycleWorkflow.class.getMethod("run", String.class);
 
         var instanceId = executor.startWorkflow("full-lifecycle-disabled", "FullLifecycleWorkflow", "default",
-                "world", workflow, method);
+                "world", () -> workflow, method);
 
         await().atMost(Duration.ofSeconds(5)).until(() ->
                 store.getInstance("full-lifecycle-disabled")
@@ -250,7 +250,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         var workflow = new CompensatingWorkflow();
         var method = CompensatingWorkflow.class.getMethod("run", String.class);
 
-        executor.startWorkflow("comp-disabled", "CompensatingWorkflow", "default", "hello", workflow, method);
+        executor.startWorkflow("comp-disabled", "CompensatingWorkflow", "default", "hello", () -> workflow, method);
 
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
                 assertEquals(WorkflowStatus.FAILED, store.getInstance("comp-disabled").orElseThrow().status()));
@@ -280,7 +280,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         var method = FullLifecycleWorkflow.class.getMethod("run", String.class);
 
         var instanceId = executor.startWorkflow("full-lifecycle-enabled", "FullLifecycleWorkflow", "default",
-                "world", workflow, method);
+                "world", () -> workflow, method);
 
         await().atMost(Duration.ofSeconds(5)).until(() ->
                 store.getInstance("full-lifecycle-enabled")

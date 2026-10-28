@@ -92,7 +92,7 @@ class AwaitSignalTimeoutRaceIT extends PostgresIntegrationSupport {
         var harness = MaestroEngineHarness.builder(racing, objectMapper).build();
         this.harness = harness;
         racing.harness(harness);
-        harness.registerWorkflow(new TestWorkflows.PatientSignalWorkflow(Duration.ofHours(1)));
+        harness.registerWorkflow(TestWorkflows.PatientSignalWorkflow.class, () -> new TestWorkflows.PatientSignalWorkflow(Duration.ofHours(1)));
         var handle = harness.start(workflowId, TestWorkflows.PatientSignalWorkflow.class, "seed");
         handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
         var row = store.findTimer(handle.instanceId(), TIMER_ID).orElseThrow();
@@ -128,7 +128,7 @@ class AwaitSignalTimeoutRaceIT extends PostgresIntegrationSupport {
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("await-race-signal-wins");
         var harness = MaestroEngineHarness.builder(store, objectMapper).build();
         this.harness = harness;
-        harness.registerWorkflow(new TestWorkflows.PatientSignalWorkflow(Duration.ofHours(1)));
+        harness.registerWorkflow(TestWorkflows.PatientSignalWorkflow.class, () -> new TestWorkflows.PatientSignalWorkflow(Duration.ofHours(1)));
         var handle = harness.start(workflowId, TestWorkflows.PatientSignalWorkflow.class, "seed");
         handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
         var row = store.findTimer(handle.instanceId(), TIMER_ID).orElseThrow();
@@ -158,7 +158,7 @@ class AwaitSignalTimeoutRaceIT extends PostgresIntegrationSupport {
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("await-race-deadline-wins");
         var harness = MaestroEngineHarness.builder(store, objectMapper).build();
         this.harness = harness;
-        harness.registerWorkflow(new TestWorkflows.PatientSignalWorkflow(Duration.ofHours(1)));
+        harness.registerWorkflow(TestWorkflows.PatientSignalWorkflow.class, () -> new TestWorkflows.PatientSignalWorkflow(Duration.ofHours(1)));
         var handle = harness.start(workflowId, TestWorkflows.PatientSignalWorkflow.class, "seed");
         handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
         var row = store.findTimer(handle.instanceId(), TIMER_ID).orElseThrow();

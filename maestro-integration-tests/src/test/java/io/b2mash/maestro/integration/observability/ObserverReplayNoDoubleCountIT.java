@@ -76,7 +76,7 @@ class ObserverReplayNoDoubleCountIT extends PostgresIntegrationSupport {
                 .build();
         nodeA.registerActivities(ChainActivities.class,
                 new CountingActivities.RecordingChainActivities(recorder));
-        nodeA.registerWorkflow(new TestWorkflows.SignalWorkflow(parked));
+        nodeA.registerWorkflow(TestWorkflows.SignalWorkflow.class, () -> new TestWorkflows.SignalWorkflow(parked));
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("observer-replay");
         var handle = nodeA.start(workflowId, TestWorkflows.SignalWorkflow.class, "seed");
@@ -102,7 +102,7 @@ class ObserverReplayNoDoubleCountIT extends PostgresIntegrationSupport {
                 .build();
         nodeB.registerActivities(ChainActivities.class,
                 new CountingActivities.RecordingChainActivities(recorder));
-        nodeB.registerWorkflow(new TestWorkflows.SignalWorkflow(new CountDownLatch(1)));
+        nodeB.registerWorkflow(TestWorkflows.SignalWorkflow.class, () -> new TestWorkflows.SignalWorkflow(new CountDownLatch(1)));
 
         assertEquals(1, nodeB.recover(),
                 "the workflow parked by the crash must be recoverable from Postgres alone");

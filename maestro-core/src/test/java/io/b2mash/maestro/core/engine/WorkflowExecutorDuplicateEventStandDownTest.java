@@ -191,7 +191,7 @@ class WorkflowExecutorDuplicateEventStandDownTest {
                 }, store, null, null, RetryPolicy.noRetry(), Duration.ofSeconds(5), serializer, retryExecutor));
         try {
             var method = TwoActivityWorkflow.class.getMethod("run");
-            executor.startWorkflow(workflowId, "TwoActivityWorkflow", "default", null, impl, method);
+            executor.startWorkflow(workflowId, "TwoActivityWorkflow", "default", null, () -> impl, method);
         } catch (NoSuchMethodException e) {
             throw new IllegalStateException(e);
         }
@@ -202,7 +202,7 @@ class WorkflowExecutorDuplicateEventStandDownTest {
         var impl = new CompensableWorkflow(compensations, false);
         try {
             var method = CompensableWorkflow.class.getMethod("run");
-            executor.startWorkflow(workflowId, "CompensableWorkflow", "default", null, impl, method);
+            executor.startWorkflow(workflowId, "CompensableWorkflow", "default", null, () -> impl, method);
         } catch (NoSuchMethodException e) {
             throw new IllegalStateException(e);
         }
@@ -213,7 +213,7 @@ class WorkflowExecutorDuplicateEventStandDownTest {
         var impl = new CompensableWorkflow(compensations, true);
         try {
             var method = CompensableWorkflow.class.getMethod("run");
-            executor.startWorkflow(workflowId, "CompensableWorkflow", "default", null, impl, method);
+            executor.startWorkflow(workflowId, "CompensableWorkflow", "default", null, () -> impl, method);
         } catch (NoSuchMethodException e) {
             throw new IllegalStateException(e);
         }

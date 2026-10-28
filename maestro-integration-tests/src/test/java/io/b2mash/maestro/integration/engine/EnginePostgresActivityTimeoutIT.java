@@ -67,7 +67,7 @@ class EnginePostgresActivityTimeoutIT extends PostgresIntegrationSupport {
         harness = newHarness();
         harness.registerActivities(FlakyActivities.class,
                 new CountingActivities.SlowFirstAttemptActivities(recorder, Duration.ofSeconds(5)));
-        harness.registerWorkflow(new TestWorkflows.TimeoutRetryWorkflow());
+        harness.registerWorkflow(TestWorkflows.TimeoutRetryWorkflow.class);
         var handle = harness.start(MaestroEngineHarness.uniqueWorkflowId("timeout-retry"),
                 TestWorkflows.TimeoutRetryWorkflow.class, "x");
 
@@ -84,7 +84,7 @@ class EnginePostgresActivityTimeoutIT extends PostgresIntegrationSupport {
         harness = newHarness();
         harness.registerActivities(FlakyActivities.class,
                 new CountingActivities.SlowFirstAttemptActivities(recorder, Duration.ofSeconds(5)));
-        harness.registerWorkflow(new TestWorkflows.TimeoutNoRetryWorkflow());
+        harness.registerWorkflow(TestWorkflows.TimeoutNoRetryWorkflow.class);
         var handle = harness.start(MaestroEngineHarness.uniqueWorkflowId("timeout-fail"),
                 TestWorkflows.TimeoutNoRetryWorkflow.class, "x");
 
@@ -141,7 +141,7 @@ class EnginePostgresActivityTimeoutIT extends PostgresIntegrationSupport {
                 .build();
         node.registerActivities(FlakyActivities.class,
                 new CountingActivities.SlowFirstAttemptActivities(recorder, Duration.ofSeconds(5)));
-        node.registerWorkflow(new TestWorkflows.TimeoutBranchWorkflow(observations, parked));
+        node.registerWorkflow(TestWorkflows.TimeoutBranchWorkflow.class, () -> new TestWorkflows.TimeoutBranchWorkflow(observations, parked));
         return node;
     }
 

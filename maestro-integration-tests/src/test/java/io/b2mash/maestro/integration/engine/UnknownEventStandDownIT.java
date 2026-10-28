@@ -93,7 +93,7 @@ class UnknownEventStandDownIT extends PostgresIntegrationSupport {
                 .build()) {
             nodeA.registerActivities(ChainActivities.class,
                     new CountingActivities.RecordingChainActivities(recorder));
-            nodeA.registerWorkflow(new TestWorkflows.SignalWorkflow(parked));
+            nodeA.registerWorkflow(TestWorkflows.SignalWorkflow.class, () -> new TestWorkflows.SignalWorkflow(parked));
             handle = nodeA.start(workflowId, TestWorkflows.SignalWorkflow.class, "seed");
             assertTrue(parked.await(30, TimeUnit.SECONDS));
             handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
@@ -119,7 +119,7 @@ class UnknownEventStandDownIT extends PostgresIntegrationSupport {
                 .build()) {
             nodeB.registerActivities(ChainActivities.class,
                     new CountingActivities.RecordingChainActivities(recorder));
-            nodeB.registerWorkflow(new TestWorkflows.SignalWorkflow(new CountDownLatch(1)));
+            nodeB.registerWorkflow(TestWorkflows.SignalWorkflow.class, () -> new TestWorkflows.SignalWorkflow(new CountDownLatch(1)));
 
             assertEquals(1, nodeB.recover(),
                     "the parked workflow must still be adopted — a node cannot know a "
@@ -178,7 +178,7 @@ class UnknownEventStandDownIT extends PostgresIntegrationSupport {
                 .build()) {
             nodeC.registerActivities(ChainActivities.class,
                     new CountingActivities.RecordingChainActivities(recorder));
-            nodeC.registerWorkflow(new TestWorkflows.SignalWorkflow(completionParked));
+            nodeC.registerWorkflow(TestWorkflows.SignalWorkflow.class, () -> new TestWorkflows.SignalWorkflow(completionParked));
 
             assertEquals(1, nodeC.recover(),
                     "the stood-down instance must still be adoptable — that is the whole "
@@ -210,7 +210,7 @@ class UnknownEventStandDownIT extends PostgresIntegrationSupport {
                 .build()) {
             nodeA.registerActivities(ChainActivities.class,
                     new CountingActivities.RecordingChainActivities(recorder));
-            nodeA.registerWorkflow(new TestWorkflows.SignalWorkflow(parked));
+            nodeA.registerWorkflow(TestWorkflows.SignalWorkflow.class, () -> new TestWorkflows.SignalWorkflow(parked));
             handle = nodeA.start(workflowId, TestWorkflows.SignalWorkflow.class, "seed");
             assertTrue(parked.await(30, TimeUnit.SECONDS));
             handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
@@ -226,7 +226,7 @@ class UnknownEventStandDownIT extends PostgresIntegrationSupport {
                 .build()) {
             nodeB.registerActivities(ChainActivities.class,
                     new CountingActivities.RecordingChainActivities(recorder));
-            nodeB.registerWorkflow(new TestWorkflows.SignalWorkflow(new CountDownLatch(1)));
+            nodeB.registerWorkflow(TestWorkflows.SignalWorkflow.class, () -> new TestWorkflows.SignalWorkflow(new CountDownLatch(1)));
 
             for (int pass = 1; pass <= 3; pass++) {
                 var expected = pass;

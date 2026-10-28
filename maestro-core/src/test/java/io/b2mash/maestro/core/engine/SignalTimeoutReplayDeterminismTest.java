@@ -76,7 +76,7 @@ class SignalTimeoutReplayDeterminismTest {
         var method = GatedWorkflow.class.getMethod("run");
         var workflowId = "determinism-1";
 
-        nodeA.startWorkflow(workflowId, "GatedWorkflow", "default", null, workflow, method);
+        nodeA.startWorkflow(workflowId, "GatedWorkflow", "default", null, () -> workflow, method);
 
         // Original execution: wait until the gate has GENUINELY timed out (the
         // latch trips inside the catch) — shutting down during the gate park
@@ -99,7 +99,7 @@ class SignalTimeoutReplayDeterminismTest {
 
         // Recovery replay on the replacement node.
         var reg = new WorkflowRegistration("GatedWorkflow", "default",
-                new GatedWorkflow(new java.util.concurrent.CountDownLatch(1)), method);
+                () -> new GatedWorkflow(new java.util.concurrent.CountDownLatch(1)), method);
         nodeB.recoverWorkflows(Map.of("GatedWorkflow", reg));
 
         // Let the replay reach the "second" park again, then release it.
@@ -133,7 +133,7 @@ class SignalTimeoutReplayDeterminismTest {
         var method = SagaGateWorkflow.class.getMethod("run");
         var workflowId = "saga-no-leak-1";
 
-        nodeA.startWorkflow(workflowId, "SagaGateWorkflow", "default", null, workflow, method);
+        nodeA.startWorkflow(workflowId, "SagaGateWorkflow", "default", null, () -> workflow, method);
 
         // Original execution: gate #1 times out, the resource is reserved (with
         // its compensation registered), the workflow parks at gate #2.
@@ -150,7 +150,7 @@ class SignalTimeoutReplayDeterminismTest {
         nodeB.deliverSignal(workflowId, "withdraw", "late-withdrawal");
 
         var reg = new WorkflowRegistration("SagaGateWorkflow", "default",
-                new SagaGateWorkflow(reserved, released), method);
+                () -> new SagaGateWorkflow(reserved, released), method);
         nodeB.recoverWorkflows(Map.of("SagaGateWorkflow", reg));
 
         TestTerminalWait.awaitTerminal(store, workflowId, Duration.ofSeconds(5));
@@ -173,7 +173,7 @@ class SignalTimeoutReplayDeterminismTest {
         var method = SingleAwaitWorkflow.class.getMethod("run");
         var workflowId = "retry-redrive-1";
 
-        nodeA.startWorkflow(workflowId, "SingleAwaitWorkflow", "default", null, workflow, method);
+        nodeA.startWorkflow(workflowId, "SingleAwaitWorkflow", "default", null, () -> workflow, method);
 
         // The await times out uncaught → FAILED, with a SIGNAL_TIMEOUT memo.
         TestTerminalWait.awaitStatus(store, workflowId, WorkflowStatus.FAILED, Duration.ofSeconds(5));
@@ -181,7 +181,7 @@ class SignalTimeoutReplayDeterminismTest {
         // Operator fixes the fault (delivers the signal) and retries.
         nodeA.deliverSignal(workflowId, "approval", "granted");
         var reg = new WorkflowRegistration("SingleAwaitWorkflow", "default",
-                new SingleAwaitWorkflow(), method);
+                () -> new SingleAwaitWorkflow(), method);
         nodeA.retryWorkflow(workflowId, reg);
 
         TestTerminalWait.awaitTerminal(store, workflowId, Duration.ofSeconds(5));
@@ -202,7 +202,7 @@ class SignalTimeoutReplayDeterminismTest {
         var method = GateThenFlakyWorkflow.class.getMethod("run");
         var workflowId = "retry-gate-memo-1";
 
-        nodeA.startWorkflow(workflowId, "GateThenFlakyWorkflow", "default", null, workflow, method);
+        nodeA.startWorkflow(workflowId, "GateThenFlakyWorkflow", "default", null, () -> workflow, method);
 
         // Gate times out (caught, memoized); the flaky step then fails → FAILED.
         assertTrue(proceeded.await(5, java.util.concurrent.TimeUnit.SECONDS));
@@ -213,7 +213,7 @@ class SignalTimeoutReplayDeterminismTest {
         // it would resurrect the Issue 19 divergence through the retry door.
         nodeA.deliverSignal(workflowId, "gate", "late-arrival");
         var reg = new WorkflowRegistration("GateThenFlakyWorkflow", "default",
-                new GateThenFlakyWorkflow(failOnce, new java.util.concurrent.CountDownLatch(1)),
+                () -> new GateThenFlakyWorkflow(failOnce, new java.util.concurrent.CountDownLatch(1)),
                 method);
         nodeA.retryWorkflow(workflowId, reg);
 

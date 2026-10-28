@@ -181,7 +181,7 @@ class WorkflowExecutorTerminalTransitionTest {
         var impl = new CompensatedWorkflow(compensations);
         var method = CompensatedWorkflow.class.getMethod("run");
 
-        executor.startWorkflow(workflowId, "CompensatedWorkflow", "default", null, impl, method);
+        executor.startWorkflow(workflowId, "CompensatedWorkflow", "default", null, () -> impl, method);
         await().atMost(Duration.ofSeconds(5)).until(() -> !executor.isRunning(workflowId));
 
         var row = store.getInstance(workflowId).orElseThrow();
@@ -195,7 +195,7 @@ class WorkflowExecutorTerminalTransitionTest {
 
         // The store has recovered: ordinary recovery replays the run and finalises it.
         assertEquals(1, executor.recoverWorkflows(Map.of("CompensatedWorkflow",
-                new WorkflowRegistration("CompensatedWorkflow", "default", impl, method))));
+                new WorkflowRegistration("CompensatedWorkflow", "default", () -> impl, method))));
         awaitTerminal(workflowId);
         assertEquals(WorkflowStatus.COMPLETED, store.getInstance(workflowId).orElseThrow().status());
         assertEquals(1, store.eventsOfType(EventType.WORKFLOW_COMPLETED));
@@ -217,7 +217,7 @@ class WorkflowExecutorTerminalTransitionTest {
         var impl = new CompensatedWorkflow(compensations);
         var method = CompensatedWorkflow.class.getMethod("run");
 
-        executor.startWorkflow(workflowId, "CompensatedWorkflow", "default", null, impl, method);
+        executor.startWorkflow(workflowId, "CompensatedWorkflow", "default", null, () -> impl, method);
         await().atMost(Duration.ofSeconds(5)).until(() -> !executor.isRunning(workflowId));
 
         assertEquals(0, compensations.get(), "a workflow that SUCCEEDED must never be compensated");
@@ -256,7 +256,7 @@ class WorkflowExecutorTerminalTransitionTest {
         var impl = new TrivialWorkflow();
         try {
             var method = TrivialWorkflow.class.getMethod("run");
-            executor.startWorkflow(workflowId, "TrivialWorkflow", "default", null, impl, method);
+            executor.startWorkflow(workflowId, "TrivialWorkflow", "default", null, () -> impl, method);
         } catch (NoSuchMethodException e) {
             throw new IllegalStateException(e);
         }

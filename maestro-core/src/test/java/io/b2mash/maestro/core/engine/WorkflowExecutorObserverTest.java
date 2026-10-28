@@ -89,7 +89,7 @@ class WorkflowExecutorObserverTest {
         var workflow = new TwoStepWorkflow(proxy(observer), done);
         var method = TwoStepWorkflow.class.getMethod("run", String.class);
 
-        executor.startWorkflow("obs-live", "TwoStepWorkflow", "default", "in", workflow, method);
+        executor.startWorkflow("obs-live", "TwoStepWorkflow", "default", "in", () -> workflow, method);
         assertTrue(done.await(5, TimeUnit.SECONDS));
         await().atMost(Duration.ofSeconds(2)).until(() -> !executor.isRunning("obs-live"));
 
@@ -121,7 +121,7 @@ class WorkflowExecutorObserverTest {
         var workflow = new ThrowingWorkflow();
         var method = ThrowingWorkflow.class.getMethod("run", String.class);
 
-        executor.startWorkflow("obs-fail", "ThrowingWorkflow", "default", "in", workflow, method);
+        executor.startWorkflow("obs-fail", "ThrowingWorkflow", "default", "in", () -> workflow, method);
 
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
                 assertEquals(1, observer.failed().size(), "workflowFailed must fire exactly once"));
@@ -138,7 +138,7 @@ class WorkflowExecutorObserverTest {
         var workflow = new GatedWorkflow(started, release);
         var method = GatedWorkflow.class.getMethod("run", String.class);
 
-        executor.startWorkflow("obs-loser", "GatedWorkflow", "default", "in", workflow, method);
+        executor.startWorkflow("obs-loser", "GatedWorkflow", "default", "in", () -> workflow, method);
         assertTrue(started.await(5, TimeUnit.SECONDS));
 
         // Another runner finalised the instance while this node's run was mid-flight
@@ -160,7 +160,7 @@ class WorkflowExecutorObserverTest {
         var workflow = new AwaitingWorkflow(waiting);
         var method = AwaitingWorkflow.class.getMethod("run", String.class);
 
-        executor.startWorkflow("obs-term", "AwaitingWorkflow", "default", "in", workflow, method);
+        executor.startWorkflow("obs-term", "AwaitingWorkflow", "default", "in", () -> workflow, method);
         assertTrue(waiting.await(5, TimeUnit.SECONDS));
         await().atMost(Duration.ofSeconds(2)).until(() ->
                 store.getInstance("obs-term").map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL)
@@ -182,7 +182,7 @@ class WorkflowExecutorObserverTest {
         var workflow = new StaleRunWorkflow();
         var method = StaleRunWorkflow.class.getMethod("run", String.class);
 
-        executor.startWorkflow("obs-stale", "StaleRunWorkflow", "default", "in", workflow, method);
+        executor.startWorkflow("obs-stale", "StaleRunWorkflow", "default", "in", () -> workflow, method);
 
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
                 assertEquals(1, observer.standDowns().size(), "standDown must fire exactly once"));
@@ -205,7 +205,7 @@ class WorkflowExecutorObserverTest {
         var method = AwaitingWorkflow.class.getMethod("run", String.class);
 
         executor.startWorkflow("obs-abandon-term", "AwaitingWorkflow", "default", "in",
-                workflow, method);
+                () -> workflow, method);
         assertTrue(waiting.await(5, TimeUnit.SECONDS));
         await().atMost(Duration.ofSeconds(2)).until(() ->
                 store.getInstance("obs-abandon-term")
@@ -233,7 +233,7 @@ class WorkflowExecutorObserverTest {
         var method = AwaitingWorkflow.class.getMethod("run", String.class);
 
         executor.startWorkflow("obs-abandon-shut", "AwaitingWorkflow", "default", "in",
-                workflow, method);
+                () -> workflow, method);
         assertTrue(waiting.await(5, TimeUnit.SECONDS));
         await().atMost(Duration.ofSeconds(2)).until(() ->
                 store.getInstance("obs-abandon-shut")
@@ -268,7 +268,7 @@ class WorkflowExecutorObserverTest {
         // WORKFLOW_COMPLETED would take
         store.collideOnEventType(EventType.WORKFLOW_COMPLETED);
 
-        executor.startWorkflow("obs-collide-done", "TwoStepWorkflow", "default", "in", workflow, method);
+        executor.startWorkflow("obs-collide-done", "TwoStepWorkflow", "default", "in", () -> workflow, method);
         assertTrue(done.await(5, TimeUnit.SECONDS));
         await().atMost(Duration.ofSeconds(5)).until(() -> !executor.isRunning("obs-collide-done"));
 
@@ -288,7 +288,7 @@ class WorkflowExecutorObserverTest {
         var method = ThrowingWorkflow.class.getMethod("run", String.class);
         store.collideOnEventType(EventType.WORKFLOW_FAILED);
 
-        executor.startWorkflow("obs-collide-fail", "ThrowingWorkflow", "default", "in", workflow, method);
+        executor.startWorkflow("obs-collide-fail", "ThrowingWorkflow", "default", "in", () -> workflow, method);
 
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
                 assertTrue(observer.abandoned().stream()
@@ -311,7 +311,7 @@ class WorkflowExecutorObserverTest {
         // phase still started on this node and must still be observed.
         store.collideOnEventType(EventType.COMPENSATION_STARTED);
 
-        executor.startWorkflow("obs-collide-comp", "CompensatingWorkflow", "default", "in", workflow, method);
+        executor.startWorkflow("obs-collide-comp", "CompensatingWorkflow", "default", "in", () -> workflow, method);
 
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
                 assertEquals(1, observer.standDowns().size(),
@@ -341,7 +341,7 @@ class WorkflowExecutorObserverTest {
         var method = ActivityThenSignalWorkflow.class.getMethod("run", String.class);
 
         executor.startWorkflow("obs-hostile", "ActivityThenSignalWorkflow", "default", "in",
-                workflow, method);
+                () -> workflow, method);
         await().atMost(Duration.ofSeconds(5)).until(() -> throwing.calls.contains("workflowParked"));
         executor.deliverSignal("obs-hostile", "go", "payload");
 
@@ -367,7 +367,7 @@ class WorkflowExecutorObserverTest {
         var workflow = new AwaitingWorkflow(waiting);
         var method = AwaitingWorkflow.class.getMethod("run", String.class);
 
-        executor.startWorkflow("obs-signal", "AwaitingWorkflow", "default", "in", workflow, method);
+        executor.startWorkflow("obs-signal", "AwaitingWorkflow", "default", "in", () -> workflow, method);
         assertTrue(waiting.await(5, TimeUnit.SECONDS));
         await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
                 assertEquals(1, observer.parked().size(), "the live park must emit workflowParked"));
@@ -399,7 +399,7 @@ class WorkflowExecutorObserverTest {
         var method = SleepingWorkflow.class.getMethod("run", String.class);
 
         executor.startTimerPoller(Duration.ofMillis(50), 10);
-        executor.startWorkflow("obs-timer", "SleepingWorkflow", "default", "in", workflow, method);
+        executor.startWorkflow("obs-timer", "SleepingWorkflow", "default", "in", () -> workflow, method);
 
         assertTrue(done.await(10, TimeUnit.SECONDS), "sleep should complete via the timer poller");
         await().atMost(Duration.ofSeconds(2)).until(() -> !executor.isRunning("obs-timer"));
@@ -429,7 +429,7 @@ class WorkflowExecutorObserverTest {
         var workflow = new CompensatingWorkflow();
         var method = CompensatingWorkflow.class.getMethod("run", String.class);
 
-        executor.startWorkflow("obs-saga", "CompensatingWorkflow", "default", "in", workflow, method);
+        executor.startWorkflow("obs-saga", "CompensatingWorkflow", "default", "in", () -> workflow, method);
 
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
                 assertEquals(1, observer.compensating().size(),

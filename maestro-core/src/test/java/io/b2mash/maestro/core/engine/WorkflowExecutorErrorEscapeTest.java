@@ -164,7 +164,7 @@ class WorkflowExecutorErrorEscapeTest {
         }, store, null, null, policy, Duration.ofSeconds(30), serializer, new RetryExecutor());
         var workflowId = "error-activity-ncdfe";
         var instanceId = executor.startWorkflow(workflowId, "ActivityCallingWorkflow", "default", null,
-                new ActivityCallingWorkflow(compensations, proxy),
+                () -> new ActivityCallingWorkflow(compensations, proxy),
                 ActivityCallingWorkflow.class.getMethod("run"));
         await().atMost(BOUND).until(() -> !executor.isRunning(workflowId));
         await().atMost(BOUND).until(() -> !observer.abandoned().isEmpty() || !observer.failed().isEmpty());
@@ -195,7 +195,7 @@ class WorkflowExecutorErrorEscapeTest {
         }, store, null, null, policy, Duration.ofSeconds(30), serializer, new RetryExecutor());
         var workflowId = "error-compensation-ncdfe";
         var instanceId = executor.startWorkflow(workflowId, "CompensatingViaActivityWorkflow", "default", null,
-                new CompensatingViaActivityWorkflow(proxy),
+                () -> new CompensatingViaActivityWorkflow(proxy),
                 CompensatingViaActivityWorkflow.class.getMethod("run"));
         await().atMost(BOUND).until(() -> !executor.isRunning(workflowId));
 
@@ -231,7 +231,7 @@ class WorkflowExecutorErrorEscapeTest {
         try {
             Method run = ErrorThrowingWorkflow.class.getMethod("run");
             return executor.startWorkflow(workflowId, "ErrorThrowingWorkflow", "default", null,
-                    new ErrorThrowingWorkflow(compensations, toThrow), run);
+                    () -> new ErrorThrowingWorkflow(compensations, toThrow), run);
         } catch (NoSuchMethodException e) {
             throw new IllegalStateException(e);
         }

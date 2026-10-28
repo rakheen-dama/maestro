@@ -47,7 +47,7 @@ class ErrorEscapeFailsWorkflowIT extends PostgresIntegrationSupport {
         try (var node = MaestroEngineHarness.builder(store, objectMapper).serviceName("node-a")
                 .lock(newLock()).observer(observer).build()) {
             node.registerActivities(ChainActivities.class, new CountingActivities.RecordingChainActivities(recorder));
-            node.registerWorkflow(new TestWorkflows.ErrorThrowingWorkflow());
+            node.registerWorkflow(TestWorkflows.ErrorThrowingWorkflow.class);
             var handle = node.start(workflowId, TestWorkflows.ErrorThrowingWorkflow.class, "seed");
 
             assertEquals(WorkflowStatus.FAILED, handle.awaitTerminal(BOUND));
@@ -75,7 +75,7 @@ class ErrorEscapeFailsWorkflowIT extends PostgresIntegrationSupport {
         try (var node = MaestroEngineHarness.builder(store, objectMapper).serviceName("node-a")
                 .lock(newLock()).observer(observer).build()) {
             node.registerActivities(ChainActivities.class, new CountingActivities.RecordingChainActivities(recorder));
-            node.registerWorkflow(new TestWorkflows.NodeErrorWorkflow());
+            node.registerWorkflow(TestWorkflows.NodeErrorWorkflow.class);
             var handle = node.start(workflowId, TestWorkflows.NodeErrorWorkflow.class, "seed");
 
             await().atMost(BOUND).until(() -> !observer.abandoned().isEmpty());
@@ -122,7 +122,7 @@ class ErrorEscapeFailsWorkflowIT extends PostgresIntegrationSupport {
                 recorder.record("attempt");
                 throw new NoClassDefFoundError("com/acme/RemovedDependency");
             });
-            node.registerWorkflow(new TestWorkflows.RetryWorkflow());
+            node.registerWorkflow(TestWorkflows.RetryWorkflow.class);
             var handle = node.start(workflowId, TestWorkflows.RetryWorkflow.class, "seed");
 
             await().atMost(BOUND).until(() -> !observer.abandoned().isEmpty() || !observer.failed().isEmpty());

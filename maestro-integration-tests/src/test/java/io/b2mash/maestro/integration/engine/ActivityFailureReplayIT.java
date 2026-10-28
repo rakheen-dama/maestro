@@ -97,7 +97,7 @@ class ActivityFailureReplayIT extends PostgresIntegrationSupport {
                 .instanceLockTtl(LOCK_TTL)
                 .build();
         node.registerActivities(FailingActivities.class, new ThrowingFailingActivities(thrown));
-        node.registerWorkflow(new TestWorkflows.FailureReplayWorkflow(observations, parked));
+        node.registerWorkflow(TestWorkflows.FailureReplayWorkflow.class, () -> new TestWorkflows.FailureReplayWorkflow(observations, parked));
         return node;
     }
 }

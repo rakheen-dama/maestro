@@ -134,7 +134,7 @@ class TerminalEventRaceIT extends PostgresIntegrationSupport {
                 .build();
         harness.registerActivities(CountingActivities.ChainActivities.class,
                 new CountingActivities.RecordingChainActivities(new CountingActivities.Recorder()));
-        harness.registerWorkflow(new TestWorkflows.ChainWorkflow());
+        harness.registerWorkflow(TestWorkflows.ChainWorkflow.class);
         return harness.start(MaestroEngineHarness.uniqueWorkflowId(prefix),
                 TestWorkflows.ChainWorkflow.class, "seed");
     }

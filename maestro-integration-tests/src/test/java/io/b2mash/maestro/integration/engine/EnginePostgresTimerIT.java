@@ -263,7 +263,7 @@ class EnginePostgresTimerIT extends PostgresIntegrationSupport {
         harness = newHarness("timer-node", true);
         harness.registerActivities(ChainActivities.class,
                 new CountingActivities.RecordingChainActivities(recorder));
-        harness.registerWorkflow(new TestWorkflows.CancellableSleepWorkflow(Duration.ofMinutes(10)));
+        harness.registerWorkflow(TestWorkflows.CancellableSleepWorkflow.class, () -> new TestWorkflows.CancellableSleepWorkflow(Duration.ofMinutes(10)));
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("timer-cancel-catch");
         var handle = harness.start(workflowId, TestWorkflows.CancellableSleepWorkflow.class, "seed");
@@ -372,7 +372,7 @@ class EnginePostgresTimerIT extends PostgresIntegrationSupport {
     private void registerSleeper(MaestroEngineHarness target, Duration nap) {
         target.registerActivities(ChainActivities.class,
                 new CountingActivities.RecordingChainActivities(recorder));
-        target.registerWorkflow(new TestWorkflows.SleepingWorkflow(nap));
+        target.registerWorkflow(TestWorkflows.SleepingWorkflow.class, () -> new TestWorkflows.SleepingWorkflow(nap));
     }
 
     /**

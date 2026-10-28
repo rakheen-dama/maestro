@@ -112,7 +112,7 @@ class UnreadablePayloadStandDownIT extends PostgresIntegrationSupport {
         }
         var node = builder.build();
         node.registerActivities(ChainActivities.class, new CountingActivities.RecordingChainActivities(recorder));
-        node.registerWorkflow(new TestWorkflows.SignalWorkflow(parked));
+        node.registerWorkflow(TestWorkflows.SignalWorkflow.class, () -> new TestWorkflows.SignalWorkflow(parked));
         return node;
     }
 

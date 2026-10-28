@@ -61,7 +61,7 @@ class EnginePostgresTerminateIT extends PostgresIntegrationSupport {
         harness = newHarness();
         harness.registerActivities(FlakyActivities.class,
                 new CountingActivities.FailNTimesActivities(recorder, Integer.MAX_VALUE));
-        harness.registerWorkflow(new TestWorkflows.SlowRetryWorkflow());
+        harness.registerWorkflow(TestWorkflows.SlowRetryWorkflow.class);
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("term-backoff");
         var handle = harness.start(workflowId, TestWorkflows.SlowRetryWorkflow.class, "x");
         await().atMost(BOUND).until(() -> recorder.count("attempt") == 1);

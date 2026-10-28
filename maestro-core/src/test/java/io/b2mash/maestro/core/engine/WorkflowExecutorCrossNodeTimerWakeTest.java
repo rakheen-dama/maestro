@@ -71,7 +71,7 @@ class WorkflowExecutorCrossNodeTimerWakeTest {
         var method = SleepingWorkflow.class.getMethod("run", String.class);
 
         var instanceId = executor.startWorkflow("xnode-fire-1", "SleepingWorkflow", "default",
-                "hello", workflow, method);
+                "hello", () -> workflow, method);
 
         await().atMost(Duration.ofSeconds(5)).until(() ->
                 store.getInstance("xnode-fire-1")
@@ -107,7 +107,7 @@ class WorkflowExecutorCrossNodeTimerWakeTest {
         var method = CancellableSleepWorkflow.class.getMethod("run", String.class);
 
         var instanceId = executor.startWorkflow("xnode-cancel-1", "CancellableSleepWorkflow", "default",
-                "hello", workflow, method);
+                "hello", () -> workflow, method);
 
         await().atMost(Duration.ofSeconds(5)).until(() ->
                 store.getInstance("xnode-cancel-1")
@@ -142,7 +142,7 @@ class WorkflowExecutorCrossNodeTimerWakeTest {
         var method = SleepingWorkflow.class.getMethod("run", String.class);
 
         var instanceId = executor.startWorkflow("xnode-pending-1", "SleepingWorkflow", "default",
-                "hello", workflow, method);
+                "hello", () -> workflow, method);
 
         await().atMost(Duration.ofSeconds(5)).until(() ->
                 store.getInstance("xnode-pending-1")
@@ -180,7 +180,7 @@ class WorkflowExecutorCrossNodeTimerWakeTest {
         var method = SleepingWorkflow.class.getMethod("run", String.class);
 
         var instanceId = executor.startWorkflow("local-fire-1", "SleepingWorkflow", "default",
-                "hello", workflow, method);
+                "hello", () -> workflow, method);
 
         await().atMost(Duration.ofSeconds(5)).until(() ->
                 store.getInstance("local-fire-1")
@@ -216,7 +216,7 @@ class WorkflowExecutorCrossNodeTimerWakeTest {
         var completed = new CountDownLatch(1);
         var workflow = new SleepingWorkflow(Duration.ofMinutes(10), completed);
         var method = SleepingWorkflow.class.getMethod("run", String.class);
-        var instanceId = executor.startWorkflow(workflowId, "SleepingWorkflow", "default", "hello", workflow, method);
+        var instanceId = executor.startWorkflow(workflowId, "SleepingWorkflow", "default", "hello", () -> workflow, method);
         await().atMost(Duration.ofSeconds(5)).until(() ->
                 store.getInstance(workflowId).map(i -> i.status() == WorkflowStatus.WAITING_TIMER).orElse(false));
 

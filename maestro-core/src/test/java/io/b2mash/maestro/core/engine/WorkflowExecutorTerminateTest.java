@@ -87,7 +87,7 @@ class WorkflowExecutorTerminateTest {
     void terminateParkedOnSignal_evictsWithoutCompensating() throws Exception {
         var workflow = new CompensatingAwaitWorkflow();
         executor.startWorkflow("term-signal", "CompensatingAwaitWorkflow", "default",
-                null, workflow, CompensatingAwaitWorkflow.class.getMethod("run"));
+                null, () -> workflow, CompensatingAwaitWorkflow.class.getMethod("run"));
         awaitStatus("term-signal", WorkflowStatus.WAITING_SIGNAL);
 
         var outcome = executor.terminateWorkflow("term-signal", "stuck on a signal that never came");
@@ -118,7 +118,7 @@ class WorkflowExecutorTerminateTest {
     void terminateParkedOnTimer_evictsPromptly() throws Exception {
         var workflow = new SleepingWorkflow();
         executor.startWorkflow("term-timer", "TerminateSleepingWorkflow", "default",
-                null, workflow, SleepingWorkflow.class.getMethod("run"));
+                null, () -> workflow, SleepingWorkflow.class.getMethod("run"));
         awaitStatus("term-timer", WorkflowStatus.WAITING_TIMER);
 
         assertEquals(WorkflowExecutor.TerminateOutcome.TERMINATED,
@@ -135,7 +135,7 @@ class WorkflowExecutorTerminateTest {
     void terminateWithoutReason_recordsTerminatedBy() throws Exception {
         var workflow = new SleepingWorkflow();
         executor.startWorkflow("term-noreason", "TerminateSleepingWorkflow", "default",
-                null, workflow, SleepingWorkflow.class.getMethod("run"));
+                null, () -> workflow, SleepingWorkflow.class.getMethod("run"));
         awaitStatus("term-noreason", WorkflowStatus.WAITING_TIMER);
 
         executor.terminateWorkflow("term-noreason", null);
@@ -151,7 +151,7 @@ class WorkflowExecutorTerminateTest {
     void terminateRacingAPark_refusesTheLatePark() throws Exception {
         var workflow = new ReparkingWorkflow();
         executor.startWorkflow("term-repark", "ReparkingWorkflow", "default",
-                null, workflow, ReparkingWorkflow.class.getMethod("run"));
+                null, () -> workflow, ReparkingWorkflow.class.getMethod("run"));
         awaitStatus("term-repark", WorkflowStatus.WAITING_TIMER);
 
         // Let the workflow loop: it wakes and immediately parks again. Whichever
@@ -173,7 +173,7 @@ class WorkflowExecutorTerminateTest {
         var owner = new WorkflowExecutor(store, null, messaging, null, serializer, "owner-node");
         try {
             owner.startWorkflow("term-remote", "TerminateSleepingWorkflow", "default",
-                    null, workflow, SleepingWorkflow.class.getMethod("run"));
+                    null, () -> workflow, SleepingWorkflow.class.getMethod("run"));
             awaitStatus("term-remote", WorkflowStatus.WAITING_TIMER);
 
             // This executor never ran it, so it has nothing local to evict —
@@ -194,7 +194,7 @@ class WorkflowExecutorTerminateTest {
     void terminateDuringCompensation_stopsRemainingCompensations() throws Exception {
         var workflow = new ParkingCompensationWorkflow();
         executor.startWorkflow("term-compensating", "ParkingCompensationWorkflow", "default",
-                null, workflow, ParkingCompensationWorkflow.class.getMethod("run"));
+                null, () -> workflow, ParkingCompensationWorkflow.class.getMethod("run"));
 
         // The second (LIFO-first) compensation parks, so the run sits in
         // COMPENSATING with one compensation still pending.
@@ -220,7 +220,7 @@ class WorkflowExecutorTerminateTest {
     void terminateMidActivity_letsTheActivityFinishThenStandsDown() throws Exception {
         var workflow = new BlockingWorkflow();
         executor.startWorkflow("term-activity", "BlockingWorkflow", "default",
-                null, workflow, BlockingWorkflow.class.getMethod("run"));
+                null, () -> workflow, BlockingWorkflow.class.getMethod("run"));
         assertTrue(workflow.entered.await(5, TimeUnit.SECONDS), "the workflow must reach its block");
 
         assertEquals(WorkflowExecutor.TerminateOutcome.TERMINATED,
@@ -261,7 +261,7 @@ class WorkflowExecutorTerminateTest {
         var workflow = new WorkflowExecutorShutdownTest.RetryShutdownWorkflow(proxy);
         var method = WorkflowExecutorShutdownTest.RetryShutdownWorkflow.class.getMethod("run", String.class);
         executor.startWorkflow("term-retry-activity", "RetryShutdownWorkflow", "default", "input",
-                workflow, method);
+                () -> workflow, method);
 
         awaitStatus("term-retry-activity", WorkflowStatus.WAITING_SIGNAL);
         assertEquals(1, invocations.get(), "must not have been retried before terminate either");
@@ -288,7 +288,7 @@ class WorkflowExecutorTerminateTest {
     void terminateDuringRetryBackoff_abandonsBackoffAndRunsNoFurtherAttempt() throws Exception {
         var invocations = new AtomicInteger();
         var workflow = new BackoffWorkflow(failingProxy(invocations));
-        executor.startWorkflow("term-backoff", "BackoffWorkflow", "default", null, workflow,
+        executor.startWorkflow("term-backoff", "BackoffWorkflow", "default", null, () -> workflow,
                 BackoffWorkflow.class.getMethod("run"));
         await().atMost(Duration.ofSeconds(5)).until(() -> invocations.get() == 1);   // attempt 1 failed; in backoff
 
@@ -312,7 +312,7 @@ class WorkflowExecutorTerminateTest {
     void terminateDuringLiveActivity_runsNoFurtherLiveActivity() throws Exception {
         var gated = new GatedActivityImpl();
         var workflow = new TwoStepWorkflow(gatedProxy(gated));
-        executor.startWorkflow("term-next", "TwoStepWorkflow", "default", null, workflow,
+        executor.startWorkflow("term-next", "TwoStepWorkflow", "default", null, () -> workflow,
                 TwoStepWorkflow.class.getMethod("run"));
         assertTrue(gated.entered.await(5, TimeUnit.SECONDS));
 
@@ -332,7 +332,7 @@ class WorkflowExecutorTerminateTest {
     void terminateDuringParallelBranchBackoff_abandonsEveryBranch() throws Exception {
         var invocations = new AtomicInteger();
         var workflow = new ParallelBackoffWorkflow(failingProxy(invocations));
-        executor.startWorkflow("term-par", "ParallelBackoffWorkflow", "default", null, workflow,
+        executor.startWorkflow("term-par", "ParallelBackoffWorkflow", "default", null, () -> workflow,
                 ParallelBackoffWorkflow.class.getMethod("run"));
         await().atMost(Duration.ofSeconds(5)).until(() -> invocations.get() == 2);
 
@@ -358,7 +358,7 @@ class WorkflowExecutorTerminateTest {
     void terminateTerminalWorkflow_isANoOp() throws Exception {
         var workflow = new ImmediateWorkflow();
         executor.startWorkflow("term-done", "ImmediateWorkflow", "default",
-                "seed", workflow, ImmediateWorkflow.class.getMethod("run", String.class));
+                "seed", () -> workflow, ImmediateWorkflow.class.getMethod("run", String.class));
         awaitStatus("term-done", WorkflowStatus.COMPLETED);
         var completedAt = store.getInstance("term-done").orElseThrow().completedAt();
 
@@ -377,7 +377,7 @@ class WorkflowExecutorTerminateTest {
     void duplicateTerminate_converges() throws Exception {
         var workflow = new SleepingWorkflow();
         executor.startWorkflow("term-dup", "TerminateSleepingWorkflow", "default",
-                null, workflow, SleepingWorkflow.class.getMethod("run"));
+                null, () -> workflow, SleepingWorkflow.class.getMethod("run"));
         awaitStatus("term-dup", WorkflowStatus.WAITING_TIMER);
 
         assertEquals(WorkflowExecutor.TerminateOutcome.TERMINATED,
@@ -398,7 +398,7 @@ class WorkflowExecutorTerminateTest {
     void terminateConvergesAcrossAVersionConflict() throws Exception {
         var workflow = new SleepingWorkflow();
         executor.startWorkflow("term-conflict", "TerminateSleepingWorkflow", "default",
-                null, workflow, SleepingWorkflow.class.getMethod("run"));
+                null, () -> workflow, SleepingWorkflow.class.getMethod("run"));
         awaitStatus("term-conflict", WorkflowStatus.WAITING_TIMER);
 
         store.failNextUpdates(2);
@@ -414,7 +414,7 @@ class WorkflowExecutorTerminateTest {
     void terminateWithExhaustedAttemptBudget_propagates() throws Exception {
         var workflow = new SleepingWorkflow();
         executor.startWorkflow("term-exhausted", "TerminateSleepingWorkflow", "default",
-                null, workflow, SleepingWorkflow.class.getMethod("run"));
+                null, () -> workflow, SleepingWorkflow.class.getMethod("run"));
         awaitStatus("term-exhausted", WorkflowStatus.WAITING_TIMER);
 
         store.failNextUpdates(100);

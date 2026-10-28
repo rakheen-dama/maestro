@@ -521,13 +521,13 @@ class LoanApplicationWorkflowV2Test {
         var input = new LoanApplication(applicationId, BORROWERS, 400_000, 100_000, 500_000,
                 REQUIRED_DOCS);
         var instanceId = node.startWorkflow(workflowId, WORKFLOW_TYPE, TASK_QUEUE, input,
-                workflowImpl(workflowClass), workflowMethod(workflowClass));
+                () -> workflowImpl(workflowClass), workflowMethod(workflowClass));
         return new Run(applicationId, workflowId, instanceId);
     }
 
     private WorkflowRegistration registration(Class<?> workflowClass) {
         return new WorkflowRegistration(WORKFLOW_TYPE, TASK_QUEUE,
-                workflowImpl(workflowClass), workflowMethod(workflowClass));
+                () -> workflowImpl(workflowClass), workflowMethod(workflowClass));
     }
 
     /** Instantiates the workflow and injects a memoizing proxy per {@code @ActivityStub}. */

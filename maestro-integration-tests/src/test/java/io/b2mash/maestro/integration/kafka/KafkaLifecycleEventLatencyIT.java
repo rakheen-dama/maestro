@@ -109,7 +109,7 @@ class KafkaLifecycleEventLatencyIT extends PostgresIntegrationSupport {
                 .serviceName("lifecycle-latency")
                 .messaging(messaging)
                 .build()) {
-            harness.registerWorkflow(new KafkaTestWorkflows.ImmediateWorkflow());
+            harness.registerWorkflow(KafkaTestWorkflows.ImmediateWorkflow.class);
 
             var workflowId = MaestroEngineHarness.uniqueWorkflowId("lat");
             var start = System.nanoTime();

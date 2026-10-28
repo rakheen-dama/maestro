@@ -181,7 +181,7 @@ class EnginePostgresParallelIT extends PostgresIntegrationSupport {
                 .lock(newLock())
                 .instanceLockTtl(Duration.ofSeconds(30))
                 .build();
-        harness.registerWorkflow(workflow);
+        harness.registerWorkflow(ParallelParkingWorkflow.class, () -> workflow);
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("parallel-park");
         var handle = harness.start(workflowId, ParallelParkingWorkflow.class, "seed");
@@ -224,7 +224,7 @@ class EnginePostgresParallelIT extends PostgresIntegrationSupport {
                 .build();
         harness.registerActivities(CountingActivities.ChainActivities.class,
                 new CountingActivities.RecordingChainActivities(recorder));
-        harness.registerWorkflow(new OverlongBranchWorkflow());
+        harness.registerWorkflow(OverlongBranchWorkflow.class);
 
         var handle = harness.start(MaestroEngineHarness.uniqueWorkflowId("parallel-overlong"),
                 OverlongBranchWorkflow.class, "seed");
@@ -507,7 +507,7 @@ class EnginePostgresParallelIT extends PostgresIntegrationSupport {
                 .instanceLockTtl(Duration.ofSeconds(2))
                 .build();
         built.registerActivities(CountingActivities.ChainActivities.class, activities);
-        built.registerWorkflow(new TestWorkflows.ParallelWorkflow());
+        built.registerWorkflow(TestWorkflows.ParallelWorkflow.class);
         return built;
     }
 

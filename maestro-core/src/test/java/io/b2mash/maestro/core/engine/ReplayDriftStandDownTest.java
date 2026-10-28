@@ -383,7 +383,7 @@ class ReplayDriftStandDownTest {
                               Function<UUID, WorkflowEvent> plant, Consumer<UUID> alsoPlant) {
         var gate = new CountDownLatch(1);
         var instanceId = executor.startWorkflow(workflowId, "DriftWorkflow", "default", null,
-                new DriftWorkflow(gate, secondOp), workflowMethod());
+                () -> new DriftWorkflow(gate, secondOp), workflowMethod());
         await().atMost(BOUND)
                 .until(() -> store.getEventBySequence(instanceId, 1).isPresent());
         store.injectRawEvent(plant.apply(instanceId));

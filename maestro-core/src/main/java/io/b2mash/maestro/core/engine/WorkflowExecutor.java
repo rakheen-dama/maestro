@@ -50,6 +50,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 /**
  * Central orchestrator that runs workflow methods on Java virtual threads.
@@ -394,18 +395,23 @@ public final class WorkflowExecutor {
      * @param workflowType the workflow type name
      * @param taskQueue    the task queue name
      * @param input        the workflow input, or {@code null}
-     * @param workflowImpl the workflow implementation instance
+     * @param workflowFactory builds the workflow implementation object for this
+     *                     run; called exactly once, on the calling thread, before
+     *                     the run's virtual thread is created. An exception it
+     *                     throws propagates to the caller (the instance row is
+     *                     left active for the recovery poller to adopt)
      * @param workflowMethod the entry-point method
      * @return the workflow instance UUID
      * @throws IllegalStateException        if the executor is shutting down
      * @throws WorkflowAlreadyExistsException if a workflow with this ID exists
+     * @see WorkflowRegistration#workflowFactory()
      */
     public UUID startWorkflow(
             String workflowId,
             String workflowType,
             String taskQueue,
             @Nullable Object input,
-            Object workflowImpl,
+            Supplier<Object> workflowFactory,
             Method workflowMethod
     ) {
         if (shuttingDown.get()) {
@@ -455,7 +461,7 @@ public final class WorkflowExecutor {
         emit("workflowStarted", workflowId, () -> observer.workflowStarted(observed(instance)));
 
         // Launch on virtual thread
-        launchWorkflow(instance, workflowImpl, workflowMethod, inputPayload, false, acquisition);
+        launchWorkflow(instance, workflowFactory, workflowMethod, inputPayload, false, acquisition);
 
         logger.info("Started workflow '{}' (type={}, id={})", workflowId, workflowType, instanceId);
         return instanceId;
@@ -472,7 +478,10 @@ public final class WorkflowExecutor {
      * execution continues from where it left off.
      *
      * @param instance       the workflow instance to resume
-     * @param workflowImpl   the workflow implementation instance
+     * @param workflowFactory builds a fresh workflow implementation object for
+     *                       this run; called exactly once if — and only if — the
+     *                       run is launched. An exception it throws propagates to
+     *                       the caller
      * @param workflowMethod the entry-point method
      * @return {@code true} if the workflow was launched; {@code false} if it
      *         was skipped (already running locally, instance lock held by
@@ -480,7 +489,7 @@ public final class WorkflowExecutor {
      */
     public boolean resumeWorkflow(
             WorkflowInstance instance,
-            Object workflowImpl,
+            Supplier<Object> workflowFactory,
             Method workflowMethod
     ) {
         if (shuttingDown.get()) {
@@ -493,7 +502,7 @@ public final class WorkflowExecutor {
             return false;
         }
 
-        var launched = launchWorkflow(instance, workflowImpl, workflowMethod, instance.input(), true, null);
+        var launched = launchWorkflow(instance, workflowFactory, workflowMethod, instance.input(), true, null);
         if (launched) {
             logger.info("Resuming workflow '{}' (type={}, status={})",
                     instance.workflowId(), instance.workflowType(), instance.status());
@@ -523,7 +532,7 @@ public final class WorkflowExecutor {
                         instance.workflowType(), instance.workflowId());
                 continue;
             }
-            if (resumeWorkflow(instance, reg.workflowImpl(), reg.workflowMethod())) {
+            if (resumeWorkflow(instance, reg.workflowFactory(), reg.workflowMethod())) {
                 count++;
             }
         }
@@ -1034,7 +1043,7 @@ public final class WorkflowExecutor {
             return RetryOutcome.ALREADY_RUNNING_LOCALLY;
         }
 
-        var launched = launchWorkflow(running, registration.workflowImpl(), registration.workflowMethod(),
+        var launched = launchWorkflow(running, registration.workflowFactory(), registration.workflowMethod(),
                 running.input(), true, null);
         if (!launched) {
             logger.info("Workflow '{}' CAS'd to RUNNING but its instance lock is held elsewhere — "
@@ -1288,9 +1297,17 @@ public final class WorkflowExecutor {
      * visibility of state fields read by query methods (use {@code volatile}
      * or synchronization).
      *
-     * <p>Currently only workflows running in-memory on this executor can be
-     * queried. If the workflow is not in-memory (completed, failed, or running
-     * on a different instance), a {@link WorkflowNotQueryableException} is thrown.
+     * <p>The query is answered by the workflow object of the current run —
+     * the one {@link WorkflowRegistration#workflowFactory()} built when this
+     * executor launched or re-adopted it — never by an object shared with
+     * other runs of the same workflow type.
+     *
+     * <p>Queries are answered only by the node whose executor currently holds
+     * this workflow's run — the one that holds its instance lock. A workflow
+     * that is parked, running or compensating on another node, or that has
+     * reached a terminal status, throws {@link WorkflowNotQueryableException}.
+     * Cross-node query routing is out of scope; route the request to the
+     * owning node or read durable state via {@code WorkflowHandle.status()}/{@code result()}.
      *
      * @param workflowId the workflow's business ID
      * @param queryName  the query name (from {@code @QueryMethod.name()} or the method name)
@@ -1444,7 +1461,7 @@ public final class WorkflowExecutor {
 
     private boolean launchWorkflow(
             WorkflowInstance instance,
-            Object workflowImpl,
+            Supplier<Object> workflowFactory,
             Method workflowMethod,
             @Nullable JsonNode inputPayload,
             boolean replaying,
@@ -1510,37 +1527,44 @@ public final class WorkflowExecutor {
         var sagaAnnotation = workflowMethod.getAnnotation(Saga.class);
         var parallelCompensation = sagaAnnotation != null && sagaAnnotation.parallelCompensation();
 
-        var thread = Thread.ofVirtual()
-                .name("maestro-workflow-%s-%s".formatted(instance.workflowType(), instance.workflowId()))
-                .unstarted(() -> {
-                    WorkflowMDC.populate(ctx);
-                    try {
-                        ScopedValue.where(WorkflowContext.scopedValue(), ctx)
-                                .run(() -> executeWorkflow(ctx, instance, workflowImpl, workflowMethod,
-                                        inputPayload, compensationStack, parallelCompensation));
-                    } finally {
-                        WorkflowMDC.clear();
-                    }
-                });
-
-        // Register before starting to prevent the race where a fast workflow
-        // finishes and removes itself before the put() below executes
-        var running = new RunningWorkflow(thread, instance, instance.workflowType(), workflowImpl,
-                cancellation);
-        runningWorkflows.put(instance.workflowId(), running);
-        // R22(1): shutdown() requests a shutdown on every run it finds
-        // registered. A launch that passed its shuttingDown check before
-        // shutdown began but registers only after that loop ran would be
-        // missed — and would then wait out a full retry backoff. Re-checking
-        // after the put closes the window: either the loop sees this run, or
-        // this check sees the flag (the flag is set before the loop starts).
-        if (shuttingDown.get()) {
-            cancellation.requestShutdown();
-        }
+        RunningWorkflow running = null;
         try {
+            // F1: one workflow object per run, built on the launching thread
+            // before the run's virtual thread exists — a throwing factory
+            // surfaces to the caller and releases the lock in the catch below.
+            var workflowImpl = workflowFactory.get();
+            var thread = Thread.ofVirtual()
+                    .name("maestro-workflow-%s-%s".formatted(instance.workflowType(), instance.workflowId()))
+                    .unstarted(() -> {
+                        WorkflowMDC.populate(ctx);
+                        try {
+                            ScopedValue.where(WorkflowContext.scopedValue(), ctx)
+                                    .run(() -> executeWorkflow(ctx, instance, workflowImpl, workflowMethod,
+                                            inputPayload, compensationStack, parallelCompensation));
+                        } finally {
+                            WorkflowMDC.clear();
+                        }
+                    });
+
+            // Register before starting to prevent the race where a fast workflow
+            // finishes and removes itself before the put() below executes
+            running = new RunningWorkflow(thread, instance, instance.workflowType(), workflowImpl,
+                    cancellation);
+            runningWorkflows.put(instance.workflowId(), running);
+            // R22(1): shutdown() requests a shutdown on every run it finds
+            // registered. A launch that passed its shuttingDown check before
+            // shutdown began but registers only after that loop ran would be
+            // missed — and would then wait out a full retry backoff. Re-checking
+            // after the put closes the window: either the loop sees this run, or
+            // this check sees the flag (the flag is set before the loop starts).
+            if (shuttingDown.get()) {
+                cancellation.requestShutdown();
+            }
             thread.start();
         } catch (RuntimeException | Error e) {
-            runningWorkflows.remove(instance.workflowId());
+            if (running != null) {
+                runningWorkflows.remove(instance.workflowId(), running);
+            }
             instanceLockManager.release(instance.workflowId());
             throw e;
         }
@@ -2356,6 +2380,8 @@ public final class WorkflowExecutor {
      * Tracks a currently running workflow for shutdown coordination, query
      * dispatch, and — through {@code cancellation}, the same instance the run's
      * {@link WorkflowContext} holds — terminate/shutdown requests to the run.
+     * {@code workflowImpl} is the object the registration's factory built for
+     * this run alone; queries against the run are invoked on it.
      */
     record RunningWorkflow(Thread thread, WorkflowInstance instance, String workflowType,
                            Object workflowImpl, RunCancellation cancellation) {}

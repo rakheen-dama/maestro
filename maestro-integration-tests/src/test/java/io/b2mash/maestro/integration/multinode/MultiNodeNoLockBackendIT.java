@@ -200,7 +200,7 @@ class MultiNodeNoLockBackendIT extends PostgresIntegrationSupport {
                 .lock(null)
                 .build();
         harness.registerActivities(CountingActivities.ChainActivities.class, activities);
-        harness.registerWorkflow(new TestWorkflows.ChainWorkflow());
+        harness.registerWorkflow(TestWorkflows.ChainWorkflow.class);
         return harness;
     }
 

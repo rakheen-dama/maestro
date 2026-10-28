@@ -240,7 +240,7 @@ class ReplayDriftStandDownIT extends PostgresIntegrationSupport {
         }
         var node = builder.build();
         node.registerActivities(ChainActivities.class, new CountingActivities.RecordingChainActivities(recorder));
-        node.registerWorkflow(new TestWorkflows.SignalWorkflow(parked));
+        node.registerWorkflow(TestWorkflows.SignalWorkflow.class, () -> new TestWorkflows.SignalWorkflow(parked));
         return node;
     }
 
@@ -255,7 +255,7 @@ class ReplayDriftStandDownIT extends PostgresIntegrationSupport {
         }
         var node = builder.build();
         node.registerActivities(ChainActivities.class, new CountingActivities.RecordingChainActivities(recorder));
-        node.registerWorkflow(new TestWorkflows.SleepingWorkflow(Duration.ofHours(1)));
+        node.registerWorkflow(TestWorkflows.SleepingWorkflow.class, () -> new TestWorkflows.SleepingWorkflow(Duration.ofHours(1)));
         return node;
     }
 
@@ -270,7 +270,7 @@ class ReplayDriftStandDownIT extends PostgresIntegrationSupport {
         }
         var node = builder.build();
         node.registerActivities(SagaActivities.class, activities);
-        node.registerWorkflow(new TestWorkflows.SagaWorkflow());
+        node.registerWorkflow(TestWorkflows.SagaWorkflow.class);
         return node;
     }
 

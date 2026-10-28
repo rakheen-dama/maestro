@@ -73,7 +73,7 @@ class SequenceSpaceExhaustionTest extends ParallelSagaTestSupport {
         var workflow = new TripleForkWorkflow(undone);
         var executor = new WorkflowExecutor(store, null, null, null, serializer, "node-a");
         try {
-            executor.startWorkflow("triple-fork", "TripleForkWorkflow", "default", "in", workflow,
+            executor.startWorkflow("triple-fork", "TripleForkWorkflow", "default", "in", () -> workflow,
                     TripleForkWorkflow.class.getMethod("run", String.class));
             TestTerminalWait.awaitTerminal(store, "triple-fork", Duration.ofSeconds(5));
             var tripleFork = store.getInstance("triple-fork").orElseThrow();

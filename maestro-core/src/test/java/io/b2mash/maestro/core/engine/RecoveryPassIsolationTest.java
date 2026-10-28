@@ -126,7 +126,7 @@ class RecoveryPassIsolationTest {
 
     private Map<String, WorkflowRegistration> registrations(AtomicInteger runs) {
         return Map.of("RecoverableWorkflow", new WorkflowRegistration(
-                "RecoverableWorkflow", "default", new RecoverableWorkflow(runs), workflowMethod()));
+                "RecoverableWorkflow", "default", () -> new RecoverableWorkflow(runs), workflowMethod()));
     }
 
     private void seedRecoverable(String workflowId) {

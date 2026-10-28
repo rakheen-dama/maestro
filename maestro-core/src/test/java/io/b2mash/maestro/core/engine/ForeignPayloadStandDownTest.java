@@ -182,7 +182,7 @@ class ForeignPayloadStandDownTest {
         // A newer node persisted this instance's input in a shape this build's
         // workflow signature cannot accept. It is re-read on EVERY recovery run.
         var instanceId = executor.startWorkflow(workflowId, "InputWorkflow", "default",
-                Map.of("reshaped", "by a newer node"), impl, methodOf(InputWorkflow.class));
+                Map.of("reshaped", "by a newer node"), () -> impl, methodOf(InputWorkflow.class));
 
         awaitRunEnded(workflowId);
 
@@ -213,7 +213,7 @@ class ForeignPayloadStandDownTest {
         var workflowId = "foreign-signal";
         var impl = new SignallingWorkflow(compensations);
         var instanceId = executor.startWorkflow(workflowId, "SignallingWorkflow", "default", null,
-                impl, methodOf(SignallingWorkflow.class));
+                () -> impl, methodOf(SignallingWorkflow.class));
 
         await().atMost(BOUND).until(() -> store.getInstance(workflowId)
                 .map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL).orElse(false));
@@ -254,7 +254,7 @@ class ForeignPayloadStandDownTest {
         // replay.
         store.winnerAppearsOnNextAppend(1, winnerType, winnerPayload);
         return executor.startWorkflow(workflowId, "AdoptingWorkflow", "default", null,
-                impl, methodOf(AdoptingWorkflow.class));
+                () -> impl, methodOf(AdoptingWorkflow.class));
     }
 
     private static JsonNode json(String raw) {

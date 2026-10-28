@@ -96,9 +96,9 @@ class WorkflowExecutorRetryTest {
                 RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
         var workflow = new ThreeStepWorkflow(proxy);
         var method = ThreeStepWorkflow.class.getMethod("run");
-        var registration = new WorkflowRegistration("ThreeStepWorkflow", "default", workflow, method);
+        var registration = new WorkflowRegistration("ThreeStepWorkflow", "default", () -> workflow, method);
 
-        executor.startWorkflow("retry-headline", "ThreeStepWorkflow", "default", null, workflow, method);
+        executor.startWorkflow("retry-headline", "ThreeStepWorkflow", "default", null, () -> workflow, method);
         awaitStatus("retry-headline", WorkflowStatus.FAILED);
 
         assertEquals(1, activityImpl.oneCount.get());
@@ -142,11 +142,11 @@ class WorkflowExecutorRetryTest {
     void retryOfRunningWorkflow_isNotFailedNoOp() throws Exception {
         var workflow = new ParkedWorkflow();
         var method = ParkedWorkflow.class.getMethod("run");
-        executor.startWorkflow("retry-running", "ParkedWorkflow", "default", null, workflow, method);
+        executor.startWorkflow("retry-running", "ParkedWorkflow", "default", null, () -> workflow, method);
         awaitStatus("retry-running", WorkflowStatus.WAITING_SIGNAL);
         var before = store.getInstance("retry-running").orElseThrow();
 
-        var registration = new WorkflowRegistration("ParkedWorkflow", "default", workflow, method);
+        var registration = new WorkflowRegistration("ParkedWorkflow", "default", () -> workflow, method);
         assertEquals(WorkflowExecutor.RetryOutcome.NOT_FAILED,
                 executor.retryWorkflow("retry-running", registration));
 
@@ -160,11 +160,11 @@ class WorkflowExecutorRetryTest {
     void retryOfCompletedWorkflow_isNotFailedNoOp() throws Exception {
         var workflow = new ImmediateWorkflow();
         var method = ImmediateWorkflow.class.getMethod("run", String.class);
-        executor.startWorkflow("retry-completed", "ImmediateWorkflow", "default", "seed", workflow, method);
+        executor.startWorkflow("retry-completed", "ImmediateWorkflow", "default", "seed", () -> workflow, method);
         awaitStatus("retry-completed", WorkflowStatus.COMPLETED);
         var before = store.getInstance("retry-completed").orElseThrow();
 
-        var registration = new WorkflowRegistration("ImmediateWorkflow", "default", workflow, method);
+        var registration = new WorkflowRegistration("ImmediateWorkflow", "default", () -> workflow, method);
         assertEquals(WorkflowExecutor.RetryOutcome.NOT_FAILED,
                 executor.retryWorkflow("retry-completed", registration));
 
@@ -178,12 +178,12 @@ class WorkflowExecutorRetryTest {
     void retryOfTerminatedWorkflow_isNotFailedNoOp() throws Exception {
         var workflow = new ParkedWorkflow();
         var method = ParkedWorkflow.class.getMethod("run");
-        executor.startWorkflow("retry-terminated", "ParkedWorkflow", "default", null, workflow, method);
+        executor.startWorkflow("retry-terminated", "ParkedWorkflow", "default", null, () -> workflow, method);
         awaitStatus("retry-terminated", WorkflowStatus.WAITING_SIGNAL);
         executor.terminateWorkflow("retry-terminated", "stop it");
         var before = store.getInstance("retry-terminated").orElseThrow();
 
-        var registration = new WorkflowRegistration("ParkedWorkflow", "default", workflow, method);
+        var registration = new WorkflowRegistration("ParkedWorkflow", "default", () -> workflow, method);
         assertEquals(WorkflowExecutor.RetryOutcome.NOT_FAILED,
                 executor.retryWorkflow("retry-terminated", registration));
 
@@ -196,7 +196,7 @@ class WorkflowExecutorRetryTest {
     @DisplayName("retrying an unknown workflow ID is an acknowledged no-op")
     void retryOfUnknownWorkflow_isNotFound() {
         var registration = new WorkflowRegistration(
-                "Anything", "default", new Object(), Object.class.getMethods()[0]);
+                "Anything", "default", () -> new Object(), Object.class.getMethods()[0]);
         assertEquals(WorkflowExecutor.RetryOutcome.NOT_FOUND,
                 executor.retryWorkflow("no-such-workflow", registration));
         assertEquals(0, messaging.events.size(), "a no-op must publish nothing");
@@ -211,9 +211,9 @@ class WorkflowExecutorRetryTest {
                 RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
         var workflow = new ThreeStepWorkflow(proxy);
         var method = ThreeStepWorkflow.class.getMethod("run");
-        var registration = new WorkflowRegistration("ThreeStepWorkflow", "default", workflow, method);
+        var registration = new WorkflowRegistration("ThreeStepWorkflow", "default", () -> workflow, method);
 
-        executor.startWorkflow("retry-dup", "ThreeStepWorkflow", "default", null, workflow, method);
+        executor.startWorkflow("retry-dup", "ThreeStepWorkflow", "default", null, () -> workflow, method);
         awaitStatus("retry-dup", WorkflowStatus.FAILED);
 
         activityImpl.faultFixed.set(true);
@@ -236,9 +236,9 @@ class WorkflowExecutorRetryTest {
                 RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
         var workflow = new ThreeStepWorkflow(proxy);
         var method = ThreeStepWorkflow.class.getMethod("run");
-        var registration = new WorkflowRegistration("ThreeStepWorkflow", "default", workflow, method);
+        var registration = new WorkflowRegistration("ThreeStepWorkflow", "default", () -> workflow, method);
 
-        executor.startWorkflow("retry-concurrent", "ThreeStepWorkflow", "default", null, workflow, method);
+        executor.startWorkflow("retry-concurrent", "ThreeStepWorkflow", "default", null, () -> workflow, method);
         awaitStatus("retry-concurrent", WorkflowStatus.FAILED);
         activityImpl.faultFixed.set(true);
 
@@ -318,7 +318,7 @@ class WorkflowExecutorRetryTest {
             // Another node holds the instance lock throughout.
             lock.holdForeign(WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX + "workflow:retry-lock");
 
-            var registration = new WorkflowRegistration("ParkedWorkflow", "default", workflow, method);
+            var registration = new WorkflowRegistration("ParkedWorkflow", "default", () -> workflow, method);
             var outcome = lockedExecutor.retryWorkflow("retry-lock", registration);
 
             assertEquals(WorkflowExecutor.RetryOutcome.LOCK_HELD_ELSEWHERE, outcome);
@@ -336,7 +336,7 @@ class WorkflowExecutorRetryTest {
     void retryOfCompensatedSaga_isCompensatedNotRetryableNoOp() throws Exception {
         var workflow = new ParkedWorkflow();
         var method = ParkedWorkflow.class.getMethod("run");
-        var registration = new WorkflowRegistration("ParkedWorkflow", "default", workflow, method);
+        var registration = new WorkflowRegistration("ParkedWorkflow", "default", () -> workflow, method);
 
         // Seed a FAILED instance whose event log carries a completed
         // compensation — the state retryWorkflow would see after a saga ran
@@ -422,7 +422,7 @@ class WorkflowExecutorRetryTest {
         // No launch here — this is the "crash before relaunch" window.
 
         assertEquals(1, executor.recoverWorkflows(
-                Map.of("ThreeStepWorkflow", new WorkflowRegistration("ThreeStepWorkflow", "default", workflow, method))));
+                Map.of("ThreeStepWorkflow", new WorkflowRegistration("ThreeStepWorkflow", "default", () -> workflow, method))));
 
         awaitStatus("retry-crash-cas", WorkflowStatus.COMPLETED);
         assertEquals(0, activityImpl.oneCount.get(), "seeded ACTIVITY_COMPLETED events replay without an impl call");
@@ -439,9 +439,9 @@ class WorkflowExecutorRetryTest {
                 RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
         var workflow = new ThreeStepWorkflow(proxy);
         var method = ThreeStepWorkflow.class.getMethod("run");
-        var registration = new WorkflowRegistration("ThreeStepWorkflow", "default", workflow, method);
+        var registration = new WorkflowRegistration("ThreeStepWorkflow", "default", () -> workflow, method);
 
-        executor.startWorkflow("retry-crash-delete", "ThreeStepWorkflow", "default", null, workflow, method);
+        executor.startWorkflow("retry-crash-delete", "ThreeStepWorkflow", "default", null, () -> workflow, method);
         awaitStatus("retry-crash-delete", WorkflowStatus.FAILED);
         var instanceId = store.getInstance("retry-crash-delete").orElseThrow().id();
 

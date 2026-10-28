@@ -77,7 +77,7 @@ class EnginePostgresSagaIT extends PostgresIntegrationSupport {
         harness.registerActivities(SagaActivities.class, new GatedSagaActivities(
                 new CountingActivities.RecordingSagaActivities(recorder, "ship"),
                 compensating, release));
-        harness.registerWorkflow(new TestWorkflows.SagaWorkflow());
+        harness.registerWorkflow(TestWorkflows.SagaWorkflow.class);
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("saga-fail");
         var handle = harness.start(workflowId, TestWorkflows.SagaWorkflow.class, "widget");
@@ -141,7 +141,7 @@ class EnginePostgresSagaIT extends PostgresIntegrationSupport {
         harness = newHarness();
         harness.registerActivities(SagaActivities.class,
                 new CountingActivities.RecordingSagaActivities(recorder, null));
-        harness.registerWorkflow(new TestWorkflows.SagaWorkflow());
+        harness.registerWorkflow(TestWorkflows.SagaWorkflow.class);
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("saga-ok");
         var handle = harness.start(workflowId, TestWorkflows.SagaWorkflow.class, "widget");
@@ -177,7 +177,7 @@ class EnginePostgresSagaIT extends PostgresIntegrationSupport {
         harness = newHarness();
         harness.registerActivities(SagaActivities.class, new GatedSagaActivities(
                 new CountingActivities.RecordingSagaActivities(recorder, "ship"), compensating, release));
-        harness.registerWorkflow(new TestWorkflows.SagaWorkflow());
+        harness.registerWorkflow(TestWorkflows.SagaWorkflow.class);
         // The terminate comes from a second engine on the same store that does
         // not own the run, so the owning node's in-memory cancellation flag
         // plays no part: only the per-entry store read can stop entry 1.

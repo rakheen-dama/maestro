@@ -339,7 +339,7 @@ class EnginePostgresParallelSagaIT extends PostgresIntegrationSupport {
         var workflow = new TripleForkWorkflow();
         harness = MaestroEngineHarness.builder(store, objectMapper).serviceName("triple-fork").lock(newLock())
                 .observer(observer).build();
-        harness.registerWorkflow(workflow);
+        harness.registerWorkflow(TripleForkWorkflow.class, () -> workflow);
         var handle = harness.start(MaestroEngineHarness.uniqueWorkflowId("triple-fork"), TripleForkWorkflow.class, "in");
 
         assertEquals(WorkflowStatus.FAILED, handle.awaitTerminal(Duration.ofSeconds(15)));
@@ -362,7 +362,7 @@ class EnginePostgresParallelSagaIT extends PostgresIntegrationSupport {
         harness = MaestroEngineHarness.builder(store, objectMapper).serviceName("fan-out-comp").lock(newLock())
                 .observer(observer).build();
         harness.registerActivities(ChainActivities.class, new CountingActivities.RecordingChainActivities(recorder));
-        harness.registerWorkflow(new FanOutCompensationWorkflow());
+        harness.registerWorkflow(FanOutCompensationWorkflow.class);
         var handle = harness.start(MaestroEngineHarness.uniqueWorkflowId("fan-out-comp"),
                 FanOutCompensationWorkflow.class, "in");
 
@@ -391,7 +391,7 @@ class EnginePostgresParallelSagaIT extends PostgresIntegrationSupport {
         harness = MaestroEngineHarness.builder(store, objectMapper).serviceName("greedy-comp").lock(newLock())
                 .observer(observer).build();
         harness.registerActivities(ChainActivities.class, new CountingActivities.RecordingChainActivities(recorder));
-        harness.registerWorkflow(new GreedyCompensationWorkflow());
+        harness.registerWorkflow(GreedyCompensationWorkflow.class);
         var handle = harness.start(MaestroEngineHarness.uniqueWorkflowId("greedy-comp"),
                 GreedyCompensationWorkflow.class, "in");
 
@@ -421,7 +421,7 @@ class EnginePostgresParallelSagaIT extends PostgresIntegrationSupport {
         harness = MaestroEngineHarness.builder(store, objectMapper).serviceName("fork-after-fork-comp")
                 .lock(newLock()).observer(observer).build();
         harness.registerActivities(ChainActivities.class, new CountingActivities.RecordingChainActivities(recorder));
-        harness.registerWorkflow(new ForkAfterForwardForkCompensationWorkflow());
+        harness.registerWorkflow(ForkAfterForwardForkCompensationWorkflow.class);
         var handle = harness.start(MaestroEngineHarness.uniqueWorkflowId("fork-after-fork-comp"),
                 ForkAfterForwardForkCompensationWorkflow.class, "in");
 
@@ -460,11 +460,7 @@ class EnginePostgresParallelSagaIT extends PostgresIntegrationSupport {
         }
         var built = builder.build();
         built.registerActivities(SagaActivities.class, activities);
-        try {
-            built.registerWorkflow(workflowClass.getDeclaredConstructor().newInstance());
-        } catch (ReflectiveOperationException e) {
-            throw new IllegalStateException("Cannot instantiate " + workflowClass, e);
-        }
+        built.registerWorkflow(workflowClass);
         return built;
     }
 

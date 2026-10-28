@@ -81,7 +81,7 @@ class WorkflowTerminalStateGuardTest {
     void deliveredSignal_doesNotResurrectTerminatedInstance() throws Exception {
         var workflow = new AwaitingWorkflow();
         executor.startWorkflow("resurrect-signal", "AwaitingWorkflow", "default",
-                null, workflow, AwaitingWorkflow.class.getMethod("run"));
+                null, () -> workflow, AwaitingWorkflow.class.getMethod("run"));
         awaitStatus("resurrect-signal", WorkflowStatus.WAITING_SIGNAL);
 
         // Another node terminated it while this node's thread stayed parked.
@@ -107,7 +107,7 @@ class WorkflowTerminalStateGuardTest {
     void firedTimer_doesNotResurrectTerminatedInstance() throws Exception {
         var workflow = new SleepingWorkflow();
         executor.startWorkflow("resurrect-timer", "SleepingWorkflow", "default",
-                null, workflow, SleepingWorkflow.class.getMethod("run"));
+                null, () -> workflow, SleepingWorkflow.class.getMethod("run"));
         awaitStatus("resurrect-timer", WorkflowStatus.WAITING_TIMER);
 
         store.forceStatus("resurrect-timer", WorkflowStatus.TERMINATED);
@@ -134,7 +134,7 @@ class WorkflowTerminalStateGuardTest {
     void parkedAwait_standsDownWithinOneRecheckInterval() throws Exception {
         var workflow = new AwaitingWorkflow();
         executor.startWorkflow("resurrect-parked", "AwaitingWorkflow", "default",
-                null, workflow, AwaitingWorkflow.class.getMethod("run"));
+                null, () -> workflow, AwaitingWorkflow.class.getMethod("run"));
         awaitStatus("resurrect-parked", WorkflowStatus.WAITING_SIGNAL);
 
         // No signal, no timer — only the terminal row. The await's periodic
@@ -156,7 +156,7 @@ class WorkflowTerminalStateGuardTest {
     void completedElsewhere_isNotOverwrittenByAWakingRun() throws Exception {
         var workflow = new AwaitingWorkflow();
         executor.startWorkflow("resurrect-completed", "AwaitingWorkflow", "default",
-                null, workflow, AwaitingWorkflow.class.getMethod("run"));
+                null, () -> workflow, AwaitingWorkflow.class.getMethod("run"));
         awaitStatus("resurrect-completed", WorkflowStatus.WAITING_SIGNAL);
 
         store.forceStatus("resurrect-completed", WorkflowStatus.COMPLETED);
@@ -178,7 +178,7 @@ class WorkflowTerminalStateGuardTest {
     void failingRunAgainstACompletedRow_standsDownWithoutCompensating() throws Exception {
         var workflow = new FailingAfterPeerCompletesWorkflow(store, "failing-completed");
         executor.startWorkflow("failing-completed", "FailingAfterPeerCompletesWorkflow", "default",
-                null, workflow, FailingAfterPeerCompletesWorkflow.class.getMethod("run"));
+                null, () -> workflow, FailingAfterPeerCompletesWorkflow.class.getMethod("run"));
 
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
                 assertFalse(executor.isRunning("failing-completed")));

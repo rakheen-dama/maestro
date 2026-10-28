@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 /**
  * In-memory Maestro engine for fast, deterministic workflow tests.
@@ -171,16 +172,21 @@ public final class TestWorkflowEnvironment {
         var taskQueue = annotation.taskQueue();
         var workflowMethod = findWorkflowMethod(workflowClass);
 
-        // Instantiate workflow and wire activity stubs
-        var workflowImpl = instantiate(workflowClass);
-        wireActivityStubs(workflowImpl);
+        // One workflow object per run (F1): the executor calls this factory on
+        // every launch of this workflow, each call building and wiring a fresh
+        // instance — exactly as the Spring starter does with prototype beans.
+        Supplier<Object> workflowFactory = () -> {
+            var workflowImpl = instantiate(workflowClass);
+            wireActivityStubs(workflowImpl);
+            return workflowImpl;
+        };
 
         // Register query methods
         executor.registerQueries(workflowType, workflowClass);
 
         // Start
         var instanceId = executor.startWorkflow(
-                workflowId, workflowType, taskQueue, input, workflowImpl, workflowMethod);
+                workflowId, workflowType, taskQueue, input, workflowFactory, workflowMethod);
 
         logger.debug("Test: started workflow '{}' (type={}, instanceId={})",
                 workflowId, workflowType, instanceId);

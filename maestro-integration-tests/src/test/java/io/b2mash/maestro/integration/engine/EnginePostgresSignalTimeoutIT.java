@@ -66,7 +66,7 @@ class EnginePostgresSignalTimeoutIT extends PostgresIntegrationSupport {
     @DisplayName("a parked await's deadline survives an executor restart and is not re-armed from now()")
     void deadlineSurvivesRestart_andIsNotReArmed() throws Exception {
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("await-durable");
-        var a = newHarness(store); a.registerWorkflow(new TestWorkflows.PatientSignalWorkflow(Duration.ofHours(1)));
+        var a = newHarness(store); a.registerWorkflow(TestWorkflows.PatientSignalWorkflow.class, () -> new TestWorkflows.PatientSignalWorkflow(Duration.ofHours(1)));
         var handle = a.start(workflowId, TestWorkflows.PatientSignalWorkflow.class, "seed");
         handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
         var row = store.findTimer(handle.instanceId(), TIMER_ID).orElseThrow();
@@ -74,7 +74,7 @@ class EnginePostgresSignalTimeoutIT extends PostgresIntegrationSupport {
         assertTrue(Duration.between(Instant.now(), row.fireAt()).compareTo(Duration.ofMinutes(55)) > 0);
         a.close();                                            // abandons the park; row and memo stay
 
-        var b = newHarness(store); b.registerWorkflow(new TestWorkflows.PatientSignalWorkflow(Duration.ofHours(1)));
+        var b = newHarness(store); b.registerWorkflow(TestWorkflows.PatientSignalWorkflow.class, () -> new TestWorkflows.PatientSignalWorkflow(Duration.ofHours(1)));
         assertEquals(1, b.recover());
         await().atMost(BOUND).until(() -> b.executor().isRunning(workflowId));
         assertEquals(row, store.findTimer(handle.instanceId(), TIMER_ID).orElseThrow(), "same row, same fireAt");
@@ -93,7 +93,7 @@ class EnginePostgresSignalTimeoutIT extends PostgresIntegrationSupport {
     @DisplayName("a signal delivered while no node owned the workflow is consumed on recovery, not timed out")
     void signalDuringDowntime_isConsumedOnRecovery() throws Exception {
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("await-downtime");
-        var a = newHarness(store); a.registerWorkflow(new TestWorkflows.PatientSignalWorkflow(Duration.ofHours(1)));
+        var a = newHarness(store); a.registerWorkflow(TestWorkflows.PatientSignalWorkflow.class, () -> new TestWorkflows.PatientSignalWorkflow(Duration.ofHours(1)));
         var handle = a.start(workflowId, TestWorkflows.PatientSignalWorkflow.class, "seed");
         handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
         a.close();                                            // no node owns the workflow now
@@ -106,7 +106,7 @@ class EnginePostgresSignalTimeoutIT extends PostgresIntegrationSupport {
                 UUID.randomUUID(), handle.instanceId(), workflowId, TestWorkflows.PatientSignalWorkflow.SIGNAL,
                 serializer.serialize("approved"), false, Instant.now()));
 
-        var b = newHarness(store); b.registerWorkflow(new TestWorkflows.PatientSignalWorkflow(Duration.ofHours(1)));
+        var b = newHarness(store); b.registerWorkflow(TestWorkflows.PatientSignalWorkflow.class, () -> new TestWorkflows.PatientSignalWorkflow(Duration.ofHours(1)));
         assertEquals(1, b.recover());
         assertEquals(WorkflowStatus.COMPLETED, handle.awaitTerminal(BOUND));
         assertEquals("approved", handle.result(String.class));

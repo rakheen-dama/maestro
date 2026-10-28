@@ -229,7 +229,7 @@ class UnknownHistoryStandDownTest {
         var openGate = new CountDownLatch(0);
         var recovered = executor.recoverWorkflows(Map.of("StandDownWorkflow",
                 new WorkflowRegistration("StandDownWorkflow", "default",
-                        new StandDownWorkflow(compensations, openGate), workflowMethod())));
+                        () -> new StandDownWorkflow(compensations, openGate), workflowMethod())));
         assertEquals(1, recovered, "the stood-down instance must still be adoptable");
 
         await().atMost(BOUND)
@@ -266,7 +266,7 @@ class UnknownHistoryStandDownTest {
                               java.util.function.Function<UUID, WorkflowEvent> plant) {
         var gate = new CountDownLatch(1);
         var instanceId = executor.startWorkflow(workflowId, "StandDownWorkflow", "default", null,
-                new StandDownWorkflow(compensations, gate), workflowMethod());
+                () -> new StandDownWorkflow(compensations, gate), workflowMethod());
         await().atMost(BOUND)
                 .until(() -> store.getEventBySequence(instanceId, 1).isPresent());
         store.injectRawEvent(plant.apply(instanceId));

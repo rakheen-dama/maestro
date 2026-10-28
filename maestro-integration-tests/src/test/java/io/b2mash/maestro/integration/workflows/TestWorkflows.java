@@ -2,6 +2,7 @@ package io.b2mash.maestro.integration.workflows;
 
 import io.b2mash.maestro.core.annotation.ActivityStub;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
+import io.b2mash.maestro.core.annotation.QueryMethod;
 import io.b2mash.maestro.core.annotation.Saga;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
@@ -50,6 +51,46 @@ public final class TestWorkflows {
             var one = activities.stepOne(input);
             var two = activities.stepTwo(one);
             return activities.stepThree(two);
+        }
+    }
+
+    /**
+     * {@link ChainWorkflow} carrying a constructor-supplied tag that a
+     * {@code @QueryMethod} reports — so a query's answer names the exact
+     * object (and therefore the node's factory) that served it.
+     */
+    @DurableWorkflow(name = "TaggedChainWorkflow")
+    public static class TaggedChainWorkflow {
+
+        private final String nodeTag;
+
+        @ActivityStub
+        ChainActivities activities;
+
+        /**
+         * @param nodeTag the tag {@link #tag()} reports, typically the building node's name
+         */
+        public TaggedChainWorkflow(String nodeTag) {
+            this.nodeTag = nodeTag;
+        }
+
+        /**
+         * @param input the seed value
+         * @return the accumulated result of all three steps
+         */
+        @WorkflowMethod
+        public String run(String input) {
+            var one = activities.stepOne(input);
+            var two = activities.stepTwo(one);
+            return activities.stepThree(two);
+        }
+
+        /**
+         * @return the tag this object was constructed with
+         */
+        @QueryMethod
+        public String tag() {
+            return nodeTag;
         }
     }
 
