@@ -1210,10 +1210,7 @@ public final class WorkflowExecutor {
                     "WorkflowExecutor is shutting down — cannot start timer poller");
         }
         var poller = new TimerPoller(store, this, distributedLock, serviceName, pollInterval, batchSize);
-        if (!timerPoller.compareAndSet(null, poller)) {
-            throw new IllegalStateException("Timer poller already started");
-        }
-        poller.start();
+        installAndStart(timerPoller, poller, "Timer poller", poller::start, poller::stop);
         timerPollerStarted.set(true);
     }
 
@@ -1242,10 +1239,7 @@ public final class WorkflowExecutor {
                     "WorkflowExecutor is shutting down — cannot start recovery poller");
         }
         var poller = new RecoveryPoller(this, registrations, serviceName, pollInterval);
-        if (!recoveryPoller.compareAndSet(null, poller)) {
-            throw new IllegalStateException("Recovery poller already started");
-        }
-        poller.start();
+        installAndStart(recoveryPoller, poller, "Recovery poller", poller::start, poller::stop);
         recoveryPollerStarted.set(true);
     }
 
@@ -1292,11 +1286,31 @@ public final class WorkflowExecutor {
                     "WorkflowExecutor is shutting down — cannot start signal janitor");
         }
         var janitor = new SignalJanitor(store, interval, retention);
-        if (!signalJanitor.compareAndSet(null, janitor)) {
-            throw new IllegalStateException("Signal janitor already started");
-        }
+        installAndStart(signalJanitor, janitor, "Signal janitor", janitor::start, janitor::stop);
         signalJanitorSettings = new SignalJanitorSettings(interval, retention);
-        janitor.start();
+    }
+
+    /**
+     * Claims a background-loop slot, starts the loop, then re-checks for a
+     * concurrent {@link #shutdown()}. The up-front {@code shuttingDown} check
+     * in each {@code start*} method is only a fast fail: a shutdown landing
+     * between it and the claim would find the slot empty, stop nothing, and
+     * leave the loop running on a stopped executor. The re-check after the
+     * start closes that window — whichever of {@code shutdown()} and this
+     * method runs last stops the loop.
+     */
+    private <T> void installAndStart(
+            AtomicReference<T> slot, T loop, String name, Runnable start, Runnable stop) {
+        if (!slot.compareAndSet(null, loop)) {
+            throw new IllegalStateException(name + " already started");
+        }
+        start.run();
+        if (shuttingDown.get()) {
+            slot.compareAndSet(loop, null);
+            stop.run();
+            throw new IllegalStateException(
+                    "WorkflowExecutor is shutting down — " + name + " stopped");
+        }
     }
 
     // ── Shutdown ───────────────────────────────────────────────────────
@@ -2236,13 +2250,15 @@ public final class WorkflowExecutor {
             CompensationStack compensationStack,
             boolean parallelCompensation
     ) {
-        logger.error("Workflow '{}' failed: {}", ctx.workflowId(), failure.getMessage(), failure);
-
         // R33: a run already known to be stale (workflow code turned a
         // swallowed collision or StaleRunException into this "failure") must
         // neither compensate work the winner owns nor write FAILED over it.
         // The StaleRunException reaches failAndCompensate's stand-down arm.
         ctx.cancellation().throwIfStale(ctx.workflowId());
+
+        // Logged after the stale check: a stand-down loser is not a failure worth
+        // an ERROR line (its stand-down is logged by its own handler).
+        logger.error("Workflow '{}' failed: {}", ctx.workflowId(), failure.getMessage(), failure);
 
         // Run compensations via SagaManager if any are registered
         if (!compensationStack.isEmpty()) {

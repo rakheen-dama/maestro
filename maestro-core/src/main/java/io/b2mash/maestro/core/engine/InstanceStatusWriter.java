@@ -120,27 +120,6 @@ public final class InstanceStatusWriter {
     }
 
     /**
-     * Moves a workflow to a non-terminal status, standing down if the instance
-     * has since reached a terminal state, and retrying a lost compare-and-set
-     * against a fresh read rather than turning it into a workflow outcome.
-     *
-     * @param store      the workflow store to write through
-     * @param workflowId the workflow's business ID
-     * @param newStatus  the non-terminal status to write
-     * @throws WorkflowTerminatedException if the instance is already
-     *                                     {@code TERMINATED} — the caller's run
-     *                                     must unwind without writing anything.
-     *                                     This is an {@code Error}, not a
-     *                                     {@code MaestroException}, so a
-     *                                     workflow's own {@code catch
-     *                                     (Exception)} cannot swallow it
-     * @throws StaleRunException           if the instance is already
-     *                                     {@code COMPLETED} or {@code FAILED} —
-     *                                     another runner finalised it; nothing
-     *                                     is written and the caller's run must
-     *                                     stand down
-     */
-    /**
      * {@link #write(WorkflowStore, String, WorkflowStatus)} for a running
      * workflow's own status writes, making a stale-run stand-down
      * <b>sticky</b>: when the fresh read finds the row finalised by another
@@ -165,6 +144,27 @@ public final class InstanceStatusWriter {
         }
     }
 
+    /**
+     * Moves a workflow to a non-terminal status, standing down if the instance
+     * has since reached a terminal state, and retrying a lost compare-and-set
+     * against a fresh read rather than turning it into a workflow outcome.
+     *
+     * @param store      the workflow store to write through
+     * @param workflowId the workflow's business ID
+     * @param newStatus  the non-terminal status to write
+     * @throws WorkflowTerminatedException if the instance is already
+     *                                     {@code TERMINATED} — the caller's run
+     *                                     must unwind without writing anything.
+     *                                     This is an {@code Error}, not a
+     *                                     {@code MaestroException}, so a
+     *                                     workflow's own {@code catch
+     *                                     (Exception)} cannot swallow it
+     * @throws StaleRunException           if the instance is already
+     *                                     {@code COMPLETED} or {@code FAILED} —
+     *                                     another runner finalised it; nothing
+     *                                     is written and the caller's run must
+     *                                     stand down
+     */
     static void write(WorkflowStore store, String workflowId, WorkflowStatus newStatus) {
         for (var attempt = 1; ; attempt++) {
             var instance = store.getInstance(workflowId);

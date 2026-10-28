@@ -18,8 +18,6 @@ public final class TerminalWrites {
     /**
      * Validates a {@link WorkflowStore#completeInstance} call before any write.
      *
-     * @param terminal      the terminal instance about to be written
-     * @param terminalEvent the terminal event about to be appended
      * <p>The status and the event must describe the same outcome:
      * {@code COMPLETED} pairs only with {@link EventType#WORKFLOW_COMPLETED} and
      * {@code FAILED} only with {@link EventType#WORKFLOW_FAILED}. A mismatched
@@ -28,6 +26,8 @@ public final class TerminalWrites {
      * to pair it with, and a terminate is not written through
      * {@code completeInstance}.
      *
+     * @param terminal      the terminal instance about to be written
+     * @param terminalEvent the terminal event about to be appended
      * @throws IllegalArgumentException if {@code terminal.status()} is not
      *         terminal, if {@code terminalEvent.eventType()} is not the event
      *         type paired with {@code terminal.status()} (including any

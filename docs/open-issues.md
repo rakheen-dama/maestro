@@ -2693,6 +2693,7 @@ state").
 timers (pinned with two executors of different service names over one
 Postgres store), or `docs/operations.md` states the one-schema-per-service
 requirement and the latency cost of breaking it.
+
 ---
 
 ## 6. Suggested order

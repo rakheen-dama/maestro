@@ -20,8 +20,10 @@ import java.time.Duration;
  *
  * <p>Setting {@code enabled} to {@code false} is the operator's explicit
  * opt-out: a failing row is marked {@code FAILED} after exactly one attempt —
- * no backoff, no {@code DEAD_LETTER} parking — restoring the pre-redelivery,
- * at-most-once behaviour. See {@code PostgresWorkflowMessaging.recordFailure}.
+ * no backoff, no {@code DEAD_LETTER} parking of handler failures — restoring
+ * the pre-redelivery, at-most-once behaviour. Rows retired as "outcome unknown"
+ * (a lost finalisation write) still go to {@code DEAD_LETTER} in both modes.
+ * See {@code PostgresWorkflowMessaging.recordFailure}.
  *
  * <p><b>Thread safety:</b> This record is immutable and therefore thread-safe.
  *

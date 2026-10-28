@@ -54,6 +54,7 @@ class StickyStaleStopPointsTest {
     private RecordingEngineObserver observer;
     private WorkflowExecutor executor;
     private final AtomicInteger afterStopPoint = new AtomicInteger();
+    private final AtomicInteger compensations = new AtomicInteger();
 
     @BeforeEach
     void setUp() {
@@ -118,13 +119,29 @@ class StickyStaleStopPointsTest {
                 () -> assertEquals(List.of(StandDownReason.STALE_RUN), observer.standDownReasons("sticky-return")));
     }
 
+    @Test
+    @DisplayName("(d) a workflow failing after a swallowed duplicate stands down: no compensation, no FAILED")
+    void failureAfterSwallowedDuplicate_standsDownWithoutCompensatingOrWritingFailed() throws Exception {
+        var instanceId = start("sticky-fail", StopPoint.FAIL);
+
+        await().atMost(BOUND).until(() -> !executor.isRunning("sticky-fail"));
+        assertAll(
+                () -> assertNotEquals(WorkflowStatus.FAILED,
+                        store.getInstance("sticky-fail").orElseThrow().status(),
+                        "a stale run must not reach its FAILED terminal write"),
+                () -> assertEquals(0, countOfType(instanceId, EventType.WORKFLOW_FAILED)),
+                () -> assertEquals(0, compensations.get(), "a stale run must not compensate work the winner owns"),
+                () -> assertTrue(observer.failed().isEmpty(), "no workflowFailed for a stale run"),
+                () -> assertEquals(List.of(StandDownReason.STALE_RUN), observer.standDownReasons("sticky-fail")));
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────
 
     private UUID start(String workflowId, StopPoint stopPoint) throws NoSuchMethodException {
         var activity = new ActivityProxyFactory().createProxy(Step.class, input -> input + "-local",
                 store, null, null, RetryPolicy.noRetry(), Duration.ofSeconds(5), serializer, new RetryExecutor());
         return executor.startWorkflow(workflowId, "SwallowingWorkflow", "default", null,
-                () -> new SwallowingWorkflow(activity, stopPoint, afterStopPoint),
+                () -> new SwallowingWorkflow(activity, stopPoint, afterStopPoint, compensations),
                 SwallowingWorkflow.class.getMethod("run"));
     }
 
@@ -133,7 +150,7 @@ class StickyStaleStopPointsTest {
     }
 
     /** Where the workflow goes after swallowing the duplicate. */
-    enum StopPoint { SLEEP, AWAIT_SIGNAL, RETURN }
+    enum StopPoint { SLEEP, AWAIT_SIGNAL, RETURN, FAIL }
 
     /** The activity whose result append loses the race. */
     @Activity
@@ -151,8 +168,11 @@ class StickyStaleStopPointsTest {
         private final Step activity;
         private final StopPoint stopPoint;
         private final AtomicInteger afterStopPoint;
+        private final AtomicInteger compensations;
 
-        SwallowingWorkflow(Step activity, StopPoint stopPoint, AtomicInteger afterStopPoint) {
+        SwallowingWorkflow(Step activity, StopPoint stopPoint, AtomicInteger afterStopPoint,
+                AtomicInteger compensations) {
+            this.compensations = compensations;
             this.activity = activity;
             this.stopPoint = stopPoint;
             this.afterStopPoint = afterStopPoint;
@@ -161,6 +181,9 @@ class StickyStaleStopPointsTest {
         /** @return a fixed result, if the run survives its stop point */
         @WorkflowMethod
         public String run() {
+            if (stopPoint == StopPoint.FAIL) {
+                WorkflowContext.current().addCompensation(compensations::incrementAndGet);
+            }
             try {
                 activity.step("seed");
             } catch (DuplicateEventException swallowed) {
@@ -173,6 +196,7 @@ class StickyStaleStopPointsTest {
                 case RETURN -> {
                     return "local-output";
                 }
+                case FAIL -> throw new IllegalStateException("business failure after a swallowed duplicate");
             }
             afterStopPoint.incrementAndGet();
             return "after-stop-point";

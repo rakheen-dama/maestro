@@ -172,7 +172,9 @@ it is not a recommended default, and defaults to `true`:
   [dead-letter-topic startup probe](#kafka-dead-letter-topic-check) below is
   skipped entirely, since nothing will ever publish to a `.DLT` topic.
 - **Postgres:** a failing row is marked `FAILED` after exactly **one** attempt
-  — no backoff, no `DEAD_LETTER` parking. This is the pre-redelivery behaviour
+  — no backoff, no `DEAD_LETTER` parking of *handler failures*. (Rows retired as
+  "outcome unknown" still go to `DEAD_LETTER` in both modes — see the
+  retirement note below.) This is the pre-redelivery behaviour
   (see the `FAILED` rescue statement below); `max-attempts` and the backoff
   properties are ignored while the flag is off.
 
