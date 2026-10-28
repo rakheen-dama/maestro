@@ -81,11 +81,23 @@ public final class ValkeySignalNotifier extends RedisPubSubAdapter<String, Strin
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Uses Lettuce's synchronous pub/sub command, so this method returns
+     * only after the server has acknowledged the subscription (bounded by the
+     * connection's command timeout). A {@link #publish} issued after this
+     * returns is therefore always delivered, which is what makes the caller's
+     * check-then-subscribe race closure real. The remaining gap is a
+     * notification published while this connection is disconnected: Lettuce
+     * re-subscribes on reconnect but does not replay, and the
+     * {@code maestro.signal.wake-recheck-interval} store re-read covers it.
+     */
     @Override
     public void subscribe(String workflowId, SignalCallback callback) {
         var channel = CHANNEL_PREFIX + workflowId;
         callbacks.put(workflowId, callback);
-        pubSubConnection.async().subscribe(channel);
+        pubSubConnection.sync().subscribe(channel);
         logger.debug("Subscribed to signal channel '{}'", channel);
     }
 
@@ -93,7 +105,7 @@ public final class ValkeySignalNotifier extends RedisPubSubAdapter<String, Strin
     public void unsubscribe(String workflowId) {
         var channel = CHANNEL_PREFIX + workflowId;
         callbacks.remove(workflowId);
-        pubSubConnection.async().unsubscribe(channel);
+        pubSubConnection.sync().unsubscribe(channel);
         logger.debug("Unsubscribed from signal channel '{}'", channel);
     }
 

@@ -56,14 +56,24 @@ class ValkeySignalNotifierTest extends ValkeyTestSupport {
                 latch.countDown();
             });
 
-            // Small delay for subscription to propagate
-            Thread.sleep(100);
-
             notifier.publish("workflow-1", "approval_granted");
 
             assertTrue(latch.await(5, TimeUnit.SECONDS), "Callback should have been invoked");
             assertEquals(1, receivedSignals.size());
             assertEquals("workflow-1:approval_granted", receivedSignals.getFirst());
+        }
+
+        @Test
+        @DisplayName("subscribe returns only once the server has registered the subscription — a publish issued immediately after is received")
+        void publishImmediatelyAfterSubscribe_isReceived_everyTime() throws InterruptedException {
+            for (int i = 0; i < 25; i++) {
+                var latch = new CountDownLatch(1);
+                var workflowId = "wf-sync-" + i;
+                notifier.subscribe(workflowId, (wfId, name) -> latch.countDown());
+                notifier.publish(workflowId, "go");
+                assertTrue(latch.await(2, TimeUnit.SECONDS), "iteration " + i + ": publish raced ahead of the subscription");
+                notifier.unsubscribe(workflowId);
+            }
         }
 
         @Test

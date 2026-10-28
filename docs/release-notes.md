@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed — Valkey wake subscription is acknowledged before parking
+
+- **Before:** `ValkeySignalNotifier.subscribe` used Lettuce's async pub/sub command, so it returned before the server had registered the subscription; a signal published in that window was missed until `maestro.signal.wake-recheck-interval`, making `SignalManager`'s check-then-subscribe race closure racy.
+- **Now:** `subscribe`/`unsubscribe` use the synchronous commands and return only after the server acknowledges. The remaining gap is a publish during a pub/sub disconnect (no replay on reconnect), covered by the recheck interval. Pinned by `ValkeySignalNotifierTest.publishImmediatelyAfterSubscribe_isReceived_everyTime`.
+
 ### Added — signal janitor and database-assigned `received_at` (C14)
 
 - **Before:** a signal row's `received_at` was the JVM clock of the node that ingested it, and `getUnconsumedSignals` orders by it — so two same-name signals delivered through different nodes could be consumed in clock-skew order rather than arrival order. Separately, unconsumed signals addressed to a workflow that had already finished were never purged, so the signal table grew without bound.
