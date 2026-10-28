@@ -243,10 +243,29 @@ public interface WorkflowStore {
      * now-delivered signal. Earlier <em>caught</em> gate timeouts sit at lower
      * sequences, are never that maximum, and must survive — deleting them
      * would let a retry replay consume a late-arrived signal at the gate and
-     * diverge from the pre-failure execution. The retried await resumes from
-     * its memoized deadline, not a fresh one: its timer row is no longer
-     * {@code PENDING}, so it consumes a signal that has arrived since, or else
-     * times out again immediately.
+     * diverge from the pre-failure execution.
+     *
+     * <p><b>The failing await's deadline (R61).</b> An await that parked
+     * before timing out also recorded a {@code TIMER_SCHEDULED} memo carrying
+     * its absolute deadline in the slot immediately before its
+     * {@code SIGNAL_TIMEOUT} (same step name,
+     * {@code $maestro:awaitSignal:<signalName>}), and a timer row with logical
+     * ID {@code await-signal-<memoSeq>}, now {@code FIRED} or
+     * {@code CANCELLED}. That deadline is spent, so it is part of the failure
+     * too: when the failing {@code SIGNAL_TIMEOUT} at {@code seq} is deleted
+     * and the event at {@code seq - 1} is a {@code TIMER_SCHEDULED} with the
+     * same step name, implementations must delete that memo and every timer
+     * row of the instance with timer ID {@code await-signal-<seq - 1>} (any
+     * status) as well. The retried await then runs live at the same slot: a
+     * signal that has arrived since is consumed at once; otherwise it arms a
+     * fresh full timeout from the retry and parks. Leaving either behind makes
+     * the retried await honour the spent deadline and fail again at once.
+     * {@code sleep()} rows and the memos and rows of earlier awaits are never
+     * touched.
+     *
+     * <p><b>Atomicity.</b> Implementations should apply all of the deletes
+     * together (one transaction), so a crash cannot leave a partial delete for
+     * a second retry to compound. The shipped JDBC store does.
      *
      * <p><b>Idempotent.</b> Called on an instance with no failure memos it
      * deletes nothing and returns {@code 0}.
@@ -254,11 +273,11 @@ public interface WorkflowStore {
      * <p><b>Implementation note:</b> this is the only operation that removes
      * rows from the event log. Implementations must scope the delete to the
      * given instance and to those event types (plus the single failing-timeout
-     * memo) — never to a sequence range, which would take compensation and
-     * success memos with it.
+     * memo and its await's park memo and deadline rows) — never to a sequence
+     * range, which would take compensation and success memos with it.
      *
      * @param instanceId the workflow instance UUID whose failure memos to delete
-     * @return the number of events deleted
+     * @return the number of events deleted (deleted timer rows are not counted)
      * @see io.b2mash.maestro.core.engine.WorkflowExecutor#retryWorkflow
      */
     int deleteFailureEvents(UUID instanceId);

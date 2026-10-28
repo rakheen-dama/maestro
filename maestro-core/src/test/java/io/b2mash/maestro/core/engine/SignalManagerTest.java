@@ -1469,7 +1469,7 @@ class SignalManagerTest {
 
         @Override
         public int deleteFailureEvents(UUID instanceId) {
-            return removeFailureEvents(events, instanceId);
+            return removeFailureEvents(events, timers, instanceId);
         }
 
         @Override

@@ -68,6 +68,13 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     /** SQL state for unique constraint violation (standard across Postgres, H2, etc.). */
     private static final String UNIQUE_VIOLATION = "23505";
 
+    /**
+     * Logical-ID prefix of an {@code awaitSignal} deadline row; the suffix is
+     * the sequence of the await's {@code TIMER_SCHEDULED} memo (the layout the
+     * {@link WorkflowStore#deleteFailureEvents} contract names).
+     */
+    private static final String AWAIT_SIGNAL_TIMER_ID_PREFIX = "await-signal-";
+
     /** SQL IN-clause fragment derived from {@link WorkflowStatus#isActive()}. */
     private static final String ACTIVE_STATUS_SQL = Arrays.stream(WorkflowStatus.values())
             .filter(WorkflowStatus::isActive)
@@ -478,10 +485,47 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         return queryList(sql, ps -> ps.setObject(1, instanceId), this::mapEvent);
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One connection, one transaction ({@code autoCommit=false}): the
+     * failing await's deadline rows and park memo, the failing
+     * {@code SIGNAL_TIMEOUT} memo, and the {@code ACTIVITY_FAILED} /
+     * {@code WORKFLOW_FAILED} events are deleted together or not at all. A
+     * partial delete is not harmless here: with {@code WORKFLOW_FAILED} still
+     * present and the failing timeout memo gone, a second retry would take the
+     * next-highest {@code SIGNAL_TIMEOUT} — a caught gate — for the failing
+     * one.
+     */
     @Override
     public int deleteFailureEvents(UUID instanceId) {
         Objects.requireNonNull(instanceId, "instanceId");
 
+        int deleted;
+        try (var conn = dataSource.getConnection()) {
+            conn.setAutoCommit(false);
+            boolean settled = false; // committed or rolled back — see endTransaction
+            try {
+                deleted = deleteFailureEvents(conn, instanceId);
+                conn.commit();
+                settled = true;
+            } catch (SQLException | RuntimeException e) {
+                settled = rollbackAfter(conn, e);
+                throw e;
+            } finally {
+                endTransaction(conn, settled);
+            }
+        } catch (SQLException e) {
+            throw new UncheckedSqlException("Failed to delete failure events of workflow instance "
+                    + instanceId, e);
+        }
+
+        log.debug("Deleted {} failure event(s) for workflow instance {}", deleted, instanceId);
+        return deleted;
+    }
+
+    /** The deletes of {@link #deleteFailureEvents(UUID)}, on the caller's transaction. */
+    private int deleteFailureEvents(Connection conn, UUID instanceId) throws SQLException {
         // The FAILING timeout memo (Issue 19): when the workflow FAILED
         // *because* of a signal timeout — the WORKFLOW_FAILED payload's
         // exceptionType says so — retry must also delete the timeout memo the
@@ -495,34 +539,84 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         // late-arrived signal at that gate and diverge from the pre-failure
         // execution.
         int deleted = 0;
-        if (failedBySignalTimeout(instanceId)) {
-            String timeoutSql = "DELETE FROM " + tableName("workflow_event")
-                    + " WHERE workflow_instance_id = ? AND event_type = ?"
-                    + " AND sequence_number = (SELECT MAX(sequence_number) FROM "
-                    + tableName("workflow_event")
-                    + "   WHERE workflow_instance_id = ? AND event_type = ?)";
-            deleted = update(timeoutSql, ps -> {
-                ps.setObject(1, instanceId);
-                ps.setString(2, EventType.SIGNAL_TIMEOUT.name());
-                ps.setObject(3, instanceId);
-                ps.setString(4, EventType.SIGNAL_TIMEOUT.name());
-            });
+        if (failedBySignalTimeout(conn, instanceId)) {
+            var failingTimeout = failingTimeoutMemo(conn, instanceId);
+            if (failingTimeout != null) {
+                deleted += deleteFailingAwaitDeadline(conn, instanceId, failingTimeout);
+                deleted += executeUpdate(conn, "DELETE FROM " + tableName("workflow_event")
+                        + " WHERE workflow_instance_id = ? AND sequence_number = ?", ps -> {
+                    ps.setObject(1, instanceId);
+                    ps.setInt(2, failingTimeout.sequenceNumber());
+                });
+            }
         }
 
         // Scoped to the instance AND to the two failure types — deliberately
         // not a sequence range, which would take the success and compensation
         // memos with it. See the SPI Javadoc for why those must survive.
-        String sql = "DELETE FROM " + tableName("workflow_event")
-                + " WHERE workflow_instance_id = ? AND event_type IN (?, ?)";
-
-        deleted += update(sql, ps -> {
+        deleted += executeUpdate(conn, "DELETE FROM " + tableName("workflow_event")
+                + " WHERE workflow_instance_id = ? AND event_type IN (?, ?)", ps -> {
             ps.setObject(1, instanceId);
             ps.setString(2, EventType.ACTIVITY_FAILED.name());
             ps.setString(3, EventType.WORKFLOW_FAILED.name());
         });
-
-        log.debug("Deleted {} failure event(s) for workflow instance {}", deleted, instanceId);
         return deleted;
+    }
+
+    /** Sequence and step name of the failing (highest-sequenced) {@code SIGNAL_TIMEOUT} memo. */
+    private record FailingTimeout(int sequenceNumber, @Nullable String stepName) {
+    }
+
+    private @Nullable FailingTimeout failingTimeoutMemo(Connection conn, UUID instanceId)
+            throws SQLException {
+        String sql = "SELECT sequence_number, step_name FROM " + tableName("workflow_event")
+                + " WHERE workflow_instance_id = ? AND event_type = ?"
+                + " ORDER BY sequence_number DESC";
+        try (var ps = conn.prepareStatement(sql)) {
+            ps.setObject(1, instanceId);
+            ps.setString(2, EventType.SIGNAL_TIMEOUT.name());
+            try (var rs = ps.executeQuery()) {
+                return rs.next()
+                        ? new FailingTimeout(rs.getInt("sequence_number"), rs.getString("step_name"))
+                        : null;
+            }
+        }
+    }
+
+    /**
+     * The failing await's spent deadline (R61): if the slot just before the
+     * failing {@code SIGNAL_TIMEOUT} holds that await's {@code TIMER_SCHEDULED}
+     * park memo (same step name), deletes the memo and the await's deadline
+     * rows ({@code await-signal-<memoSeq>}, any status), so the retried await
+     * arms a fresh full timeout instead of resuming past its old deadline.
+     * Matching the step name keeps an unrelated memo in that slot — a
+     * {@code sleep()} or another await — out of reach.
+     *
+     * @return the number of events deleted (0 or 1); timer rows are not counted
+     */
+    private int deleteFailingAwaitDeadline(Connection conn, UUID instanceId, FailingTimeout failingTimeout)
+            throws SQLException {
+        var stepName = failingTimeout.stepName();
+        if (stepName == null) {
+            return 0;
+        }
+        int memoSeq = failingTimeout.sequenceNumber() - 1;
+        int memoDeleted = executeUpdate(conn, "DELETE FROM " + tableName("workflow_event")
+                + " WHERE workflow_instance_id = ? AND sequence_number = ?"
+                + " AND event_type = ? AND step_name = ?", ps -> {
+            ps.setObject(1, instanceId);
+            ps.setInt(2, memoSeq);
+            ps.setString(3, EventType.TIMER_SCHEDULED.name());
+            ps.setString(4, stepName);
+        });
+        if (memoDeleted > 0) {
+            executeUpdate(conn, "DELETE FROM " + tableName("workflow_timer")
+                    + " WHERE workflow_instance_id = ? AND timer_id = ?", ps -> {
+                ps.setObject(1, instanceId);
+                ps.setString(2, AWAIT_SIGNAL_TIMER_ID_PREFIX + memoSeq);
+            });
+        }
+        return memoDeleted;
     }
 
     /**
@@ -537,20 +631,24 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * wrapping of a CAUGHT gate timeout) and wrongly delete a caught-gate
      * memo, reintroducing the very replay divergence Issue 19 fixed.
      */
-    private boolean failedBySignalTimeout(UUID instanceId) {
+    private boolean failedBySignalTimeout(Connection conn, UUID instanceId) throws SQLException {
         String sql = "SELECT payload FROM " + tableName("workflow_event")
                 + " WHERE workflow_instance_id = ? AND event_type = ?"
                 + " ORDER BY sequence_number DESC";
-        var payloads = queryList(sql, ps -> {
+        @Nullable String payloadJson;
+        try (var ps = conn.prepareStatement(sql)) {
             ps.setObject(1, instanceId);
             ps.setString(2, EventType.WORKFLOW_FAILED.name());
-        }, rs -> rs.getString("payload"));
-        if (payloads.isEmpty() || payloads.getFirst() == null) {
+            try (var rs = ps.executeQuery()) {
+                payloadJson = rs.next() ? rs.getString("payload") : null;
+            }
+        }
+        if (payloadJson == null) {
             return false;
         }
         JsonNode payload;
         try {
-            payload = parseJsonNode(payloads.getFirst());
+            payload = parseJsonNode(payloadJson);
         } catch (SerializationException e) {
             // Not ErrorDetail-shaped — cannot be a signal-timeout failure.
             return false;
@@ -964,6 +1062,14 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             }
         } catch (SQLException e) {
             throw new UncheckedSqlException("Query failed: " + sql, e);
+        }
+    }
+
+    /** Executes one statement on the caller's connection (and transaction). */
+    private static int executeUpdate(Connection conn, String sql, StatementSetter setter) throws SQLException {
+        try (var ps = conn.prepareStatement(sql)) {
+            setter.set(ps);
+            return ps.executeUpdate();
         }
     }
 

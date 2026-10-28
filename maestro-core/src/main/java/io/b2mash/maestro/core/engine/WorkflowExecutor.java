@@ -1160,6 +1160,15 @@ public final class WorkflowExecutor {
      * terminal event land where {@code WORKFLOW_FAILED} used to sit, instead of
      * colliding with it.
      *
+     * <p>When the failure was an uncaught {@code awaitSignal} timeout, the
+     * failing await's {@code SIGNAL_TIMEOUT} goes too (Issue 19) — and, if that
+     * await had parked, its {@code TIMER_SCHEDULED} memo and its
+     * {@code await-signal-<seq>} deadline row (R61). Their deadline is spent:
+     * kept, the retried await would resume past it and fail again at once. So
+     * the retried await runs live at the same sequence slots: it consumes a
+     * signal that arrived meanwhile, or else arms a fresh full timeout from
+     * the retry and parks.
+     *
      * <h2>Mechanics — "make it recoverable again, then recover it"</h2>
      * <ol>
      *   <li>Read the instance. Absent → {@link RetryOutcome#NOT_FOUND}. Status

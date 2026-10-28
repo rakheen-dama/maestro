@@ -55,6 +55,13 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
     private final ArrayList<WorkflowTimer> timers = new ArrayList<>();
     private final Object timerLock = new Object();
 
+    /**
+     * Logical-ID prefix of an {@code awaitSignal} deadline row; the suffix is
+     * the sequence of the await's {@code TIMER_SCHEDULED} memo (the layout
+     * {@link WorkflowStore#deleteFailureEvents} names).
+     */
+    private static final String AWAIT_SIGNAL_TIMER_ID_PREFIX = "await-signal-";
+
     // Lock object per workflowId for updateInstance optimistic locking
     private final ConcurrentHashMap<String, Object> instanceLocks = new ConcurrentHashMap<>();
 
@@ -245,13 +252,28 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
                 .filter(e -> e.eventType() == EventType.SIGNAL_TIMEOUT)
                 .mapToInt(io.b2mash.maestro.core.model.WorkflowEvent::sequenceNumber)
                 .max();
+        if (failedByTimeout && failingTimeoutSeq.isPresent()) {
+            var timeoutSeq = failingTimeoutSeq.getAsInt();
+            var failingTimeout = instanceEvents.remove(timeoutSeq);
+            // R61: the failing await's spent deadline goes with it — its
+            // TIMER_SCHEDULED park memo in the slot just before (same step
+            // name) and its deadline rows, any status — so the retried await
+            // arms a fresh full timeout instead of resuming past the old one.
+            var parkMemo = instanceEvents.get(timeoutSeq - 1);
+            if (failingTimeout != null && failingTimeout.stepName() != null && parkMemo != null
+                    && parkMemo.eventType() == EventType.TIMER_SCHEDULED
+                    && failingTimeout.stepName().equals(parkMemo.stepName())) {
+                instanceEvents.remove(timeoutSeq - 1);
+                var timerId = AWAIT_SIGNAL_TIMER_ID_PREFIX + (timeoutSeq - 1);
+                synchronized (timerLock) {
+                    timers.removeIf(t -> t.workflowInstanceId().equals(instanceId)
+                            && t.timerId().equals(timerId));
+                }
+            }
+        }
         instanceEvents.values().removeIf(event ->
                 event.eventType() == EventType.ACTIVITY_FAILED
-                        || event.eventType() == EventType.WORKFLOW_FAILED
-                        || (failedByTimeout
-                                && event.eventType() == EventType.SIGNAL_TIMEOUT
-                                && failingTimeoutSeq.isPresent()
-                                && event.sequenceNumber() == failingTimeoutSeq.getAsInt()));
+                        || event.eventType() == EventType.WORKFLOW_FAILED);
         return before - instanceEvents.size();
     }
 

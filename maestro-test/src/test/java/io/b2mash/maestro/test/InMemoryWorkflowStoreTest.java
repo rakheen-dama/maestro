@@ -310,6 +310,59 @@ class InMemoryWorkflowStoreTest {
     }
 
     @Test
+    void deleteFailureEventsDeletesFailingAwaitsSpentDeadlineButNoSleepOrEarlierAwaitRow() {
+        // R61: the failing await's TIMER_SCHEDULED park memo (seq-1, same step
+        // name) and its await-signal-<seq-1> row hold a spent deadline; they
+        // go with the failing SIGNAL_TIMEOUT so a retry arms a fresh timeout.
+        var instanceId = UUID.randomUUID();
+        var at = Instant.now();
+        store.appendEvent(namedEvent(instanceId, 1, EventType.TIMER_SCHEDULED, "$maestro:sleep"));
+        store.appendEvent(namedEvent(instanceId, 2, EventType.TIMER_SCHEDULED, "$maestro:awaitSignal:gate"));
+        store.appendEvent(namedEvent(instanceId, 3, EventType.SIGNAL_TIMEOUT, "$maestro:awaitSignal:gate"));
+        store.appendEvent(namedEvent(instanceId, 4, EventType.TIMER_SCHEDULED, "$maestro:awaitSignal:approval"));
+        store.appendEvent(namedEvent(instanceId, 5, EventType.SIGNAL_TIMEOUT, "$maestro:awaitSignal:approval"));
+        store.appendEvent(signalTimeoutFailure(instanceId, 6));
+        for (var timerId : java.util.List.of("sleep-1", "await-signal-2", "await-signal-4")) {
+            store.saveTimer(new WorkflowTimer(UUID.randomUUID(), instanceId, "wf", timerId, at,
+                    TimerStatus.FIRED, at));
+        }
+
+        assertEquals(3, store.deleteFailureEvents(instanceId),
+                "WORKFLOW_FAILED, the failing SIGNAL_TIMEOUT and the failing await's park memo");
+        assertEquals(java.util.List.of(1, 2, 3), store.getEvents(instanceId).stream()
+                .map(WorkflowEvent::sequenceNumber).toList());
+        assertTrue(store.findTimer(instanceId, "await-signal-4").isEmpty());
+        assertTrue(store.findTimer(instanceId, "sleep-1").isPresent());
+        assertTrue(store.findTimer(instanceId, "await-signal-2").isPresent());
+    }
+
+    @Test
+    void deleteFailureEventsKeepsUnrelatedMemoBeforeSingleSlotTimeout() {
+        var instanceId = UUID.randomUUID();
+        var at = Instant.now();
+        store.appendEvent(namedEvent(instanceId, 1, EventType.TIMER_SCHEDULED, "$maestro:sleep"));
+        store.appendEvent(namedEvent(instanceId, 2, EventType.SIGNAL_TIMEOUT, "$maestro:awaitSignal:approval"));
+        store.appendEvent(signalTimeoutFailure(instanceId, 3));
+        store.saveTimer(new WorkflowTimer(UUID.randomUUID(), instanceId, "wf", "sleep-1", at,
+                TimerStatus.FIRED, at));
+
+        assertEquals(2, store.deleteFailureEvents(instanceId));
+        assertTrue(store.getEventBySequence(instanceId, 1).isPresent());
+        assertTrue(store.findTimer(instanceId, "sleep-1").isPresent());
+    }
+
+    private static WorkflowEvent namedEvent(UUID instanceId, int seq, EventType type, String stepName) {
+        return new WorkflowEvent(UUID.randomUUID(), instanceId, seq, type, stepName, null, Instant.now());
+    }
+
+    private static WorkflowEvent signalTimeoutFailure(UUID instanceId, int seq) {
+        return new WorkflowEvent(UUID.randomUUID(), instanceId, seq, EventType.WORKFLOW_FAILED, null,
+                json("{\"exceptionType\":\"io.b2mash.maestro.core.exception.SignalTimeoutException\","
+                        + "\"message\":\"signal 'approval' timed out\"}"),
+                Instant.now());
+    }
+
+    @Test
     void deleteFailureEventsDeletesFailingTimeoutMemoWhenCompensationEventsFollowIt() {
         // Regression pin (CodeRabbit wave, PR #30): an UNCAUGHT
         // SignalTimeoutException in a saga appends COMPENSATION_* events

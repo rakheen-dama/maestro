@@ -198,9 +198,15 @@ OWNER_SEARCH_MAX_ATTEMPTS="${OWNER_SEARCH_MAX_ATTEMPTS:-20}"
 # override applied ONLY to node A, so the retry-target workflow reaches
 # FAILED (an uncaught SignalTimeoutException at the underwriting-decision
 # await — LoanApplicationWorkflow.awaitDecisionForRound, never caught by the
-# workflow) within seconds instead of the SPEC default 10 minutes. Node B
-# keeps the SPEC default (10m) so the retried run has ample time to receive
-# the decision this harness delivers promptly after issuing $maestro:retry.
+# workflow) within seconds instead of the SPEC default 10 minutes. The
+# timeout is memoized (F4), so the retried run on node B replays node A's
+# PT8S - but a retry re-arms the failed await's deadline from the retry time
+# (R61), giving a fresh full PT8S for the decision this harness delivers
+# promptly after issuing $maestro:retry. That window only holds if the
+# decision event reaches node B within it: a decision on a
+# loans.underwriting.decisions partition still assigned to the killed node A
+# waits for A's consumer-group eviction (session.timeout.ms, up to ~45s)
+# and the retried await times out again.
 RETRY_DECISION_TIMEOUT="${RETRY_DECISION_TIMEOUT:-PT8S}"
 WAIT_FAILURE_SECS="${WAIT_FAILURE_SECS:-30}"
 # Observed empirically: a $maestro:* command published to a Kafka partition
@@ -1938,8 +1944,8 @@ scenario_cross_node_admin() {
     wait_for_log_line "$loan_log_b" "Retried workflow '$wfid_retry'" "$WAIT_ADMIN_COMMAND_SECS" || return 1
     log "Node B's log confirms it executed the retry for $wfid_retry"
 
-    # Deliver the decision promptly - the retried run resumes node B's
-    # default (10m) decision-timeout, but there is no reason to wait.
+    # Deliver the decision promptly - the retried await waits a fresh full
+    # decision-timeout from the retry (the memoized PT8S, R61).
     post_decision "$id_retry" 1 "APPROVED" '[]' || return 1
     sign_app_via "$LOAN_URL_B" "$id_retry" "s10r" || return 1
 

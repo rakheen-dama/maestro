@@ -195,6 +195,18 @@ public final class MaestroEngineHarness implements AutoCloseable {
     }
 
     /**
+     * Retries a {@code FAILED} workflow exactly as the admin {@code $maestro:retry}
+     * command does, with the workflow's own registration.
+     *
+     * @param workflowId    the business workflow ID
+     * @param workflowClass the workflow class (must have been registered)
+     * @return what the retry did
+     */
+    public WorkflowExecutor.RetryOutcome retry(String workflowId, Class<?> workflowClass) {
+        return executor.retryWorkflow(workflowId, requireRegistration(workflowClass));
+    }
+
+    /**
      * Re-invokes every recoverable workflow found in the store, exactly as
      * startup recovery does.
      *

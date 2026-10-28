@@ -468,6 +468,12 @@ final class SignalManager {
      * {@code TestWorkflowEnvironment.advanceTime()} drives it. See
      * {@link #awaitOutcome} for the one rule that decides the outcome.
      *
+     * <p>An admin retry of a workflow that failed on this await's timeout
+     * deletes the memo, the outcome and the row
+     * ({@code WorkflowStore.deleteFailureEvents}, R61), so the retried run
+     * reaches this await on the live path: a signal that arrived meanwhile is
+     * consumed, otherwise a fresh full timeout is armed from the retry.
+     *
      * @param ctx        the current workflow context (passed explicitly, not read from thread-local)
      * @param signalName the signal name to wait for
      * @param type       the expected payload type
@@ -546,7 +552,9 @@ final class SignalManager {
             // id (findTimer could then pick either). A non-PENDING leftover
             // means that deadline is already spent (fired, or cancelled by an
             // operator): reusing it makes the await time out unless a signal
-            // is visible — the row arbitrates, exactly as on replay.
+            // is visible — the row arbitrates, exactly as on replay. (An admin
+            // retry after this await's timeout deletes its row along with the
+            // memo, so the retried await never meets a spent row here — R61.)
             var timerId = TIMER_ID_PREFIX + seq;
             var existing = store.findTimer(ctx.workflowInstanceId(), timerId);
             Instant deadline;

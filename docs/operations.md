@@ -171,6 +171,15 @@ backends confirms the lock backend is not in this path at all — if you need
 faster admin-command delivery after a hard node death, tune Kafka's
 `session.timeout.ms`, not anything in Maestro.
 
+**Retrying an await-timeout failure.** The E2E's retry target fails on an
+uncaught `awaitSignal` timeout and the harness sends the missing signal only
+*after* the retry. That works because a retry waits the full timeout again,
+counted from the retry: it discards the failed await's spent deadline (its
+`TIMER_SCHEDULED` memo and `await-signal-<seq>` row) together with its
+`SIGNAL_TIMEOUT` (R61). A signal sent before the retry is consumed at once.
+The timeout itself is whatever the run memoized — in the loan sample, node
+A's `PT8S` override (F4) — not the retrying node's configuration.
+
 ---
 
 ## 5. Cross-node timer/signal wake bounds (Issue 17)

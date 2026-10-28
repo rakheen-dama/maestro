@@ -319,7 +319,7 @@ Left uncaught, `TimerCancelledException` propagates like any other exception: sa
 
 Cancellation is arbitrated the same way firing is: a compare-and-set on the timer row (`PENDING -> CANCELLED`). `cancelTimer` returns `true` if it won the race, `false` if the timer had already fired or was already cancelled -- the caller is told, rather than left to guess.
 
-`awaitSignal(name, timeout)` arms a durable timer row for its timeout (timer ID `await-signal-<seq>`, where `seq` is the sequence the await allocated), so the deadline survives restarts and is honoured from the original arming time. `cancelTimer` does reach it: a cancelled await timer ends the await with `SignalTimeoutException` on its next wake, because the timer row is the arbiter and a non-`PENDING` row means the deadline is spent.
+`awaitSignal(name, timeout)` arms a durable timer row for its timeout (timer ID `await-signal-<seq>`, where `seq` is the sequence the await allocated), so the deadline survives restarts and is honoured from the original arming time. `cancelTimer` does reach it: a cancelled await timer ends the await with `SignalTimeoutException` on its next wake, because the timer row is the arbiter and a non-`PENDING` row means the deadline is spent. An admin **Retry** of a workflow that failed on an await timeout discards that await's spent deadline along with its timeout, so the retried await waits the full timeout again from the moment of the retry; a signal that arrived in the meantime is consumed at once.
 
 ---
 

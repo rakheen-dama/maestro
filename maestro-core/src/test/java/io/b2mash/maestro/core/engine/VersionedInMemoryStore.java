@@ -273,7 +273,7 @@ class VersionedInMemoryStore implements WorkflowStore {
     @Override
     public int deleteFailureEvents(UUID instanceId) {
         synchronized (events) {
-            return removeFailureEvents(events, instanceId);
+            return removeFailureEvents(events, timers, instanceId);
         }
     }
 
@@ -344,6 +344,11 @@ class VersionedInMemoryStore implements WorkflowStore {
                 .filter(t -> t.status() == TimerStatus.PENDING && !t.fireAt().isAfter(now))
                 .limit(batchSize)
                 .toList();
+    }
+
+    /** @return a snapshot of every stored timer row, in insertion order (test inspection) */
+    List<WorkflowTimer> allTimers() {
+        return List.copyOf(timers);
     }
 
     @Override

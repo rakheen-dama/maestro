@@ -620,6 +620,79 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
         }
 
         @Test
+        @DisplayName("deleteFailureEvents also deletes the failing await's park memo and deadline row (R61), "
+                + "never a sleep row or an earlier await's")
+        void deleteFailureEvents_deletesFailingAwaitsSpentDeadline() {
+            // R61: a parked await that timed out left TIMER_SCHEDULED (its
+            // absolute deadline) at seq-1 and the row await-signal-<seq-1>.
+            // Both are spent; leaving them made the retried await honour the
+            // old deadline and fail again at once. The sleep memo/row and the
+            // caught gate's memos/row are pre-failure history and must survive.
+            var instance = newInstance("order-del-await-deadline");
+            store.createInstance(instance);
+            var at = Instant.now().truncatedTo(ChronoUnit.MILLIS);
+            store.appendEvent(namedEvent(instance.id(), 1, EventType.TIMER_SCHEDULED, "$maestro:sleep"));
+            store.appendEvent(namedEvent(instance.id(), 2, EventType.TIMER_SCHEDULED,
+                    "$maestro:awaitSignal:gate"));
+            store.appendEvent(namedEvent(instance.id(), 3, EventType.SIGNAL_TIMEOUT,
+                    "$maestro:awaitSignal:gate"));
+            store.appendEvent(namedEvent(instance.id(), 4, EventType.TIMER_SCHEDULED,
+                    "$maestro:awaitSignal:approval"));
+            store.appendEvent(namedEvent(instance.id(), 5, EventType.SIGNAL_TIMEOUT,
+                    "$maestro:awaitSignal:approval"));
+            store.appendEvent(signalTimeoutFailure(instance.id(), 6));
+            for (var timerId : List.of("sleep-1", "await-signal-2", "await-signal-4")) {
+                store.saveTimer(new WorkflowTimer(UUID.randomUUID(), instance.id(), instance.workflowId(),
+                        timerId, at, TimerStatus.FIRED, at));
+            }
+
+            assertEquals(3, store.deleteFailureEvents(instance.id()),
+                    "WORKFLOW_FAILED, the failing SIGNAL_TIMEOUT and the failing await's park memo");
+            assertEquals(List.of(1, 2, 3), store.getEvents(instance.id()).stream()
+                            .map(WorkflowEvent::sequenceNumber).toList(),
+                    "the sleep memo and the caught gate's memos must survive");
+            assertTrue(store.findTimer(instance.id(), "await-signal-4").isEmpty(),
+                    "the failing await's spent deadline row must be gone, so the retry arms a fresh one");
+            assertTrue(store.findTimer(instance.id(), "sleep-1").isPresent(), "a sleep row is never touched");
+            assertTrue(store.findTimer(instance.id(), "await-signal-2").isPresent(),
+                    "an earlier await's row is never touched");
+            assertEquals(0, store.deleteFailureEvents(instance.id()), "idempotent");
+        }
+
+        @Test
+        @DisplayName("deleteFailureEvents leaves an unrelated TIMER_SCHEDULED in the slot before a "
+                + "zero-timeout await's failing SIGNAL_TIMEOUT")
+        void deleteFailureEvents_keepsUnrelatedMemoBeforeSingleSlotTimeout() {
+            var instance = newInstance("order-del-sleep-before-timeout");
+            store.createInstance(instance);
+            var at = Instant.now().truncatedTo(ChronoUnit.MILLIS);
+            store.appendEvent(namedEvent(instance.id(), 1, EventType.TIMER_SCHEDULED, "$maestro:sleep"));
+            store.appendEvent(namedEvent(instance.id(), 2, EventType.SIGNAL_TIMEOUT,
+                    "$maestro:awaitSignal:approval"));
+            store.appendEvent(signalTimeoutFailure(instance.id(), 3));
+            store.saveTimer(new WorkflowTimer(UUID.randomUUID(), instance.id(), instance.workflowId(),
+                    "sleep-1", at, TimerStatus.FIRED, at));
+
+            assertEquals(2, store.deleteFailureEvents(instance.id()));
+            assertTrue(store.getEventBySequence(instance.id(), 1).isPresent(),
+                    "the sleep memo before a single-slot timeout is not that await's park memo");
+            assertTrue(store.findTimer(instance.id(), "sleep-1").isPresent());
+        }
+
+        private WorkflowEvent namedEvent(UUID instanceId, int seq, EventType type, String stepName) {
+            return new WorkflowEvent(UUID.randomUUID(), instanceId, seq, type, stepName,
+                    jsonNode("{\"result\":\"ok\"}"), Instant.now().truncatedTo(ChronoUnit.MILLIS));
+        }
+
+        private WorkflowEvent signalTimeoutFailure(UUID instanceId, int seq) {
+            return new WorkflowEvent(UUID.randomUUID(), instanceId, seq, EventType.WORKFLOW_FAILED, null,
+                    jsonNode("{\"exceptionType\":"
+                            + "\"io.b2mash.maestro.core.exception.SignalTimeoutException\","
+                            + "\"message\":\"signal 'approval' timed out\"}"),
+                    Instant.now().truncatedTo(ChronoUnit.MILLIS));
+        }
+
+        @Test
         @DisplayName("deleteFailureEvents deletes the failing SIGNAL_TIMEOUT memo when "
                 + "exceptionType records a SignalTimeoutException")
         void deleteFailureEvents_deletesFailingTimeoutMemoOnSignalTimeoutFailure() {

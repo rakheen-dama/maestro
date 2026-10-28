@@ -142,7 +142,7 @@ class TimerManagerTest {
         }
 
         @Override public int deleteFailureEvents(UUID instanceId) {
-            return removeFailureEvents(events, instanceId);
+            return removeFailureEvents(events, timers, instanceId);
         }
 
         @Override public void saveSignal(WorkflowSignal signal) { signals.add(signal); }

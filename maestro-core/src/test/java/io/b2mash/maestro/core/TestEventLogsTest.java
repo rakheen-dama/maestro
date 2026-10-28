@@ -1,7 +1,9 @@
 package io.b2mash.maestro.core;
 
 import io.b2mash.maestro.core.model.EventType;
+import io.b2mash.maestro.core.model.TimerStatus;
 import io.b2mash.maestro.core.model.WorkflowEvent;
+import io.b2mash.maestro.core.model.WorkflowTimer;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -88,5 +90,36 @@ class TestEventLogsTest {
                 "the caught-gate SIGNAL_TIMEOUT memo must survive — the failure cause "
                         + "(exceptionType) was not a SignalTimeoutException");
         assertFalse(events.stream().anyMatch(e -> e.eventType() == EventType.WORKFLOW_FAILED));
+    }
+
+    @Test
+    void removesFailingAwaitsParkMemoAndDeadlineRowButNoSleepOrEarlierAwait() {
+        // R61: the failing await's TIMER_SCHEDULED park memo (seq-1, same step
+        // name) and its await-signal-<seq-1> row hold a spent deadline and go
+        // with the failing SIGNAL_TIMEOUT; nothing else does.
+        var instanceId = UUID.randomUUID();
+        var at = Instant.now();
+        var events = new CopyOnWriteArrayList<WorkflowEvent>(List.of(
+                named(instanceId, 1, EventType.TIMER_SCHEDULED, "$maestro:sleep"),
+                named(instanceId, 2, EventType.TIMER_SCHEDULED, "$maestro:awaitSignal:gate"),
+                named(instanceId, 3, EventType.SIGNAL_TIMEOUT, "$maestro:awaitSignal:gate"),
+                named(instanceId, 4, EventType.TIMER_SCHEDULED, "$maestro:awaitSignal:approval"),
+                named(instanceId, 5, EventType.SIGNAL_TIMEOUT, "$maestro:awaitSignal:approval"),
+                new WorkflowEvent(UUID.randomUUID(), instanceId, 6, EventType.WORKFLOW_FAILED, null,
+                        json("{\"exceptionType\":"
+                                + "\"io.b2mash.maestro.core.exception.SignalTimeoutException\"}"),
+                        at)));
+        var timers = new CopyOnWriteArrayList<WorkflowTimer>();
+        for (var timerId : List.of("sleep-1", "await-signal-2", "await-signal-4")) {
+            timers.add(new WorkflowTimer(UUID.randomUUID(), instanceId, "wf", timerId, at, TimerStatus.FIRED, at));
+        }
+
+        assertEquals(3, TestEventLogs.removeFailureEvents(events, timers, instanceId));
+        assertEquals(List.of(1, 2, 3), events.stream().map(WorkflowEvent::sequenceNumber).toList());
+        assertEquals(List.of("sleep-1", "await-signal-2"), timers.stream().map(WorkflowTimer::timerId).toList());
+    }
+
+    private static WorkflowEvent named(UUID instanceId, int seq, EventType type, String stepName) {
+        return new WorkflowEvent(UUID.randomUUID(), instanceId, seq, type, stepName, null, Instant.now());
     }
 }
