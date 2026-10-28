@@ -3,7 +3,7 @@
 Two Spring Boot services demonstrating Maestro's durable workflow capabilities across services:
 
 - **sample-order-service** — REST API for placing orders, runs the `OrderFulfilmentWorkflow`
-- **sample-payment-gateway** — Processes payments with durable retries, runs the `PaymentProcessingWorkflow`
+- **sample-payment-gateway** — Processes payments under a retry policy (a declined card is non-retryable), runs the `PaymentProcessingWorkflow`
 
 ## Architecture
 
@@ -181,7 +181,7 @@ kafka-topics.sh --bootstrap-server localhost:9092 --create --topic payments.resu
 | **Activity memoization** | Replay after crash skips completed steps |
 | **Cross-service signals** | Payment result flows Order → Kafka → Payment → Kafka → Order |
 | **Saga compensation** | `DECLINE_ME` triggers automatic inventory release |
-| **Durable retries** | Payment gateway retries 30x with exponential backoff |
+| **Retry policies** | Payment gateway retries a provider outage up to 30x with exponential backoff (attempt counter in memory — a crash restarts the schedule; a completed charge is never re-executed); a declined card is non-retryable |
 | **Signal self-recovery** | Signals persist to Postgres, delivered when workflow is ready |
 | **Workflow queries** | `GET /orders/{id}/status` reads live workflow state |
 

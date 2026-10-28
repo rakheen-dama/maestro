@@ -20,6 +20,17 @@ public enum StandDownReason {
      */
     NONDETERMINISTIC_HISTORY,
 
-    /** Issue 18: event append collided with a concurrent runner's history. */
+    /**
+     * Another runner owns this workflow (Issue 18 / C5). Reported when an
+     * event append collided with a concurrent runner's history
+     * ({@code DuplicateEventException}), and when a fresh read found the row
+     * already finalised ({@code COMPLETED}/{@code FAILED}) by another runner
+     * ({@code StaleRunException}) — at a park/wake status write, an
+     * {@code awaitSignal()} wake, the transition to {@code COMPENSATING}, or
+     * before a sequential compensation entry. Also reported when the next
+     * live activity of a run whose earlier collision workflow code swallowed
+     * is stopped before it executes ({@code StaleRunException} from the run's
+     * cancellation latch).
+     */
     STALE_RUN
 }

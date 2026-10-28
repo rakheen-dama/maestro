@@ -219,8 +219,12 @@ workflow that had **succeeded** on the winner was durably marked `FAILED`
 and its saga compensations ran, reversing completed work. That's fixed: the
 same collision now stands the stale run down immediately (no write, no
 compensation, the winner's outcome governs), mirroring the shutdown/
-termination control-flow pattern. See `docs/open-issues.md` Issue 18 for the
-full defect and fix.
+termination control-flow pattern. Since C5 the loser also stands down when a
+fresh read at a status write, a signal wake, the `COMPENSATING` transition or a
+sequential compensation entry finds the row already finalised by the winner
+(`StaleRunException`), and a run whose collision workflow code swallowed is
+stopped before its next live activity — all reported as `stale_run`. See
+`docs/open-issues.md` Issue 18 for the full defect and fix.
 
 **Measured consequence.** Under the chaos harness's mandated split-brain
 trigger (≥2 loan-node `PAUSE_RESUME` actions — freeze a real container past
@@ -471,8 +475,14 @@ There are three history reasons and **they mean different things**:
 | `unknown_event_payload` | A stored payload this build could not deserialize while replaying. A newer build *or* an incompatible payload change. |
 | `nondeterministic_history` | The current code performs a different operation at this sequence than the one recorded (step renamed/reordered, `parallel()` arity changed). Only a code change can cause it. See §10.7. |
 
-(A fourth value, `stale_run`, is unrelated to versioning — it is Issue 18's
-duplicate-append convergence.)
+(A fourth value, `stale_run`, is unrelated to versioning — it is the
+split-brain convergence of §6: another runner owns the workflow. It is reported
+for an event-append collision with that runner's history (Issue 18), and for a
+fresh read that finds the row already finalised (`COMPLETED`/`FAILED`) by it
+(`StaleRunException`, C5) — at a park/wake status write, an `awaitSignal()`
+wake, the transition to `COMPENSATING`, or before a sequential compensation
+entry — and before the next live activity of a run whose earlier collision the
+workflow code caught and swallowed.)
 
 ### 10.4 The alarm that matters: `unknown_event_payload` on a homogeneous fleet
 
@@ -701,9 +711,11 @@ upgrade; drain such instances before upgrading.
 **Node errors are not workflow failures — alert on them separately.** A
 `LinkageError` (`NoClassDefFoundError`, `ExceptionInInitializerError`, ...) or
 a `VirtualMachineError` other than `StackOverflowError` (`OutOfMemoryError`,
-`InternalError`, ...) escaping a workflow method means that *node* is broken —
-a bad deploy or resource exhaustion — so the engine does **not** record
-`FAILED` and does **not** compensate. It logs an `ERROR` under the workflow's
+`InternalError`, ...) escaping a workflow method — or thrown inside an
+activity or a compensation activity, which is then neither retried nor
+recorded as `ACTIVITY_FAILED` — means that *node* is broken — a bad deploy or
+resource exhaustion — so the engine does **not** record `FAILED` and does
+**not** compensate (an unwind it interrupts is left `COMPENSATING`). It logs an `ERROR` under the workflow's
 MDC (`Workflow '<id>' abandoned its local run on a node-level error (<class>)
 ...`), fires `runAbandoned(..., NODE_ERROR)` (span attribute
 `maestro.abandon.reason=NODE_ERROR`), writes nothing, releases the lock, and

@@ -104,7 +104,7 @@ The `reason` tag value set is closed at four, mapped from
 | `unknown_event_type` | A persisted `event_type` string this build's `EventType` enum does not define — written by a **newer** node |
 | `unknown_event_payload` | A stored payload this build could not deserialize while replaying |
 | `nondeterministic_history` | C10 — the recorded event at a replayed sequence was written by a different operation than the current code performs there (an ungated workflow edit; roll back — see [Operations §10.7](operations.md#107-replay-drift-nondeterministic_history)) |
-| `stale_run` | Issue 18 — an event append collided with a concurrent runner's history |
+| `stale_run` | Issue 18 / C5 — another runner owns this workflow. Either an event append collided with a concurrent runner's history (`DuplicateEventException`), or a fresh read found the row already finalised (`COMPLETED`/`FAILED`) by another runner (`StaleRunException`) — at a park/wake status write, an `awaitSignal()` wake, the transition to `COMPENSATING`, or before a sequential compensation entry. Also raised before the next live activity of a run whose earlier collision the workflow code swallowed. |
 
 See [Operations §10](operations.md#10-versioning-and-mixed-version-deploys) for
 what a rising `maestro.standdown` means and how to act on each reason. The two
@@ -155,24 +155,27 @@ correct: no JVM is holding it.
 
 ### Which callbacks the meter adapter implements
 
-`MicrometerEngineObserver` implements 13 of the 22 `EngineObserver` callbacks.
+`MicrometerEngineObserver` implements 13 of the 23 `EngineObserver` callbacks.
 It deliberately does **not** implement:
 
 - `workflowResumed`, `workflowParked`, `workflowUnparked`, `activityStarted`,
   `signalPersisted`, `timerScheduled`, `timerCancelled`,
   `instanceLockAcquired` — no meter in the catalog needs them.
+- `wrapActivityAttempt` — its default returns the attempt unchanged; a meter
+  needs no thread-local context on the attempt thread.
 - **`runAbandoned`** — this fires when a run stops because the node is shutting
   down, an operator terminated the workflow, another writer finalised the row
   first, the terminal status write failed, or a node-level `Error` escaped the
-  workflow method (`NODE_ERROR`). Counting it would double-count:
+  workflow method, an activity or a compensation action (`NODE_ERROR`). Counting it would double-count:
   `workflowTerminated` already fires exactly once per terminate. It exists for
   the tracing adapter, which needs a callback on the workflow's own thread to
   close its span. `NODE_ERROR` — a `LinkageError` (`NoClassDefFoundError`,
   `ExceptionInInitializerError`, ...) or a `VirtualMachineError` other than
   `StackOverflowError` (`OutOfMemoryError`, `InternalError`, ...) — is the one
   reason that is not routine: it is a bad deploy or resource exhaustion on that
-  node, the instance stays `RUNNING` and recoverable, and nothing is recorded as
-  a workflow failure. It is visible as the segment attribute
+  node, the instance keeps its active status (`RUNNING`, or `COMPENSATING`
+  mid-unwind) and stays recoverable, and nothing is recorded as a workflow or
+  activity failure — an activity that throws one is not retried. It is visible as the segment attribute
   `maestro.abandon.reason=NODE_ERROR` and as an `ERROR` log line under the
   workflow MDC (`... abandoned its local run on a node-level error (<class>)
   ...`); alert on either.
@@ -540,9 +543,10 @@ their parenting are unaffected.
 
 ## Writing your own observer
 
-`EngineObserver` is a plain interface in `maestro-core` with 22 `default` no-op
-methods — implement only what you need, and register the bean; the starter picks
-up every `EngineObserver` in the context.
+`EngineObserver` is a plain interface in `maestro-core` with 23 `default`
+methods — 22 no-ops, plus `wrapActivityAttempt`, whose default returns the
+attempt unchanged — so implement only what you need, and register the bean; the
+starter picks up every `EngineObserver` in the context.
 
 The callback surface, grouped:
 
@@ -573,7 +577,9 @@ Rules for implementers:
   activity runs on its own attempt thread, not on the thread `activityStarted`
   ran on. Capture the context in the call, re-establish it in the returned
   callable, close it in a `finally`, and call the attempt exactly once.
-  Counting observers ignore the hook.
+  Counting observers ignore the hook. With several observers registered, the
+  first one's wrapper is outermost — its code runs first on the way in and last
+  on the way out, matching the order every other callback fans out in.
 
 ---
 

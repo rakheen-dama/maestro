@@ -1486,9 +1486,14 @@ public final class WorkflowExecutor {
 
         } catch (ExecutorShutdownException e) {
             // Not a failure: this node is stopping while the workflow was
-            // parked. Its durable state — WAITING_SIGNAL or WAITING_TIMER —
-            // is still valid and still recoverable, so nothing is written and
-            // no compensation runs. Whichever node starts next picks it up.
+            // parked, or while it sat in an activity's retry backoff (which
+            // shutdown abandons rather than waits out). Its durable state —
+            // WAITING_SIGNAL or WAITING_TIMER for a park, RUNNING for an
+            // abandoned backoff (nothing was memoized for that activity; the
+            // in-memory attempt counter restarts on the recovering node), or
+            // COMPENSATING mid-saga — is still valid and still recoverable, so
+            // nothing is written and no compensation runs. Whichever node
+            // starts next picks it up.
             //
             // This catch is deliberately ahead of catch (Exception e) below:
             // ExecutorShutdownException extends Error (see its Javadoc), so
@@ -1613,9 +1618,10 @@ public final class WorkflowExecutor {
     /**
      * Records that a workflow's local run ended because this node is shutting
      * down. Deliberately writes nothing: the instance is already in the
-     * {@code WAITING_*} (or {@code COMPENSATING}, if shutdown landed mid-saga)
-     * status it was interrupted in, which is exactly the state recovery needs
-     * to find.
+     * {@code WAITING_*} status of the park it was interrupted in,
+     * {@code RUNNING} if it was in an activity's retry backoff, or
+     * {@code COMPENSATING} if shutdown landed mid-saga — exactly the state
+     * recovery needs to find.
      */
     private void handleShutdownSuspension(WorkflowContext ctx) {
         var status = store.getInstance(ctx.workflowId())

@@ -159,6 +159,20 @@ Why the wrapper is kept: on replay the engine may have to *reconstruct* the caus
 
 Retry interaction: an exception you intend to catch as a business outcome belongs in `nonRetryableExceptions`. Otherwise the policy retries it to exhaustion before the workflow ever sees it (30 attempts with up-to-10-minute backoff in the payment sample's case).
 
+**Never catch-and-continue a stand-down: rethrow `DuplicateEventException` and `StaleRunException`.** These two are not activity failures, and they are not wrapped in `ActivityExecutionException`. They mean *another runner owns this workflow* — a peer node adopted it while this one lost its instance lock (or runs without a lock backend), and either an append of this run collided with the peer's event at the same sequence (`DuplicateEventException`) or a fresh read found the workflow already finished by the peer (`StaleRunException`). The engine's response is to stand the local run down: write nothing, compensate nothing, let the winner's record govern. Both are ordinary `MaestroException`s, so a broad `catch (Exception e)` around an activity call, `sleep()` or `awaitSignal()` *can* intercept them — and if it swallows one, or turns it into a business failure, it costs real work: the next live activity executes a side effect the winner also runs (a second charge, a second email), and rethrowing it as a business failure can run compensations that undo work the winner owns. Let them propagate:
+
+```java
+try {
+    provider.charge(request.paymentMethod(), request.amount());
+} catch (DuplicateEventException | StaleRunException standDown) {
+    throw standDown;                       // another runner owns this workflow
+} catch (Exception e) {
+    // ... genuine failure handling ...
+}
+```
+
+As a backstop, the engine stops the *next live activity* of a run it already knows is stale, whatever the workflow code did with the exception: after an append collision, that activity throws `StaleRunException` before it acquires a lock, publishes a start or executes anything. Only the code you run between the swallowed exception and that call is beyond the engine's reach.
+
 ---
 
 ## The Determinism Rule

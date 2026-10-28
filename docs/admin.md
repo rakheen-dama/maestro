@@ -237,8 +237,10 @@ All actions produce a flash message confirming success or reporting failure, the
 - **Terminate** applies to any active workflow, including one currently
   compensating. It durably marks the instance `TERMINATED` and stops it —
   **without running any compensation** and **without interrupting an
-  in-flight activity attempt**. The attempt that is executing finishes and
-  memoizes its result (harmless); but no further attempt starts, a retry
+  in-flight activity attempt**. The attempt that is executing finishes —
+  unless its timeout (`startToCloseTimeout`) elapses first — and a successful
+  result is memoized (harmless); a failed one is neither retried nor
+  recorded as `ACTIVITY_FAILED`. No further attempt starts, a retry
   backoff in progress is abandoned, and no later activity goes live — the
   run stands down at its next live activity, retry, park or status write.
   (That attempt-level stop applies when the node processing the command owns
