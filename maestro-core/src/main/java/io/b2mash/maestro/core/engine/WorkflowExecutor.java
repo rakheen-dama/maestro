@@ -9,8 +9,10 @@ import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.MaestroControlFlowError;
+import io.b2mash.maestro.core.exception.MaestroException;
 import io.b2mash.maestro.core.exception.QueryNotDefinedException;
 import io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException;
+import io.b2mash.maestro.core.exception.StaleRunException;
 import io.b2mash.maestro.core.exception.UnknownWorkflowHistoryException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowExecutionException;
@@ -1496,7 +1498,7 @@ public final class WorkflowExecutor {
             // them the ordering is readability-only, since the exception is an
             // Error and catch (Exception e) below could never reach it.
             handleUnknownHistoryStandDown(ctx, unreadableHistory);
-        } catch (DuplicateEventException staleRun) {
+        } catch (DuplicateEventException | StaleRunException staleRun) {
             // Issue 18: a DuplicateEventException that reaches this level means
             // "another run owns this workflow's progress — this node's view is
             // stale". It is the store's (workflow_instance_id, sequence_number)
@@ -1510,8 +1512,10 @@ public final class WorkflowExecutor {
             // termination cases above: write nothing, compensate nothing,
             // release the local run. The winner's durable state governs; if no
             // winner exists (a pure self-conflict), the instance stays active
-            // and recovery replays it from the log. MUST stay ahead of
-            // catch (Exception e) — DuplicateEventException is a MaestroException.
+            // and recovery replays it from the log. A StaleRunException is the
+            // same signal from a status write (C5): a fresh read found COMPLETED
+            // or FAILED written by another runner. MUST stay ahead of
+            // catch (Exception e) — both are MaestroExceptions.
             handleStaleRunStandDown(ctx, staleRun);
         } catch (Error e) {
             // Sits after the control-flow arms above and before catch (Exception e):
@@ -1669,31 +1673,46 @@ public final class WorkflowExecutor {
     // ── Internal: stale-run stand-down (Issue 18) ──────────────────────
 
     /**
-     * Records that a workflow's local run stood down because its event append
-     * collided with a concurrent runner's already-persisted event (the
-     * {@code (workflow_instance_id, sequence_number)} unique guard — see
-     * {@link DuplicateEventException}). Deliberately writes nothing: the other
-     * runner's durable state — its events, its terminal outcome, its
-     * compensation progress — is the record. If no other runner exists, the
-     * instance is still active and recovery replays it from the log.
+     * Records that a workflow's local run stood down because another runner
+     * owns the workflow's progress, in either of the two forms that signal
+     * takes:
+     * <ul>
+     *   <li>a {@link DuplicateEventException} — an event append collided with
+     *       a concurrent runner's already-persisted event (the
+     *       {@code (workflow_instance_id, sequence_number)} unique guard),
+     *       including an activity's own result append: since C5
+     *       {@code ActivityInvocationHandler} no longer adopts the winner's
+     *       value but lets the duplicate unwind to here, because the winner is
+     *       alive and ahead;</li>
+     *   <li>a {@link StaleRunException} — a status write's fresh read found
+     *       {@code COMPLETED} or {@code FAILED} written by another runner.</li>
+     * </ul>
+     * Deliberately writes nothing: the other runner's durable state — its
+     * events, its terminal outcome, its compensation progress — is the record.
+     * If no other runner exists, the instance is still active and recovery
+     * replays it from the log.
      *
-     * <p>This is the executor-level meaning only. Inside
-     * {@code ActivityInvocationHandler} the same exception keeps its
-     * adopt-the-stored-result semantics (the memoized payload at that sequence
-     * is returned); only an append that escapes to this level means the whole
-     * local run is stale.
+     * @param ctx the stale run's context
+     * @param e   the {@link DuplicateEventException} or {@link StaleRunException}
+     *            that unwound the run — the only two types the stand-down arms
+     *            pass
      */
-    private void handleStaleRunStandDown(WorkflowContext ctx, DuplicateEventException e) {
+    private void handleStaleRunStandDown(WorkflowContext ctx, MaestroException e) {
+        var detail = switch (e) {
+            case DuplicateEventException duplicate -> "append collision at sequence " + duplicate.sequenceNumber();
+            case StaleRunException stale -> stale.detail();
+            default -> throw new IllegalArgumentException(
+                    "not a stale-run signal: " + e.getClass().getName(), e);
+        };
         var status = store.getInstance(ctx.workflowId())
                 .map(WorkflowInstance::status)
                 .orElse(null);
-        logger.warn("Workflow '{}' stood down: event append at sequence {} collided with a "
-                        + "concurrent runner (instance status now {}) — no failure recorded, "
-                        + "no compensation run; the concurrent runner's durable state governs",
-                ctx.workflowId(), e.sequenceNumber(), status);
+        logger.warn("Workflow '{}' stood down: another runner owns its progress ({}; instance status "
+                        + "now {}) — no failure recorded, no compensation run; the concurrent runner's "
+                        + "durable state governs",
+                ctx.workflowId(), detail, status);
         emit("standDown", ctx.workflowId(), () ->
-                observer.standDown(StandDownReason.STALE_RUN, ctx.workflowId(),
-                        "append collision at sequence " + e.sequenceNumber()));
+                observer.standDown(StandDownReason.STALE_RUN, ctx.workflowId(), detail));
     }
 
     // ── Internal: unknown-history stand-down (spec §C2) ────────────────
@@ -1820,14 +1839,17 @@ public final class WorkflowExecutor {
             // active and recoverable — and an upgraded node finishes the
             // unwind. Nothing is written here.
             handleUnknownHistoryStandDown(ctx, unreadableDuringCompensation);
-        } catch (DuplicateEventException staleDuringCompensation) {
+        } catch (DuplicateEventException | StaleRunException staleDuringCompensation) {
             // The duplicate landed while compensating a genuine failure:
             // another runner adopted the workflow and is compensating it
             // (or already finished). SagaManager rethrows instead of
             // recording COMPENSATION_STEP_FAILED, exactly like the shutdown
             // case; the instance stays COMPENSATING — active and
             // recoverable — and the winner's compensation run finishes the
-            // job. Nothing is written here.
+            // job. Nothing is written here. A StaleRunException is the
+            // status-write form: the COMPENSATING transition (or a status
+            // write inside a compensation action) found the row already
+            // finalised by another runner, which then stands as written.
             handleStaleRunStandDown(ctx, staleDuringCompensation);
         }
     }

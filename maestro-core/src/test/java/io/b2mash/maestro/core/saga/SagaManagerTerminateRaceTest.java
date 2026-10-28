@@ -3,8 +3,8 @@ package io.b2mash.maestro.core.saga;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.engine.InstanceStatusWriter;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
-import io.b2mash.maestro.core.exception.InvalidStateTransitionException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
+import io.b2mash.maestro.core.exception.StaleRunException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.EventType;
@@ -204,7 +204,7 @@ class SagaManagerTerminateRaceTest {
         var stack = new CompensationStack();
         stack.push("step-A", compensationRuns::incrementAndGet);
 
-        assertThrows(InvalidStateTransitionException.class,
+        assertThrows(StaleRunException.class,
                 () -> sagaManager.compensate(ctx, instance, stack, false),
                 "a stale run must not compensate a workflow another runner already COMPLETED");
 

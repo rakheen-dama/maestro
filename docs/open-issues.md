@@ -1516,7 +1516,15 @@ with two engine instances.
 > compensation; with no winner the instance stays active and recoverable;
 > a duplicate landing mid-compensation stands the whole attempt down
 > without recording a step failure). The rest of this section is the record
-> of the defect.
+> of the defect. **Superseded in part by spec row C5:** the activity live
+> path no longer adopts the winner's value either — a lost activity append
+> now unwinds to the same `STALE_RUN` stand-down, because the winner is alive
+> and ahead and every later live step of the loser would collide again or
+> repeat a side effect (pinned by
+> `WorkflowExecutorDuplicateEventStandDownTest`'s fourth test and
+> `EnginePostgresDualExecutionIT`) — and the new `StaleRunException` carries
+> the status-write variant of the same signal (a fresh read of `COMPLETED`
+> or `FAILED` that this run did not write) into that one stand-down arm.
 
 **What's wrong.** In the Issue 11 no-fencing window — a node frozen past the
 30s instance-lock TTL (long GC pause, `docker pause`), partitioned, or racing

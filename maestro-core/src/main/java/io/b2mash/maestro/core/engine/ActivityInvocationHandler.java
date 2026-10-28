@@ -53,9 +53,30 @@ import java.util.concurrent.TimeoutException;
  *
  * <h2>Idempotency</h2>
  * <p>The Postgres unique constraint on {@code (workflow_instance_id, sequence_number)}
- * is the primary idempotency guard. If a {@link DuplicateEventException} is caught
- * during event append, the handler re-reads the stored event and returns/throws
- * its result — handling crash-after-persist scenarios gracefully.
+ * is the primary idempotency guard: at most one outcome is ever persisted per
+ * sequence. The memoization lookup above makes a recovery run replay what is
+ * already there, so a live append only collides when <em>another runner</em>
+ * wrote the slot between this run's lookup and its append — two nodes
+ * executing the same workflow in the lost-lock window (Issue 11).
+ *
+ * <p><b>The stand-down contract.</b> On a {@link DuplicateEventException} from
+ * the append — of this attempt's {@code ACTIVITY_COMPLETED} or of its
+ * {@code ACTIVITY_FAILED} alike — the handler accepts the winner's
+ * <em>record</em> as the truth and writes nothing that contradicts it: no
+ * lifecycle event, no failure surfaced to workflow code. It re-reads the
+ * winner only to check this build can interpret its type (an unknown-typed
+ * winner stands down as {@code UNKNOWN_EVENT_TYPE}, RULING 9), logs at WARN,
+ * and rethrows the duplicate, which unwinds to {@code WorkflowExecutor}'s
+ * {@code STALE_RUN} stand-down. The observer still sees the attempt this node
+ * genuinely executed — it measures executions, not the durable record.
+ *
+ * <p><b>Why not adopt the winner's value.</b> This handler used to return the
+ * winner's stored payload and let the workflow carry on. But the winner is
+ * alive and ahead: every later live activity of the loser would either collide
+ * again or — worse — run a side effect the winner also runs, and a failure the
+ * loser surfaced would contradict a completion the winner recorded. Nothing the
+ * loser does after the collision is needed; standing down is the only move that
+ * cannot double a side effect (C5).
  *
  * <h2>Lock Strategy</h2>
  * <p>The distributed lock is an optimization to prevent duplicate execution, not
@@ -416,40 +437,38 @@ public final class ActivityInvocationHandler implements InvocationHandler {
                 );
             } catch (ActivityExecutionException e) {
                 var elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
-                // Retries exhausted — persist failure
-                boolean failurePersisted = persistFailure(ctx, seq, stepName, e);
-                if (failurePersisted) {
-                    publishLifecycleEvent(ctx, stepName, LifecycleEventType.ACTIVITY_FAILED);
+                // Retries exhausted — persist the failure.
+                try {
+                    persistFailure(ctx, seq, stepName, e);
+                } catch (DuplicateEventException staleRun) {
+                    // A concurrent runner already recorded an outcome at this
+                    // sequence (Review Focus 4). The duplicate propagates
+                    // INSTEAD of e: this run neither publishes ACTIVITY_FAILED
+                    // nor surfaces a failure that contradicts the winner's
+                    // record — it stands down. The observer still sees the
+                    // failure this node genuinely executed: it measures this
+                    // node's executions, not the durable record.
+                    observer.activityFailed(info, elapsed, failureExceptionType(e), false);
+                    throw staleRun;
                 }
-                // If failurePersisted is false, a prior ACTIVITY_COMPLETED event exists
-                // at this sequence (DuplicateEventException). Don't publish misleading
-                // ACTIVITY_FAILED lifecycle event — the stored result is a success.
-                // The observer still sees the failure this node genuinely
-                // executed: it measures this node's executions, not the
-                // durable record. (An Error — e.g. a shutdown signal — never
-                // reaches this catch and is never observed as a failure.)
+                publishLifecycleEvent(ctx, stepName, LifecycleEventType.ACTIVITY_FAILED);
+                // (An Error — e.g. a shutdown signal — never reaches this catch
+                // and is never observed as a failure.)
                 observer.activityFailed(info, elapsed, failureExceptionType(e), false);
                 throw e;
             }
             var elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
 
-            // Persist success
-            var payload = serializer.serialize(result);
-            var persisted = appendEventSafe(ctx, seq, EventType.ACTIVITY_COMPLETED, stepName, payload);
-
-            // If DuplicateEventException was caught, use the stored result
-            if (persisted != null && persisted != payload) {
-                logger.debug("Using previously stored result for '{}' at seq {} (idempotent)", stepName, seq);
+            // Persist success.
+            try {
+                appendEventSafe(ctx, seq, EventType.ACTIVITY_COMPLETED, stepName, serializer.serialize(result));
+            } catch (DuplicateEventException staleRun) {
+                // The winner is alive and ahead: stand down rather than adopt
+                // its value (class Javadoc, "Idempotency"). No ACTIVITY_COMPLETED
+                // lifecycle event — this run did not persist one — but the
+                // observer sees the attempt this node genuinely executed.
                 observer.activityCompleted(info, elapsed, false);
-                // RULING 9: this is a payload this run did NOT write — a
-                // concurrent runner did, possibly on a newer build. Reading it
-                // is a replay read in everything but name, so a payload this
-                // build cannot interpret stands the run down instead of being
-                // recorded as a workflow failure with compensation.
-                return UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), seq,
-                        "result of activity '%s' adopted from a concurrent runner"
-                                .formatted(stepName),
-                        () -> deserializeResult(persisted, method));
+                throw staleRun;
             }
 
             publishLifecycleEvent(ctx, stepName, LifecycleEventType.ACTIVITY_COMPLETED);
@@ -607,14 +626,19 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     // ── Event persistence ─────────────────────────────────────────────
 
     /**
-     * Appends an event to the memoization log, handling {@link DuplicateEventException}
-     * for idempotency.
+     * Appends an event to the memoization log; a lost append race stands this
+     * run down.
      *
-     * @return the payload that was persisted. If a DuplicateEventException was caught,
-     *         returns the payload from the already-stored event (which may differ from
-     *         the provided payload). Returns the same payload reference on normal success.
+     * @throws DuplicateEventException if a concurrent runner already persisted
+     *                                 an event at {@code seq} — rethrown after
+     *                                 the winner's type has been checked, so
+     *                                 the run stands down as {@code STALE_RUN}
+     * @throws io.b2mash.maestro.core.exception.UnknownWorkflowHistoryException
+     *                                 if the winner's event type is one this
+     *                                 build does not define (RULING 9) — the
+     *                                 run stands down as {@code UNKNOWN_EVENT_TYPE}
      */
-    private @Nullable JsonNode appendEventSafe(
+    private void appendEventSafe(
             WorkflowContext ctx, int seq, EventType type,
             String stepName, @Nullable JsonNode payload
     ) {
@@ -630,34 +654,32 @@ public final class ActivityInvocationHandler implements InvocationHandler {
 
         try {
             store.appendEvent(event);
-            return payload;
         } catch (DuplicateEventException e) {
-            logger.debug("Event at seq {} already exists (idempotent), re-reading stored result", seq);
-            // Re-read the stored event and return its payload — but only after
-            // checking this build can interpret the winner's TYPE (RULING 9).
-            //
-            // This branch is reached with NO author error, from the engine's own
-            // normal tolerated state: locks are best-effort, so an old node can
-            // read sequence N empty, execute live, and lose the append race to a
-            // newer node whose event at N is a type this build does not define.
-            // Adopting that winner blindly then either deserializes a foreign
-            // payload as this activity's return type — a SerializationException
-            // that executeWorkflow's catch (Exception) records as FAILED *with
-            // compensation* — or, worse, succeeds and memoizes a silently wrong
-            // value. Standing down instead costs one re-adoption.
-            var stored = UnknownHistoryGuard.requireKnown(
+            // Lost the append race: a concurrent runner already persisted an
+            // outcome at this sequence (C5). Its payload is never adopted — the
+            // winner is alive and ahead — but its TYPE is still checked first
+            // (RULING 9): reached with no author error, from the engine's own
+            // tolerated state (locks are best-effort), the winner may be a
+            // newer node whose event type this build does not define, and that
+            // stands down as UNKNOWN_EVENT_TYPE — the reason an operator needs
+            // to see — rather than as a plain stale run.
+            UnknownHistoryGuard.requireKnown(
                     store.getEventBySequence(ctx.workflowInstanceId(), seq), ctx.workflowId());
-            return stored.map(WorkflowEvent::payload).orElse(payload);
+            logger.warn("Workflow '{}': {} append for '{}' at seq {} collided with a concurrent runner's "
+                            + "event — not adopting it; standing this stale run down",
+                    ctx.workflowId(), type, stepName, seq);
+            throw e;
         }
     }
 
     /**
      * Persists an ACTIVITY_FAILED event with error details in the payload.
      *
-     * @return {@code true} if the failure event was actually persisted, {@code false}
-     *         if a prior event already exists at this sequence (DuplicateEventException)
+     * @throws DuplicateEventException if a concurrent runner already persisted
+     *                                 an outcome at {@code seq} — see
+     *                                 {@link #appendEventSafe}
      */
-    private boolean persistFailure(
+    private void persistFailure(
             WorkflowContext ctx, int seq, String stepName,
             ActivityExecutionException exception
     ) {
@@ -673,10 +695,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             errorPayload = null;
         }
 
-        var persisted = appendEventSafe(ctx, seq, EventType.ACTIVITY_FAILED, stepName, errorPayload);
-        // If appendEventSafe caught DuplicateEventException, persisted will differ from errorPayload
-        // (it returns the previously stored event's payload). This means the failure was NOT persisted.
-        return persisted == errorPayload;
+        appendEventSafe(ctx, seq, EventType.ACTIVITY_FAILED, stepName, errorPayload);
     }
 
     /**

@@ -319,7 +319,8 @@ recollection. "Unverified" below means no test asserts the behaviour either way.
    second node launches its own copy and an in-flight activity runs once per
    node, so activities must be idempotent in that profile. Memoized steps still
    replay rather than re-run, the unique index admits one event per sequence, and
-   the losing node adopts the winner's result.
+   the losing node stands down at its first collision instead of adopting the
+   winner's result (C5, `EnginePostgresDualExecutionIT`).
 
 #### B. Design sharp edges
 

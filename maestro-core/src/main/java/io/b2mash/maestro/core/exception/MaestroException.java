@@ -45,7 +45,8 @@ public sealed class MaestroException extends RuntimeException
                 AdminCommandException,
                 UnsupportedWorkflowVersionException,
                 SequenceSpaceExhaustedException,
-                BranchSequenceExhaustedException {
+                BranchSequenceExhaustedException,
+                StaleRunException {
 
     /**
      * Creates a new exception with the given message.

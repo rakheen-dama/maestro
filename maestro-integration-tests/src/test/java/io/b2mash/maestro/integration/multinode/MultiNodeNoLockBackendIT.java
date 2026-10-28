@@ -48,8 +48,9 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
  *   <li><b>The event log stays single-valued.</b> The unique index on
  *       {@code (workflow_instance_id, sequence_number)} lets exactly one node
  *       win each sequence; the loser <em>discards its own result</em> and
- *       adopts the winner's, so both nodes converge on one output and the
- *       workflow completes exactly once.</li>
+ *       stands down at that first collision ({@code STALE_RUN}, spec row C5 —
+ *       it used to adopt the winner's value and carry on), so the winner's
+ *       output is the only one and the workflow completes exactly once.</li>
  *   <li><b>Finalisation converges too.</b> The second node to write the
  *       terminal status finds the row already versioned past its read and
  *       stands down instead of recording a failure. This is not free — it was
@@ -124,9 +125,10 @@ class MultiNodeNoLockBackendIT extends PostgresIntegrationSupport {
                 .until(() -> !nodeA.executor().isRunning(workflowId));
 
         // Reality check #4: node A's own step-two result never reaches the log;
-        // it reads node B's back and its step three is replayed, not run.
+        // its append collides with node B's and it stands down there (C5), so
+        // its step three is never executed.
         assertEquals(0, recorderA.count("stepThree"),
-                "node A replays step three from node B's event rather than executing it");
+                "node A stands down at its step-two collision rather than executing step three");
         assertEquals(
                 List.of("1:ACTIVITY_COMPLETED:chain.stepOne",
                         "2:ACTIVITY_COMPLETED:chain.stepTwo",

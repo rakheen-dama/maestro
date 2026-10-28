@@ -93,7 +93,10 @@ class ForeignPayloadStandDownTest {
         executor.shutdown();
     }
 
-    // ── F1: the duplicate-adopt branch (ActivityInvocationHandler) ────────
+    // ── F1: the lost append race (ActivityInvocationHandler) ──────────────
+    // Since C5 the loser no longer adopts the winner's value at all: it checks
+    // the winner's TYPE (an unknown type still stands down as
+    // UNKNOWN_EVENT_TYPE) and then stands down as STALE_RUN.
 
     @Test
     @Timeout(30)
@@ -133,13 +136,15 @@ class ForeignPayloadStandDownTest {
 
     @Test
     @Timeout(30)
-    @DisplayName("adopting a winner whose payload this build cannot read stands down — not FAILED, "
-            + "not compensated")
-    void adoptingAnUnreadableWinnerPayload_standsDownInsteadOfFailingAndCompensating() {
+    @DisplayName("losing the append race stands down as STALE_RUN without reading the winner's payload — "
+            + "not FAILED, not compensated")
+    void losingTheAppendRace_standsDownAsStaleRunWithoutReadingTheWinnerPayload() {
         var compensations = new AtomicInteger();
         var workflowId = "adopt-foreign-payload";
-        // A KNOWN type — so only the payload check can catch this — carrying a
-        // shape that cannot become the activity's String return value.
+        // A KNOWN type carrying a shape that cannot become the activity's
+        // String return value. Since C5 the loser never adopts the winner's
+        // value, so the payload is never read: the run stands down as a stale
+        // run at the collision itself, before any deserialization could fail.
         var instanceId = startWithWinner(workflowId, compensations,
                 EventType.ACTIVITY_COMPLETED, json(FOREIGN_PAYLOAD));
 
@@ -161,8 +166,9 @@ class ForeignPayloadStandDownTest {
                 () -> assertTrue(observer.failed().isEmpty(), "workflowFailed must not fire"),
                 () -> assertTrue(observer.compensating().isEmpty(),
                         "workflowCompensating must not fire"),
-                () -> assertEquals(List.of(StandDownReason.UNKNOWN_EVENT_PAYLOAD), reasons(),
-                        "and the run reports WHY it stood down"));
+                () -> assertEquals(List.of(StandDownReason.STALE_RUN), reasons(),
+                        "the winner is alive and ahead — the payload is never read, so the "
+                                + "run stands down as stale, not as unreadable history"));
     }
 
     // ── F2a: the persisted workflow input (WorkflowExecutor) ──────────────

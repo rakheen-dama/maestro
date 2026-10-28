@@ -4,10 +4,10 @@ import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.context.WorkflowMDC;
 import io.b2mash.maestro.core.exception.CompensationException;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
-import io.b2mash.maestro.core.exception.InvalidStateTransitionException;
 import io.b2mash.maestro.core.exception.MaestroControlFlowError;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException;
+import io.b2mash.maestro.core.exception.StaleRunException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
@@ -411,7 +411,7 @@ public final class SagaManager {
                 appendEvent(ctx, stepBaseSeq, EventType.COMPENSATION_STEP_COMPLETED, entry.stepName(), null);
                 publishLifecycleEvent(ctx, entry.stepName(),
                         LifecycleEventType.COMPENSATION_STEP_COMPLETED);
-            } catch (DuplicateEventException staleRun) {
+            } catch (DuplicateEventException | StaleRunException staleRun) {
                 // Issue 18: an append collision here means a concurrent runner
                 // owns this workflow's compensation progress (the replay-skip
                 // guard above read the store before the winner's event landed).
@@ -421,8 +421,12 @@ public final class SagaManager {
                 // (WorkflowExecutor leaves the instance COMPENSATING and
                 // recoverable; the winner's run finishes the job) — the exact
                 // treatment ExecutorShutdownException gets here, and ahead of
-                // catch (Exception e) because DuplicateEventException is a
-                // MaestroException.
+                // catch (Exception e) because both are MaestroExceptions. The
+                // collision may come from the action itself: since C5 a
+                // compensation activity that loses its append race propagates
+                // the duplicate instead of adopting the winner's result. A
+                // StaleRunException (a status write inside the action finding
+                // the row finalised by another runner) is the same signal.
                 throw staleRun;
             } catch (Exception e) {
                 logger.error("Compensation {} '{}' failed for workflow '{}': {}",
@@ -631,8 +635,13 @@ public final class SagaManager {
             // this workflow's compensation progress. Not a step failure;
             // recording it would contradict the winner's durable entry.
             // Rethrow so WorkflowExecutor stands the run down (instance stays
-            // COMPENSATING, recoverable; the winner finishes the job).
+            // COMPENSATING, recoverable; the winner finishes the job). A
+            // StaleRunException — a branch's status write finding the row
+            // finalised by another runner — is the same signal.
             if (errorRef.get() instanceof DuplicateEventException staleRun) {
+                throw staleRun;
+            }
+            if (errorRef.get() instanceof StaleRunException staleRun) {
                 throw staleRun;
             }
         }
@@ -694,10 +703,16 @@ public final class SagaManager {
      *       recording a failure.</li>
      *   <li>A freshly-read {@code COMPLETED}/{@code FAILED} means another
      *       runner already finalised the instance; this run has nothing to add
-     *       and throws {@link InvalidStateTransitionException} rather than
-     *       returning normally — a stale run must never proceed to compensate
-     *       a workflow a peer already finished (that peer's own failure path
-     *       ran, or skipped, compensations per its own outcome).</li>
+     *       and throws {@link StaleRunException} rather than returning
+     *       normally — a stale run must never proceed to compensate a workflow
+     *       a peer already finished (that peer's own failure path ran, or
+     *       skipped, compensations per its own outcome). It propagates out of
+     *       {@link #compensate} to {@code WorkflowExecutor}'s stale-run
+     *       stand-down ({@code STALE_RUN}), which writes nothing. (It used to
+     *       be an {@code InvalidStateTransitionException}, which no executor
+     *       arm caught: thrown from the failure path, it escaped
+     *       {@code executeWorkflow} and killed the workflow thread uncaught —
+     *       C5.)</li>
      *   <li>A lost compare-and-set ({@link OptimisticLockException}) is
      *       retried against a fresh read, up to the shared budget.</li>
      * </ul>
@@ -745,8 +760,7 @@ public final class SagaManager {
                 logger.warn("Workflow '{}' is already {} — another runner finalised it first; "
                                 + "abandoning this stale run without compensating",
                         ctx.workflowId(), latest.status());
-                throw new InvalidStateTransitionException(
-                        ctx.workflowId(), latest.status(), WorkflowStatus.COMPENSATING);
+                throw new StaleRunException(ctx.workflowId(), latest.status(), "COMPENSATING write");
             }
             try {
                 var compensating = latest.toBuilder()

@@ -217,24 +217,35 @@ class ActivityInvocationHandlerTest {
     // ── Idempotency tests ─────────────────────────────────────────────
 
     @Test
-    @DisplayName("Idempotency: DuplicateEventException on append returns stored result")
-    void duplicateEventIdempotency() {
-        // Pre-populate the store so appendEvent will throw DuplicateEventException
-        var storedPayload = MAPPER.valueToTree(new Greeting("Stored result"));
-        store.preloadForDuplication(1, new WorkflowEvent(
-                UUID.randomUUID(), INSTANCE_ID, 1,
+    @DisplayName("Stale run: losing the append race rethrows DuplicateEventException instead of adopting the winner's value")
+    void duplicateEventOnAppend_standsDownInsteadOfAdopting() {
+        store.preloadForDuplication(1, new WorkflowEvent(UUID.randomUUID(), INSTANCE_ID, 1,
                 EventType.ACTIVITY_COMPLETED, "GreetingActivities.greet",
-                storedPayload, Instant.now()
-        ));
-
+                MAPPER.valueToTree(new Greeting("winner")), Instant.now()));
         withContext(() -> {
-            // The proxy will try to append, get DuplicateEventException, re-read stored result
             var proxy = createProxy(GreetingActivities.class, new GreetingActivitiesImpl());
-            var result = proxy.greet("World");
-
-            // Should return the stored result, not the live execution result
-            assertEquals("Stored result", result.message());
+            var thrown = assertThrows(DuplicateEventException.class, () -> proxy.greet("World"));
+            assertEquals(1, thrown.sequenceNumber());
         });
+        assertTrue(messaging.publishedEvents.stream().noneMatch(e -> e.eventType() == LifecycleEventType.ACTIVITY_COMPLETED),
+                "the loser must not announce a completion it did not persist");
+    }
+
+    @Test
+    @DisplayName("Stale run: a loser whose own attempt FAILED after the winner completed does not persist or surface that failure")
+    void duplicateEventOnFailureAppend_standsDown() {
+        // Review Focus 4: the loser never reports a failure that contradicts the winner.
+        store.preloadForDuplication(1, new WorkflowEvent(UUID.randomUUID(), INSTANCE_ID, 1,
+                EventType.ACTIVITY_COMPLETED, "GreetingActivities.greet",
+                MAPPER.valueToTree(new Greeting("winner")), Instant.now()));
+        withContext(() -> {
+            var proxy = createProxy(GreetingActivities.class, new FailingActivities(), RetryPolicy.noRetry(),
+                    Duration.ofSeconds(30));
+            assertThrows(DuplicateEventException.class, () -> proxy.greet("World"),
+                    "must not surface ActivityExecutionException — the winner's COMPLETED is the truth");
+        });
+        assertTrue(messaging.publishedEvents.stream().noneMatch(e -> e.eventType() == LifecycleEventType.ACTIVITY_FAILED));
+        assertTrue(store.appendedEvents.isEmpty(), "the loser persisted nothing");
     }
 
     // ── Lock behavior tests ───────────────────────────────────────────
@@ -775,12 +786,14 @@ class ActivityInvocationHandlerTest {
         private final Map<Integer, WorkflowEvent> duplicateEvents = new HashMap<>();
 
         /**
-         * Pre-loads an event that will cause appendEvent to throw DuplicateEventException
-         * for the given sequence, simulating a crash-after-persist scenario.
+         * Arms a lost append race at {@code seq}: the memoization lookup still
+         * sees an empty slot (so the activity really executes live), and the
+         * winner's {@code event} lands at the moment this run appends — which
+         * then throws {@link DuplicateEventException}, exactly as a concurrent
+         * runner's earlier insert does against the unique index.
          */
         void preloadForDuplication(int seq, WorkflowEvent event) {
             duplicateEvents.put(seq, event);
-            eventsBySequence.put(seq, event);
         }
 
         @Override
@@ -790,7 +803,9 @@ class ActivityInvocationHandlerTest {
 
         @Override
         public void appendEvent(WorkflowEvent event) {
-            if (duplicateEvents.containsKey(event.sequenceNumber())) {
+            var winner = duplicateEvents.remove(event.sequenceNumber());
+            if (winner != null) {
+                eventsBySequence.put(event.sequenceNumber(), winner);
                 throw new DuplicateEventException(event.workflowInstanceId(), event.sequenceNumber());
             }
             if (eventsBySequence.containsKey(event.sequenceNumber())) {
