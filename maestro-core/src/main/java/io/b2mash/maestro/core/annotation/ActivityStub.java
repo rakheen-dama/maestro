@@ -41,11 +41,24 @@ import java.lang.annotation.Target;
 public @interface ActivityStub {
 
     /**
-     * Maximum time from when an activity starts to when it must complete,
-     * as an ISO 8601 duration.
+     * Maximum time from when an activity attempt starts to when it must
+     * complete, as an ISO 8601 duration.
      *
-     * <p>Used as the TTL hint for the distributed lock acquired during
-     * live execution. Hard enforcement of this timeout is a future enhancement.
+     * <p>Enforced per attempt: each live attempt runs on its own virtual
+     * thread, and one that is still running when this timeout elapses is
+     * cancelled (interrupted) and fails with an
+     * {@link io.b2mash.maestro.core.exception.ActivityTimeoutException
+     * ActivityTimeoutException}. That failure is retried under
+     * {@link #retryPolicy()} like any other — list the exception in
+     * {@code nonRetryableExceptions} to make a timeout terminal. Each retry
+     * gets the full timeout afresh, and {@code @Compensate} methods are bounded
+     * by the same timeout. Must be positive. Also the base of the TTL of the
+     * distributed lock acquired during live execution.
+     *
+     * <p>Because the attempt runs on its own thread, activity code must not
+     * call workflow APIs or other activity proxies (unsupported); the
+     * {@code WorkflowContext} is re-bound there for compatibility only, and a
+     * {@code parallel()} branch's compensation buffer is not.
      *
      * @return the start-to-close timeout duration
      */

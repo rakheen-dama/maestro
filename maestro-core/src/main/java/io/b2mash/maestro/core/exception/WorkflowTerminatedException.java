@@ -19,6 +19,11 @@ import org.jspecify.annotations.Nullable;
  *       next time it touches the engine — at its next park, at its next status
  *       write, or within one wake-recheck interval for a parked
  *       {@code awaitSignal()}.</li>
+ *   <li>At its next live activity attempt or retry backoff, when the
+ *       terminating node is the owner: the run's in-memory
+ *       {@code RunCancellation} is set, so no further attempt starts and a
+ *       backoff in progress is abandoned. The attempt already executing is not
+ *       interrupted.</li>
  * </ul>
  *
  * <p>Nothing is written when it propagates: the {@code TERMINATED} row is

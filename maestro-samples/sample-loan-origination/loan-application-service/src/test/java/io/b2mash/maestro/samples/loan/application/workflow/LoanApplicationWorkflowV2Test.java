@@ -17,6 +17,7 @@ import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.samples.loan.application.activity.FundingActivities;
 import io.b2mash.maestro.samples.loan.application.activity.LoanActivities;
 import io.b2mash.maestro.samples.loan.application.activity.LoanMessagingActivities;
+import io.b2mash.maestro.samples.loan.application.activity.LoanPolicyActivities;
 import io.b2mash.maestro.samples.loan.application.activity.impl.InMemoryLoanActivities;
 import io.b2mash.maestro.samples.loan.application.activity.impl.SimulatedFundingActivities;
 import io.b2mash.maestro.samples.loan.application.domain.DocumentUploaded;
@@ -117,12 +118,6 @@ class LoanApplicationWorkflowV2Test {
 
     @BeforeEach
     void setUp() {
-        // Fast test timeouts; the gate timeout is waited out in real time on
-        // the not-withdrawn path, twice per run.
-        LoanTimeouts.configure(
-                Duration.ofSeconds(5), Duration.ofSeconds(5),
-                Duration.ofSeconds(5), Duration.ofMillis(200));
-
         store = new InMemoryWorkflowStore();
         lock = new InMemoryDistributedLock();
         messaging = new InMemoryWorkflowMessaging();
@@ -136,6 +131,13 @@ class LoanApplicationWorkflowV2Test {
         activityImpls.put(LoanActivities.class, new InMemoryLoanActivities());
         activityImpls.put(LoanMessagingActivities.class, recordingMessaging);
         activityImpls.put(FundingActivities.class, new SimulatedFundingActivities());
+        // This fixture runs raw executors on the system clock, with no test
+        // clock to advance. Only the withdrawal gates are meant to expire (a
+        // short "not withdrawn" window); every human wait gets the SPEC 10
+        // minutes, so no wall-clock deadline can race the script on a slow
+        // build — every signal the script sends is delivered long before (R59).
+        activityImpls.put(LoanPolicyActivities.class, (LoanPolicyActivities) () -> new LoanTimeoutPolicy(
+                Duration.ofMinutes(10), Duration.ofMinutes(10), Duration.ofMinutes(10), Duration.ofMillis(200)));
 
         v2WorkflowClass = loadV2WorkflowClass();
     }
@@ -144,7 +146,6 @@ class LoanApplicationWorkflowV2Test {
     void tearDown() {
         nodes.forEach(WorkflowExecutor::shutdown);
         nodes.clear();
-        LoanTimeouts.reset();
     }
 
     // ── Guard: the fixture really is running two different implementations ──
@@ -167,21 +168,27 @@ class LoanApplicationWorkflowV2Test {
     @Test
     @DisplayName("a loan in flight when v2 is deployed replays the sequential path with an identical event log")
     void inFlightLoanKeepsTheSequentialPathAndTheSameEventSequence() {
+        // Both runs deliver every signal only once the workflow is parked on
+        // it, so every await parks (TIMER_SCHEDULED, then its outcome) in both
+        // logs. Delivering ahead of the await would let either run find the
+        // signal already waiting and skip the deadline memo — an event layout
+        // that depends on thread timing, not on the code version (R59).
+        //
         // Reference: a whole loan run start-to-finish on v1 code only.
         var nodeV1 = node("node-v1");
         var reference = startLoan(nodeV1, "loan-reference", LoanApplicationWorkflow.class);
-        driveVerificationsSequentially(nodeV1, reference);
-        driveToFunded(nodeV1, reference);
+        for (var type : List.of("credit", "employment", "appraisal")) {
+            deliverWhenParked(nodeV1, reference, "verification.result", approved(reference.applicationId, type));
+        }
+        driveToFundedWhenParked(nodeV1, reference);
         awaitStatus(reference, WorkflowStatus.COMPLETED);
         var referenceLog = eventLog(reference);
 
         // Migrated: the same script, but the node is replaced mid-verification
         // by one running v2 code.
         var migrated = startLoan(nodeV1, "loan-migrated", LoanApplicationWorkflow.class);
-        nodeV1.deliverSignal(migrated.workflowId, "verification.result",
-                approved(migrated.applicationId, "credit"));
-        awaitVerificationsConsumed(migrated, 1);
-        awaitStatus(migrated, WorkflowStatus.WAITING_SIGNAL);
+        deliverWhenParked(nodeV1, migrated, "verification.result", approved(migrated.applicationId, "credit"));
+        awaitParkedOn(migrated, "verification.result");
 
         nodeV1.shutdown();
         nodes.remove(nodeV1);
@@ -191,13 +198,9 @@ class LoanApplicationWorkflowV2Test {
         assertEquals(1, nodeV2.recoverWorkflows(Map.of(WORKFLOW_TYPE, registration(v2WorkflowClass))),
                 "the replacement node must adopt the in-flight loan");
 
-        nodeV2.deliverSignal(migrated.workflowId, "verification.result",
-                approved(migrated.applicationId, "employment"));
-        awaitVerificationsConsumed(migrated, 2);
-        nodeV2.deliverSignal(migrated.workflowId, "verification.result",
-                approved(migrated.applicationId, "appraisal"));
-        awaitVerificationsConsumed(migrated, 3);
-        driveToFunded(nodeV2, migrated);
+        deliverWhenParked(nodeV2, migrated, "verification.result", approved(migrated.applicationId, "employment"));
+        deliverWhenParked(nodeV2, migrated, "verification.result", approved(migrated.applicationId, "appraisal"));
+        driveToFundedWhenParked(nodeV2, migrated);
         awaitStatus(migrated, WorkflowStatus.COMPLETED);
 
         var migratedLog = eventLog(migrated);
@@ -264,6 +267,13 @@ class LoanApplicationWorkflowV2Test {
         var afterJoin = parentSeq * BRANCH_MULTIPLIER + 3 * BRANCH_MULTIPLIER;
 
         var verificationSeqs = sequences(verificationSignalEvents(run));
+        // Every event branch 0's awaits recorded, including the TIMER_SCHEDULED
+        // deadline memo a parked await writes at its own slot (C12 / F4).
+        var verificationSlots = events(run).stream()
+                .filter(e -> "$maestro:awaitSignal:verification.result".equals(e.stepName()))
+                .map(WorkflowEvent::sequenceNumber)
+                .sorted()
+                .toList();
         var documentSeqs = sequences(documentSignalEvents(run));
         var afterJoinSeqs = events(run).stream()
                 .map(WorkflowEvent::sequenceNumber)
@@ -277,11 +287,18 @@ class LoanApplicationWorkflowV2Test {
 
         assertAll(
                 // Branch 0 awaits verification.result three times, back to back,
-                // from the first slot of its own partition.
-                () -> assertEquals(
-                        List.of(branch0Base + 1, branch0Base + 2, branch0Base + 3),
-                        verificationSeqs,
-                        "branch 0 must allocate from parentSeq*1000 + 1*1000"),
+                // from the first slot of its own partition. A parked await takes
+                // two slots (deadline memo, then outcome) and one that finds its
+                // signal already waiting takes one, so pin the first slot and
+                // contiguity rather than exact outcome slots.
+                () -> assertEquals(branch0Base + 1, verificationSlots.getFirst(),
+                        "branch 0 must allocate from parentSeq*1000 + 1*1000, got " + verificationSlots),
+                () -> assertEquals(verificationSlots.getFirst() + verificationSlots.size() - 1,
+                        verificationSlots.getLast(),
+                        "branch 0's await slots must be back to back, got " + verificationSlots),
+                () -> assertEquals(3, verificationSeqs.size()),
+                () -> assertTrue(verificationSlots.getLast() < branch1Base,
+                        "branch 0 must stay inside its own partition, got " + verificationSlots),
                 // Branch 1's collectSignals interleaves currentTime side effects
                 // with its two awaits, so pin containment rather than exact slots.
                 () -> assertTrue(documentSeqs.stream()
@@ -300,7 +317,7 @@ class LoanApplicationWorkflowV2Test {
         var node = node("node-same-name");
         var workflowId = "same-name-1";
         node.startWorkflow(workflowId, "same-name-branches", "test", null,
-                workflowImpl(SameSignalNameBranchesWorkflow.class),
+                () -> workflowImpl(SameSignalNameBranchesWorkflow.class),
                 workflowMethod(SameSignalNameBranchesWorkflow.class));
 
         await().atMost(SETTLE).until(() ->
@@ -355,7 +372,7 @@ class LoanApplicationWorkflowV2Test {
         // reach their await and neither of them parks.
         node.deliverSignal(workflowId, "dup", "only-one");
         node.startWorkflow(workflowId, "same-name-branches", "test", null,
-                workflowImpl(SameSignalNameBranchesWorkflow.class),
+                () -> workflowImpl(SameSignalNameBranchesWorkflow.class),
                 workflowMethod(SameSignalNameBranchesWorkflow.class));
 
         await().atMost(SETTLE).until(() ->
@@ -473,9 +490,50 @@ class LoanApplicationWorkflowV2Test {
         }
     }
 
-    private void driveToFunded(WorkflowExecutor node, Run run) {
-        deliverDocuments(node, run);
-        driveUnderwritingAndFunding(node, run);
+    /**
+     * The documents → underwriting → signatures part of the sequential (v1)
+     * path, each signal delivered only once the workflow is parked on it. The
+     * withdrawal gates in between expire on their own (no withdrawal is sent).
+     */
+    private void driveToFundedWhenParked(WorkflowExecutor node, Run run) {
+        deliverWhenParked(node, run, "document.uploaded",
+                new DocumentUploaded(run.applicationId, "payslip", BORROWERS.get(0)));
+        deliverWhenParked(node, run, "document.uploaded",
+                new DocumentUploaded(run.applicationId, "bank-statement", BORROWERS.get(1)));
+        deliverWhenParked(node, run, "underwriting.decision",
+                new UnderwritingDecision(run.applicationId, 1, "APPROVED", List.of()));
+        deliverWhenParked(node, run, "package.signed", new Signature(run.applicationId, BORROWERS.get(0)));
+        deliverWhenParked(node, run, "package.signed", new Signature(run.applicationId, BORROWERS.get(1)));
+    }
+
+    /**
+     * Waits until the (sequential) workflow is parked on an await of
+     * {@code signalName}, delivers the signal, and waits for it to be consumed.
+     */
+    private void deliverWhenParked(WorkflowExecutor node, Run run, String signalName, Object payload) {
+        awaitParkedOn(run, signalName);
+        var consumed = signalEvents(run, signalName).size();
+        node.deliverSignal(run.workflowId, signalName, payload);
+        await().atMost(SETTLE).until(() -> signalEvents(run, signalName).size() > consumed);
+    }
+
+    /**
+     * Waits until the newest event of a sequential run is the
+     * {@code TIMER_SCHEDULED} memo of an await of {@code signalName} — the
+     * await has parked and armed its deadline, and no outcome is recorded —
+     * and the instance is {@code WAITING_SIGNAL}.
+     */
+    private void awaitParkedOn(Run run, String signalName) {
+        var awaitStep = "$maestro:awaitSignal:" + signalName;
+        await().atMost(SETTLE).until(() -> {
+            var newest = events(run).stream()
+                    .max(java.util.Comparator.comparingInt(WorkflowEvent::sequenceNumber));
+            return newest.isPresent()
+                    && newest.get().eventType() == EventType.TIMER_SCHEDULED
+                    && awaitStep.equals(newest.get().stepName())
+                    && store.getInstance(run.workflowId)
+                            .map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL).orElse(false);
+        });
     }
 
     private void deliverDocuments(WorkflowExecutor node, Run run) {
@@ -509,13 +567,13 @@ class LoanApplicationWorkflowV2Test {
         var input = new LoanApplication(applicationId, BORROWERS, 400_000, 100_000, 500_000,
                 REQUIRED_DOCS);
         var instanceId = node.startWorkflow(workflowId, WORKFLOW_TYPE, TASK_QUEUE, input,
-                workflowImpl(workflowClass), workflowMethod(workflowClass));
+                () -> workflowImpl(workflowClass), workflowMethod(workflowClass));
         return new Run(applicationId, workflowId, instanceId);
     }
 
     private WorkflowRegistration registration(Class<?> workflowClass) {
         return new WorkflowRegistration(WORKFLOW_TYPE, TASK_QUEUE,
-                workflowImpl(workflowClass), workflowMethod(workflowClass));
+                () -> workflowImpl(workflowClass), workflowMethod(workflowClass));
     }
 
     /** Instantiates the workflow and injects a memoizing proxy per {@code @ActivityStub}. */

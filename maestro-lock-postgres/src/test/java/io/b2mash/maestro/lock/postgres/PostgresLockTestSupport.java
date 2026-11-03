@@ -52,7 +52,7 @@ abstract class PostgresLockTestSupport {
             if (!migrated) {
                 Flyway.configure()
                         .dataSource(dataSource)
-                        .locations("classpath:db/migration")
+                        .locations("classpath:db/maestro/lock")
                         .load()
                         .migrate();
                 migrated = true;

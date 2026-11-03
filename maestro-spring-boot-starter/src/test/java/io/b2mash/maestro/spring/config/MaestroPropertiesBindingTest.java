@@ -41,13 +41,11 @@ class MaestroPropertiesBindingTest {
                         "maestro.service-name=binding-test",
                         "maestro.messaging.type=kafka",
                         "maestro.messaging.consumer-group=custom-group",
-                        "maestro.messaging.topics.tasks=custom.tasks",
                         "maestro.messaging.topics.signals=custom.signals",
                         "maestro.messaging.topics.admin-events=custom.admin.events")
                 .run(context -> {
                     var messaging = context.getBean(MaestroProperties.class).getMessaging();
                     assertThat(messaging.consumerGroup()).isEqualTo("custom-group");
-                    assertThat(messaging.topics().tasks()).isEqualTo("custom.tasks");
                     assertThat(messaging.topics().signals()).isEqualTo("custom.signals");
                     assertThat(messaging.topics().adminEvents()).isEqualTo("custom.admin.events");
                 });
@@ -90,7 +88,7 @@ class MaestroPropertiesBindingTest {
     void remainingBlocksBind() {
         runner.withPropertyValues(
                         "maestro.service-name=binding-test",
-                        "maestro.store.table-prefix=custom_",
+                        "maestro.store.schema.mode=validate",
                         "maestro.lock.type=postgres",
                         "maestro.lock.key-prefix=custom:lock:",
                         "maestro.lock.ttl=45s",
@@ -102,10 +100,12 @@ class MaestroPropertiesBindingTest {
                         "maestro.admin.events.enabled=false",
                         "maestro.admin.events.topic=custom.admin",
                         "maestro.shutdown.timeout=15s",
-                        "maestro.signal.wake-recheck-interval=5s")
+                        "maestro.signal.wake-recheck-interval=5s",
+                        "maestro.signal.janitor-interval=2h",
+                        "maestro.signal.terminal-retention=3d")
                 .run(context -> {
                     var properties = context.getBean(MaestroProperties.class);
-                    assertThat(properties.getStore().tablePrefix()).isEqualTo("custom_");
+                    assertThat(properties.getStore().schema().mode()).isEqualTo("validate");
                     assertThat(properties.getLock().type()).isEqualTo("postgres");
                     assertThat(properties.getLock().keyPrefix()).isEqualTo("custom:lock:");
                     assertThat(properties.getLock().ttl()).isEqualTo(Duration.ofSeconds(45));
@@ -118,6 +118,8 @@ class MaestroPropertiesBindingTest {
                     assertThat(properties.getAdmin().events().topic()).isEqualTo("custom.admin");
                     assertThat(properties.getShutdown().timeout()).isEqualTo(Duration.ofSeconds(15));
                     assertThat(properties.getSignal().wakeRecheckInterval()).isEqualTo(Duration.ofSeconds(5));
+                    assertThat(properties.getSignal().janitorInterval()).isEqualTo(Duration.ofHours(2));
+                    assertThat(properties.getSignal().terminalRetention()).isEqualTo(Duration.ofDays(3));
                 });
     }
 
@@ -141,10 +143,10 @@ class MaestroPropertiesBindingTest {
         runner.withPropertyValues("maestro.service-name=binding-test").run(context -> {
             var properties = context.getBean(MaestroProperties.class);
             assertThat(properties.getStore().type()).isEqualTo("postgres");
-            assertThat(properties.getStore().tablePrefix()).isEqualTo("maestro_");
+            assertThat(properties.getStore().schema().mode()).isEqualTo("flyway");
             assertThat(properties.getMessaging().type()).isEqualTo("kafka");
             assertThat(properties.getMessaging().consumerGroup()).isNull();
-            assertThat(properties.getMessaging().topics().tasks()).isNull();
+            assertThat(properties.getMessaging().topics().signals()).isNull();
             assertThat(properties.getMessaging().topics().adminEvents()).isEqualTo("maestro.admin.events");
             var redelivery = properties.getMessaging().redelivery();
             assertThat(redelivery.enabled()).isTrue();
@@ -163,6 +165,8 @@ class MaestroPropertiesBindingTest {
             assertThat(properties.getAdmin().events().topic()).isEqualTo("maestro.admin.events");
             assertThat(properties.getShutdown().timeout()).isEqualTo(Duration.ofSeconds(30));
             assertThat(properties.getSignal().wakeRecheckInterval()).isEqualTo(Duration.ofSeconds(30));
+            assertThat(properties.getSignal().janitorInterval()).isEqualTo(Duration.ofHours(1));
+            assertThat(properties.getSignal().terminalRetention()).isEqualTo(Duration.ofDays(7));
             assertThat(properties.getObservability().metrics().enabled()).isTrue();
             assertThat(properties.getObservability().tracing().enabled()).isTrue();
         });

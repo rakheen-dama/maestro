@@ -63,11 +63,23 @@ public sealed interface WorkflowOperations permits DefaultWorkflowOperations {
      * If none found, parks the virtual thread until a signal arrives or
      * the timeout elapses.
      *
-     * <p>During replay, a previously received signal is returned instantly.
+     * <p>The deadline of a parked await is durable: it is memoized as a
+     * {@code TIMER_SCHEDULED} event and persisted as a timer row
+     * ({@code await-signal-<seq>}), so a crash or restart resumes the wait
+     * from the original deadline instead of re-arming it, the timer poller
+     * fires it like any {@link #sleep(Duration)} timer, cancelling that row
+     * ends the wait with {@code SignalTimeoutException}, and
+     * {@code TestWorkflowEnvironment.advanceTime()} drives it. A signal that is
+     * already visible when the deadline is reached still wins.
+     *
+     * <p>During replay, a previously received signal is returned instantly,
+     * and a previously recorded timeout is re-raised.
      *
      * @param signalName the signal name to wait for (e.g., {@code "payment.result"})
      * @param type       the expected payload type
-     * @param timeout    maximum time to wait
+     * @param timeout    maximum time to wait; zero or negative consumes an
+     *                   already-arrived signal or times out immediately, with
+     *                   no timer row
      * @param <T>        the payload type
      * @return the signal payload
      * @throws io.b2mash.maestro.core.exception.SignalTimeoutException if the timeout elapses
@@ -97,9 +109,33 @@ public sealed interface WorkflowOperations permits DefaultWorkflowOperations {
      * On replay, each branch replays its own events independently,
      * regardless of execution order.
      *
+     * <h2>Limits</h2>
+     * <ul>
+     *   <li><b>999 sequence slots per branch.</b> Branch {@code i} of a fork at
+     *       parent sequence {@code p} draws from the block starting at
+     *       {@code p * 1000 + (i + 1) * 1000}; the 1000th slot throws
+     *       {@link io.b2mash.maestro.core.exception.BranchSequenceExhaustedException}
+     *       instead of spilling into the sibling's block. Most steps take one
+     *       slot; {@code sleep()} takes two.</li>
+     *   <li><b>Depth.</b> Every fork level multiplies the sequence by 1000 and
+     *       sequence numbers are 32-bit, so only a few levels fit. A fork that
+     *       cannot be sequenced throws
+     *       {@link io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException}
+     *       before it consumes a slot. See {@code docs/concepts.md} § Parallel
+     *       Execution → Depth limit for which shapes fit.</li>
+     * </ul>
+     * <p>Both are ordinary {@link io.b2mash.maestro.core.exception.MaestroException}s,
+     * not engine control-flow signals: they fail the branch (rethrown once every
+     * branch has joined) and, uncaught, fail the workflow, which runs its
+     * registered compensations.
+     *
      * @param tasks the tasks to execute in parallel
      * @param <T>   the result type
      * @return the results in the same order as the input tasks
+     * @throws io.b2mash.maestro.core.exception.BranchSequenceExhaustedException
+     *         if a branch takes a 1000th sequence slot
+     * @throws io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException
+     *         if the fork's branch blocks would overflow the sequence space
      */
     <T> List<T> parallel(List<Callable<T>> tasks);
 
@@ -180,6 +216,13 @@ public sealed interface WorkflowOperations permits DefaultWorkflowOperations {
      * (most recent first) to undo completed activities. The stack is
      * rebuilt during replay as the workflow re-executes.
      *
+     * <p><b>Inside a {@code parallel()} branch</b> the action is not pushed
+     * immediately: it is buffered per branch and pushed when the fork joins, in
+     * branch-index order (not finish order), whether the fork returns or
+     * throws. So until the enclosing {@code parallel()} returns, the action is
+     * not yet on the stack; and if the fork's join is interrupted it is
+     * dropped (with a WARN naming it).
+     *
      * @param compensation the compensation action to register
      */
     void addCompensation(Runnable compensation);
@@ -190,6 +233,10 @@ public sealed interface WorkflowOperations permits DefaultWorkflowOperations {
      * <p>The step name is used for logging and event recording. This
      * overload is used by the {@code @Compensate} integration in the
      * activity proxy.
+     *
+     * <p>The same branch-buffering caveat as {@link #addCompensation(Runnable)}
+     * applies inside a {@code parallel()} branch: pushed at the fork's join, in
+     * branch-index order.
      *
      * @param stepName     the compensation step name for logging and events
      * @param compensation the compensation action to register

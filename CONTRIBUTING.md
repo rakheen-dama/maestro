@@ -123,10 +123,10 @@ Integration tests use [Testcontainers](https://testcontainers.com/) and **requir
 
 ```bash
 # All integration tests
-./gradlew integrationTest
+./gradlew :maestro-integration-tests:test
 
-# Specific module
-./gradlew :maestro-store-postgres:integrationTest
+# One module's Testcontainers suite (test is the only task; there is no integrationTest task)
+./gradlew :maestro-store-postgres:test
 ```
 
 ### Running a specific test class
@@ -269,7 +269,7 @@ Create a branch from `main` using one of these prefixes:
 
 1. Run the full build: `./gradlew build`
 2. Run unit tests: `./gradlew test`
-3. Run integration tests if your change touches persistence, messaging, or locking: `./gradlew integrationTest`
+3. Run integration tests if your change touches persistence, messaging, or locking: `./gradlew :maestro-integration-tests:test`
 4. Verify your code follows the [code standards](#code-standards) above.
 5. Add or update tests for any new or changed functionality.
 

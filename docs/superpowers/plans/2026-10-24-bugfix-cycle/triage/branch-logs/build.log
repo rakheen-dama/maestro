@@ -1,0 +1,927 @@
+# pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle head=ec9286dbf3e2fe6beab43e79486a150203929d30 started=2026-10-28T17:59:30Z gate=build
+> Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :build-logic:generateExternalPluginSpecBuilders
+> Task :build-logic:extractPrecompiledScriptPluginPlugins
+> Task :build-logic:generateScriptPluginAdapters
+> Task :build-logic:pluginDescriptors
+> Task :build-logic:processResources
+> Task :build-logic:compilePluginsBlocks
+> Task :build-logic:generatePrecompiledScriptPluginAccessors
+
+> Configure project :maestro-admin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :build-logic:compileKotlin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+w: ⚠️ Inconsistent JVM Target Compatibility Between Java and Kotlin Tasks
+Inconsistent JVM-target compatibility detected for tasks 'compileJava' (25) and 'compileKotlin' (24).
+This will become an error in Gradle 8.0.
+Solution: Consider using JVM Toolchain: https://kotl.in/gradle/jvm/toolchain
+Learn more about JVM-target validation: https://kotl.in/gradle/jvm/target-validation
+
+
+> Task :build-logic:compileJava NO-SOURCE
+> Task :build-logic:classes
+> Task :build-logic:jar
+> Task :assemble UP-TO-DATE
+> Task :maestro-bom:assemble UP-TO-DATE
+> Task :maestro-bom:check UP-TO-DATE
+> Task :maestro-bom:build UP-TO-DATE
+> Task :maestro-integration-tests:compileJava NO-SOURCE
+> Task :maestro-integration-tests:processResources NO-SOURCE
+> Task :maestro-integration-tests:classes UP-TO-DATE
+
+> Task :verifyModuleTestCoverage
+Test-coverage gate: 17 modules with production code, 0 accepted without tests.
+
+> Task :check
+> Task :build
+> Task :maestro-store-jdbc:processResources NO-SOURCE
+> Task :maestro-integration-tests:jar
+> Task :maestro-integration-tests:assemble
+> Task :maestro-messaging-kafka:processResources
+> Task :maestro-test:processResources NO-SOURCE
+> Task :maestro-admin-client:processResources
+> Task :maestro-spring-boot-starter:processResources
+> Task :maestro-lock-valkey:processResources
+> Task :maestro-integration-tests:processTestResources
+> Task :maestro-lock-postgres:processResources
+> Task :maestro-admin-client:sourcesJar
+> Task :maestro-admin-client:processTestResources NO-SOURCE
+> Task :maestro-lock-valkey:sourcesJar
+> Task :maestro-lock-valkey:processTestResources NO-SOURCE
+> Task :maestro-messaging-postgres:processResources
+> Task :maestro-store-jdbc:sourcesJar
+> Task :maestro-store-jdbc:processTestResources NO-SOURCE
+> Task :maestro-samples:sample-order-service:processResources
+> Task :maestro-samples:sample-order-service:processTestResources NO-SOURCE
+> Task :maestro-lock-postgres:sourcesJar
+> Task :maestro-lock-postgres:processTestResources NO-SOURCE
+> Task :maestro-store-postgres:processResources
+> Task :maestro-samples:sample-payment-gateway:processResources
+> Task :maestro-samples:sample-payment-gateway:processTestResources NO-SOURCE
+> Task :maestro-samples:sample-postgres-only:processResources
+> Task :maestro-messaging-kafka:sourcesJar
+> Task :maestro-samples:sample-postgres-only:processTestResources NO-SOURCE
+> Task :maestro-messaging-kafka:processTestResources NO-SOURCE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:processResources
+> Task :maestro-samples:sample-loan-origination:loan-application-service:processV2Resources NO-SOURCE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:processTestResources NO-SOURCE
+> Task :maestro-samples:sample-loan-origination:underwriting-service:processResources
+> Task :maestro-samples:sample-loan-origination:underwriting-service:processTestResources NO-SOURCE
+> Task :maestro-test:sourcesJar
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:processResources
+> Task :maestro-test:processTestResources NO-SOURCE
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:processTestResources NO-SOURCE
+> Task :maestro-messaging-postgres:sourcesJar
+> Task :maestro-messaging-postgres:processTestResources NO-SOURCE
+> Task :maestro-store-postgres:sourcesJar
+> Task :maestro-admin:processResources
+> Task :maestro-admin:processTestResources NO-SOURCE
+> Task :maestro-spring-boot-starter:sourcesJar
+> Task :maestro-spring-boot-starter:processTestResources NO-SOURCE
+> Task :maestro-store-postgres:processTestResources
+> Task :maestro-core:compileJava
+> Task :maestro-core:processResources NO-SOURCE
+> Task :maestro-core:classes
+> Task :maestro-core:jar
+> Task :maestro-store-jdbc:compileJava
+> Task :maestro-store-jdbc:classes
+> Task :maestro-store-jdbc:jar
+> Task :maestro-test:compileJava
+> Task :maestro-test:classes
+> Task :maestro-test:jar
+> Task :maestro-admin-client:compileJava
+> Task :maestro-admin-client:classes
+> Task :maestro-admin-client:jar
+> Task :maestro-admin:compileJava
+> Task :maestro-admin:classes
+> Task :maestro-admin:resolveMainClassName
+> Task :maestro-spring-boot-starter:compileJava
+> Task :maestro-lock-postgres:compileJava
+> Task :maestro-lock-postgres:classes
+> Task :maestro-store-postgres:compileJava
+> Task :maestro-spring-boot-starter:classes
+> Task :maestro-lock-postgres:jar
+> Task :maestro-store-postgres:classes
+> Task :maestro-store-postgres:jar
+> Task :maestro-messaging-postgres:compileJava
+> Task :maestro-messaging-postgres:classes
+> Task :maestro-spring-boot-starter:jar
+> Task :maestro-messaging-postgres:jar
+> Task :maestro-lock-valkey:compileJava
+> Task :maestro-lock-valkey:classes
+> Task :maestro-lock-valkey:jar
+
+> Task :maestro-messaging-kafka:compileJava
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-messaging-kafka/src/main/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagation.java:156: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = tracer.withSpan(span)) {
+                 ^
+1 warning
+
+> Task :maestro-admin:bootJar
+> Task :maestro-admin:jar
+> Task :maestro-admin:assemble
+
+> Task :maestro-admin:compileTestJava
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-admin/src/test/java/io/b2mash/maestro/admin/AdminAppTestSupport.java:61: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+    protected static final PostgreSQLContainer<?> POSTGRES =
+                           ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-admin/src/test/java/io/b2mash/maestro/admin/AdminAppTestSupport.java:62: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+            new PostgreSQLContainer<>("postgres:16-alpine")
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-admin/src/test/java/io/b2mash/maestro/admin/AdminAppTestSupport.java:68: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+    protected static final KafkaContainer KAFKA =
+                           ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-admin/src/test/java/io/b2mash/maestro/admin/AdminAppTestSupport.java:69: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+            new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1"))
+                ^
+4 warnings
+
+> Task :maestro-admin:testClasses
+> Task :maestro-admin-client:javadoc
+
+> Task :maestro-integration-tests:compileTestJava
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/support/PostgresIntegrationSupport.java:52: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+    static final PostgreSQLContainer<?> postgres =
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/support/PostgresIntegrationSupport.java:53: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+            new PostgreSQLContainer<>("postgres:16-alpine")
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/KafkaTraceLinkageIT.java:73: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+    private static final KafkaContainer KAFKA =
+                         ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/KafkaTraceLinkageIT.java:74: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+            new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1")).withKraft();
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/KafkaTraceLinkageIT.java:135: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+            try (var ignored = otelA.tracer().withSpan(publishSpan)) {
+                     ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/SignalListenerTraceContextIT.java:85: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+    private static final KafkaContainer KAFKA =
+                         ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/SignalListenerTraceContextIT.java:86: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+            new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1")).withKraft();
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/schema/MaestroMigrationsCoexistIT.java:65: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+    static final PostgreSQLContainer<?> postgres =
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/schema/MaestroMigrationsCoexistIT.java:66: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+            new PostgreSQLContainer<>("postgres:16-alpine")
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/schema/MaestroMigrationsCoexistIT.java:83: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+        ds.setPortNumbers(new int[] {postgres.getMappedPort(PostgreSQLContainer.POSTGRESQL_PORT)});
+                                                            ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/kafka/KafkaLifecycleEventLatencyIT.java:64: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+    private static final KafkaContainer KAFKA =
+                         ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/kafka/KafkaLifecycleEventLatencyIT.java:65: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+            new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1"))
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/kafka/KafkaSpringIntegrationSupport.java:103: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+    private static final KafkaContainer KAFKA =
+                         ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/kafka/KafkaSpringIntegrationSupport.java:104: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+            new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1"))
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/ChaosCluster.java:88: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+    private PostgreSQLContainer<?> postgres;
+            ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/ChaosCluster.java:141: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+        postgres = new PostgreSQLContainer<>(DockerImageName.parse(POSTGRES_IMAGE))
+                       ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/engine/EnginePostgresParallelIT.java:234: warning: [deprecation] asText() in JsonNode has been deprecated
+                handle.instance().output().get("exceptionType").asText());
+                                                               ^
+17 warnings
+
+> Task :maestro-admin-client:javadocJar
+> Task :maestro-admin-client:assemble
+> Task :maestro-store-jdbc:javadoc
+> Task :maestro-messaging-kafka:classes
+> Task :maestro-messaging-kafka:jar
+> Task :maestro-integration-tests:testClasses
+> Task :maestro-admin-client:compileTestJava
+> Task :maestro-admin-client:testClasses
+> Task :maestro-test:javadoc
+> Task :maestro-lock-postgres:javadoc
+> Task :maestro-store-jdbc:javadocJar
+> Task :maestro-store-jdbc:assemble
+> Task :maestro-store-jdbc:compileTestJava
+> Task :maestro-store-jdbc:testClasses
+> Task :maestro-lock-postgres:javadocJar
+> Task :maestro-lock-postgres:assemble
+> Task :maestro-lock-valkey:javadoc
+> Task :maestro-messaging-postgres:javadoc
+
+> Task :maestro-lock-postgres:compileTestJava
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-lock-postgres/src/test/java/io/b2mash/maestro/lock/postgres/PostgresLockTestSupport.java:31: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+    static final PostgreSQLContainer<?> postgres =
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-lock-postgres/src/test/java/io/b2mash/maestro/lock/postgres/PostgresLockTestSupport.java:32: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+            new PostgreSQLContainer<>("postgres:16-alpine")
+                ^
+2 warnings
+
+> Task :maestro-lock-postgres:testClasses
+> Task :maestro-lock-valkey:javadocJar
+> Task :maestro-lock-valkey:assemble
+> Task :maestro-messaging-postgres:javadocJar
+> Task :maestro-messaging-postgres:assemble
+> Task :maestro-lock-valkey:compileTestJava
+> Task :maestro-lock-valkey:testClasses
+
+> Task :maestro-messaging-postgres:compileTestJava
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-messaging-postgres/src/test/java/io/b2mash/maestro/messaging/postgres/PostgresMessagingTestSupport.java:33: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+    static final PostgreSQLContainer<?> postgres =
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-messaging-postgres/src/test/java/io/b2mash/maestro/messaging/postgres/PostgresMessagingTestSupport.java:34: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+            new PostgreSQLContainer<>("postgres:16-alpine")
+                ^
+2 warnings
+
+> Task :maestro-messaging-postgres:testClasses
+> Task :maestro-spring-boot-starter:javadoc
+> Task :maestro-messaging-kafka:javadoc
+
+> Task :maestro-integration-tests:test
+
+ChaosControllerInterruptTest > an interrupted controller aborts the schedule loudly before dispatching any action PASSED
+
+ChaosSuiteSelectionTest > a soak invocation must not select the PR gate (25-min @Timeout vs 120-min window) PASSED
+
+ChaosSuiteSelectionTest > the dedicated suites stay opt-in via their system-property flags PASSED
+
+ChaosSuiteSelectionTest > golden / boot-smoke / explicit-mode invocations must not select the PR gate either PASSED
+
+> Task :maestro-store-jdbc:test
+> Task :maestro-store-jdbc:check
+> Task :maestro-store-jdbc:build
+OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes because bootstrap classpath has been appended
+> Task :maestro-spring-boot-starter:javadocJar
+> Task :maestro-spring-boot-starter:assemble
+> Task :maestro-messaging-kafka:javadocJar
+> Task :maestro-messaging-kafka:assemble
+> Task :maestro-core:javadoc
+OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes because bootstrap classpath has been appended
+> Task :maestro-core:javadocJar
+> Task :maestro-core:sourcesJar
+> Task :maestro-core:assemble
+
+> Task :maestro-messaging-kafka:compileTestJava
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTestSupport.java:41: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+    static final KafkaContainer kafka =
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTestSupport.java:42: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+            new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1"))
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagationContractTest.java:113: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = otel.tracer().withSpan(span)) {
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagationContractTest.java:141: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = otel.tracer().withSpan(span)) {
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagationContractTest.java:175: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = otel.tracer().withSpan(span)) {
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagationContractTest.java:277: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = otel.tracer().withSpan(span)) {
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagationContractTest.java:311: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = otel.tracer().withSpan(span)) {
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-messaging-kafka/src/test/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagationContractTest.java:440: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = otel.tracer().withSpan(span)) {
+                 ^
+8 warnings
+
+> Task :maestro-messaging-kafka:testClasses
+> Task :maestro-spring-boot-starter:compileTestJava
+> Task :maestro-spring-boot-starter:testClasses
+
+> Task :maestro-integration-tests:test
+
+InvariantCheckerBlindnessTest > authoritativeVerifyAgainstUnreachableStoreIsAHardFailureNotAPass() PASSED
+
+InvariantCheckerBlindnessTest > periodicChecksStaySoftWhenStoreUnreachable() PASSED
+
+LogTailScannerTest > boundary-checked id match still works on whole lines across polls PASSED
+
+LogTailScannerTest > effect line split across two polls is still matched once complete PASSED
+
+> Task :maestro-admin-client:test
+> Task :maestro-admin-client:check
+> Task :maestro-admin-client:build
+
+> Task :maestro-core:compileTestJava
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-core/src/test/java/io/b2mash/maestro/core/saga/SagaManagerTest.java:278: warning: [deprecation] asText() in JsonNode has been deprecated
+        assertEquals(BranchSequenceExhaustedException.class.getName(), failed.payload().get("exceptionType").asText());
+                                                                                                            ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-core/src/test/java/io/b2mash/maestro/core/saga/SagaManagerTest.java:303: warning: [deprecation] asText() in JsonNode has been deprecated
+        assertEquals(BranchSequenceExhaustedException.class.getName(), failed.payload().get("exceptionType").asText());
+                                                                                                            ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-core/src/test/java/io/b2mash/maestro/core/engine/CompensationWithParallelTest.java:98: warning: [deprecation] asText() in JsonNode has been deprecated
+                        .payload().get("exceptionType").asText());
+                                                       ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-core/src/test/java/io/b2mash/maestro/core/engine/CompensationWithParallelTest.java:114: warning: [deprecation] asText() in JsonNode has been deprecated
+        assertEquals(IllegalStateException.class.getName(), failed.payload().get("exceptionType").asText());
+                                                                                                 ^
+
+> Task :maestro-store-postgres:javadoc
+> Task :maestro-test:javadocJar
+> Task :maestro-test:assemble
+> Task :maestro-store-postgres:javadocJar
+> Task :maestro-store-postgres:assemble
+> Task :maestro-test:compileTestJava
+> Task :maestro-test:testClasses
+
+> Task :maestro-store-postgres:compileTestJava
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-store-postgres/src/test/java/io/b2mash/maestro/store/postgres/PostgresTestSupport.java:31: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+    static final PostgreSQLContainer<?> postgres =
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-store-postgres/src/test/java/io/b2mash/maestro/store/postgres/PostgresTestSupport.java:32: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+            new PostgreSQLContainer<>("postgres:16-alpine")
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-store-postgres/src/test/java/io/b2mash/maestro/store/postgres/config/PostgresStoreAutoConfigurationHostFlywayTest.java:39: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+    static final PostgreSQLContainer<?> postgres =
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-store-postgres/src/test/java/io/b2mash/maestro/store/postgres/config/PostgresStoreAutoConfigurationHostFlywayTest.java:40: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+            new PostgreSQLContainer<>("postgres:16-alpine")
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-store-postgres/src/test/java/io/b2mash/maestro/store/postgres/config/PostgresStoreAutoConfigurationHostFlywayTest.java:86: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+        ds.setPortNumbers(new int[] {postgres.getMappedPort(PostgreSQLContainer.POSTGRESQL_PORT)});
+                                                            ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-store-postgres/src/test/java/io/b2mash/maestro/store/postgres/schema/MaestroSchemaInitializerTest.java:35: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+    static final PostgreSQLContainer<?> postgres =
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-store-postgres/src/test/java/io/b2mash/maestro/store/postgres/schema/MaestroSchemaInitializerTest.java:36: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+            new PostgreSQLContainer<>("postgres:16-alpine")
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-store-postgres/src/test/java/io/b2mash/maestro/store/postgres/schema/MaestroSchemaInitializerTest.java:58: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+        ds.setPortNumbers(new int[] {postgres.getMappedPort(PostgreSQLContainer.POSTGRESQL_PORT)});
+                                                            ^
+8 warnings
+
+> Task :maestro-store-postgres:testClasses
+
+> Task :maestro-core:compileTestJava
+4 warnings
+
+> Task :maestro-core:processTestResources NO-SOURCE
+> Task :maestro-core:testClasses
+
+> Task :maestro-integration-tests:test
+
+WorkloadDriverBackPressureTest > normal load never touches the back-pressure accounting PASSED
+
+WorkloadDriverBackPressureTest > a fully back-pressured window is accounted: waits, max wait, blocked time, zero submissions PASSED
+
+> Task :maestro-test:test
+> Task :maestro-test:check
+> Task :maestro-test:build
+> Task :maestro-samples:sample-order-service:compileJava
+> Task :maestro-samples:sample-order-service:classes
+> Task :maestro-samples:sample-order-service:resolveMainClassName
+> Task :maestro-samples:sample-order-service:bootJar
+> Task :maestro-samples:sample-order-service:jar
+> Task :maestro-samples:sample-order-service:assemble
+> Task :maestro-samples:sample-order-service:compileTestJava
+> Task :maestro-samples:sample-order-service:testClasses
+> Task :maestro-samples:sample-order-service:test
+> Task :maestro-samples:sample-order-service:check
+> Task :maestro-samples:sample-order-service:build
+> Task :maestro-samples:sample-payment-gateway:compileJava
+> Task :maestro-samples:sample-payment-gateway:classes
+> Task :maestro-samples:sample-payment-gateway:resolveMainClassName
+> Task :maestro-samples:sample-payment-gateway:bootJar
+> Task :maestro-samples:sample-payment-gateway:jar
+> Task :maestro-samples:sample-payment-gateway:assemble
+
+> Task :maestro-integration-tests:test
+
+WorkloadDriverBackPressureTest > a throttled benchmark-tail phase is attributed to THAT window, not diluted into totals (R1-2) PASSED
+
+> Task :maestro-samples:sample-payment-gateway:compileTestJava
+> Task :maestro-samples:sample-payment-gateway:testClasses
+OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes because bootstrap classpath has been appended
+> Task :maestro-lock-postgres:test
+> Task :maestro-lock-postgres:check
+> Task :maestro-lock-postgres:build
+> Task :maestro-samples:sample-payment-gateway:test
+> Task :maestro-samples:sample-payment-gateway:check
+> Task :maestro-samples:sample-payment-gateway:build
+OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes because bootstrap classpath has been appended
+> Task :maestro-samples:sample-postgres-only:compileJava
+> Task :maestro-samples:sample-postgres-only:classes
+> Task :maestro-samples:sample-postgres-only:resolveMainClassName
+> Task :maestro-samples:sample-loan-origination:loan-application-service:compileJava
+> Task :maestro-samples:sample-loan-origination:loan-application-service:classes
+> Task :maestro-samples:sample-loan-origination:loan-application-service:resolveMainClassName
+> Task :maestro-samples:sample-postgres-only:bootJar
+> Task :maestro-samples:sample-postgres-only:jar
+> Task :maestro-samples:sample-postgres-only:assemble
+> Task :maestro-samples:sample-postgres-only:compileTestJava
+> Task :maestro-samples:sample-postgres-only:testClasses
+> Task :maestro-samples:sample-loan-origination:loan-application-service:bootJar
+> Task :maestro-samples:sample-loan-origination:loan-application-service:jar
+> Task :maestro-samples:sample-loan-origination:loan-application-service:assemble
+> Task :maestro-samples:sample-loan-origination:loan-application-service:compileV2Java
+> Task :maestro-samples:sample-loan-origination:loan-application-service:v2Classes
+> Task :maestro-samples:sample-loan-origination:loan-application-service:v2BootJar
+
+> Task :maestro-integration-tests:test
+
+WorkloadDriverPacingTest > interrupt at T+2s of a 10s/600-per-min window: generated count stays <= 3x budget, abort is prompt PASSED
+
+WorkloadDriverPacingTest > interrupt pending before the first park: generation aborts at seq 0/1 immediately PASSED
+
+> Task :maestro-samples:sample-loan-origination:loan-application-service:compileTestJava
+> Task :maestro-samples:sample-loan-origination:loan-application-service:testClasses
+> Task :maestro-samples:sample-postgres-only:test
+> Task :maestro-samples:sample-postgres-only:check
+> Task :maestro-samples:sample-postgres-only:build
+> Task :maestro-samples:sample-loan-origination:underwriting-service:compileJava
+> Task :maestro-samples:sample-loan-origination:underwriting-service:classes
+> Task :maestro-samples:sample-loan-origination:underwriting-service:resolveMainClassName
+> Task :maestro-samples:sample-loan-origination:underwriting-service:bootJar
+> Task :maestro-samples:sample-loan-origination:underwriting-service:jar
+> Task :maestro-samples:sample-loan-origination:underwriting-service:assemble
+> Task :maestro-samples:sample-loan-origination:underwriting-service:compileTestJava
+> Task :maestro-samples:sample-loan-origination:underwriting-service:testClasses
+OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes because bootstrap classpath has been appended
+
+> Task :maestro-integration-tests:test
+
+A replayed activity failure is deterministic across nodes > an exception with a public (String) constructor replays as its own type PASSED
+
+A replayed activity failure is deterministic across nodes > an exception without a (String) constructor replays as ReconstructedActivityFailure carrying the original class name PASSED
+
+2026-10-28T19:59:59.948+02:00  INFO 39172 --- [maestro-admin] [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Shutdown initiated...
+2026-10-28T19:59:59.951+02:00  INFO 39172 --- [maestro-admin] [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Shutdown completed.
+2026-10-28T19:59:59.953+02:00  INFO 39172 --- [maestro-admin] [ionShutdownHook] i.b.m.admin.kafka.AdminEventConsumer     : Stopping admin event consumer
+2026-10-28T19:59:59.958+02:00  INFO 39172 --- [maestro-admin] [anNameSet-0-C-1] k.c.c.i.ConsumerRebalanceListenerInvoker : [Consumer clientId=consumer-admin-ingestion-group-2, groupId=admin-ingestion-group] Revoke previously assigned partitions [admin-ingestion.events-0]
+2026-10-28T19:59:59.958+02:00  INFO 39172 --- [maestro-admin] [anNameSet-0-C-1] s.k.l.ConcurrentMessageListenerContainer : admin-ingestion-group: partitions revoked: [admin-ingestion.events-0]
+2026-10-28T19:59:59.958+02:00  INFO 39172 --- [maestro-admin] [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-admin-ingestion-group-2, groupId=admin-ingestion-group] Member consumer-admin-ingestion-group-2-74879700-dcb6-47f1-a3df-a4e1c813301a sending LeaveGroup request to coordinator localhost:61595 (id: 2147483646 rack: null isFenced: false) due to the consumer unsubscribed from all topics
+2026-10-28T19:59:59.959+02:00  INFO 39172 --- [maestro-admin] [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-admin-ingestion-group-2, groupId=admin-ingestion-group] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-10-28T19:59:59.959+02:00  INFO 39172 --- [maestro-admin] [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-admin-ingestion-group-2, groupId=admin-ingestion-group] Request joining group due to: consumer pro-actively leaving the group
+2026-10-28T19:59:59.959+02:00  INFO 39172 --- [maestro-admin] [anNameSet-0-C-1] o.a.k.c.c.i.ClassicKafkaConsumer         : [Consumer clientId=consumer-admin-ingestion-group-2, groupId=admin-ingestion-group] Unsubscribed all topics or patterns and assigned partitions
+2026-10-28T19:59:59.960+02:00  INFO 39172 --- [maestro-admin] [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-admin-ingestion-group-2, groupId=admin-ingestion-group] Resetting generation and member id due to: consumer pro-actively leaving the group
+2026-10-28T19:59:59.960+02:00  INFO 39172 --- [maestro-admin] [anNameSet-0-C-1] o.a.k.c.c.internals.ConsumerCoordinator  : [Consumer clientId=consumer-admin-ingestion-group-2, groupId=admin-ingestion-group] Request joining group due to: consumer pro-actively leaving the group
+2026-10-28T20:00:00.326+02:00  INFO 39172 --- [maestro-admin] [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics scheduler closed
+2026-10-28T20:00:00.326+02:00  INFO 39172 --- [maestro-admin] [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.metrics.JmxReporter
+2026-10-28T20:00:00.326+02:00  INFO 39172 --- [maestro-admin] [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Closing reporter org.apache.kafka.common.telemetry.internals.ClientTelemetryReporter
+2026-10-28T20:00:00.326+02:00  INFO 39172 --- [maestro-admin] [anNameSet-0-C-1] o.apache.kafka.common.metrics.Metrics    : Metrics reporters closed
+2026-10-28T20:00:00.335+02:00  INFO 39172 --- [maestro-admin] [anNameSet-0-C-1] o.a.kafka.common.utils.AppInfoParser     : App info kafka.consumer for consumer-admin-ingestion-group-2 unregistered
+2026-10-28T20:00:00.336+02:00  INFO 39172 --- [maestro-admin] [anNameSet-0-C-1] o.s.k.l.KafkaMessageListenerContainer    : admin-ingestion-group: Consumer stopped
+2026-10-28T20:00:00.336+02:00  INFO 39172 --- [maestro-admin] [ionShutdownHook] i.b.m.admin.kafka.AdminEventConsumer     : Admin event consumer stopped
+2026-10-28T20:00:00.338+02:00  INFO 39172 --- [maestro-admin] [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-2 - Shutdown initiated...
+2026-10-28T20:00:00.340+02:00  INFO 39172 --- [maestro-admin] [ionShutdownHook] com.zaxxer.hikari.HikariDataSource       : HikariPool-2 - Shutdown completed.
+
+> Task :maestro-lock-valkey:test
+> Task :maestro-lock-valkey:check
+> Task :maestro-lock-valkey:build
+> Task :maestro-admin:test
+> Task :maestro-admin:check
+> Task :maestro-admin:build
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:compileJava
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:classes
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:resolveMainClassName
+OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes because bootstrap classpath has been appended
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:bootJar
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:jar
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:assemble
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:compileTestJava
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:testClasses
+
+> Task :maestro-integration-tests:test
+
+awaitSignal deadline fire racing a signal against a real Postgres store > signal wins outright before the fire: SIGNAL_RECEIVED, row CANCELLED, the due fire finds nothing PASSED
+
+awaitSignal deadline fire racing a signal against a real Postgres store > signal persisted in the same instant the deadline fires: exactly one outcome is recorded, the loser is never discarded > [1] order = SIGNAL_THEN_FIRE PASSED
+
+OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes because bootstrap classpath has been appended
+2026-10-28T20:00:03.128+02:00  INFO 39369 --- [sample-underwriting-service] [ionShutdownHook] [                                                 ] i.b.m.s.config.GracefulShutdownHandler   : Maestro graceful shutdown initiated
+2026-10-28T20:00:03.129+02:00  INFO 39369 --- [sample-underwriting-service] [ionShutdownHook] [                                                 ] i.b.maestro.core.engine.TimerPoller      : Timer poller stopped
+2026-10-28T20:00:03.129+02:00  INFO 39369 --- [sample-underwriting-service] [ionShutdownHook] [                                                 ] i.b.maestro.core.engine.RecoveryPoller   : Recovery poller stopped
+2026-10-28T20:00:03.129+02:00  INFO 39369 --- [sample-underwriting-service] [ionShutdownHook] [                                                 ] i.b.maestro.core.engine.SignalJanitor    : Signal janitor stopped
+2026-10-28T20:00:03.129+02:00  INFO 39369 --- [sample-underwriting-service] [ionShutdownHook] [                                                 ] i.b.m.core.engine.WorkflowExecutor       : Shutting down WorkflowExecutor, 0 workflow(s) in-flight
+2026-10-28T20:00:03.129+02:00  INFO 39369 --- [sample-underwriting-service] [ionShutdownHook] [                                                 ] i.b.m.core.engine.WorkflowExecutor       : WorkflowExecutor shutdown complete — all workflows finished
+2026-10-28T20:00:03.129+02:00  INFO 39369 --- [sample-underwriting-service] [ionShutdownHook] [                                                 ] i.b.m.s.config.GracefulShutdownHandler   : Maestro graceful shutdown complete
+2026-10-28T20:00:03.131+02:00  INFO 39369 --- [sample-underwriting-service] [ionShutdownHook] [                                                 ] i.b.m.core.engine.WorkflowExecutor       : Shutdown already in progress
+2026-10-28T20:00:03.133+02:00  INFO 39369 --- [sample-underwriting-service] [ionShutdownHook] [                                                 ] i.b.m.m.postgres.PostgresSignalNotifier  : PostgresSignalNotifier closed
+2026-10-28T20:00:03.133+02:00  INFO 39369 --- [sample-underwriting-service] [ionShutdownHook] [                                                 ] i.b.m.m.p.PostgresWorkflowMessaging      : PostgresWorkflowMessaging closed
+2026-10-28T20:00:03.136+02:00  WARN 39369 --- [sample-underwriting-service] [ionShutdownHook] [                                                 ] com.zaxxer.hikari.pool.ProxyConnection   : HikariPool-1 - Connection org.postgresql.jdbc.PgConnection@3bf52f8f marked as broken because of SQLSTATE(08003), ErrorCode(0)
+
+org.postgresql.util.PSQLException: This connection has been closed.
+	at org.postgresql.jdbc.PgConnection.checkClosed(PgConnection.java:1015) ~[postgresql-42.7.8.jar:42.7.8]
+	at org.postgresql.jdbc.PgConnection.clearWarnings(PgConnection.java:907) ~[postgresql-42.7.8.jar:42.7.8]
+	at com.zaxxer.hikari.pool.ProxyConnection.close(ProxyConnection.java:258) ~[HikariCP-7.0.2.jar:na]
+	at io.b2mash.maestro.messaging.postgres.PostgresNotificationListener.closeConnection(PostgresNotificationListener.java:346) ~[maestro-messaging-postgres-0.3.0-SNAPSHOT.jar:na]
+	at io.b2mash.maestro.messaging.postgres.PostgresNotificationListener.close(PostgresNotificationListener.java:226) ~[maestro-messaging-postgres-0.3.0-SNAPSHOT.jar:na]
+	at org.springframework.beans.factory.support.DisposableBeanAdapter.destroy(DisposableBeanAdapter.java:230) ~[spring-beans-7.0.6.jar:7.0.6]
+	at org.springframework.beans.factory.support.DefaultSingletonBeanRegistry.destroyBean(DefaultSingletonBeanRegistry.java:795) ~[spring-beans-7.0.6.jar:7.0.6]
+	at org.springframework.beans.factory.support.DefaultSingletonBeanRegistry.destroySingleton(DefaultSingletonBeanRegistry.java:745) ~[spring-beans-7.0.6.jar:7.0.6]
+	at org.springframework.beans.factory.support.DefaultListableBeanFactory.destroySingleton(DefaultListableBeanFactory.java:1500) ~[spring-beans-7.0.6.jar:7.0.6]
+	at org.springframework.beans.factory.support.DefaultSingletonBeanRegistry.destroySingletons(DefaultSingletonBeanRegistry.java:704) ~[spring-beans-7.0.6.jar:7.0.6]
+	at org.springframework.beans.factory.support.DefaultListableBeanFactory.destroySingletons(DefaultListableBeanFactory.java:1493) ~[spring-beans-7.0.6.jar:7.0.6]
+	at org.springframework.context.support.AbstractApplicationContext.destroyBeans(AbstractApplicationContext.java:1246) ~[spring-context-7.0.6.jar:7.0.6]
+	at org.springframework.context.support.AbstractApplicationContext.doClose(AbstractApplicationContext.java:1207) ~[spring-context-7.0.6.jar:7.0.6]
+	at org.springframework.context.support.AbstractApplicationContext.close(AbstractApplicationContext.java:1153) ~[spring-context-7.0.6.jar:7.0.6]
+	at org.springframework.boot.SpringApplicationShutdownHook.closeAndWait(SpringApplicationShutdownHook.java:147) ~[spring-boot-4.0.5.jar:4.0.5]
+	at java.base/java.lang.Iterable.forEach(Iterable.java:75) ~[na:na]
+	at org.springframework.boot.SpringApplicationShutdownHook.run(SpringApplicationShutdownHook.java:116) ~[spring-boot-4.0.5.jar:4.0.5]
+	at java.base/java.lang.Thread.run(Thread.java:1474) ~[na:na]
+
+2026-10-28T20:00:03.138+02:00  INFO 39369 --- [sample-underwriting-service] [ionShutdownHook] [                                                 ] i.b.m.m.p.PostgresNotificationListener   : PostgreSQL LISTEN/NOTIFY listener closed
+2026-10-28T20:00:03.138+02:00  INFO 39369 --- [sample-underwriting-service] [ionShutdownHook] [                                                 ] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Shutdown initiated...
+2026-10-28T20:00:03.140+02:00  INFO 39369 --- [sample-underwriting-service] [ionShutdownHook] [                                                 ] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Shutdown completed.
+
+> Task :maestro-samples:sample-loan-origination:underwriting-service:test
+> Task :maestro-samples:sample-loan-origination:underwriting-service:check
+> Task :maestro-samples:sample-loan-origination:underwriting-service:build
+
+> Task :maestro-integration-tests:test
+
+awaitSignal deadline fire racing a signal against a real Postgres store > signal persisted in the same instant the deadline fires: exactly one outcome is recorded, the loser is never discarded > [2] order = FIRE_THEN_SIGNAL PASSED
+
+awaitSignal deadline fire racing a signal against a real Postgres store > deadline wins outright: SIGNAL_TIMEOUT at seq 2, and a signal delivered afterwards stays unconsumed PASSED
+
+Retry after an awaitSignal timeout re-arms a fresh deadline (Postgres) > a signal delivered before the retry is consumed at once, with no deadline row armed PASSED
+
+Retry after an awaitSignal timeout re-arms a fresh deadline (Postgres) > the retried await parks on retry time + timeout with a fresh PENDING row, then a signal completes it PASSED
+
+startToCloseTimeout bounds each activity attempt against a real Postgres store > an attempt exceeding startToCloseTimeout is retried; the second attempt completes the workflow PASSED
+
+OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes because bootstrap classpath has been appended
+OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes because bootstrap classpath has been appended
+OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes because bootstrap classpath has been appended
+
+> Task :maestro-integration-tests:test
+
+startToCloseTimeout bounds each activity attempt against a real Postgres store > with maxAttempts = 1 a timeout is persisted as ACTIVITY_FAILED with the timeout's type and the workflow FAILS PASSED
+
+startToCloseTimeout bounds each activity attempt against a real Postgres store > causedBy(ActivityTimeoutException) takes the same branch on replay: a timeout caught live as 'timeout' replays as 'timeout' on a second node (I2) PASSED
+
+A dual-execution loser stands down at its first append collision > with the lock lost, the loser stands down at its first append collision and runs no further activity PASSED
+
+2026-10-28T20:00:07.896+02:00  INFO 39384 --- [sample-verification-gateway-service] [ionShutdownHook] [                                                 ] i.b.m.s.config.GracefulShutdownHandler   : Maestro graceful shutdown initiated
+2026-10-28T20:00:07.896+02:00  INFO 39384 --- [sample-verification-gateway-service] [ionShutdownHook] [                                                 ] i.b.maestro.core.engine.TimerPoller      : Timer poller stopped
+2026-10-28T20:00:07.896+02:00  INFO 39384 --- [sample-verification-gateway-service] [ionShutdownHook] [                                                 ] i.b.maestro.core.engine.RecoveryPoller   : Recovery poller stopped
+2026-10-28T20:00:07.897+02:00  INFO 39384 --- [sample-verification-gateway-service] [ionShutdownHook] [                                                 ] i.b.maestro.core.engine.SignalJanitor    : Signal janitor stopped
+2026-10-28T20:00:07.897+02:00  INFO 39384 --- [sample-verification-gateway-service] [ionShutdownHook] [                                                 ] i.b.m.core.engine.WorkflowExecutor       : Shutting down WorkflowExecutor, 0 workflow(s) in-flight
+2026-10-28T20:00:07.897+02:00  INFO 39384 --- [sample-verification-gateway-service] [ionShutdownHook] [                                                 ] i.b.m.core.engine.WorkflowExecutor       : WorkflowExecutor shutdown complete — all workflows finished
+2026-10-28T20:00:07.897+02:00  INFO 39384 --- [sample-verification-gateway-service] [ionShutdownHook] [                                                 ] i.b.m.s.config.GracefulShutdownHandler   : Maestro graceful shutdown complete
+2026-10-28T20:00:07.898+02:00  INFO 39384 --- [sample-verification-gateway-service] [ionShutdownHook] [                                                 ] i.b.m.core.engine.WorkflowExecutor       : Shutdown already in progress
+2026-10-28T20:00:07.900+02:00  INFO 39384 --- [sample-verification-gateway-service] [ionShutdownHook] [                                                 ] i.b.m.m.postgres.PostgresSignalNotifier  : PostgresSignalNotifier closed
+2026-10-28T20:00:07.900+02:00  INFO 39384 --- [sample-verification-gateway-service] [ionShutdownHook] [                                                 ] i.b.m.m.p.PostgresWorkflowMessaging      : PostgresWorkflowMessaging closed
+2026-10-28T20:00:07.902+02:00  WARN 39384 --- [sample-verification-gateway-service] [ionShutdownHook] [                                                 ] com.zaxxer.hikari.pool.ProxyConnection   : HikariPool-1 - Connection org.postgresql.jdbc.PgConnection@7668f8fd marked as broken because of SQLSTATE(08003), ErrorCode(0)
+
+org.postgresql.util.PSQLException: This connection has been closed.
+	at org.postgresql.jdbc.PgConnection.checkClosed(PgConnection.java:1015) ~[postgresql-42.7.8.jar:42.7.8]
+	at org.postgresql.jdbc.PgConnection.clearWarnings(PgConnection.java:907) ~[postgresql-42.7.8.jar:42.7.8]
+	at com.zaxxer.hikari.pool.ProxyConnection.close(ProxyConnection.java:258) ~[HikariCP-7.0.2.jar:na]
+	at io.b2mash.maestro.messaging.postgres.PostgresNotificationListener.closeConnection(PostgresNotificationListener.java:346) ~[maestro-messaging-postgres-0.3.0-SNAPSHOT.jar:na]
+	at io.b2mash.maestro.messaging.postgres.PostgresNotificationListener.close(PostgresNotificationListener.java:226) ~[maestro-messaging-postgres-0.3.0-SNAPSHOT.jar:na]
+	at org.springframework.beans.factory.support.DisposableBeanAdapter.destroy(DisposableBeanAdapter.java:230) ~[spring-beans-7.0.6.jar:7.0.6]
+	at org.springframework.beans.factory.support.DefaultSingletonBeanRegistry.destroyBean(DefaultSingletonBeanRegistry.java:795) ~[spring-beans-7.0.6.jar:7.0.6]
+	at org.springframework.beans.factory.support.DefaultSingletonBeanRegistry.destroySingleton(DefaultSingletonBeanRegistry.java:745) ~[spring-beans-7.0.6.jar:7.0.6]
+	at org.springframework.beans.factory.support.DefaultListableBeanFactory.destroySingleton(DefaultListableBeanFactory.java:1500) ~[spring-beans-7.0.6.jar:7.0.6]
+	at org.springframework.beans.factory.support.DefaultSingletonBeanRegistry.destroySingletons(DefaultSingletonBeanRegistry.java:704) ~[spring-beans-7.0.6.jar:7.0.6]
+	at org.springframework.beans.factory.support.DefaultListableBeanFactory.destroySingletons(DefaultListableBeanFactory.java:1493) ~[spring-beans-7.0.6.jar:7.0.6]
+	at org.springframework.context.support.AbstractApplicationContext.destroyBeans(AbstractApplicationContext.java:1246) ~[spring-context-7.0.6.jar:7.0.6]
+	at org.springframework.context.support.AbstractApplicationContext.doClose(AbstractApplicationContext.java:1207) ~[spring-context-7.0.6.jar:7.0.6]
+	at org.springframework.context.support.AbstractApplicationContext.close(AbstractApplicationContext.java:1153) ~[spring-context-7.0.6.jar:7.0.6]
+	at org.springframework.boot.SpringApplicationShutdownHook.closeAndWait(SpringApplicationShutdownHook.java:147) ~[spring-boot-4.0.5.jar:4.0.5]
+	at java.base/java.lang.Iterable.forEach(Iterable.java:75) ~[na:na]
+	at org.springframework.boot.SpringApplicationShutdownHook.run(SpringApplicationShutdownHook.java:116) ~[spring-boot-4.0.5.jar:4.0.5]
+	at java.base/java.lang.Thread.run(Thread.java:1474) ~[na:na]
+
+2026-10-28T20:00:07.903+02:00  INFO 39384 --- [sample-verification-gateway-service] [ionShutdownHook] [                                                 ] i.b.m.m.p.PostgresNotificationListener   : PostgreSQL LISTEN/NOTIFY listener closed
+2026-10-28T20:00:07.904+02:00  INFO 39384 --- [sample-verification-gateway-service] [ionShutdownHook] [                                                 ] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Shutdown initiated...
+2026-10-28T20:00:07.951+02:00  INFO 39384 --- [sample-verification-gateway-service] [ionShutdownHook] [                                                 ] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Shutdown completed.
+
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:test
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:check
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:build
+> Task :maestro-store-postgres:test
+> Task :maestro-store-postgres:check
+> Task :maestro-store-postgres:build
+2026-10-28T20:00:09.370+02:00  INFO 39365 --- [sample-loan-application-service] [ionShutdownHook] [                                                 ] i.b.m.s.config.GracefulShutdownHandler   : Maestro graceful shutdown initiated
+2026-10-28T20:00:09.370+02:00  INFO 39365 --- [sample-loan-application-service] [ionShutdownHook] [                                                 ] i.b.maestro.core.engine.TimerPoller      : Timer poller stopped
+2026-10-28T20:00:09.370+02:00  INFO 39365 --- [sample-loan-application-service] [ionShutdownHook] [                                                 ] i.b.maestro.core.engine.RecoveryPoller   : Recovery poller stopped
+2026-10-28T20:00:09.370+02:00  INFO 39365 --- [sample-loan-application-service] [ionShutdownHook] [                                                 ] i.b.maestro.core.engine.SignalJanitor    : Signal janitor stopped
+2026-10-28T20:00:09.370+02:00  INFO 39365 --- [sample-loan-application-service] [ionShutdownHook] [                                                 ] i.b.m.core.engine.WorkflowExecutor       : Shutting down WorkflowExecutor, 0 workflow(s) in-flight
+2026-10-28T20:00:09.370+02:00  INFO 39365 --- [sample-loan-application-service] [ionShutdownHook] [                                                 ] i.b.m.core.engine.WorkflowExecutor       : WorkflowExecutor shutdown complete — all workflows finished
+2026-10-28T20:00:09.370+02:00  INFO 39365 --- [sample-loan-application-service] [ionShutdownHook] [                                                 ] i.b.m.s.config.GracefulShutdownHandler   : Maestro graceful shutdown complete
+2026-10-28T20:00:09.372+02:00  INFO 39365 --- [sample-loan-application-service] [ionShutdownHook] [                                                 ] i.b.m.core.engine.WorkflowExecutor       : Shutdown already in progress
+2026-10-28T20:00:09.374+02:00  INFO 39365 --- [sample-loan-application-service] [ionShutdownHook] [                                                 ] i.b.m.m.postgres.PostgresSignalNotifier  : PostgresSignalNotifier closed
+2026-10-28T20:00:09.374+02:00  INFO 39365 --- [sample-loan-application-service] [ionShutdownHook] [                                                 ] i.b.m.m.p.PostgresWorkflowMessaging      : PostgresWorkflowMessaging closed
+2026-10-28T20:00:09.377+02:00  WARN 39365 --- [sample-loan-application-service] [ionShutdownHook] [                                                 ] com.zaxxer.hikari.pool.ProxyConnection   : HikariPool-1 - Connection org.postgresql.jdbc.PgConnection@200e6029 marked as broken because of SQLSTATE(08003), ErrorCode(0)
+
+org.postgresql.util.PSQLException: This connection has been closed.
+	at org.postgresql.jdbc.PgConnection.checkClosed(PgConnection.java:1015) ~[postgresql-42.7.8.jar:42.7.8]
+	at org.postgresql.jdbc.PgConnection.clearWarnings(PgConnection.java:907) ~[postgresql-42.7.8.jar:42.7.8]
+	at com.zaxxer.hikari.pool.ProxyConnection.close(ProxyConnection.java:258) ~[HikariCP-7.0.2.jar:na]
+	at io.b2mash.maestro.messaging.postgres.PostgresNotificationListener.closeConnection(PostgresNotificationListener.java:346) ~[maestro-messaging-postgres-0.3.0-SNAPSHOT.jar:na]
+	at io.b2mash.maestro.messaging.postgres.PostgresNotificationListener.close(PostgresNotificationListener.java:226) ~[maestro-messaging-postgres-0.3.0-SNAPSHOT.jar:na]
+	at org.springframework.beans.factory.support.DisposableBeanAdapter.destroy(DisposableBeanAdapter.java:230) ~[spring-beans-7.0.6.jar:7.0.6]
+	at org.springframework.beans.factory.support.DefaultSingletonBeanRegistry.destroyBean(DefaultSingletonBeanRegistry.java:795) ~[spring-beans-7.0.6.jar:7.0.6]
+	at org.springframework.beans.factory.support.DefaultSingletonBeanRegistry.destroySingleton(DefaultSingletonBeanRegistry.java:745) ~[spring-beans-7.0.6.jar:7.0.6]
+	at org.springframework.beans.factory.support.DefaultListableBeanFactory.destroySingleton(DefaultListableBeanFactory.java:1500) ~[spring-beans-7.0.6.jar:7.0.6]
+	at org.springframework.beans.factory.support.DefaultSingletonBeanRegistry.destroySingletons(DefaultSingletonBeanRegistry.java:704) ~[spring-beans-7.0.6.jar:7.0.6]
+	at org.springframework.beans.factory.support.DefaultListableBeanFactory.destroySingletons(DefaultListableBeanFactory.java:1493) ~[spring-beans-7.0.6.jar:7.0.6]
+	at org.springframework.context.support.AbstractApplicationContext.destroyBeans(AbstractApplicationContext.java:1246) ~[spring-context-7.0.6.jar:7.0.6]
+	at org.springframework.context.support.AbstractApplicationContext.doClose(AbstractApplicationContext.java:1207) ~[spring-context-7.0.6.jar:7.0.6]
+	at org.springframework.context.support.AbstractApplicationContext.close(AbstractApplicationContext.java:1153) ~[spring-context-7.0.6.jar:7.0.6]
+	at org.springframework.boot.SpringApplicationShutdownHook.closeAndWait(SpringApplicationShutdownHook.java:147) ~[spring-boot-4.0.5.jar:4.0.5]
+	at java.base/java.lang.Iterable.forEach(Iterable.java:75) ~[na:na]
+	at org.springframework.boot.SpringApplicationShutdownHook.run(SpringApplicationShutdownHook.java:116) ~[spring-boot-4.0.5.jar:4.0.5]
+	at java.base/java.lang.Thread.run(Thread.java:1474) ~[na:na]
+
+2026-10-28T20:00:09.377+02:00  INFO 39365 --- [sample-loan-application-service] [ionShutdownHook] [                                                 ] i.b.m.m.p.PostgresNotificationListener   : PostgreSQL LISTEN/NOTIFY listener closed
+2026-10-28T20:00:09.378+02:00  INFO 39365 --- [sample-loan-application-service] [ionShutdownHook] [                                                 ] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Shutdown initiated...
+2026-10-28T20:00:09.423+02:00  INFO 39365 --- [sample-loan-application-service] [ionShutdownHook] [                                                 ] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Shutdown completed.
+> Task :maestro-samples:sample-loan-origination:loan-application-service:test
+> Task :maestro-samples:sample-loan-origination:loan-application-service:check
+> Task :maestro-samples:sample-loan-origination:loan-application-service:build
+
+> Task :maestro-integration-tests:test
+
+The engine runs a workflow lifecycle end to end against Postgres > a workflow whose activity exhausts its retries is persisted as FAILED with an error payload PASSED
+
+> Task :maestro-messaging-postgres:test
+> Task :maestro-spring-boot-starter:test
+> Task :maestro-spring-boot-starter:check
+> Task :maestro-spring-boot-starter:build
+> Task :maestro-messaging-kafka:test
+> Task :maestro-core:test
+
+OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes because bootstrap classpath has been appended
+
+> Task :maestro-integration-tests:test
+
+The engine runs a workflow lifecycle end to end against Postgres > the instance row's event sequence and version march with the run PASSED
+
+The engine runs a workflow lifecycle end to end against Postgres > a completed run leaves no instance lock behind PASSED
+
+The engine runs a workflow lifecycle end to end against Postgres > starting a second workflow with an existing ID is rejected by the store constraint PASSED
+
+The engine runs a workflow lifecycle end to end against Postgres > a completed chain persists one event per activity plus a completion event PASSED
+
+Memoization replays stored activity results from Postgres > a completed activity with a stored result is not re-executed on replay PASSED
+
+Memoization replays stored activity results from Postgres > a stored activity failure is replayed as a failure rather than retried PASSED
+
+Memoization replays stored activity results from Postgres > replaying a run twice is stable — the second replay changes nothing PASSED
+
+The optimistic-lock version convention holds against real Postgres > the loser of a concurrent update sees an OptimisticLockException and writes nothing PASSED
+
+The optimistic-lock version convention holds against real Postgres > updating an instance that does not exist is a not-found error, not a version conflict PASSED
+
+The optimistic-lock version convention holds against real Postgres > an update whose version is the stored version plus one is persisted PASSED
+
+The optimistic-lock version convention holds against real Postgres > a full engine run against Postgres completes, so every engine write obeys the convention PASSED
+
+The optimistic-lock version convention holds against real Postgres > an update that forgets to pre-increment the version is rejected — the BUG1 shape PASSED
+
+Parallel branches partition the sequence space in Postgres > a branch that takes a 1000th step fails the workflow; its sibling's block and the parent counter are intact PASSED
+
+Parallel branches partition the sequence space in Postgres > the fork point records how many branches were forked PASSED
+
+Parallel branches partition the sequence space in Postgres > two branches parking at once do not collide on the instance status row PASSED
+
+Parallel branches partition the sequence space in Postgres > replay after a crash re-runs only the branch that never finished PASSED
+
+Parallel branches partition the sequence space in Postgres > each branch persists its events in its own sequence block PASSED
+
+Saga compensation after a failed parallel() fork, against a real Postgres store > a compensation that fans out runs each branch once, in the entry's own block, past every forward slot PASSED
+
+Saga compensation after a failed parallel() fork, against a real Postgres store > a workflow that exhausts the sequence space finishes FAILED with no compensation and no stand-down PASSED
+
+Saga compensation after a failed parallel() fork, against a real Postgres store > a sequential compensation that takes 1000 slots fails its own step with BranchSequenceExhaustedException; the next entry still runs PASSED
+
+OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes because bootstrap classpath has been appended
+
+> Task :maestro-messaging-postgres:check
+> Task :maestro-messaging-postgres:build
+
+> Task :maestro-integration-tests:test
+
+Saga compensation after a failed parallel() fork, against a real Postgres store > reserve ∥ charge, charge fails: releaseReservation runs once and lands past the branch space PASSED
+
+Saga compensation after a failed parallel() fork, against a real Postgres store > a node that dies mid-parallel-compensation is finished by a recovering node — no stand-down, no stuck COMPENSATING PASSED
+
+Saga compensation after a failed parallel() fork, against a real Postgres store > a compensation that forks after a forward parallel() fails its own step with SequenceSpaceExhaustedException; the remaining entry still runs PASSED
+
+A second engine process recovers a workflow abandoned mid-flight > recover() replays completed steps and resumes at the first uncompleted step PASSED
+
+A second engine process recovers a workflow abandoned mid-flight > the recovery poller adopts an abandoned workflow without an explicit recover() call PASSED
+
+A second engine process recovers a workflow abandoned mid-flight > recovery is a no-op when no workflow was left in an active state PASSED
+
+A second engine process recovers a workflow abandoned mid-flight > recovery does not launch a second copy of a workflow already running on this node PASSED
+
+Saga compensation against a real Postgres store > a saga whose third step fails compensates the first two in LIFO order and lands in FAILED PASSED
+
+Saga compensation against a real Postgres store > a saga that never fails completes and runs no compensation at all PASSED
+
+> Task :maestro-core:check
+> Task :maestro-core:build
+
+> Task :maestro-integration-tests:test
+
+Saga compensation against a real Postgres store > a terminate from another node during the first compensation stops the second from running PASSED
+
+Engine signal handling against a real Postgres store > a workflow parked on awaitSignal wakes and completes when a signal is delivered PASSED
+
+Engine signal handling against a real Postgres store > an await that times out fails the workflow with SignalTimeoutException PASSED
+
+Engine signal handling against a real Postgres store > collectSignals takes the first N signals in received-at order and leaves the rest unconsumed PASSED
+
+Engine signal handling against a real Postgres store > losing the consume CAS to a concurrent consumer still completes the workflow from the memoized event PASSED
+
+Engine signal handling against a real Postgres store > a signal that arrives before the await point is consumed without parking PASSED
+
+Engine signal handling against a real Postgres store > a signal delivered before the workflow exists is adopted when the instance is created PASSED
+
+Durable awaitSignal deadlines against a real Postgres store > a signal delivered while no node owned the workflow is consumed on recovery, not timed out PASSED
+
+Durable awaitSignal deadlines against a real Postgres store > a parked await's deadline survives an executor restart and is not re-armed from now() PASSED
+
+Terminate stops live activity work against a real Postgres store > terminate while a live activity is mid-retry backoff abandons the backoff; no further attempt runs PASSED
+
+Durable timers against a real Postgres store > a timer cancelled before its TIMER_CANCELLED event was appended is healed by recovery (Issue 13) PASSED
+
+Durable timers against a real Postgres store > a timer scheduled by one executor is fired and completed by a second executor over the same store PASSED
+
+Durable timers against a real Postgres store > sleep persists a pending timer row and parks the workflow in WAITING_TIMER PASSED
+
+Durable timers against a real Postgres store > cancelTimer on an already-fired timer is a false no-op (R1) and does not disturb completion PASSED
+
+Durable timers against a real Postgres store > the timer poller fires a due timer read from Postgres and resumes the workflow PASSED
+
+Durable timers against a real Postgres store > cancelling a timer a workflow is parked on unparks it; uncaught it fails the workflow (Issue 13) PASSED
+
+Durable timers against a real Postgres store > markTimerFired is a compare-and-set: only the first caller wins PASSED
+
+Durable timers against a real Postgres store > a caught TimerCancelledException lets the workflow complete via a fallback branch (Issue 13) PASSED
+
+Durable timers against a real Postgres store > a timer marked FIRED before its TIMER_FIRED event was appended is healed by recovery PASSED
+
+A JVM Error escaping the workflow body ends it FAILED on Postgres > AssertionError: FAILED, WORKFLOW_FAILED recorded, observer fired, lock released, nothing to recover PASSED
+
+A JVM Error escaping the workflow body ends it FAILED on Postgres > NoClassDefFoundError thrown INSIDE an activity (R28): not retried, no ACTIVITY_FAILED, stays RUNNING, abandoned as NODE_ERROR PASSED
+
+A JVM Error escaping the workflow body ends it FAILED on Postgres > NoClassDefFoundError (R20): a node error — stays RUNNING, nothing written, lock released, abandoned as NODE_ERROR, and re-adopted by recovery PASSED
+
+Replay drift stands down on a real store and recovers once history matches the code > a compensation entry renamed under a COMPENSATING saga stands down without re-running it, and the saga finishes FAILED once the name matches again PASSED
+
+Replay drift stands down on a real store and recovers once history matches the code > a renamed activity stands down — nothing re-executed, nothing written — and the instance completes once the name matches again PASSED
+
+Replay drift stands down on a real store and recovers once history matches the code > sleep() on a slot another operation recorded leaks no timer row across recovery passes PASSED
+
+Per-task-queue workflow concurrency over Postgres > concurrency=1: a parallel() of two sleeps fired together completes PASSED
+
+Per-task-queue workflow concurrency over Postgres > concurrency=1 runs a queue's workflows one at a time, and both complete PASSED
+
+A terminal status is not a finished workflow > the base-class awaitStatus helper waits for the event on a terminal status PASSED
+
+A terminal status is not a finished workflow > TerminalWait.awaitTerminal waits for the event, not the status PASSED
+
+A terminal status is not a finished workflow > WorkflowHandle.awaitTerminal waits for the event, not the status PASSED
+
+A terminal status is not a finished workflow > a status-only poll never observes a terminal status without its terminal event PASSED
+
+Issue 26: the terminal write is atomic against a real mid-transaction failure > Issue 26: a failed terminal write leaves the instance non-terminal and recoverable; recovery then finalises it PASSED
+
+A node that cannot read a workflow's history stands down and leaves it adoptable > re-adoption churn is visible, not hidden: each recovery pass stands down again PASSED
+
+A node that cannot read a workflow's history stands down and leaves it adoptable > recovery stands down — status unchanged, zero compensations, lock free, observer fired — and the same instance completes once the row is removed PASSED
+
+An unreadable stored payload stands down naming its cause, and recovers once restored > a reshaped String result stands down with the root cause in the detail, then completes once the payload is restored PASSED
+
+$maestro:retry / $maestro:terminate over real Kafka > $maestro:bogus is dead-lettered after the attempt budget, and a subsequent valid command still processes PASSED
+
+$maestro:retry / $maestro:terminate over real Kafka > a workflow parked on awaitSignal is TERMINATED by $maestro:terminate, and WORKFLOW_TERMINATED is observed on the admin events topic PASSED
+
+$maestro:retry / $maestro:terminate over real Kafka > a FAILED workflow reaches COMPLETED after $maestro:retry, once the fault is fixed PASSED
+
+$maestro:retry / $maestro:terminate over real Kafka > after retry and terminate commands flow, no $maestro:* row was ever persisted as a WorkflowSignal, and getUnconsumedSignals stays empty PASSED
+
+A failing signal handler must not lose the signal > a transient handler failure is redelivered until it succeeds, and the workflow completes PASSED
+
+A failing signal handler must not lose the signal > a persistently failing @MaestroSignalListener record is dead-lettered, not dropped PASSED
+
+A failing signal handler must not lose the signal > the engine signal channel dead-letters a record it can never process PASSED
+
+A failing signal handler must not lose the signal > subscribing to a topic with no pre-created .DLT companion logs a WARN naming it PASSED
+
+A failing signal handler must not lose the signal > the engine signal channel redelivers when the handler throws PASSED
+
+A duplicated Kafka event runs the workflow exactly once > the same event delivered twice is consumed once and leaves one surplus row PASSED
+
+A duplicated Kafka event runs the workflow exactly once > duplicates that arrive before the workflow exists are both adopted and one is consumed PASSED
+
+A missing admin-events topic costs no meaningful workflow-thread time > startWorkflow returns promptly even though the admin-events topic does not exist PASSED
+
+The engine publishes workflow lifecycle events to the admin topic > a failing workflow emits WORKFLOW_FAILED after its start event PASSED
+
+The engine publishes workflow lifecycle events to the admin topic > maestro.messaging.topics.admin-events names the topic the adapter publishes to PASSED
+
+The engine publishes workflow lifecycle events to the admin topic > a completed workflow emits WORKFLOW_STARTED then WORKFLOW_COMPLETED, keyed by workflow ID PASSED
+
+The maestro.signals.{service} channel delivers signals into running workflows > an admin command on the channel actually terminates the workflow, and is never persisted as a signal row PASSED
+
+The maestro.signals.{service} channel delivers signals into running workflows > a SignalMessage published to the channel wakes a parked workflow and completes it PASSED
+
+A Kafka event routed by @MaestroSignalListener wakes a parked workflow > an event published while the workflow is parked wakes it and completes it PASSED
+
+A Kafka event routed by @MaestroSignalListener wakes a parked workflow > an event routed before the workflow exists is persisted as an orphan and adopted on start PASSED
+
+The per-instance lock stops a second node from running a workflow that is already live > a second node's recovery pass does not launch a workflow the first node is running PASSED
+
+The per-instance lock stops a second node from running a workflow that is already live > when both nodes recover an ownerless workflow at once, exactly one of them adopts it PASSED
+
+The per-instance lock stops a second node from running a workflow that is already live > the instance lock is held for the whole run and released when the workflow completes PASSED
+
+The per-instance lock stops a second node from running a workflow that is already live > a second node starting the same workflow ID is rejected by the store, not silently duplicated PASSED
+
+With no lock backend two nodes both run the workflow, and only the store's unique index keeps them consistent > node B adopts a workflow node A is still running: the in-flight step runs twice, and node A's result is discarded in favour of node B's PASSED
+
+With no lock backend two nodes both run the workflow, and only the store's unique index keeps them consistent > both nodes adopt the same ownerless workflow, and the store still yields one event per sequence and one output PASSED
+
+A node that dies holding the instance lock hands its workflow over when the TTL expires > the dead owner's lock row is left behind un-released and is freed only by TTL expiry PASSED
+
+A node that dies holding the instance lock hands its workflow over when the TTL expires > no node adopts the workflow while the dead owner's lock has not yet expired PASSED
+
+A node that dies holding the instance lock hands its workflow over when the TTL expires > node B adopts the abandoned workflow after the TTL and resumes at the first uncompleted step PASSED
+
+After a re-adoption, queries answer from the adopting node's per-run object > afterReadoptionQueriesAnswerFromNodeBsObjectAndNodeAsIsUnreachable() PASSED
+
+A signal ingested on one node reaches a workflow parked on another > a signal delivered on node B wakes the workflow parked on node A, which resumes it PASSED
+
+A signal ingested on one node reaches a workflow parked on another > a signal delivered on node B before the workflow exists is adopted when node A starts it PASSED
+
+A signal ingested on one node reaches a workflow parked on another > a run of signals delivered on node B is collected on node A in receipt order PASSED
+
+A timer fired or cancelled on one node wakes a workflow sleeping on another > a timer cancelled on node B wakes the workflow sleeping on node A with the cancelled outcome PASSED
+
+A timer fired or cancelled on one node wakes a workflow sleeping on another > a timer fired by node B's poller wakes the workflow sleeping on node A PASSED
+
+A Valkey brownout neither stalls signal() nor loses the parked workflow's wake (Issue 32) > signal() on node B returns promptly during the pause, persists one row, and node A still wakes PASSED
+
+A signal published by service A and consumed by service B yields one connected trace > B's resumed run segment carries A's trace ID, parented to A's publish span, and the durable signal row is what carried it PASSED
+
+A signal published by service A and consumed by service B yields one connected trace > a signal carrying an over-long traceparent is still delivered and consumed — the workflow completes and the resumed segment is simply a fresh root PASSED
+
+A signal published by service A and consumed by service B yields one connected trace > an over-long trace context set directly through the holder still persists the signal and completes the workflow PASSED
+
+A recovered workflow's replayed activity does not double-count maestro.activity.duration > crash after the pre-park activity, recover, complete: activity.duration is 1 per step (stepOne == 1, stepTwo == 1), workflow.started == 1, workflow.completed == 1 — the replayed step is never re-counted PASSED
+
+An inbound traceparent header on a @MaestroSignalListener topic reaches the signal row's trace_context > a valid W3C traceparent on the routed event survives BeanPostProcessor -> deliverSignal -> saveSignal and lands on the signal row carrying the same trace id PASSED
+
+A parallel fan-out leaves no unclosed segment and no orphan parent > every exported span's local parent was itself exported — no branch span references a segment that was never closed PASSED
+
+A parallel fan-out leaves no unclosed segment and no orphan parent > the parking fan-out still completes when another node's timer poller fires the branch's timer PASSED
+
+A parallel fan-out leaves no unclosed segment and no orphan parent > a fork-first workflow whose branches park still leaves no unclosed segment and no orphan parent PASSED
+
+A recovered workflow's replayed activity produces no spans on the recovering node > node B replays stepOne to reach the park and emits exactly one activity span — for the genuinely live stepTwo PASSED
+
+Maestro Flyway migrations coexist with the host's and with each other > upgrade procedure, fresh start: DROP + scoped DELETE, then Maestro recreates its schema PASSED
+
+Maestro Flyway migrations coexist with the host's and with each other > V4 adds a nullable maestro_workflow_signal.trace_context on top of V1–V3 PASSED
+
+Maestro Flyway migrations coexist with the host's and with each other > upgrade procedure, keep the data: mode none + V4/V5/V202 by hand + scoped DELETE PASSED
+
+Maestro Flyway migrations coexist with the host's and with each other > the host's Flyway and Maestro's history coexist without a version collision PASSED
+
+Maestro Flyway migrations coexist with the host's and with each other > no two Maestro migrations declare the same version, across every module PASSED
+
+Graceful shutdown leaves parked workflows recoverable, never failed > a workflow parked on sleep stays WAITING_TIMER with its timer still pending PASSED
+
+Graceful shutdown leaves parked workflows recoverable, never failed > shutdown releases the instance lock of a parked workflow instead of leaving it to the TTL PASSED
+
+Graceful shutdown leaves parked workflows recoverable, never failed > a workflow parked on awaitSignal stays WAITING_SIGNAL and stays recoverable PASSED
+
+Graceful shutdown leaves parked workflows recoverable, never failed > shutdown mid-compensation leaves the workflow recoverable with no step recorded failed, and a fresh node completes the compensation PASSED
+
+Graceful shutdown leaves parked workflows recoverable, never failed > a saga parked after committing compensable work is not compensated by shutdown PASSED
+
+Graceful shutdown leaves parked workflows recoverable, never failed > shutdown blocks until an in-flight activity drains, then records its result PASSED
+
+Graceful shutdown leaves parked workflows recoverable, never failed > a node started after the shutdown recovers the parked workflow and completes it PASSED
+
+Engine harness drives the real engine against Postgres > an activity chain completes and persists its events to Postgres PASSED
+
+> Task :maestro-integration-tests:check
+> Task :maestro-integration-tests:build
+> Task :maestro-messaging-kafka:check
+> Task :maestro-messaging-kafka:build
+
+[Incubating] Problems report is available at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/build/reports/problems/problems-report.html
+
+BUILD SUCCESSFUL in 5m 9s
+143 actionable tasks: 143 executed
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.2.0/userguide/configuration_cache_enabling.html
+# exit=0 finished=2026-10-28T18:04:39Z

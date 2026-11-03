@@ -124,7 +124,7 @@ class ConcurrentBranchParkingTest {
         var method = TwoAwaitingBranches.class.getMethod("run", String.class);
 
         var instanceId = executor.startWorkflow("park-race-signal", "TwoAwaitingBranches",
-                "default", "in", wf, method);
+                "default", "in", () -> wf, method);
 
         // Both branches must be inside the barrier — i.e. both have read the
         // same version and neither has written — before either signal lands.
@@ -169,7 +169,7 @@ class ConcurrentBranchParkingTest {
         var method = TwoSleepingBranches.class.getMethod("run", String.class);
 
         var instanceId = executor.startWorkflow("park-race-timer", "TwoSleepingBranches",
-                "default", "in", wf, method);
+                "default", "in", () -> wf, method);
 
         await().atMost(Duration.ofSeconds(5)).until(store::bothBranchesAtBarrier);
 
@@ -216,7 +216,7 @@ class ConcurrentBranchParkingTest {
             var wf = new TwoAwaitingBranches(done, compensated);
             var method = TwoAwaitingBranches.class.getMethod("run", String.class);
 
-            executor.startWorkflow(workflowId, "TwoAwaitingBranches", "default", "in", wf, method);
+            executor.startWorkflow(workflowId, "TwoAwaitingBranches", "default", "in", () -> wf, method);
 
             await().atMost(Duration.ofSeconds(5)).until(() ->
                     store.getInstance(workflowId)

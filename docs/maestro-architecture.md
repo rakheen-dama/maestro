@@ -118,7 +118,7 @@ graph TB
 | `maestro-core` | Execution engine, hybrid memoization, virtual threads, timers, signals, saga, queries. | **No** |
 | `maestro-spring-boot-starter` | Auto-configuration, annotation scanning, activity proxy creation, config binding, health indicators. | Yes |
 | `maestro-store-jdbc` | Abstract JDBC `WorkflowStore`. | No (JDBC only) |
-| `maestro-store-postgres` | Postgres implementation + Flyway 11 migrations. | No |
+| `maestro-store-postgres` | Postgres implementation + Flyway 11 migrations (own history table). | No |
 | `maestro-messaging-kafka` | Spring Kafka 4.x `WorkflowMessaging` implementation. `@MaestroSignalListener` processing. | Yes |
 | `maestro-messaging-postgres` | PostgreSQL-based `WorkflowMessaging` + `SignalNotifier`. No external broker required. | No |
 | `maestro-lock-valkey` | Lettuce-based `DistributedLock`. | No |
@@ -457,15 +457,14 @@ All topics are pre-created and declared in `application.yml`.
 |---|---|---|---|
 | `payments.requests` | Order Service | orderId | Payment commands to proxy |
 | `payments.results` | Payment Proxy | orderId | Payment results back |
-| `maestro.tasks.{taskQueue}` | Per-service | workflowId | Internal task dispatch |
 | `maestro.signals.{service}` | Per-service | workflowId | Inbound signals |
 | `maestro.admin.events` | All services | serviceName | Lifecycle events for dashboard |
 | `<any consumed topic>.DLT` | Per-service | workflowId | Messages that exhausted redelivery (suffix configurable) |
 
 Consumer group per service: `maestro-{serviceName}`.
 
-A dead-letter topic is required for every topic Maestro *consumes* — the task
-topics, the signal topics, and each `@MaestroSignalListener` topic — and is
+A dead-letter topic is required for every topic Maestro *consumes* — the signal
+topics and each `@MaestroSignalListener` topic — and is
 declared by the operator like every other topic; Maestro auto-creates none. If
 one is missing, the exhausted record cannot be published, the offset is not
 committed and consumption stalls noisily rather than dropping the message. The
@@ -564,7 +563,7 @@ flowchart TD
     style B fill:#4A90D9,color:#fff
 ```
 
-Parallel branches partition the sequence space with integer arithmetic: branch *i* of a fork at parent sequence `p` allocates sequence numbers from base `p*1000 + (i+1)*1000` (e.g. parent `5` → bases `6000`, `7000`, `8000`), giving each branch up to 999 steps. Each branch is independently memoized on replay.
+Parallel branches partition the sequence space with integer arithmetic: branch *i* of a fork at parent sequence `p` allocates sequence numbers from base `p*1000 + (i+1)*1000` (e.g. parent `5` → bases `6000`, `7000`, `8000`), giving each branch up to 999 sequence slots (most steps take one, `sleep()` takes two; the 1000th slot fails the branch with `BranchSequenceExhaustedException`). Saga compensation entries, sequential and parallel, get the same bounded blocks. Each branch is independently memoized on replay. Because every fork level multiplies the sequence by 1000 and the sequence is a 32-bit `int`, a workflow starting from a parent sequence below ~2,000 has room for **two** fork levels on any one path. *Parent-line* levels compound — sequential `parallel()` calls and the compensation phase that follows a failure — so two sequential `parallel()` calls fit, and one `parallel()` plus compensation fits, but two plus compensation do not. A nested `parallel()` compounds only within its own branch (the parent counter after the outer join is unchanged), so a nested fork plus compensation fits, as does a nested fork plus a second sequential fork. A fork that cannot be sequenced throws `SequenceSpaceExhaustedException` before any sequence is consumed: on the forward path it fails the workflow; inside a compensation entry (e.g. a compensation that forks after a forward `parallel()`) it is recorded as that entry's `COMPENSATION_STEP_FAILED` (see `docs/concepts.md` § Parallel Execution → Depth limit, and `docs/open-issues.md#issue-28`).
 
 ---
 
@@ -653,8 +652,8 @@ failed compensation step.
 | Scenario | Behaviour |
 |---|---|
 | **JVM crash** | Recovery replays from Postgres. At-least-once activities. |
-| **Activity timeout** | Retry with backoff. Exhausted → saga or fail. |
-| **External API down** | Activity retries durably (configurable: attempts, backoff, max interval). Service can restart during retries. |
+| **Activity timeout** | Each attempt is bounded by `startToCloseTimeout` on its own virtual thread; a timed-out attempt is interrupted and counts as a retryable failure (`ActivityTimeoutException`). Exhausted → saga or fail. |
+| **External API down** | Activity retries with backoff (configurable: attempts, backoff, max interval). The attempt counter is in-memory: after a restart the activity restarts at attempt 1 with the full schedule; a completed attempt is never re-executed. |
 | **Kafka rebalance** | In-progress workflows continue. New tasks reroute. |
 | **Postgres lost** | Execution blocks until restored. No activity without persistence. |
 | **Valkey down** | Workflows proceed unlocked (unique event index is the backstop; or use `maestro-lock-postgres`). Poll-based signals. |

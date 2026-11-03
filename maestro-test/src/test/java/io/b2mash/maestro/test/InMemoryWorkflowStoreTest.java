@@ -12,10 +12,12 @@ import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -107,6 +109,78 @@ class InMemoryWorkflowStoreTest {
         assertEquals(2, recoverable.size());
         assertTrue(recoverable.stream().anyMatch(i -> i.workflowId().equals("wf-running")));
         assertTrue(recoverable.stream().anyMatch(i -> i.workflowId().equals("wf-waiting")));
+    }
+
+    // ── completeInstance (Issue 26: atomic terminal status + terminal event) ──
+
+    @Test
+    void completeInstance_writesStatusAndEventTogether() {
+        var created = store.createInstance(buildInstance("wf-1"));
+        var terminal = created.toBuilder().status(WorkflowStatus.COMPLETED).version(1).build();
+        var event = event(created.id(), 5, EventType.WORKFLOW_COMPLETED);
+        assertTrue(store.completeInstance(terminal, event));
+        assertEquals(WorkflowStatus.COMPLETED, store.getInstance("wf-1").orElseThrow().status());
+        assertEquals(1, store.getInstance("wf-1").orElseThrow().version());
+        assertEquals(EventType.WORKFLOW_COMPLETED,
+                store.getEventBySequence(created.id(), 5).orElseThrow().eventType());
+    }
+
+    @Test
+    void completeInstance_staleVersion_writesNothing() {
+        var created = store.createInstance(buildInstance("wf-1"));
+        var stale = created.toBuilder().status(WorkflowStatus.COMPLETED).version(5).build(); // expects stored 4
+        assertFalse(store.completeInstance(stale, event(created.id(), 5, EventType.WORKFLOW_COMPLETED)));
+        assertEquals(WorkflowStatus.RUNNING, store.getInstance("wf-1").orElseThrow().status());
+        assertTrue(store.getEventBySequence(created.id(), 5).isEmpty());
+    }
+
+    @Test
+    void completeInstance_duplicateTerminalEvent_writesNothing() {
+        var created = store.createInstance(buildInstance("wf-1"));
+        store.appendEvent(event(created.id(), 5, EventType.WORKFLOW_COMPLETED)); // another runner got there first
+        var terminal = created.toBuilder().status(WorkflowStatus.FAILED).version(1).build();
+        assertThrows(DuplicateEventException.class,
+                () -> store.completeInstance(terminal, event(created.id(), 5, EventType.WORKFLOW_FAILED)));
+        assertEquals(WorkflowStatus.RUNNING, store.getInstance("wf-1").orElseThrow().status());
+        assertEquals(0, store.getInstance("wf-1").orElseThrow().version());
+        assertEquals(EventType.WORKFLOW_COMPLETED,
+                store.getEventBySequence(created.id(), 5).orElseThrow().eventType(),
+                "the incumbent event must be left untouched");
+    }
+
+    @Test
+    void completeInstance_rejectsNonTerminalStatus() {
+        var created = store.createInstance(buildInstance("wf-1"));
+        var notTerminal = created.toBuilder().status(WorkflowStatus.WAITING_SIGNAL).version(1).build();
+        assertThrows(IllegalArgumentException.class,
+                () -> store.completeInstance(notTerminal, event(created.id(), 5, EventType.WORKFLOW_COMPLETED)));
+        assertEquals(0, store.getInstance("wf-1").orElseThrow().version());
+    }
+
+    @Test
+    void completeInstance_rejectsNonTerminalEventType() {
+        var created = store.createInstance(buildInstance("wf-1"));
+        var terminal = created.toBuilder().status(WorkflowStatus.COMPLETED).version(1).build();
+        assertThrows(IllegalArgumentException.class,
+                () -> store.completeInstance(terminal, event(created.id(), 5, EventType.ACTIVITY_COMPLETED)));
+        assertTrue(store.getEventBySequence(created.id(), 5).isEmpty());
+    }
+
+    @Test
+    void completeInstance_rejectsEventForAnotherInstance() {
+        var created = store.createInstance(buildInstance("wf-1"));
+        var terminal = created.toBuilder().status(WorkflowStatus.COMPLETED).version(1).build();
+        assertThrows(IllegalArgumentException.class,
+                () -> store.completeInstance(terminal, event(UUID.randomUUID(), 5, EventType.WORKFLOW_COMPLETED)));
+        assertEquals(WorkflowStatus.RUNNING, store.getInstance("wf-1").orElseThrow().status());
+    }
+
+    @Test
+    void completeInstance_unknownWorkflow_throwsNotFound() {
+        var ghost = buildInstance("wf-ghost").toBuilder().status(WorkflowStatus.COMPLETED).version(1).build();
+        assertThrows(WorkflowNotFoundException.class,
+                () -> store.completeInstance(ghost, event(ghost.id(), 5, EventType.WORKFLOW_COMPLETED)));
+        assertTrue(store.getEventBySequence(ghost.id(), 5).isEmpty());
     }
 
     // ── Event operations ─────────────────────────────────────────────────
@@ -236,6 +310,59 @@ class InMemoryWorkflowStoreTest {
     }
 
     @Test
+    void deleteFailureEventsDeletesFailingAwaitsSpentDeadlineButNoSleepOrEarlierAwaitRow() {
+        // R61: the failing await's TIMER_SCHEDULED park memo (seq-1, same step
+        // name) and its await-signal-<seq-1> row hold a spent deadline; they
+        // go with the failing SIGNAL_TIMEOUT so a retry arms a fresh timeout.
+        var instanceId = UUID.randomUUID();
+        var at = Instant.now();
+        store.appendEvent(namedEvent(instanceId, 1, EventType.TIMER_SCHEDULED, "$maestro:sleep"));
+        store.appendEvent(namedEvent(instanceId, 2, EventType.TIMER_SCHEDULED, "$maestro:awaitSignal:gate"));
+        store.appendEvent(namedEvent(instanceId, 3, EventType.SIGNAL_TIMEOUT, "$maestro:awaitSignal:gate"));
+        store.appendEvent(namedEvent(instanceId, 4, EventType.TIMER_SCHEDULED, "$maestro:awaitSignal:approval"));
+        store.appendEvent(namedEvent(instanceId, 5, EventType.SIGNAL_TIMEOUT, "$maestro:awaitSignal:approval"));
+        store.appendEvent(signalTimeoutFailure(instanceId, 6));
+        for (var timerId : java.util.List.of("sleep-1", "await-signal-2", "await-signal-4")) {
+            store.saveTimer(new WorkflowTimer(UUID.randomUUID(), instanceId, "wf", timerId, at,
+                    TimerStatus.FIRED, at));
+        }
+
+        assertEquals(3, store.deleteFailureEvents(instanceId),
+                "WORKFLOW_FAILED, the failing SIGNAL_TIMEOUT and the failing await's park memo");
+        assertEquals(java.util.List.of(1, 2, 3), store.getEvents(instanceId).stream()
+                .map(WorkflowEvent::sequenceNumber).toList());
+        assertTrue(store.findTimer(instanceId, "await-signal-4").isEmpty());
+        assertTrue(store.findTimer(instanceId, "sleep-1").isPresent());
+        assertTrue(store.findTimer(instanceId, "await-signal-2").isPresent());
+    }
+
+    @Test
+    void deleteFailureEventsKeepsUnrelatedMemoBeforeSingleSlotTimeout() {
+        var instanceId = UUID.randomUUID();
+        var at = Instant.now();
+        store.appendEvent(namedEvent(instanceId, 1, EventType.TIMER_SCHEDULED, "$maestro:sleep"));
+        store.appendEvent(namedEvent(instanceId, 2, EventType.SIGNAL_TIMEOUT, "$maestro:awaitSignal:approval"));
+        store.appendEvent(signalTimeoutFailure(instanceId, 3));
+        store.saveTimer(new WorkflowTimer(UUID.randomUUID(), instanceId, "wf", "sleep-1", at,
+                TimerStatus.FIRED, at));
+
+        assertEquals(2, store.deleteFailureEvents(instanceId));
+        assertTrue(store.getEventBySequence(instanceId, 1).isPresent());
+        assertTrue(store.findTimer(instanceId, "sleep-1").isPresent());
+    }
+
+    private static WorkflowEvent namedEvent(UUID instanceId, int seq, EventType type, String stepName) {
+        return new WorkflowEvent(UUID.randomUUID(), instanceId, seq, type, stepName, null, Instant.now());
+    }
+
+    private static WorkflowEvent signalTimeoutFailure(UUID instanceId, int seq) {
+        return new WorkflowEvent(UUID.randomUUID(), instanceId, seq, EventType.WORKFLOW_FAILED, null,
+                json("{\"exceptionType\":\"io.b2mash.maestro.core.exception.SignalTimeoutException\","
+                        + "\"message\":\"signal 'approval' timed out\"}"),
+                Instant.now());
+    }
+
+    @Test
     void deleteFailureEventsDeletesFailingTimeoutMemoWhenCompensationEventsFollowIt() {
         // Regression pin (CodeRabbit wave, PR #30): an UNCAUGHT
         // SignalTimeoutException in a saga appends COMPENSATION_* events
@@ -324,6 +451,93 @@ class InMemoryWorkflowStoreTest {
     @Test
     void markSignalConsumedUnknownIdReturnsFalse() {
         assertFalse(store.markSignalConsumed(UUID.randomUUID()));
+    }
+
+    // ── Signal janitor delete (C14b) ─────────────────────────────────────
+
+    /**
+     * {@link InMemoryWorkflowStore#deleteUnconsumedSignalsForTerminalInstancesBefore}:
+     * one instance per {@link WorkflowStatus}, each completed 10 days ago with
+     * one unconsumed signal; a consumed signal on the COMPLETED instance; an
+     * orphan signal; and a COMPLETED instance completed 1 day ago. The cutoff
+     * is 7 days ago, so exactly the old COMPLETED and TERMINATED unconsumed
+     * signals qualify.
+     */
+    @Nested
+    class SignalJanitorDeleteTests {
+
+        private final Instant now = Instant.now();
+        private final Instant cutoff = now.minus(Duration.ofDays(7));
+        private final String orphanWorkflowId = "wf-orphan";
+        private final String recentCompletedId = "wf-recent-completed";
+        private UUID consumedSignalId;
+
+        @BeforeEach
+        void fixture() {
+            for (var status : WorkflowStatus.values()) {
+                var instance = store.createInstance(buildInstance(idFor(status), status).toBuilder()
+                        .completedAt(now.minus(Duration.ofDays(10)))
+                        .build());
+                store.saveSignal(signal(instance.workflowId(), instance.id(), false));
+            }
+            var completed = store.getInstance(idFor(WorkflowStatus.COMPLETED)).orElseThrow();
+            var consumed = signal(completed.workflowId(), completed.id(), true);
+            consumedSignalId = consumed.id();
+            store.saveSignal(consumed);
+
+            store.saveSignal(signal(orphanWorkflowId, null, false));
+
+            var recent = store.createInstance(buildInstance(recentCompletedId, WorkflowStatus.COMPLETED).toBuilder()
+                    .completedAt(now.minus(Duration.ofDays(1)))
+                    .build());
+            store.saveSignal(signal(recentCompletedId, recent.id(), false));
+        }
+
+        @Test
+        void deleteUnconsumedSignals_deletesCompletedAndTerminatedOlderThanCutoff() {
+            assertEquals(2, store.deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff));
+            assertEquals(0, unconsumed(idFor(WorkflowStatus.COMPLETED)));
+            assertEquals(0, unconsumed(idFor(WorkflowStatus.TERMINATED)));
+        }
+
+        @Test
+        void deleteUnconsumedSignals_keepsSignalsOfFailedInstances() {
+            store.deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff);
+            assertEquals(1, store.getUnconsumedSignals(idFor(WorkflowStatus.FAILED), "s").size(),
+                    "a FAILED workflow may be retried and consume its signals (Issue 19)");
+        }
+
+        @Test
+        void deleteUnconsumedSignals_keepsActiveNewerConsumedAndOrphanSignals() {
+            store.deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff);
+            for (var status : WorkflowStatus.values()) {
+                if (status.isActive()) {
+                    assertEquals(1, unconsumed(idFor(status)), status + " signal must survive");
+                }
+            }
+            assertEquals(1, unconsumed(recentCompletedId));
+            assertTrue(store.getAllSignals().stream().anyMatch(s -> s.id().equals(consumedSignalId)),
+                    "consumed rows are out of the janitor's scope");
+            assertEquals(1, unconsumed(orphanWorkflowId));
+        }
+
+        @Test
+        void deleteUnconsumedSignals_isIdempotent() {
+            store.deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff);
+            assertEquals(0, store.deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff));
+        }
+
+        private static String idFor(WorkflowStatus status) {
+            return "wf-" + status.name().toLowerCase();
+        }
+
+        private int unconsumed(String workflowId) {
+            return store.getUnconsumedSignals(workflowId, "s").size();
+        }
+
+        private WorkflowSignal signal(String workflowId, UUID instanceId, boolean consumed) {
+            return new WorkflowSignal(UUID.randomUUID(), instanceId, workflowId, "s", null, consumed, Instant.now());
+        }
     }
 
     // ── trace_context (design §4.3(b), RULING 2) ─────────────────────────
@@ -542,6 +756,10 @@ class InMemoryWorkflowStoreTest {
                 .updatedAt(Instant.now())
                 .version(0)
                 .build();
+    }
+
+    private static WorkflowEvent event(UUID instanceId, int sequenceNumber, EventType type) {
+        return new WorkflowEvent(UUID.randomUUID(), instanceId, sequenceNumber, type, null, null, Instant.now());
     }
 
     private static WorkflowTimer buildTimer(String workflowId, Instant fireAt, TimerStatus status) {

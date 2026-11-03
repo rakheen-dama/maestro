@@ -19,36 +19,27 @@ class JdbcStoreConfigurationTest {
     private final JsonMapper mapper = JsonMapper.builder().build();
 
     @Test
-    @DisplayName("rejects a null table prefix")
-    void constructor_rejectsNullTablePrefix() {
-        var ex = assertThrows(NullPointerException.class,
-                () -> new JdbcStoreConfiguration(null, mapper));
-        assertEquals("tablePrefix", ex.getMessage());
-    }
-
-    @Test
     @DisplayName("rejects a null ObjectMapper")
     void constructor_rejectsNullObjectMapper() {
         var ex = assertThrows(NullPointerException.class,
-                () -> new JdbcStoreConfiguration("maestro_", null));
+                () -> new JdbcStoreConfiguration(null));
         assertEquals("objectMapper", ex.getMessage());
     }
 
     @Test
-    @DisplayName("accepts a valid prefix and mapper, and exposes them unchanged")
+    @DisplayName("accepts a valid mapper and exposes it unchanged")
     void constructor_acceptsValidArguments() {
-        var config = new JdbcStoreConfiguration("custom_", mapper);
+        var config = new JdbcStoreConfiguration(mapper);
 
-        assertEquals("custom_", config.tablePrefix());
         assertSame(mapper, config.objectMapper());
     }
 
     @Test
-    @DisplayName("withDefaults() uses the canonical 'maestro_' prefix")
-    void withDefaults_usesMaestroPrefix() {
+    @DisplayName("the table prefix is the fixed 'maestro_' constant")
+    void tablePrefix_isMaestro() {
         var config = JdbcStoreConfiguration.withDefaults(mapper);
 
-        assertEquals("maestro_", config.tablePrefix());
+        assertEquals("maestro_", JdbcStoreConfiguration.TABLE_PREFIX);
         assertSame(mapper, config.objectMapper());
     }
 }

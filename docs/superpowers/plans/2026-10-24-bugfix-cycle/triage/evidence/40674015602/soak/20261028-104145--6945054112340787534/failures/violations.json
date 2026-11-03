@@ -1,0 +1,20 @@
+{
+  "_identity" : {
+    "pwd" : "/home/runner/work/maestro/maestro/maestro-integration-tests",
+    "gitHead" : "66cdf952a17987774a31c08e9afb1d316a8d2349",
+    "branch" : "main",
+    "timestampUtc" : "2026-10-28T10:41:45.660441342Z",
+    "seed" : -6945054112340787534,
+    "mode" : "SOAK",
+    "runId" : "20261028-104145--6945054112340787534"
+  },
+  "payload" : [ {
+    "invariant" : "I1",
+    "detail" : "terminal status != declared expectation",
+    "workflowIds" : [ "loan-chaos-11501689961368764082-1145 (expected=COMPLETED, actual=FAILED, path=CONDITIONS_LOOP)" ]
+  }, {
+    "invariant" : "I1",
+    "detail" : "output.status != declared expectation",
+    "workflowIds" : [ "loan-chaos-11501689961368764082-1145 (expected output=FUNDED)" ]
+  } ]
+}

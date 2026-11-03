@@ -1,0 +1,165 @@
+{
+  "_identity" : {
+    "pwd" : "/home/runner/work/maestro/maestro/maestro-integration-tests",
+    "gitHead" : "66cdf952a17987774a31c08e9afb1d316a8d2349",
+    "branch" : "main",
+    "timestampUtc" : "2026-10-28T10:41:45.660441342Z",
+    "seed" : -6945054112340787534,
+    "mode" : "SOAK",
+    "runId" : "20261028-104145--6945054112340787534"
+  },
+  "payload" : [ {
+    "id" : "fdb87de4-4b1f-424c-b751-84ef769bb1c2",
+    "workflow_instance_id" : "058cbd64-213f-4427-8210-c2369ec121dd",
+    "workflow_id" : "loan-chaos-11501689961368764082-1145",
+    "signal_name" : "package.signed",
+    "payload" : "{\"loanId\": \"chaos-11501689961368764082-1145\", \"signerId\": \"borrower-a\"}",
+    "consumed" : "false",
+    "received_at" : "2026-10-28 11:42:19.52198",
+    "trace_context" : null
+  }, {
+    "id" : "c517c203-2530-47ce-bcf6-d0173ee08776",
+    "workflow_instance_id" : "058cbd64-213f-4427-8210-c2369ec121dd",
+    "workflow_id" : "loan-chaos-11501689961368764082-1145",
+    "signal_name" : "package.signed",
+    "payload" : "{\"loanId\": \"chaos-11501689961368764082-1145\", \"signerId\": \"borrower-a\"}",
+    "consumed" : "false",
+    "received_at" : "2026-10-28 11:42:26.020935",
+    "trace_context" : null
+  }, {
+    "id" : "74c9049b-2f90-4481-862e-c9b25e39e458",
+    "workflow_instance_id" : "058cbd64-213f-4427-8210-c2369ec121dd",
+    "workflow_id" : "loan-chaos-11501689961368764082-1145",
+    "signal_name" : "document.uploaded",
+    "payload" : "{\"loanId\": \"chaos-11501689961368764082-1145\", \"docType\": \"income-proof\", \"uploadedBy\": \"borrower-a\"}",
+    "consumed" : "true",
+    "received_at" : "2026-10-28 11:41:46.531869",
+    "trace_context" : null
+  }, {
+    "id" : "48f20eac-6764-46d2-89fd-2da53e98afc0",
+    "workflow_instance_id" : "058cbd64-213f-4427-8210-c2369ec121dd",
+    "workflow_id" : "loan-chaos-11501689961368764082-1145",
+    "signal_name" : "package.signed",
+    "payload" : "{\"loanId\": \"chaos-11501689961368764082-1145\", \"signerId\": \"borrower-b\"}",
+    "consumed" : "false",
+    "received_at" : "2026-10-28 11:42:30.974132",
+    "trace_context" : null
+  }, {
+    "id" : "e4d031fc-8e2b-4d45-9dba-b0efda36c5a7",
+    "workflow_instance_id" : "058cbd64-213f-4427-8210-c2369ec121dd",
+    "workflow_id" : "loan-chaos-11501689961368764082-1145",
+    "signal_name" : "underwriting.decision",
+    "payload" : "{\"round\": 1, \"loanId\": \"chaos-11501689961368764082-1145\", \"verdict\": \"CONDITIONS\", \"conditions\": [\"proof-of-insurance\"]}",
+    "consumed" : "true",
+    "received_at" : "2026-10-28 11:42:02.724947",
+    "trace_context" : "00-2a3046873ebc506fb85948909ccd3465-929741b36a4fdbba-01"
+  }, {
+    "id" : "f055b94a-5e2a-4f18-b89b-1e46b8b46871",
+    "workflow_instance_id" : "058cbd64-213f-4427-8210-c2369ec121dd",
+    "workflow_id" : "loan-chaos-11501689961368764082-1145",
+    "signal_name" : "underwriting.decision",
+    "payload" : "{\"round\": 2, \"loanId\": \"chaos-11501689961368764082-1145\", \"verdict\": \"APPROVED\", \"conditions\": []}",
+    "consumed" : "true",
+    "received_at" : "2026-10-28 11:42:03.298625",
+    "trace_context" : "00-016829806672ac89fe633f8b806169bf-bc1d904d4fe59806-01"
+  }, {
+    "id" : "a0f1efdf-2e7f-48db-b661-e58d884a46ab",
+    "workflow_instance_id" : "058cbd64-213f-4427-8210-c2369ec121dd",
+    "workflow_id" : "loan-chaos-11501689961368764082-1145",
+    "signal_name" : "document.uploaded",
+    "payload" : "{\"loanId\": \"chaos-11501689961368764082-1145\", \"docType\": \"proof-of-insurance\", \"uploadedBy\": \"borrower-a\"}",
+    "consumed" : "true",
+    "received_at" : "2026-10-28 11:42:03.243114",
+    "trace_context" : null
+  }, {
+    "id" : "e5e23e34-d47a-4fcf-9087-5d0c03782ff2",
+    "workflow_instance_id" : "058cbd64-213f-4427-8210-c2369ec121dd",
+    "workflow_id" : "loan-chaos-11501689961368764082-1145",
+    "signal_name" : "package.signed",
+    "payload" : "{\"loanId\": \"chaos-11501689961368764082-1145\", \"signerId\": \"borrower-a\"}",
+    "consumed" : "true",
+    "received_at" : "2026-10-28 11:42:16.52103",
+    "trace_context" : null
+  }, {
+    "id" : "7ba730f0-1994-4b0c-a56c-29492be6f2e3",
+    "workflow_instance_id" : "058cbd64-213f-4427-8210-c2369ec121dd",
+    "workflow_id" : "loan-chaos-11501689961368764082-1145",
+    "signal_name" : "package.signed",
+    "payload" : "{\"loanId\": \"chaos-11501689961368764082-1145\", \"signerId\": \"borrower-a\"}",
+    "consumed" : "false",
+    "received_at" : "2026-10-28 11:42:23.020745",
+    "trace_context" : null
+  }, {
+    "id" : "cf7a30e4-9e5d-44a2-94b3-5fc2d9e0a5eb",
+    "workflow_instance_id" : "058cbd64-213f-4427-8210-c2369ec121dd",
+    "workflow_id" : "loan-chaos-11501689961368764082-1145",
+    "signal_name" : "package.signed",
+    "payload" : "{\"loanId\": \"chaos-11501689961368764082-1145\", \"signerId\": \"borrower-a\"}",
+    "consumed" : "false",
+    "received_at" : "2026-10-28 11:42:29.619889",
+    "trace_context" : null
+  }, {
+    "id" : "3e32a86f-d2ee-4213-aa8e-b740e258cbc9",
+    "workflow_instance_id" : "058cbd64-213f-4427-8210-c2369ec121dd",
+    "workflow_id" : "loan-chaos-11501689961368764082-1145",
+    "signal_name" : "verification.result",
+    "payload" : "{\"type\": \"credit\", \"loanId\": \"chaos-11501689961368764082-1145\", \"details\": \"credit verification passed\", \"approved\": true}",
+    "consumed" : "true",
+    "received_at" : "2026-10-28 11:41:56.530903",
+    "trace_context" : "00-31b9b7660228b2b1af619ac28cadbeef-54365c24eafa003a-01"
+  }, {
+    "id" : "6e0ca9a9-6f6f-42aa-b702-6aff1188a283",
+    "workflow_instance_id" : "058cbd64-213f-4427-8210-c2369ec121dd",
+    "workflow_id" : "loan-chaos-11501689961368764082-1145",
+    "signal_name" : "verification.result",
+    "payload" : "{\"type\": \"employment\", \"loanId\": \"chaos-11501689961368764082-1145\", \"details\": \"employment verification passed\", \"approved\": true}",
+    "consumed" : "true",
+    "received_at" : "2026-10-28 11:41:56.533931",
+    "trace_context" : "00-57f98174c9c5710ade099ccdb592c6af-697b0c0898ecfdb4-01"
+  }, {
+    "id" : "8a470071-4ad5-48f2-8f28-6d2bf65d7edd",
+    "workflow_instance_id" : "058cbd64-213f-4427-8210-c2369ec121dd",
+    "workflow_id" : "loan-chaos-11501689961368764082-1145",
+    "signal_name" : "verification.result",
+    "payload" : "{\"type\": \"appraisal\", \"loanId\": \"chaos-11501689961368764082-1145\", \"details\": \"appraisal verification passed\", \"approved\": true}",
+    "consumed" : "true",
+    "received_at" : "2026-10-28 11:42:01.548887",
+    "trace_context" : "00-700fc835e7f789ebfa6290d387151bb8-2ef8cadb3ddb9443-01"
+  }, {
+    "id" : "d63d76b5-192b-4607-ad93-1689ab04d0ff",
+    "workflow_instance_id" : "058cbd64-213f-4427-8210-c2369ec121dd",
+    "workflow_id" : "loan-chaos-11501689961368764082-1145",
+    "signal_name" : "package.signed",
+    "payload" : "{\"loanId\": \"chaos-11501689961368764082-1145\", \"signerId\": \"borrower-a\"}",
+    "consumed" : "true",
+    "received_at" : "2026-10-28 11:42:06.833547",
+    "trace_context" : null
+  }, {
+    "id" : "8eff75bf-108c-4e55-a18f-7aa621cc8acb",
+    "workflow_instance_id" : "058cbd64-213f-4427-8210-c2369ec121dd",
+    "workflow_id" : "loan-chaos-11501689961368764082-1145",
+    "signal_name" : "package.signed",
+    "payload" : "{\"loanId\": \"chaos-11501689961368764082-1145\", \"signerId\": \"borrower-a\"}",
+    "consumed" : "true",
+    "received_at" : "2026-10-28 11:42:13.122323",
+    "trace_context" : null
+  }, {
+    "id" : "5623630f-510f-4f32-90c2-98f018c1fc21",
+    "workflow_instance_id" : "058cbd64-213f-4427-8210-c2369ec121dd",
+    "workflow_id" : "loan-chaos-11501689961368764082-1145",
+    "signal_name" : "package.signed",
+    "payload" : "{\"loanId\": \"chaos-11501689961368764082-1145\", \"signerId\": \"borrower-a\"}",
+    "consumed" : "true",
+    "received_at" : "2026-10-28 11:42:03.818222",
+    "trace_context" : null
+  }, {
+    "id" : "00527dd5-6362-4743-80ac-fa00dacbe242",
+    "workflow_instance_id" : "058cbd64-213f-4427-8210-c2369ec121dd",
+    "workflow_id" : "loan-chaos-11501689961368764082-1145",
+    "signal_name" : "package.signed",
+    "payload" : "{\"loanId\": \"chaos-11501689961368764082-1145\", \"signerId\": \"borrower-a\"}",
+    "consumed" : "true",
+    "received_at" : "2026-10-28 11:42:10.121398",
+    "trace_context" : null
+  } ]
+}

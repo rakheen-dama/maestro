@@ -1,12 +1,18 @@
 package io.b2mash.maestro.spring.client;
 
+import io.b2mash.maestro.core.engine.FailureReconstruction;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.engine.WorkflowRegistration;
 import io.b2mash.maestro.core.exception.WorkflowExecutionException;
+import io.b2mash.maestro.core.model.WorkflowFailureDetail;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.model.WorkflowTerminationDetail;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import tools.jackson.databind.JsonNode;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -35,6 +41,8 @@ import java.util.concurrent.TimeoutException;
  */
 public final class WorkflowStub<T> {
 
+    private static final Logger logger = LoggerFactory.getLogger(WorkflowStub.class);
+
     private static final Duration POLL_INTERVAL = Duration.ofMillis(200);
 
     private final WorkflowExecutor executor;
@@ -60,8 +68,26 @@ public final class WorkflowStub<T> {
     /**
      * Starts the workflow asynchronously and returns immediately.
      *
+     * <p>Builds a new workflow object for this run from the registration's
+     * {@linkplain WorkflowRegistration#workflowFactory() factory} — a fresh
+     * prototype bean, so instance fields are this run's state alone.
+     *
      * @param input the workflow input, or {@code null} for no-arg workflows
      * @return the workflow instance UUID (primary key)
+     * @throws io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException if a
+     *         workflow with this ID already exists — including one whose earlier
+     *         start failed to build its bean (below)
+     * @throws io.b2mash.maestro.core.exception.WorkflowInstantiationException if the
+     *         workflow bean cannot be created (for example a Spring
+     *         {@code BeanCreationException} from a broken dependency, available as
+     *         its {@linkplain Throwable#getCause() cause}). The run is not launched,
+     *         but the instance row was already written and is left {@code RUNNING}:
+     *         it is <em>not</em> rolled back. The recovery poller runs it once the
+     *         bean can be built (after the dependency is fixed, typically by a
+     *         redeploy), and until then every recovery pass skips it. Retrying
+     *         {@code startAsync} with the same workflow ID therefore throws
+     *         {@code WorkflowAlreadyExistsException} — the workflow exists and
+     *         will run; it is not started a second time.
      */
     public UUID startAsync(@Nullable Object input) {
         return executor.startWorkflow(
@@ -69,7 +95,7 @@ public final class WorkflowStub<T> {
                 registration.workflowType(),
                 registration.taskQueue(),
                 input,
-                registration.workflowImpl(),
+                registration.workflowFactory(),
                 registration.workflowMethod()
         );
     }
@@ -87,7 +113,17 @@ public final class WorkflowStub<T> {
      * @param resultType the expected result type
      * @return the workflow output, or {@code null} if the workflow returned void/null
      * @throws TimeoutException if the timeout elapses before completion
-     * @throws io.b2mash.maestro.core.exception.WorkflowExecutionException if the workflow failed
+     * @throws io.b2mash.maestro.core.exception.WorkflowExecutionException if the workflow
+     *         failed — the message names the recorded exception type and message, and the
+     *         {@linkplain Throwable#getCause() cause} is that exception reconstructed (its
+     *         original type when it has a public {@code (String)} constructor, otherwise a
+     *         {@code ReconstructedActivityFailure}); or if it was terminated — the message
+     *         names who terminated it and the reason, and there is no cause
+     * @throws io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException if a
+     *         workflow with this ID already exists (see {@link #startAsync})
+     * @throws io.b2mash.maestro.core.exception.WorkflowInstantiationException if the
+     *         workflow bean cannot be created — the instance row stays
+     *         {@code RUNNING} for recovery (see {@link #startAsync})
      */
     public <R> @Nullable R startAndWait(
             @Nullable Object input,
@@ -101,10 +137,11 @@ public final class WorkflowStub<T> {
             var instance = store.getInstance(options.workflowId());
             if (instance.isPresent() && instance.get().status().isTerminal()) {
                 var status = instance.get().status();
-                if (status == WorkflowStatus.FAILED || status == WorkflowStatus.TERMINATED) {
-                    throw new WorkflowExecutionException(
-                            options.workflowId(),
-                            new RuntimeException("Workflow ended with status " + status));
+                if (status == WorkflowStatus.FAILED) {
+                    throw failed(instance.get().output());
+                }
+                if (status == WorkflowStatus.TERMINATED) {
+                    throw terminated(instance.get().output());
                 }
                 // COMPLETED — deserialize output
                 return serializer.deserialize(instance.get().output(), resultType);
@@ -120,5 +157,55 @@ public final class WorkflowStub<T> {
 
         throw new TimeoutException(
                 "Workflow '%s' did not complete within %s".formatted(options.workflowId(), timeout));
+    }
+
+    /**
+     * Builds the exception for a {@code FAILED} workflow from the recorded
+     * {@link WorkflowFailureDetail}: the message names the failing exception
+     * and the cause is its reconstruction (null if no detail was recorded).
+     */
+    private WorkflowExecutionException failed(@Nullable JsonNode output) {
+        var id = options.workflowId();
+        var detail = readDetail(output, WorkflowFailureDetail.class);
+        if (detail == null) {
+            return new WorkflowExecutionException(id, "Workflow '%s' failed".formatted(id), null);
+        }
+        var reconstructed = FailureReconstruction.reconstruct(detail.exceptionType(), detail.message());
+        var message = detail.message() == null ? "" : ": " + detail.message();
+        return new WorkflowExecutionException(id,
+                "Workflow '%s' failed: %s%s".formatted(id, detail.exceptionType(), message),
+                reconstructed);
+    }
+
+    /**
+     * Builds the exception for a {@code TERMINATED} workflow from the recorded
+     * {@link WorkflowTerminationDetail}. A termination is not a failure, so
+     * there is no cause.
+     */
+    private WorkflowExecutionException terminated(@Nullable JsonNode output) {
+        var id = options.workflowId();
+        var detail = readDetail(output, WorkflowTerminationDetail.class);
+        if (detail == null) {
+            return new WorkflowExecutionException(id, "Workflow '%s' was terminated".formatted(id), null);
+        }
+        var reason = detail.reason() == null ? "" : ": " + detail.reason();
+        return new WorkflowExecutionException(id,
+                "Workflow '%s' was terminated by %s%s".formatted(id, detail.terminatedBy(), reason),
+                null);
+    }
+
+    /**
+     * Reads a terminal detail payload, or {@code null} when it is absent or
+     * unreadable — the terminal status must still be reported even if the
+     * payload cannot be.
+     */
+    private <D> @Nullable D readDetail(@Nullable JsonNode output, Class<D> type) {
+        try {
+            return serializer.deserialize(output, type);
+        } catch (RuntimeException e) {
+            logger.warn("Workflow '{}' ended with an unreadable {} payload; reporting the status without it",
+                    options.workflowId(), type.getSimpleName(), e);
+            return null;
+        }
     }
 }

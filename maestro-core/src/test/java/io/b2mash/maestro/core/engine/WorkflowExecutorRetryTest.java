@@ -15,7 +15,6 @@ import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LifecycleEventType;
 import io.b2mash.maestro.core.spi.LockHandle;
 import io.b2mash.maestro.core.spi.SignalMessage;
-import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import org.junit.jupiter.api.AfterEach;
@@ -96,9 +95,9 @@ class WorkflowExecutorRetryTest {
                 RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
         var workflow = new ThreeStepWorkflow(proxy);
         var method = ThreeStepWorkflow.class.getMethod("run");
-        var registration = new WorkflowRegistration("ThreeStepWorkflow", "default", workflow, method);
+        var registration = new WorkflowRegistration("ThreeStepWorkflow", "default", () -> workflow, method);
 
-        executor.startWorkflow("retry-headline", "ThreeStepWorkflow", "default", null, workflow, method);
+        executor.startWorkflow("retry-headline", "ThreeStepWorkflow", "default", null, () -> workflow, method);
         awaitStatus("retry-headline", WorkflowStatus.FAILED);
 
         assertEquals(1, activityImpl.oneCount.get());
@@ -142,11 +141,11 @@ class WorkflowExecutorRetryTest {
     void retryOfRunningWorkflow_isNotFailedNoOp() throws Exception {
         var workflow = new ParkedWorkflow();
         var method = ParkedWorkflow.class.getMethod("run");
-        executor.startWorkflow("retry-running", "ParkedWorkflow", "default", null, workflow, method);
+        executor.startWorkflow("retry-running", "ParkedWorkflow", "default", null, () -> workflow, method);
         awaitStatus("retry-running", WorkflowStatus.WAITING_SIGNAL);
         var before = store.getInstance("retry-running").orElseThrow();
 
-        var registration = new WorkflowRegistration("ParkedWorkflow", "default", workflow, method);
+        var registration = new WorkflowRegistration("ParkedWorkflow", "default", () -> workflow, method);
         assertEquals(WorkflowExecutor.RetryOutcome.NOT_FAILED,
                 executor.retryWorkflow("retry-running", registration));
 
@@ -160,11 +159,11 @@ class WorkflowExecutorRetryTest {
     void retryOfCompletedWorkflow_isNotFailedNoOp() throws Exception {
         var workflow = new ImmediateWorkflow();
         var method = ImmediateWorkflow.class.getMethod("run", String.class);
-        executor.startWorkflow("retry-completed", "ImmediateWorkflow", "default", "seed", workflow, method);
+        executor.startWorkflow("retry-completed", "ImmediateWorkflow", "default", "seed", () -> workflow, method);
         awaitStatus("retry-completed", WorkflowStatus.COMPLETED);
         var before = store.getInstance("retry-completed").orElseThrow();
 
-        var registration = new WorkflowRegistration("ImmediateWorkflow", "default", workflow, method);
+        var registration = new WorkflowRegistration("ImmediateWorkflow", "default", () -> workflow, method);
         assertEquals(WorkflowExecutor.RetryOutcome.NOT_FAILED,
                 executor.retryWorkflow("retry-completed", registration));
 
@@ -178,12 +177,12 @@ class WorkflowExecutorRetryTest {
     void retryOfTerminatedWorkflow_isNotFailedNoOp() throws Exception {
         var workflow = new ParkedWorkflow();
         var method = ParkedWorkflow.class.getMethod("run");
-        executor.startWorkflow("retry-terminated", "ParkedWorkflow", "default", null, workflow, method);
+        executor.startWorkflow("retry-terminated", "ParkedWorkflow", "default", null, () -> workflow, method);
         awaitStatus("retry-terminated", WorkflowStatus.WAITING_SIGNAL);
         executor.terminateWorkflow("retry-terminated", "stop it");
         var before = store.getInstance("retry-terminated").orElseThrow();
 
-        var registration = new WorkflowRegistration("ParkedWorkflow", "default", workflow, method);
+        var registration = new WorkflowRegistration("ParkedWorkflow", "default", () -> workflow, method);
         assertEquals(WorkflowExecutor.RetryOutcome.NOT_FAILED,
                 executor.retryWorkflow("retry-terminated", registration));
 
@@ -196,7 +195,7 @@ class WorkflowExecutorRetryTest {
     @DisplayName("retrying an unknown workflow ID is an acknowledged no-op")
     void retryOfUnknownWorkflow_isNotFound() {
         var registration = new WorkflowRegistration(
-                "Anything", "default", new Object(), Object.class.getMethods()[0]);
+                "Anything", "default", () -> new Object(), Object.class.getMethods()[0]);
         assertEquals(WorkflowExecutor.RetryOutcome.NOT_FOUND,
                 executor.retryWorkflow("no-such-workflow", registration));
         assertEquals(0, messaging.events.size(), "a no-op must publish nothing");
@@ -211,9 +210,9 @@ class WorkflowExecutorRetryTest {
                 RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
         var workflow = new ThreeStepWorkflow(proxy);
         var method = ThreeStepWorkflow.class.getMethod("run");
-        var registration = new WorkflowRegistration("ThreeStepWorkflow", "default", workflow, method);
+        var registration = new WorkflowRegistration("ThreeStepWorkflow", "default", () -> workflow, method);
 
-        executor.startWorkflow("retry-dup", "ThreeStepWorkflow", "default", null, workflow, method);
+        executor.startWorkflow("retry-dup", "ThreeStepWorkflow", "default", null, () -> workflow, method);
         awaitStatus("retry-dup", WorkflowStatus.FAILED);
 
         activityImpl.faultFixed.set(true);
@@ -236,9 +235,9 @@ class WorkflowExecutorRetryTest {
                 RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
         var workflow = new ThreeStepWorkflow(proxy);
         var method = ThreeStepWorkflow.class.getMethod("run");
-        var registration = new WorkflowRegistration("ThreeStepWorkflow", "default", workflow, method);
+        var registration = new WorkflowRegistration("ThreeStepWorkflow", "default", () -> workflow, method);
 
-        executor.startWorkflow("retry-concurrent", "ThreeStepWorkflow", "default", null, workflow, method);
+        executor.startWorkflow("retry-concurrent", "ThreeStepWorkflow", "default", null, () -> workflow, method);
         awaitStatus("retry-concurrent", WorkflowStatus.FAILED);
         activityImpl.faultFixed.set(true);
 
@@ -318,7 +317,7 @@ class WorkflowExecutorRetryTest {
             // Another node holds the instance lock throughout.
             lock.holdForeign(WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX + "workflow:retry-lock");
 
-            var registration = new WorkflowRegistration("ParkedWorkflow", "default", workflow, method);
+            var registration = new WorkflowRegistration("ParkedWorkflow", "default", () -> workflow, method);
             var outcome = lockedExecutor.retryWorkflow("retry-lock", registration);
 
             assertEquals(WorkflowExecutor.RetryOutcome.LOCK_HELD_ELSEWHERE, outcome);
@@ -336,7 +335,7 @@ class WorkflowExecutorRetryTest {
     void retryOfCompensatedSaga_isCompensatedNotRetryableNoOp() throws Exception {
         var workflow = new ParkedWorkflow();
         var method = ParkedWorkflow.class.getMethod("run");
-        var registration = new WorkflowRegistration("ParkedWorkflow", "default", workflow, method);
+        var registration = new WorkflowRegistration("ParkedWorkflow", "default", () -> workflow, method);
 
         // Seed a FAILED instance whose event log carries a completed
         // compensation — the state retryWorkflow would see after a saga ran
@@ -422,7 +421,7 @@ class WorkflowExecutorRetryTest {
         // No launch here — this is the "crash before relaunch" window.
 
         assertEquals(1, executor.recoverWorkflows(
-                Map.of("ThreeStepWorkflow", new WorkflowRegistration("ThreeStepWorkflow", "default", workflow, method))));
+                Map.of("ThreeStepWorkflow", new WorkflowRegistration("ThreeStepWorkflow", "default", () -> workflow, method))));
 
         awaitStatus("retry-crash-cas", WorkflowStatus.COMPLETED);
         assertEquals(0, activityImpl.oneCount.get(), "seeded ACTIVITY_COMPLETED events replay without an impl call");
@@ -439,9 +438,9 @@ class WorkflowExecutorRetryTest {
                 RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
         var workflow = new ThreeStepWorkflow(proxy);
         var method = ThreeStepWorkflow.class.getMethod("run");
-        var registration = new WorkflowRegistration("ThreeStepWorkflow", "default", workflow, method);
+        var registration = new WorkflowRegistration("ThreeStepWorkflow", "default", () -> workflow, method);
 
-        executor.startWorkflow("retry-crash-delete", "ThreeStepWorkflow", "default", null, workflow, method);
+        executor.startWorkflow("retry-crash-delete", "ThreeStepWorkflow", "default", null, () -> workflow, method);
         awaitStatus("retry-crash-delete", WorkflowStatus.FAILED);
         var instanceId = store.getInstance("retry-crash-delete").orElseThrow().id();
 
@@ -466,8 +465,8 @@ class WorkflowExecutorRetryTest {
      * Waits for a status and, when that status is terminal, for the terminal
      * <em>event</em> too.
      *
-     * <p>The row is written before the event is appended, so a status-only gate
-     * hands the test a log the engine has not finished writing. Two callers care
+     * <p>The status and the event are one atomic write since Issue 26, but the
+     * event is what these assertions depend on, so it is what is waited for. Two callers care
      * directly: {@code retryWorkflow_...} asserts {@code WORKFLOW_COMPLETED} is
      * present, and {@code deletedMemosOnStillFailed_isHarmless} calls
      * {@code deleteFailureEvents} and asserts it removed something — a delete
@@ -483,11 +482,21 @@ class WorkflowExecutorRetryTest {
         return store.getEvents(instanceId).stream().anyMatch(e -> e.eventType() == type);
     }
 
+    /**
+     * Seeds an event as a real run would have recorded it. Activity outcomes at
+     * seq 1-3 carry the step name {@code ThreeStepWorkflow}'s proxy records
+     * there — replay checks the step name (C10), so a placeholder name would
+     * read as an ungated code change and stand the run down.
+     */
     private io.b2mash.maestro.core.model.WorkflowEvent activityEvent(
             UUID instanceId, int seq, EventType type, String stepValue) {
         var payload = stepValue != null ? serializer.serialize(stepValue) : null;
+        var isActivityOutcome = type == EventType.ACTIVITY_COMPLETED || type == EventType.ACTIVITY_FAILED;
+        var stepName = isActivityOutcome && seq >= 1 && seq <= 3
+                ? "FlakyThreeStepActivities." + List.of("stepOne", "stepTwo", "stepThree").get(seq - 1)
+                : "step-" + seq;
         return new io.b2mash.maestro.core.model.WorkflowEvent(
-                UUID.randomUUID(), instanceId, seq, type, "step-" + seq, payload, Instant.now());
+                UUID.randomUUID(), instanceId, seq, type, stepName, payload, Instant.now());
     }
 
     private List<WorkflowLifecycleEvent> lifecycleEvents(LifecycleEventType type) {
@@ -587,20 +596,12 @@ class WorkflowExecutorRetryTest {
         final CopyOnWriteArrayList<WorkflowLifecycleEvent> events = new CopyOnWriteArrayList<>();
 
         @Override
-        public void publishTask(String taskQueue, TaskMessage message) {
-        }
-
-        @Override
         public void publishSignal(String serviceName, SignalMessage message) {
         }
 
         @Override
         public void publishLifecycleEvent(WorkflowLifecycleEvent event) {
             events.add(event);
-        }
-
-        @Override
-        public void subscribe(String taskQueue, Consumer<TaskMessage> handler) {
         }
 
         @Override

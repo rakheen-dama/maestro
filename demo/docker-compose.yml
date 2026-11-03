@@ -120,10 +120,6 @@ services:
       - |
         echo "Creating Kafka topics..."
         KAFKA="/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092"
-        # Engine task-dispatch topics (one per service)
-        $$KAFKA --create --if-not-exists --topic maestro.tasks.loan-application      --partitions 3 --replication-factor 1
-        $$KAFKA --create --if-not-exists --topic maestro.tasks.verification-gateway  --partitions 3 --replication-factor 1
-        $$KAFKA --create --if-not-exists --topic maestro.tasks.underwriting          --partitions 3 --replication-factor 1
         # Engine inbound signal channels (one per service). maestro-admin also
         # publishes its retry/terminate commands onto these (signal-topic-prefix).
         $$KAFKA --create --if-not-exists --topic maestro.signals.loan-application     --partitions 3 --replication-factor 1
@@ -144,7 +140,7 @@ services:
 
         # .DLT companions (Issue 24): Maestro's redelivery/dead-letter error
         # handler is installed on every topic a Maestro consumer subscribes to
-        # (the six engine tasks/signals topics above) and on every
+        # (the three engine signal topics above) and on every
         # @MaestroSignalListener topic (the two business-event topics
         # loan-application actually *consumes* — the *.requests topics are
         # consumed by plain @KafkaListeners, outside Maestro's redelivery
@@ -153,9 +149,6 @@ services:
         # first exhausted, the recoverer's publish fails and consumption
         # stalls noisily instead of parking the record. See
         # docs/configuration.md § Redelivery and Dead-Letter Properties.
-        $$KAFKA --create --if-not-exists --topic maestro.tasks.loan-application.DLT      --partitions 3 --replication-factor 1
-        $$KAFKA --create --if-not-exists --topic maestro.tasks.verification-gateway.DLT  --partitions 3 --replication-factor 1
-        $$KAFKA --create --if-not-exists --topic maestro.tasks.underwriting.DLT          --partitions 3 --replication-factor 1
         $$KAFKA --create --if-not-exists --topic maestro.signals.loan-application.DLT     --partitions 3 --replication-factor 1
         $$KAFKA --create --if-not-exists --topic maestro.signals.verification-gateway.DLT --partitions 3 --replication-factor 1
         $$KAFKA --create --if-not-exists --topic maestro.signals.underwriting.DLT         --partitions 3 --replication-factor 1

@@ -35,9 +35,11 @@ val verifyModuleTestCoverage = tasks.register("verifyModuleTestCoverage") {
     group = "verification"
     description = "Fails if a module with production code has no test classes."
 
-    // Library modules only. The sample applications are demonstrations, not
-    // shipped artifacts, and are covered by the loan-origination E2E instead.
-    val moduleReports = subprojects.filter { it.name.startsWith("maestro-") }.map { module ->
+    // Samples are covered too: Plan 05 of the 2026-10-24 bug-fix cycle gave every
+    // sample a test, and "covered by the E2E instead" let `sample-postgres-only`
+    // ship with `NO-SOURCE` tests. Container projects (`maestro-samples`,
+    // `sample-loan-origination`) have no `src/main/java`, so `hasMain` skips them.
+    val moduleReports = subprojects.map { module ->
         val hasMain = module.file("src/main/java").isDirectory
         val testDir = module.file("src/test/java")
         val testCount = if (testDir.isDirectory) {

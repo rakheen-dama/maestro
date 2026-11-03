@@ -183,6 +183,7 @@ public final class MicrometerEngineObserver implements EngineObserver {
         return switch (reason) {
             case UNKNOWN_EVENT_TYPE -> "unknown_event_type";
             case UNKNOWN_EVENT_PAYLOAD -> "unknown_event_payload";
+            case NONDETERMINISTIC_HISTORY -> "nondeterministic_history";
             case STALE_RUN -> "stale_run";
         };
     }

@@ -5,7 +5,7 @@
  * messaging, and coordination technologies:
  * <ul>
  *   <li>{@link io.b2mash.maestro.core.spi.WorkflowStore} — persistent workflow state</li>
- *   <li>{@link io.b2mash.maestro.core.spi.WorkflowMessaging} — task dispatch and signal delivery</li>
+ *   <li>{@link io.b2mash.maestro.core.spi.WorkflowMessaging} — signal delivery and lifecycle events</li>
  *   <li>{@link io.b2mash.maestro.core.spi.DistributedLock} — distributed coordination and leader election</li>
  * </ul>
  *

@@ -4,7 +4,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
- * Sample — Payment gateway proxy demonstrating durable retries
+ * Sample — Payment gateway proxy demonstrating retry policies
  * and cross-service workflow coordination.
  */
 @SpringBootApplication

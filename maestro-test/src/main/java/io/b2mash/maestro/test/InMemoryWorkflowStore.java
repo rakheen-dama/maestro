@@ -9,12 +9,15 @@ import io.b2mash.maestro.core.model.TimerStatus;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
+import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.spi.TerminalWrites;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -51,6 +54,13 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
     // Guarded by timerLock
     private final ArrayList<WorkflowTimer> timers = new ArrayList<>();
     private final Object timerLock = new Object();
+
+    /**
+     * Logical-ID prefix of an {@code awaitSignal} deadline row; the suffix is
+     * the sequence of the await's {@code TIMER_SCHEDULED} memo (the layout
+     * {@link WorkflowStore#deleteFailureEvents} names).
+     */
+    private static final String AWAIT_SIGNAL_TIMER_ID_PREFIX = "await-signal-";
 
     // Lock object per workflowId for updateInstance optimistic locking
     private final ConcurrentHashMap<String, Object> instanceLocks = new ConcurrentHashMap<>();
@@ -102,6 +112,43 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
             }
 
             instances.put(instance.workflowId(), instance);
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Performed under the same per-workflow lock {@link #updateInstance}
+     * uses, so the version check and both writes are one critical section with
+     * respect to every other instance write: once the CAS has passed, nothing
+     * else can change the row before it is written. The event is claimed first
+     * (an atomic {@code putIfAbsent}, so even an unlocked concurrent
+     * {@link #appendEvent} cannot slip in) and the status second, so the write
+     * is all-or-nothing and a reader that sees the terminal status always also
+     * sees the terminal event. Reads are lock-free, so a reader interleaving its
+     * own two reads with this write may see the event a moment before the
+     * status — never the reverse.
+     */
+    @Override
+    public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+        TerminalWrites.requireValid(terminal, terminalEvent);
+        var lock = instanceLocks.get(terminal.workflowId());
+        if (lock == null) {
+            throw new WorkflowNotFoundException(terminal.workflowId());
+        }
+
+        synchronized (lock) {
+            var current = instances.get(terminal.workflowId());
+            if (current == null) {
+                throw new WorkflowNotFoundException(terminal.workflowId());
+            }
+            if (current.version() != terminal.version() - 1) {
+                return false;
+            }
+            // Throws DuplicateEventException before the row is touched: nothing is written.
+            put(terminalEvent);
+            instances.put(terminal.workflowId(), terminal);
+            return true;
         }
     }
 
@@ -205,18 +252,40 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
                 .filter(e -> e.eventType() == EventType.SIGNAL_TIMEOUT)
                 .mapToInt(io.b2mash.maestro.core.model.WorkflowEvent::sequenceNumber)
                 .max();
+        if (failedByTimeout && failingTimeoutSeq.isPresent()) {
+            var timeoutSeq = failingTimeoutSeq.getAsInt();
+            var failingTimeout = instanceEvents.remove(timeoutSeq);
+            // R61: the failing await's spent deadline goes with it — its
+            // TIMER_SCHEDULED park memo in the slot just before (same step
+            // name) and its deadline rows, any status — so the retried await
+            // arms a fresh full timeout instead of resuming past the old one.
+            var parkMemo = instanceEvents.get(timeoutSeq - 1);
+            if (failingTimeout != null && failingTimeout.stepName() != null && parkMemo != null
+                    && parkMemo.eventType() == EventType.TIMER_SCHEDULED
+                    && failingTimeout.stepName().equals(parkMemo.stepName())) {
+                instanceEvents.remove(timeoutSeq - 1);
+                var timerId = AWAIT_SIGNAL_TIMER_ID_PREFIX + (timeoutSeq - 1);
+                synchronized (timerLock) {
+                    timers.removeIf(t -> t.workflowInstanceId().equals(instanceId)
+                            && t.timerId().equals(timerId));
+                }
+            }
+        }
         instanceEvents.values().removeIf(event ->
                 event.eventType() == EventType.ACTIVITY_FAILED
-                        || event.eventType() == EventType.WORKFLOW_FAILED
-                        || (failedByTimeout
-                                && event.eventType() == EventType.SIGNAL_TIMEOUT
-                                && failingTimeoutSeq.isPresent()
-                                && event.sequenceNumber() == failingTimeoutSeq.getAsInt()));
+                        || event.eventType() == EventType.WORKFLOW_FAILED);
         return before - instanceEvents.size();
     }
 
     // ── Signal operations ────────────────────────────────────────────────
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Keeps the caller's {@link WorkflowSignal#receivedAt()}: every caller
+     * of this single-process store shares one clock, so the clock-skew hazard
+     * the SPI guards against cannot arise.
+     */
     @Override
     public void saveSignal(WorkflowSignal signal) {
         synchronized (signalLock) {
@@ -279,6 +348,33 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
                     ));
                 }
             }
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Evaluated under the signal lock against the current instance map.
+     */
+    @Override
+    public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+        synchronized (signalLock) {
+            var purgeable = new HashSet<UUID>();
+            for (var instance : instances.values()) {
+                var status = instance.status();
+                var completedAt = instance.completedAt();
+                if ((status == WorkflowStatus.COMPLETED || status == WorkflowStatus.TERMINATED)
+                        && completedAt != null && completedAt.isBefore(cutoff)) {
+                    purgeable.add(instance.id());
+                }
+            }
+            int before = signals.size();
+            // FAILED instances, orphans (null instance id) and consumed rows are
+            // never purged — see the SPI Javadoc.
+            signals.removeIf(s -> !s.consumed()
+                    && s.workflowInstanceId() != null
+                    && purgeable.contains(s.workflowInstanceId()));
+            return before - signals.size();
         }
     }
 

@@ -1,0 +1,303 @@
+# pwd=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle head=ec9286dbf3e2fe6beab43e79486a150203929d30 started=2026-10-28T18:34:53Z iteration=2
+> Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :build-logic:generateExternalPluginSpecBuilders
+> Task :build-logic:extractPrecompiledScriptPluginPlugins
+> Task :build-logic:generateScriptPluginAdapters
+> Task :build-logic:pluginDescriptors
+> Task :build-logic:processResources
+> Task :build-logic:compilePluginsBlocks
+> Task :build-logic:generatePrecompiledScriptPluginAccessors
+
+> Configure project :maestro-admin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+
+> Task :build-logic:compileKotlin
+Kotlin does not yet support 25 JDK target, falling back to Kotlin JVM_24 JVM target
+w: ⚠️ Inconsistent JVM Target Compatibility Between Java and Kotlin Tasks
+Inconsistent JVM-target compatibility detected for tasks 'compileJava' (25) and 'compileKotlin' (24).
+This will become an error in Gradle 8.0.
+Solution: Consider using JVM Toolchain: https://kotl.in/gradle/jvm/toolchain
+Learn more about JVM-target validation: https://kotl.in/gradle/jvm/target-validation
+
+
+> Task :build-logic:compileJava NO-SOURCE
+> Task :build-logic:classes
+> Task :build-logic:jar
+> Task :maestro-integration-tests:compileJava NO-SOURCE
+> Task :maestro-test:processResources NO-SOURCE
+> Task :maestro-integration-tests:processResources NO-SOURCE
+> Task :maestro-integration-tests:classes UP-TO-DATE
+> Task :maestro-store-jdbc:processResources NO-SOURCE
+> Task :maestro-samples:sample-loan-origination:loan-application-service:processResources
+> Task :maestro-lock-valkey:processResources
+> Task :maestro-spring-boot-starter:processResources
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:processResources
+> Task :maestro-samples:sample-loan-origination:underwriting-service:processResources
+> Task :maestro-messaging-kafka:processResources
+> Task :maestro-integration-tests:processTestResources
+> Task :maestro-lock-postgres:processResources
+> Task :maestro-messaging-postgres:processResources
+> Task :maestro-store-postgres:processResources
+> Task :maestro-core:compileJava
+> Task :maestro-core:processResources NO-SOURCE
+> Task :maestro-core:classes
+> Task :maestro-core:jar
+> Task :maestro-store-jdbc:compileJava
+> Task :maestro-store-jdbc:classes
+> Task :maestro-store-jdbc:jar
+> Task :maestro-test:compileJava
+> Task :maestro-test:classes
+> Task :maestro-test:jar
+> Task :maestro-spring-boot-starter:compileJava
+> Task :maestro-spring-boot-starter:classes
+> Task :maestro-spring-boot-starter:jar
+> Task :maestro-lock-postgres:compileJava
+> Task :maestro-lock-postgres:classes
+> Task :maestro-lock-postgres:jar
+> Task :maestro-store-postgres:compileJava
+> Task :maestro-store-postgres:classes
+> Task :maestro-store-postgres:jar
+> Task :maestro-messaging-postgres:compileJava
+> Task :maestro-messaging-postgres:classes
+> Task :maestro-messaging-postgres:jar
+> Task :maestro-lock-valkey:compileJava
+> Task :maestro-lock-valkey:classes
+> Task :maestro-lock-valkey:jar
+
+> Task :maestro-messaging-kafka:compileJava
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-messaging-kafka/src/main/java/io/b2mash/maestro/messaging/kafka/KafkaTracePropagation.java:156: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+        try (var ignored = tracer.withSpan(span)) {
+                 ^
+1 warning
+
+> Task :maestro-messaging-kafka:classes
+> Task :maestro-messaging-kafka:jar
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:compileJava
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:classes
+> Task :maestro-samples:sample-loan-origination:underwriting-service:compileJava
+> Task :maestro-samples:sample-loan-origination:underwriting-service:classes
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:resolveMainClassName
+> Task :maestro-samples:sample-loan-origination:underwriting-service:resolveMainClassName
+> Task :maestro-samples:sample-loan-origination:loan-application-service:compileJava
+> Task :maestro-samples:sample-loan-origination:loan-application-service:classes
+> Task :maestro-samples:sample-loan-origination:loan-application-service:resolveMainClassName
+> Task :maestro-samples:sample-loan-origination:verification-gateway-service:bootJar
+> Task :maestro-samples:sample-loan-origination:underwriting-service:bootJar
+> Task :maestro-samples:sample-loan-origination:loan-application-service:bootJar
+
+> Task :maestro-integration-tests:compileTestJava
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/support/PostgresIntegrationSupport.java:52: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+    static final PostgreSQLContainer<?> postgres =
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/support/PostgresIntegrationSupport.java:53: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+            new PostgreSQLContainer<>("postgres:16-alpine")
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/KafkaTraceLinkageIT.java:73: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+    private static final KafkaContainer KAFKA =
+                         ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/KafkaTraceLinkageIT.java:74: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+            new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1")).withKraft();
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/KafkaTraceLinkageIT.java:135: warning: [try] auto-closeable resource ignored is never referenced in body of corresponding try statement
+            try (var ignored = otelA.tracer().withSpan(publishSpan)) {
+                     ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/SignalListenerTraceContextIT.java:85: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+    private static final KafkaContainer KAFKA =
+                         ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/observability/SignalListenerTraceContextIT.java:86: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+            new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1")).withKraft();
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/schema/MaestroMigrationsCoexistIT.java:65: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+    static final PostgreSQLContainer<?> postgres =
+                 ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/schema/MaestroMigrationsCoexistIT.java:66: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+            new PostgreSQLContainer<>("postgres:16-alpine")
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/schema/MaestroMigrationsCoexistIT.java:83: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+        ds.setPortNumbers(new int[] {postgres.getMappedPort(PostgreSQLContainer.POSTGRESQL_PORT)});
+                                                            ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/kafka/KafkaLifecycleEventLatencyIT.java:64: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+    private static final KafkaContainer KAFKA =
+                         ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/kafka/KafkaLifecycleEventLatencyIT.java:65: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+            new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1"))
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/kafka/KafkaSpringIntegrationSupport.java:103: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+    private static final KafkaContainer KAFKA =
+                         ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/kafka/KafkaSpringIntegrationSupport.java:104: warning: [deprecation] KafkaContainer in org.testcontainers.containers has been deprecated
+            new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1"))
+                ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/ChaosCluster.java:88: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+    private PostgreSQLContainer<?> postgres;
+            ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/e2e/chaos/ChaosCluster.java:141: warning: [deprecation] PostgreSQLContainer in org.testcontainers.containers has been deprecated
+        postgres = new PostgreSQLContainer<>(DockerImageName.parse(POSTGRES_IMAGE))
+                       ^
+/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/engine/EnginePostgresParallelIT.java:234: warning: [deprecation] asText() in JsonNode has been deprecated
+                handle.instance().output().get("exceptionType").asText());
+                                                               ^
+17 warnings
+
+> Task :maestro-integration-tests:testClasses
+
+> Task :maestro-integration-tests:e2eTest
+
+Golden calibration: each path chaos-free, gap sets characterised > all four paths reach their declared terminal chaos-free and gaps are recorded SKIPPED
+
+Chaos PR-gate: 6-node loan cluster stays correct under chaos > cluster survives six minutes of chaos with all store invariants intact STANDARD_OUT
+    [chaos] ================= CHAOS RUN =================
+    [chaos] mode=PR_GATE seed=4940120682618654589 runId=20261028-183500-4940120682618654589
+    [chaos] re-run: ./gradlew :maestro-integration-tests:e2eTest -Dmaestro.chaos.seed=4940120682618654589
+    20:35:00.843 [Test worker] INFO org.testcontainers.DockerClientFactory -- Testcontainers version: 2.0.1
+    20:35:00.982 [Test worker] INFO org.testcontainers.dockerclient.DockerClientProviderStrategy -- Loaded org.testcontainers.dockerclient.UnixSocketClientProviderStrategy from ~/.testcontainers.properties, will try it first
+    20:35:01.299 [Test worker] INFO org.testcontainers.dockerclient.DockerClientProviderStrategy -- Found Docker environment with local Unix socket (unix:///var/run/docker.sock)
+    20:35:01.301 [Test worker] INFO org.testcontainers.DockerClientFactory -- Docker host IP address is localhost
+    20:35:01.312 [Test worker] INFO org.testcontainers.DockerClientFactory -- Connected to docker: 
+      Server Version: 28.5.1
+      API Version: 1.51
+      Operating System: Docker Desktop
+      Total Memory: 7837 MB
+      Labels: 
+        com.docker.desktop.address=unix:///Users/rakheendama/Library/Containers/com.docker.docker/Data/docker-cli.sock
+    20:35:01.317 [Test worker] INFO org.testcontainers.images.PullPolicy -- Image pull policy will be performed by: DefaultPullPolicy()
+    20:35:01.318 [Test worker] INFO org.testcontainers.utility.ImageNameSubstitutor -- Image name substitution will be performed by: DefaultImageNameSubstitutor (composite of 'ConfigurationFileImageNameSubstitutor' and 'PrefixingImageNameSubstitutor')
+    20:35:01.321 [Test worker] INFO org.testcontainers.DockerClientFactory -- Checking the system...
+    20:35:01.321 [Test worker] INFO org.testcontainers.DockerClientFactory -- ✔︎ Docker server version should be at least 1.6.0
+    20:35:01.342 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] starting cluster network + infrastructure
+    20:35:01.397 [Test worker] INFO tc.postgres:16-alpine -- Creating container for image: postgres:16-alpine
+    20:35:01.547 [Test worker] INFO tc.testcontainers/ryuk:0.13.0 -- Creating container for image: testcontainers/ryuk:0.13.0
+    20:35:01.611 [Test worker] INFO tc.testcontainers/ryuk:0.13.0 -- Container testcontainers/ryuk:0.13.0 is starting: 11a1dffe2e8459ab994824e5e083c80a2470765881af8a640549cf3cf21a47b9
+    20:35:01.811 [Test worker] INFO tc.testcontainers/ryuk:0.13.0 -- Container testcontainers/ryuk:0.13.0 started in PT0.263377S
+    20:35:01.927 [Test worker] INFO tc.postgres:16-alpine -- Container postgres:16-alpine is starting: d50bafdd37d23357cfd62967044a7460dd0347004fd151839d7372205afe76cf
+    20:35:03.309 [Test worker] INFO tc.postgres:16-alpine -- Container postgres:16-alpine started in PT1.912094S
+    20:35:03.310 [Test worker] INFO tc.postgres:16-alpine -- Container is started (JDBC URL: jdbc:postgresql://localhost:58084/maestro?loggerLevel=OFF)
+    20:35:03.311 [Test worker] INFO tc.apache/kafka:3.9.0 -- Creating container for image: apache/kafka:3.9.0
+    20:35:03.341 [Test worker] INFO tc.apache/kafka:3.9.0 -- Container apache/kafka:3.9.0 is starting: 50e1f192b27e6cf0cadec72bab3846b54351f2b247048da9d435541fc45c04c6
+    20:35:05.388 [Test worker] INFO tc.apache/kafka:3.9.0 -- Container apache/kafka:3.9.0 started in PT2.077735S
+    20:35:05.389 [Test worker] INFO tc.valkey/valkey:8-alpine -- Creating container for image: valkey/valkey:8-alpine
+    20:35:05.412 [Test worker] INFO tc.valkey/valkey:8-alpine -- Container valkey/valkey:8-alpine is starting: cc77d1ffb2b7e5d283a61e3767fd3e167d3eb22b2367052f86a3ed02a66cabe4
+    20:35:05.602 [Test worker] INFO tc.valkey/valkey:8-alpine -- Container valkey/valkey:8-alpine started in PT0.213255S
+    20:35:13.865 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] pre-created 8 Kafka topics
+    20:35:13.867 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Creating container for image: alpine/socat:1.7.4.3-r0
+    20:35:13.894 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 is starting: a740c9b375cb42154f656f61cd6087fd31fe40d1da9d466c28c3e31847d5f57d
+    20:35:14.083 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 started in PT0.215655S
+    20:35:14.084 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.NodeAmbassador -- [chaos] ambassador up at localhost: loan-a->58089, loan-b->58090, verify-a->58091, verify-b->58092, uw-a->58093, uw-b->58094
+    20:35:14.084 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] starting 6 workload nodes
+    20:35:14.085 [Test worker] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    20:35:15.334 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: b0dea77abee433b84edaae194d36971a297670b666dc8084a6dfe8a34fef0711
+    20:35:19.436 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.351382S
+    20:35:19.437 [Test worker] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    20:35:21.100 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 3f6ea2394f1d7ac2b5bd930e21a739c3de6eafbc9dc0da44988358fde5f59822
+    20:35:25.003 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.566098S
+    20:35:25.003 [Test worker] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    20:35:26.263 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: b6bf17ec4c59ef228019933e94f8e44decf1f0325bca859f8df87e3fee45eb1c
+    20:35:29.900 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.897028S
+    20:35:29.901 [Test worker] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    20:35:31.256 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 09f68727e3dd80f93628cb9867c3a268bd6d83792182d983caf78247809c6ca5
+    20:35:34.707 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.805698S
+    20:35:34.708 [Test worker] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    20:35:36.244 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 3b158e6cdbc386c6fcac06e9fb7c287052140d5dd7f1ee5ff61974e9407738c0
+    20:35:39.964 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.255843S
+    20:35:39.964 [Test worker] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    20:35:41.170 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 056750256f21f3d9f300820cc63779ab27796e335bdbff404ea6532d070cc047
+    20:35:44.609 [Test worker] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.644241S
+    20:35:45.340 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] cluster healthy: 6 nodes live
+    20:35:45.360 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.WorkloadDriver -- [chaos] workload generation begins: 12/min for PT6M (chaos, runaway cap 316)
+    20:35:45.360 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] controller starts (6 min window)
+    20:36:12.392 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] PAUSE LOAN_A
+    20:37:17.419 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] UNPAUSE LOAN_A
+    20:37:17.422 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#1 PAUSE_RESUME LOAN_A started=2026-10-28T18:36:12.367332Z healed=2026-10-28T18:37:17.419993Z
+    20:37:49.448 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] PAUSE LOAN_B
+    20:38:54.489 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] UNPAUSE LOAN_B
+    20:38:54.489 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#2 PAUSE_RESUME LOAN_B started=2026-10-28T18:37:49.423402Z healed=2026-10-28T18:38:54.489381Z
+    20:39:27.622 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 VERIFY_B (09f68727e3dd)
+    20:39:51.625 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    20:39:52.964 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 940fb6de33c38e72b742eaa3884eb19e9527a92deecf61b17ec4793c4b745d39
+    20:39:56.498 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.873341S
+    20:39:56.630 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED VERIFY_B -> generation 1 at http://localhost:58092
+    20:39:56.632 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#3 KILL9 VERIFY_B started=2026-10-28T18:39:27.494143Z healed=2026-10-28T18:39:56.630536Z
+    20:40:16.648 [chaos-periodic-checker] WARN io.b2mash.maestro.integration.e2e.chaos.PeriodicChecker -- [chaos] PERIODIC calm-window [I2] stuck WAITING_TIMER with no PENDING timer in verification_gateway -> [verification-chaos-4940120682618654589-41-credit, verification-chaos-4940120682618654589-41-employment, verification-chaos-4940120682618654589-41-appraisal, verification-chaos-4940120682618654589-39-appraisal, verification-chaos-4940120682618654589-40-credit, verification-chaos-4940120682618654589-40-employment, verification-chaos-4940120682618654589-40-appraisal]
+    20:40:16.752 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] KILL9 LOAN_B (3f6ea2394f1d)
+    20:40:44.757 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    20:40:46.040 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 6e06c9738485ce19c59dd56dd5395fe93b0dd7b61e5c015c5e1c9c2f217d9cb8
+    20:40:50.035 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT5.278302S
+    20:40:50.129 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED LOAN_B -> generation 1 at http://localhost:58090
+    20:40:50.130 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#4 KILL9 LOAN_B started=2026-10-28T18:40:16.637053Z healed=2026-10-28T18:40:50.129947Z
+    20:41:33.901 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) VERIFY_A (b6bf17ec4c59)
+    20:41:33.902 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    20:41:35.303 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: b7fffdf9acdd41c0706cf76216fffd763b9efb2d44c0d10e523e7e7c86bf8856
+    20:41:38.852 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.950293S
+    20:41:39.006 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED VERIFY_A -> generation 1 at http://localhost:58091
+    20:41:39.990 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] STOP(graceful) VERIFY_B (940fb6de33c3)
+    20:41:39.992 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Creating container for image: eclipse-temurin:25-jre
+    20:41:41.462 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre is starting: 8ede0bb7db32fe49bd0df56e76b22462b7d827773dd2873c51821fffd6786467
+    20:41:44.921 [chaos-controller] INFO tc.eclipse-temurin:25-jre -- Container eclipse-temurin:25-jre started in PT4.92913S
+    20:41:45.125 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] REPLACED VERIFY_B -> generation 2 at http://localhost:58092
+    20:41:45.127 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] action#5 ROLLING_RESTART VERIFICATION_GATEWAY started=2026-10-28T18:41:33.139977Z healed=2026-10-28T18:41:45.126133Z
+    20:41:58.224 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.WorkloadDriver -- [chaos] workload generation window closed: 63 workflows submitted (chaos)
+    20:42:07.131 [chaos-controller] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosController -- [chaos] controller done: 5 actions, 2 loan pause-resumes
+    20:42:07.132 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosRun -- [chaos] generation + chaos complete; healing
+    20:42:07.132 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] heal-all begin
+    20:42:07.163 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosCluster -- [chaos] heal-all complete: all nodes healthy
+    20:43:33.317 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosRun -- [chaos] drain: waiting up to 240s for all workflows terminal in all services
+    20:44:26.106 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.ChaosRun -- [chaos] drain: all workflows terminal in all three services
+    20:44:26.364 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.SideEffectCensus -- [chaos] side-effect census: totalDup=0 explained=0 unexplained=0 missingSagaComp=0
+    [chaos] VERDICT: PASS
+    [chaos] side-effect duplicates: total=0 explained=0 unexplained=0
+    [chaos] FINDING (Ruling 3): redelivered-but-unconsumed signals (consumedTwin=true, Kafka at-least-once redelivery): [loan-chaos-4940120682618654589-6:underwriting.decision x1 consumedTwin=true]
+
+Chaos PR-gate: 6-node loan cluster stays correct under chaos > cluster survives six minutes of chaos with all store invariants intact PASSED
+
+Chaos soak: hours-long multi-instance correctness + Issue 12 curves > cluster stays correct across the full soak window SKIPPED
+
+Chaos cluster boots and all six nodes are reachable > cluster boot brings up 6 healthy nodes with migrated per-service schemas SKIPPED
+
+Chaos harness: a reconnected node is reachable again > the harness endpoint for a node still works after PARTITION + RECONNECT STANDARD_OUT
+    20:44:28.603 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Creating container for image: alpine/socat:1.7.4.3-r0
+    20:44:28.663 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 is starting: 26419b5d6421d499d6aaecdd967313629abb7d6532166f857cceb79ebd357d15
+    20:44:28.815 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 started in PT0.212011S
+    20:44:28.815 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.NodeAmbassador -- [chaos] ambassador up at localhost: verify-b->60726
+    20:44:28.815 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Creating container for image: alpine/socat:1.7.4.3-r0
+    20:44:28.835 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 is starting: 2d6929c522cab794692478944203082def76ba772afdb393abca8d0f53d7af67
+    20:44:29.023 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 started in PT0.208366S
+    20:44:29.026 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PartitionReachabilityIT -- [repro] node up: alias=verify-b ip=10.173.244.3 harness endpoint=localhost:60726 direct(published)=localhost:60728
+    20:44:29.148 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PartitionReachabilityIT -- [repro] PARTITION applied; ip now '<none>'
+    20:44:29.175 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PartitionReachabilityIT -- [repro] RECONNECT applied; ip now '10.173.244.99'; docker still advertises host port 60728
+    20:44:31.179 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PartitionReachabilityIT -- [repro] node's own published port localhost:60728 after RECONNECT: reachable=false
+
+Chaos harness: a reconnected node is reachable again > the harness endpoint for a node still works after PARTITION + RECONNECT PASSED
+
+Chaos harness: a reconnected node is reachable again > the harness endpoint follows a node replaced by a fresh container STANDARD_OUT
+    20:44:31.739 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Creating container for image: alpine/socat:1.7.4.3-r0
+    20:44:31.796 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 is starting: caf2c909def33b58b76b64cf27d125373269043bb86b809f12407fdd1411a5be
+    20:44:31.987 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 started in PT0.247638S
+    20:44:31.987 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.NodeAmbassador -- [chaos] ambassador up at localhost: verify-b->60735
+    20:44:31.987 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Creating container for image: alpine/socat:1.7.4.3-r0
+    20:44:32.006 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 is starting: e74ba767cd0f5760b5df2f409e39f0549f7cc9bf7f614c3bbea02fda69b3f267
+    20:44:32.168 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 started in PT0.181029S
+    20:44:32.337 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Creating container for image: alpine/socat:1.7.4.3-r0
+    20:44:32.360 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 is starting: c9bae94fb9402274cf2834187c22a546fe969a8678bc3f44dbce46fe86bbc407
+    20:44:32.538 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 started in PT0.200753S
+    20:44:32.540 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PartitionReachabilityIT -- [repro] replacement up at ip=10.173.244.3; endpoint unchanged: localhost:60735
+
+Chaos harness: a reconnected node is reachable again > the harness endpoint follows a node replaced by a fresh container PASSED
+
+Chaos harness: a reconnected node is reachable again > a genuinely dead node still fails the probe through the ambassador STANDARD_OUT
+    20:44:33.082 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Creating container for image: alpine/socat:1.7.4.3-r0
+    20:44:33.149 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 is starting: 6f233edf97f762414a2de5e55d6c1cad2f3fb67e7998cde1058e448023ce732e
+    20:44:33.442 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 started in PT0.360163S
+    20:44:33.443 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.NodeAmbassador -- [chaos] ambassador up at localhost: verify-b->60743
+    20:44:33.448 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Creating container for image: alpine/socat:1.7.4.3-r0
+    20:44:33.476 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 is starting: 3fa7eda195aa84ab5b239d33828d86aac48959440c6e720dee43693bafa01c5d
+    20:44:33.643 [Test worker] INFO tc.alpine/socat:1.7.4.3-r0 -- Container alpine/socat:1.7.4.3-r0 started in PT0.195109S
+    20:44:33.801 [Test worker] INFO io.b2mash.maestro.integration.e2e.chaos.PartitionReachabilityIT -- [repro] bare TCP connect with the backend dead: accepted=true
+
+Chaos harness: a reconnected node is reachable again > a genuinely dead node still fails the probe through the ambassador PASSED
+
+[Incubating] Problems report is available at: file:///Users/rakheendama/Projects/2026/maestro/.claude/worktrees/bugfix-cycle/build/reports/problems/problems-report.html
+
+BUILD SUCCESSFUL in 9m 40s
+48 actionable tasks: 48 executed
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.2.0/userguide/configuration_cache_enabling.html
+# exit=0 finished=2026-10-28T18:44:34Z

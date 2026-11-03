@@ -39,7 +39,7 @@ public class DocumentApprovalWorkflow {
                   retryPolicy = @RetryPolicy(maxAttempts = 3))
     private DocumentActivities activities;
 
-    // Volatile: read by @QueryMethod from caller's thread, written by workflow's virtual thread
+    // Per-run state: Maestro creates a new workflow object for every run. Volatile because @QueryMethod runs on the caller's thread.
     private volatile String currentStep = "SUBMITTED";
 
     @WorkflowMethod

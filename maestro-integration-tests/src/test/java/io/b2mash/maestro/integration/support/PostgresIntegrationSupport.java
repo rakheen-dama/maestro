@@ -5,7 +5,8 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.lock.postgres.PostgresDistributedLock;
 import io.b2mash.maestro.store.postgres.PostgresWorkflowStore;
-import org.flywaydb.core.Flyway;
+import io.b2mash.maestro.store.postgres.schema.MaestroSchemaInitializer;
+import io.b2mash.maestro.store.postgres.schema.SchemaMode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.postgresql.ds.PGSimpleDataSource;
@@ -21,7 +22,7 @@ import java.time.Duration;
  * PostgreSQL backend.
  *
  * <p>One Postgres container is shared by every integration suite in the JVM,
- * Flyway migrated once, with per-test truncation for isolation. The container
+ * migrated once, with per-test truncation for isolation. The container
  * is never restarted — truncation is what isolates.
  *
  * <p>The container is started from a static initialiser rather than through
@@ -31,10 +32,12 @@ import java.time.Duration;
  * suite onwards would then run against a fresh, unmigrated database. Ryuk
  * removes this container when the JVM exits.
  *
- * <p>Migrations are applied from {@code classpath:db/migration}, which spans
- * every Maestro module on the test classpath: the store (version band 1–99),
- * the lock backend (100–199) and the messaging backend (200–299). That
- * composition is itself pinned by
+ * <p>Migrations are applied by {@link MaestroSchemaInitializer}, exactly as the
+ * store's auto-configuration applies them in an application: every Maestro
+ * module on the test classpath advertises its location, so the store (version
+ * band 1–99), the lock backend (100–199) and the messaging backend (200–299)
+ * are all applied, into {@code maestro_schema_history}. That composition is
+ * itself pinned by
  * {@code io.b2mash.maestro.integration.schema.MaestroMigrationsCoexistIT}.
  *
  * <h2>Thread Safety</h2>
@@ -62,8 +65,7 @@ public abstract class PostgresIntegrationSupport {
             TRUNCATE maestro_workflow_signal, maestro_workflow_timer,
                      maestro_workflow_event, maestro_workflow_instance,
                      maestro_distributed_lock, maestro_leader_election,
-                     maestro_task_queue, maestro_signal_queue,
-                     maestro_lifecycle_event_queue
+                     maestro_signal_queue
             CASCADE""";
 
     protected PGSimpleDataSource dataSource;
@@ -80,11 +82,8 @@ public abstract class PostgresIntegrationSupport {
      * method runs, so a Spring-based suite would meet an unmigrated database.
      */
     private static void migrate() {
-        Flyway.configure()
-                .dataSource(newDataSource())
-                .locations("classpath:db/migration")
-                .load()
-                .migrate();
+        new MaestroSchemaInitializer(newDataSource(), SchemaMode.FLYWAY,
+                PostgresIntegrationSupport.class.getClassLoader()).initialize();
     }
 
     @BeforeEach

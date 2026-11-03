@@ -11,6 +11,11 @@ import io.b2mash.maestro.core.spi.SignalNotifier;
  */
 public final class InMemorySignalNotifier implements SignalNotifier {
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>A no-op, so it trivially returns promptly as the SPI requires.
+     */
     @Override
     public void publish(String workflowId, String signalName) {
         // No-op: single-JVM, ParkingLot handles wake-up

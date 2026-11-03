@@ -33,7 +33,6 @@ maestro:
   messaging:
     type: kafka
     topics:
-      tasks: maestro.tasks.payments
       signals: maestro.signals.payment-gateway
 
   lock:

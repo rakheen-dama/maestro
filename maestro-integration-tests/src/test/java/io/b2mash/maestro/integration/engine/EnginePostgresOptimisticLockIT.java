@@ -165,7 +165,7 @@ class EnginePostgresOptimisticLockIT extends PostgresIntegrationSupport {
                 .build();
         harness.registerActivities(CountingActivities.ChainActivities.class,
                 new CountingActivities.RecordingChainActivities(recorder));
-        harness.registerWorkflow(new TestWorkflows.ChainWorkflow());
+        harness.registerWorkflow(TestWorkflows.ChainWorkflow.class);
 
         var handle = harness.start(MaestroEngineHarness.uniqueWorkflowId("optlock-engine"),
                 TestWorkflows.ChainWorkflow.class, "seed");

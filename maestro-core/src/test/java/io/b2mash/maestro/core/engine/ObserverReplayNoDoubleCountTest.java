@@ -83,7 +83,7 @@ class ObserverReplayNoDoubleCountTest {
         var method = ThreeStepGatedWorkflow.class.getMethod("run", String.class);
 
         executorA.startWorkflow("replay-pin", "ThreeStepGatedWorkflow", "default",
-                "in", workflowA, method);
+                "in", () -> workflowA, method);
         assertTrue(parked.await(5, TimeUnit.SECONDS));
         await().atMost(Duration.ofSeconds(2)).until(() ->
                 store.getInstance("replay-pin")
@@ -113,7 +113,7 @@ class ObserverReplayNoDoubleCountTest {
 
         var workflowB = new ThreeStepGatedWorkflow(proxy(observerB), new CountDownLatch(1));
         var recovered = executorB.recoverWorkflows(Map.of("ThreeStepGatedWorkflow",
-                new WorkflowRegistration("ThreeStepGatedWorkflow", "default", workflowB, method)));
+                new WorkflowRegistration("ThreeStepGatedWorkflow", "default", () -> workflowB, method)));
         assertEquals(1, recovered);
 
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> assertEquals(
@@ -171,7 +171,7 @@ class ObserverReplayNoDoubleCountTest {
         var method = TwoSignalWorkflow.class.getMethod("run", String.class);
 
         executorA.startWorkflow("replay-signal", "TwoSignalWorkflow", "default",
-                "in", workflowA, method);
+                "in", () -> workflowA, method);
         await().atMost(Duration.ofSeconds(2)).until(() ->
                 store.getInstance("replay-signal")
                         .map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL).orElse(false));
@@ -191,7 +191,7 @@ class ObserverReplayNoDoubleCountTest {
         var workflowB = new TwoSignalWorkflow(new CountDownLatch(1));
         executorB.deliverSignal("replay-signal", "second", "two");
         var recovered = executorB.recoverWorkflows(Map.of("TwoSignalWorkflow",
-                new WorkflowRegistration("TwoSignalWorkflow", "default", workflowB, method)));
+                new WorkflowRegistration("TwoSignalWorkflow", "default", () -> workflowB, method)));
         assertEquals(1, recovered);
 
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> assertEquals(
@@ -221,7 +221,7 @@ class ObserverReplayNoDoubleCountTest {
         var method = SleepThenAwaitWorkflow.class.getMethod("run", String.class);
 
         executorA.startWorkflow("replay-timer", "SleepThenAwaitWorkflow", "default",
-                "in", workflowA, method);
+                "in", () -> workflowA, method);
         assertTrue(slept.await(10, TimeUnit.SECONDS), "the live sleep should fire via the poller");
         await().atMost(Duration.ofSeconds(2)).until(() ->
                 store.getInstance("replay-timer")
@@ -238,7 +238,7 @@ class ObserverReplayNoDoubleCountTest {
         var workflowB = new SleepThenAwaitWorkflow(new CountDownLatch(1));
         executorB.deliverSignal("replay-timer", "after-sleep", "done");
         var recovered = executorB.recoverWorkflows(Map.of("SleepThenAwaitWorkflow",
-                new WorkflowRegistration("SleepThenAwaitWorkflow", "default", workflowB, method)));
+                new WorkflowRegistration("SleepThenAwaitWorkflow", "default", () -> workflowB, method)));
         assertEquals(1, recovered);
 
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> assertEquals(

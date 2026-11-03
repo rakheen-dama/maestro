@@ -1,5 +1,6 @@
 package io.b2mash.maestro.integration.multinode;
 
+import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.integration.support.MaestroEngineHarness;
 import io.b2mash.maestro.integration.support.PostgresIntegrationSupport;
@@ -98,10 +99,13 @@ class MultiNodeSignalRoutingIT extends PostgresIntegrationSupport {
                 "node B ingests the signal; it must not execute the workflow");
 
         assertEquals(
+                // A parked await memoizes its durable deadline at its own slot
+                // and records the outcome at the next (C12 / F4).
                 List.of("1:ACTIVITY_COMPLETED:chain.stepOne",
-                        "2:SIGNAL_RECEIVED:$maestro:awaitSignal:approval",
-                        "3:ACTIVITY_COMPLETED:chain.stepTwo",
-                        "4:WORKFLOW_COMPLETED:null"),
+                        "2:TIMER_SCHEDULED:$maestro:awaitSignal:approval",
+                        "3:SIGNAL_RECEIVED:$maestro:awaitSignal:approval",
+                        "4:ACTIVITY_COMPLETED:chain.stepTwo",
+                        "5:WORKFLOW_COMPLETED:null"),
                 handle.events().stream()
                         .map(e -> e.sequenceNumber() + ":" + e.eventType() + ":" + e.stepName())
                         .toList());
@@ -159,8 +163,11 @@ class MultiNodeSignalRoutingIT extends PostgresIntegrationSupport {
                 "receipt order must survive the cross-node hop");
         assertEquals(List.of(),
                 store.getUnconsumedSignals(workflowId, TestWorkflows.CollectingWorkflow.SIGNAL));
+        // Count consumptions only: an await that parked also memoizes its
+        // deadline (TIMER_SCHEDULED) under the same step name (C12 / F4).
         assertEquals(3, handle.events().stream()
-                        .filter(e -> e.stepName() != null
+                        .filter(e -> e.eventType() == EventType.SIGNAL_RECEIVED
+                                && e.stepName() != null
                                 && e.stepName().startsWith("$maestro:awaitSignal:"))
                         .count(),
                 "each vote must be memoized exactly once");
@@ -215,7 +222,7 @@ class MultiNodeSignalRoutingIT extends PostgresIntegrationSupport {
                 .build();
         harness.registerActivities(CountingActivities.ChainActivities.class,
                 new CountingActivities.RecordingChainActivities(recorder));
-        harness.registerWorkflow(workflowImpl);
+        harness.registerWorkflow(workflowImpl.getClass(), () -> workflowImpl);
         return harness;
     }
 }

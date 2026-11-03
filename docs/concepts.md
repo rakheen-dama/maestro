@@ -56,9 +56,10 @@ public class OrderFulfilmentWorkflow {
 **Key points:**
 
 - `name` defaults to the class simple name if omitted. It correlates instances with their implementation during recovery.
-- `taskQueue` defaults to `"default"`. Only workers subscribed to a matching queue execute workflows of this type.
+- `taskQueue` defaults to `"default"`. It names the concurrency bucket the workflow's runs and their live activities count against — the per-node limits configured under `maestro.worker.task-queues[]` (see [Worker Configuration](configuration.md#worker-configuration)); a queue not configured there is unbounded. It does not route: a workflow runs in-process on the node that starts it, or on the node that recovers it.
 - The `@WorkflowMethod` may accept zero or one parameter (the workflow input) and its return type is serialized as the workflow output.
 - **One `@WorkflowMethod` per class.** Multiple workflow types require separate classes.
+- **One object per run.** The engine instantiates the workflow class for every start, recovery and retry. Instance fields are per-run state; never put per-instance state in `static` fields.
 
 ---
 
@@ -135,6 +136,44 @@ The `@RetryPolicy` annotation configures automatic retries for failed activity i
 
 Backoff formula: `delay = min(initialInterval * backoffMultiplier^attempt, maxInterval)`.
 
+**Timeouts.** `@ActivityStub(startToCloseTimeout = ...)` (default `PT30S`) bounds each *attempt* on the wall clock, from invocation to return; every retry gets the full timeout afresh, and backoff waits do not count against it. Each attempt runs on its own virtual thread; one still running at the timeout is cancelled — its thread is interrupted — and fails with `ActivityTimeoutException`. The workflow does not wait for it to stop, and anything it returns afterwards is discarded, never memoized, so an activity that ignores interruption keeps running in the background with no effect on the workflow. `ActivityTimeoutException` is an ordinary failure under the retry policy: retried by default, and listing it in `nonRetryableExceptions` makes a timeout terminal. Detect it with `e.causedBy(ActivityTimeoutException.class)`, which also holds on replay.
+
+**What survives a crash.** The attempt counter is in-memory; after a crash the activity restarts at attempt 1 with the full backoff schedule; the durable guarantee is that a *completed* attempt is never re-executed.
+
+### Handling activity failures in workflow code
+
+An activity's exception **always** reaches the workflow method wrapped in `ActivityExecutionException`, both live and on replay. The original exception is available as `getCause()` and is tested with `causedBy(Class)`:
+
+```java
+try {
+    provider.charge(request.paymentMethod(), request.amount());
+} catch (ActivityExecutionException e) {
+    if (e.causedBy(PaymentDeclinedException.class)) {
+        // handle the business outcome
+    } else {
+        throw e;
+    }
+}
+```
+
+Why the wrapper is kept: on replay the engine may have to *reconstruct* the cause from its recorded class name (for example when the type has no public `(String)` constructor, or is no longer on the classpath), in which case `getCause()` is a `ReconstructedActivityFailure` rather than the original type. `causedBy` handles both cases, so `catch (PaymentDeclinedException e)` directly would silently never match.
+
+Retry interaction: an exception you intend to catch as a business outcome belongs in `nonRetryableExceptions`. Otherwise the policy retries it to exhaustion before the workflow ever sees it (30 attempts with up-to-10-minute backoff in the payment sample's case).
+
+**Never catch-and-continue a stand-down: rethrow `DuplicateEventException` and `StaleRunException`.** These two are not activity failures, and they are not wrapped in `ActivityExecutionException`. They mean *another runner owns this workflow* — a peer node adopted it while this one lost its instance lock (or runs without a lock backend), and either an append of this run collided with the peer's event at the same sequence (`DuplicateEventException`) or a fresh read found the workflow already finished by the peer (`StaleRunException`). The engine's response is to stand the local run down: write nothing, compensate nothing, let the winner's record govern. Both are ordinary `MaestroException`s, so a broad `catch (Exception e)` around an activity call, `sleep()` or `awaitSignal()` *can* intercept them — and if it swallows one, or turns it into a business failure, it costs real work: the next live activity executes a side effect the winner also runs (a second charge, a second email), and rethrowing it as a business failure can run compensations that undo work the winner owns. Let them propagate:
+
+```java
+try {
+    provider.charge(request.paymentMethod(), request.amount());
+} catch (DuplicateEventException | StaleRunException standDown) {
+    throw standDown;                       // another runner owns this workflow
+} catch (Exception e) {
+    // ... genuine failure handling ...
+}
+```
+
+As a backstop, the engine remembers that a run is stale, whatever the workflow code did with the exception, and stands it down at its *next stop point*: the next live activity (before it acquires a lock, publishes a start or executes anything), the next `sleep()` (before it saves a timer), the next `awaitSignal()` (before it consumes a signal), and the terminal write (a stale run never records `COMPLETED` or `FAILED`, and never compensates). Each throws `StaleRunException`. Only the plain code you run between the swallowed exception and that point is beyond the engine's reach.
+
 ---
 
 ## The Determinism Rule
@@ -159,6 +198,8 @@ Because the engine replays the workflow method during crash recovery, any non-de
 **Safe between activity calls:** conditionals, loops, string manipulation, arithmetic, creating DTOs from activity results, logging. These are deterministic because they operate on values that were already memoized.
 
 Editing the workflow method itself is the other way to break replay -- an in-flight instance resumes into code that no longer matches what it recorded. Gate the change with [`workflow.version()`](#versioning-workflow-code).
+
+Since this release the engine checks the recorded step name on every replayed step: a renamed, removed or reordered activity no longer silently replays another step's payload — the run stands down with `StandDownReason.NONDETERMINISTIC_HISTORY` (metric tag `nondeterministic_history`), nothing is written, the `maestro.standdown` meter increments and the WARN names the expected and recorded step. Gate such edits behind `workflow.version()` (below).
 
 ```java
 @WorkflowMethod
@@ -210,6 +251,8 @@ try {
     return OrderResult.failed("Payment timed out");
 }
 ```
+
+The timeout is durable: it is a timer row in `maestro_workflow_timer`, so a crash does not restart the clock, and in tests advancing the test clock by the timeout (`env.advanceTime(timeout)`) fires it deterministically: `TestWorkflowEnvironment` arms the deadline from its test clock, so the exact timeout reaches it — see [Testing](testing.md).
 
 ### Collecting multiple signals
 
@@ -276,7 +319,7 @@ Left uncaught, `TimerCancelledException` propagates like any other exception: sa
 
 Cancellation is arbitrated the same way firing is: a compare-and-set on the timer row (`PENDING -> CANCELLED`). `cancelTimer` returns `true` if it won the race, `false` if the timer had already fired or was already cancelled -- the caller is told, rather than left to guess.
 
-`awaitSignal(name, timeout)` is unaffected by any of this: its timeout is an in-memory recheck loop, not a durable timer row, so there is nothing for `cancelTimer` to reach.
+`awaitSignal(name, timeout)` arms a durable timer row for its timeout (timer ID `await-signal-<seq>`, where `seq` is the sequence the await allocated), so the deadline survives restarts and is honoured from the original arming time. `cancelTimer` does reach it: a cancelled await timer ends the await with `SignalTimeoutException` on its next wake, because the timer row is the arbiter and a non-`PENDING` row means the deadline is spent. An admin **Retry** of a workflow that failed on an await timeout discards that await's spent deadline along with its timeout, so the retried await waits the full timeout again from the moment of the retry; a signal that arrived in the meantime is consumed at once.
 
 ---
 
@@ -323,6 +366,8 @@ int progress = maestro.getWorkflow("order-abc")
 ```
 
 **Thread safety:** Query methods are invoked from the **caller's thread**, not the workflow's virtual thread. Use `volatile` fields, `AtomicReference`, or explicit synchronization to ensure visibility of state written by the workflow thread.
+
+**Single-node contract:** A query is answered by the node whose engine is currently running the workflow — the one holding its instance lock. Any other node, and any node after the workflow reaches `COMPLETED`/`FAILED`/`TERMINATED`, throws `WorkflowNotQueryableException`. A load-balanced `GET /status` on a multi-node service therefore fails on the non-owning nodes; route the request to the owner, or serve status from `WorkflowHandle.status()`/`result()` (durable, any node) or your own projection. Cross-node query routing is not implemented.
 
 **Read-only contract:** Query methods must not modify workflow state or trigger side effects. Doing so will corrupt determinism and break replay.
 
@@ -383,6 +428,8 @@ workflow.addCompensation("release-reservation",
 
 Compensations form a **LIFO stack** -- they unwind in reverse registration order (most recent first). Set `@Saga(parallelCompensation = true)` to execute all compensations concurrently instead.
 
+Compensations registered inside `parallel()` branches (a `@Compensate` activity called in a branch, or `addCompensation` in a branch) are held until the fork joins and then pushed in **branch-index order** -- branch 0's entries first, in the order branch 0 registered them, then branch 1's, and so on; a nested `parallel()` does the same into its enclosing branch -- never in the order the branches happen to finish. That holds on the failure path too: a branch that registered a compensation before a sibling failed still has it unwound. Finish order is a thread race a recovery replay need not reproduce; branch-index order is deterministic, so a saga recovered mid-compensation unwinds the same entries in the same order.
+
 Compensation calls go through the activity proxy and are therefore memoized, retriable, and replayable, just like normal activity calls.
 
 ### Compensation argument resolution
@@ -413,11 +460,21 @@ List<ShipmentConfirmation> shipments = workflow.parallel(List.of(
 
 ### Branch sequence blocks
 
-When parallel execution forks at sequence step `5`, each branch is allocated its own block of sequence numbers: branch *i* starts at `5*1000 + (i+1)*1000` (bases `6000`, `7000`, `8000`), with up to 999 steps per branch. This means:
+When parallel execution forks at sequence step `5`, each branch is allocated its own block of sequence numbers: branch *i* starts at `5*1000 + (i+1)*1000` (bases `6000`, `7000`, `8000`), with up to 999 sequence slots per branch (most steps take one slot; `sleep()` takes two — the timer and its wake record) — **the 1000th slot throws `BranchSequenceExhaustedException`, failing the branch and therefore the workflow (its registered compensations run)**; the counter never spills into the sibling's block. Saga compensation entries get the same 1000-slot blocks with the same bound, sequential and parallel alike: an entry that takes a 1000th slot is recorded `COMPENSATION_STEP_FAILED` with that cause, and the remaining entries still run. This means:
 
 - Each branch is independently memoized.
 - On replay, each branch replays its own stored events regardless of original execution order.
 - Results are returned in the same order as the input task list.
+
+### Depth limit
+
+Every fork level multiplies the sequence by 1000, and the sequence is a 32-bit `int`, so from a parent sequence below ~2,000 any one path through a workflow has room for **two** fork levels. Where a fork sits decides which levels it adds to:
+
+- **Parent-line levels compound.** Each sequential `parallel()` call on the workflow's main line leaves the parent counter past its branch blocks (×1000), and the compensation phase that follows a failure anchors on that counter, so it is a parent-line level too. Two sequential `parallel()` calls fit; one `parallel()` plus compensation fits; two sequential `parallel()` calls plus compensation do not.
+- **A nested `parallel()` compounds only within its own branch.** It rebases that branch's counter, never the parent's: after the outer join the parent sits exactly where it would without the nesting (`4000` for a 2-branch fork at seq `1`). So a nested `parallel()` followed by compensation fits (anchor `4001`), and so does a nested `parallel()` followed by a second sequential `parallel()`. A fork nested inside a nested fork does not, nor does a nested fork inside a branch of the second sequential `parallel()`.
+- **A fork inside a compensation entry** is one level below the compensation phase. With no forward `parallel()` it fits (entry block `3000`, nested branch blocks from `3,002,000`). After a forward `parallel()` the compensation phase is already the second level (anchor `4001`, entry block `4,002,000`), so the entry's own fork at `4,002,001` cannot be sequenced: the compensation pre-check passes, and **that compensation step is recorded `COMPENSATION_STEP_FAILED` with `SequenceSpaceExhaustedException`** while the remaining entries still run. Under `@Saga(parallelCompensation = true)` a compensation cannot fork at all: parallel-compensation branches run without workflow operations (no `sleep()`, `awaitSignal()` or `parallel()`), so the call fails that step with `IllegalStateException`.
+
+A fork that cannot be sequenced throws `SequenceSpaceExhaustedException` *before* any sequence is consumed. On the forward path that fails the workflow; inside a compensation entry it is recorded as that entry's `COMPENSATION_STEP_FAILED`. The compensation phase itself is checked up front, so **a saga that has already made two sequential `parallel()` calls cannot compensate at all**: its compensation anchor is ≈ 4,004,001–7,005,001 depending on branch counts, and the anchor × 1000 block arithmetic overflows `int`. The workflow is still finished `FAILED`, but **no compensation runs** — the engine logs at `ERROR` the step names of the compensations that could not run, and the operator must compensate manually. This is a known structural limitation; see [Issue 28](open-issues.md#issue-28).
 
 ---
 
@@ -553,7 +610,7 @@ OrderResult result = maestro.newWorkflow(OrderFulfilmentWorkflow.class, options)
     .startAndWait(input, Duration.ofMinutes(5), OrderResult.class);
 ```
 
-`startAndWait` starts the workflow, then polls the store until it reaches a terminal state or the timeout elapses. Throws `TimeoutException` if the workflow does not complete in time, or `WorkflowExecutionException` if it fails.
+`startAndWait` starts the workflow, then polls the store until it reaches a terminal state or the timeout elapses. Throws `TimeoutException` if the workflow does not complete in time, or `WorkflowExecutionException` if it fails or is terminated. For a failure, the exception message names the failing exception (`Workflow 'order-abc' failed: java.lang.IllegalStateException: out of stock`) and the cause is that activity/workflow exception reconstructed from the store — its original type when it has a public `(String)` constructor, otherwise a `ReconstructedActivityFailure` carrying the original class name and message. For a termination, the message names who terminated it and the reason, and there is no cause.
 
 ### Sending a signal
 
@@ -576,6 +633,18 @@ For queries that accept an argument:
 DetailedStatus detail = maestro.getWorkflow("order-abc")
     .query("getDetail", "verbose", DetailedStatus.class);
 ```
+
+### Status, result and termination
+
+```java
+WorkflowStatus status = maestro.getWorkflow("order-abc").status();
+Optional<OrderResult> result = maestro.getWorkflow("order-abc", OrderResult.class).result();
+maestro.getWorkflow("order-abc").terminate("reason");
+```
+
+These read and write the store, so they work from any node; only `query` requires the owning node.
+
+`status()` throws `WorkflowNotFoundException` for an unknown workflow ID. `result()` is present only once the workflow is `COMPLETED` with a non-null output, deserialised to the type passed to `getWorkflow(id, type)`; it is empty while the workflow is active, and when it failed or was terminated. `terminate(reason)` marks the workflow `TERMINATED` and stops it without running compensations, returning a `TerminateOutcome` (`TERMINATED`, `ALREADY_TERMINAL` or `NOT_FOUND`).
 
 ---
 

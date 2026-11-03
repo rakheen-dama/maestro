@@ -14,8 +14,8 @@ import java.sql.SQLException;
  * Base class for {@code maestro-messaging-postgres} integration tests.
  *
  * <p>Provides a Postgres container shared by every suite in the JVM, the
- * module's Flyway migration applied once, per-test truncation of the queue
- * tables, and a started {@link PostgresNotificationListener}.
+ * module's Flyway migrations applied once, per-test truncation of the signal
+ * queue, and a started {@link PostgresNotificationListener}.
  *
  * <p>The container is started from a static initialiser rather than through
  * JUnit's {@code @Testcontainers}/{@code @Container} extension: that extension
@@ -56,7 +56,7 @@ abstract class PostgresMessagingTestSupport {
             if (!migrated) {
                 Flyway.configure()
                         .dataSource(dataSource)
-                        .locations("classpath:db/migration")
+                        .locations("classpath:db/maestro/messaging")
                         .load()
                         .migrate();
                 migrated = true;
@@ -91,15 +91,14 @@ abstract class PostgresMessagingTestSupport {
     }
 
     /**
-     * Empties every queue table.
+     * Empties the signal queue — the transport's only table.
      *
      * @throws SQLException if truncation fails
      */
     protected void truncateQueues() throws SQLException {
         try (var conn = dataSource.getConnection();
              var stmt = conn.createStatement()) {
-            stmt.execute("TRUNCATE maestro_task_queue, maestro_signal_queue, "
-                    + "maestro_lifecycle_event_queue");
+            stmt.execute("TRUNCATE maestro_signal_queue");
         }
     }
 
@@ -173,26 +172,6 @@ abstract class PostgresMessagingTestSupport {
     protected PostgresWorkflowMessaging newMessaging(PostgresRedeliveryConfig redelivery) {
         return new PostgresWorkflowMessaging(
                 newDataSource(), objectMapper, notificationListener, redelivery);
-    }
-
-    /**
-     * Counts rows for a workflow in a queue table.
-     *
-     * @param table the queue table
-     * @param workflowId the workflow ID
-     * @return the row count
-     * @throws SQLException if the query fails
-     */
-    protected int rowCount(String table, String workflowId) throws SQLException {
-        try (var conn = dataSource.getConnection();
-             var stmt = conn.prepareStatement(
-                     "SELECT count(*) FROM " + table + " WHERE workflow_id = ?")) {
-            stmt.setString(1, workflowId);
-            try (var rs = stmt.executeQuery()) {
-                rs.next();
-                return rs.getInt(1);
-            }
-        }
     }
 
     /**

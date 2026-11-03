@@ -3,7 +3,11 @@ package io.b2mash.maestro.core.spi;
 import java.util.function.Consumer;
 
 /**
- * Messaging SPI for task dispatch, signal delivery, and lifecycle event publishing.
+ * Messaging SPI for signal delivery and lifecycle event publishing.
+ *
+ * <p>There is deliberately no task-dispatch channel: a workflow starts
+ * in-process, on the node that called {@code startWorkflow}, so nothing is
+ * ever dispatched to a worker over the transport.
  *
  * <p>Implementations provide the communication backbone between workflow
  * engine components. The reference implementation uses Apache Kafka via
@@ -11,7 +15,8 @@ import java.util.function.Consumer;
  *
  * <h2>Delivery Guarantees</h2>
  * <ul>
- *   <li>All publish methods provide <b>at-least-once</b> delivery.</li>
+ *   <li>{@link #publishSignal} provides <b>at-least-once</b> delivery;
+ *       lifecycle events are best-effort.</li>
  *   <li>Consumers must be idempotent — duplicate messages are possible
  *       during Kafka rebalances or retries, and a handler that throws is
  *       re-invoked with the same message until it succeeds or the message is
@@ -25,22 +30,10 @@ import java.util.function.Consumer;
  * publish messages concurrently. Subscription handlers are invoked on
  * the messaging implementation's consumer threads.
  *
- * @see TaskMessage
  * @see SignalMessage
  * @see WorkflowLifecycleEvent
  */
 public interface WorkflowMessaging {
-
-    /**
-     * Publishes a task message to start or resume a workflow.
-     *
-     * <p>The message is dispatched to the specified task queue. Workers
-     * subscribed to that queue will pick it up.
-     *
-     * @param taskQueue the task queue name
-     * @param message   the task message
-     */
-    void publishTask(String taskQueue, TaskMessage message);
 
     /**
      * Publishes a signal to a service for delivery to a workflow.
@@ -59,29 +52,13 @@ public interface WorkflowMessaging {
      *
      * <p>Lifecycle events are consumed by the Maestro Admin application
      * for observability. Publishing failures should be logged but must
-     * not interrupt workflow execution.
+     * not interrupt workflow execution. A transport the dashboard cannot
+     * consume from may implement this as a no-op (the Postgres transport
+     * does, logging one WARN).
      *
      * @param event the lifecycle event
      */
     void publishLifecycleEvent(WorkflowLifecycleEvent event);
-
-    /**
-     * Subscribes to task messages on the specified queue.
-     *
-     * <p>The handler is invoked for each received message on the
-     * implementation's consumer thread.
-     *
-     * <p><b>A handler exception means the message was not processed.</b> The
-     * implementation must therefore not acknowledge it: it must redeliver the
-     * message a bounded number of times, and route a message that exhausts
-     * redelivery to a durable, inspectable dead-letter destination. Handler
-     * exceptions must never crash the consumer and must never silently discard
-     * the message.
-     *
-     * @param taskQueue the task queue to subscribe to
-     * @param handler   callback invoked for each task message
-     */
-    void subscribe(String taskQueue, Consumer<TaskMessage> handler);
 
     /**
      * Subscribes to inbound signals for the specified service.
@@ -90,12 +67,14 @@ public interface WorkflowMessaging {
      * handler's responsibility to persist the signal via
      * {@link WorkflowStore#saveSignal} and notify the workflow.
      *
-     * <p>That persist <em>is</em> the durability step, so the same rule as
-     * {@link #subscribe} applies with extra force: a handler exception means
-     * the signal is not yet in the store, and acknowledging it there is the one
-     * moment a signal can be truly lost. The implementation must redeliver a
-     * bounded number of times and dead-letter what it cannot deliver — never
-     * discard a signal.
+     * <p><b>A handler exception means the signal was not processed.</b> That
+     * persist <em>is</em> the durability step: a handler exception means the
+     * signal is not yet in the store, and acknowledging it there is the one
+     * moment a signal can be truly lost. The implementation must therefore not
+     * acknowledge it: it must redeliver the message a bounded number of times,
+     * and route a message that exhausts redelivery to a durable, inspectable
+     * dead-letter destination. Handler exceptions must never crash the consumer
+     * and must never silently discard the signal.
      *
      * @param serviceName the service name to subscribe signals for
      * @param handler     callback invoked for each signal message

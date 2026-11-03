@@ -92,7 +92,8 @@ timing comparison of the two backends across the multi-node scenarios below.
 
 **Schema footprint note.** All three services now depend on both
 `maestro-lock-valkey` and `maestro-lock-postgres` (to make the switch above
-possible), so Flyway's default classpath scan picks up
+possible), so Maestro's schema initializer (which applies every Maestro
+module's migrations found on the classpath) picks up
 `V100__maestro_lock_postgres.sql` regardless of which backend is configured.
 A **default (Valkey) boot now also creates the `maestro_distributed_lock` and
 `maestro_leader_election` tables** in all three sample databases — unused and

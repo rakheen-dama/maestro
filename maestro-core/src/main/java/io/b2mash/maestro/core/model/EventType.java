@@ -26,7 +26,14 @@ public enum EventType {
     /** A named signal was received and consumed by the workflow. */
     SIGNAL_RECEIVED,
 
-    /** A durable timer was scheduled. */
+    /**
+     * A durable timer was scheduled — by {@code sleep()} (step
+     * {@code $maestro:sleep}, outcome {@code TIMER_FIRED}/{@code TIMER_CANCELLED}
+     * at the next sequence), or as the deadline of a parked
+     * {@code awaitSignal()} (step {@code $maestro:awaitSignal:<signalName>},
+     * timer {@code await-signal-<seq>}, outcome {@code SIGNAL_RECEIVED} or
+     * {@code SIGNAL_TIMEOUT} at the next sequence).
+     */
     TIMER_SCHEDULED,
 
     /** A durable timer fired, resuming the workflow. */

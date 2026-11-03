@@ -15,7 +15,7 @@ The module provides an in-memory Maestro engine for testing durable workflows. N
 What you get:
 
 - **Real execution engine.** The same `WorkflowExecutor` that runs in production, backed by in-memory SPI implementations.
-- **Deterministic time.** A `ControllableClock` replaces wall-clock time. Call `advanceTime(Duration.ofDays(30))` and all due timers fire immediately.
+- **Deterministic time.** A `ControllableClock` replaces wall-clock time: the engine arms every `sleep()` timer and `awaitSignal()` deadline from it. Call `advanceTime(Duration.ofDays(30))` and every timer due by then fires immediately — see [How It Works](#how-it-works).
 - **Signal self-recovery testing.** Pre-deliver signals before a workflow starts to verify the orphan adoption path.
 - **Full event log inspection.** Assert on every activity completion, signal receipt, and timer firing.
 - **Sub-second test execution.** No containers to start, no connections to establish.
@@ -192,7 +192,7 @@ assertEquals(5, events.size());
 assertTrue(events.stream().anyMatch(e -> e.eventType() == EventType.ACTIVITY_COMPLETED));
 ```
 
-**Read the log only after `getResult` or `awaitCompletion` has returned** -- never after merely observing a terminal `getStatus()`. The engine finalises a run with two separate, non-transactional writes and the **instance row goes first**: there is a real interval in which the status reads `COMPLETED` while `WORKFLOW_COMPLETED` has not yet been appended. `getResult` and `awaitCompletion` wait for the event, so the log they hand you is complete; a status poll does not, so it can hand you a log one event short. That reads as a flaky test on a loaded CI machine and as data loss to anyone reading the snapshot.
+**Read the log after `getResult` or `awaitCompletion` has returned.** The engine writes a run's terminal status and its terminal event (`WORKFLOW_COMPLETED` / `WORKFLOW_FAILED`) in one atomic store write (`WorkflowStore.completeInstance`, a single transaction on Postgres), so a terminal status always comes with its event -- the old interval in which the status read `COMPLETED` while the event had not yet been appended is gone (Issue 26). `getResult` and `awaitCompletion` still wait for the event itself, and they remain the recommended wait: they say what the assertions that follow depend on, and they fail loudly with `TimeoutException` if the event never lands.
 
 ### Querying a Running Workflow
 
@@ -224,10 +224,12 @@ Durable timers are central to Maestro workflows. In production, `workflow.sleep(
 // Workflow calls workflow.sleep(Duration.ofDays(30))
 var handle = env.startWorkflow(ReminderWorkflow.class, input);
 
-// Workflow is now parked on a timer
-assertEquals(WorkflowStatus.WAITING_TIMER, handle.getStatus());
+// startWorkflow returns at once: wait until the workflow has armed its timer
+// and parked (waitForParkedStatus is under "Best Practices" below)
+waitForParkedStatus(handle, WorkflowStatus.WAITING_TIMER, Duration.ofSeconds(5));
 
-// Fast-forward 30 days -- timer fires instantly
+// Fast-forward 30 days -- the timer fires instantly. Its fireAt was armed
+// from the test clock (now + 30 days), so advancing exactly 30 days reaches it.
 env.advanceTime(Duration.ofDays(30));
 
 // Workflow resumes and completes
@@ -238,10 +240,14 @@ var result = handle.getResult(ReminderResult.class, Duration.ofSeconds(5));
 
 `advanceTime(duration)` does two things:
 
-1. **Advances the `ControllableClock`** by the given duration.
-2. **Fires all due timers** whose `fireAt <= clock.now()`.
+1. **Advances the `ControllableClock`** by the given duration, to a target instant fixed for the call.
+2. **Fires all due timers** whose `fireAt` is at or before that target.
 
-The method loops to handle cascading timers: if timer A fires and the workflow immediately creates timer B that is also due, timer B fires in the same `advanceTime` call. A safety limit of 1,000 iterations prevents infinite timer loops.
+**Why an exact advance works.** The environment hands its `ControllableClock` to the engine, which arms every durable deadline from it: `sleep(d)` gets `fireAt = clock.now() + d`, and a parked `awaitSignal(name, type, timeout)` gets `deadline = clock.now() + timeout`, decided against the same clock. The wall clock plays no part, so a 1-second deadline cannot expire while a slow test is still getting ready, and `advanceTime(timeout)` lands exactly on the deadline — no `plusSeconds(1)` margin. `workflow.currentTime()` reads the same clock, so `collectSignals` budgets its overall timeout in test time too. (Production uses the system clock; only `TestWorkflowEnvironment` swaps it.)
+
+**What one call fires.** A workflow that a call wakes and that parks again arms its next timer from the advanced clock, at `target + d`. For any positive `d` that is after the target, so the same call never fires it — the next `advanceTime` does. So one `advanceTime` fires only timers that were already due at its target; it never chains on into a timer the woken workflow arms with a positive duration, however long that duration is relative to the advance. A zero- or negative-duration timer armed by a woken workflow is due at once, so whether this call or the next one fires it depends on thread timing — don't rely on either. The loop inside the call repeats while timers due by the target remain (more than one batch of 100, or such a timer); a safety limit of 1,000 iterations prevents infinite timer loops.
+
+`advanceTime` fires `awaitSignal` deadlines exactly as it fires `sleep()` timers: a 7-day approval wait times out with one `env.advanceTime(Duration.ofDays(7))` instead of seven days of wall clock — and a signal delivered before the advanced clock reaches the deadline still wins. Wait for the workflow to be parked (status `WAITING_SIGNAL`, or its `TIMER_SCHEDULED` memo in the event log) before advancing: advancing first moves the clock past nothing, and the await then arms its deadline from the already-advanced clock.
 
 ### Direct Clock Access
 
@@ -458,10 +464,12 @@ class OrderFulfilmentWorkflowTest {
         var handle = env.startWorkflow(
             OrderFollowUpWorkflow.class, orderInput);
 
-        // Workflow sleeps for 30 days before sending a follow-up
-        assertEquals(WorkflowStatus.WAITING_TIMER, handle.getStatus());
+        // Workflow sleeps for 30 days before sending a follow-up: wait until
+        // it has armed the timer and parked (see "Best Practices")
+        waitForParkedStatus(handle, WorkflowStatus.WAITING_TIMER, Duration.ofSeconds(5));
 
-        // Fast-forward 30 days
+        // Fast-forward 30 days: the timer was armed from the test clock,
+        // so the exact duration fires it (see "How It Works")
         env.advanceTime(Duration.ofDays(30));
 
         handle.awaitCompletion(Duration.ofSeconds(5));
@@ -536,7 +544,7 @@ private static void waitForParkedStatus(TestWorkflowHandle handle,
 }
 ```
 
-**Never poll the status for a terminal one.** Parking is a single write, so the loop above is correct for `WAITING_SIGNAL` and `WAITING_TIMER`. Finishing is **two** writes -- the instance row first, then the `WORKFLOW_COMPLETED` / `WORKFLOW_FAILED` event -- so a loop that returns the moment the status reads `COMPLETED` returns while the event log is still one event short, and anything you assert on the log afterwards is a coin flip. Use `handle.awaitCompletion(timeout)` or `handle.getResult(type, timeout)`, which wait for the event itself:
+**Prefer the handle's waits for a terminal status.** Parking is a single write, so the loop above is correct for `WAITING_SIGNAL` and `WAITING_TIMER`. Finishing is one atomic write too -- the terminal status and the `WORKFLOW_COMPLETED` / `WORKFLOW_FAILED` event land together (Issue 26) -- so a status loop no longer returns with the log one event short. Still, use `handle.awaitCompletion(timeout)` or `handle.getResult(type, timeout)`, which wait for the event itself and so state exactly what your log assertions depend on:
 
 ```java
 // Right: waits for the durable terminal event, so the log is complete.

@@ -208,7 +208,7 @@ class MultiNodeOwnerDeathIT extends PostgresIntegrationSupport {
                 .instanceLockTtl(ttl)
                 .build();
         harness.registerActivities(CountingActivities.ChainActivities.class, activities);
-        harness.registerWorkflow(new TestWorkflows.ChainWorkflow());
+        harness.registerWorkflow(TestWorkflows.ChainWorkflow.class);
         return harness;
     }
 

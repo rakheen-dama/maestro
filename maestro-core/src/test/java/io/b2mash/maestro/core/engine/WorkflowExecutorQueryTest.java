@@ -14,7 +14,6 @@ import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.spi.SignalMessage;
-import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.core.spi.WorkflowStore;
@@ -73,7 +72,7 @@ class WorkflowExecutorQueryTest {
 
         executor.registerQueries("QueryableWorkflow", QueryableWorkflow.class);
         executor.startWorkflow("order-q1", "QueryableWorkflow", "default",
-                "processing", workflow, method);
+                "processing", () -> workflow, method);
 
         // Wait for workflow to reach awaitSignal and park
         assertTrue(waitingLatch.await(5, TimeUnit.SECONDS), "Workflow should reach await point");
@@ -95,7 +94,7 @@ class WorkflowExecutorQueryTest {
 
         executor.registerQueries("BlockingQueryableWorkflow", BlockingQueryableWorkflow.class);
         executor.startWorkflow("order-q2", "BlockingQueryableWorkflow", "default",
-                "active", workflow, method);
+                "active", () -> workflow, method);
 
         try {
             assertTrue(startedLatch.await(5, TimeUnit.SECONDS));
@@ -118,7 +117,7 @@ class WorkflowExecutorQueryTest {
 
         executor.registerQueries("WorkflowWithArgQuery", WorkflowWithArgQuery.class);
         executor.startWorkflow("order-q3", "WorkflowWithArgQuery", "default",
-                "input", workflow, method);
+                "input", () -> workflow, method);
 
         try {
             assertTrue(startedLatch.await(5, TimeUnit.SECONDS));
@@ -141,7 +140,7 @@ class WorkflowExecutorQueryTest {
 
         executor.registerQueries("CustomNameWorkflow", WorkflowWithCustomQueryName.class);
         executor.startWorkflow("order-q4", "CustomNameWorkflow", "default",
-                "input", workflow, method);
+                "input", () -> workflow, method);
 
         try {
             assertTrue(startedLatch.await(5, TimeUnit.SECONDS));
@@ -196,7 +195,7 @@ class WorkflowExecutorQueryTest {
 
         executor.registerQueries("BlockingQueryableWorkflow", BlockingQueryableWorkflow.class);
         executor.startWorkflow("order-q5", "BlockingQueryableWorkflow", "default",
-                "input", workflow, method);
+                "input", () -> workflow, method);
 
         try {
             assertTrue(startedLatch.await(5, TimeUnit.SECONDS));
@@ -218,7 +217,7 @@ class WorkflowExecutorQueryTest {
 
         executor.registerQueries("FastQueryableWorkflow", FastQueryableWorkflow.class);
         executor.startWorkflow("order-q6", "FastQueryableWorkflow", "default",
-                "input", workflow, method);
+                "input", () -> workflow, method);
 
         // Wait for workflow to complete and be removed from runningWorkflows
         assertTrue(completedLatch.await(5, TimeUnit.SECONDS));
@@ -404,6 +403,15 @@ class WorkflowExecutorQueryTest {
         public void appendEvent(WorkflowEvent event) { events.add(event); }
 
         @Override
+        public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+            // Test fixture: no CAS and one writer per instance, so composing the two
+            // writes is atomic enough here. Event first, so a duplicate writes nothing.
+            appendEvent(terminalEvent);
+            updateInstance(terminal);
+            return true;
+        }
+
+        @Override
         public Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int sequenceNumber) {
             return events.stream()
                     .filter(e -> e.workflowInstanceId().equals(instanceId)
@@ -418,7 +426,7 @@ class WorkflowExecutorQueryTest {
 
         @Override
         public int deleteFailureEvents(UUID instanceId) {
-            return removeFailureEvents(events, instanceId);
+            return removeFailureEvents(events, timers, instanceId);
         }
 
         @Override
@@ -454,6 +462,11 @@ class WorkflowExecutorQueryTest {
                             s.signalName(), s.payload(), s.consumed(), s.receivedAt()));
                 }
             }
+        }
+
+        @Override
+        public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+            return 0;
         }
 
         @Override
@@ -502,10 +515,8 @@ class WorkflowExecutorQueryTest {
     }
 
     private static class NoOpMessaging implements WorkflowMessaging {
-        @Override public void publishTask(String taskQueue, TaskMessage message) {}
         @Override public void publishSignal(String serviceName, SignalMessage message) {}
         @Override public void publishLifecycleEvent(WorkflowLifecycleEvent event) {}
-        @Override public void subscribe(String taskQueue, Consumer<TaskMessage> handler) {}
         @Override public void subscribeSignals(String serviceName, Consumer<SignalMessage> handler) {}
     }
 }

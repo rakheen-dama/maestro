@@ -255,7 +255,7 @@ class EnginePostgresRecoveryIT extends PostgresIntegrationSupport {
                 .instanceLockTtl(Duration.ofSeconds(2))
                 .build();
         built.registerActivities(CountingActivities.ChainActivities.class, activities);
-        built.registerWorkflow(new TestWorkflows.ChainWorkflow());
+        built.registerWorkflow(TestWorkflows.ChainWorkflow.class);
         return built;
     }
 

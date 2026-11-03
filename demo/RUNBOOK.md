@@ -650,37 +650,55 @@ Walk one workflow's rows, then crash it and walk them again.
 demo/scripts/drive-loan.sh events <id>          # any completed loan
 ```
 
-**POINT AT** — the whole of a v1 happy loan's event log, read off a real run
-(`demo/.evidence/task-6-runbook-02-scenario1-happy.log`). Eighteen rows, in
-order, and this is *all* of it:
+**POINT AT** — the whole of a v1 happy loan's event log. This is the layout
+under durable `awaitSignal` deadlines, with every await having parked (its
+signal arrived after the workflow reached it): twenty-seven rows, in order, and
+this is *all* of it:
 
 ```
-    1  ACTIVITY_COMPLETED            LoanActivities.recordApplication
-    2  ACTIVITY_COMPLETED            LoanMessagingActivities.requestVerifications
-    3  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
-    4  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    1  ACTIVITY_COMPLETED            LoanPolicyActivities.timeouts
+    2  ACTIVITY_COMPLETED            LoanActivities.recordApplication
+    3  ACTIVITY_COMPLETED            LoanMessagingActivities.requestVerifications
+    4  TIMER_SCHEDULED               $maestro:awaitSignal:verification.result
     5  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
-    6  SIDE_EFFECT                   $maestro:currentTime
-    7  SIDE_EFFECT                   $maestro:currentTime
-    8  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
-    9  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
-   10  ACTIVITY_COMPLETED            LoanMessagingActivities.requestUnderwriting
-   11  SIGNAL_RECEIVED               $maestro:awaitSignal:underwriting.decision
-   12  ACTIVITY_COMPLETED            FundingActivities.reserveRateLock
-   13  SIDE_EFFECT                   $maestro:currentTime
-   14  SIDE_EFFECT                   $maestro:currentTime
-   15  SIGNAL_RECEIVED               $maestro:awaitSignal:package.signed
-   16  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
-   17  ACTIVITY_COMPLETED            FundingActivities.disburse
-   18  WORKFLOW_COMPLETED
+    6  TIMER_SCHEDULED               $maestro:awaitSignal:verification.result
+    7  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+    8  TIMER_SCHEDULED               $maestro:awaitSignal:verification.result
+    9  SIGNAL_RECEIVED               $maestro:awaitSignal:verification.result
+   10  SIDE_EFFECT                   $maestro:currentTime
+   11  SIDE_EFFECT                   $maestro:currentTime
+   12  TIMER_SCHEDULED               $maestro:awaitSignal:document.uploaded
+   13  SIGNAL_RECEIVED               $maestro:awaitSignal:document.uploaded
+   14  TIMER_SCHEDULED               $maestro:awaitSignal:application.withdrawn
+   15  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+   16  ACTIVITY_COMPLETED            LoanMessagingActivities.requestUnderwriting
+   17  TIMER_SCHEDULED               $maestro:awaitSignal:underwriting.decision
+   18  SIGNAL_RECEIVED               $maestro:awaitSignal:underwriting.decision
+   19  ACTIVITY_COMPLETED            FundingActivities.reserveRateLock
+   20  SIDE_EFFECT                   $maestro:currentTime
+   21  SIDE_EFFECT                   $maestro:currentTime
+   22  TIMER_SCHEDULED               $maestro:awaitSignal:package.signed
+   23  SIGNAL_RECEIVED               $maestro:awaitSignal:package.signed
+   24  TIMER_SCHEDULED               $maestro:awaitSignal:application.withdrawn
+   25  SIGNAL_TIMEOUT                $maestro:awaitSignal:application.withdrawn
+   26  ACTIVITY_COMPLETED            FundingActivities.disburse
+   27  WORKFLOW_COMPLETED
 ```
 
-Row counts move with the scenario — the §2 crashed loan carries its
-`SIDE_EFFECT` rows at 6/7/9 and 15/16/18 — but the *shape* is this.
+Row counts move with the scenario. An await whose signal was already waiting
+when the workflow reached it writes one `SIGNAL_RECEIVED` row and no
+`TIMER_SCHEDULED` (nothing to wait for), so a live run is often a row or two
+shorter — verifications that land together are the usual case — and a crashed
+loan lays its `SIDE_EFFECT` rows out where its replay reached them. The
+*shape* is this. (The recorded evidence log
+`demo/.evidence/task-6-runbook-02-scenario1-happy.log` predates the policy
+activity and durable deadlines; it shows the older eighteen-row layout.)
 
 **SAY**
 
-- "One row per step. The sequence number is the step's address."
+- "One row per step — two for an await that had to wait: `TIMER_SCHEDULED`
+  is its durable deadline, the next row its outcome. The sequence number is
+  the step's address."
 - "On recovery the method is re-invoked from the top. At each activity call
   the proxy asks Postgres: is there a row at this sequence number? If yes it
   returns the stored result and the activity body never executes. If no, it
@@ -704,9 +722,10 @@ docker exec maestro-demo-postgres-1 psql -U maestro -d loan_application -c '\d m
 ```
 
 **Under v2** the numbers jump: parallel branches partition the sequence space
-by the engine's `p*1000 + (i+1)*1000` rule. With the fork at parent sequence 4,
-branch 0 allocates from **5001**, branch 1 from **6001**, and the parent
-resumes at **7001**. If you see those bands, you are looking at v2 — which is
+by the engine's `p*1000 + (i+1)*1000` rule. v2 records its version marker at
+sequence 1 and the policy call at 2, so the fork sits at parent sequence 5:
+branch 0 allocates from **6001**, branch 1 from **7001**, and the parent
+resumes at **8001**. If you see those bands, you are looking at v2 — which is
 why D1 ends with a restore.
 
 **TIMING:** as long as you talk. No moving parts.

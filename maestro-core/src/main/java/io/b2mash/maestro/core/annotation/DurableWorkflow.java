@@ -52,19 +52,24 @@ public @interface DurableWorkflow {
      * Optional name for this workflow type. If empty, the class's
      * simple name is used (e.g., {@code "OrderFulfilmentWorkflow"}).
      *
-     * <p>The name is used to correlate workflow instances with their
-     * implementation during recovery and task routing.
+     * <p>The name is persisted with every instance and is what recovery uses
+     * to find this workflow's implementation again.
      *
      * @return the workflow type name, or empty to use the class simple name
      */
     String name() default "";
 
     /**
-     * The task queue this workflow listens on. Defaults to {@code "default"}.
+     * The task queue this workflow's runs are counted against. Defaults to
+     * {@code "default"}.
      *
-     * <p>Task queues allow partitioning workflows across different worker
-     * groups. Only workers subscribed to a matching queue will execute
-     * workflows of this type.
+     * <p>A task queue is a concurrency bucket, not a route: it names the
+     * per-node limits configured under {@code maestro.worker.task-queues[]}
+     * ({@code concurrency} for workflow runs, {@code activity-concurrency} for
+     * live activity executions), and a queue that is not configured there is
+     * unbounded. It does not decide <em>where</em> a workflow runs — a run
+     * executes in-process on the node that starts it, or on the node that
+     * recovers it after its owner stops.
      *
      * @return the task queue name
      */

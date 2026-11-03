@@ -12,7 +12,6 @@ import io.b2mash.maestro.core.retry.RetryExecutor;
 import io.b2mash.maestro.core.retry.RetryPolicy;
 import io.b2mash.maestro.core.spi.LifecycleEventType;
 import io.b2mash.maestro.core.spi.SignalMessage;
-import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.core.spi.WorkflowStore;
@@ -97,7 +96,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
 
         var start = System.nanoTime();
         executor.startWorkflow("blocking-topic-1", "ImmediateWorkflow", "default",
-                "hello", workflow, method);
+                "hello", () -> workflow, method);
         var elapsed = Duration.ofNanos(System.nanoTime() - start);
 
         assertTrue(elapsed.compareTo(Duration.ofMillis(500)) < 0,
@@ -122,7 +121,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         var workflow = new ImmediateWorkflow(latch);
         var method = ImmediateWorkflow.class.getMethod("run", String.class);
 
-        executor.startWorkflow("disabled-1", "ImmediateWorkflow", "default", "hello", workflow, method);
+        executor.startWorkflow("disabled-1", "ImmediateWorkflow", "default", "hello", () -> workflow, method);
         assertTrue(latch.await(5, TimeUnit.SECONDS));
 
         await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
@@ -150,7 +149,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         var workflow = new ImmediateWorkflow(latch);
         var method = ImmediateWorkflow.class.getMethod("run", String.class);
 
-        executor.startWorkflow("enabled-1", "ImmediateWorkflow", "default", "hello", workflow, method);
+        executor.startWorkflow("enabled-1", "ImmediateWorkflow", "default", "hello", () -> workflow, method);
         assertTrue(latch.await(5, TimeUnit.SECONDS));
 
         await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
@@ -169,7 +168,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         var workflow = new ImmediateWorkflow(latch);
         var method = ImmediateWorkflow.class.getMethod("run", String.class);
 
-        executor.startWorkflow("shutdown-1", "ImmediateWorkflow", "default", "hello", workflow, method);
+        executor.startWorkflow("shutdown-1", "ImmediateWorkflow", "default", "hello", () -> workflow, method);
         assertTrue(latch.await(5, TimeUnit.SECONDS));
         await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
                 assertEquals(WorkflowStatus.COMPLETED, store.getInstance("shutdown-1").orElseThrow().status()));
@@ -209,7 +208,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         var method = FullLifecycleWorkflow.class.getMethod("run", String.class);
 
         var instanceId = executor.startWorkflow("full-lifecycle-disabled", "FullLifecycleWorkflow", "default",
-                "world", workflow, method);
+                "world", () -> workflow, method);
 
         await().atMost(Duration.ofSeconds(5)).until(() ->
                 store.getInstance("full-lifecycle-disabled")
@@ -250,7 +249,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         var workflow = new CompensatingWorkflow();
         var method = CompensatingWorkflow.class.getMethod("run", String.class);
 
-        executor.startWorkflow("comp-disabled", "CompensatingWorkflow", "default", "hello", workflow, method);
+        executor.startWorkflow("comp-disabled", "CompensatingWorkflow", "default", "hello", () -> workflow, method);
 
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
                 assertEquals(WorkflowStatus.FAILED, store.getInstance("comp-disabled").orElseThrow().status()));
@@ -280,7 +279,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         var method = FullLifecycleWorkflow.class.getMethod("run", String.class);
 
         var instanceId = executor.startWorkflow("full-lifecycle-enabled", "FullLifecycleWorkflow", "default",
-                "world", workflow, method);
+                "world", () -> workflow, method);
 
         await().atMost(Duration.ofSeconds(5)).until(() ->
                 store.getInstance("full-lifecycle-enabled")
@@ -378,9 +377,6 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         }
 
         @Override
-        public void publishTask(String taskQueue, TaskMessage message) {}
-
-        @Override
         public void publishSignal(String serviceName, SignalMessage message) {}
 
         @Override
@@ -394,9 +390,6 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         }
 
         @Override
-        public void subscribe(String taskQueue, Consumer<TaskMessage> handler) {}
-
-        @Override
         public void subscribeSignals(String serviceName, Consumer<SignalMessage> handler) {}
     }
 
@@ -405,18 +398,12 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         final CopyOnWriteArrayList<WorkflowLifecycleEvent> events = new CopyOnWriteArrayList<>();
 
         @Override
-        public void publishTask(String taskQueue, TaskMessage message) {}
-
-        @Override
         public void publishSignal(String serviceName, SignalMessage message) {}
 
         @Override
         public void publishLifecycleEvent(WorkflowLifecycleEvent event) {
             events.add(event);
         }
-
-        @Override
-        public void subscribe(String taskQueue, Consumer<TaskMessage> handler) {}
 
         @Override
         public void subscribeSignals(String serviceName, Consumer<SignalMessage> handler) {}
@@ -461,6 +448,15 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         }
 
         @Override
+        public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+            // Test fixture: no CAS and one writer per instance, so composing the two
+            // writes is atomic enough here. Event first, so a duplicate writes nothing.
+            appendEvent(terminalEvent);
+            updateInstance(terminal);
+            return true;
+        }
+
+        @Override
         public Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int sequenceNumber) {
             return events.stream()
                     .filter(e -> e.workflowInstanceId().equals(instanceId) && e.sequenceNumber() == sequenceNumber)
@@ -474,7 +470,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
 
         @Override
         public int deleteFailureEvents(UUID instanceId) {
-            return removeFailureEvents(events, instanceId);
+            return removeFailureEvents(events, timers, instanceId);
         }
 
         @Override
@@ -504,6 +500,11 @@ class WorkflowExecutorLifecycleEventPublishingTest {
 
         @Override
         public void adoptOrphanedSignals(String workflowId, UUID instanceId) {
+        }
+
+        @Override
+        public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+            return 0;
         }
 
         @Override

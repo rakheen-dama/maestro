@@ -1,5 +1,6 @@
 package io.b2mash.maestro.integration.engine;
 
+import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowStatus;
@@ -20,6 +21,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -45,6 +47,7 @@ class EnginePostgresSagaIT extends PostgresIntegrationSupport {
     private static final Duration BOUND = Duration.ofSeconds(30);
 
     private @Nullable MaestroEngineHarness harness;
+    private @Nullable MaestroEngineHarness remote;
     private CountingActivities.Recorder recorder;
 
     @BeforeEach
@@ -58,6 +61,10 @@ class EnginePostgresSagaIT extends PostgresIntegrationSupport {
             harness.close();
             harness = null;
         }
+        if (remote != null) {
+            remote.close();
+            remote = null;
+        }
     }
 
     @Test
@@ -70,7 +77,7 @@ class EnginePostgresSagaIT extends PostgresIntegrationSupport {
         harness.registerActivities(SagaActivities.class, new GatedSagaActivities(
                 new CountingActivities.RecordingSagaActivities(recorder, "ship"),
                 compensating, release));
-        harness.registerWorkflow(new TestWorkflows.SagaWorkflow());
+        harness.registerWorkflow(TestWorkflows.SagaWorkflow.class);
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("saga-fail");
         var handle = harness.start(workflowId, TestWorkflows.SagaWorkflow.class, "widget");
@@ -134,7 +141,7 @@ class EnginePostgresSagaIT extends PostgresIntegrationSupport {
         harness = newHarness();
         harness.registerActivities(SagaActivities.class,
                 new CountingActivities.RecordingSagaActivities(recorder, null));
-        harness.registerWorkflow(new TestWorkflows.SagaWorkflow());
+        harness.registerWorkflow(TestWorkflows.SagaWorkflow.class);
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("saga-ok");
         var handle = harness.start(workflowId, TestWorkflows.SagaWorkflow.class, "widget");
@@ -160,6 +167,37 @@ class EnginePostgresSagaIT extends PostgresIntegrationSupport {
         assertEquals(1, eventsOfType(events, EventType.WORKFLOW_COMPLETED).size());
         assertEquals(3, eventsOfType(events, EventType.ACTIVITY_COMPLETED).size(),
                 "three forward steps and no compensations, got " + describe(events));
+    }
+
+    @Test
+    @DisplayName("a terminate from another node during the first compensation stops the second from running")
+    void remoteTerminateDuringFirstCompensation_stopsBeforeTheSecond() throws Exception {
+        var compensating = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        harness = newHarness();
+        harness.registerActivities(SagaActivities.class, new GatedSagaActivities(
+                new CountingActivities.RecordingSagaActivities(recorder, "ship"), compensating, release));
+        harness.registerWorkflow(TestWorkflows.SagaWorkflow.class);
+        // The terminate comes from a second engine on the same store that does
+        // not own the run, so the owning node's in-memory cancellation flag
+        // plays no part: only the per-entry store read can stop entry 1.
+        remote = newHarness();
+        var workflowId = MaestroEngineHarness.uniqueWorkflowId("saga-remote-term");
+        var handle = harness.start(workflowId, TestWorkflows.SagaWorkflow.class, "widget");
+        assertTrue(compensating.await(30, TimeUnit.SECONDS), "must be held inside refund");
+
+        assertEquals(WorkflowExecutor.TerminateOutcome.TERMINATED,
+                remote.executor().terminateWorkflow(workflowId, "remote"));
+        release.countDown();
+
+        await().atMost(BOUND).until(() -> !handle.isRunningLocally());
+        assertEquals(1, recorder.count("refund"), "the entry already executing finishes");
+        assertEquals(0, recorder.count("releaseReservation"),
+                "the next entry must not start on a TERMINATED workflow");
+        assertEquals(WorkflowStatus.TERMINATED, handle.status());
+        var events = handle.events();
+        assertTrue(eventsOfType(events, EventType.COMPENSATION_COMPLETED).isEmpty());
+        assertTrue(eventsOfType(events, EventType.WORKFLOW_FAILED).isEmpty());
     }
 
     // ── helpers ────────────────────────────────────────────────────────

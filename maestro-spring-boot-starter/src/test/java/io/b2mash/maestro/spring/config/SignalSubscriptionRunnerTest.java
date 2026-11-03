@@ -4,7 +4,6 @@ import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.spi.SignalMessage;
-import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.test.InMemoryWorkflowStore;
@@ -170,6 +169,12 @@ class SignalSubscriptionRunnerTest {
         }
 
         @Override
+        public boolean completeInstance(io.b2mash.maestro.core.model.WorkflowInstance terminal,
+                                        io.b2mash.maestro.core.model.WorkflowEvent terminalEvent) {
+            throw new UnsupportedOperationException("stub");
+        }
+
+        @Override
         public java.util.Optional<io.b2mash.maestro.core.model.WorkflowEvent> getEventBySequence(
                 java.util.UUID instanceId, int sequenceNumber) {
             return java.util.Optional.empty();
@@ -202,6 +207,11 @@ class SignalSubscriptionRunnerTest {
 
         @Override
         public void adoptOrphanedSignals(String workflowId, java.util.UUID instanceId) {}
+
+        @Override
+        public int deleteUnconsumedSignalsForTerminalInstancesBefore(java.time.Instant cutoff) {
+            return 0;
+        }
 
         @Override
         public void saveTimer(io.b2mash.maestro.core.model.WorkflowTimer timer) {
@@ -237,16 +247,10 @@ class SignalSubscriptionRunnerTest {
         Consumer<SignalMessage> handler;
 
         @Override
-        public void publishTask(String taskQueue, TaskMessage message) {}
-
-        @Override
         public void publishSignal(String serviceName, SignalMessage message) {}
 
         @Override
         public void publishLifecycleEvent(WorkflowLifecycleEvent event) {}
-
-        @Override
-        public void subscribe(String taskQueue, Consumer<TaskMessage> handler) {}
 
         @Override
         public void subscribeSignals(String serviceName, Consumer<SignalMessage> handler) {

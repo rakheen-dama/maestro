@@ -3,23 +3,27 @@ package io.b2mash.maestro.store.postgres.config;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.spring.client.MaestroClient;
 import io.b2mash.maestro.spring.config.MaestroAutoConfiguration;
-import io.b2mash.maestro.store.jdbc.JdbcStoreConfiguration;
 import io.b2mash.maestro.store.postgres.PostgresWorkflowStore;
+import io.b2mash.maestro.store.postgres.schema.MaestroSchemaInitializer;
+import io.b2mash.maestro.store.postgres.schema.SchemaMode;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.context.annotation.ImportCandidates;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
-import org.springframework.test.util.ReflectionTestUtils;
 import tools.jackson.databind.ObjectMapper;
 
 import javax.sql.DataSource;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * Verifies that maestro-store-postgres ships a Spring Boot auto-configuration
@@ -84,15 +88,15 @@ class PostgresStoreAutoConfigurationTest {
     }
 
     @Test
-    void honorsTablePrefixProperty() {
+    void failsStartupWhenTablePrefixIsSet() {
         storeRunner()
                 .withBean(DataSource.class, () -> mock(DataSource.class))
-                .withPropertyValues("maestro.store.table-prefix=custom_")
-                .run(context -> {
-                    var store = context.getBean(PostgresWorkflowStore.class);
-                    var config = (JdbcStoreConfiguration) ReflectionTestUtils.getField(store, "config");
-                    assertThat(config).isNotNull();
-                    assertThat(config.tablePrefix()).isEqualTo("custom_");
+                .withPropertyValues("maestro.store.table-prefix=custom_", "maestro.store.schema.mode=none")
+                .run(ctx -> {
+                    assertThat(ctx).hasFailed();
+                    assertThat(ctx.getStartupFailure()).rootCause()
+                            .hasMessageContaining("maestro.store.table-prefix has been removed")
+                            .hasMessageContaining("currentSchema");
                 });
     }
 
@@ -109,11 +113,61 @@ class PostgresStoreAutoConfigurationTest {
                 .withConfiguration(AutoConfigurations.of(withEngine(moduleAutoConfigurations())))
                 .withBean(ObjectMapper.class, ObjectMapper::new)
                 .withBean(DataSource.class, () -> mock(DataSource.class))
-                .withPropertyValues("maestro.service-name=test-service")
+                .withPropertyValues("maestro.service-name=test-service", "maestro.store.schema.mode=none")
                 .run(context -> {
                     assertThat(context).hasSingleBean(WorkflowStore.class);
                     assertThat(context).hasSingleBean(MaestroClient.class);
                 });
+    }
+
+    @Test
+    void schemaModeBindsFromEnvironment() throws SQLException {
+        // Default (property unset): the initializer runs Flyway, so it reaches
+        // for a connection. The mock refuses one, which proves initialize() was
+        // attempted in a managing mode rather than skipped as NONE. That the
+        // default is FLYWAY specifically (migrations applied) is pinned end to
+        // end, against a real database with the property unset, by
+        // PostgresStoreAutoConfigurationHostFlywayTest.
+        var refusing = mock(DataSource.class);
+        when(refusing.getConnection()).thenThrow(new SQLException("no database in this test"));
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(moduleAutoConfigurations()))
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withBean(DataSource.class, () -> refusing)
+                .withPropertyValues("maestro.service-name=test-service")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasMessageContaining("maestroSchemaInitializer")
+                            .hasStackTraceContaining("no database in this test");
+                });
+        verify(refusing, atLeastOnce()).getConnection();
+
+        storeRunner()
+                .withBean(DataSource.class, () -> mock(DataSource.class))
+                .withPropertyValues("maestro.store.schema.mode=bogus")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure()).rootCause()
+                            .isInstanceOf(IllegalArgumentException.class)
+                            .hasMessageContaining("maestro.store.schema.mode 'bogus'")
+                            .hasMessageContaining("flyway, validate, none");
+                });
+        // Case-insensitive, as Boot's lenient enum binding would be.
+        storeRunner()
+                .withBean(DataSource.class, () -> mock(DataSource.class))
+                .withPropertyValues("maestro.store.schema.mode=NONE")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(MaestroSchemaInitializer.class);
+                    assertThat(context.getBean(MaestroSchemaInitializer.class).mode())
+                            .isEqualTo(SchemaMode.NONE);
+                });
+        storeRunner()
+                .withBean(DataSource.class, () -> mock(DataSource.class))
+                .withPropertyValues("maestro.store.schema.mode=none")
+                .run(context -> assertThat(context.getBean(MaestroSchemaInitializer.class).mode())
+                        .isEqualTo(SchemaMode.NONE));
     }
 
     @Test
@@ -133,11 +187,17 @@ class PostgresStoreAutoConfigurationTest {
 
     // ── helpers ─────────────────────────────────────────────────────
 
+    /**
+     * The {@link DataSource} in these tests is a Mockito mock, so the schema
+     * initializer is switched off ({@code maestro.store.schema.mode=none}) —
+     * a real Flyway run against it would fail. A later
+     * {@code withPropertyValues} overrides it where a test needs another mode.
+     */
     private ApplicationContextRunner storeRunner() {
         return new ApplicationContextRunner()
                 .withConfiguration(AutoConfigurations.of(moduleAutoConfigurations()))
                 .withBean(ObjectMapper.class, ObjectMapper::new)
-                .withPropertyValues("maestro.service-name=test-service");
+                .withPropertyValues("maestro.service-name=test-service", "maestro.store.schema.mode=none");
     }
 
     private static Class<?>[] moduleAutoConfigurations() {

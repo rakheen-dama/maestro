@@ -100,7 +100,11 @@ cycle (`.superpowers/sdd/progress.md`, Task 3 entry): *"`awaitSignal(timeout)`
 does NOT persist a durable timer row... the brief was wrong; scenario covers
 3 distinct WAITING_SIGNAL states; WAITING_TIMER deploy-safety is covered by
 engine ITs + the Task 7 chaos harness ROLLING_RESTART action on verification
-nodes."* If you need evidence specifically for "a workflow parked in
+nodes."* That quote predates the durable `awaitSignal` deadline (C12/F4):
+since then a parked `awaitSignal(timeout)` **does** persist a durable timer
+row (`await-signal-<seq>`), but the await still parks as `WAITING_SIGNAL`, so
+the scenario's coverage boundary is unchanged — it still reaches no
+`WAITING_TIMER` state. If you need evidence specifically for "a workflow parked in
 `sleep()` survives a graceful restart," look at
 `WorkflowExecutorShutdownTest`/`ShutdownContractIT` (engine-level) and the
 chaos harness's `ROLLING_RESTART` action against `verification-gateway`
@@ -167,6 +171,15 @@ backends confirms the lock backend is not in this path at all — if you need
 faster admin-command delivery after a hard node death, tune Kafka's
 `session.timeout.ms`, not anything in Maestro.
 
+**Retrying an await-timeout failure.** The E2E's retry target fails on an
+uncaught `awaitSignal` timeout and the harness sends the missing signal only
+*after* the retry. That works because a retry waits the full timeout again,
+counted from the retry: it discards the failed await's spent deadline (its
+`TIMER_SCHEDULED` memo and `await-signal-<seq>` row) together with its
+`SIGNAL_TIMEOUT` (R61). A signal sent before the retry is consumed at once.
+The timeout itself is whatever the run memoized — in the loan sample, node
+A's `PT8S` override (F4) — not the retrying node's configuration.
+
 ---
 
 ## 5. Cross-node timer/signal wake bounds (Issue 17)
@@ -195,7 +208,19 @@ With `maestro.lock.type: postgres`, the whole Valkey auto-config is disabled
 — **Postgres-lock deployments have no `SignalNotifier`**, so cross-node
 signal wake rides the wake-recheck interval alone (bounded ≤ the configured
 interval, by design — the recheck exists precisely so pub/sub is an
-optimisation, never a correctness dependency). See §7 below for the
+optimisation, never a correctness dependency). The notification itself is
+best-effort and bounded: `signal()` returns once the row is saved and never
+waits for the notifier, so a Valkey (or `NOTIFY`) outage delays the remote
+wake by at most one recheck interval instead of stalling the sender (Issue 32).
+During an outage, notifications back up in proportion to the signal rate: up
+to *rate × 60 s* (Lettuce's command timeout) pending `PUBLISH`es on each
+Valkey publish connection, or *rate × the pool's `connectionTimeout`* (Hikari
+default 30 s) parked `NOTIFY` threads for Postgres. Each node also keeps at
+most 1,000 notification hand-offs in flight and drops the excess, logged at
+`DEBUG`. A dropped or failed notification costs latency (one recheck
+interval), never a signal. A brownout shorter than the command timeout logs
+nothing from the Valkey notifier — the queued `PUBLISH`es simply complete
+late. While failures persist, the outage `WARN` repeats every 5 minutes. See §7 below for the
 lock-backend matrix in full.
 
 ---
@@ -219,8 +244,13 @@ workflow that had **succeeded** on the winner was durably marked `FAILED`
 and its saga compensations ran, reversing completed work. That's fixed: the
 same collision now stands the stale run down immediately (no write, no
 compensation, the winner's outcome governs), mirroring the shutdown/
-termination control-flow pattern. See `docs/open-issues.md` Issue 18 for the
-full defect and fix.
+termination control-flow pattern. Since C5 the loser also stands down when a
+fresh read at a status write, a signal wake, the `COMPENSATING` transition or a
+sequential compensation entry finds the row already finalised by the winner
+(`StaleRunException`), and a run whose stand-down workflow code swallowed is
+stopped at its next stop point (live activity, `sleep()`, `awaitSignal()`,
+terminal write) — all reported as `stale_run`. See
+`docs/open-issues.md` Issue 18 for the full defect and fix.
 
 **Measured consequence.** Under the chaos harness's mandated split-brain
 trigger (≥2 loan-node `PAUSE_RESUME` actions — freeze a real container past
@@ -272,8 +302,8 @@ with no Valkey pub/sub present — bounded, by design, never a correctness
 dependency.
 
 **Schema footprint note.** Because the sample now depends on both lock
-modules to make the `E2E_LOCK_BACKEND` switch possible, Flyway's classpath
-scan picks up the Postgres-lock migration regardless of which backend is
+modules to make the `E2E_LOCK_BACKEND` switch possible, Maestro's schema
+initializer picks up the Postgres-lock migration regardless of which backend is
 configured — a **default (Valkey) boot now also creates the (unused, inert)
 `maestro_distributed_lock`/`maestro_leader_election` tables** in the sample's
 databases. See `maestro-samples/sample-loan-origination/README.md` and
@@ -404,6 +434,30 @@ new one. Leave a fleet half-upgraded and those workflows wait indefinitely.
 
 New event types are rare, so this is insurance, not a hot path.
 
+**This release changes the `awaitSignal` layout — rollback requires draining
+parked awaits.** An await that parks now records `TIMER_SCHEDULED` at its slot
+and its outcome at the next one (the two-slot layout, `docs/release-notes.md`
+→ "`awaitSignal` deadlines are durable timers"). Histories an older build wrote
+replay safely here, but **not the reverse**: an older node that adopts a
+workflow parked in a new-layout await stands down — a build with the replay
+drift guard as `nondeterministic_history` (detail
+`stored=$maestro:awaitSignal:<name> type=TIMER_SCHEDULED`, the same step name
+the code performs), a pre-drift-guard build as `stale_run` when its outcome
+append collides with the occupied slot. Nothing is written, nothing is
+compensated, but the older node makes no progress on that workflow. So upgrade
+every node together, or drain parked awaits first; **after a rollback, roll
+forward** — redeploying the older build again (§10.7's first remedy) does not
+heal these stand-downs.
+
+**Postgres transport: an old node's stale claim gets one uncounted attempt.**
+This release counts a queue row's attempt when it is *claimed* (Issue 27). A
+row an older node claimed carries no such count, so if that node dies
+mid-handler during a rolling upgrade, the upgraded node's stale reclaim sees
+budget left and re-invokes the handler — one extra attempt beyond
+`max-attempts` (or a second attempt with redelivery disabled) for that row,
+once. Handlers must be idempotent anyway; drain the queues first if even one
+extra attempt is unacceptable.
+
 ### 10.2 `workflow.version()` — changing workflow code with instances in flight
 
 Recovery re-runs the workflow method against the **current** code. If you edit a
@@ -451,18 +505,38 @@ instead of failing:
   adopt it via recovery
   ```
 
-An upgraded node then adopts and finishes the workflow through the ordinary
-lock-TTL / recovery-poller machinery, unchanged. Nothing special is needed.
+  That closing clause is the `unknown_event_type` one. For
+  `unknown_event_payload` it reads instead `if a newer node wrote it, that node
+  adopts it on recovery; on a homogeneous fleet this is an incompatible payload
+  change — roll back, gate the change with workflow.version(), or terminate
+  (operations §10.4)`; for `nondeterministic_history`, `roll back the deploy or
+  gate the change behind workflow.version()` (§10.7).
 
-There are two unknown-history reasons and **they mean different things**:
+For an `unknown_event_type` stand-down, an upgraded node then adopts and
+finishes the workflow through the ordinary lock-TTL / recovery-poller
+machinery, unchanged — nothing special is needed. The other two reasons are
+**not** healed by waiting: see §10.4 and §10.7.
+
+There are three history reasons and **they mean different things**:
 
 | `reason` tag | What it means |
 |---|---|
 | `unknown_event_type` | An `event_type` string this build's enum does not define. Only a **newer** build can have written it. |
 | `unknown_event_payload` | A stored payload this build could not deserialize while replaying. A newer build *or* an incompatible payload change. |
+| `nondeterministic_history` | The current code performs a different operation at this sequence than the one recorded (step renamed/reordered, `parallel()` arity changed). Only a code change can cause it. See §10.7. |
 
-(A third value, `stale_run`, is unrelated to versioning — it is Issue 18's
-duplicate-append convergence.)
+(A fourth value, `stale_run`, is normally unrelated to versioning — it is the
+split-brain convergence of §6: another runner owns the workflow. The one
+versioning exception: after a rollback, a build older than the replay drift
+guard reports `stale_run` on a workflow parked in a new-layout `awaitSignal`
+(§10.1) — roll forward. It is reported
+for an event-append collision with that runner's history (Issue 18), and for a
+fresh read that finds the row already finalised (`COMPLETED`/`FAILED`) by it
+(`StaleRunException`, C5) — at a park/wake status write, an `awaitSignal()`
+wake, the transition to `COMPENSATING`, or before a sequential compensation
+entry — and at the next stop point (live activity, `sleep()`,
+`awaitSignal()`, terminal write) of a run whose earlier stand-down the workflow
+code caught and swallowed.)
 
 ### 10.4 The alarm that matters: `unknown_event_payload` on a homogeneous fleet
 
@@ -486,6 +560,30 @@ means **"an incompatible payload change needs `workflow.version()`"** — not
 parameter type, or workflow input shape; gate the change behind
 `workflow.version()` so in-flight instances keep the old shape; redeploy.
 
+Two other remedies exist, and neither needs a code change:
+
+- **Roll back** to the build that wrote the payload. The stand-down loop ends
+  immediately and nothing needs repairing — a stand-down writes nothing.
+- **Terminate** the instance from the admin dashboard when it is not worth
+  finishing. Stand-down never terminates on its own, because it cannot tell a
+  transient skew from a permanent refactor.
+
+The WARN and the `standDown` observer detail carry the deserializer's root
+cause as **the exception class and the JSON path of the offending field**:
+`seq=N cause=<class> at <path>` — for example
+`seq=3 cause=tools.jackson.databind.exc.InvalidFormatException at
+lines[2].status` — or just `seq=N cause=<class>` when the failure has no field
+path (a root-level shape mismatch, or a stream-level error). The path is
+structural only: property names, list indexes, and `[<key>]` in place of any
+map key (`byCustomer[<key>].amount`), because map keys are often user data. That is
+what distinguishes "a newer node wrote this" from "my own refactor broke this"
+on a fleet you know to be homogeneous. The deserializer's own message is
+deliberately left out: Jackson quotes the stored *values* (and, for stream
+errors, the source text) in it, and stored payloads carry customer data that
+must not reach log or metric backends. **The raw deserializer message is in the
+DEBUG stack trace** — enable `DEBUG` for `io.b2mash.maestro.core.engine.WorkflowExecutor`
+to see the full cause chain logged with each stand-down.
+
 `unknown_event_type` keeps the "wait for the deploy" reading, because a type
 this build does not define really can only come from a newer build. That is
 precisely why the two are distinct enum constants and distinct tag values rather
@@ -498,6 +596,7 @@ than one.
 | `rate(maestro.standdown{reason="unknown_event_type"})` > 0 **during** a rolling deploy | Expected. Should return to zero once every node is upgraded. |
 | the same, **after** the deploy completes | Not expected — a node was missed, or a stale replica is still running. |
 | `rate(maestro.standdown{reason="unknown_event_payload"})` > 0 on a homogeneous fleet | **An incompatible payload change. Use `workflow.version()`.** |
+| `unknown_event_payload` **and** `nondeterministic_history` both rising on a homogeneous fleet | One deploy shipped both an ungated code change and an incompatible payload change; roll it back. |
 | `maestro.workflows.running` / `maestro.workflows.parked` flat at zero on a node with traffic | That node is adopting nothing — check the lock backend and the recovery poller. |
 
 Remember that both gauges are **node-local, in-JVM** values: dashboard them per
@@ -531,34 +630,177 @@ by a newer node; skipping this instance so the rest of this query, and any
 recovery pass it feeds, still completes
 ```
 
-### 10.6 Schema migrations and a custom `table-prefix`
+### 10.6 Schema migrations
 
-Maestro's Flyway migrations hardcode the `maestro_` table prefix. `V1` says so
-in its header, and the consequence is that a deployment configuring
-`maestro.store.table-prefix` to anything else runs on **hand-maintained
-migrations** and does not receive new ones automatically. That is a supported
-configuration — `docs/cross-service.md` recommends a unique prefix per service
-— so new migrations are an upgrade step for those deployments.
+Maestro's migrations always target `maestro_*` tables and are applied by Maestro itself at startup in the connection's current schema, so under the default `maestro.store.schema.mode: flyway` an upgrade between builds that both keep `maestro_schema_history` needs no manual SQL (the one-time move to that history table does — last paragraph below). The former custom-prefix mode (`maestro.store.table-prefix`) is gone; to isolate services sharing a database, give each its own Postgres schema (see `docs/configuration.md` § Store Configuration).
 
-This cycle adds one: **`V4__signal_trace_context.sql`**, a nullable
-`trace_context VARCHAR(128)` column on `maestro_workflow_signal`.
+Maestro records what it applied in its **own Flyway history table, `maestro_schema_history`** — never your application's `flyway_schema_history`, whose `spring.flyway.*` settings it ignores. Each Maestro Postgres module ships its SQL under its own location and version band (`classpath:db/maestro/store` 1–99, `classpath:db/maestro/lock` 100–199, `classpath:db/maestro/messaging` 200–299), and every location on the classpath is applied. The first node of the new build applies the new migrations before its engine starts, and Flyway's database lock makes concurrent starts safe. **Do not assume older nodes keep working against the newer schema**: most of Maestro's migrations add a column, index or default, but not all — `V202` drops `maestro_task_queue` and `maestro_lifecycle_event_queue`, which a 0.4.0 node's Postgres transport still reads and writes. Before a deploy that ships a migration, read its release-notes entry; a migration that drops or renames anything means stopping every older node first, on top of the deploy rule in §10.1. `maestro.store.schema.mode: validate` makes a node fail startup instead when migrations are pending; `none` hands the DDL to you entirely. A database migrated by a build from before Maestro owned its history (0.4.0 and earlier) needs a one-time procedure — stop every node; then either drop the `maestro_*` tables, or keep them under `maestro.store.schema.mode: none` with `V4`, `V5` and `V202` applied by hand; delete Maestro's rows from `flyway_schema_history`; start the new build. The SQL for each step is in `docs/configuration.md` § Schema management → "Upgrading an existing database".
 
-```sql
-ALTER TABLE <your_prefix>workflow_signal ADD COLUMN trace_context VARCHAR(128);
+### 10.7 Replay drift: `nondeterministic_history`
+
+**What it means.** Recovery replays the workflow method against the current
+code and matches each step to the recorded event at the same sequence number.
+A `nondeterministic_history` stand-down means the event recorded there was
+written by a *different* operation than the one the code now performs: an
+activity was renamed or reordered, a `sleep()`/`awaitSignal()`/side effect now
+sits where something else ran, an awaited signal was renamed, a `parallel()`
+now forks a different number of branches, a saga compensation entry was
+renamed or reordered, or `@Saga(parallelCompensation)` was flipped. In every
+case the workflow was edited without a `workflow.version()` gate (§10.2) while
+instances were in flight. It is checked at every replay read — including a
+`sleep()`'s wake slot (which must hold that sleep's own `TIMER_FIRED` /
+`TIMER_CANCELLED`) and the saga's `COMPENSATION_STARTED` / `COMPENSATION_COMPLETED`
+markers — **before** any side effect at that slot: no activity runs, no timer
+row is saved or re-parked on, no signal is consumed, no branch or compensation
+is started. The `version()` peek itself
+is not a drift check: a non-marker event there means "this history predates
+the change", by design.
+
+**Why it stands down rather than fails.** The history is fine; the code is the
+problem, and rolling the code back is the fix. Recording `FAILED` here would run
+compensations for work that never failed — the same argument as §10.3. Before
+this check existed the drift was silent: a renamed step returned the old step's
+recorded payload and the run carried on with it, a renamed signal await
+returned the other signal's payload, and a `sleep()` landing on an occupied slot
+inserted a `PENDING` timer row before colliding on the append — one leaked row
+per recovery pass, misreported as `stale_run`.
+
+**What you see.** The WARN of §10.3, ending `roll back the deploy or gate the
+change behind workflow.version()`, and an observer detail of the form
+
+```
+seq=<n> expected=<step the code performs> stored=<step recorded> type=<EVENT_TYPE>
 ```
 
-**Apply it before starting a node on this version.** The column is not
-optional at runtime even with tracing switched off:
-`AbstractJdbcWorkflowStore` names `trace_context` unconditionally in the signal
-`INSERT` and `SELECT`, with no feature detection and no fallback. Against a
-signal table without the column, `saveSignal` throws — inside the transport
-listener, so the record is never acked, bounded redelivery exhausts, and the
-signal is **dead-lettered**. The symptom is lost signals and a rising
-dead-letter count, not a failure at startup, so it will not be caught by a
-smoke test that never delivers a signal.
+(for a `parallel()` arity change: `seq=<n> expected=$maestro:parallel
+branches=<code> stored=$maestro:parallel branches=<recorded>`). The instance
+keeps its status (`RUNNING`, `WAITING_*` or `COMPENSATING`) and stays
+recoverable.
 
-Default-prefix deployments need no action: Flyway applies `V4` at startup like
-`V1`–`V3`.
+**The two remedies.**
+
+1. **Redeploy the previous build**, so the recorded path is runnable again.
+   The next recovery pass adopts the instance and it finishes normally.
+2. **Gate the change behind `workflow.version()`** (§10.2) — the old path for
+   histories that predate it, the new one for new instances — and redeploy.
+
+**Exception — `stored=$maestro:awaitSignal:* type=TIMER_SCHEDULED` after a
+rollback → roll forward.** When `expected` and `stored` name the same
+`$maestro:awaitSignal:<name>` step and the stored type is `TIMER_SCHEDULED`,
+the "drift" is the engine's own two-slot await layout, written by the newer
+build you rolled back from (§10.1). The workflow code did not change, and
+remedy 1 is what caused it: redeploy the newer build.
+
+**Upgrade note — histories that already drifted silently.** A workflow edited
+without a `version()` gate under an *older* build may have "worked": the drift
+was silent, so the instance carried on (on the wrong payload) and is still in
+flight. After upgrading to this build, its next replay checks the recorded
+step at every read and the instance stands down as `nondeterministic_history`.
+**Rollback does not apply** — the build you would roll back to is the one that
+replayed it wrongly, and the history it wrote already disagrees with the code.
+The remedies are:
+
+- **Terminate** the instance (admin dashboard) and handle its business outcome
+  by hand, or
+- **restore the recorded name** so the recorded path is runnable again. A
+  recorded activity step is `<group>.<method>` (the detail's `stored=` field
+  names it exactly): if the interface was renamed, pin the old group with
+  `@Activity(name = "<group>")` on it; if the method was renamed, give it its
+  old name back. Then redeploy.
+
+Where possible, **drain in-flight instances before upgrading** a service whose
+workflow code was edited without `version()` gates since those instances
+started.
+
+**Alert.** `rate(maestro.standdown{reason="nondeterministic_history"}) > 0` →
+"an ungated workflow edit shipped; roll back". Unlike `unknown_event_type` it
+does not go away when a deploy finishes — it *is* the deploy.
+
+**Churn is by design.** Until one of the remedies ships, every recovery pass
+adopts the instance, stands down again, and emits one WARN plus one counter
+increment — exactly the §10.3 behaviour, and the reason the alert above is a
+rate.
+
+**An admin Retry can surface as drift.** Retry deletes *every*
+`ACTIVITY_FAILED` memo of the instance (plus `WORKFLOW_FAILED`), including one
+the workflow **caught** and recovered from (`try { a.x(); } catch (ActivityExecutionException e) { b.fallback(); }`).
+On the retried run that activity has no memo, so it executes live; if it now
+succeeds, the workflow takes the success path, and the next recorded step — the
+fallback the original run took — no longer matches. That run stands down as
+`nondeterministic_history` instead of continuing. Before this check the same
+retry was *silent corruption*: the success path replayed the fallback's
+recorded payload as its own. No code change or rollback heals it — the history
+genuinely records a path the retried run no longer takes. **Remedy:**
+terminate the instance and complete its business outcome by hand (or start a
+fresh instance); avoid admin Retry on workflows that catch activity failures
+and branch on them.
+
+**Compensations registered inside `parallel()` branches are not drift.** They
+reach the saga stack in branch-index order, not finish order (see
+`docs/concepts.md` → Compensation ordering), so a saga recovered
+mid-compensation unwinds the same entries in the same order whichever branch
+finishes first on replay. **Upgrade note:** an instance parked in
+`COMPENSATING` whose branch compensations were recorded by the previous
+version in an order other than branch-index order stands down here after
+upgrade; drain such instances before upgrading.
+
+### 10.8 Node errors: `node_error` abandons
+
+**Node errors are not workflow failures — alert on them separately.** A
+`LinkageError` (`NoClassDefFoundError`, `ExceptionInInitializerError`, ...) or
+a `VirtualMachineError` other than `StackOverflowError` (`OutOfMemoryError`,
+`InternalError`, ...) escaping a workflow method — or thrown inside an
+activity or a compensation activity, which is then neither retried nor
+recorded as `ACTIVITY_FAILED` — means that *node* is broken — a bad deploy or
+resource exhaustion — so the engine does **not** record `FAILED` and does
+**not** compensate (an unwind it interrupts is left `COMPENSATING`). It logs an `ERROR` under the workflow's
+MDC (`Workflow '<id>' abandoned its local run on a node-level error (<class>)
+...`), fires `runAbandoned(..., NODE_ERROR)` (span attribute
+`maestro.abandon.reason=NODE_ERROR`), writes nothing, releases the lock, and
+leaves the instance recoverable, so every recovery pass re-adopts it and logs
+again until the node is fixed or rolled back. Alert on that `ERROR` line (or the
+span attribute); the remedy is the node — redeploy the previous build, fix the
+classpath, raise the heap — or terminate the workflow if it cannot be healed.
+`StackOverflowError`, `AssertionError` and every other `Error` remain workflow
+failures (`FAILED` + compensation): they recur identically on every node.
+
+### 10.9 Store-side faults that need a human: `TERMINAL_WRITE_FAILED` and retired queue rows
+
+Two store-side outcomes are deliberately *not* workflow failures, and both are
+logged at `ERROR` — alert on them together, as "the store is refusing or losing
+writes":
+
+- **`TERMINAL_WRITE_FAILED`** — `runAbandoned(..., TERMINAL_WRITE_FAILED)`
+  (span attribute `maestro.abandon.reason=TERMINAL_WRITE_FAILED`), with the
+  `ERROR` line `Could not persist the COMPLETED outcome of workflow '<id>' ...`
+  (success path) or `Failed to update workflow '<id>' status to FAILED`
+  (failure path). The atomic terminal write (Issue 26) failed with a store
+  error, so the instance normally stays active and the next recovery pass
+  finalises it. **Repeated for one run id** means the rejection is
+  deterministic, not a blip — an oversized output/error payload, a constraint
+  or type error (SQLSTATE class `22`), a program-limit error (`54000`): every
+  recovery pass re-runs the workflow, re-abandons with the same `ERROR`, and
+  the workflow never ends. Fix the cause (shrink the result, widen the
+  column) or terminate the workflow.
+  **It can also mean the commit landed but its acknowledgement was lost.**
+  Then the row *is* terminal and the run is never re-driven — but
+  `workflowCompleted`/`workflowFailed` and the `WORKFLOW_COMPLETED` /
+  `WORKFLOW_FAILED` lifecycle event were never emitted. Check the instance:
+  if it is already `COMPLETED`/`FAILED`, the outcome stands and only
+  downstream consumers of the lifecycle event (the admin dashboard, any
+  listener) missed it.
+- **Retired queue rows (Postgres transport, Issue 27)** — `Retired <n> stale
+  PROCESSING claim(s) in maestro_signal_queue for '<service>' as DEAD_LETTER ...`. The
+  handler's final status write was lost with no attempt budget left, so the
+  row was parked in `DEAD_LETTER` with `last_error` containing `outcome
+  unknown`, in both redelivery modes. Triage each with
+  `listDeadLetterSignals`: check whether the handler's
+  effect happened, then `replaySignal` or delete it
+  (`docs/configuration.md` → "Retired rows").
+
+Suggested rule: any `ERROR` from either source → page; the same run id
+abandoning `TERMINAL_WRITE_FAILED` on consecutive recovery passes → treat as
+deterministic and escalate.
 
 ---
 

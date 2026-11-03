@@ -2,6 +2,7 @@ package io.b2mash.maestro.spring.config;
 
 import io.b2mash.maestro.core.engine.ActivityProxyFactory;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
+import io.b2mash.maestro.core.engine.TaskQueueLimits;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.observe.CompositeEngineObserver;
 import io.b2mash.maestro.core.observe.EngineObserver;
@@ -24,6 +25,9 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.env.Environment;
 import tools.jackson.databind.ObjectMapper;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * Auto-configuration for the Maestro durable workflow engine.
@@ -104,20 +108,80 @@ public class MaestroAutoConfiguration {
         return new WorkflowExecutor(
                 store, distributedLock, messaging, signalNotifier, serializer, serviceName,
                 lock.keyPrefix(), lock.ttl(), lifecycleEventsEnabled,
-                shutdownTimeout, wakeRecheckInterval, observer
+                shutdownTimeout, wakeRecheckInterval, observer,
+                taskQueueLimits(properties.getWorker())
         );
+    }
+
+    /**
+     * Builds the executor's per-task-queue limits from {@code maestro.worker.task-queues}
+     * (F8 / Issue 25). Fails startup on an entry without a name, a queue named
+     * twice, or a limit below 1 — a silently ignored or merged entry would bound
+     * a queue differently from what the operator wrote.
+     */
+    static Map<String, TaskQueueLimits> taskQueueLimits(MaestroProperties.WorkerProperties worker) {
+        var limits = new LinkedHashMap<String, TaskQueueLimits>();
+        for (var queue : worker.taskQueues()) {
+            var name = queue.name();
+            if (name == null || name.isBlank()) {
+                throw new IllegalStateException("maestro.worker.task-queues has an entry without a name");
+            }
+            TaskQueueLimits queueLimits;
+            try {
+                queueLimits = new TaskQueueLimits(queue.concurrency(), queue.activityConcurrency());
+            } catch (IllegalArgumentException e) {
+                throw new IllegalStateException(
+                        "maestro.worker.task-queues '%s': %s".formatted(name, e.getMessage()), e);
+            }
+            if (limits.putIfAbsent(name, queueLimits) != null) {
+                throw new IllegalStateException(
+                        "maestro.worker.task-queues names a queue twice: '%s'".formatted(name));
+            }
+        }
+        return limits;
     }
 
     /**
      * Registers bare {@code @DurableWorkflow} classes as Spring beans via
      * classpath scanning. Static because {@code BeanDefinitionRegistryPostProcessor}
      * beans are instantiated very early, before this configuration class itself.
+     *
+     * <p>Also the engine's earliest unconditional hook, so it is where removed
+     * properties are rejected ({@code rejectRemovedProperties}) — before
+     * any other bean, transport included, is created, and whatever beans the
+     * application overrides.
+     *
+     * @throws IllegalStateException if a removed {@code maestro.*} property is set
      */
     @Bean
     public static DurableWorkflowBeanRegistrar maestroDurableWorkflowBeanRegistrar(
             Environment environment
     ) {
+        rejectRemovedProperties(environment);
         return new DurableWorkflowBeanRegistrar(environment);
+    }
+
+    /**
+     * Fails startup when a removed property is still set, rather than letting
+     * it bind to nothing and be silently ignored. Transport-neutral: checked
+     * whichever messaging module (or none) is on the classpath.
+     *
+     * <ul>
+     *   <li>{@code maestro.messaging.topics.tasks} — Maestro no longer
+     *       dispatches work over a task topic (workflows start in-process), so
+     *       the property and the operator's pre-created {@code maestro.tasks.*}
+     *       topics would otherwise go silently unused.</li>
+     * </ul>
+     *
+     * <p>({@code maestro.store.table-prefix} is rejected by the Postgres store
+     * module, before any DDL runs.)
+     */
+    static void rejectRemovedProperties(Environment environment) {
+        if (environment.containsProperty("maestro.messaging.topics.tasks")) {
+            throw new IllegalStateException("maestro.messaging.topics.tasks has been removed: Maestro no longer "
+                    + "dispatches work over a task topic (workflows start in-process). Delete the property "
+                    + "and the maestro.tasks.* topics.");
+        }
     }
 
     @Bean

@@ -1,5 +1,5 @@
 /**
- * Sample — payment gateway proxy with durable retries.
+ * Sample — payment gateway proxy with retry policies (a declined card is non-retryable).
  */
 @NullMarked
 package io.b2mash.maestro.samples.payment;

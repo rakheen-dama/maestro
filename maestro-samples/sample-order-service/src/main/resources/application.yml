@@ -26,7 +26,6 @@ maestro:
   messaging:
     type: kafka
     topics:
-      tasks: maestro.tasks.orders
       signals: maestro.signals.order-service
 
   lock:

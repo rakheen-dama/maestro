@@ -58,7 +58,7 @@ class WorkflowVersionRecoveryTest {
 
         // Original run on code declaring maxSupported = 1.
         nodeA.startWorkflow(workflowId, "VersionedWorkflow", "default", null,
-                new VersionedWorkflow(1), method);
+                () -> new VersionedWorkflow(1), method);
         await().atMost(Duration.ofSeconds(5)).until(() ->
                 store.getInstance(workflowId)
                         .map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL)
@@ -70,7 +70,7 @@ class WorkflowVersionRecoveryTest {
         nodeB = new WorkflowExecutor(store, null, null, null, serializer, "node-b");
         nodeB.recoverWorkflows(Map.of("VersionedWorkflow",
                 new WorkflowRegistration("VersionedWorkflow", "default",
-                        new VersionedWorkflow(3), method)));
+                        () -> new VersionedWorkflow(3), method)));
 
         await().atMost(Duration.ofSeconds(5)).until(() ->
                 store.getInstance(workflowId)

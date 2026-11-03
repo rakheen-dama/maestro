@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.engine.WorkflowRegistration;
+import io.b2mash.maestro.spring.proxy.ActivityStubBeanPostProcessor;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,8 +26,29 @@ import java.util.concurrent.ConcurrentHashMap;
  * with the {@link WorkflowExecutor}.
  *
  * <p>Runs during the {@link SmartInitializingSingleton} phase — after all
- * singleton beans are created (including activity proxy injection) but
- * before {@link org.springframework.boot.ApplicationRunner} fires.
+ * singleton beans are created but before
+ * {@link org.springframework.boot.ApplicationRunner} fires.
+ *
+ * <h2>One workflow object per run</h2>
+ * <p>Workflow beans must be prototype-scoped (scanned ones are, see
+ * {@link DurableWorkflowBeanRegistrar}). Discovery reads bean definitions by
+ * name and type only — it never instantiates a workflow. Each registration's
+ * {@link WorkflowRegistration#workflowFactory() workflowFactory} is
+ * {@code () -> applicationContext.getBean(beanName)}, so the engine gets a new,
+ * fully wired object (dependency injection, {@code @ActivityStub} proxies)
+ * for every start, recovery and retry. A {@code @DurableWorkflow} bean in any
+ * other scope (singleton, request, session, custom) — one object potentially
+ * shared by several runs, leaking instance fields between concurrent
+ * workflows — fails startup with a {@link BeanInitializationException}.
+ *
+ * <p>Discovery also has {@link ActivityStubBeanPostProcessor#prepare(Class)}
+ * validate each class's {@code @ActivityStub} fields and build their proxies,
+ * so a missing activity bean, an invalid stub field or an unparsable
+ * {@code startToCloseTimeout} fails startup. Only a genuine dependency-injection
+ * failure (a throwing constructor, an unresolvable {@code @Autowired}
+ * dependency) surfaces when a run first builds the object: the engine wraps
+ * the {@code BeansException} in
+ * {@link io.b2mash.maestro.core.exception.WorkflowInstantiationException}.
  *
  * <h2>Thread Safety</h2>
  * <p>Registration happens once during the single-threaded initialization phase.
@@ -58,20 +80,35 @@ public class WorkflowRegistrar implements SmartInitializingSingleton, Applicatio
     @Override
     public void afterSingletonsInstantiated() {
         var ctx = Objects.requireNonNull(applicationContext);
-        var workflowBeans = ctx.getBeansWithAnnotation(DurableWorkflow.class);
+        var stubProcessor = ctx.getBeanProvider(ActivityStubBeanPostProcessor.class).getIfAvailable();
 
-        for (var entry : workflowBeans.entrySet()) {
-            var beanName = entry.getKey();
-            var bean = entry.getValue();
-            var targetClass = ClassUtils.getUserClass(bean.getClass());
-            registerWorkflow(beanName, bean, targetClass);
+        // By name and type only: getBeansWithAnnotation would instantiate every
+        // (prototype) workflow bean just to discover it.
+        for (var beanName : ctx.getBeanNamesForAnnotation(DurableWorkflow.class)) {
+            var beanType = ctx.getType(beanName);
+            if (beanType == null) {
+                throw new BeanInitializationException(
+                        "Cannot determine the type of @DurableWorkflow bean '%s'".formatted(beanName));
+            }
+            var targetClass = ClassUtils.getUserClass(beanType);
+            // Any scope but prototype (singleton, request, session, custom) can hand
+            // one object to several runs.
+            if (!ctx.isPrototype(beanName)) {
+                throw new BeanInitializationException(
+                        ("@DurableWorkflow bean '%s' (%s) must be prototype-scoped: a new workflow object is "
+                                + "created per run. Remove @Component (the starter registers the class itself) "
+                                + "or add @Scope(\"prototype\").")
+                                .formatted(beanName, targetClass.getName()));
+            }
+            registerWorkflow(ctx, stubProcessor, beanName, targetClass);
         }
 
         logger.info("Registered {} workflow type(s): {}", registrations.size(),
                 registrations.keySet());
     }
 
-    private void registerWorkflow(String beanName, Object bean, Class<?> targetClass) {
+    private void registerWorkflow(ApplicationContext ctx, @Nullable ActivityStubBeanPostProcessor stubProcessor,
+                                  String beanName, Class<?> targetClass) {
         var annotation = targetClass.getAnnotation(DurableWorkflow.class);
         if (annotation == null) {
             return;
@@ -83,8 +120,17 @@ public class WorkflowRegistrar implements SmartInitializingSingleton, Applicatio
 
         var workflowMethod = findWorkflowMethod(targetClass, workflowType);
 
+        // Validate the @ActivityStub fields and build their proxies now, against the
+        // class: no workflow object exists until the first run, so without this a
+        // missing activity bean or bad timeout would fail every run, not startup.
+        if (stubProcessor != null) {
+            stubProcessor.prepare(targetClass);
+        }
+
+        // getBean of a prototype is thread-safe and builds a new object per call,
+        // as the factory contract (called once per run, possibly concurrently) requires.
         var registration = new WorkflowRegistration(
-                workflowType, taskQueue, bean, workflowMethod
+                workflowType, taskQueue, () -> ctx.getBean(beanName), workflowMethod
         );
 
         var existing = registrations.putIfAbsent(workflowType, registration);

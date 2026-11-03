@@ -16,30 +16,29 @@ import static org.awaitility.Awaitility.await;
  * <em>finished</em> rather than merely <em>flagged as finished</em>.
  *
  * <h2>Why this exists</h2>
- * <p>{@code WorkflowExecutor} finalises a run with two separate,
- * non-transactional store calls, and the instance row goes first:
+ * <p>Until Issue 26, {@code WorkflowExecutor} finalised a run with two
+ * separate, non-transactional store calls, and the instance row went first
+ * (an {@code UPDATE} to {@code COMPLETED}/{@code FAILED}, then the
+ * {@code INSERT} of the terminal event). It now writes both in one atomic
+ * {@code WorkflowStore.completeInstance} call, so the gap described below is
+ * closed at the source; this predicate stays because it names what the
+ * assertions that follow depend on, and it is still correct.
  *
- * <pre>{@code
- * if (transitionToTerminal(ctx, instance, COMPLETED, output)) {  // 1. UPDATE instance
- *     emit("workflowCompleted", ...);                           //    (observer)
- *     appendEvent(ctx, WORKFLOW_COMPLETED, null, output);       // 2. INSERT event
- * }
- * }</pre>
- *
- * <p>So there is a real, committed interval in which {@code getInstance(...)}
- * answers {@code COMPLETED}/{@code FAILED} while {@code getEvents(...)} is still
- * one event short. A test that gates on {@code status().isTerminal()} and then
- * asserts on the event log is asserting on a log the engine has not finished
- * writing. It passes on a fast machine, and reddens {@code main} on CI — which
+ * <p>Before that fix there was a real, committed interval in which {@code getInstance(...)}
+ * answered {@code COMPLETED}/{@code FAILED} while {@code getEvents(...)} was still
+ * one event short. A test that gated on {@code status().isTerminal()} and then
+ * asserted on the event log was asserting on a log the engine had not finished
+ * writing. It passed on a fast machine, and reddened {@code main} on CI — which
  * is exactly what happened to
  * {@code EnginePostgresParallelIT.parallelReplay_resumesOnlyTheUnfinishedBranch}
  * (GitHub Actions run 30728290264: five events expected, four observed, the
  * missing one being {@code 5001:WORKFLOW_COMPLETED}).
  *
- * <p>The fix is not a sleep and not a longer timeout — those only move the odds.
- * The fix is to wait for the condition the assertion actually depends on: the
- * terminal event being present in the durable log. The event log is the truth;
- * the status column is an advisory hint that runs ahead of it.
+ * <p>The fix for that was not a sleep and not a longer timeout — those only
+ * moved the odds. It was to wait for the condition the assertion actually
+ * depends on: the terminal event being present in the durable log. Before
+ * Issue 26 the status column was an advisory hint that ran ahead of the log;
+ * it no longer does, and waiting on the event remains the precise predicate.
  *
  * <h2>The {@code TERMINATED} exemption</h2>
  * <p>{@code terminate()} moves the instance row to {@link WorkflowStatus#TERMINATED}

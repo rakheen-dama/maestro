@@ -2,6 +2,8 @@ package io.b2mash.maestro.test;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.InstantSource;
+import java.time.temporal.ChronoUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -12,17 +14,24 @@ import java.util.concurrent.atomic.AtomicReference;
  * {@link TestWorkflowEnvironment#advanceTime(Duration)} to fire
  * due timers without relying on wall-clock time.
  *
+ * <p>An {@link InstantSource}: {@link TestWorkflowEnvironment} hands it to
+ * its {@code WorkflowExecutor}, so every {@code sleep()} timer and
+ * {@code awaitSignal()} deadline is armed from this clock (R59) and an
+ * {@code advanceTime(timeout)} of exactly the timeout fires it.
+ *
  * <p><b>Thread safety:</b> All operations are atomic via {@link AtomicReference}.
  */
-public final class ControllableClock {
+public final class ControllableClock implements InstantSource {
 
     private final AtomicReference<Instant> now;
 
     /**
-     * Creates a clock starting at the current wall-clock time.
+     * Creates a clock starting at the current wall-clock time, truncated to
+     * microseconds — the precision an {@code awaitSignal} deadline is stored
+     * at — so {@code now().plus(timeout)} equals the deadline it arms.
      */
     public ControllableClock() {
-        this.now = new AtomicReference<>(Instant.now());
+        this.now = new AtomicReference<>(Instant.now().truncatedTo(ChronoUnit.MICROS));
     }
 
     /**
@@ -40,6 +49,17 @@ public final class ControllableClock {
      * @return the current instant
      */
     public Instant now() {
+        return now.get();
+    }
+
+    /**
+     * Returns the current clock time — the {@link InstantSource} view of
+     * {@link #now()}.
+     *
+     * @return the current instant
+     */
+    @Override
+    public Instant instant() {
         return now.get();
     }
 

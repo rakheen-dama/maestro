@@ -4,6 +4,8 @@ import io.b2mash.maestro.core.annotation.ActivityStub;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 
+import java.util.concurrent.atomic.AtomicInteger;
+
 /**
  * A workflow class annotated ONLY with {@code @DurableWorkflow} — no
  * {@code @Component}, no manual bean registration. This is the exact
@@ -13,8 +15,19 @@ import io.b2mash.maestro.core.annotation.WorkflowMethod;
 @DurableWorkflow(name = "scanned-approval", taskQueue = "approvals")
 public class ScannedApprovalWorkflow {
 
+    /**
+     * Counts constructor calls, so a test can prove that context startup
+     * (workflow discovery) does not instantiate the prototype bean.
+     */
+    public static final AtomicInteger CONSTRUCTED = new AtomicInteger();
+
     @ActivityStub
     private ApprovalActivities activities;
+
+    /** Records the construction in {@link #CONSTRUCTED}. */
+    public ScannedApprovalWorkflow() {
+        CONSTRUCTED.incrementAndGet();
+    }
 
     @WorkflowMethod
     public String approve(String documentId) {

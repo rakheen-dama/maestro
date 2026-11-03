@@ -8,12 +8,14 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -56,14 +58,24 @@ class ValkeySignalNotifierTest extends ValkeyTestSupport {
                 latch.countDown();
             });
 
-            // Small delay for subscription to propagate
-            Thread.sleep(100);
-
             notifier.publish("workflow-1", "approval_granted");
 
             assertTrue(latch.await(5, TimeUnit.SECONDS), "Callback should have been invoked");
             assertEquals(1, receivedSignals.size());
             assertEquals("workflow-1:approval_granted", receivedSignals.getFirst());
+        }
+
+        @Test
+        @DisplayName("subscribe returns only once the server has registered the subscription — a publish issued immediately after is received")
+        void publishImmediatelyAfterSubscribe_isReceived_everyTime() throws InterruptedException {
+            for (int i = 0; i < 25; i++) {
+                var latch = new CountDownLatch(1);
+                var workflowId = "wf-sync-" + i;
+                notifier.subscribe(workflowId, (wfId, name) -> latch.countDown());
+                notifier.publish(workflowId, "go");
+                assertTrue(latch.await(2, TimeUnit.SECONDS), "iteration " + i + ": publish raced ahead of the subscription");
+                notifier.unsubscribe(workflowId);
+            }
         }
 
         @Test
@@ -118,6 +130,34 @@ class ValkeySignalNotifierTest extends ValkeyTestSupport {
         void publishWithNoSubscribers() {
             // Should not throw
             notifier.publish("no-subscriber-workflow", "some-signal");
+        }
+    }
+
+    @Nested
+    @DisplayName("under a brownout (Issue 32)")
+    class BrownoutTests {
+
+        @Test
+        @DisplayName("publish against a paused Valkey returns promptly instead of waiting for the 60 s command timeout")
+        void publishAgainstPausedValkey_returnsPromptly() throws InterruptedException {
+            var docker = valkey.getDockerClient();
+            docker.pauseContainerCmd(valkey.getContainerId()).exec();
+            try {
+                var started = System.nanoTime();
+                assertTimeoutPreemptively(Duration.ofSeconds(3),
+                        () -> notifier.publish("workflow-paused", "approval"));
+                var elapsed = Duration.ofNanos(System.nanoTime() - started);
+                assertTrue(elapsed.compareTo(Duration.ofSeconds(1)) < 0,
+                        "publish must not wait on a paused server; took " + elapsed);
+            } finally {
+                docker.unpauseContainerCmd(valkey.getContainerId()).exec();
+            }
+
+            // Once the server is back, notifications flow again on the same connection.
+            var latch = new CountDownLatch(1);
+            notifier.subscribe("workflow-resumed", (wfId, signalName) -> latch.countDown());
+            notifier.publish("workflow-resumed", "approval");
+            assertTrue(latch.await(5, TimeUnit.SECONDS), "publish must work again after the brownout");
         }
     }
 }

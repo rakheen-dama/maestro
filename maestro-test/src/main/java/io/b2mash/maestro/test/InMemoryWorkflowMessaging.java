@@ -1,7 +1,6 @@
 package io.b2mash.maestro.test;
 
 import io.b2mash.maestro.core.spi.SignalMessage;
-import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 
@@ -12,14 +11,13 @@ import java.util.function.Consumer;
 /**
  * In-memory {@link WorkflowMessaging} for tests.
  *
- * <p>Records lifecycle events for assertion. Task and signal publish/subscribe
- * are no-ops — in a single-JVM test environment, the
+ * <p>Records lifecycle events for assertion. Signal publish/subscribe are
+ * no-ops — in a single-JVM test environment, the
  * {@link TestWorkflowEnvironment} invokes the workflow executor directly.
  *
  * <p><b>Divergence from the SPI contract:</b> the redelivery and dead-letter
- * obligations on {@link WorkflowMessaging#subscribe} and
- * {@link WorkflowMessaging#subscribeSignals} do not apply here, because there
- * is no transport to redeliver from. Delivery is synchronous, so a handler
+ * obligations on {@link WorkflowMessaging#subscribeSignals} do not apply
+ * here, because there is no transport to redeliver from. Delivery is synchronous, so a handler
  * exception propagates straight to the caller that published — it cannot be
  * silently lost, which is what those obligations exist to prevent.
  *
@@ -31,11 +29,6 @@ public final class InMemoryWorkflowMessaging implements WorkflowMessaging {
     private final CopyOnWriteArrayList<WorkflowLifecycleEvent> lifecycleEvents = new CopyOnWriteArrayList<>();
 
     @Override
-    public void publishTask(String taskQueue, TaskMessage message) {
-        // No-op: TestWorkflowEnvironment calls executor.startWorkflow directly
-    }
-
-    @Override
     public void publishSignal(String serviceName, SignalMessage message) {
         // No-op: single-JVM, signals delivered via executor.deliverSignal
     }
@@ -43,11 +36,6 @@ public final class InMemoryWorkflowMessaging implements WorkflowMessaging {
     @Override
     public void publishLifecycleEvent(WorkflowLifecycleEvent event) {
         lifecycleEvents.add(event);
-    }
-
-    @Override
-    public void subscribe(String taskQueue, Consumer<TaskMessage> handler) {
-        // No-op: no message broker in test mode
     }
 
     @Override

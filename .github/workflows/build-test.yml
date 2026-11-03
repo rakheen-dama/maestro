@@ -38,3 +38,21 @@ jobs:
           name: test-reports
           path: '**/build/reports/tests/'
           retention-days: 7
+
+  # GitHub disables every scheduled workflow after 60 days without a commit
+  # (that is what took E2E (loan-origination) offline from 2026-10-10 until
+  # this cycle). A scheduled keepalive would be disabled with it; a push is
+  # the only event that proves the repository is alive, so the first push
+  # after a dormant period turns the nightly schedule back on.
+  keep-nightly-enabled:
+    name: Re-enable the nightly E2E schedule
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Enable E2E (loan-origination) if GitHub disabled it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh workflow enable e2e-nightly.yml

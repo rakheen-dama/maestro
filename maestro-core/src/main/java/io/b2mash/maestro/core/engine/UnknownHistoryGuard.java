@@ -4,7 +4,12 @@ import io.b2mash.maestro.core.exception.SerializationException;
 import io.b2mash.maestro.core.exception.UnknownWorkflowHistoryException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
+import org.jspecify.annotations.Nullable;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.DatabindException;
 
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 
@@ -81,8 +86,13 @@ public final class UnknownHistoryGuard {
      *
      * <p>Only stored history counts. A live-path serialization failure is an
      * ordinary workflow failure and must keep flowing to the failure handler;
-     * a stored payload this build cannot read means a newer node shaped it, so
-     * the run stands down instead.
+     * a stored payload this build cannot read means a newer node shaped it (or,
+     * on a homogeneous fleet, an incompatible payload change did), so the run
+     * stands down instead.
+     *
+     * <p>The stand-down's message and {@code detail} name the root cause by
+     * class and JSON field path only — never its message, which quotes stored
+     * values (see {@link #redactedCause}).
      *
      * @param workflowId     the workflow being replayed
      * @param sequenceNumber the sequence number of the event being read
@@ -99,11 +109,71 @@ public final class UnknownHistoryGuard {
         try {
             return deserialize.get();
         } catch (SerializationException e) {
+            var cause = redactedCause(e.getCause() != null ? e.getCause() : e);
             var standDown = payloadStandDown(workflowId, sequenceNumber,
-                    "could not deserialize the stored %s".formatted(what));
+                    "could not deserialize the stored %s: %s".formatted(what, cause),
+                    "seq=%d cause=%s".formatted(sequenceNumber, cause));
             standDown.initCause(e);
             throw standDown;
         }
+    }
+
+    /**
+     * Describes a deserialization root cause <em>without</em> its message.
+     *
+     * <p>Jackson's messages quote the stored values ({@code from String
+     * "…"}) and, for stream-level errors, the source text they choked on.
+     * Stored payloads routinely carry customer data, and this description
+     * reaches a WARN line and the observer's {@code detail} (both commonly
+     * shipped to log/metric backends with weaker access controls than the
+     * database). So only the exception class and — for a
+     * {@link DatabindException} — the <em>structural</em> JSON path of the
+     * offending field are kept (see {@link #structuralPath}). The raw message
+     * stays on the attached cause, logged at DEBUG only.
+     */
+    private static String redactedCause(Throwable root) {
+        var name = root.getClass().getName();
+        if (root instanceof DatabindException databind) {
+            var path = structuralPath(databind.getPath());
+            if (!path.isEmpty()) {
+                return name + " at " + path;
+            }
+        }
+        return name;
+    }
+
+    /**
+     * Renders a Jackson path from its structure alone: a bean/record property
+     * by name ({@code .amount}), a list/array element by index ({@code [1]}),
+     * and a map entry as the placeholder {@code [<key>]}.
+     *
+     * <p>Deliberately <em>not</em> {@link DatabindException#getPathReference()}:
+     * that renders map <b>keys</b>, which are routinely user data (a
+     * {@code Map<String, Order>} keyed by customer id), and the parent class
+     * names. Neither is needed to locate the reshaped field.
+     */
+    private static String structuralPath(List<JacksonException.Reference> path) {
+        var out = new StringBuilder();
+        for (var ref : path) {
+            if (isMap(ref.from())) {
+                out.append("[<key>]");
+            } else if (ref.getIndex() >= 0) {
+                out.append('[').append(ref.getIndex()).append(']');
+            } else if (ref.getPropertyName() != null) {
+                if (!out.isEmpty()) {
+                    out.append('.');
+                }
+                out.append(ref.getPropertyName());
+            } else {
+                out.append("[?]");
+            }
+        }
+        return out.toString();
+    }
+
+    private static boolean isMap(@Nullable Object from) {
+        return from instanceof Map<?, ?>
+                || (from instanceof Class<?> type && Map.class.isAssignableFrom(type));
     }
 
     /**
@@ -123,11 +193,20 @@ public final class UnknownHistoryGuard {
     public static UnknownWorkflowHistoryException payloadStandDown(String workflowId,
                                                                    int sequenceNumber,
                                                                    String detail) {
+        return payloadStandDown(workflowId, sequenceNumber, detail,
+                "seq=%d cause=%s".formatted(sequenceNumber, detail));
+    }
+
+    private static UnknownWorkflowHistoryException payloadStandDown(String workflowId,
+                                                                    int sequenceNumber,
+                                                                    String detail,
+                                                                    String structuredDetail) {
         return new UnknownWorkflowHistoryException(workflowId, sequenceNumber,
                 UnknownWorkflowHistoryException.Kind.UNKNOWN_EVENT_PAYLOAD,
                 ("Workflow '%s' has an event at sequence %d whose stored payload this build "
-                        + "cannot interpret (%s) — likely written by a newer node; standing this "
-                        + "run down without recording a failure")
-                        .formatted(workflowId, sequenceNumber, detail));
+                        + "cannot interpret (%s) — a newer node or an incompatible payload change; "
+                        + "standing this run down without recording a failure")
+                        .formatted(workflowId, sequenceNumber, detail),
+                structuredDetail);
     }
 }

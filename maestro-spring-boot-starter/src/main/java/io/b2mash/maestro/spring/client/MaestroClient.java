@@ -33,9 +33,13 @@ import io.b2mash.maestro.spring.config.WorkflowRegistrar;
  *             .signal("payment.result", result);
  *     }
  *
- *     public String getOrderStatus(String orderId) {
+ *     public String getOrderStep(String orderId) {
  *         return maestro.getWorkflow("order-" + orderId)
  *             .query("currentStep", String.class);
+ *     }
+ *
+ *     public WorkflowStatus getOrderStatus(String orderId) {
+ *         return maestro.getWorkflow("order-" + orderId).status();
  *     }
  * }
  * }</pre>
@@ -75,12 +79,30 @@ public final class MaestroClient {
     }
 
     /**
-     * Gets a handle to an existing workflow for signal delivery and queries.
+     * Gets an untyped handle to an existing workflow for signals, queries,
+     * status, result and termination.
+     *
+     * <p>{@link WorkflowHandle#result()} on this handle deserializes the output
+     * to its natural JSON form ({@code Map}, {@code List}, {@code String}, …);
+     * use {@link #getWorkflow(String, Class)} for a typed result.
      *
      * @param workflowId the workflow's business ID
      * @return a handle for interacting with the workflow
      */
-    public WorkflowHandle getWorkflow(String workflowId) {
-        return new WorkflowHandle(executor, workflowId);
+    public WorkflowHandle<Object> getWorkflow(String workflowId) {
+        return getWorkflow(workflowId, Object.class);
+    }
+
+    /**
+     * Gets a handle to an existing workflow whose {@link WorkflowHandle#result()}
+     * deserializes the output to {@code resultType}.
+     *
+     * @param workflowId the workflow's business ID
+     * @param resultType the workflow's result type
+     * @param <R>        the result type
+     * @return a handle for interacting with the workflow
+     */
+    public <R> WorkflowHandle<R> getWorkflow(String workflowId, Class<R> resultType) {
+        return new WorkflowHandle<>(executor, store, serializer, workflowId, resultType);
     }
 }

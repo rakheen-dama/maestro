@@ -3,15 +3,21 @@ package io.b2mash.maestro.core.engine;
 import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.ActivityExecutionException;
+import io.b2mash.maestro.core.exception.ActivityTimeoutException;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
+import io.b2mash.maestro.core.exception.StaleRunException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowNotFoundException;
+import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.observe.ActivityInfo;
+import io.b2mash.maestro.core.observe.EngineObserver;
+import io.b2mash.maestro.core.observe.RecordingEngineObserver;
 import io.b2mash.maestro.core.retry.RetryExecutor;
 import io.b2mash.maestro.core.retry.RetryPolicy;
 import io.b2mash.maestro.core.spi.DistributedLock;
@@ -21,7 +27,6 @@ import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.core.spi.SignalMessage;
-import io.b2mash.maestro.core.spi.TaskMessage;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -37,6 +42,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -129,6 +140,8 @@ class ActivityInvocationHandlerTest {
 
             var ex = assertThrows(ActivityExecutionException.class, () -> proxy.greet("World"));
             assertTrue(ex.getMessage().contains("Simulated failure"));
+            assertInstanceOf(RuntimeException.class, ex.getCause());
+            assertEquals(RuntimeException.class, ex.getCause().getClass());
         });
     }
 
@@ -204,24 +217,75 @@ class ActivityInvocationHandlerTest {
     // ── Idempotency tests ─────────────────────────────────────────────
 
     @Test
-    @DisplayName("Idempotency: DuplicateEventException on append returns stored result")
-    void duplicateEventIdempotency() {
-        // Pre-populate the store so appendEvent will throw DuplicateEventException
-        var storedPayload = MAPPER.valueToTree(new Greeting("Stored result"));
-        store.preloadForDuplication(1, new WorkflowEvent(
-                UUID.randomUUID(), INSTANCE_ID, 1,
+    @DisplayName("Stale run: losing the append race rethrows DuplicateEventException instead of adopting the winner's value")
+    void duplicateEventOnAppend_standsDownInsteadOfAdopting() {
+        store.preloadForDuplication(1, new WorkflowEvent(UUID.randomUUID(), INSTANCE_ID, 1,
                 EventType.ACTIVITY_COMPLETED, "GreetingActivities.greet",
-                storedPayload, Instant.now()
-        ));
-
+                MAPPER.valueToTree(new Greeting("winner")), Instant.now()));
         withContext(() -> {
-            // The proxy will try to append, get DuplicateEventException, re-read stored result
             var proxy = createProxy(GreetingActivities.class, new GreetingActivitiesImpl());
-            var result = proxy.greet("World");
-
-            // Should return the stored result, not the live execution result
-            assertEquals("Stored result", result.message());
+            var thrown = assertThrows(DuplicateEventException.class, () -> proxy.greet("World"));
+            assertEquals(1, thrown.sequenceNumber());
         });
+        assertTrue(messaging.publishedEvents.stream().noneMatch(e -> e.eventType() == LifecycleEventType.ACTIVITY_COMPLETED),
+                "the loser must not announce a completion it did not persist");
+    }
+
+    @Test
+    @DisplayName("Stale run: a loser whose own attempt FAILED after the winner completed does not persist or surface that failure")
+    void duplicateEventOnFailureAppend_standsDown() {
+        // Review Focus 4: the loser never reports a failure that contradicts the winner.
+        store.preloadForDuplication(1, new WorkflowEvent(UUID.randomUUID(), INSTANCE_ID, 1,
+                EventType.ACTIVITY_COMPLETED, "GreetingActivities.greet",
+                MAPPER.valueToTree(new Greeting("winner")), Instant.now()));
+        withContext(() -> {
+            var proxy = createProxy(GreetingActivities.class, new FailingActivities(), RetryPolicy.noRetry(),
+                    Duration.ofSeconds(30));
+            assertThrows(DuplicateEventException.class, () -> proxy.greet("World"),
+                    "must not surface ActivityExecutionException — the winner's COMPLETED is the truth");
+        });
+        assertTrue(messaging.publishedEvents.stream().noneMatch(e -> e.eventType() == LifecycleEventType.ACTIVITY_FAILED));
+        assertTrue(store.appendedEvents.isEmpty(), "the loser persisted nothing");
+    }
+
+    @Test
+    @DisplayName("Stale run: after one collision, a SWALLOWED DuplicateEventException does not let the next "
+            + "live activity run — it throws StaleRunException before executing anything (R29)")
+    void swallowedDuplicate_nextLiveActivityStandsDownBeforeExecuting() {
+        store.preloadForDuplication(1, new WorkflowEvent(UUID.randomUUID(), INSTANCE_ID, 1,
+                EventType.ACTIVITY_COMPLETED, "GreetingActivities.greet",
+                MAPPER.valueToTree(new Greeting("winner")), Instant.now()));
+        var calls = new AtomicInteger();
+        var observer = new RecordingEngineObserver();
+        GreetingActivities counting = new GreetingActivitiesImpl() {
+            @Override
+            public Greeting greet(String name) {
+                calls.incrementAndGet();
+                return super.greet(name);
+            }
+        };
+        withContext(() -> {
+            var proxy = createProxy(GreetingActivities.class, counting, RetryPolicy.noRetry(),
+                    Duration.ofSeconds(30), observer);
+            try {
+                proxy.greet("first");
+            } catch (DuplicateEventException swallowed) {
+                // An author's catch-and-continue — exactly what the stand-down contract forbids.
+            }
+            assertEquals(1, calls.get());
+            var thrown = assertThrows(StaleRunException.class, () -> proxy.greet("second"),
+                    "the engine must stop the next live activity of a run it already knows is stale");
+            assertEquals(WORKFLOW_ID, thrown.workflowId());
+            assertEquals("append collision at sequence 1", thrown.detail());
+        });
+        assertEquals(1, calls.get(), "the second activity must not execute — the winner runs that side effect");
+        assertEquals(1, lock.acquiredKeys.size(), "no activity lock for the stood-down call");
+        assertEquals(1, messaging.publishedEvents.stream()
+                        .filter(e -> e.eventType() == LifecycleEventType.ACTIVITY_STARTED).count(),
+                "no ACTIVITY_STARTED for the stood-down call");
+        assertEquals(1, observer.callbackNames().stream().filter("activityStarted"::equals).count(),
+                "no activityStarted (no span opened) for the stood-down call: " + observer.callbackNames());
+        assertTrue(store.appendedEvents.isEmpty(), "the stale run persisted nothing");
     }
 
     // ── Lock behavior tests ───────────────────────────────────────────
@@ -419,6 +483,135 @@ class ActivityInvocationHandlerTest {
         });
     }
 
+    // ── startToCloseTimeout enforcement (C11) ─────────────────────────
+
+    @Test
+    @DisplayName("Timeout: an attempt exceeding startToCloseTimeout is cancelled and recorded as ActivityTimeoutException")
+    void liveAttemptExceedingTimeout_isRecordedAsTimeout() {
+        withContext(() -> {
+            var proxy = createProxy(SlowActivities.class, new SlowActivitiesImpl(Duration.ofSeconds(2), false),
+                    RetryPolicy.noRetry(), Duration.ofMillis(100));
+            var start = System.nanoTime();
+            var thrown = assertThrows(ActivityExecutionException.class, proxy::slow);
+            assertTrue(Duration.ofNanos(System.nanoTime() - start).compareTo(Duration.ofSeconds(1)) < 0,
+                    "must give up at the timeout, not wait for the attempt");
+            assertTrue(thrown.causedBy(ActivityTimeoutException.class));
+            assertEquals(1, store.appendedEvents.size());
+            assertEquals(EventType.ACTIVITY_FAILED, store.appendedEvents.get(0).eventType());
+            assertEquals(ActivityTimeoutException.class.getName(),
+                    store.appendedEvents.get(0).payload().get("exceptionType").stringValue());
+        });
+    }
+
+    @Test
+    @DisplayName("Timeout: a timed-out attempt is retried under the policy, and a fast second attempt succeeds")
+    void timedOutAttempt_isRetriedLikeAnyFailure() {
+        var calls = new AtomicInteger();
+        SlowActivities impl = () -> calls.incrementAndGet() == 1 ? sleepThenReturn(Duration.ofSeconds(2)) : "fast";
+        withContext(() -> {
+            var proxy = createProxy(SlowActivities.class, impl,
+                    RetryPolicy.builder().maxAttempts(2).initialInterval(Duration.ofMillis(1)).build(),
+                    Duration.ofMillis(100));
+            assertEquals("fast", proxy.slow());
+            assertEquals(2, calls.get());
+            assertEquals(1, store.appendedEvents.size());
+            assertEquals(EventType.ACTIVITY_COMPLETED, store.appendedEvents.get(0).eventType());
+        });
+    }
+
+    @Test
+    @DisplayName("Timeout: nonRetryableExceptions = ActivityTimeoutException makes a timeout terminal after one attempt")
+    void timeoutListedNonRetryable_failsAfterOneAttempt() {
+        var calls = new AtomicInteger();
+        withContext(() -> {
+            var proxy = createProxy(SlowActivities.class, () -> { calls.incrementAndGet(); return sleepThenReturn(Duration.ofSeconds(2)); },
+                    RetryPolicy.builder().maxAttempts(5).initialInterval(Duration.ofMillis(1))
+                            .nonRetryableExceptions(List.of(ActivityTimeoutException.class)).build(),
+                    Duration.ofMillis(100));
+            assertThrows(ActivityExecutionException.class, proxy::slow);
+            assertEquals(1, calls.get());
+        });
+    }
+
+    @Test
+    @DisplayName("Timeout: a late value from an attempt that ignored interruption is never memoized")   // Review Focus 3
+    void lateValueAfterTimeout_isNeverMemoized() throws Exception {
+        var zombie = new SlowActivitiesImpl(Duration.ofMillis(400), true);
+        withContext(() -> {
+            var proxy = createProxy(SlowActivities.class, zombie,
+                    RetryPolicy.noRetry(), Duration.ofMillis(50));
+            assertThrows(ActivityExecutionException.class, proxy::slow);
+        });
+        Thread.sleep(700);   // let the uninterruptible attempt finish and try to "return"
+        assertTrue(zombie.returned.await(5, TimeUnit.SECONDS),
+                "the uninterruptible attempt must actually have run to its return, or this pin is vacuous");
+        assertEquals(1, store.appendedEvents.size(), "exactly one event at this sequence");
+        assertEquals(EventType.ACTIVITY_FAILED, store.appendedEvents.get(0).eventType(),
+                "the late 'late' value must not be persisted over the recorded timeout");
+    }
+
+    @Test
+    @DisplayName("Terminate requested before the call: no lock, no ACTIVITY_STARTED, no attempt (R22 part 3)")
+    void terminateBeforeCall_publishesNoActivityStarted() {
+        var calls = new AtomicInteger();
+        var observer = new RecordingEngineObserver();
+        withContext(() -> {
+            WorkflowContext.current().cancellation().requestTermination("operator");
+            var proxy = createProxy(SlowActivities.class, () -> { calls.incrementAndGet(); return "ran"; },
+                    RetryPolicy.noRetry(), Duration.ofSeconds(30), observer);
+            assertThrows(WorkflowTerminatedException.class, proxy::slow);
+        });
+        assertTrue(messaging.publishedEvents.isEmpty(),
+                "a terminated run must not publish ACTIVITY_STARTED (or open an activity span)");
+        assertTrue(observer.invocations().isEmpty(),
+                "no observer callback either — in particular no activityStarted: " + observer.callbackNames());
+        assertTrue(lock.acquiredKeys.isEmpty(), "no activity lock for a terminated run");
+        assertTrue(store.appendedEvents.isEmpty());
+        assertEquals(0, calls.get());
+    }
+
+    @Test
+    @DisplayName("Attempt thread: the observer's wrapActivityAttempt wrapper runs on the attempt thread, "
+            + "around the activity (R26)")
+    void observerWrapperRunsAroundTheAttemptOnTheAttemptThread() {
+        var workflowThread = new AtomicReference<Thread>();
+        var wrapperThread = new AtomicReference<Thread>();
+        var activityThread = new AtomicReference<Thread>();
+        var wrappedInfo = new AtomicReference<ActivityInfo>();
+        var observer = new EngineObserver() {
+            @Override
+            public <T> Callable<T> wrapActivityAttempt(ActivityInfo a, Callable<T> attempt) {
+                wrappedInfo.set(a);
+                return () -> {
+                    wrapperThread.set(Thread.currentThread());
+                    return attempt.call();
+                };
+            }
+        };
+        withContext(() -> {
+            workflowThread.set(Thread.currentThread());
+            var proxy = createProxy(SlowActivities.class, () -> {
+                activityThread.set(Thread.currentThread());
+                return "ok";
+            }, RetryPolicy.noRetry(), Duration.ofSeconds(30), observer);
+            assertEquals("ok", proxy.slow());
+        });
+        assertEquals("SlowActivities.slow", wrappedInfo.get().activityName());
+        assertEquals(1, wrappedInfo.get().sequenceNumber());
+        assertNotSame(workflowThread.get(), wrapperThread.get(), "the wrapper must run on the attempt thread");
+        assertSame(wrapperThread.get(), activityThread.get(), "the wrapper must run around the activity");
+    }
+
+    @Test
+    @DisplayName("Constructor: a zero or negative startToCloseTimeout is rejected up front")
+    void nonPositiveTimeout_isRejected() {
+        var zero = assertThrows(IllegalArgumentException.class, () ->
+                createProxy(SlowActivities.class, () -> "x", RetryPolicy.noRetry(), Duration.ZERO));
+        assertTrue(zero.getMessage().contains("startToCloseTimeout must be positive"), zero.getMessage());
+        assertThrows(IllegalArgumentException.class, () ->
+                createProxy(SlowActivities.class, () -> "x", RetryPolicy.noRetry(), Duration.ofSeconds(-1)));
+    }
+
     // ── Helper methods ────────────────────────────────────────────────
 
     private <T> T createProxy(Class<T> iface, T impl) {
@@ -427,6 +620,34 @@ class ActivityInvocationHandlerTest {
                 RetryPolicy.noRetry(), Duration.ofSeconds(30),
                 serializer, retryExecutor
         );
+    }
+
+    private <T> T createProxy(Class<T> iface, T impl, RetryPolicy policy, Duration startToCloseTimeout,
+                              EngineObserver observer) {
+        return factory.createProxy(
+                iface, impl, store, lock, messaging,
+                policy, startToCloseTimeout,
+                serializer, retryExecutor, WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, observer
+        );
+    }
+
+    private <T> T createProxy(Class<T> iface, T impl, RetryPolicy policy, Duration startToCloseTimeout) {
+        return factory.createProxy(
+                iface, impl, store, lock, messaging,
+                policy, startToCloseTimeout,
+                serializer, retryExecutor
+        );
+    }
+
+    /** Sleeps for {@code d}; an interrupt (the timeout's cancel) surfaces as a failure. */
+    private static String sleepThenReturn(Duration d) {
+        try {
+            Thread.sleep(d);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted", e);
+        }
+        return "slow";
     }
 
     private <T> T createProxyWithoutMessaging(Class<T> iface, T impl) {
@@ -554,6 +775,45 @@ class ActivityInvocationHandlerTest {
         }
     }
 
+    @Activity
+    interface SlowActivities {
+        String slow();
+    }
+
+    /**
+     * Sleeps for {@code sleep} then returns {@code "late"}. With
+     * {@code ignoreInterrupt} it swallows interrupts and keeps going until the
+     * deadline — an attempt the timeout's {@code cancel(true)} cannot stop.
+     */
+    static final class SlowActivitiesImpl implements SlowActivities {
+        private final Duration sleep;
+        private final boolean ignoreInterrupt;
+        /** Counted down when an interrupt-ignoring attempt reaches its return. */
+        final CountDownLatch returned = new CountDownLatch(1);
+
+        SlowActivitiesImpl(Duration sleep, boolean ignoreInterrupt) {
+            this.sleep = sleep;
+            this.ignoreInterrupt = ignoreInterrupt;
+        }
+
+        @Override
+        public String slow() {
+            if (ignoreInterrupt) {
+                var deadline = System.nanoTime() + sleep.toNanos();
+                while (System.nanoTime() < deadline) {
+                    try {
+                        Thread.sleep(10);
+                    } catch (InterruptedException ignored) {
+                        // deliberately ignored: this attempt cannot be stopped
+                    }
+                }
+                returned.countDown();
+                return "late";
+            }
+            return sleepThenReturn(sleep);
+        }
+    }
+
     // ── In-memory SPI stubs ───────────────────────────────────────────
 
     /**
@@ -562,16 +822,18 @@ class ActivityInvocationHandlerTest {
     static class InMemoryWorkflowStore implements WorkflowStore {
 
         final Map<Integer, WorkflowEvent> eventsBySequence = new HashMap<>();
-        final List<WorkflowEvent> appendedEvents = new ArrayList<>();
+        final List<WorkflowEvent> appendedEvents = new CopyOnWriteArrayList<>();
         private final Map<Integer, WorkflowEvent> duplicateEvents = new HashMap<>();
 
         /**
-         * Pre-loads an event that will cause appendEvent to throw DuplicateEventException
-         * for the given sequence, simulating a crash-after-persist scenario.
+         * Arms a lost append race at {@code seq}: the memoization lookup still
+         * sees an empty slot (so the activity really executes live), and the
+         * winner's {@code event} lands at the moment this run appends — which
+         * then throws {@link DuplicateEventException}, exactly as a concurrent
+         * runner's earlier insert does against the unique index.
          */
         void preloadForDuplication(int seq, WorkflowEvent event) {
             duplicateEvents.put(seq, event);
-            eventsBySequence.put(seq, event);
         }
 
         @Override
@@ -581,7 +843,9 @@ class ActivityInvocationHandlerTest {
 
         @Override
         public void appendEvent(WorkflowEvent event) {
-            if (duplicateEvents.containsKey(event.sequenceNumber())) {
+            var winner = duplicateEvents.remove(event.sequenceNumber());
+            if (winner != null) {
+                eventsBySequence.put(event.sequenceNumber(), winner);
                 throw new DuplicateEventException(event.workflowInstanceId(), event.sequenceNumber());
             }
             if (eventsBySequence.containsKey(event.sequenceNumber())) {
@@ -589,6 +853,11 @@ class ActivityInvocationHandlerTest {
             }
             eventsBySequence.put(event.sequenceNumber(), event);
             appendedEvents.add(event);
+        }
+
+        @Override
+        public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+            throw new UnsupportedOperationException();
         }
 
         @Override
@@ -645,6 +914,11 @@ class ActivityInvocationHandlerTest {
         @Override
         public void adoptOrphanedSignals(String workflowId, UUID instanceId) {
             throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+            return 0;
         }
 
         @Override
@@ -717,7 +991,7 @@ class ActivityInvocationHandlerTest {
      */
     static class RecordingMessaging implements WorkflowMessaging {
 
-        final List<WorkflowLifecycleEvent> publishedEvents = new ArrayList<>();
+        final List<WorkflowLifecycleEvent> publishedEvents = new CopyOnWriteArrayList<>();
         boolean throwOnPublish = false;
 
         @Override
@@ -729,17 +1003,7 @@ class ActivityInvocationHandlerTest {
         }
 
         @Override
-        public void publishTask(String taskQueue, TaskMessage message) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
         public void publishSignal(String serviceName, SignalMessage message) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public void subscribe(String taskQueue, Consumer<TaskMessage> handler) {
             throw new UnsupportedOperationException();
         }
 

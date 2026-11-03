@@ -11,7 +11,6 @@ import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
 import io.b2mash.maestro.core.spi.SignalMessage;
-import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.core.spi.WorkflowStore;
@@ -252,6 +251,15 @@ class TimerPollerTest {
 
         @Override public void appendEvent(WorkflowEvent event) { events.add(event); }
 
+        @Override
+        public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+            // Test fixture: no CAS and one writer per instance, so composing the two
+            // writes is atomic enough here. Event first, so a duplicate writes nothing.
+            appendEvent(terminalEvent);
+            updateInstance(terminal);
+            return true;
+        }
+
         @Override public Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int seq) {
             return events.stream()
                     .filter(e -> e.workflowInstanceId().equals(instanceId) && e.sequenceNumber() == seq)
@@ -263,7 +271,7 @@ class TimerPollerTest {
         }
 
         @Override public int deleteFailureEvents(UUID instanceId) {
-            return removeFailureEvents(events, instanceId);
+            return removeFailureEvents(events, timers, instanceId);
         }
 
         @Override public void saveSignal(WorkflowSignal signal) { signals.add(signal); }
@@ -294,6 +302,11 @@ class TimerPollerTest {
                             s.signalName(), s.payload(), s.consumed(), s.receivedAt()));
                 }
             }
+        }
+
+        @Override
+        public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+            return 0;
         }
 
         @Override public void saveTimer(WorkflowTimer timer) { timers.add(timer); }

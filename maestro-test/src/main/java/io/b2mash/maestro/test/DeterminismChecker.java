@@ -15,7 +15,13 @@ import java.util.concurrent.TimeoutException;
  * code between activity calls is deterministic. Break it — branch on
  * {@code Math.random()}, on {@code Instant.now()}, on a mutable field, on map
  * iteration order — and recovery replays a different path than the one the
- * event log records. Nothing detects that today; divergence is silent.
+ * event log records. The engine detects divergence <em>at replay time</em>: a
+ * step name, event type, or {@code parallel()} branch count that disagrees with
+ * the recorded event stands the run down with
+ * {@code StandDownReason.NONDETERMINISTIC_HISTORY} and leaves the instance
+ * recoverable (see {@code docs/operations.md} §10.7). What it still cannot
+ * detect is a nondeterministic <em>value</em> that happens to produce the same
+ * step sequence — which is what this checker exists to catch before deployment.
  *
  * <p>This checker runs the same workflow several times from a clean state and
  * compares the resulting event logs. A workflow whose decisions depend on

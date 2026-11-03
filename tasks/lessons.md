@@ -93,3 +93,16 @@ process identity before signalling it, every time, even mid-cleanup;
 (2) never kill -9 a pid you haven't printed and matched against the process
 you think it is; (3) after killing a port's holder, a re-listen by a
 DIFFERENT process is information, not a target.
+
+## 2026-10-28 — a gate run overlapped an implementer's Gradle loop
+Running `:maestro-integration-tests:test --rerun-tasks` as a verification gate
+while a subagent ran its own `--rerun-tasks` loop on the same module produced
+a BUILD FAILED with 144/144 tests passed: both JVMs wrote the same
+`build/test-results` XML files, and the gate compiled the subagent's
+half-edited test sources. The run proved nothing and cost a rerun.
+Rules: (1) a verification gate runs only when no other Gradle invocation on
+the same module can start during it — check `ListAgents`/the ledger for a
+live implementer first; (2) a gate that fails only on "Could not write XML
+test results" is INVALID, not red: do not treat it as a test failure, do not
+dispatch an investigator, rerun it alone; (3) sequence gate runs after the
+implementer's commit lands, never beside it.

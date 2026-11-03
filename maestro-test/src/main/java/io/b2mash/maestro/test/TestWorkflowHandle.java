@@ -168,13 +168,14 @@ public final class TestWorkflowHandle {
      * Waits for the run to be finished in the durable log, not merely flagged as
      * finished on the instance row.
      *
-     * <p>The engine finalises a run with two separate writes: the instance row
-     * moves to {@code COMPLETED}/{@code FAILED} first, then the matching
-     * {@code WORKFLOW_COMPLETED}/{@code WORKFLOW_FAILED} event is appended.
-     * Returning on the status alone hands the caller a log the engine has not
-     * finished writing, so a test doing
-     * {@code handle.awaitCompletion(...); handle.getEvents()} can legitimately
-     * miss the terminal event. Waiting for the event closes that window.
+     * <p>Until Issue 26 the engine finalised a run with two separate writes:
+     * the instance row moved to {@code COMPLETED}/{@code FAILED} first, then
+     * the matching {@code WORKFLOW_COMPLETED}/{@code WORKFLOW_FAILED} event was
+     * appended, so returning on the status alone could hand the caller a log
+     * one event short. The engine now writes both in one atomic
+     * {@code WorkflowStore.completeInstance} call; waiting for the event stays,
+     * because it is exactly what a caller of {@code getEvents()} depends on and
+     * it fails loudly if a store ever breaks that contract.
      *
      * <p>{@link WorkflowStatus#TERMINATED} is exempt: terminating a workflow
      * appends no event to the log, so there is nothing there to wait for.

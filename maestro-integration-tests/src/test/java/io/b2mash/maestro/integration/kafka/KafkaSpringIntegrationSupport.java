@@ -4,6 +4,8 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.integration.support.PostgresIntegrationSupport;
 import io.b2mash.maestro.integration.support.TerminalWait;
+import io.b2mash.maestro.store.postgres.schema.MaestroSchemaInitializer;
+import io.b2mash.maestro.store.postgres.schema.SchemaMode;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.NewTopic;
@@ -13,7 +15,6 @@ import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
-import org.flywaydb.core.Flyway;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Tag;
 import org.springframework.kafka.core.ConsumerFactory;
@@ -23,6 +24,7 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
 import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.MessageListener;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.KafkaContainer;
@@ -61,7 +63,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * exists. Ryuk removes the container when the JVM exits.
  *
  * <h2>Schema</h2>
- * <p>Flyway runs in the static initialiser, not in a {@code @BeforeEach}: the
+ * <p>Maestro's schema initializer runs in the static initialiser, not in a
+ * {@code @BeforeEach}: the
  * Spring context is built before any {@code @BeforeEach} runs and its
  * {@code StartupRecoveryRunner} queries {@code maestro_workflow_instance} during
  * startup, so the schema has to exist before the context is created. The
@@ -75,8 +78,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <h2>Context isolation</h2>
  * <p>Each suite sets a distinct {@code maestro.service-name} and distinct topic
  * names. Distinct properties mean distinct context cache keys, so suites never
- * share a consumer group; cached contexts from earlier suites stay alive but
- * consume only their own topics.
+ * share a consumer group — and never share a context either, which is why
+ * {@code @DirtiesContext(AFTER_CLASS)} costs nothing: it closes each suite's
+ * context when that suite ends rather than forcing an extra refresh.
+ *
+ * <p>Closing it is load-bearing (R53). A live context keeps its engine's timer
+ * poller running every {@code maestro.timer.poll-interval} (5s) against the
+ * shared Postgres container, and {@code getDueTimers} is not scoped by service
+ * (Issue 31). Left cached, it fires the due timers of every later suite in the
+ * JVM: a harness test that drains its own timer finds it already gone, and a
+ * workflow parked on {@code sleep()} — whose wake then lands in the cached
+ * context's JVM-local parking lot — waits for its 30s durable re-check.
  *
  * <h2>Thread Safety</h2>
  * <p>The container, producer and admin helpers are static and thread-safe;
@@ -84,6 +96,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * confined to the test thread.
  */
 @Tag("integration")
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 abstract class KafkaSpringIntegrationSupport extends PostgresIntegrationSupport {
 
     @SuppressWarnings("resource")
@@ -100,12 +113,8 @@ abstract class KafkaSpringIntegrationSupport extends PostgresIntegrationSupport 
     static {
         KAFKA.start();
 
-        var dataSource = newDataSource();
-        Flyway.configure()
-                .dataSource(dataSource)
-                .locations("classpath:db/migration")
-                .load()
-                .migrate();
+        new MaestroSchemaInitializer(newDataSource(), SchemaMode.FLYWAY,
+                KafkaSpringIntegrationSupport.class.getClassLoader()).initialize();
 
         PRODUCER = new KafkaTemplate<>(new DefaultKafkaProducerFactory<>(Map.of(
                 ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers(),
@@ -176,10 +185,9 @@ abstract class KafkaSpringIntegrationSupport extends PostgresIntegrationSupport 
      * poll — the engine's in-memory state is never the subject of an assertion.
      *
      * <p>When {@code expected} is terminal this additionally waits for the
-     * terminal event to be appended: the instance row turns terminal one
-     * non-transactional write ahead of the log, so returning on the status alone
-     * hands the caller a log the engine has not finished writing. See
-     * {@code TerminalWait}.
+     * terminal event to be appended — the condition the caller's log
+     * assertions depend on (status and event are one atomic write since
+     * Issue 26). See {@code TerminalWait}.
      *
      * @param workflowId the business workflow ID
      * @param expected   the status to wait for

@@ -6,11 +6,17 @@ package io.b2mash.maestro.core.exception;
  *
  * <p>When a node shuts down gracefully, workflows parked on
  * {@code awaitSignal()} or {@code sleep()} are unblocked with this exception so
- * their virtual threads can exit promptly. Their durable state is untouched and
- * still valid: the instance stays in {@code WAITING_SIGNAL} or
- * {@code WAITING_TIMER} (or {@code COMPENSATING} if it was interrupted mid-saga),
- * no compensation step is recorded as failed, and any node — including this
- * one after a restart — recovers it from the store and carries on.
+ * their virtual threads can exit promptly — and so are workflows waiting out an
+ * activity's retry backoff, which shutdown abandons rather than waits for
+ * (the activity attempt that is executing is not interrupted; in-flight work
+ * drains). Their durable state is untouched and still valid: the instance stays
+ * in {@code WAITING_SIGNAL} or {@code WAITING_TIMER} for a park,
+ * {@code RUNNING} for an abandoned backoff (nothing was memoized for that
+ * activity, and its in-memory attempt counter restarts on the node that
+ * recovers it), or {@code COMPENSATING} if it was interrupted mid-saga; no
+ * activity or compensation step is recorded as failed, and any node —
+ * including this one after a restart — recovers it from the store and carries
+ * on.
  *
  * <p>The engine distinguishes this exception from every other throwable
  * escaping a workflow method. Anything else means the workflow genuinely

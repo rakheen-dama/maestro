@@ -115,7 +115,7 @@ class EnginePostgresLifecycleIT extends PostgresIntegrationSupport {
         // Always fails: more injected failures than the stub's maxAttempts (3).
         harness.registerActivities(CountingActivities.FlakyActivities.class,
                 new CountingActivities.FailNTimesActivities(recorder, 99));
-        harness.registerWorkflow(new TestWorkflows.RetryWorkflow());
+        harness.registerWorkflow(TestWorkflows.RetryWorkflow.class);
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("lifecycle-fail");
         var handle = harness.start(workflowId, TestWorkflows.RetryWorkflow.class, "seed");
@@ -203,7 +203,7 @@ class EnginePostgresLifecycleIT extends PostgresIntegrationSupport {
                 .build();
         built.registerActivities(CountingActivities.ChainActivities.class,
                 new CountingActivities.RecordingChainActivities(recorder));
-        built.registerWorkflow(new TestWorkflows.ChainWorkflow());
+        built.registerWorkflow(TestWorkflows.ChainWorkflow.class);
         return built;
     }
 

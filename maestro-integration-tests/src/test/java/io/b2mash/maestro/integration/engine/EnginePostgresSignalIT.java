@@ -85,7 +85,7 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
         harness = newHarness(store);
         harness.registerActivities(ChainActivities.class,
                 new CountingActivities.RecordingChainActivities(recorder));
-        harness.registerWorkflow(new TestWorkflows.SignalWorkflow(parked));
+        harness.registerWorkflow(TestWorkflows.SignalWorkflow.class, () -> new TestWorkflows.SignalWorkflow(parked));
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("signal-wake");
         var handle = harness.start(workflowId, TestWorkflows.SignalWorkflow.class, "seed");
@@ -120,7 +120,7 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
         harness = newHarness(store);
         harness.registerActivities(ChainActivities.class, new GatedChainActivities(
                 new CountingActivities.RecordingChainActivities(recorder), entered, release));
-        harness.registerWorkflow(new TestWorkflows.SignalWorkflow(new CountDownLatch(1)));
+        harness.registerWorkflow(TestWorkflows.SignalWorkflow.class, () -> new TestWorkflows.SignalWorkflow(new CountDownLatch(1)));
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("signal-prearrived");
         var handle = harness.start(workflowId, TestWorkflows.SignalWorkflow.class, "seed");
@@ -149,7 +149,7 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
         harness = newHarness(store);
         harness.registerActivities(ChainActivities.class,
                 new CountingActivities.RecordingChainActivities(recorder));
-        harness.registerWorkflow(new TestWorkflows.SignalWorkflow(new CountDownLatch(1)));
+        harness.registerWorkflow(TestWorkflows.SignalWorkflow.class, () -> new TestWorkflows.SignalWorkflow(new CountDownLatch(1)));
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("signal-orphan");
         harness.deliverSignal(workflowId, TestWorkflows.SignalWorkflow.SIGNAL, "adopted");
@@ -178,7 +178,7 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
     @DisplayName("an await that times out fails the workflow with SignalTimeoutException")
     void awaitSignalTimeout_failsTheWorkflow() {
         harness = newHarness(store);
-        harness.registerWorkflow(new ImpatientSignalWorkflow());
+        harness.registerWorkflow(ImpatientSignalWorkflow.class);
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("signal-timeout");
         var handle = harness.start(workflowId, ImpatientSignalWorkflow.class, "seed");
@@ -205,7 +205,7 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
         harness = newHarness(racingStore);
         harness.registerActivities(ChainActivities.class,
                 new CountingActivities.RecordingChainActivities(recorder));
-        harness.registerWorkflow(new TestWorkflows.SignalWorkflow(parked));
+        harness.registerWorkflow(TestWorkflows.SignalWorkflow.class, () -> new TestWorkflows.SignalWorkflow(parked));
 
         var handle = harness.start(workflowId, TestWorkflows.SignalWorkflow.class, "seed");
         assertTrue(parked.await(15, TimeUnit.SECONDS), "workflow never reached its await point");
@@ -232,7 +232,7 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
     void collectSignals_takesTheFirstNInFifoOrder() throws Exception {
         var parked = new CountDownLatch(1);
         harness = newHarness(store);
-        harness.registerWorkflow(new TestWorkflows.CollectingWorkflow(3, parked));
+        harness.registerWorkflow(TestWorkflows.CollectingWorkflow.class, () -> new TestWorkflows.CollectingWorkflow(3, parked));
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("signal-collect");
         var handle = harness.start(workflowId, TestWorkflows.CollectingWorkflow.class, "seed");
@@ -452,6 +452,11 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
         }
 
         @Override
+        public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+            return delegate.completeInstance(terminal, terminalEvent);
+        }
+
+        @Override
         public boolean markSignalConsumed(UUID signalId) {
             var applied = delegate.markSignalConsumed(signalId);
             engineCasResults.add(applied);
@@ -508,6 +513,11 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
         @Override
         public void adoptOrphanedSignals(String workflowId, UUID instanceId) {
             delegate.adoptOrphanedSignals(workflowId, instanceId);
+        }
+
+        @Override
+        public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+            return delegate.deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff);
         }
 
         @Override

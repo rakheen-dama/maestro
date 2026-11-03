@@ -4,19 +4,42 @@ import io.b2mash.maestro.core.model.EventType;
 
 /**
  * Signals that a workflow's <em>local run</em> must <b>stand down</b> because
- * this node cannot interpret the workflow's persisted history — an event whose
- * type string is absent from this build's {@link EventType} enum (read back as
- * {@link EventType#UNKNOWN}), or a stored payload this build cannot
- * deserialize while replaying. Both mean the same thing: a <em>newer</em> node
- * wrote that history during a mixed-version deploy window, and this node is
- * too old to read it. It is <b>not</b> a workflow failure.
+ * this node cannot interpret the workflow's persisted history. There are three
+ * ways that happens (see {@link Kind}):
+ *
+ * <ul>
+ *   <li><b>Unknown type</b> — an event whose type string is absent from this
+ *       build's {@link EventType} enum (read back as {@link EventType#UNKNOWN}):
+ *       a <em>newer</em> node wrote that history during a mixed-version deploy
+ *       window, and this node is too old to read it.</li>
+ *   <li><b>Unreadable payload</b> — a known event type whose stored payload this
+ *       build cannot deserialize while replaying: written by a newer node,
+ *       <em>or</em> by the same version before an incompatible change to the
+ *       payload's type.</li>
+ *   <li><b>Nondeterministic history</b> — the event is readable, but its step
+ *       name, type, or fork shape disagrees with the operation the current code
+ *       performs at that sequence: the workflow code changed without a
+ *       {@code workflow.version()} gate, so the recorded path and the code's
+ *       path have diverged.</li>
+ * </ul>
+ *
+ * <p>The common ground that justifies one signal for all three: <em>none</em>
+ * of them is a workflow failure — the workflow did nothing wrong; this node's
+ * code cannot faithfully continue the recorded history — and standing down
+ * (rather than failing and compensating) keeps a deploy rollback as the
+ * remedy.
  *
  * <p>The run stands down exactly like a graceful shutdown does: nothing is
  * written, <b>no compensation runs</b>, the instance keeps whatever
  * recoverable status it already had, and the instance lock is released as the
  * thread unwinds through {@code WorkflowExecutor.executeWorkflow}'s
- * {@code finally}. An upgraded node then adopts and processes the workflow
- * through the ordinary lock-TTL/recovery-poller machinery, unchanged.
+ * {@code finally}. What heals it depends on the {@link Kind}: for an unknown
+ * event <em>type</em> an upgraded node adopts and processes the workflow
+ * through the ordinary lock-TTL/recovery-poller machinery, unchanged; for an
+ * unreadable <em>payload</em> that holds only if a newer node wrote it — on a
+ * homogeneous fleet it is an incompatible payload change, healed by rolling
+ * back, gating the change with {@code workflow.version()}, or terminating; for
+ * nondeterministic history, by rolling back or gating the change.
  *
  * <h2>The failure this prevents</h2>
  * <p>Version N+1 of a service writes a new event type. A node still on version
@@ -70,15 +93,26 @@ public final class UnknownWorkflowHistoryException extends MaestroControlFlowErr
          * understand. Only <em>stored</em> history counts: a live-path
          * serialization failure is an ordinary workflow failure.
          */
-        UNKNOWN_EVENT_PAYLOAD
+        UNKNOWN_EVENT_PAYLOAD,
+
+        /**
+         * Replay met a persisted event whose step name, type, or fork shape
+         * does not match the operation the current code performs at that
+         * sequence — the workflow code changed without a
+         * {@code workflow.version()} gate (C10). A deploy rollback is the fix;
+         * the instance is left recoverable.
+         */
+        NONDETERMINISTIC_HISTORY
     }
 
     private final String workflowId;
     private final int sequenceNumber;
     private final Kind kind;
+    private final String detail;
 
     /**
-     * Creates a stand-down signal.
+     * Creates a stand-down signal whose observer detail is just the sequence
+     * ({@code "seq=N"}).
      *
      * @param workflowId     the workflow whose local run is standing down
      * @param sequenceNumber the sequence number of the unreadable event
@@ -88,10 +122,29 @@ public final class UnknownWorkflowHistoryException extends MaestroControlFlowErr
      */
     public UnknownWorkflowHistoryException(String workflowId, int sequenceNumber,
                                            Kind kind, String message) {
+        this(workflowId, sequenceNumber, kind, message, "seq=" + sequenceNumber);
+    }
+
+    /**
+     * Creates a stand-down signal with an explicit observer detail.
+     *
+     * @param workflowId     the workflow whose local run is standing down
+     * @param sequenceNumber the sequence number of the event that could not be
+     *                       interpreted
+     * @param kind           why the history could not be interpreted
+     * @param message        descriptive message naming the workflow, sequence
+     *                       and cause
+     * @param detail         short, machine-friendly detail handed verbatim to
+     *                       {@code EngineObserver.standDown} (for example
+     *                       {@code "seq=2 expected=Acts.a stored=Acts.b type=ACTIVITY_COMPLETED"})
+     */
+    public UnknownWorkflowHistoryException(String workflowId, int sequenceNumber,
+                                           Kind kind, String message, String detail) {
         super(message);
         this.workflowId = workflowId;
         this.sequenceNumber = sequenceNumber;
         this.kind = kind;
+        this.detail = detail;
     }
 
     /** @return the workflow whose local run stood down */
@@ -107,5 +160,14 @@ public final class UnknownWorkflowHistoryException extends MaestroControlFlowErr
     /** @return why the history could not be interpreted */
     public Kind kind() {
         return kind;
+    }
+
+    /**
+     * @return the exact detail string handed to {@code EngineObserver.standDown}
+     *         as its third argument — {@code "seq=N"} unless the creator
+     *         supplied a richer one
+     */
+    public String detail() {
+        return detail;
     }
 }

@@ -215,7 +215,16 @@ public final class RecordingEngineObserver implements EngineObserver {
     public List<String> lockLost() { return List.copyOf(lockLost); }
     public List<RecoveryPassCall> recoveryPasses() { return List.copyOf(recoveryPasses); }
     public List<StandDownCall> standDowns() { return List.copyOf(standDowns); }
+
+    /** The reasons {@code workflowId} stood down for, in arrival order. */
+    public List<StandDownReason> standDownReasons(String workflowId) {
+        return standDowns.stream()
+                .filter(s -> s.workflowId().equals(workflowId))
+                .map(StandDownCall::reason)
+                .toList();
+    }
     public List<AbandonCall> abandoned() { return List.copyOf(abandoned); }
+    public List<AbandonReason> abandonReasons() { return abandoned.stream().map(AbandonCall::reason).toList(); }
 
     /** Completions of one named activity filtered by the replayed flag. */
     public List<ActivityCompletion> completionsOf(String activityName, boolean replayed) {

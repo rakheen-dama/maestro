@@ -72,7 +72,7 @@ _recovery_poll_prop="-Dmaestro.recovery.poll-interval=${DEMO_RECOVERY_POLL_INTER
 # WHAT MAKES THE CROSS-SERVICE TRACE ONE TRACE.
 #
 # Maestro's own KafkaTracePropagation injects/extracts W3C `traceparent` on the
-# `maestro.tasks.*` / `maestro.signals.*` topics it owns. But the three loan
+# `maestro.signals.*` topics it owns. But the three loan
 # services talk to each other over the SAMPLE's OWN domain topics —
 # loans.verification.{requests,results}, loans.underwriting.{requests,decisions}
 # — published with a plain Spring `KafkaTemplate` and consumed with plain

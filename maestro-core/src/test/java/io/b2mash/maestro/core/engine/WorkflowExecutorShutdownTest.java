@@ -34,6 +34,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static io.b2mash.maestro.core.TestEventLogs.removeFailureEvents;
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -95,7 +96,7 @@ class WorkflowExecutorShutdownTest {
     void shutdown_withWorkflowParkedOnSignal_leavesItWaitingSignalAndRecoverable() throws Exception {
         var workflow = new AwaitingWorkflow();
         executor.startWorkflow("park-signal", "AwaitingWorkflow", "default",
-                "input", workflow, AwaitingWorkflow.class.getMethod("run", String.class));
+                "input", () -> workflow, AwaitingWorkflow.class.getMethod("run", String.class));
         awaitStatus("park-signal", WorkflowStatus.WAITING_SIGNAL);
 
         executor.shutdown();
@@ -122,7 +123,7 @@ class WorkflowExecutorShutdownTest {
         var workflow = new CatchAllAwaitingWorkflow();
         var method = CatchAllAwaitingWorkflow.class.getMethod("run", String.class);
         executor.startWorkflow("park-catchall", "CatchAllAwaitingWorkflow", "default",
-                "input", workflow, method);
+                "input", () -> workflow, method);
         awaitStatus("park-catchall", WorkflowStatus.WAITING_SIGNAL);
 
         executor.shutdown();
@@ -139,7 +140,7 @@ class WorkflowExecutorShutdownTest {
         // memory: a second executor recovers it and drives it to completion.
         secondExecutor = new WorkflowExecutor(store, null, null, null, serializer, "node-b");
         var registrations = Map.of("CatchAllAwaitingWorkflow",
-                new WorkflowRegistration("CatchAllAwaitingWorkflow", "default", workflow, method));
+                new WorkflowRegistration("CatchAllAwaitingWorkflow", "default", () -> workflow, method));
         assertEquals(1, secondExecutor.recoverWorkflows(registrations));
         awaitStatus("park-catchall", WorkflowStatus.WAITING_SIGNAL);
         secondExecutor.deliverSignal("park-catchall", CatchAllAwaitingWorkflow.SIGNAL, "approved");
@@ -154,7 +155,7 @@ class WorkflowExecutorShutdownTest {
     void shutdown_withWorkflowParkedOnSleep_leavesItWaitingTimerAndRecoverable() throws Exception {
         var workflow = new SleepingWorkflow();
         executor.startWorkflow("park-timer", "SleepingWorkflow", "default",
-                "input", workflow, SleepingWorkflow.class.getMethod("run", String.class));
+                "input", () -> workflow, SleepingWorkflow.class.getMethod("run", String.class));
         awaitStatus("park-timer", WorkflowStatus.WAITING_TIMER);
 
         executor.shutdown();
@@ -175,7 +176,7 @@ class WorkflowExecutorShutdownTest {
         var compensations = new AtomicInteger();
         var workflow = new CompensatingAwaitingWorkflow(compensations);
         executor.startWorkflow("park-saga", "CompensatingAwaitingWorkflow", "default",
-                "input", workflow, CompensatingAwaitingWorkflow.class.getMethod("run", String.class));
+                "input", () -> workflow, CompensatingAwaitingWorkflow.class.getMethod("run", String.class));
         awaitStatus("park-saga", WorkflowStatus.WAITING_SIGNAL);
 
         executor.shutdown();
@@ -194,7 +195,7 @@ class WorkflowExecutorShutdownTest {
         var released = new AtomicInteger();
         var workflow = new ParkingCompensationWorkflow(released);
         var method = ParkingCompensationWorkflow.class.getMethod("run", String.class);
-        executor.startWorkflow("mid-comp", "ParkingCompensationWorkflow", "default", "input", workflow, method);
+        executor.startWorkflow("mid-comp", "ParkingCompensationWorkflow", "default", "input", () -> workflow, method);
 
         // LIFO order runs "parking-compensation" (registered second) before
         // "release" (registered first) — so shutdown here interrupts the very
@@ -223,7 +224,7 @@ class WorkflowExecutorShutdownTest {
         // genuine failure.
         secondExecutor = new WorkflowExecutor(store, null, null, null, serializer, "node-b");
         var registrations = Map.of("ParkingCompensationWorkflow",
-                new WorkflowRegistration("ParkingCompensationWorkflow", "default", workflow, method));
+                new WorkflowRegistration("ParkingCompensationWorkflow", "default", () -> workflow, method));
         assertEquals(1, secondExecutor.recoverWorkflows(registrations),
                 "the workflow abandoned mid-compensation must be recoverable by a fresh node");
 
@@ -254,7 +255,7 @@ class WorkflowExecutorShutdownTest {
         var workflow = new ParkingSecondCompensationWorkflow(completedInvocations);
         var method = ParkingSecondCompensationWorkflow.class.getMethod("run", String.class);
         executor.startWorkflow("mid-comp-completed-first", "ParkingSecondCompensationWorkflow", "default",
-                "input", workflow, method);
+                "input", () -> workflow, method);
 
         awaitStatus("mid-comp-completed-first", WorkflowStatus.WAITING_SIGNAL);
         assertEquals(1, completedInvocations.get(),
@@ -270,7 +271,7 @@ class WorkflowExecutorShutdownTest {
 
         secondExecutor = new WorkflowExecutor(store, null, null, null, serializer, "node-b");
         var registrations = Map.of("ParkingSecondCompensationWorkflow",
-                new WorkflowRegistration("ParkingSecondCompensationWorkflow", "default", workflow, method));
+                new WorkflowRegistration("ParkingSecondCompensationWorkflow", "default", () -> workflow, method));
         assertEquals(1, secondExecutor.recoverWorkflows(registrations),
                 "the workflow abandoned mid-compensation must be recoverable by a fresh node");
 
@@ -313,7 +314,7 @@ class WorkflowExecutorShutdownTest {
         var workflow = new ParkingParallelBranchWorkflow();
         var method = ParkingParallelBranchWorkflow.class.getMethod("run", String.class);
         executor.startWorkflow("park-parallel-branch", "ParkingParallelBranchWorkflow", "default", "input",
-                workflow, method);
+                () -> workflow, method);
 
         awaitStatus("park-parallel-branch", WorkflowStatus.WAITING_SIGNAL);
 
@@ -330,7 +331,7 @@ class WorkflowExecutorShutdownTest {
 
         secondExecutor = new WorkflowExecutor(store, null, null, null, serializer, "node-b");
         var registrations = Map.of("ParkingParallelBranchWorkflow",
-                new WorkflowRegistration("ParkingParallelBranchWorkflow", "default", workflow, method));
+                new WorkflowRegistration("ParkingParallelBranchWorkflow", "default", () -> workflow, method));
         assertEquals(1, secondExecutor.recoverWorkflows(registrations));
         awaitStatus("park-parallel-branch", WorkflowStatus.WAITING_SIGNAL);
         secondExecutor.deliverSignal("park-parallel-branch", ParkingParallelBranchWorkflow.SIGNAL, "approved");
@@ -357,7 +358,7 @@ class WorkflowExecutorShutdownTest {
         var workflow = new RetryShutdownWorkflow(proxy);
         var method = RetryShutdownWorkflow.class.getMethod("run", String.class);
         executor.startWorkflow("park-retry-activity", "RetryShutdownWorkflow", "default", "input",
-                workflow, method);
+                () -> workflow, method);
 
         awaitStatus("park-retry-activity", WorkflowStatus.WAITING_SIGNAL);
         assertEquals(1, invocations.get(), "must not have been retried before shutdown either");
@@ -386,7 +387,7 @@ class WorkflowExecutorShutdownTest {
                 RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
         var restartedWorkflow = new RetryShutdownWorkflow(restartedProxy);
         var registrations = Map.of("RetryShutdownWorkflow",
-                new WorkflowRegistration("RetryShutdownWorkflow", "default", restartedWorkflow, method));
+                new WorkflowRegistration("RetryShutdownWorkflow", "default", () -> restartedWorkflow, method));
         assertEquals(1, secondExecutor.recoverWorkflows(registrations),
                 "the workflow abandoned mid-activity must be recoverable by a fresh node");
 
@@ -415,7 +416,7 @@ class WorkflowExecutorShutdownTest {
         var workflow = new CompensateShutdownWorkflow(proxy);
         var method = CompensateShutdownWorkflow.class.getMethod("run", String.class);
         executor.startWorkflow("park-compensate-activity", "CompensateShutdownWorkflow", "default", "widget",
-                workflow, method);
+                () -> workflow, method);
 
         awaitStatus("park-compensate-activity", WorkflowStatus.WAITING_SIGNAL);
         assertTrue(hasEvent("park-compensate-activity", EventType.COMPENSATION_STARTED),
@@ -442,7 +443,7 @@ class WorkflowExecutorShutdownTest {
                 RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
         var restartedWorkflow = new CompensateShutdownWorkflow(restartedProxy);
         var registrations = Map.of("CompensateShutdownWorkflow",
-                new WorkflowRegistration("CompensateShutdownWorkflow", "default", restartedWorkflow, method));
+                new WorkflowRegistration("CompensateShutdownWorkflow", "default", () -> restartedWorkflow, method));
         assertEquals(1, secondExecutor.recoverWorkflows(registrations),
                 "the workflow abandoned mid-compensation must be recoverable by a fresh node");
 
@@ -466,7 +467,7 @@ class WorkflowExecutorShutdownTest {
         var release = new CountDownLatch(1);
         var workflow = new BlockingWorkflow(entered, release);
         executor.startWorkflow("drain", "BlockingWorkflow", "default",
-                "input", workflow, BlockingWorkflow.class.getMethod("run", String.class));
+                "input", () -> workflow, BlockingWorkflow.class.getMethod("run", String.class));
         assertTrue(entered.await(15, TimeUnit.SECONDS), "the workflow must be in-flight before shutdown");
 
         // Shut down from another thread so the test thread can observe that
@@ -491,6 +492,46 @@ class WorkflowExecutorShutdownTest {
     }
 
     @Test
+    @DisplayName("A run registered AFTER shutdown's request loop still abandons its retry backoff (R22 part 1)")
+    void runRegisteredAfterShutdownLoop_stillAbandonsItsBackoff() throws Exception {
+        var invocations = new AtomicInteger();
+        var workflow = new WorkflowExecutorTerminateTest.BackoffWorkflow(failingProxy(invocations));
+        // startWorkflow has passed its shuttingDown check when createInstance
+        // runs; shutting down here completes shutdown's requestShutdown() loop
+        // before launchWorkflow registers the run — the exact window M1 closes.
+        store.afterCreateInstance = executor::shutdown;
+
+        executor.startWorkflow("late-registered", "BackoffWorkflow", "default", null, () -> workflow,
+                WorkflowExecutorTerminateTest.BackoffWorkflow.class.getMethod("run"));
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> !executor.isRunning("late-registered"));
+        assertEquals(1, invocations.get(), "the 30s backoff must be abandoned, not waited out");
+        assertEquals(WorkflowStatus.RUNNING, store.getInstance("late-registered").orElseThrow().status());
+        assertFalse(hasEvent("late-registered", EventType.ACTIVITY_FAILED));
+    }
+
+    @Test
+    @DisplayName("Shutdown while a retried activity is in backoff abandons the wait and leaves the workflow RUNNING and recoverable")
+    void shutdown_duringRetryBackoff_abandonsBackoffAndLeavesItRecoverable() throws Exception {
+        var invocations = new AtomicInteger();
+        var workflow = new WorkflowExecutorTerminateTest.BackoffWorkflow(failingProxy(invocations));
+        executor.startWorkflow("shutdown-backoff", "BackoffWorkflow", "default", null, () -> workflow,
+                WorkflowExecutorTerminateTest.BackoffWorkflow.class.getMethod("run"));
+        await().atMost(Duration.ofSeconds(5)).until(() -> invocations.get() == 1);
+
+        var start = Instant.now();
+        executor.shutdown();
+
+        assertTrue(Duration.between(start, Instant.now()).compareTo(Duration.ofSeconds(10)) < 0,
+                "shutdown must not wait out a 30s backoff");
+        assertEquals(1, invocations.get());
+        var instance = store.getInstance("shutdown-backoff").orElseThrow();
+        assertEquals(WorkflowStatus.RUNNING, instance.status(), "nothing is written — the run is recoverable");
+        assertFalse(hasEvent("shutdown-backoff", EventType.ACTIVITY_FAILED));
+        assertTrue(store.getRecoverableInstances().stream().anyMatch(i -> i.workflowId().equals("shutdown-backoff")));
+    }
+
+    @Test
     @DisplayName("A configured shutdown timeout bounds the drain wait instead of the 30s default")
     void shutdown_withConfiguredTimeout_returnsAfterTheConfiguredWaitNotTheDefault() throws Exception {
         executor.shutdown(); // discard the default, 30s-timeout executor from setUp
@@ -502,7 +543,7 @@ class WorkflowExecutorShutdownTest {
         var release = new CountDownLatch(1); // deliberately never counted down
         var workflow = new BlockingWorkflow(entered, release);
         executor.startWorkflow("shutdown-timeout", "BlockingWorkflow", "default",
-                "input", workflow, BlockingWorkflow.class.getMethod("run", String.class));
+                "input", () -> workflow, BlockingWorkflow.class.getMethod("run", String.class));
         assertTrue(entered.await(15, TimeUnit.SECONDS), "the workflow must be in-flight before shutdown");
 
         var start = Instant.now();
@@ -527,7 +568,7 @@ class WorkflowExecutorShutdownTest {
 
         var workflow = new AwaitingWorkflow();
         executor.startWorkflow("park-lock", "AwaitingWorkflow", "default",
-                "input", workflow, AwaitingWorkflow.class.getMethod("run", String.class));
+                "input", () -> workflow, AwaitingWorkflow.class.getMethod("run", String.class));
         awaitStatus("park-lock", WorkflowStatus.WAITING_SIGNAL);
         assertTrue(lock.isHeld("maestro:lock:workflow:park-lock"),
                 "the lock must be held while the workflow is parked here");
@@ -545,14 +586,14 @@ class WorkflowExecutorShutdownTest {
     void afterShutdown_aSecondExecutorRecoversTheParkedWorkflowAndCompletesIt() throws Exception {
         var workflow = new AwaitingWorkflow();
         var method = AwaitingWorkflow.class.getMethod("run", String.class);
-        executor.startWorkflow("restart", "AwaitingWorkflow", "default", "input", workflow, method);
+        executor.startWorkflow("restart", "AwaitingWorkflow", "default", "input", () -> workflow, method);
         awaitStatus("restart", WorkflowStatus.WAITING_SIGNAL);
 
         executor.shutdown();
 
         secondExecutor = new WorkflowExecutor(store, null, null, null, serializer, "node-b");
         var registrations = Map.of("AwaitingWorkflow",
-                new WorkflowRegistration("AwaitingWorkflow", "default", workflow, method));
+                new WorkflowRegistration("AwaitingWorkflow", "default", () -> workflow, method));
         assertEquals(1, secondExecutor.recoverWorkflows(registrations),
                 "the workflow abandoned by shutdown must be recoverable by a fresh node");
 
@@ -573,7 +614,7 @@ class WorkflowExecutorShutdownTest {
         var compensations = new AtomicInteger();
         var workflow = new FailingCompensatingWorkflow(compensations);
         executor.startWorkflow("boom", "FailingCompensatingWorkflow", "default",
-                "input", workflow, FailingCompensatingWorkflow.class.getMethod("run", String.class));
+                "input", () -> workflow, FailingCompensatingWorkflow.class.getMethod("run", String.class));
 
         awaitStatus("boom", WorkflowStatus.FAILED);
         assertEquals(1, compensations.get(),
@@ -585,12 +626,16 @@ class WorkflowExecutorShutdownTest {
 
     /**
      * Waits for a status and, when that status is terminal, for the terminal
-     * <em>event</em> too: the row is written before the event is appended, and
-     * four of the terminal callers here go on to assert
+     * <em>event</em> too: the event is what four of the terminal callers here
+     * depend on (status and event are one atomic write since Issue 26) — they go on to assert
      * {@code hasEvent(..., WORKFLOW_FAILED)}. See {@link TestTerminalWait}.
      */
     private void awaitStatus(String workflowId, WorkflowStatus expected) {
         TestTerminalWait.awaitStatus(store, workflowId, expected, Duration.ofSeconds(15));
+    }
+
+    private WorkflowExecutorTerminateTest.FailingActivity failingProxy(AtomicInteger invocations) {
+        return WorkflowExecutorTerminateTest.failingProxy(store, serializer, invocations);
     }
 
     private boolean hasEvent(String workflowId, EventType type) {
@@ -1002,12 +1047,15 @@ class WorkflowExecutorShutdownTest {
         private final CopyOnWriteArrayList<WorkflowEvent> events = new CopyOnWriteArrayList<>();
         private final CopyOnWriteArrayList<WorkflowSignal> signals = new CopyOnWriteArrayList<>();
         private final CopyOnWriteArrayList<WorkflowTimer> timers = new CopyOnWriteArrayList<>();
+        /** Runs after the row is created — a seam inside startWorkflow, past its shuttingDown check. */
+        private volatile Runnable afterCreateInstance = () -> { };
 
         @Override
         public WorkflowInstance createInstance(WorkflowInstance instance) {
             if (byWorkflowId.putIfAbsent(instance.workflowId(), instance) != null) {
                 throw new WorkflowAlreadyExistsException(instance.workflowId());
             }
+            afterCreateInstance.run();
             return instance;
         }
 
@@ -1032,6 +1080,15 @@ class WorkflowExecutorShutdownTest {
         }
 
         @Override
+        public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+            // Test fixture: no CAS and one writer per instance, so composing the two
+            // writes is atomic enough here. Event first, so a duplicate writes nothing.
+            appendEvent(terminalEvent);
+            updateInstance(terminal);
+            return true;
+        }
+
+        @Override
         public Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int sequenceNumber) {
             return events.stream()
                     .filter(e -> e.workflowInstanceId().equals(instanceId)
@@ -1046,7 +1103,7 @@ class WorkflowExecutorShutdownTest {
 
         @Override
         public int deleteFailureEvents(UUID instanceId) {
-            return removeFailureEvents(events, instanceId);
+            return removeFailureEvents(events, timers, instanceId);
         }
 
         @Override
@@ -1085,6 +1142,11 @@ class WorkflowExecutorShutdownTest {
                             s.signalName(), s.payload(), s.consumed(), s.receivedAt()));
                 }
             }
+        }
+
+        @Override
+        public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+            return 0;
         }
 
         @Override

@@ -1,7 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.spi.SignalMessage;
-import io.b2mash.maestro.core.spi.TaskMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import org.jspecify.annotations.Nullable;
@@ -11,8 +10,8 @@ import java.util.function.Consumer;
 /**
  * Decorates a {@link WorkflowMessaging} so that {@link #publishLifecycleEvent}
  * is a no-op when lifecycle publishing is disabled ({@code
- * maestro.admin.events.enabled=false}), while every other method — task
- * dispatch, signal delivery, subscriptions — passes straight through to the
+ * maestro.admin.events.enabled=false}), while every other method — signal
+ * delivery and the signal subscription — passes straight through to the
  * delegate unaffected.
  *
  * <h2>Why this exists</h2>
@@ -79,11 +78,6 @@ public final class GatedWorkflowMessaging implements WorkflowMessaging {
     }
 
     @Override
-    public void publishTask(String taskQueue, TaskMessage message) {
-        delegate.publishTask(taskQueue, message);
-    }
-
-    @Override
     public void publishSignal(String serviceName, SignalMessage message) {
         delegate.publishSignal(serviceName, message);
     }
@@ -94,11 +88,6 @@ public final class GatedWorkflowMessaging implements WorkflowMessaging {
             return;
         }
         delegate.publishLifecycleEvent(event);
-    }
-
-    @Override
-    public void subscribe(String taskQueue, Consumer<TaskMessage> handler) {
-        delegate.subscribe(taskQueue, handler);
     }
 
     @Override

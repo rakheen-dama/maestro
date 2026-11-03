@@ -136,7 +136,7 @@ The admin schema is managed by Flyway and applied automatically on startup. Migr
 
 ### Kafka topic
 
-> **Note:** When using Postgres messaging (`maestro.messaging.type: postgres`), lifecycle events are stored in the `maestro_lifecycle_event_queue` table instead of being published to a Kafka topic. The admin dashboard consumes from that table automatically when configured for Postgres messaging.
+> **Note:** Lifecycle events reach the dashboard over **Kafka only**. With Postgres messaging (`maestro.messaging.type: postgres`) no lifecycle events are published — `publishLifecycleEvent` is a no-op that logs one WARN. Set `maestro.admin.events.enabled: false` in Postgres-only services to silence it; the dashboard cannot observe those services.
 
 The `maestro.admin.events` topic must be pre-created. The `kafka-init` service in `docker-compose.yml` handles this:
 
@@ -223,6 +223,14 @@ All actions produce a flash message confirming success or reporting failure, the
   Nothing else changes: memoized successful steps stay memoized. Retry is
   intended for transient failures (an external dependency that has since
   recovered), not for correcting bad workflow logic or bad input.
+  **Await timeouts:** when the failure was an uncaught `awaitSignal`
+  timeout, retry also discards that await's timeout and its spent deadline,
+  so the retried await waits the **full timeout again**, counted from the
+  retry. Inside `collectSignals` the re-armed await gets the **remaining
+  slice** of the overall timeout, recomputed from the memoized
+  `currentTime()`, not a fresh full timeout. A signal that arrived in the
+  meantime is consumed at once, so the
+  operator can send the missing signal before or after retrying.
   **Compensated-saga caveat:** retrying a workflow whose saga already ran
   compensations is **not supported**. Its compensation events sit at
   sequence positions anchored to the failed run; if the previously-failed
@@ -237,10 +245,16 @@ All actions produce a flash message confirming success or reporting failure, the
 - **Terminate** applies to any active workflow, including one currently
   compensating. It durably marks the instance `TERMINATED` and stops it —
   **without running any compensation** and **without interrupting an
-  in-flight activity** (consistent with a graceful shutdown; the activity's
-  result is still memoized if it completes, but the run stands down at its
-  next checkpoint instead of continuing). A parked thread (waiting on a
-  signal or timer) is unwound promptly wherever it happens to be running.
+  in-flight activity attempt**. The attempt that is executing finishes —
+  unless its timeout (`startToCloseTimeout`) elapses first — and a successful
+  result is memoized (harmless); a failed one is neither retried nor
+  recorded as `ACTIVITY_FAILED`. No further attempt starts, a retry
+  backoff in progress is abandoned, and no later activity goes live — the
+  run stands down at its next live activity, retry, park or status write.
+  (That attempt-level stop applies when the node processing the command owns
+  the workflow; a remote owner converges via the guards described below.) A
+  parked thread (waiting on a signal or timer) is unwound promptly wherever
+  it happens to be running.
   Terminate is safe to call from any node: an optimistic version check, not
   the instance lock, is the arbiter, so the command need not reach the node
   that owns the workflow. The instance row is updated immediately regardless

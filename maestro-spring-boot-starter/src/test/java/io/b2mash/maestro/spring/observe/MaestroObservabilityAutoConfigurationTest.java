@@ -19,6 +19,7 @@ import io.micrometer.tracing.Tracer;
 import io.micrometer.tracing.propagation.Propagator;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.micrometer.metrics.autoconfigure.CompositeMeterRegistryAutoConfiguration;
 import org.springframework.boot.micrometer.metrics.autoconfigure.MetricsAutoConfiguration;
@@ -30,6 +31,7 @@ import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Scope;
 import tools.jackson.databind.ObjectMapper;
 
 import java.time.Duration;
@@ -193,15 +195,14 @@ class MaestroObservabilityAutoConfigurationTest {
                     var executor = context.getBean(WorkflowExecutor.class);
                     var store = context.getBean(WorkflowStore.class);
                     var client = context.getBean(MaestroClient.class);
-                    var workflow = context.getBean(ParkingActivityWorkflow.class);
 
                     assertThat(registry.get("maestro.workflows.running").gauge().value()).isZero();
                     assertThat(registry.get("maestro.workflows.parked").gauge().value()).isZero();
 
                     client.newWorkflow(ParkingActivityWorkflow.class, options("gauges-parked-1"))
                             .startAsync(null);
-                    assertThat(workflow.reachedGate.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
-                    await().atMost(Duration.ofSeconds(2)).until(() ->
+                    // WAITING_SIGNAL means the run has passed its first activity and parked.
+                    await().atMost(Duration.ofSeconds(10)).until(() ->
                             store.getInstance("gauges-parked-1")
                                     .map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL).orElse(false));
 
@@ -233,12 +234,11 @@ class MaestroObservabilityAutoConfigurationTest {
                     assertThat(contextA).hasNotFailed();
                     var store = contextA.getBean(WorkflowStore.class);
                     var client = contextA.getBean(MaestroClient.class);
-                    var workflow = contextA.getBean(ParkingActivityWorkflow.class);
 
                     client.newWorkflow(ParkingActivityWorkflow.class, options("observability-replay-1"))
                             .startAsync(null);
-                    assertThat(workflow.reachedGate.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
-                    await().atMost(Duration.ofSeconds(2)).until(() ->
+                    // WAITING_SIGNAL means the run has passed its first activity and parked.
+                    await().atMost(Duration.ofSeconds(10)).until(() ->
                             store.getInstance("observability-replay-1")
                                     .map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL).orElse(false));
 
@@ -377,12 +377,11 @@ class MaestroObservabilityAutoConfigurationTest {
                         assertThat(contextA).hasNotFailed();
                         var store = contextA.getBean(WorkflowStore.class);
                         var client = contextA.getBean(MaestroClient.class);
-                        var workflow = contextA.getBean(ParkingActivityWorkflow.class);
 
                         client.newWorkflow(ParkingActivityWorkflow.class, options("tracing-replay-1"))
                                 .startAsync(null);
-                        assertThat(workflow.reachedGate.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
-                        await().atMost(Duration.ofSeconds(2)).until(() ->
+                        // WAITING_SIGNAL means the run has passed its first activity and parked.
+                        await().atMost(Duration.ofSeconds(10)).until(() ->
                                 store.getInstance("tracing-replay-1")
                                         .map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL).orElse(false));
 
@@ -432,16 +431,21 @@ class MaestroObservabilityAutoConfigurationTest {
         return WorkflowOptions.builder().workflowId(workflowId).build();
     }
 
-    /** Registers the workflow beans the client resolves through WorkflowRegistrar. */
+    /**
+     * Registers the workflow beans the client resolves through WorkflowRegistrar.
+     * Workflow beans are prototype-scoped: Maestro creates one object per run.
+     */
     @Configuration(proxyBeanMethods = false)
     static class TestWorkflowConfiguration {
 
         @Bean
+        @Scope(BeanDefinition.SCOPE_PROTOTYPE)
         EchoWorkflow echoWorkflow() {
             return new EchoWorkflow();
         }
 
         @Bean
+        @Scope(BeanDefinition.SCOPE_PROTOTYPE)
         ParkingActivityWorkflow parkingActivityWorkflow() {
             return new ParkingActivityWorkflow();
         }
@@ -473,9 +477,6 @@ class MaestroObservabilityAutoConfigurationTest {
         @ActivityStub
         private CountingActivities activities;
 
-        /** Counted down once the workflow has reached its await point. */
-        final java.util.concurrent.CountDownLatch reachedGate = new java.util.concurrent.CountDownLatch(1);
-
         /**
          * @param input ignored
          * @return a constant once the signal arrives
@@ -483,7 +484,6 @@ class MaestroObservabilityAutoConfigurationTest {
         @WorkflowMethod
         public String run(String input) {
             activities.step();
-            reachedGate.countDown();
             WorkflowContext.current().awaitSignal("resume", String.class, Duration.ofSeconds(30));
             // A second live call on the recovering node — proves the replayed
             // first call didn't touch the timer while a genuinely live call does.
