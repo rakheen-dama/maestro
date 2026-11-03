@@ -395,7 +395,8 @@ class EnginePostgresParallelSagaIT extends PostgresIntegrationSupport {
         var handle = harness.start(MaestroEngineHarness.uniqueWorkflowId("greedy-comp"),
                 GreedyCompensationWorkflow.class, "in");
 
-        assertEquals(WorkflowStatus.FAILED, handle.awaitTerminal(Duration.ofSeconds(30)));
+        // 1000 memoized event writes: ~15 s locally, 2-3x slower on CI runners (a 30 s bound tripped there).
+        assertEquals(WorkflowStatus.FAILED, handle.awaitTerminal(Duration.ofSeconds(120)));
         assertEquals(1, recorder.count("stepTwo"), "the ordinary entry must not be skipped as already done");
         var failed = store.getEventBySequence(handle.instanceId(), 2000).orElseThrow();
         assertEquals(EventType.COMPENSATION_STEP_FAILED, failed.eventType());
