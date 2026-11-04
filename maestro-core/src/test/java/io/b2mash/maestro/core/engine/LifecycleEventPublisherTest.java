@@ -86,6 +86,34 @@ class LifecycleEventPublisherTest {
     }
 
     @Test
+    @DisplayName("dropped() counts backpressure drops and post-shutdown rejections")
+    void dropped_countsBackpressureAndShutdownRejections() throws Exception {
+        var publisher = new LifecycleEventPublisher("test-service");
+        var workerEntered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        try {
+            publisher.submit(() -> {
+                workerEntered.countDown();
+                blockOn(release);
+            });
+            assertTrue(workerEntered.await(5, TimeUnit.SECONDS));
+            // Queue capacity is 1000; 1500 more submits must drop at least 500.
+            for (var i = 0; i < 1_500; i++) {
+                publisher.submit(() -> {});
+            }
+            assertTrue(publisher.dropped() >= 500,
+                    "expected >= 500 backpressure drops, counted " + publisher.dropped());
+        } finally {
+            release.countDown();
+            publisher.shutdown();
+        }
+        var beforeRejection = publisher.dropped();
+        publisher.submit(() -> {});
+        assertTrue(publisher.dropped() == beforeRejection + 1,
+                "a submit after shutdown must be counted as dropped");
+    }
+
+    @Test
     @DisplayName("shutdown is idempotent")
     void shutdown_isIdempotent() {
         var publisher = new LifecycleEventPublisher("test-service");
