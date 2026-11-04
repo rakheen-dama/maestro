@@ -301,7 +301,7 @@ A third resolution step now builds the URI from
 when neither URI property is set. **Behaviour change:** a deployment that set
 `spring.data.redis.host` expecting it to apply now genuinely connects there
 instead of falling back to localhost. The full resolution order is documented
-in [`docs/configuration.md` § Valkey Connection Resolution](configuration.md#valkey-connection-resolution).
+in `docs/configuration.md` § Valkey Connection Resolution (section removed with the Valkey module in 2026-11).
 
 ### Removed
 

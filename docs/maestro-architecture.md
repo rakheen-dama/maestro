@@ -112,7 +112,7 @@ graph TB
 | `maestro-core` | Execution engine, hybrid memoization, virtual threads, timers, signals, saga, queries. | **No** |
 | `maestro-spring-boot-starter` | Auto-configuration, annotation scanning, activity proxy creation, config binding, health indicators. | Yes |
 | `maestro-store-jdbc` | Abstract JDBC `WorkflowStore`. | No (JDBC only) |
-| `maestro-store-postgres` | Postgres `WorkflowStore`; table-backed `DistributedLock` + leader election (`io.b2mash.maestro.store.postgres.lock`); `LISTEN/NOTIFY` cross-node signal wake (`...store.postgres.notify`); Flyway 11 migrations (own history table). | No |
+| `maestro-store-postgres` | Postgres `WorkflowStore`; table-backed `DistributedLock` + leader election (`io.b2mash.maestro.store.postgres.lock`); `LISTEN/NOTIFY` cross-node signal wake (`...store.postgres.notify`); Flyway 11 migrations (own history table). | Yes (auto-configuration only) |
 | `maestro-messaging-kafka` | Spring Kafka 4.x `WorkflowMessaging` implementation. `@MaestroSignalListener` processing. | Yes |
 | `maestro-admin` | Standalone dashboard app (Thymeleaf + HTMX, own Postgres schema). | Yes |
 | `maestro-admin-client` | Publishes lifecycle events to Kafka. Lightweight. | Minimal |
