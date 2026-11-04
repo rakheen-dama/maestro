@@ -1,6 +1,11 @@
 package io.b2mash.maestro.integration.schema;
 
+import io.b2mash.maestro.core.model.EventType;
+import io.b2mash.maestro.core.model.WorkflowEvent;
+import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
+import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.spi.RunLease;
 import io.b2mash.maestro.store.postgres.PostgresWorkflowStore;
 import io.b2mash.maestro.store.postgres.schema.MaestroSchemaInitializer;
 import io.b2mash.maestro.store.postgres.schema.SchemaMode;
@@ -202,7 +207,7 @@ class MaestroMigrationsCoexistIT {
      * harmless (optionally {@code DROP TABLE maestro_signal_queue}).
      */
     @Test
-    @DisplayName("upgrade procedure, keep the data: mode none + V4/V5 by hand + scoped DELETE")
+    @DisplayName("upgrade procedure, keep the data: mode none + V4–V8 by hand + scoped DELETE")
     void upgradeProcedureKeepingTheData(@TempDir Path released, @TempDir Path hostMigrations,
                                         @TempDir Path noMigrations) throws Exception {
         simulateReleased040Database(released, hostMigrations);
@@ -223,7 +228,24 @@ class MaestroMigrationsCoexistIT {
                 ALTER TABLE maestro_workflow_signal ADD COLUMN IF NOT EXISTS trace_context VARCHAR(128);  -- V4
                 ALTER TABLE maestro_workflow_signal ALTER COLUMN received_at SET DEFAULT now();         -- V5
                 ALTER TABLE maestro_workflow_instance ADD COLUMN IF NOT EXISTS lease_epoch BIGINT NOT NULL DEFAULT 0; -- V6
+                ALTER TABLE maestro_workflow_event ADD COLUMN IF NOT EXISTS args_hash VARCHAR(64);       -- V7
                 """);
+        // The block's two V8 lines, one statement each: CREATE INDEX CONCURRENTLY
+        // cannot run inside a transaction block, and a multi-statement string is
+        // one implicit transaction — an operator pastes them one at a time too.
+        execute("""
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_wf_instance_terminal                        -- V8
+                    ON maestro_workflow_instance (status, completed_at) WHERE completed_at IS NOT NULL;
+                """);
+        execute("""
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_wf_signal_instance                          -- V8
+                    ON maestro_workflow_signal (workflow_instance_id);
+                """);
+        execute("""
+                DROP TABLE IF EXISTS maestro_signal_queue, maestro_task_queue, maestro_lifecycle_event_queue; -- optional cleanup
+                """);
+        assertTrue(indexes().containsAll(List.of("idx_wf_instance_terminal", "idx_wf_signal_instance")),
+                "the hand-applied V8 indexes exist: " + indexes());
         // Step 3.
         assertEquals(4, execute(DELETE_MAESTRO_HISTORY_ROWS),
                 "every store/lock row a 0.4.0 build wrote is matched (V200/V201 are not replayed here)");
@@ -237,7 +259,36 @@ class MaestroMigrationsCoexistIT {
         assertTrue(store.getUnconsumedSignals("wf-upgrade", "go").size() >= 1);
         assertTrue(store.getRecoverableInstances().isEmpty(),
                 "this build names lease_epoch in every instance SELECT — the hand-applied V6 makes it readable");
+        // This build names args_hash in every event insert and read — the hand-applied
+        // V7 makes an activity outcome recordable and replayable, through the fenced
+        // append the engine uses, carrying the fingerprint it would carry.
+        var instance = store.createInstance(upgradedInstance("wf-upgrade-event"));
+        var argsHash = "0123456789abcdef".repeat(4);
+        store.appendEvent(new WorkflowEvent(UUID.randomUUID(), instance.id(), 1, EventType.ACTIVITY_COMPLETED,
+                        "Acts.step", null, Instant.now(), argsHash),
+                new RunLease(instance.id(), instance.leaseEpoch()));
+        var recorded = store.getEventBySequence(instance.id(), 1).orElseThrow();
+        assertEquals(argsHash, recorded.argsHash(), "the hand-applied V7 column round-trips the fingerprint");
+        assertEquals(EventType.ACTIVITY_COMPLETED, recorded.eventType());
         assertFalse(tables().contains(MaestroSchemaInitializer.HISTORY_TABLE), "mode none writes no history");
+    }
+
+    /** A minimal RUNNING instance for the upgraded-schema write checks. */
+    private static WorkflowInstance upgradedInstance(String workflowId) {
+        var now = Instant.now();
+        return WorkflowInstance.builder()
+                .id(UUID.randomUUID())
+                .workflowId(workflowId)
+                .runId(UUID.randomUUID())
+                .workflowType("upgrade-test")
+                .taskQueue("default")
+                .status(WorkflowStatus.RUNNING)
+                .serviceName("upgrade-test")
+                .eventSequence(0)
+                .startedAt(now)
+                .updatedAt(now)
+                .version(0)
+                .build();
     }
 
     /** R50: the same procedure's fresh-start path. */
@@ -326,6 +377,18 @@ class MaestroMigrationsCoexistIT {
             stmt.execute(sql);
             return stmt.getUpdateCount();
         }
+    }
+
+    private List<String> indexes() throws SQLException {
+        var names = new ArrayList<String>();
+        try (var conn = ds.getConnection();
+             var rs = conn.createStatement().executeQuery(
+                     "SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() ORDER BY indexname")) {
+            while (rs.next()) {
+                names.add(rs.getString(1));
+            }
+        }
+        return names;
     }
 
     private List<String> tables() throws SQLException {
