@@ -223,7 +223,7 @@ graph TB
 | `maestro-core` | Execution engine, memoization, timers, signals, saga | **No** |
 | `maestro-spring-boot-starter` | Auto-configuration, annotations, config binding | Yes |
 | `maestro-store-jdbc` | Abstract JDBC `WorkflowStore` | No |
-| `maestro-store-postgres` | Postgres `WorkflowStore`, table-backed `DistributedLock`, LISTEN/NOTIFY signal wake, Flyway migrations | No |
+| `maestro-store-postgres` | Postgres `WorkflowStore`, table-backed `DistributedLock`, LISTEN/NOTIFY signal wake, Flyway migrations | Yes (auto-configuration only) |
 | `maestro-messaging-kafka` | Kafka `WorkflowMessaging` implementation | Yes |
 | `maestro-admin` | Standalone monitoring dashboard | Yes |
 | `maestro-admin-client` | Lifecycle event publisher | Minimal |
