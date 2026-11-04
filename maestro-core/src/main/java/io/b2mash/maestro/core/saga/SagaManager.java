@@ -23,6 +23,7 @@ import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.core.engine.InstanceStatusWriter;
+import io.b2mash.maestro.core.engine.LifecycleEventSink;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.engine.ReplayGuard;
 import io.b2mash.maestro.core.engine.SequenceSpace;
@@ -98,7 +99,7 @@ public final class SagaManager {
     private static final String SEQUENTIAL_COMPENSATION = "$maestro:sequential-compensation";
 
     private final WorkflowStore store;
-    private final @Nullable WorkflowMessaging messaging;
+    private final LifecycleEventSink lifecycleEventSink;
     private final PayloadSerializer serializer;
     private final String serviceName;
     private final EngineObserver observer;
@@ -139,8 +140,33 @@ public final class SagaManager {
             String serviceName,
             EngineObserver observer
     ) {
+        this(store, serializer, serviceName, observer, LifecycleEventSink.direct(messaging));
+    }
+
+    /**
+     * Creates a new SagaManager with an {@link EngineObserver}, publishing
+     * lifecycle events through an explicit {@link LifecycleEventSink} instead
+     * of inline on a {@link WorkflowMessaging} — {@link WorkflowExecutor}
+     * passes its off-thread sink here so {@code COMPENSATION_*} events never
+     * block a workflow thread on the transport.
+     *
+     * @param store              workflow store for persistence
+     * @param serializer         Jackson serializer for event payloads
+     * @param serviceName        the owning service name
+     * @param observer           engine observation seam; never {@code null}
+     *                           (pass {@link EngineObserver#NOOP})
+     * @param lifecycleEventSink where {@code COMPENSATION_*} events go; never
+     *                           {@code null} (pass {@link LifecycleEventSink#NOOP})
+     */
+    public SagaManager(
+            WorkflowStore store,
+            PayloadSerializer serializer,
+            String serviceName,
+            EngineObserver observer,
+            LifecycleEventSink lifecycleEventSink
+    ) {
         this.store = store;
-        this.messaging = messaging;
+        this.lifecycleEventSink = lifecycleEventSink;
         this.serializer = serializer;
         this.serviceName = serviceName;
         this.observer = observer;
@@ -989,23 +1015,18 @@ public final class SagaManager {
 
     private void publishLifecycleEvent(WorkflowContext ctx, String stepName,
                                        LifecycleEventType eventType) {
-        if (messaging == null) return;
-        try {
-            messaging.publishLifecycleEvent(new WorkflowLifecycleEvent(
-                    ctx.workflowInstanceId(),
-                    ctx.workflowId(),
-                    ctx.workflowType(),
-                    serviceName,
-                    ctx.taskQueue(),
-                    eventType,
-                    stepName,
-                    null,
-                    Instant.now()
-            ));
-        } catch (Exception e) {
-            logger.warn("Failed to publish {} lifecycle event for workflow '{}'",
-                    eventType, ctx.workflowId(), e);
-        }
+        // Never blocks and never throws — see LifecycleEventSink.
+        lifecycleEventSink.publish(new WorkflowLifecycleEvent(
+                ctx.workflowInstanceId(),
+                ctx.workflowId(),
+                ctx.workflowType(),
+                serviceName,
+                ctx.taskQueue(),
+                eventType,
+                stepName,
+                null,
+                Instant.now()
+        ));
     }
 
     // ── Payload records ───────────────────────────────────────────────

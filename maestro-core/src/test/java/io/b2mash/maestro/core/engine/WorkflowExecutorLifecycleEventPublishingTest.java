@@ -36,6 +36,7 @@ import java.util.function.Consumer;
 import static io.b2mash.maestro.core.TestEventLogs.removeFailureEvents;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -310,6 +311,115 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         assertTrue(types.contains(LifecycleEventType.WORKFLOW_COMPLETED));
     }
 
+    // ── Feature 3: every lifecycle event leaves the workflow thread via the sink ──
+
+    @Test
+    @DisplayName("lifecycleEventSink() publishes on the executor's lifecycle-publisher thread, never the caller's")
+    void lifecycleEventSink_publishesOffTheCallingThread() {
+        var messaging = new RecordingMessaging();
+        var serializer = new PayloadSerializer(new ObjectMapper());
+        executor = new WorkflowExecutor(store, null, messaging, null, serializer, "sink-service");
+
+        var sink = executor.lifecycleEventSink();
+        var event = new WorkflowLifecycleEvent(UUID.randomUUID(), "wf-sink", "SinkWorkflow", "sink-service",
+                "default", LifecycleEventType.WORKFLOW_STARTED, null, null, Instant.now());
+        sink.publish(event);
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> assertEquals(1, messaging.events.size()));
+        var publishedOn = messaging.threads.getFirst();
+        assertTrue(publishedOn.startsWith("maestro-lifecycle-publisher-sink-service-"),
+                "expected the executor's LifecycleEventPublisher thread, was " + publishedOn);
+    }
+
+    @Test
+    @DisplayName("lifecycleEventSink() is NOOP with no messaging, and NOOP when publishing is disabled")
+    void lifecycleEventSink_isNoopWithoutMessagingOrWhenDisabled() {
+        var serializer = new PayloadSerializer(new ObjectMapper());
+        executor = new WorkflowExecutor(store, null, null, null, serializer, "test-service");
+        assertSame(LifecycleEventSink.NOOP, executor.lifecycleEventSink(), "no messaging → NOOP");
+        executor.shutdown();
+
+        executor = new WorkflowExecutor(store, null, new RecordingMessaging(), null, serializer, "test-service",
+                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
+                false);
+        assertSame(LifecycleEventSink.NOOP, executor.lifecycleEventSink(), "enabled=false → NOOP");
+    }
+
+    @Test
+    @DisplayName("activity, timer, signal and workflow events all publish off the workflow thread through the sink")
+    void everyLifecycleEventSource_publishesOffThread_viaTheExecutorSink() throws Exception {
+        // Before the sink, ActivityInvocationHandler, SignalManager and
+        // DefaultWorkflowOperations each called publishLifecycleEvent inline on
+        // the workflow's own virtual thread: a Kafka producer blocked on a missing
+        // topic cost every activity call up to max.block.ms, twice. This pins the
+        // thread each event is actually published on.
+        var messaging = new RecordingMessaging();
+        var serializer = new PayloadSerializer(new ObjectMapper());
+        executor = new WorkflowExecutor(store, null, messaging, null, serializer, "sink-service");
+
+        // The production wiring: ActivityStubBeanPostProcessor hands the
+        // executor's sink to the proxy, so ACTIVITY_* events take the same route.
+        var activities = new ActivityProxyFactory().createProxy(
+                GreetingActivities.class, new GreetingActivitiesImpl(),
+                store, null, RetryPolicy.defaultPolicy(), Duration.ofSeconds(5),
+                serializer, new RetryExecutor(), WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
+                io.b2mash.maestro.core.observe.EngineObserver.NOOP, executor.taskQueueGovernor(),
+                executor.lifecycleEventSink());
+
+        var workflow = new FullLifecycleWorkflow(activities);
+        var method = FullLifecycleWorkflow.class.getMethod("run", String.class);
+
+        var instanceId = executor.startWorkflow("sink-full", "FullLifecycleWorkflow", "default",
+                "world", () -> workflow, method);
+
+        await().atMost(Duration.ofSeconds(5)).until(() ->
+                store.getInstance("sink-full").map(i -> i.status() == WorkflowStatus.WAITING_TIMER).orElse(false));
+        var timer = store.findTimer(instanceId, "sleep-2").orElseThrow();
+        executor.fireTimer("sink-full", "sleep-2", timer.id());
+
+        await().atMost(Duration.ofSeconds(5)).until(() ->
+                store.getInstance("sink-full").map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL).orElse(false));
+        executor.deliverSignal("sink-full", "go", "approved");
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertEquals(WorkflowStatus.COMPLETED, store.getInstance("sink-full").orElseThrow().status()));
+
+        executor.shutdown(); // drains the publisher, so the lists below are complete
+        var types = messaging.events.stream().map(WorkflowLifecycleEvent::eventType).toList();
+        assertTrue(types.contains(LifecycleEventType.ACTIVITY_STARTED), "positive control: " + types);
+        assertTrue(types.contains(LifecycleEventType.TIMER_SCHEDULED), "positive control: " + types);
+        assertTrue(types.contains(LifecycleEventType.SIGNAL_RECEIVED), "positive control: " + types);
+        assertTrue(types.contains(LifecycleEventType.WORKFLOW_COMPLETED), "positive control: " + types);
+        for (var thread : messaging.threads) {
+            assertTrue(thread.startsWith("maestro-lifecycle-publisher-sink-service-"),
+                    "every lifecycle event must be published on the publisher thread, one was on: " + thread
+                            + " (all: " + messaging.threads + ")");
+        }
+    }
+
+    @Test
+    @DisplayName("compensation events publish off the workflow thread through the sink too")
+    void compensationEvents_publishOffThread_viaTheExecutorSink() throws Exception {
+        var messaging = new RecordingMessaging();
+        var serializer = new PayloadSerializer(new ObjectMapper());
+        executor = new WorkflowExecutor(store, null, messaging, null, serializer, "sink-service");
+
+        var workflow = new CompensatingWorkflow();
+        var method = CompensatingWorkflow.class.getMethod("run", String.class);
+        executor.startWorkflow("sink-comp", "CompensatingWorkflow", "default", "hello", () -> workflow, method);
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertEquals(WorkflowStatus.FAILED, store.getInstance("sink-comp").orElseThrow().status()));
+
+        executor.shutdown();
+        var types = messaging.events.stream().map(WorkflowLifecycleEvent::eventType).toList();
+        assertTrue(types.contains(LifecycleEventType.COMPENSATION_STARTED), "positive control: " + types);
+        for (var thread : messaging.threads) {
+            assertTrue(thread.startsWith("maestro-lifecycle-publisher-sink-service-"),
+                    "COMPENSATION_* events must be published on the publisher thread, one was on: " + thread);
+        }
+    }
+
     // ── Fixtures ─────────────────────────────────────────────────────────
 
     /** Completes immediately and counts down a latch so the test can synchronise. */
@@ -394,9 +504,10 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         public void subscribeSignals(String serviceName, Consumer<SignalMessage> handler) {}
     }
 
-    /** Records every published lifecycle event. */
+    /** Records every published lifecycle event, and the thread each one was published on. */
     private static class RecordingMessaging implements WorkflowMessaging {
         final CopyOnWriteArrayList<WorkflowLifecycleEvent> events = new CopyOnWriteArrayList<>();
+        final CopyOnWriteArrayList<String> threads = new CopyOnWriteArrayList<>();
 
         @Override
         public void publishSignal(String serviceName, SignalMessage message) {}
@@ -404,6 +515,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         @Override
         public void publishLifecycleEvent(WorkflowLifecycleEvent event) {
             events.add(event);
+            threads.add(Thread.currentThread().getName());
         }
 
         @Override

@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.annotation.ActivityStub;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.engine.ActivityProxyFactory;
 import io.b2mash.maestro.core.engine.GatedWorkflowMessaging;
+import io.b2mash.maestro.core.engine.LifecycleEventSink;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.engine.TaskQueueGovernor;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
@@ -80,7 +81,7 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
     private @Nullable ActivityProxyFactory proxyFactory;
     private @Nullable WorkflowStore store;
     private @Nullable DistributedLock distributedLock;
-    private @Nullable WorkflowMessaging messaging;
+    private LifecycleEventSink lifecycleEventSink = LifecycleEventSink.NOOP;
     private @Nullable PayloadSerializer serializer;
     private @Nullable RetryExecutor retryExecutor;
     private @Nullable String lockKeyPrefix;
@@ -157,14 +158,6 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
 
         // Optional SPIs — null when not available
         distributedLock = ctx.getBeanProvider(DistributedLock.class).getIfAvailable();
-        // Activity proxies are built here, independently of WorkflowExecutor, so
-        // ACTIVITY_* lifecycle events need their own gate on maestro.admin.events.enabled
-        // — WorkflowExecutor only gates the events it publishes itself and the
-        // components it constructs (SignalManager, SagaManager, DefaultWorkflowOperations).
-        // GatedWorkflowMessaging is the shared seam both paths use; see its Javadoc.
-        var rawMessaging = ctx.getBeanProvider(WorkflowMessaging.class).getIfAvailable();
-        messaging = GatedWorkflowMessaging.wrap(rawMessaging, properties.getAdmin().events().enabled());
-
         // Same composite the executor is handed (design §1.3): every
         // EngineObserver bean in the context, wrapped so a throwing adapter
         // can never corrupt activity execution (coordinator Ruling 4).
@@ -175,6 +168,20 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
         // workflow can run here at all, so unbounded is the only meaningful fallback.
         var executor = ctx.getBeanProvider(WorkflowExecutor.class).getIfAvailable();
         governor = executor != null ? executor.taskQueueGovernor() : TaskQueueGovernor.UNBOUNDED;
+
+        // Activity proxies are built here, independently of WorkflowExecutor. Their
+        // ACTIVITY_* lifecycle events must take the executor's off-thread sink —
+        // already gated on maestro.admin.events.enabled — so a blocking transport
+        // (Kafka's producer on a missing topic, up to max.block.ms) never stalls a
+        // workflow thread twice per activity call. Without an executor bean the
+        // inline sink over the same GatedWorkflowMessaging seam is the fallback.
+        if (executor != null) {
+            lifecycleEventSink = executor.lifecycleEventSink();
+        } else {
+            var rawMessaging = ctx.getBeanProvider(WorkflowMessaging.class).getIfAvailable();
+            lifecycleEventSink = LifecycleEventSink.direct(
+                    GatedWorkflowMessaging.wrap(rawMessaging, properties.getAdmin().events().enabled()));
+        }
 
         dependenciesResolved = true;
     }
@@ -275,14 +282,14 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
                     activityImpl,
                     store,
                     distributedLock,
-                    messaging,
                     retryPolicy,
                     timeout,
                     serializer,
                     retryExecutor,
                     lockKeyPrefix,
                     observer,
-                    governor
+                    governor,
+                    lifecycleEventSink
             );
 
             field.setAccessible(true);
