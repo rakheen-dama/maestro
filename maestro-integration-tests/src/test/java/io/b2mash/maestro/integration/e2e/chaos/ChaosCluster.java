@@ -313,6 +313,11 @@ public final class ChaosCluster implements AutoCloseable {
         env.put("KAFKA_BOOTSTRAP", "kafka:9092");
         env.put("SERVER_PORT", String.valueOf(NODE_PORT));
         env.put("MAESTRO_SIGNAL_WAKE_RECHECK_INTERVAL", isoSeconds(config.wakeRecheckInterval()));
+        // The invariant checks read terminal rows (statuses, event logs, side
+        // effect censuses) after the drain; the retention sweeper deleting
+        // them mid-run would make those reads nondeterministic. Retention
+        // has its own coverage (MultiNodeRetentionPurgeIT); here it is off.
+        env.put("MAESTRO_RETENTION_ENABLED", "false");
         env.put("JAVA_TOOL_OPTIONS", "-Xmx256m");
         // Sample timeouts (chaos-harness-design.md §3): long enough that a
         // prompt driver never times out a live path mid-chaos, short enough that
