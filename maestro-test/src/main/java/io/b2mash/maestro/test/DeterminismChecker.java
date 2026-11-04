@@ -19,9 +19,14 @@ import java.util.concurrent.TimeoutException;
  * step name, event type, or {@code parallel()} branch count that disagrees with
  * the recorded event stands the run down with
  * {@code StandDownReason.NONDETERMINISTIC_HISTORY} and leaves the instance
- * recoverable (see {@code docs/operations.md} §10.7). What it still cannot
- * detect is a nondeterministic <em>value</em> that happens to produce the same
- * step sequence — which is what this checker exists to catch before deployment.
+ * recoverable (see {@code docs/operations.md} §10.7); so does an activity
+ * called with arguments that fingerprint differently from the recorded run's
+ * ({@code WorkflowEvent.argsHash()}). What it still cannot detect is a
+ * nondeterministic <em>value</em> that never reaches an activity's arguments —
+ * a {@code sleep()} duration, an {@code awaitSignal()} timeout, a
+ * {@code currentTime()}/{@code randomUUID()} side-effect value — yet produces
+ * the same step sequence; and what it detects only at replay, this checker
+ * exists to catch before deployment.
  *
  * <p>This checker runs the same workflow several times from a clean state and
  * compares the resulting event logs. A workflow whose decisions depend on
@@ -110,7 +115,7 @@ public final class DeterminismChecker {
      * @param input         the workflow input
      * @param run           the run index, used to build a unique workflow ID
      * @param timeout       how long the run may take
-     * @return one {@code sequence:eventType:stepName} entry per recorded event
+     * @return one {@code sequence:eventType:stepName:argsHash} entry per recorded event
      */
     private static List<String> fingerprint(
             TestWorkflowEnvironment env, Class<?> workflowClass, @Nullable Object input,
@@ -130,15 +135,25 @@ public final class DeterminismChecker {
     }
 
     /**
+     * One entry per event: sequence, type, step name and — for an activity
+     * outcome — the fingerprint of the arguments it was called with
+     * ({@link WorkflowEvent#argsHash()}; {@code -} when absent). The
+     * fingerprint is what turns a run-to-run difference in an activity's
+     * <em>input</em> (the same step asked a different question) into a
+     * divergence this checker reports; the payload (the answer) is
+     * deliberately not part of the entry — a different recorded version is a
+     * different history, not a divergent path.
+     *
      * @param events the recorded event log
      * @return the decision sequence, one entry per event
      */
     private static List<String> decisions(List<WorkflowEvent> events) {
         var decisions = new ArrayList<String>(events.size());
         for (var event : events) {
-            decisions.add("%d:%s:%s".formatted(
+            decisions.add("%d:%s:%s:%s".formatted(
                     event.sequenceNumber(), event.eventType(),
-                    event.stepName() == null ? "-" : event.stepName()));
+                    event.stepName() == null ? "-" : event.stepName(),
+                    event.argsHash() == null ? "-" : event.argsHash()));
         }
         return decisions;
     }
