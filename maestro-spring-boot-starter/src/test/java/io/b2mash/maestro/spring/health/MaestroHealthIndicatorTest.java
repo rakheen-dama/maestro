@@ -44,7 +44,7 @@ class MaestroHealthIndicatorTest {
     @Test
     @DisplayName("returns promptly, bounded by STORE_PROBE_TIMEOUT, when the store call blocks indefinitely")
     void returnsPromptlyWhenStoreBlocksIndefinitely() {
-        var indicator = new MaestroHealthIndicator(new BlockingWorkflowStore(), executor, true);
+        var indicator = new MaestroHealthIndicator(new BlockingWorkflowStore(), executor, true, true);
 
         var start = Instant.now();
         var health = indicator.health();

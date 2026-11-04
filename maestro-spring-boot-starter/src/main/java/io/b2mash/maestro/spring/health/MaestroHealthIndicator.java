@@ -52,6 +52,10 @@ import java.util.concurrent.TimeoutException;
  *       (when enabled) has started at least once, the string {@code "starting"} before
  *       then, or the string {@code "disabled"} when {@code maestro.recovery.enabled=false}
  *       — so operators can tell "off on purpose", "still starting", and "dead" apart</li>
+ *   <li>{@code retentionSweeperRunning} — the same three-way value for the retention
+ *       sweeper, {@code "disabled"} when {@code maestro.retention.enabled=false}. Note
+ *       that "running" means the sweep loop is alive on this node, not that this node
+ *       is the elected leader that actually purges</li>
  *   <li>{@code runningWorkflowCount} — workflows currently executing on this node</li>
  * </ul>
  *
@@ -104,19 +108,24 @@ public class MaestroHealthIndicator implements HealthIndicator {
     private final WorkflowStore store;
     private final WorkflowExecutor executor;
     private final boolean recoveryPollerEnabled;
+    private final boolean retentionSweeperEnabled;
 
     /**
      * Creates a health indicator backed by the given store and executor.
      *
-     * @param store                 the workflow store to probe for reachability
-     * @param executor              the executor whose poller and running-workflow state is reported
-     * @param recoveryPollerEnabled mirrors {@code maestro.recovery.enabled} — whether the
-     *                              recovery poller is expected to run at all
+     * @param store                   the workflow store to probe for reachability
+     * @param executor                the executor whose poller and running-workflow state is reported
+     * @param recoveryPollerEnabled   mirrors {@code maestro.recovery.enabled} — whether the
+     *                                recovery poller is expected to run at all
+     * @param retentionSweeperEnabled mirrors {@code maestro.retention.enabled} — whether the
+     *                                retention sweeper is expected to run at all
      */
-    public MaestroHealthIndicator(WorkflowStore store, WorkflowExecutor executor, boolean recoveryPollerEnabled) {
+    public MaestroHealthIndicator(WorkflowStore store, WorkflowExecutor executor, boolean recoveryPollerEnabled,
+                                  boolean retentionSweeperEnabled) {
         this.store = store;
         this.executor = executor;
         this.recoveryPollerEnabled = recoveryPollerEnabled;
+        this.retentionSweeperEnabled = retentionSweeperEnabled;
     }
 
     @Override
@@ -125,8 +134,11 @@ public class MaestroHealthIndicator implements HealthIndicator {
         var timer = pollerState(executor.hasTimerPollerStarted(), executor.isTimerPollerRunning(), false);
         var recovery = pollerState(executor.hasRecoveryPollerStarted(), executor.isRecoveryPollerRunning(),
                 !recoveryPollerEnabled);
+        var retention = pollerState(executor.hasRetentionSweeperStarted(), executor.isRetentionSweeperRunning(),
+                !retentionSweeperEnabled);
 
-        var status = (storeProbe.status().equals("reachable") && !timer.fault() && !recovery.fault())
+        var status = (storeProbe.status().equals("reachable") && !timer.fault() && !recovery.fault()
+                && !retention.fault())
                 ? Status.UP
                 : Status.DOWN;
 
@@ -134,6 +146,7 @@ public class MaestroHealthIndicator implements HealthIndicator {
                 .withDetail("store", storeProbe.status())
                 .withDetail("timerPollerRunning", timer.detail())
                 .withDetail("recoveryPollerRunning", recovery.detail())
+                .withDetail("retentionSweeperRunning", retention.detail())
                 .withDetail("runningWorkflowCount", executor.runningCount());
 
         if (storeProbe.exception() != null) {

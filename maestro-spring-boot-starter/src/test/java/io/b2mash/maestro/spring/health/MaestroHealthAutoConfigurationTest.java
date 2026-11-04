@@ -208,6 +208,55 @@ class MaestroHealthAutoConfigurationTest {
                 });
     }
 
+    @Test
+    @DisplayName("retentionSweeperRunning is \"starting\" before the sweeper starts, true while it runs, "
+            + "and false (DOWN) once it has started and then stopped")
+    void retentionSweeperDetailFollowsTheSweeper() {
+        runner.withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .withPropertyValues("maestro.recovery.enabled=false")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    var executor = context.getBean(WorkflowExecutor.class);
+                    var indicator = context.getBean(MaestroHealthIndicator.class);
+                    executor.startTimerPoller(Duration.ofSeconds(5), 100);
+
+                    assertThat(indicator.health().getDetails()).containsEntry("retentionSweeperRunning", "starting");
+                    assertThat(indicator.health().getStatus()).isEqualTo(Status.UP);
+
+                    executor.startRetentionSweeper(new WorkflowExecutor.RetentionSettings(Duration.ofHours(1),
+                            Duration.ofDays(30), Duration.ofDays(30), Duration.ofDays(90), 500, 100));
+                    assertThat(indicator.health().getDetails()).containsEntry("retentionSweeperRunning", true);
+                    assertThat(indicator.health().getStatus()).isEqualTo(Status.UP);
+
+                    executor.shutdown();
+                    var health = indicator.health();
+                    assertThat(health.getDetails()).containsEntry("retentionSweeperRunning", false);
+                    assertThat(health.getStatus())
+                            .as("the sweeper started and then stopped running — a genuine fault")
+                            .isEqualTo(Status.DOWN);
+                });
+    }
+
+    @Test
+    @DisplayName("retentionSweeperRunning is \"disabled\" and status stays UP when maestro.retention.enabled=false")
+    void retentionSweeperDisabledByConfiguration() {
+        runner.withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .withPropertyValues("maestro.retention.enabled=false")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    var executor = context.getBean(WorkflowExecutor.class);
+                    executor.startTimerPoller(Duration.ofSeconds(5), 100);
+                    executor.startRecoveryPoller(Map.of(), Duration.ofSeconds(60));
+                    try {
+                        var health = context.getBean(MaestroHealthIndicator.class).health();
+                        assertThat(health.getStatus()).isEqualTo(Status.UP);
+                        assertThat(health.getDetails()).containsEntry("retentionSweeperRunning", "disabled");
+                    } finally {
+                        executor.shutdown();
+                    }
+                });
+    }
+
     /** Always throws from {@link #getInstance(String)} to simulate an unreachable store. */
     private static final class ThrowingWorkflowStore extends DelegatingWorkflowStore {
 

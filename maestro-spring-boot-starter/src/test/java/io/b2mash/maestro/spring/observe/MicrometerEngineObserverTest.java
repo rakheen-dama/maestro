@@ -150,6 +150,20 @@ class MicrometerEngineObserverTest {
     }
 
     @Test
+    @DisplayName("maestro.retention.purged{kind} / maestro.retention.sweeps — Counters moved by the pass's counts")
+    void retentionPass() {
+        observer.retentionPass(new io.b2mash.maestro.core.spi.PurgeResult(5, 40, 3, 2));
+        observer.retentionPass(io.b2mash.maestro.core.spi.PurgeResult.EMPTY);
+        observer.retentionPass(new io.b2mash.maestro.core.spi.PurgeResult(1, 2, 0, 1));
+
+        assertThat(registry.get("maestro.retention.sweeps").counter().count()).isEqualTo(3.0);
+        assertThat(registry.get("maestro.retention.purged").tag("kind", "instance").counter().count()).isEqualTo(6.0);
+        assertThat(registry.get("maestro.retention.purged").tag("kind", "event").counter().count()).isEqualTo(42.0);
+        assertThat(registry.get("maestro.retention.purged").tag("kind", "signal").counter().count()).isEqualTo(3.0);
+        assertThat(registry.get("maestro.retention.purged").tag("kind", "timer").counter().count()).isEqualTo(3.0);
+    }
+
+    @Test
     @DisplayName("maestro.lock.renew.failures — Counter, tag outcome=error|lost")
     void lockRenewFailures() {
         observer.instanceLockRenewFailed("wf-1");
