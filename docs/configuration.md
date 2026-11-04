@@ -457,7 +457,7 @@ signals.
 | `maestro.retention.completed-retention`  | `Duration` | `30d`   | How long a `COMPLETED` workflow is kept after it completed.                  |
 | `maestro.retention.terminated-retention` | `Duration` | `30d`   | How long a `TERMINATED` workflow is kept after it was terminated. Its leftover `PENDING` timers go with it. |
 | `maestro.retention.failed-retention`     | `Duration` | `90d`   | How long a `FAILED` workflow is kept after it failed. Longer by default because an operator may still retry it; once purged, a retry reports the workflow not found. |
-| `maestro.retention.batch-size`           | `int`      | `500`   | Instances deleted per transaction (plus all of their child rows).            |
+| `maestro.retention.batch-size`           | `int`      | `500`   | Instances deleted per transaction (plus all of their child rows). 1 to 10 000; each candidate is one JDBC bind parameter in the batch's deletes and pgjdbc allows 32 767 per statement, so a larger value is rejected at startup rather than failing every batch. |
 | `maestro.retention.max-batches-per-sweep`| `int`      | `100`   | Batches per status per sweep. Bounds one sweep's work on a large backlog: at the defaults, at most 50 000 instances per status per hour; the rest waits for the next interval. |
 
 `maestro.signal.terminal-retention` (above) is independent and narrower: it

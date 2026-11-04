@@ -620,7 +620,10 @@ public class MaestroProperties {
      * @param failedRetention     how long a {@code FAILED} workflow is kept
      *                            after it failed — longer by default, because an
      *                            operator may still retry it
-     * @param batchSize           instances deleted per transaction
+     * @param batchSize           instances deleted per transaction; at most
+     *                            10 000 (each candidate is a JDBC bind parameter
+     *                            in the batch's deletes, and the driver caps
+     *                            binds per statement) — startup fails above it
      * @param maxBatchesPerSweep  batches per status per sweep; bounds one
      *                            sweep's work on a large backlog (the rest
      *                            waits for the next interval)

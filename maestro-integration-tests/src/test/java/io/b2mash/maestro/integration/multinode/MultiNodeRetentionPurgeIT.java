@@ -102,6 +102,14 @@ class MultiNodeRetentionPurgeIT extends PostgresIntegrationSupport {
             assertEquals(0, childRows("maestro_workflow_timer", id), "timers of " + id);
         }
 
+        // retentionPass is emitted at the end of the whole sweep (after the
+        // TERMINATED and FAILED passes), so the rows can be gone a moment
+        // before the observer has heard about the last batch.
+        await("the leader's observer has reported every purged instance")
+                .atMost(Duration.ofSeconds(10))
+                .pollInterval(Duration.ofMillis(50))
+                .until(() -> observerA.instancesPurged() + observerB.instancesPurged() == 3);
+
         // Exactly one node purged; the other never emitted a retentionPass at
         // all, because a non-leader never reaches the store.
         var purgedByA = observerA.instancesPurged();

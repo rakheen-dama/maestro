@@ -92,6 +92,15 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     private static final String UNIQUE_VIOLATION = "23505";
 
     /**
+     * Largest {@code batchSize} {@link #purgeTerminalInstancesBefore} accepts.
+     * Each candidate is one bind parameter in each of the batch's four
+     * {@code IN (...)} lists, and pgjdbc allows at most 32 767 binds per
+     * statement; above the cap every batch would fail. Matches
+     * {@code WorkflowExecutor.RetentionSettings.MAX_BATCH_SIZE}.
+     */
+    static final int MAX_PURGE_BATCH_SIZE = 10_000;
+
+    /**
      * Logical-ID prefix of an {@code awaitSignal} deadline row; the suffix is
      * the sequence of the await's {@code TIMER_SCHEDULED} memo (the layout the
      * {@link WorkflowStore#deleteFailureEvents} contract names).
@@ -719,8 +728,9 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         if (!status.isTerminal()) {
             throw new IllegalArgumentException("Only terminal statuses can be purged, got " + status);
         }
-        if (batchSize < 1) {
-            throw new IllegalArgumentException("batchSize must be at least 1, got " + batchSize);
+        if (batchSize < 1 || batchSize > MAX_PURGE_BATCH_SIZE) {
+            throw new IllegalArgumentException("batchSize must be between 1 and " + MAX_PURGE_BATCH_SIZE
+                    + ", got " + batchSize);
         }
 
         try (var conn = dataSource.getConnection()) {

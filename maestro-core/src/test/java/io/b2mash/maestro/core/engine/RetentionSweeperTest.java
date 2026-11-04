@@ -70,6 +70,18 @@ class RetentionSweeperTest {
         }
 
         @Test
+        @DisplayName("rejects a batch size above MAX_BATCH_SIZE (the JDBC bind-parameter ceiling)")
+        void rejectsBatchSizeAboveTheCap() {
+            assertEquals(10_000, WorkflowExecutor.RetentionSettings.MAX_BATCH_SIZE);
+            new WorkflowExecutor.RetentionSettings(Duration.ofHours(1), Duration.ofDays(1), Duration.ofDays(1),
+                    Duration.ofDays(1), WorkflowExecutor.RetentionSettings.MAX_BATCH_SIZE, 1);
+            var ex = assertThrows(IllegalArgumentException.class, () -> new WorkflowExecutor.RetentionSettings(
+                    Duration.ofHours(1), Duration.ofDays(1), Duration.ofDays(1), Duration.ofDays(1),
+                    WorkflowExecutor.RetentionSettings.MAX_BATCH_SIZE + 1, 1));
+            assertTrue(ex.getMessage().contains("10000"), ex.getMessage());
+        }
+
+        @Test
         @DisplayName("the sweeper rejects a null store, settings or observer and a blank service name")
         void sweeperRejectsNulls() {
             var store = new RecordingStore();
@@ -278,6 +290,28 @@ class RetentionSweeperTest {
         }
 
         @Test
+        @DisplayName("stop() during a batch ends the sweep before the next batch, even when the store swallowed the interrupt")
+        void stopMidSweepEndsBeforeTheNextBatch() throws Exception {
+            var store = new RecordingStore();
+            // Every batch comes back full, so without the stop check the sweep
+            // would run on for the whole 100-batch budget after stop().
+            var full = new PurgeResult(2, 2, 0, 0);
+            store.enqueue(java.util.Collections.nCopies(300, full).toArray(PurgeResult[]::new));
+            store.blockFirstCallUntilReleased(full);
+            var sweeper = new RetentionSweeper(store, null, SERVICE, settings(2, 100), new RecordingEngineObserver());
+            sweeper.start();
+            assertTrue(store.sweepEntered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+
+            var stopper = Thread.startVirtualThread(sweeper::stop);
+            await().atMost(Duration.ofSeconds(5)).until(() -> !sweeper.isRunning());
+            store.release.countDown(); // the blocked batch now returns full
+            stopper.join(Duration.ofSeconds(10).toMillis());
+            assertFalse(stopper.isAlive(), "stop() must have returned");
+
+            assertEquals(1, store.calls.size(), "no batch may start after stop()");
+        }
+
+        @Test
         @DisplayName("stop() ends the loop promptly even when the store swallows the interrupt mid-sweep")
         void stopWhileTheStoreSwallowsTheInterruptEndsPromptly() throws Exception {
             var store = new RecordingStore();
@@ -364,10 +398,31 @@ class RetentionSweeperTest {
             swallowInterrupt = true;
         }
 
+        private volatile @Nullable PurgeResult blockedResult;
+        final java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+
+        /** The first call blocks (swallowing any interrupt) until {@link #release} is counted down, then returns {@code result}. */
+        void blockFirstCallUntilReleased(PurgeResult result) {
+            blockedResult = result;
+        }
+
         @Override
         public synchronized PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff,
                                                                      int batchSize) {
             calls.add(new Call(status, cutoff, batchSize));
+            var blocked = blockedResult;
+            if (blocked != null && calls.size() == 1) {
+                sweepEntered.countDown();
+                while (true) {
+                    try {
+                        release.await();
+                        break;
+                    } catch (InterruptedException swallowed) {
+                        // deliberately swallowed — keep waiting, like a driver that ignores interrupts
+                    }
+                }
+                return blocked;
+            }
             if (swallowInterrupt) {
                 swallowInterrupt = false;
                 sweepThread.set(Thread.currentThread());

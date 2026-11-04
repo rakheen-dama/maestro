@@ -88,6 +88,23 @@ class AbstractJdbcWorkflowStoreUnitTest {
     }
 
     @Test
+    @DisplayName("purgeTerminalInstancesBefore() rejects a non-terminal status and a batch size outside 1..10000 "
+            + "before touching the DataSource")
+    void purge_rejectsBadArgumentsBeforeBorrowingAConnection() {
+        var store = new TestStore(neverUsedDataSource, JdbcStoreConfiguration.withDefaults(mapper));
+        var cutoff = java.time.Instant.now();
+
+        assertThrows(IllegalArgumentException.class, () -> store.purgeTerminalInstancesBefore(
+                io.b2mash.maestro.core.model.WorkflowStatus.RUNNING, cutoff, 10));
+        assertThrows(IllegalArgumentException.class, () -> store.purgeTerminalInstancesBefore(
+                io.b2mash.maestro.core.model.WorkflowStatus.COMPLETED, cutoff, 0));
+        var ex = assertThrows(IllegalArgumentException.class, () -> store.purgeTerminalInstancesBefore(
+                io.b2mash.maestro.core.model.WorkflowStatus.COMPLETED, cutoff,
+                AbstractJdbcWorkflowStore.MAX_PURGE_BATCH_SIZE + 1));
+        assertEquals("batchSize must be between 1 and 10000, got 10001", ex.getMessage());
+    }
+
+    @Test
     @DisplayName("toJsonString() serializes a JsonNode with the configured mapper")
     void toJsonString_serializesNode() {
         var store = new TestStore(neverUsedDataSource, JdbcStoreConfiguration.withDefaults(mapper));

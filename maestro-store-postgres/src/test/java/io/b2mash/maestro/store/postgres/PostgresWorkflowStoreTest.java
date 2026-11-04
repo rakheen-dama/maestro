@@ -1227,6 +1227,9 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
                     () -> store.purgeTerminalInstancesBefore(WorkflowStatus.RUNNING, cutoff, 10));
             assertThrows(IllegalArgumentException.class,
                     () -> store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, cutoff, 0));
+            assertThrows(IllegalArgumentException.class,
+                    () -> store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, cutoff, 10_001),
+                    "above the bind-parameter cap");
         }
 
         /**

@@ -1444,7 +1444,8 @@ public final class WorkflowExecutor {
      * @param failedRetention     how long a {@code FAILED} workflow is kept after
      *                            it failed — typically longer, since an operator
      *                            may still retry it; positive
-     * @param batchSize           instances deleted per transaction; at least 1
+     * @param batchSize           instances deleted per transaction; 1 to
+     *                            {@link #MAX_BATCH_SIZE} inclusive
      * @param maxBatchesPerSweep  batches per status per sweep, bounding one
      *                            sweep's work; at least 1
      */
@@ -1456,18 +1457,31 @@ public final class WorkflowExecutor {
                                     int maxBatchesPerSweep) {
 
         /**
+         * Upper bound on {@link #batchSize()}. A JDBC store binds one parameter
+         * per candidate in each of its {@code IN (...)} lists, and pgjdbc
+         * refuses more than 32 767 binds per statement — a larger batch would
+         * make every purge fail with nothing but a {@code WARN} per interval to
+         * show for it. Ten thousand leaves ample headroom and already makes a
+         * long transaction; raise the interval or the batch count instead.
+         */
+        public static final int MAX_BATCH_SIZE = 10_000;
+
+        /**
          * Validates the settings.
          *
          * @throws IllegalArgumentException if any duration is {@code null}, zero
-         *                                  or negative, or either count is below 1
+         *                                  or negative, if either count is below
+         *                                  1, or if {@code batchSize} exceeds
+         *                                  {@link #MAX_BATCH_SIZE}
          */
         public RetentionSettings {
             requirePositive("interval", interval);
             requirePositive("completedRetention", completedRetention);
             requirePositive("terminatedRetention", terminatedRetention);
             requirePositive("failedRetention", failedRetention);
-            if (batchSize < 1) {
-                throw new IllegalArgumentException("batchSize must be at least 1, got " + batchSize);
+            if (batchSize < 1 || batchSize > MAX_BATCH_SIZE) {
+                throw new IllegalArgumentException("batchSize must be between 1 and " + MAX_BATCH_SIZE
+                        + ", got " + batchSize);
             }
             if (maxBatchesPerSweep < 1) {
                 throw new IllegalArgumentException("maxBatchesPerSweep must be at least 1, got " + maxBatchesPerSweep);

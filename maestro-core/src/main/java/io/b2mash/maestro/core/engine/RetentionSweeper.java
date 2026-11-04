@@ -84,6 +84,12 @@ final class RetentionSweeper {
     private final EngineObserver observer;
     private final String candidateId;
     private final AtomicBoolean started = new AtomicBoolean(false);
+    /**
+     * Set by {@link #stop()} and never cleared; distinct from {@code running}
+     * so a direct {@link #sweepOnce()} on a sweeper that was never started
+     * still sweeps.
+     */
+    private final AtomicBoolean stopRequested = new AtomicBoolean(false);
 
     private volatile boolean running;
     private volatile @Nullable Thread sweeperThread;
@@ -147,6 +153,7 @@ final class RetentionSweeper {
      * terminate. After stopping, the sweeper cannot be restarted.
      */
     synchronized void stop() {
+        stopRequested.set(true);
         running = false;
         var thread = sweeperThread;
         if (thread != null) {
@@ -179,7 +186,10 @@ final class RetentionSweeper {
      *
      * <p>A {@link RuntimeException} from the store or the lock backend is
      * logged at {@code WARN} and swallowed; the sweep ends there and reports
-     * what it had purged so far.
+     * what it had purged so far. So does a {@link #stop()} request: it is
+     * checked before every batch, so a store call that swallowed the
+     * interrupt cannot carry a sweep on past shutdown for up to
+     * {@code maxBatchesPerSweep} more batches.
      *
      * @return the summed counts of this sweep if this node was the leader when
      *         it began (possibly {@link PurgeResult#EMPTY}); empty if another
@@ -192,6 +202,10 @@ final class RetentionSweeper {
         try {
             for (var target : targets(now)) {
                 for (int batch = 0; batch < settings.maxBatchesPerSweep(); batch++) {
+                    if (stopRequested.get()) {
+                        logger.info("Retention sweeper stopping mid-sweep after {} instance(s)", total.instances());
+                        return leader ? finish(total) : Optional.empty();
+                    }
                     if (!isLeader()) {
                         if (!leader) {
                             logger.debug("Another node holds retention leadership for service '{}' — skipping sweep",
