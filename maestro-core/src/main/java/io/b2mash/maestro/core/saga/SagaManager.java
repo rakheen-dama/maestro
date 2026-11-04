@@ -911,10 +911,16 @@ public final class SagaManager {
             ));
             appendEvent(ctx, seq, EventType.COMPENSATION_STEP_FAILED, stepName, errorPayload);
             publishLifecycleEvent(ctx, stepName, LifecycleEventType.COMPENSATION_STEP_FAILED);
-        } catch (DuplicateEventException staleRun) {
+        } catch (DuplicateEventException | FencedWriteException staleRun) {
             // Issue 18: the winner already recorded an outcome at this
             // sequence — this run's view of the step is stale. Stand down
             // rather than mislabelling the collision as a recorded failure.
+            // Issue 11: a fenced append is the same signal from the lease
+            // fence (another node adopted the workflow). Both MUST be rethrown
+            // ahead of catch (Exception) below, which would otherwise swallow
+            // them and let the sequential loop — and executeParallel's failure
+            // collection — carry on running compensation ACTIONS the adopting
+            // node also runs.
             throw staleRun;
         } catch (Exception e) {
             logger.warn("Failed to record compensation step failure for '{}' in workflow '{}'",

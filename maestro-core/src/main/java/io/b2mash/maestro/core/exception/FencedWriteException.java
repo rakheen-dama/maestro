@@ -11,10 +11,14 @@ import java.util.UUID;
  * <p>Raised by the fenced {@link io.b2mash.maestro.core.spi.WorkflowStore}
  * overloads that take a {@link io.b2mash.maestro.core.spi.RunLease} —
  * {@code appendEvent}, {@code completeInstance}, {@code updateInstance} and
- * {@code saveTimer}. (The three CAS flips {@code markSignalConsumed},
- * {@code markTimerFired} and {@code markTimerCancelled} report a fence silently
- * by returning {@code false}: each follows a fenced append in the same step, so
- * the loud rejection has already happened.)
+ * {@code saveTimer} — the four writes that carry progress, each of which checks
+ * the epoch atomically with the write. (The three CAS flips
+ * {@code markSignalConsumed}, {@code markTimerFired} and
+ * {@code markTimerCancelled} are best-effort — epoch checked in the same
+ * statement, row not locked — and report a fence silently by returning
+ * {@code false}: none carries progress on its own, and the loud fenced append
+ * of the same step, whether it came before or after, is the rejection that
+ * stands the run down.)
  *
  * <p>Like {@link DuplicateEventException} and {@link StaleRunException}, this
  * means <em>the run must stand down</em>, not that the workflow failed: the

@@ -1059,6 +1059,145 @@ class WorkflowExecutorTest {
         }
     }
 
+    @Test
+    @DisplayName("A fenced FAILED terminal write is a LEASE_FENCED stand-down, not a TERMINAL_WRITE_FAILED abandon")
+    void fencedFailedTerminalWrite_standsDownAsLeaseFenced() throws Exception {
+        var observer = new io.b2mash.maestro.core.observe.RecordingEngineObserver();
+        var versioned = new VersionedInMemoryStore();
+        var fencedExecutor = new WorkflowExecutor(versioned, null, messaging, null, serializer, "test-service",
+                "maestro:lock:", Duration.ofSeconds(30), true, Duration.ofSeconds(5), Duration.ofSeconds(30),
+                observer, Map.of());
+        var gate = new CountDownLatch(1);
+        try {
+            var entered = new CountDownLatch(1);
+            var workflow = new GatedFailingWorkflow(entered, gate);
+            var method = GatedFailingWorkflow.class.getMethod("run", String.class);
+
+            fencedExecutor.startWorkflow("fenced-fail-1", "GatedFailingWorkflow", "default", "x",
+                    () -> workflow, method);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+
+            // Another node adopts while the body is still running …
+            versioned.forceLeaseEpoch("fenced-fail-1", 1);
+            gate.countDown(); // … then the body throws and the FAILED write is fenced.
+            await().atMost(Duration.ofSeconds(5)).until(() -> !fencedExecutor.isRunning("fenced-fail-1"));
+
+            assertEquals(List.of(io.b2mash.maestro.core.observe.StandDownReason.LEASE_FENCED),
+                    observer.standDownReasons("fenced-fail-1"));
+            assertTrue(observer.abandoned().isEmpty(), "a fence is a hand-off, not a store fault");
+            assertTrue(observer.failed().isEmpty(), "nothing terminal was written");
+            var stored = versioned.getInstance("fenced-fail-1").orElseThrow();
+            assertEquals(WorkflowStatus.RUNNING, stored.status());
+            assertTrue(versioned.getEvents(stored.id()).isEmpty(), "the fenced WORKFLOW_FAILED never landed");
+        } finally {
+            gate.countDown();
+            fencedExecutor.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("A store fault during adoption releases the instance lock — the workflow stays acquirable here")
+    void storeFaultDuringAdoption_releasesTheLock() throws Exception {
+        var blowUp = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var faulty = new VersionedInMemoryStore() {
+            @Override
+            public synchronized void updateInstance(WorkflowInstance instance) {
+                if (blowUp.getAndSet(false)) {
+                    throw new IllegalStateException("db blip on the adoption write");
+                }
+                super.updateInstance(instance);
+            }
+        };
+        var lock = new MapLock();
+        var fencedExecutor = new WorkflowExecutor(faulty, lock, messaging, null, serializer, "test-service");
+        try {
+            var seeded = recoverableInstance("adopt-blip");
+            faulty.createInstance(seeded);
+            var latch = new CountDownLatch(1);
+            var workflow = new SimpleWorkflow(latch);
+            var method = SimpleWorkflow.class.getMethod("run", String.class);
+
+            assertThrows(IllegalStateException.class,
+                    () -> fencedExecutor.resumeWorkflow(seeded, () -> workflow, method),
+                    "a store fault on the adoption write surfaces to the caller");
+            assertFalse(lock.isHeld("maestro:lock:workflow:adopt-blip"),
+                    "the lock acquired for this launch must not leak into heldLocks");
+            assertFalse(fencedExecutor.isRunning("adopt-blip"));
+
+            // The next attempt — the recovery poller's next pass — acquires and runs.
+            assertTrue(fencedExecutor.resumeWorkflow(seeded, () -> workflow, method),
+                    "a leaked handle would make tryAcquire answer HELD_ELSEWHERE forever");
+            assertTrue(latch.await(5, TimeUnit.SECONDS));
+            await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
+                    assertEquals(WorkflowStatus.COMPLETED, faulty.getInstance("adopt-blip").orElseThrow().status()));
+        } finally {
+            fencedExecutor.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("Once the SIGNAL_RECEIVED memo is durable, the signal row is consumed even if an adopter bumps the epoch in between")
+    void consumedSignalRowFollowsTheMemo_evenAcrossAnAdoptionBump() throws Exception {
+        var observer = new io.b2mash.maestro.core.observe.RecordingEngineObserver();
+        var bumping = new VersionedInMemoryStore() {
+            @Override
+            public void appendEvent(WorkflowEvent event, io.b2mash.maestro.core.spi.RunLease lease) {
+                super.appendEvent(event, lease);
+                if (event.eventType() == EventType.SIGNAL_RECEIVED) {
+                    // An adopter lands between the memo and the row flip.
+                    forceLeaseEpoch("consume-bump-1", lease.epoch() + 1);
+                }
+            }
+        };
+        var fencedExecutor = new WorkflowExecutor(bumping, null, messaging, null, serializer, "test-service",
+                "maestro:lock:", Duration.ofSeconds(30), true, Duration.ofSeconds(5), Duration.ofSeconds(30),
+                observer, Map.of());
+        try {
+            var waiting = new CountDownLatch(1);
+            var completed = new CountDownLatch(1);
+            var workflow = new SignalWorkflow(waiting, completed);
+            var method = SignalWorkflow.class.getMethod("run", String.class);
+            fencedExecutor.startWorkflow("consume-bump-1", "SignalWorkflow", "default", "in",
+                    () -> workflow, method);
+            assertTrue(waiting.await(5, TimeUnit.SECONDS));
+            await().atMost(Duration.ofSeconds(5)).until(() ->
+                    bumping.getInstance("consume-bump-1").orElseThrow().status() == WorkflowStatus.WAITING_SIGNAL);
+
+            fencedExecutor.deliverSignal("consume-bump-1", "payment.result", "paid");
+            await().atMost(Duration.ofSeconds(5)).until(() -> !fencedExecutor.isRunning("consume-bump-1"));
+
+            var signals = bumping.allSignals();
+            assertEquals(1, signals.size());
+            assertTrue(signals.getFirst().consumed(),
+                    "the memo is durable, so the row must be consumed — a fenced flip would leave it for a "
+                            + "later same-name await to consume twice");
+            assertEquals(1, bumping.getEvents(bumping.getInstance("consume-bump-1").orElseThrow().id()).stream()
+                    .filter(e -> e.eventType() == EventType.SIGNAL_RECEIVED).count());
+            // The run itself is then fenced at its next write (the RUNNING status write) — correct.
+            assertEquals(List.of(io.b2mash.maestro.core.observe.StandDownReason.LEASE_FENCED),
+                    observer.standDownReasons("consume-bump-1"));
+        } finally {
+            fencedExecutor.shutdown();
+        }
+    }
+
+    /** Signals that it has started, waits for the gate, then fails — the fixture for the fenced FAILED write. */
+    public static class GatedFailingWorkflow {
+        private final CountDownLatch entered;
+        private final CountDownLatch gate;
+
+        public GatedFailingWorkflow(CountDownLatch entered, CountDownLatch gate) {
+            this.entered = entered;
+            this.gate = gate;
+        }
+
+        public String run(String input) throws InterruptedException {
+            entered.countDown();
+            gate.await();
+            throw new IllegalStateException("body failed after the adoption");
+        }
+    }
+
     /** Two proxied activities in a row; the fixture for the lost-lock stand-down. */
     public static class TwoActivityWorkflow {
         private final HandlerActivity activity;

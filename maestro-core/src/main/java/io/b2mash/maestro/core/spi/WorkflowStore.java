@@ -43,15 +43,22 @@ import java.util.UUID;
  * {@link #updateInstance(WorkflowInstance, RunLease)},
  * {@link #saveTimer(WorkflowTimer, RunLease)},
  * {@link #markSignalConsumed(UUID, RunLease)}, {@link #markTimerFired(UUID, RunLease)}
- * and {@link #markTimerCancelled(UUID, RunLease)}. A fenced write is applied if
- * and only if the instance row's {@link WorkflowInstance#leaseEpoch()} still
- * equals the lease's epoch — atomically with the write itself, so a concurrent
- * adoption bump cannot slip between the check and the write. The four "loud"
- * overloads reject a stale lease with {@link FencedWriteException} and write
- * nothing; the three CAS flips report it silently by returning {@code false},
- * because each follows a loud fenced append in the same step. This is what
- * makes an instance lock that expired, was lost or was never configured
- * unable to let a stale node persist progress (Issue 11).
+ * and {@link #markTimerCancelled(UUID, RunLease)}. A fenced write is applied
+ * only if the instance row's {@link WorkflowInstance#leaseEpoch()} still
+ * equals the lease's epoch. The four "loud" overloads — the ones that carry
+ * progress — check this <em>atomically</em> with the write (one
+ * {@code INSERT ... SELECT} under a row lock, or the epoch folded into the
+ * instance compare-and-set), so a concurrent adoption bump cannot slip between
+ * the check and the write; they reject a stale lease with
+ * {@link FencedWriteException} and write nothing. The three CAS flips are
+ * <em>best-effort</em>: they check the epoch in the same statement
+ * ({@code AND EXISTS (...)}) but without locking the row, and report a stale
+ * lease silently by returning {@code false}. That is enough because none of
+ * them carries progress on its own — the memo written by a loud fenced append
+ * in the same step is the truth, and a flip that lost to an adoption is at
+ * worst a row the adopter's run re-reads and settles. This is what makes an
+ * instance lock that expired, was lost or was never configured unable to let
+ * a stale node persist progress (Issue 11).
  *
  * <p>The unfenced forms stay for writes that are <em>not</em> a run's own:
  * {@link #createInstance} (no lease exists yet), {@link #saveSignal} and
@@ -447,12 +454,17 @@ public interface WorkflowStore {
     /**
      * {@link #markSignalConsumed(UUID)} fenced on the consuming run's lease:
      * the flip is applied only while the instance row of
-     * {@code lease.instanceId()} carries {@code lease.epoch()}. A stale lease
-     * is reported <em>silently</em> — {@code false}, nothing written —
-     * because the engine calls this right after the loud fenced append of the
-     * {@code SIGNAL_RECEIVED} memo in the same step, which has already stood
-     * the run down. The default delegates to the unfenced form — see the
-     * class Javadoc.
+     * {@code lease.instanceId()} carries {@code lease.epoch()}, checked in
+     * the same statement but without locking the row (best-effort). A stale
+     * lease is reported <em>silently</em> — {@code false}, nothing written.
+     *
+     * <p>The engine's own consume path does <b>not</b> use this overload: once
+     * its fenced {@code SIGNAL_RECEIVED} append has committed, that memo is
+     * the durable truth and the row must follow it even if an adopter bumps
+     * the epoch in between, so it flips with the unfenced form. This overload
+     * is for a store user that wants the flip refused once the lease is
+     * stale. The default delegates to the unfenced form — see the class
+     * Javadoc.
      *
      * @param signalId the signal UUID to mark as consumed
      * @param lease    the consuming run's lease
@@ -602,10 +614,14 @@ public interface WorkflowStore {
 
     /**
      * {@link #markTimerFired(UUID)} fenced on the run's lease — the form a
-     * workflow's own thread uses when it self-fires a deadline it has decided
-     * has elapsed. The flip is applied only while the instance row of
-     * {@code lease.instanceId()} carries {@code lease.epoch()}; a stale lease
-     * is reported silently as {@code false}, nothing written. The timer
+     * workflow's own thread uses when it self-fires an await deadline it has
+     * decided has elapsed, <em>before</em> it appends the {@code SIGNAL_TIMEOUT}
+     * memo. The flip is applied only while the instance row of
+     * {@code lease.instanceId()} carries {@code lease.epoch()}, checked in the
+     * same statement but without locking the row (best-effort); a stale lease
+     * is reported silently as {@code false}, nothing written — and the memo
+     * append that follows is the loud, atomic rejection. A fenced run must not
+     * retire a deadline the adopting node's run is still parked on. The timer
      * <em>leader</em> keeps using the unfenced form: it fires on behalf of
      * whichever run owns the workflow, so no single lease applies. The
      * default delegates to the unfenced form — see the class Javadoc.
@@ -640,9 +656,12 @@ public interface WorkflowStore {
     /**
      * {@link #markTimerCancelled(UUID)} fenced on the run's lease: the flip is
      * applied only while the instance row of {@code lease.instanceId()}
-     * carries {@code lease.epoch()}; a stale lease is reported silently as
-     * {@code false}, nothing written (the engine cancels a deadline row right
-     * after the loud fenced append of the outcome that made it moot). The
+     * carries {@code lease.epoch()}, checked in the same statement but without
+     * locking the row (best-effort); a stale lease is reported silently as
+     * {@code false}, nothing written. The engine cancels an await's deadline
+     * row right after the loud fenced append of the {@code SIGNAL_RECEIVED}
+     * memo that made it moot, so a flip lost to an adoption in that gap
+     * leaves at worst a {@code PENDING} row the adopter's run re-reads. The
      * default delegates to the unfenced form — see the class Javadoc.
      *
      * @param timerId the timer UUID to cancel

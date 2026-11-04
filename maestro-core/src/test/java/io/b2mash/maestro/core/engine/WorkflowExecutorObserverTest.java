@@ -282,8 +282,9 @@ class WorkflowExecutorObserverTest {
     }
 
     @Test
-    @DisplayName("terminal slot collision on failure: nothing is written and the run is abandoned as TERMINAL_WRITE_FAILED")
-    void failureCollisionOnTheTerminalSlot_isAbandonedWithoutReportingFailure() throws Exception {
+    @DisplayName("terminal slot collision on failure: nothing is written and the run stands down as STALE_RUN "
+            + "(not a TERMINAL_WRITE_FAILED abandon — another runner owns the slot)")
+    void failureCollisionOnTheTerminalSlot_standsDownWithoutReportingFailure() throws Exception {
         var workflow = new ThrowingWorkflow();
         var method = ThrowingWorkflow.class.getMethod("run", String.class);
         store.collideOnEventType(EventType.WORKFLOW_FAILED);
@@ -291,9 +292,10 @@ class WorkflowExecutorObserverTest {
         executor.startWorkflow("obs-collide-fail", "ThrowingWorkflow", "default", "in", () -> workflow, method);
 
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
-                assertTrue(observer.abandoned().stream()
-                                .anyMatch(a -> a.reason() == AbandonReason.TERMINAL_WRITE_FAILED),
-                        "the failed terminal write must be reported as TERMINAL_WRITE_FAILED"));
+                assertEquals(List.of(StandDownReason.STALE_RUN), observer.standDownReasons("obs-collide-fail"),
+                        "a taken terminal slot is a hand-off to the runner that owns it, not a store fault"));
+        assertTrue(observer.abandoned().stream().noneMatch(a -> a.reason() == AbandonReason.TERMINAL_WRITE_FAILED),
+                "the stale-run signals are routed past the TERMINAL_WRITE_FAILED arm");
         assertTrue(store.getInstance("obs-collide-fail").orElseThrow().status().isActive(),
                 "the atomic terminal write lost its event slot, so FAILED was not written either");
         assertEquals(0, observer.failed().size(),

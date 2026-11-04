@@ -815,13 +815,15 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                 }
             }
 
-            // Stale-run signals next (R27): a DuplicateEventException or
-            // StaleRunException means another runner owns this workflow's
-            // progress, so this run must stand down — not record FAILED and
-            // compensate because an earlier branch happened to throw first.
+            // Stale-run signals next (R27): a DuplicateEventException,
+            // StaleRunException or FencedWriteException (Issue 11) means
+            // another runner owns this workflow's progress, so this run must
+            // stand down — not record FAILED and compensate because an earlier
+            // branch happened to throw first.
             for (int i = 0; i < branchCount; i++) {
                 var error = errors.get(i).get();
-                if (error instanceof DuplicateEventException || error instanceof StaleRunException) {
+                if (error instanceof DuplicateEventException || error instanceof StaleRunException
+                        || error instanceof FencedWriteException) {
                     throw (RuntimeException) error;
                 }
             }

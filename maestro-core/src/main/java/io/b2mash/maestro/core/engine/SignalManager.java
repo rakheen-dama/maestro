@@ -1101,9 +1101,14 @@ final class SignalManager {
         // durable memoized truth for this sequence — consuming a different
         // row now would contradict the event log on replay, so we proceed.
         appendEvent(ctx, seq, EventType.SIGNAL_RECEIVED, stepName, signal.payload());
-        // Fenced on the run's lease; a stale lease cannot reach here, because
-        // the fenced append above has already rejected it.
-        if (!store.markSignalConsumed(signal.id(), ctx.lease())) {
+        // Deliberately the UNFENCED flip. The fenced append above has committed
+        // under this run's lease, so the SIGNAL_RECEIVED memo is now the
+        // durable truth whatever happens next — including an adopter bumping
+        // the epoch in the gap before this line. A fenced flip would then
+        // return false and leave the row unconsumed beside a memo that says it
+        // was, and a later same-name awaitSignal would consume it a second
+        // time. The row must follow the memo, so this write carries no lease.
+        if (!store.markSignalConsumed(signal.id())) {
             logger.warn("Signal '{}' (id={}) for workflow '{}' was already consumed by a "
                             + "concurrent consumer — proceeding with the memoized SIGNAL_RECEIVED "
                             + "event at seq {}",

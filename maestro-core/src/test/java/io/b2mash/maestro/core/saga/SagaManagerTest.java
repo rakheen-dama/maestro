@@ -906,6 +906,32 @@ class SagaManagerTest {
     }
 
     @Test
+    @DisplayName("a fenced COMPENSATION_STEP_FAILED append is NOT swallowed by recordStepFailure's catch (Exception): "
+            + "it propagates and no further compensation entry runs")
+    void fencedStepFailureRecordPropagatesAndStopsTheUnwind() {
+        var ran = new ArrayList<String>();
+        var stack = new CompensationStack();
+        stack.push("step-A", () -> ran.add("A"));
+        stack.push("step-B", () -> {
+            ran.add("B");
+            // Another node adopts while B's action is failing: the memo that
+            // records B's FAILURE is the next write, and it is fenced.
+            store.rowLeaseEpoch = 1;
+            throw new IllegalStateException("B's reversal failed");
+        });
+
+        var thrown = org.junit.jupiter.api.Assertions.assertThrows(
+                io.b2mash.maestro.core.exception.FencedWriteException.class,
+                () -> sagaManager.compensate(ctx, instance, stack, false));
+
+        assertEquals("appendEvent", thrown.operation());
+        assertEquals(List.of("B"), ran, "A must never run — a fenced failure record is a stand-down, not a logged blip");
+        assertEquals(io.b2mash.maestro.core.context.RunCancellation.Cause.STALE, ctx.cancellation().cause());
+        assertEquals(0, countEvents(EventType.COMPENSATION_STEP_FAILED), "the fenced memo was not written");
+        assertEquals(0, countEvents(EventType.COMPENSATION_COMPLETED));
+    }
+
+    @Test
     @DisplayName("a fenced COMPENSATING transition propagates without compensating anything")
     void fencedCompensatingTransitionPropagates() {
         var ran = new AtomicInteger();

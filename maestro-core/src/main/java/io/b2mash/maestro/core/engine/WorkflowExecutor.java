@@ -1800,37 +1800,45 @@ public final class WorkflowExecutor {
         // epoch this run will write under. Assigned exactly once on each path.
         WorkflowInstance instance;
         if (replaying) {
-            // Close the recovery-query→resume race: the previous owner may
-            // have finished the workflow after the recovery snapshot was
-            // taken. Run the re-check regardless of lock acquisition — with
-            // no lock backend (NO_BACKEND) the snapshot can be just as stale.
-            var current = store.getInstance(snapshot.workflowId());
-            if (current.isEmpty() || !current.get().status().isActive()) {
-                logger.debug("Workflow '{}' turned terminal before resume — skipping",
-                        snapshot.workflowId());
-                if (acquisition == WorkflowInstanceLockManager.Acquisition.ACQUIRED) {
-                    instanceLockManager.release(snapshot.workflowId());
+            // Both store calls below run while this node may already hold the
+            // lock. A store fault here (an UncheckedSqlException from a DB
+            // blip) must not leak the handle: left in heldLocks it would be
+            // renewed forever, every later tryAcquire would answer
+            // HELD_ELSEWHERE, and the workflow would be unrecoverable on this
+            // node until a JVM restart.
+            try {
+                // Close the recovery-query→resume race: the previous owner may
+                // have finished the workflow after the recovery snapshot was
+                // taken. Run the re-check regardless of lock acquisition — with
+                // no lock backend (NO_BACKEND) the snapshot can be just as stale.
+                var current = store.getInstance(snapshot.workflowId());
+                if (current.isEmpty() || !current.get().status().isActive()) {
+                    logger.debug("Workflow '{}' turned terminal before resume — skipping",
+                            snapshot.workflowId());
+                    releaseIfAcquired(acquisition, snapshot.workflowId());
+                    return false;
                 }
-                return false;
-            }
-            // Adoption (Issue 11): bump the row's lease epoch under its version
-            // CAS. From this write on, every run-scoped write by any EARLIER
-            // holder of this instance — a node frozen past its lock TTL, a
-            // partitioned peer, a no-lock-backend twin — is fenced by the store,
-            // whatever its lock renewer did or did not notice. Losing this CAS
-            // means another adopter got here first in the same instant; this
-            // node yields exactly as if the lock had been held elsewhere. The
-            // bump happens on every adoption, NO_BACKEND included: two
-            // lock-less nodes adopting in turn would fence each other, which is
-            // why multi-node without a lock backend is unsupported (documented).
-            var adopted = adopt(current.get());
-            if (adopted == null) {
-                if (acquisition == WorkflowInstanceLockManager.Acquisition.ACQUIRED) {
-                    instanceLockManager.release(snapshot.workflowId());
+                // Adoption (Issue 11): bump the row's lease epoch under its
+                // version CAS. From this write on, every run-scoped write by any
+                // EARLIER holder of this instance — a node frozen past its lock
+                // TTL, a partitioned peer, a no-lock-backend twin — is fenced by
+                // the store, whatever its lock renewer did or did not notice.
+                // Losing this CAS means another adopter got here first in the
+                // same instant; this node yields exactly as if the lock had been
+                // held elsewhere. The bump happens on every adoption, NO_BACKEND
+                // included: two lock-less nodes adopting in turn would fence
+                // each other, which is why multi-node without a lock backend is
+                // unsupported (documented).
+                var adopted = adopt(current.get());
+                if (adopted == null) {
+                    releaseIfAcquired(acquisition, snapshot.workflowId());
+                    return false;
                 }
-                return false;
+                instance = adopted;
+            } catch (RuntimeException | Error e) {
+                releaseIfAcquired(acquisition, snapshot.workflowId());
+                throw e;
             }
-            instance = adopted;
         } else {
             instance = snapshot;
         }
@@ -1917,6 +1925,13 @@ public final class WorkflowExecutor {
                     () -> observer.workflowResumed(observed(instance)));
         }
         return true;
+    }
+
+    /** Releases the instance lock this launch acquired, if it did acquire one. */
+    private void releaseIfAcquired(WorkflowInstanceLockManager.Acquisition acquisition, String workflowId) {
+        if (acquisition == WorkflowInstanceLockManager.Acquisition.ACQUIRED) {
+            instanceLockManager.release(workflowId);
+        }
     }
 
     /**
@@ -2532,6 +2547,15 @@ public final class WorkflowExecutor {
                 // COMPLETED case above.
                 emitRunAbandoned(ctx, AbandonReason.CONVERGED);
             }
+        } catch (FencedWriteException | StaleRunException | DuplicateEventException routed) {
+            // Not a persistence fault: another runner owns this workflow's
+            // progress (the lease fence refused the FAILED write, a fresh read
+            // found the row finalised, or the terminal slot is already taken).
+            // Rethrow so failAndCompensate's stand-down arm reports it as
+            // LEASE_FENCED / STALE_RUN — the generic arm below would log an
+            // ERROR and emit TERMINAL_WRITE_FAILED, misdescribing a routine
+            // hand-off as a store fault.
+            throw routed;
         } catch (Exception updateError) {
             logger.error("Failed to update workflow '{}' status to FAILED",
                     ctx.workflowId(), updateError);
@@ -2539,12 +2563,10 @@ public final class WorkflowExecutor {
             // fired and the run is over on this thread regardless. Emitted
             // inside the catch so it cannot be skipped by the failure it
             // reports on. Issue 26: the write is atomic, so this arm wrote
-            // NOTHING — the instance stays active and recoverable. That
-            // includes a DuplicateEventException (another runner already owns
-            // the terminal slot): reported here as TERMINAL_WRITE_FAILED
-            // rather than as a stale-run stand-down, which is acceptable
-            // because either way nothing is written and the durable winner
-            // governs.
+            // NOTHING — the instance stays active and recoverable. The
+            // stale-run signals (fence, finalised row, taken terminal slot)
+            // are routed past this arm above, so what reaches here is a
+            // genuine store fault.
             emitRunAbandoned(ctx, AbandonReason.TERMINAL_WRITE_FAILED);
         }
     }
