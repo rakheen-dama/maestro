@@ -219,8 +219,8 @@ class SignalManagerTest {
     @Test
     @DisplayName("Issue 32: deliverSignal returns promptly when SignalNotifier.publish blocks — one row, notified off-thread")
     void deliverSignalDoesNotWaitForABlockingNotifier() throws Exception {
-        // A notifier stuck on a brownout: publish parks until released (Lettuce's
-        // sync PUBLISH against a paused Valkey sits for its 60 s command timeout).
+        // A notifier stuck on a brownout: publish parks until released (a
+        // synchronous publish against a paused backend sits for its command timeout).
         var publishEntered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var publishThread = new AtomicReference<Thread>();
@@ -1017,7 +1017,7 @@ class SignalManagerTest {
     @Test
     @DisplayName("parked workflow finds a store-persisted signal via periodic re-check — no notifier, no unpark")
     void parkedWorkflowFindsStoreSignalViaPeriodicRecheck() throws Exception {
-        // No SignalNotifier at all (e.g. Kafka messaging without Valkey):
+        // No SignalNotifier at all (e.g. the Postgres wake disabled):
         // cross-node signals must still arrive within the re-check interval
         var sm = new SignalManager(store, messaging, null, serializer, parkingLot,
                 Duration.ofMillis(100));

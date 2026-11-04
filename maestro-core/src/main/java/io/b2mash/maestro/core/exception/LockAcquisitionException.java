@@ -20,7 +20,7 @@ public final class LockAcquisitionException extends MaestroException {
 
     /**
      * @param key   the lock key that could not be acquired
-     * @param cause the underlying exception (e.g., Redis/Valkey connection failure)
+     * @param cause the underlying exception (e.g., a database connection failure)
      */
     public LockAcquisitionException(String key, Throwable cause) {
         super("Failed to acquire lock: " + key, cause);

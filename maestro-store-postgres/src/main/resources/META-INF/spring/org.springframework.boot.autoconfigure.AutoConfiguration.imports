@@ -1,1 +1,3 @@
 io.b2mash.maestro.store.postgres.config.PostgresStoreAutoConfiguration
+io.b2mash.maestro.store.postgres.config.PostgresLockAutoConfiguration
+io.b2mash.maestro.store.postgres.config.PostgresSignalWakeAutoConfiguration

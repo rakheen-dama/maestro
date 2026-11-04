@@ -2,8 +2,7 @@ package io.b2mash.maestro.core.exception;
 
 /**
  * Thrown when a distributed-lock backend operation fails for infrastructure
- * reasons (for example a lost database connection or an unreachable
- * Valkey/Redis server).
+ * reasons (for example a lost or refused database connection).
  *
  * <p>This is distinct from {@link LockAcquisitionException}, which signals
  * lock <em>contention</em> — another instance holds the lock. A backend

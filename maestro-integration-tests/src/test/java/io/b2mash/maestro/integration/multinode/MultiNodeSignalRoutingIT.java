@@ -6,9 +6,10 @@ import io.b2mash.maestro.integration.support.MaestroEngineHarness;
 import io.b2mash.maestro.integration.support.PostgresIntegrationSupport;
 import io.b2mash.maestro.integration.workflows.CountingActivities;
 import io.b2mash.maestro.integration.workflows.TestWorkflows;
-import io.b2mash.maestro.lock.postgres.PostgresDistributedLock;
-import io.b2mash.maestro.messaging.postgres.PostgresNotificationListener;
-import io.b2mash.maestro.messaging.postgres.PostgresSignalNotifier;
+import io.b2mash.maestro.store.postgres.lock.PostgresDistributedLock;
+import io.b2mash.maestro.store.postgres.notify.PostgresSignalNotifier;
+import io.b2mash.maestro.store.postgres.notify.PostgresWakeListener;
+import io.b2mash.maestro.store.postgres.notify.WakeChannel;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -33,11 +34,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * that consumes a Kafka message is rarely the node running the workflow.
  *
  * <h2>Topology</h2>
- * <p>Two harnesses over one store. Each has its <em>own</em>
- * {@link PostgresSignalNotifier} on its own {@link PostgresNotificationListener}
- * and its own connection, so a notification genuinely crosses a process
- * boundary (Postgres {@code LISTEN}/{@code NOTIFY}) rather than being handed
- * over in-JVM.
+ * <p>Two harnesses over one store, both nodes of one service. Each has its
+ * <em>own</em> {@link PostgresSignalNotifier} on its own
+ * {@link PostgresWakeListener} and its own connection — on the service's shared
+ * channel, {@link WakeChannel#channelFor} — so a notification genuinely crosses
+ * a process boundary (Postgres {@code LISTEN}/{@code NOTIFY}) rather than being
+ * handed over in-JVM.
  *
  * <h2>Timing contract</h2>
  * <p>Every wait here is bounded at <b>15 seconds</b>, deliberately below
@@ -58,7 +60,10 @@ class MultiNodeSignalRoutingIT extends PostgresIntegrationSupport {
     private final CountingActivities.Recorder recorderB = new CountingActivities.Recorder();
     private final CountDownLatch parkedOnNodeA = new CountDownLatch(1);
 
-    private final List<PostgresNotificationListener> listeners = new ArrayList<>();
+    /** One service, two nodes: both listen on this channel. */
+    private static final String WAKE_CHANNEL = WakeChannel.channelFor("signal-routing-service");
+
+    private final List<PostgresWakeListener> listeners = new ArrayList<>();
     private MaestroEngineHarness nodeA;
     private MaestroEngineHarness nodeB;
 
@@ -70,7 +75,7 @@ class MultiNodeSignalRoutingIT extends PostgresIntegrationSupport {
         if (nodeA != null) {
             nodeA.close();
         }
-        listeners.forEach(PostgresNotificationListener::close);
+        listeners.forEach(PostgresWakeListener::close);
     }
 
     @Test
@@ -210,14 +215,14 @@ class MultiNodeSignalRoutingIT extends PostgresIntegrationSupport {
      */
     private MaestroEngineHarness node(String serviceName, CountingActivities.Recorder recorder,
                                       Object workflowImpl) {
-        var listener = new PostgresNotificationListener(newDataSource());
+        var listener = new PostgresWakeListener(newDataSource(), WAKE_CHANNEL);
         listener.start();
         listeners.add(listener);
 
         var harness = MaestroEngineHarness.builder(store, objectMapper)
                 .serviceName(serviceName)
                 .lock(new PostgresDistributedLock(newDataSource()))
-                .signalNotifier(new PostgresSignalNotifier(newDataSource(), listener))
+                .signalNotifier(new PostgresSignalNotifier(newDataSource(), listener, WAKE_CHANNEL))
                 .instanceLockTtl(Duration.ofSeconds(10))
                 .build();
         harness.registerActivities(CountingActivities.ChainActivities.class,

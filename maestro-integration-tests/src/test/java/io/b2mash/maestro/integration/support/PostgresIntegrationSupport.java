@@ -3,7 +3,7 @@ package io.b2mash.maestro.integration.support;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
-import io.b2mash.maestro.lock.postgres.PostgresDistributedLock;
+import io.b2mash.maestro.store.postgres.lock.PostgresDistributedLock;
 import io.b2mash.maestro.store.postgres.PostgresWorkflowStore;
 import io.b2mash.maestro.store.postgres.schema.MaestroSchemaInitializer;
 import io.b2mash.maestro.store.postgres.schema.SchemaMode;
@@ -35,8 +35,8 @@ import java.time.Duration;
  * <p>Migrations are applied by {@link MaestroSchemaInitializer}, exactly as the
  * store's auto-configuration applies them in an application: every Maestro
  * module on the test classpath advertises its location, so the store (version
- * band 1–99), the lock backend (100–199) and the messaging backend (200–299)
- * are all applied, into {@code maestro_schema_history}. That composition is
+ * band 1–99) and the lock (100–199) are both applied, into
+ * {@code maestro_schema_history}. That composition is
  * itself pinned by
  * {@code io.b2mash.maestro.integration.schema.MaestroMigrationsCoexistIT}.
  *
@@ -64,8 +64,7 @@ public abstract class PostgresIntegrationSupport {
     private static final String TRUNCATE_SQL = """
             TRUNCATE maestro_workflow_signal, maestro_workflow_timer,
                      maestro_workflow_event, maestro_workflow_instance,
-                     maestro_distributed_lock, maestro_leader_election,
-                     maestro_signal_queue
+                     maestro_distributed_lock, maestro_leader_election
             CASCADE""";
 
     protected PGSimpleDataSource dataSource;

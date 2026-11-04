@@ -39,9 +39,11 @@ import java.util.Map;
  *       such as {@code maestro-store-postgres})</li>
  * </ul>
  *
- * <p>Optional SPIs ({@link DistributedLock}, {@link WorkflowMessaging}) are
- * injected when available. When absent, the engine runs in single-node mode
- * without distributed locking or cross-service messaging.
+ * <p>Optional SPIs ({@link DistributedLock}, {@link WorkflowMessaging},
+ * {@link SignalNotifier}) are injected when available — {@code maestro-store-postgres}
+ * contributes the first and last, {@code maestro-messaging-kafka} the second.
+ * When absent, the engine runs in single-node mode without distributed
+ * locking, cross-service messaging or instant cross-node signal wake.
  *
  * @see MaestroProperties
  */
@@ -95,6 +97,9 @@ public class MaestroAutoConfiguration {
         // trusting configuration alone.
         log.info("Maestro distributed-lock backend: {}",
                 distributedLock != null ? distributedLock.getClass().getName() : "none (single-node mode)");
+        log.info("Maestro cross-node signal wake: {}",
+                signalNotifier != null ? signalNotifier.getClass().getName()
+                        : "none (cross-node wake falls back to maestro.signal.wake-recheck-interval)");
         var lock = properties.getLock();
         var lifecycleEventsEnabled = properties.getAdmin().events().enabled();
         var shutdownTimeout = properties.getShutdown().timeout();
@@ -171,6 +176,12 @@ public class MaestroAutoConfiguration {
      *       dispatches work over a task topic (workflows start in-process), so
      *       the property and the operator's pre-created {@code maestro.tasks.*}
      *       topics would otherwise go silently unused.</li>
+     *   <li>{@code maestro.lock.type} other than {@code postgres} — the Valkey
+     *       lock backend was removed; the property stays so a value can be
+     *       re-added later, but today only {@code postgres} exists and any
+     *       other value would silently leave the engine with no lock.</li>
+     *   <li>{@code maestro.messaging.type} other than {@code kafka} — the
+     *       Postgres messaging transport was removed; likewise.</li>
      * </ul>
      *
      * <p>({@code maestro.store.table-prefix} is rejected by the Postgres store
@@ -181,6 +192,18 @@ public class MaestroAutoConfiguration {
             throw new IllegalStateException("maestro.messaging.topics.tasks has been removed: Maestro no longer "
                     + "dispatches work over a task topic (workflows start in-process). Delete the property "
                     + "and the maestro.tasks.* topics.");
+        }
+        var lockType = environment.getProperty("maestro.lock.type");
+        if (lockType != null && !lockType.strip().equalsIgnoreCase("postgres")) {
+            throw new IllegalStateException("maestro.lock.type='" + lockType + "' is not supported: the Valkey lock "
+                    + "backend was removed; only 'postgres' is available. Remove the property or set it to "
+                    + "'postgres'.");
+        }
+        var messagingType = environment.getProperty("maestro.messaging.type");
+        if (messagingType != null && !messagingType.strip().equalsIgnoreCase("kafka")) {
+            throw new IllegalStateException("maestro.messaging.type='" + messagingType + "' is not supported: the "
+                    + "Postgres messaging transport was removed; only 'kafka' is available. Remove the property "
+                    + "or set it to 'kafka'.");
         }
     }
 

@@ -21,8 +21,7 @@ dependencies {
     // Same modular-autoconfiguration gap as Kafka above: flyway-core alone never
     // runs a migration for this app. spring-boot-starter-flyway is what pulls in
     // Spring Boot's FlywayAutoConfiguration, which actually invokes Flyway against
-    // the DataSource on startup (see maestro-samples/sample-postgres-only, which
-    // documents the same requirement). Without it, every admin_* table is missing
+    // the DataSource on startup. Without it, every admin_* table is missing
     // and every repository query fails with "relation does not exist" — caught by
     // the same two test classes as the Kafka gap above (Issue 10b).
     implementation(libs.spring.boot.starter.flyway)

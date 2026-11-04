@@ -34,10 +34,13 @@ import java.util.TreeSet;
  * Flyway, its {@code spring.flyway.*} settings and its
  * {@code flyway_schema_history} are never read or written.
  *
- * <p>Version bands keep the modules apart inside that one history: the store
- * owns 1–99 ({@code classpath:db/maestro/store}), the Postgres lock 100–199
- * ({@code classpath:db/maestro/lock}) and the Postgres messaging 200–299
- * ({@code classpath:db/maestro/messaging}).
+ * <p>Version bands keep the locations apart inside that one history: the store
+ * owns 1–99 ({@code classpath:db/maestro/store}) and the Postgres lock 100–199
+ * ({@code classpath:db/maestro/lock}), both shipped by
+ * {@code maestro-store-postgres}. Band 200–299 belonged to the removed
+ * Postgres messaging transport and is retired — never reuse it: databases
+ * that applied V200–V202 keep those history rows (Flyway ignores versions it
+ * cannot resolve by default) and an orphan {@code maestro_signal_queue}.
  *
  * <h2>Modes</h2>
  * <ul>

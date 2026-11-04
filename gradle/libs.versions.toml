@@ -8,7 +8,6 @@ jackson = "3.0.1"
 slf4j = "2.0.17"
 junit-jupiter = "6.0.1"
 flyway = "11.14.1"
-lettuce = "6.8.1.RELEASE"
 postgresql = "42.7.8"
 testcontainers = "2.0.1"
 awaitility = "4.3.0"
@@ -25,9 +24,6 @@ flyway-postgres = { module = "org.flywaydb:flyway-database-postgresql", version.
 
 # Jackson 3 — tools.jackson group
 jackson-databind = { module = "tools.jackson.core:jackson-databind", version.ref = "jackson" }
-
-# Lettuce — Redis/Valkey client
-lettuce-core = { module = "io.lettuce:lettuce-core", version.ref = "lettuce" }
 
 # SLF4J
 slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }

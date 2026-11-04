@@ -2,7 +2,7 @@ plugins {
     id("maestro.integration-test-conventions")
 }
 
-description = "Maestro Integration Tests — engine against real Postgres, Kafka and lock backends (not published)"
+description = "Maestro Integration Tests — engine against real Postgres and Kafka (not published)"
 
 dependencies {
     // Subjects under test — the real engine and the real backend adapters.
@@ -10,9 +10,6 @@ dependencies {
     testImplementation(project(":maestro-spring-boot-starter"))
     testImplementation(project(":maestro-store-postgres"))
     testImplementation(project(":maestro-messaging-kafka"))
-    testImplementation(project(":maestro-messaging-postgres"))
-    testImplementation(project(":maestro-lock-postgres"))
-    testImplementation(project(":maestro-lock-valkey"))
 
     // Fixtures only — never the subject of an integration assertion.
     testImplementation(project(":maestro-test"))
@@ -70,7 +67,7 @@ tasks.named<Test>("e2eTest") {
     // log probes, single-pass census); 2g is defence in depth — 4x the default,
     // covering soak-scale transient allocation (docker-java frames for 6 nodes,
     // end-of-run census and dumps) while fitting a 7GB CI runner beside the
-    // Docker containers (6x256m node JVMs + Kafka + Postgres + Valkey).
+    // Docker containers (6x256m node JVMs + Kafka + Postgres).
     maxHeapSize = "2g"
     testLogging {
         showStandardStreams = true
