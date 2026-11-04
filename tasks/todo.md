@@ -536,6 +536,10 @@ Plan: `~/.claude/plans/velvet-snacking-petal.md` § Feature 3. No migration.
 - [x] Docs: configuration § Kafka Topic Verification + defaults table +
       pre-creation; operations § 12 runbook; open-issues Issue 24 addendum;
       CLAUDE.md; release notes
-- Deviation: `missingTopicsFatal` is tied to `fail` (not unconditional) —
-  Spring Kafka counts an unreachable broker as "missing", so unconditional would
-  make `warn`/`off` meaningless and fail start() on a broker blip.
+- Deviation: `missingTopicsFatal` is tied to `fail` AND a confirmed-present
+  probe (`KafkaTopicVerifier.fatalOnMissing`), not unconditional — Spring Kafka
+  counts an unreachable broker as "missing", so anything else fails start()
+  right after the verifier's "starting anyway" WARN (review finding 1).
+- Review finding 2: `publishSignal` waits `max.block.ms + delivery.timeout.ms
+  + 5 s` (read from the producer factory), not a fixed 30 s, so a thrown
+  publish can never be followed by a late delivery; SPI Javadoc documents it.

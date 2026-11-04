@@ -5,10 +5,10 @@ import io.b2mash.maestro.messaging.kafka.KafkaMessagingConfig;
 import io.b2mash.maestro.messaging.kafka.KafkaRedeliveryErrorHandlers;
 import io.b2mash.maestro.messaging.kafka.KafkaTopicVerifier;
 import io.b2mash.maestro.messaging.kafka.KafkaTracePropagation;
+import io.b2mash.maestro.messaging.kafka.KafkaWorkflowMessaging;
 import io.b2mash.maestro.spring.annotation.MaestroSignalListener;
 import io.b2mash.maestro.spring.annotation.SignalRouting;
 import io.b2mash.maestro.spring.config.MaestroProperties;
-import io.b2mash.maestro.spring.config.MaestroProperties.TopicsProperties.TopicVerification;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -160,7 +160,16 @@ public class MaestroSignalListenerBeanPostProcessor
         // The transport's one startup gate — before the early return below, because
         // the engine's own signal topic (and the admin-events topic) must exist
         // whether or not this service declares any @MaestroSignalListener.
-        verifyTopics(messagingConfig, consumerFactory, properties);
+        var verification = verifyTopics(messagingConfig, consumerFactory, properties);
+        var fatalOnMissing = KafkaTopicVerifier.fatalOnMissing(messagingConfig.verifyOnStartup(), verification);
+
+        // The engine's own signal channel is subscribed later, from
+        // SignalSubscriptionRunner; hand it the same outcome so its container
+        // follows the same rule (fatal only when every topic was confirmed).
+        var engineMessaging = ctx.getBeanProvider(KafkaWorkflowMessaging.class).getIfAvailable();
+        if (engineMessaging != null) {
+            engineMessaging.applyTopicVerification(verification);
+        }
 
         if (registrations.isEmpty()) {
             return;
@@ -179,8 +188,7 @@ public class MaestroSignalListenerBeanPostProcessor
 
         for (var reg : registrations) {
             var container = createListenerContainer(reg, consumerFactory, executor, objectMapper, baseGroup,
-                    kafkaTemplate, redelivery, messagingConfig.verifyOnStartup(), tracePropagation,
-                    listenerObservation);
+                    kafkaTemplate, redelivery, fatalOnMissing, tracePropagation, listenerObservation);
             containers.add(container);
             container.start();
 
@@ -249,11 +257,12 @@ public class MaestroSignalListenerBeanPostProcessor
     /**
      * One {@link KafkaTopicVerifier} pass over every topic this service needs.
      *
+     * @return what the probe confirmed, for {@link KafkaTopicVerifier#fatalOnMissing}
      * @throws IllegalStateException under {@code verify-on-startup=fail} when a
      *                               required topic is confirmed missing — fails
      *                               context refresh with every missing topic named
      */
-    private void verifyTopics(
+    private KafkaTopicVerifier.Result verifyTopics(
             KafkaMessagingConfig messagingConfig,
             ConsumerFactory<String, byte[]> consumerFactory,
             MaestroProperties properties
@@ -264,7 +273,7 @@ public class MaestroSignalListenerBeanPostProcessor
                 properties.getServiceName(),
                 properties.getAdmin().events().enabled(),
                 listenerTopics);
-        KafkaTopicVerifier.verifyOnStartup(messagingConfig, consumerFactory, required);
+        return KafkaTopicVerifier.verifyOnStartup(messagingConfig, consumerFactory, required);
     }
 
     private ConcurrentMessageListenerContainer<String, byte[]> createListenerContainer(
@@ -275,7 +284,7 @@ public class MaestroSignalListenerBeanPostProcessor
             String baseGroup,
             KafkaOperations<String, byte[]> kafkaTemplate,
             MaestroProperties.RedeliveryProperties redelivery,
-            TopicVerification verification,
+            boolean fatalOnMissing,
             @Nullable KafkaTracePropagation tracePropagation,
             @Nullable Boolean listenerObservation
     ) {
@@ -287,12 +296,14 @@ public class MaestroSignalListenerBeanPostProcessor
         containerProps.setGroupId(groupId);
         containerProps.setAckMode(ContainerProperties.AckMode.RECORD);
         // Same two settings, same reasons, as KafkaWorkflowMessaging.createContainer:
-        // under verify-on-startup=fail a topic gone at container start fails
-        // start() rather than polling nothing forever (Spring Kafka counts an
-        // unreachable broker as "missing", so this is deliberately not
-        // unconditional); and an auth exception from poll() retries instead of
-        // stopping the container silently.
-        containerProps.setMissingTopicsFatal(verification == TopicVerification.FAIL);
+        // fatal on a missing topic only under verify-on-startup=fail AND only when
+        // the startup probe confirmed every topic present (KafkaTopicVerifier
+        // .fatalOnMissing) — Spring Kafka counts an unreachable broker as
+        // "missing", so an inconclusive probe must leave this off or the
+        // "starting anyway" WARN would be followed by a failed start(); and an
+        // auth exception from poll() retries instead of stopping the container
+        // silently.
+        containerProps.setMissingTopicsFatal(fatalOnMissing);
         containerProps.setAuthExceptionRetryInterval(AUTH_EXCEPTION_RETRY_INTERVAL);
         // Same rule as KafkaMessagingAutoConfiguration.observationEnabled — an
         // explicit spring.kafka.listener.observation-enabled always wins,

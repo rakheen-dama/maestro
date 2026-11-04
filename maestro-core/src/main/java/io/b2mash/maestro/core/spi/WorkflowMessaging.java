@@ -17,6 +17,12 @@ import java.util.function.Consumer;
  * <ul>
  *   <li>{@link #publishSignal} provides <b>at-least-once</b> delivery;
  *       lifecycle events are best-effort.</li>
+ *   <li>{@link #publishSignal} returns only once the transport has accepted
+ *       the message durably, and when it throws the message <b>will not be
+ *       delivered later</b> — the implementation must wait out its own
+ *       transport's delivery budget before failing, so a caller may retry a
+ *       failed publish without that attempt producing a duplicate. (The Kafka
+ *       adapter waits {@code max.block.ms + delivery.timeout.ms + 5s}.)</li>
  *   <li>Consumers must be idempotent — duplicate messages are possible
  *       during Kafka rebalances or retries, and a handler that throws is
  *       re-invoked with the same message until it succeeds or the message is

@@ -3,7 +3,7 @@ package io.b2mash.maestro.messaging.kafka;
 import io.b2mash.maestro.core.spi.SignalMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
-import io.b2mash.maestro.spring.config.MaestroProperties.TopicsProperties.TopicVerification;
+import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -20,6 +20,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -72,13 +73,14 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
 
     private static final Logger logger = LoggerFactory.getLogger(KafkaWorkflowMessaging.class);
 
-    /**
-     * How long {@link #publishSignal} waits for the broker's acknowledgement
-     * before failing the publish. The producer's own {@code max.block.ms}
-     * (Maestro's default 10s) bounds the metadata fetch inside {@code send()};
-     * this bounds the acknowledgement after it.
-     */
-    static final Duration SEND_TIMEOUT = Duration.ofSeconds(30);
+    /** Kafka's own default for {@code max.block.ms}, used when the producer config does not set one. */
+    static final long KAFKA_DEFAULT_MAX_BLOCK_MS = 60_000L;
+
+    /** Kafka's own default for {@code delivery.timeout.ms}, used when the producer config does not set one. */
+    static final long KAFKA_DEFAULT_DELIVERY_TIMEOUT_MS = 120_000L;
+
+    /** Added on top of the producer's own budget so it has definitively given up before we throw. */
+    static final Duration SEND_TIMEOUT_GRACE = Duration.ofSeconds(5);
 
     /** How often a container whose poll hit an auth exception retries, instead of stopping. */
     static final Duration AUTH_EXCEPTION_RETRY_INTERVAL = Duration.ofSeconds(10);
@@ -88,8 +90,17 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
     private final ObjectMapper objectMapper;
     private final KafkaMessagingConfig config;
     private final @Nullable KafkaTracePropagation tracePropagation;
+    private final Duration sendTimeout;
     private final List<ConcurrentMessageListenerContainer<String, byte[]>> containers =
             new CopyOnWriteArrayList<>();
+
+    /**
+     * Whether containers built from here are fatal on a missing topic. Set once,
+     * during context refresh, by {@link #applyTopicVerification} — before
+     * {@code SignalSubscriptionRunner} ever calls {@link #subscribeSignals} —
+     * and {@code false} until then: nothing confirmed, nothing fatal.
+     */
+    private volatile boolean missingTopicsFatal;
 
     /**
      * Creates a new Kafka-based workflow messaging implementation.
@@ -133,10 +144,114 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
         this.objectMapper = objectMapper;
         this.config = config;
         this.tracePropagation = tracePropagation;
+        this.sendTimeout = sendTimeoutFor(producerConfigOf(kafkaTemplate));
+    }
+
+    /**
+     * Records what the startup topic verification confirmed, so the consumer
+     * containers {@link #subscribeSignals} builds can be made fatal on a
+     * missing topic — only under {@code verify-on-startup=fail} and only when
+     * the probe confirmed every required topic present
+     * ({@link KafkaTopicVerifier#fatalOnMissing}). Called once by
+     * {@code MaestroSignalListenerBeanPostProcessor} during context refresh,
+     * before any subscription; an adapter nobody calls this on (a directly
+     * constructed one) keeps tolerant containers.
+     *
+     * @param verification the outcome of {@link KafkaTopicVerifier#verifyOnStartup}
+     */
+    public void applyTopicVerification(KafkaTopicVerifier.Result verification) {
+        this.missingTopicsFatal = KafkaTopicVerifier.fatalOnMissing(config.verifyOnStartup(), verification);
+    }
+
+    /**
+     * @return whether containers built from now on are fatal on a missing topic;
+     *         package-visible for tests
+     */
+    boolean missingTopicsFatal() {
+        return missingTopicsFatal;
+    }
+
+    /**
+     * @return how long {@link #publishSignal} waits for the broker's acknowledgement
+     *         before throwing; package-visible for tests
+     */
+    Duration sendTimeout() {
+        return sendTimeout;
+    }
+
+    /**
+     * The bound {@link #publishSignal} waits for an acknowledgement, derived
+     * from the producer's own delivery budget: {@code max.block.ms} (how long
+     * {@code send()} may block fetching metadata or buffer space) plus
+     * {@code delivery.timeout.ms} (how long the producer then retries the
+     * record) plus a {@value #SEND_TIMEOUT_GRACE} grace. Waiting at least that
+     * long is what makes the "no late delivery after this throws" guarantee
+     * true: once the producer's own budget is spent it has failed the record's
+     * future itself, so a timeout here can only mean the producer is wedged,
+     * never that the record is still queued and about to land. A shorter
+     * fixed wait — the previous 30 s against a 120 s default delivery
+     * timeout — could report failure for a record Kafka went on to deliver,
+     * inviting a duplicate on retry.
+     *
+     * @param producerConfig the producer factory's configuration; values may
+     *                       be numbers or strings, as Boot binds them; absent or
+     *                       unparsable values fall back to Kafka's defaults
+     *                       ({@value #KAFKA_DEFAULT_MAX_BLOCK_MS} /
+     *                       {@value #KAFKA_DEFAULT_DELIVERY_TIMEOUT_MS} ms)
+     * @return the acknowledgement wait
+     */
+    static Duration sendTimeoutFor(Map<String, Object> producerConfig) {
+        var maxBlock = millis(producerConfig.get(ProducerConfig.MAX_BLOCK_MS_CONFIG), KAFKA_DEFAULT_MAX_BLOCK_MS);
+        var deliveryTimeout = millis(producerConfig.get(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG),
+                KAFKA_DEFAULT_DELIVERY_TIMEOUT_MS);
+        return Duration.ofMillis(maxBlock + deliveryTimeout).plus(SEND_TIMEOUT_GRACE);
+    }
+
+    private static long millis(@Nullable Object value, long fallback) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        if (value instanceof String text) {
+            try {
+                return Long.parseLong(text.trim());
+            } catch (NumberFormatException e) {
+                return fallback;
+            }
+        }
+        return fallback;
+    }
+
+    private static Map<String, Object> producerConfigOf(KafkaTemplate<String, byte[]> template) {
+        try {
+            var factory = template.getProducerFactory();
+            return factory.getConfigurationProperties();
+        } catch (RuntimeException e) {
+            // A template whose factory exposes no configuration (a test double,
+            // say) — fall back to Kafka's defaults rather than fail construction.
+            return Map.of();
+        }
     }
 
     // ── Publishing ───────────────────────────────────────────────────────
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Blocks until the broker acknowledges the record ({@code acks=all}) or
+     * the producer's delivery budget — {@code max.block.ms} +
+     * {@code delivery.timeout.ms} + 5 s, see {@link #sendTimeoutFor} — is
+     * spent, whichever comes first.
+     *
+     * @throws IllegalStateException if the record was not acknowledged: the
+     *                               producer reported a failure, the wait
+     *                               expired, or the thread was interrupted.
+     *                               <b>Once this throws the record will not be
+     *                               delivered later</b> — the wait outlasts the
+     *                               producer's own retry budget, after which the
+     *                               producer has failed the record itself — so a
+     *                               caller may retry without producing a
+     *                               duplicate from this attempt
+     */
     @Override
     public void publishSignal(String serviceName, SignalMessage message) {
         var topic = resolveSignalTopic(serviceName);
@@ -165,7 +280,8 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
         // Topic existence (this topic and its .DLT) was verified once at startup by
         // KafkaTopicVerifier, from MaestroSignalListenerBeanPostProcessor — not
         // per subscription here; the container below is additionally started
-        // with missingTopicsFatal under verify-on-startup=fail.
+        // with missingTopicsFatal when that verification confirmed every topic
+        // under verify-on-startup=fail (see applyTopicVerification).
         //
         // Nothing is caught here on purpose: a handler failure — or an
         // undeserializable record — must reach the container's error handler so
@@ -207,16 +323,20 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
         try {
             // Block on the future to ensure at-least-once delivery, but never
             // without bound: an unacknowledged record must surface as a failure
-            // the caller can act on, not hold a signal publisher forever.
+            // the caller can act on, not hold a signal publisher forever. The
+            // bound outlasts the producer's own delivery budget (sendTimeoutFor),
+            // so a timeout here never races a record that is about to land.
             // Safe on virtual threads — yields the carrier thread while waiting.
-            kafkaTemplate.send(record).get(SEND_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+            kafkaTemplate.send(record).get(sendTimeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (ExecutionException e) {
             throw new IllegalStateException(
                     "Failed to publish message to Kafka topic '" + topic + "' (key=" + key + ")", e.getCause());
         } catch (TimeoutException e) {
             throw new IllegalStateException(
-                    "Timed out after " + SEND_TIMEOUT + " waiting for Kafka to acknowledge a message on topic '"
-                            + topic + "' (key=" + key + ")", e);
+                    "Timed out after " + sendTimeout + " (the producer's max.block.ms + delivery.timeout.ms + "
+                            + SEND_TIMEOUT_GRACE + ") waiting for Kafka to acknowledge a message on topic '"
+                            + topic + "' (key=" + key + ") — the producer has given up on it; it will not be "
+                            + "delivered later", e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(
@@ -245,12 +365,13 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
         containerProps.setGroupId(config.consumerGroup());
         containerProps.setMessageListener(listener);
         containerProps.setAckMode(ContainerProperties.AckMode.RECORD);
-        // Under verify-on-startup=fail a topic that is gone at container start
-        // fails start() instead of leaving a consumer polling nothing forever;
-        // warn/off keep the container tolerant, matching the operator's choice.
-        // (Spring Kafka counts an unreachable broker as "missing" here, which is
-        // exactly why this is not unconditional.)
-        containerProps.setMissingTopicsFatal(config.verifyOnStartup() == TopicVerification.FAIL);
+        // Fatal only under verify-on-startup=fail AND only when the startup probe
+        // confirmed every required topic present (applyTopicVerification): then a
+        // topic gone at container start fails start() instead of leaving a
+        // consumer polling nothing forever. Spring Kafka counts an unreachable
+        // broker as "missing" here, so after an inconclusive probe this must stay
+        // false or the "starting anyway" WARN would be followed by a failed start.
+        containerProps.setMissingTopicsFatal(missingTopicsFatal);
         // Without an interval an AuthenticationException/AuthorizationException
         // from poll() stops the container silently; with one it retries, so a
         // credential or ACL fix is picked up without a restart.

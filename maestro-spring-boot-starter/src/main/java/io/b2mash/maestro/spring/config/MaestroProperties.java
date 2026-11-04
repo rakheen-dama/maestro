@@ -372,12 +372,14 @@ public class MaestroProperties {
             /**
              * A topic confirmed missing fails startup with one exception that
              * lists every missing topic and a ready {@code kafka-topics.sh
-             * --create} line for each. Listener containers are additionally
+             * --create} line for each. Once the probe has confirmed every
+             * required topic present, the consumer containers are additionally
              * started with {@code missingTopicsFatal}, so a topic that vanishes
              * later fails the container rather than polling nothing. A probe
-             * that cannot reach the broker is <em>inconclusive</em>, logged at
-             * WARN, and does not fail startup — a broker blip must not become a
-             * fleet-wide restart loop. The default.
+             * that cannot reach the broker is <em>inconclusive</em>: logged at
+             * WARN, does not fail startup, and leaves that boot's containers
+             * tolerant — a broker blip must not become a fleet-wide restart
+             * loop. The default.
              */
             FAIL,
             /** Missing topics are logged at WARN, naming each one; startup continues. */

@@ -5,6 +5,7 @@ import ch.qos.logback.core.read.ListAppender;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.messaging.kafka.KafkaTestSupport;
 import io.b2mash.maestro.messaging.kafka.KafkaTopicVerifier;
+import io.b2mash.maestro.messaging.kafka.KafkaWorkflowMessaging;
 import io.b2mash.maestro.messaging.kafka.config.KafkaMessagingAutoConfiguration;
 import io.b2mash.maestro.spring.annotation.MaestroSignalListener;
 import io.b2mash.maestro.spring.annotation.SignalRouting;
@@ -19,6 +20,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.test.util.ReflectionTestUtils;
 import tools.jackson.databind.ObjectMapper;
 
 import java.time.Duration;
@@ -122,9 +124,13 @@ class KafkaTopicVerificationStartupTest extends KafkaTestSupport {
                     assertThat(containers).hasSize(1);
                     var props = containers.get(0).getContainerProperties();
                     assertThat(props.isMissingTopicsFatal())
-                            .as("under fail, a topic that vanishes after startup must fail the container, "
-                                    + "not leave it polling nothing")
+                            .as("under fail, once the probe confirmed every topic, a topic that vanishes "
+                                    + "after startup must fail the container, not leave it polling nothing")
                             .isTrue();
+                    assertThat(ReflectionTestUtils.getField(ctx.getBean(KafkaWorkflowMessaging.class),
+                            "missingTopicsFatal"))
+                            .as("the engine signal channel was handed the same confirmed-present outcome")
+                            .isEqualTo(true);
                     assertThat(props.getAuthExceptionRetryInterval()).isEqualTo(Duration.ofSeconds(10));
                     assertThat(containers.get(0).isRunning()).isTrue();
                     assertThat(warnMessages()).isEmpty();

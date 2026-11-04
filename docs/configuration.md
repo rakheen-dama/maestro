@@ -226,10 +226,11 @@ Maestro entirely.
     (adjust --partitions/--replication-factor to the cluster; a single-broker development cluster needs --replication-factor 1)
   ```
 
-  Under `fail` the consumer containers (the engine's signal channel and every
-  listener) are also started with Spring Kafka's `missingTopicsFatal`, so a
-  topic that disappears *after* startup fails the container instead of leaving
-  it polling nothing.
+  Under `fail`, once the probe has confirmed **every** required topic present,
+  the consumer containers (the engine's signal channel and every listener) are
+  also started with Spring Kafka's `missingTopicsFatal`, so a topic that
+  disappears *after* startup fails the container instead of leaving it polling
+  nothing. (Not after an inconclusive probe — see below.)
 - **`warn`** — the same message at `WARN`; startup continues and the
   containers stay tolerant. The escape hatch for a deploy that cannot create
   topics yet.
@@ -240,7 +241,11 @@ A topic is *missing* only when the broker says so
 timeout, connection refused, authentication or authorization failure — is
 **inconclusive**: logged at `WARN` naming the unverified topics, and never
 fatal under any mode, because a broker blip at deploy time must not become a
-fleet-wide restart loop. The verifier's `Admin` client is derived from the
+fleet-wide restart loop. That boot's consumer containers then stay tolerant
+too — Spring Kafka's `missingTopicsFatal` check counts an unreachable broker
+as "missing" and would otherwise fail `start()` right after the WARN — so a
+topic that really is missing polls nothing until it is created, and the next
+restart re-verifies. The verifier's `Admin` client is derived from the
 engine consumer factory's full configuration (`bootstrap.servers`, `security.*`,
 `sasl.*`, `ssl.*`), so it authenticates the way the consumers do.
 

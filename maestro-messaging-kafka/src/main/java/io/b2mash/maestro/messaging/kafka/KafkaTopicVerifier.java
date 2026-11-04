@@ -54,10 +54,15 @@ import java.util.stream.Collectors;
  * ({@link UnknownTopicOrPartitionException}). Anything else — a timeout, an
  * unreachable or unauthenticated broker, an interrupted probe — is
  * <b>inconclusive</b>: logged at WARN and never fatal, because a broker blip
- * at deploy time must not become a fleet-wide restart loop. Under
- * {@link TopicVerification#FAIL} the consumer containers are started with
- * {@code missingTopicsFatal}, which still guards consumption of a topic the
- * probe could not see.
+ * at deploy time must not become a fleet-wide restart loop. That promise has
+ * to hold for the consumer containers too: Spring Kafka's
+ * {@code missingTopicsFatal} check counts <em>any</em> describe failure as
+ * "missing" and throws from {@code start()}, so it is enabled — see
+ * {@link #fatalOnMissing} — only under {@link TopicVerification#FAIL}
+ * <em>and</em> only when this probe confirmed every required topic present.
+ * After an inconclusive probe this boot's containers stay tolerant (the WARN
+ * says so); a topic that really is missing then polls nothing until it is
+ * created, and the next restart re-verifies.
  *
  * <h2>Where it runs</h2>
  * <p>Once, from {@code MaestroSignalListenerBeanPostProcessor.afterSingletonsInstantiated}
@@ -162,12 +167,15 @@ public final class KafkaTopicVerifier {
      * @param consumerFactory the factory whose configuration — bootstrap servers,
      *                        security settings — the probe's client is derived from
      * @param required        the topics to verify, from {@link #requiredTopics}
+     * @return the outcome, for {@link #fatalOnMissing}: what the probe confirmed.
+     *         Under {@link TopicVerification#OFF} nothing is probed and every
+     *         topic is reported inconclusive ("not confirmed")
      * @throws IllegalStateException under {@link TopicVerification#FAIL} when at
      *                               least one topic is confirmed missing; the message
      *                               names every missing topic with a
      *                               {@code kafka-topics.sh --create} line each
      */
-    public static void verifyOnStartup(
+    public static Result verifyOnStartup(
             KafkaMessagingConfig config,
             ConsumerFactory<?, ?> consumerFactory,
             Collection<String> required
@@ -175,11 +183,11 @@ public final class KafkaTopicVerifier {
         var mode = config.verifyOnStartup();
         if (mode == TopicVerification.OFF) {
             logger.debug("Kafka topic verification is off ({}=off); not checking {}", PROPERTY, required);
-            return;
+            return Result.inconclusive(required);
         }
         if (required.isEmpty()) {
             logger.debug("Kafka topic verification: nothing to verify");
-            return;
+            return new Result(List.of(), List.of(), List.of());
         }
         var adminConfig = adminConfigFrom(consumerFactory);
         var bootstrapServers = bootstrapServersOf(adminConfig);
@@ -193,6 +201,31 @@ public final class KafkaTopicVerifier {
             result = Result.inconclusive(required);
         }
         enforce(mode, result, bootstrapServers);
+        return result;
+    }
+
+    /**
+     * Whether this boot's consumer containers may be started with Spring
+     * Kafka's {@code missingTopicsFatal}: only under
+     * {@link TopicVerification#FAIL}, and only when the probe confirmed
+     * <em>every</em> required topic present.
+     *
+     * <p>Spring Kafka's check treats any describe failure — a timeout, an
+     * unreachable broker — as "missing" and throws from {@code start()}. Were
+     * fatality tied to the mode alone, an inconclusive probe that this
+     * verifier deliberately let through ("starting anyway") would fail startup
+     * a few milliseconds later from the container, producing exactly the
+     * restart loop the inconclusive branch exists to avoid. Both container
+     * builders ({@code KafkaWorkflowMessaging} and
+     * {@code MaestroSignalListenerBeanPostProcessor}) take their answer from
+     * here, so the rule lives in one place.
+     *
+     * @param mode   the configured policy
+     * @param result the outcome of {@link #verifyOnStartup}
+     * @return {@code true} only for {@code FAIL} with every topic confirmed present
+     */
+    public static boolean fatalOnMissing(TopicVerification mode, Result result) {
+        return mode == TopicVerification.FAIL && result.allPresent();
     }
 
     /**
@@ -217,13 +250,12 @@ public final class KafkaTopicVerifier {
         }
         if (!result.inconclusive().isEmpty()) {
             logger.warn("Could not verify that {} Kafka topic(s) exist on {} within {}s — {} — the broker was "
-                            + "unreachable, slow, or refused the request. Starting anyway ({}={}); a consumer on a "
-                            + "topic that turns out to be missing {}.",
+                            + "unreachable, slow, or refused the request. Starting anyway ({}={}): this boot's "
+                            + "consumer containers are not fatal on a missing topic, since nothing was confirmed, "
+                            + "so a topic that really is missing polls nothing until it is created. Restart once "
+                            + "the broker is reachable to re-verify.",
                     result.inconclusive().size(), bootstrapServers, PROBE_TIMEOUT_SECONDS, result.inconclusive(),
-                    PROPERTY, mode.name().toLowerCase(),
-                    mode == TopicVerification.FAIL
-                            ? "fails at container start (missingTopicsFatal)"
-                            : "polls nothing until the topic is created");
+                    PROPERTY, mode.name().toLowerCase());
         }
         if (result.allPresent()) {
             logger.info("Verified {} Kafka topic(s) exist on {}: {}",

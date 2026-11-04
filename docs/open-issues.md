@@ -2228,8 +2228,9 @@ in the callout above.
 > `maestro.messaging.topics.verify-on-startup = fail | warn | off`, **default
 > `fail`**: a confirmed-missing topic fails startup with one exception listing
 > every missing topic and a `kafka-topics.sh --create` line each; an
-> unreachable broker is inconclusive and only WARNs. Under `fail` both
-> container builders also set `missingTopicsFatal(true)` (and all set
+> unreachable broker is inconclusive and only WARNs. Under `fail`, once the
+> probe confirmed every topic present (`KafkaTopicVerifier.fatalOnMissing`),
+> both container builders also set `missingTopicsFatal(true)` (and all set
 > `setAuthExceptionRetryInterval(10s)`); the engine consumer defaults
 > `allow.auto.create.topics=false`; the engine producer defaults
 > `max.block.ms=10000` and `publishSignal` bounds its acknowledgement wait to

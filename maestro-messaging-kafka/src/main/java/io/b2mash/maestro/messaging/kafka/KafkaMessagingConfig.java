@@ -24,8 +24,9 @@ import java.util.Objects;
  * <p>{@code verifyOnStartup} carries {@code maestro.messaging.topics.verify-on-startup}:
  * what {@link KafkaTopicVerifier} does, during context refresh, about a topic
  * this service needs that does not exist, and whether the consumer containers
- * are started with {@code missingTopicsFatal} ({@link TopicVerification#FAIL}
- * only).
+ * may be started with {@code missingTopicsFatal} ({@link TopicVerification#FAIL}
+ * only, and only once the probe has confirmed every required topic present —
+ * {@link KafkaTopicVerifier#fatalOnMissing}).
  *
  * <p><b>Thread safety:</b> This record is immutable and therefore thread-safe.
  *

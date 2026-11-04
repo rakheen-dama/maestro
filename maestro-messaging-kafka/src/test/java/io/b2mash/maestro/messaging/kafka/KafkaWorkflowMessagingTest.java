@@ -259,8 +259,7 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
                     false); // redeliveryEnabled
             var disabledMessaging = new KafkaWorkflowMessaging(
                     kafkaTemplate, consumerFactory, objectMapper, disabledConfig);
-            // The broker does not auto-create, and the container is started with
-            // missingTopicsFatal under the config's default fail policy.
+            // The broker does not auto-create: the topic must exist to be polled.
             createTopics("flagoff-" + testSuffix);
 
             try {
@@ -293,6 +292,39 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
             } finally {
                 disabledMessaging.destroy();
             }
+        }
+    }
+
+    // ── Topic verification → container fatality ──────────────────────────
+
+    @Nested
+    @DisplayName("applyTopicVerification decides the engine channel's missingTopicsFatal")
+    class TopicVerificationTests {
+
+        @Test
+        @DisplayName("a confirmed-present verification under fail makes the next container fatal on a missing topic; "
+                + "with none applied it stays tolerant")
+        void confirmedPresentMakesContainersFatal() throws Exception {
+            var tolerantService = "tolerant-" + testSuffix;
+            var fatalService = "fatal-" + testSuffix;
+            createTopics("maestro.signals." + tolerantService, "maestro.signals." + fatalService);
+
+            messaging.subscribeSignals(tolerantService, message -> { });
+            messaging.applyTopicVerification(new KafkaTopicVerifier.Result(
+                    List.of("maestro.signals." + fatalService), List.of(), List.of()));
+            messaging.subscribeSignals(fatalService, message -> { });
+
+            @SuppressWarnings("unchecked")
+            var containers = (List<ConcurrentMessageListenerContainer<String, byte[]>>)
+                    ReflectionTestUtils.getField(messaging, "containers");
+            assertEquals(2, containers.size());
+            assertFalse(containers.get(0).getContainerProperties().isMissingTopicsFatal(),
+                    "before any verification outcome nothing was confirmed, so nothing is fatal");
+            assertTrue(containers.get(1).getContainerProperties().isMissingTopicsFatal(),
+                    "fail (the config's default) + every topic confirmed present → fatal");
+            assertEquals(Duration.ofSeconds(10),
+                    containers.get(1).getContainerProperties().getAuthExceptionRetryInterval());
+            messaging.destroy();
         }
     }
 

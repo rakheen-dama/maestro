@@ -975,12 +975,15 @@ probe could not get an answer — the broker was unreachable, slow (5 s bound),
 or refused the request (authentication, authorization). This is
 *inconclusive*, not *missing*, and never fails startup under any mode: a broker
 blip during a rolling deploy must not become a fleet-wide restart loop. The
-node continues; under `fail` its consumer containers are started with Spring
-Kafka's `missingTopicsFatal`, so a topic that really is missing still fails
-the container (and the node) once the broker is reachable, with
-`Topic(s) [...] is/are not present and missingTopicsFatal is true`. A node
-stuck in a restart loop on *that* message, on a healthy broker, is a genuinely
-missing topic — apply the fix above.
+node continues with **tolerant** consumer containers for this boot — Spring
+Kafka's `missingTopicsFatal` check counts an unreachable broker as "missing"
+and would otherwise fail `start()` a moment after the WARN — so a topic that
+really is missing polls nothing until it is created. Once the broker is
+reachable again, restart the node to re-verify: a restart that then prints the
+missing-topic failure above is a genuinely missing topic — apply the fix.
+(`Topic(s) [...] is/are not present and missingTopicsFatal is true` from a
+container therefore only ever appears on a node whose startup probe *did*
+confirm the topics, i.e. a topic deleted while the node was running.)
 
 **Upgrading from a build without the check.** A service whose `.DLT`
 companions were never created used to start and run until its first exhausted

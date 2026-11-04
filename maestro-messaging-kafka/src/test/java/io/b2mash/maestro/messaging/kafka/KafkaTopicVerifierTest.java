@@ -215,7 +215,7 @@ class KafkaTopicVerifierTest {
             assertThat(warnMessages()).anySatisfy(m -> assertThat(m)
                     .contains("Could not verify")
                     .contains("maestro.signals.orders")
-                    .contains("missingTopicsFatal"));
+                    .contains("not fatal on a missing topic"));
         }
 
         @Test
@@ -228,6 +228,42 @@ class KafkaTopicVerifierTest {
             assertThat(warnMessages()).isEmpty();
             assertThat(logAppender.list).anySatisfy(e -> assertThat(e.getFormattedMessage())
                     .contains("Verified 2 Kafka topic(s)"));
+        }
+    }
+
+    // ── fatalOnMissing ────────────────────────────────────────────────────
+
+    @Nested
+    @DisplayName("fatalOnMissing — the one rule both container builders follow")
+    class FatalOnMissing {
+
+        private final KafkaTopicVerifier.Result allPresent =
+                new KafkaTopicVerifier.Result(List.of("a", "a.DLT"), List.of(), List.of());
+        private final KafkaTopicVerifier.Result inconclusive =
+                KafkaTopicVerifier.Result.inconclusive(List.of("a", "a.DLT"));
+        private final KafkaTopicVerifier.Result partlyInconclusive =
+                new KafkaTopicVerifier.Result(List.of("a"), List.of(), List.of("a.DLT"));
+
+        @Test
+        @DisplayName("fail + every topic confirmed present → containers are fatal on a missing topic")
+        void failAndConfirmedPresent() {
+            assertThat(KafkaTopicVerifier.fatalOnMissing(TopicVerification.FAIL, allPresent)).isTrue();
+        }
+
+        @Test
+        @DisplayName("fail + inconclusive probe → NOT fatal: Spring Kafka would count the unreachable broker "
+                + "as missing and fail start() right after the 'starting anyway' WARN")
+        void failAndInconclusive() {
+            assertThat(KafkaTopicVerifier.fatalOnMissing(TopicVerification.FAIL, inconclusive)).isFalse();
+            assertThat(KafkaTopicVerifier.fatalOnMissing(TopicVerification.FAIL, partlyInconclusive)).isFalse();
+        }
+
+        @Test
+        @DisplayName("warn and off are never fatal, whatever the probe said")
+        void warnAndOffNeverFatal() {
+            assertThat(KafkaTopicVerifier.fatalOnMissing(TopicVerification.WARN, allPresent)).isFalse();
+            assertThat(KafkaTopicVerifier.fatalOnMissing(TopicVerification.OFF, allPresent)).isFalse();
+            assertThat(KafkaTopicVerifier.fatalOnMissing(TopicVerification.WARN, inconclusive)).isFalse();
         }
     }
 

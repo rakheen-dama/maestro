@@ -2,6 +2,7 @@ package io.b2mash.maestro.messaging.kafka.listener;
 
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.messaging.kafka.KafkaTracePropagation;
+import io.b2mash.maestro.messaging.kafka.KafkaWorkflowMessaging;
 import io.b2mash.maestro.messaging.kafka.config.KafkaMessagingAutoConfiguration;
 import io.b2mash.maestro.spring.annotation.MaestroSignalListener;
 import io.b2mash.maestro.spring.annotation.SignalRouting;
@@ -71,6 +72,31 @@ class MaestroSignalListenerContainerConfigTest {
                     // FAIL-mode wiring is pinned against a real broker in
                     // KafkaTopicVerificationStartupTest.
                     "maestro.messaging.topics.verify-on-startup=off");
+
+    @Test
+    @DisplayName("verify-on-startup=fail with an unreachable broker: the probe is inconclusive, the context still "
+            + "starts, and this boot's containers are NOT fatal on a missing topic")
+    void failMode_inconclusiveProbe_startsWithTolerantContainers() {
+        // Spring Kafka's missingTopicsFatal check counts an unreachable broker as
+        // "missing" and throws from start(). Were fatality tied to the mode alone,
+        // the verifier's "starting anyway" WARN would be followed by a failed
+        // container start — the restart loop the inconclusive branch exists to
+        // avoid. Costs the verifier's 5s probe timeout once.
+        runner.withPropertyValues("maestro.messaging.topics.verify-on-startup=fail")
+                .run(ctx -> {
+                    assertThat(ctx).hasNotFailed();
+                    var bpp = ctx.getBean(MaestroSignalListenerBeanPostProcessor.class);
+                    var containers = bpp.containersForTesting();
+                    assertThat(containers).hasSize(1);
+                    assertThat(containers.get(0).getContainerProperties().isMissingTopicsFatal())
+                            .as("an inconclusive probe must leave missingTopicsFatal off for this boot")
+                            .isFalse();
+                    var engineMessaging = ctx.getBean(KafkaWorkflowMessaging.class);
+                    assertThat(ReflectionTestUtils.getField(engineMessaging, "missingTopicsFatal"))
+                            .as("the engine signal channel follows the same rule")
+                            .isEqualTo(false);
+                });
+    }
 
     @Test
     @DisplayName("verify-on-startup=off leaves missingTopicsFatal off but still sets the auth-exception retry interval")
