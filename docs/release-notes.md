@@ -15,6 +15,7 @@ Closes `docs/open-issues.md` Issue 11. A node that loses its instance lock — a
 - **Multi-node without a lock backend** remains unsupported but is now safe: two lock-less nodes adopting the same workflow either race the adoption CAS (one yields without launching) or adopt in turn (the earlier adopter's first write is fenced).
 
 **Upgrade.** Rolling-deploy safe: the column defaults to `0`, which is the epoch every pre-upgrade run implicitly holds, and an old node's unfenced writes keep working against a V6 schema. With `maestro.store.schema.mode: flyway` nothing to do; with `validate`/`none`, apply V6 by hand before deploying this build — it names `lease_epoch` in every instance read and write, so without it no workflow can be started, resumed or read (see `docs/configuration.md`, "Upgrading an existing database", for the updated hand-apply block and `flyway_schema_history` DELETE).
+
 ### Kafka — missing topics fail startup; lifecycle publishes never block a workflow
 
 **Behaviour change: a service whose Kafka topics — `.DLT` companions included — do not exist no longer starts.** `reports/Maestro framework value assessment.md` found that "Maestro never auto-creates Kafka topics" was policy, not code: nothing set `allow.auto.create.topics`, nothing set `missingTopicsFatal`, the only guard was a warn-only dead-letter probe, and a missing admin-events topic cost `max.block.ms` (60 s) on every lifecycle publish — inline on the workflow thread for every activity, timer, signal and compensation event (the never-explained six-of-six loan E2E failures, Issue 3).
@@ -44,6 +45,7 @@ Until now nothing ever deleted a finished workflow: every `COMPLETED`, `FAILED` 
 2. **Expect the first sweep to be large.** On a database that has never been purged, everything older than the retentions becomes eligible at once and drains at up to 50 000 instances per status per hour at the defaults. Raise the retentions first and lower them later, or set `maestro.retention.enabled: false`, if you want to control the pace.
 3. **The admin dashboard keeps showing purged workflows** (it has its own copy from the lifecycle events); **Retry/Terminate on one now reports `NOT_FOUND`**. A purged `workflow_id` becomes free for a new `startWorkflow`, which adopts any orphaned signals still addressed to it — see `docs/operations.md` § 11 if your IDs are reused across time.
 4. **Custom `WorkflowStore` implementations must implement `purgeTerminalInstancesBefore`** (see its Javadoc for the children-before-parent and all-or-nothing contract). The chaos harness runs with `MAESTRO_RETENTION_ENABLED=false`.
+
 
 ### Removed — the Valkey lock, the Postgres messaging transport and the Postgres-only sample; Postgres + Kafka is the whole stack
 

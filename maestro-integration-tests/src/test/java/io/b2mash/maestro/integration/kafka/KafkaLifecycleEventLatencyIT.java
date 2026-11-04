@@ -67,11 +67,20 @@ class KafkaLifecycleEventLatencyIT extends PostgresIntegrationSupport {
     private static final int MAX_BLOCK_MS = 2_000;
 
     /**
-     * startWorkflow must return — and the ten-activity workflow must complete —
-     * well inside this bound even though the producer above may stall on
-     * every one of its publishes.
+     * startWorkflow must return well inside this bound even though the producer
+     * above may stall on its publish.
      */
     private static final Duration PROMPT_BOUND = Duration.ofSeconds(1);
+
+    /**
+     * The ten-activity workflow — ten memoized activity calls, each a Postgres
+     * event append plus lock round trip on the shared Testcontainers database —
+     * must complete inside this bound. Measured 307–575 ms on an idle machine
+     * and 971 ms with four module suites running in parallel, so 1 s was a
+     * flake waiting to happen; 2 s still separates a regression unambiguously,
+     * since the inline publish path costs 20 × {@value #MAX_BLOCK_MS} ms = 40 s.
+     */
+    private static final Duration TEN_STEP_BOUND = Duration.ofSeconds(2);
 
     @SuppressWarnings("resource")
     private static final KafkaContainer KAFKA =
@@ -124,7 +133,7 @@ class KafkaLifecycleEventLatencyIT extends PostgresIntegrationSupport {
     }
 
     @Test
-    @DisplayName("a ten-activity workflow completes in under a second even though every one of its "
+    @DisplayName("a ten-activity workflow completes in under two seconds even though every one of its "
             + "22 lifecycle publishes would block for max.block.ms")
     void tenActivityWorkflow_completesPromptly_whenAdminTopicIsMissing() {
         var producerFactory = producerFactory();
@@ -141,7 +150,7 @@ class KafkaLifecycleEventLatencyIT extends PostgresIntegrationSupport {
             var workflowId = MaestroEngineHarness.uniqueWorkflowId("lat-steps");
             var start = System.nanoTime();
             var handle = harness.start(workflowId, KafkaTestWorkflows.TenStepWorkflow.class, "seed");
-            // Bounded well above PROMPT_BOUND so a regression fails on the
+            // Bounded well above TEN_STEP_BOUND so a regression fails on the
             // assertion below with the measured time, not on an opaque timeout —
             // but far below the 20 × max.block.ms (40s) the inline path would cost.
             var status = handle.awaitTerminal(Duration.ofSeconds(15));
@@ -151,7 +160,7 @@ class KafkaLifecycleEventLatencyIT extends PostgresIntegrationSupport {
                     + "start → COMPLETED in {} ms", KafkaTestWorkflows.TenStepWorkflow.STEPS, MAX_BLOCK_MS,
                     elapsed.toMillis());
             assertEquals(WorkflowStatus.COMPLETED, status);
-            assertTrue(elapsed.compareTo(PROMPT_BOUND) < 0,
+            assertTrue(elapsed.compareTo(TEN_STEP_BOUND) < 0,
                     "a workflow's activity lifecycle events must never block its thread on Kafka "
                             + "(20 ACTIVITY_* publishes × max.block.ms=" + MAX_BLOCK_MS + "ms would be "
                             + Duration.ofMillis(20L * MAX_BLOCK_MS) + "), took " + elapsed);
