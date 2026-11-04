@@ -46,11 +46,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * in {@code classpath:db/migration} (test resources) and proves the two
  * histories never meet.
  *
- * <p>The Postgres-only profile ({@code maestro-samples/sample-postgres-only})
- * puts {@code maestro-store-postgres}, {@code maestro-lock-postgres} and
- * {@code maestro-messaging-postgres} on one classpath; their versions share
- * Maestro's one history and must not collide either (bands 1–99, 100–199,
- * 200–299).
+ * <p>{@code maestro-store-postgres} ships two migration locations — the store
+ * (band 1–99) and the lock (band 100–199); their versions share Maestro's one
+ * history and must not collide either. Band 200–299 belonged to the removed
+ * Postgres messaging transport and is retired, never to be reused: databases
+ * that applied V200–V202 keep those history rows and an orphan
+ * {@code maestro_signal_queue}, which Flyway ignores.
  *
  * <p>This is an integration test rather than a module unit test because the
  * defect only exists when the modules are composed; no single module owns it.
@@ -97,18 +98,16 @@ class MaestroMigrationsCoexistIT {
 
         new MaestroSchemaInitializer(ds, SchemaMode.FLYWAY, getClass().getClassLoader()).initialize();
 
-        assertEquals(List.of("1", "2", "3", "4", "5", "100", "200", "201", "202"),
+        assertEquals(List.of("1", "2", "3", "4", "5", "100"),
                 versions(MaestroSchemaInitializer.HISTORY_TABLE));
         assertEquals(List.of("1"), versions("flyway_schema_history"),
                 "Maestro wrote nothing into the host's history");
         var tables = tables();
         assertTrue(tables.containsAll(List.of(
-                        "maestro_workflow_instance", "maestro_distributed_lock", "maestro_signal_queue")),
-                "every module's tables must be present, found: " + tables);
-        // V202: the task-dispatch channel and the never-read lifecycle outbox are gone.
-        assertFalse(tables.contains("maestro_task_queue"), "V202 must drop maestro_task_queue: " + tables);
-        assertFalse(tables.contains("maestro_lifecycle_event_queue"),
-                "V202 must drop maestro_lifecycle_event_queue: " + tables);
+                        "maestro_workflow_instance", "maestro_distributed_lock", "maestro_leader_election")),
+                "the store's and the lock's tables must be present, found: " + tables);
+        assertFalse(tables.contains("maestro_signal_queue"),
+                "the removed Postgres transport's table must not be created on a fresh database: " + tables);
     }
 
     /**
@@ -141,8 +140,7 @@ class MaestroMigrationsCoexistIT {
     @DisplayName("no two Maestro migrations declare the same version, across every module")
     void maestroMigrationVersionsAreUniqueAcrossModules() {
         var locations = MaestroSchemaInitializer.discoverLocations(getClass().getClassLoader());
-        assertEquals(List.of("classpath:db/maestro/lock", "classpath:db/maestro/messaging",
-                "classpath:db/maestro/store"), locations);
+        assertEquals(List.of("classpath:db/maestro/lock", "classpath:db/maestro/store"), locations);
 
         var flyway = Flyway.configure()
                 .dataSource(ds)
@@ -163,13 +161,20 @@ class MaestroMigrationsCoexistIT {
      * R50: the documented one-time upgrade of a 0.4.0 database, keep-the-data
      * path (docs/configuration.md § Schema management → "Upgrading an existing
      * database", step for step). The SQL below is the documented SQL verbatim.
+     *
+     * <p>0.4.0 also shipped the Postgres messaging transport's V200/V201; that
+     * module is gone, so this fixture replays only the store and lock scripts
+     * a 0.4.0 host applied. A real 0.4.0 database additionally holds the V200
+     * and V201 history rows and the {@code maestro_signal_queue} table; the
+     * documented DELETE below still names them, and the orphan table is
+     * harmless (optionally {@code DROP TABLE maestro_signal_queue}).
      */
     @Test
-    @DisplayName("upgrade procedure, keep the data: mode none + V4/V5/V202 by hand + scoped DELETE")
+    @DisplayName("upgrade procedure, keep the data: mode none + V4/V5 by hand + scoped DELETE")
     void upgradeProcedureKeepingTheData(@TempDir Path released, @TempDir Path hostMigrations,
                                         @TempDir Path noMigrations) throws Exception {
         simulateReleased040Database(released, hostMigrations);
-        assertEquals(List.of("1", "2", "3", "100", "200", "201", "1000"), versions("flyway_schema_history"));
+        assertEquals(List.of("1", "2", "3", "100", "1000"), versions("flyway_schema_history"));
         var store = new PostgresWorkflowStore(ds, JsonMapper.builder().build());
         assertThrows(RuntimeException.class, () -> store.saveSignal(preDeliverySignal()),
                 "without V4/V5 every saveSignal fails — the reason the procedure applies them");
@@ -185,11 +190,10 @@ class MaestroMigrationsCoexistIT {
         execute("""
                 ALTER TABLE maestro_workflow_signal ADD COLUMN IF NOT EXISTS trace_context VARCHAR(128);  -- V4
                 ALTER TABLE maestro_workflow_signal ALTER COLUMN received_at SET DEFAULT now();         -- V5
-                DROP TABLE IF EXISTS maestro_task_queue;                                                 -- V202
-                DROP TABLE IF EXISTS maestro_lifecycle_event_queue;                                      -- V202
                 """);
         // Step 3.
-        assertEquals(6, execute(DELETE_MAESTRO_HISTORY_ROWS), "every row a 0.4.0 build wrote is matched");
+        assertEquals(4, execute(DELETE_MAESTRO_HISTORY_ROWS),
+                "every store/lock row a 0.4.0 build wrote is matched (V200/V201 are not replayed here)");
 
         assertEquals(List.of("1000"), versions("flyway_schema_history"), "the host's own row is untouched");
 
@@ -198,10 +202,7 @@ class MaestroMigrationsCoexistIT {
         new MaestroSchemaInitializer(ds, SchemaMode.NONE, getClass().getClassLoader()).initialize();
         store.saveSignal(preDeliverySignal());
         assertTrue(store.getUnconsumedSignals("wf-upgrade", "go").size() >= 1);
-        var tables = tables();
-        assertFalse(tables.contains("maestro_task_queue"), tables.toString());
-        assertFalse(tables.contains("maestro_lifecycle_event_queue"), tables.toString());
-        assertFalse(tables.contains(MaestroSchemaInitializer.HISTORY_TABLE), "mode none writes no history");
+        assertFalse(tables().contains(MaestroSchemaInitializer.HISTORY_TABLE), "mode none writes no history");
     }
 
     /** R50: the same procedure's fresh-start path. */
@@ -210,7 +211,8 @@ class MaestroMigrationsCoexistIT {
     void upgradeProcedureFreshStart(@TempDir Path released, @TempDir Path hostMigrations) throws Exception {
         simulateReleased040Database(released, hostMigrations);
 
-        // Step 2, fresh start.
+        // Step 2, fresh start (the documented statement still names the removed
+        // transport's tables; IF EXISTS makes that a no-op here).
         execute("""
                 DROP TABLE IF EXISTS maestro_workflow_signal, maestro_workflow_timer, maestro_workflow_event,
                     maestro_workflow_instance, maestro_distributed_lock, maestro_leader_election,
@@ -219,13 +221,13 @@ class MaestroMigrationsCoexistIT {
         assertTrue(tables().stream().noneMatch(t -> t.startsWith("maestro_")), "every Maestro table dropped");
         assertTrue(tables().contains("host_orders"), "the host's own table is untouched");
         // Step 3.
-        assertEquals(6, execute(DELETE_MAESTRO_HISTORY_ROWS));
+        assertEquals(4, execute(DELETE_MAESTRO_HISTORY_ROWS));
         assertEquals(List.of("1000"), versions("flyway_schema_history"));
 
         // Step 4.
         Flyway.configure().dataSource(ds).locations("filesystem:" + hostMigrations).load().migrate();
         new MaestroSchemaInitializer(ds, SchemaMode.FLYWAY, getClass().getClassLoader()).initialize();
-        assertEquals(List.of("1", "2", "3", "4", "5", "100", "200", "201", "202"),
+        assertEquals(List.of("1", "2", "3", "4", "5", "100"),
                 versions(MaestroSchemaInitializer.HISTORY_TABLE));
         new PostgresWorkflowStore(ds, JsonMapper.builder().build()).saveSignal(preDeliverySignal());
     }
@@ -244,14 +246,16 @@ class MaestroMigrationsCoexistIT {
                 ('201', 'V201__redelivery_dead_letter.sql'));
             """;
 
-    /** The migrations 0.4.0 released, under the old layout: one location, the host's history table. */
+    /**
+     * The store and lock migrations 0.4.0 released, under the old layout: one
+     * location, the host's history table. (0.4.0's V200/V201 belonged to the
+     * removed Postgres transport and are no longer on any classpath.)
+     */
     private static final List<String> RELEASED_040 = List.of(
             "db/maestro/store/V1__create_maestro_schema.sql",
             "db/maestro/store/V2__create_indexes.sql",
             "db/maestro/store/V3__timer_lookup_index.sql",
-            "db/maestro/lock/V100__maestro_lock_postgres.sql",
-            "db/maestro/messaging/V200__maestro_messaging_postgres.sql",
-            "db/maestro/messaging/V201__redelivery_dead_letter.sql");
+            "db/maestro/lock/V100__maestro_lock_postgres.sql");
 
     /**
      * A database as a 0.4.0 host left it: Maestro's released scripts and the

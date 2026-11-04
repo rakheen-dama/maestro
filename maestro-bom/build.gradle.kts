@@ -15,9 +15,6 @@ dependencies {
         api(project(":maestro-store-jdbc"))
         api(project(":maestro-store-postgres"))
         api(project(":maestro-messaging-kafka"))
-        api(project(":maestro-messaging-postgres"))
-        api(project(":maestro-lock-valkey"))
-        api(project(":maestro-lock-postgres"))
         api(project(":maestro-admin-client"))
         api(project(":maestro-test"))
     }

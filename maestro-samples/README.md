@@ -154,7 +154,8 @@ curl -s http://localhost:8081/orders/{orderId}/status | jq .
 
 ## Running Locally (without Docker)
 
-Prerequisites: PostgreSQL 16+, Kafka 3.x, Valkey/Redis running locally.
+Prerequisites: PostgreSQL 16+ and Kafka 3.x running locally. Postgres holds the
+workflow state and the distributed locks; Kafka carries the signals.
 
 ```bash
 # Create Kafka topics (see docker-compose.yml for the full list)
@@ -182,24 +183,3 @@ kafka-topics.sh --bootstrap-server localhost:9092 --create --topic payments.resu
 | **Retry policies** | Payment gateway retries a provider outage up to 30x with exponential backoff (attempt counter in memory — a crash restarts the schedule; a completed charge is never re-executed); a declined card is non-retryable |
 | **Signal self-recovery** | Signals persist to Postgres, delivered when workflow is ready |
 | **Workflow queries** | `GET /orders/{id}/status` reads live workflow state |
-
----
-
-## sample-postgres-only
-
-**Postgres-only document approval workflow** — demonstrates Maestro with zero external dependencies beyond PostgreSQL.
-
-- **Domain:** Submit → assign reviewer → await review signal → publish/reject → archive
-- **Backend:** `maestro-store-postgres` + `maestro-messaging-postgres` + `maestro-lock-postgres`
-- **No Kafka, no Valkey**
-
-```bash
-cd maestro-samples/sample-postgres-only
-docker-compose up -d
-# Submit a document
-curl -X POST http://localhost:8083/documents -H 'Content-Type: application/json' \
-  -d '{"title": "Q4 Report", "content": "...", "authorId": "alice"}'
-# Approve it
-curl -X POST http://localhost:8083/documents/{id}/review -H 'Content-Type: application/json' \
-  -d '{"approved": true, "reviewerId": "bob", "comments": "Looks good"}'
-```

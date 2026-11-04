@@ -6,13 +6,13 @@
 #
 # Services:
 #   - postgres:16   → One instance, one database per service
-#                     (loan_application, verification_gateway, underwriting)
-#   - valkey:8      → Distributed locks and signal notifications
+#                     (loan_application, verification_gateway, underwriting);
+#                     also holds each service's distributed locks
 #   - kafka (KRaft) → Signals, lifecycle events, cross-service events
 #   - kafka-init    → Pre-creates ALL required topics (never auto-created)
 #
 # Host ports are offset from the root docker-compose.yml so both stacks can
-# run side by side: Postgres 5433, Valkey 6380, Kafka 29093.
+# run side by side: Postgres 5433, Kafka 29093.
 
 name: maestro-loan-origination
 
@@ -33,16 +33,6 @@ services:
       - ./docker/init-loan-dbs.sh:/docker-entrypoint-initdb.d/init-loan-dbs.sh
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U maestro -d maestro"]
-      interval: 3s
-      timeout: 3s
-      retries: 10
-
-  valkey:
-    image: valkey/valkey:8-alpine
-    ports:
-      - "6380:6379"
-    healthcheck:
-      test: ["CMD", "valkey-cli", "ping"]
       interval: 3s
       timeout: 3s
       retries: 10

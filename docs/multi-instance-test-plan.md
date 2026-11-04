@@ -70,7 +70,7 @@ failure injected between nodes.
 
 **Engine features built for multi-node** (all currently proven only at the
 levels above): instance locks with TTL + renewal (Valkey and Postgres
-backends), recovery-poller adoption of ownerless RUNNING workflows,
+backends at the time; Postgres only since 2026-11-04), recovery-poller adoption of ownerless RUNNING workflows,
 timer-poller leader election, consumer-group signal routing, node-agnostic
 admin terminate (optimistic-version CAS), terminal-state resurrection
 guards, graceful shutdown leaving parked workflows `WAITING_*` and
@@ -139,6 +139,11 @@ both pass 3 consecutive runs.
 and `lock-postgres` profiles (adoption timing rides on TTL semantics; the two
 backends age locks differently). Done when: the multi-node scenario set is
 green on both, with per-backend timing notes recorded.
+
+> **Superseded 2026-11-04.** The Valkey lock module and the `E2E_LOCK_BACKEND`
+> switch were removed; the Postgres lock (now inside `maestro-store-postgres`)
+> is the only backend and the E2E runs on it alone. The matrix and its timings
+> are preserved in `docs/operations.md` §7 as history.
 
 ## 4. Phase 2 — chaos/soak harness (architect designs first)
 

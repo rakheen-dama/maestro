@@ -4,13 +4,13 @@
 [![Java](https://img.shields.io/badge/Java-25-orange.svg)](https://openjdk.org/projects/jdk/25/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.x-green.svg)](https://spring.io/projects/spring-boot)
 
-**Durable workflows for Spring Boot 4 teams on Postgres + Kafka — sagas, cross-service signals, free dashboard.** Add a starter to your microservice and get crash-recoverable workflows on the Postgres you already run; Kafka and Valkey are optional.
+**Durable workflows for Spring Boot 4 teams on Postgres + Kafka — sagas, cross-service signals, free dashboard.** Add a starter to your microservice and get crash-recoverable workflows on the Postgres and Kafka you already run; nothing else to deploy.
 
 ---
 
 ## What is Maestro?
 
-Maestro is an open-source durable workflow engine delivered as a Spring Boot Starter. It brings crash-recoverable, long-running workflow orchestration to Java microservices **without a central server**. Workflows are plain Java methods. Activities are Spring beans. State is persisted to Postgres. Coordination happens via Kafka and Valkey.
+Maestro is an open-source durable workflow engine delivered as a Spring Boot Starter. It brings crash-recoverable, long-running workflow orchestration to Java microservices **without a central server**. Workflows are plain Java methods. Activities are Spring beans. State, locks and leader election live in Postgres. Cross-service signals travel over Kafka.
 
 ### Why Maestro?
 
@@ -24,7 +24,7 @@ Maestro is an open-source durable workflow engine delivered as a Spring Boot Sta
 | **Camunda / Zeebe, Flowable** | BPMN engines (Flowable 8 embeds on any JDBC; Zeebe needs its own broker) | BPMN modelling, human tasks and history views; model-first rather than code-first |
 | **Axon Framework** | Event-sourcing and CQRS framework | Event-sourcing model with a steep learning curve; Axon 5.1+ partly commercial |
 | **Dapr Workflow** | Sidecar-based workflow runtime | Polyglot and Kubernetes-native; a sidecar per pod and state outside your database |
-| **Maestro** | **Embedded Spring Boot 4 starter on your Postgres (+ optional Kafka, Valkey)** | **Sagas, cross-service signals with trace propagation, versioning, a test kit and a free dashboard — nothing new to deploy. Pre-1.0; see `docs/open-issues.md`.** |
+| **Maestro** | **Embedded Spring Boot 4 starter on your Postgres + Kafka** | **Sagas, cross-service signals with trace propagation, versioning, a test kit and a free dashboard — nothing new to deploy. Pre-1.0; see `docs/open-issues.md`.** |
 
 ---
 
@@ -56,7 +56,6 @@ dependencies {
     implementation("io.b2mash.maestro:maestro-spring-boot-starter")
     implementation("io.b2mash.maestro:maestro-store-postgres")
     implementation("io.b2mash.maestro:maestro-messaging-kafka")
-    implementation("io.b2mash.maestro:maestro-lock-valkey")
     implementation("org.springframework.boot:spring-boot-starter-jdbc")
 
     testImplementation("io.b2mash.maestro:maestro-test")
@@ -65,7 +64,7 @@ dependencies {
 
 Replace `<version>` with the Maestro release you are adopting (`gradle.properties` on `main` holds the snapshot under development). Nothing is published to Maven Central yet; build and `publishToMavenLocal` from source.
 
-> **Postgres-only mode:** Replace `maestro-messaging-kafka` with `maestro-messaging-postgres` and `maestro-lock-valkey` with `maestro-lock-postgres` to eliminate Kafka and Valkey dependencies entirely. See [Configuration](docs/configuration.md) for details.
+> `maestro-store-postgres` provides the workflow store, the distributed lock and the cross-node signal wake (Postgres `LISTEN/NOTIFY`) from one dependency; there is no separate lock module. See [Configuration](docs/configuration.md) for details.
 
 ### 2. Define an activity
 
@@ -209,14 +208,12 @@ graph TB
     end
 
     subgraph "Infrastructure (yours)"
-        PG[("PostgreSQL")]
+        PG[("PostgreSQL<br/>state + locks + wake")]
         KAFKA["Apache Kafka"]
-        VALKEY["Valkey / Redis"]
     end
 
     ENGINE <--> PG
     ENGINE <--> KAFKA
-    ENGINE <--> VALKEY
 ```
 
 ### Modules
@@ -226,16 +223,12 @@ graph TB
 | `maestro-core` | Execution engine, memoization, timers, signals, saga | **No** |
 | `maestro-spring-boot-starter` | Auto-configuration, annotations, config binding | Yes |
 | `maestro-store-jdbc` | Abstract JDBC `WorkflowStore` | No |
-| `maestro-store-postgres` | Postgres implementation + Flyway migrations | No |
+| `maestro-store-postgres` | Postgres `WorkflowStore`, table-backed `DistributedLock`, LISTEN/NOTIFY signal wake, Flyway migrations | No |
 | `maestro-messaging-kafka` | Kafka `WorkflowMessaging` implementation | Yes |
-| `maestro-messaging-postgres` | PostgreSQL `WorkflowMessaging` via LISTEN/NOTIFY + polling | No |
-| `maestro-lock-valkey` | Valkey/Redis `DistributedLock` | No |
-| `maestro-lock-postgres` | PostgreSQL `DistributedLock` via table-backed locks | No |
 | `maestro-admin` | Standalone monitoring dashboard | Yes |
 | `maestro-admin-client` | Lifecycle event publisher | Minimal |
 | `maestro-bom` | Gradle/Maven platform aligning all module versions | No |
 | `maestro-test` | In-memory engine for testing | No |
-| `sample-postgres-only` | Document approval workflow -- Postgres-only demo | Yes |
 
 `maestro-core` is **pure Java** with zero Spring dependency. All Spring integration lives in `maestro-spring-boot-starter`.
 
@@ -301,7 +294,7 @@ See the [Samples README](maestro-samples/README.md) for crash recovery simulatio
 | Build | Gradle Kotlin DSL (Gradle 9) |
 | Database | PostgreSQL 14+ |
 | Messaging | Apache Kafka via Spring Kafka 4.x |
-| Coordination | Valkey / Redis via Lettuce |
+| Coordination | PostgreSQL tables (locks, leader election) + LISTEN/NOTIFY wake |
 | Serialization | Jackson 3 (`tools.jackson` packages) |
 | Schema migration | Flyway 11.x |
 | Null safety | JSpecify (aligned with Spring 7) |
@@ -315,7 +308,7 @@ See the [Samples README](maestro-samples/README.md) for crash recovery simulatio
 ```bash
 ./gradlew build                                      # Everything, including the real-backend suites (Docker required)
 ./gradlew :maestro-core:test                         # Unit tests for core
-./gradlew :maestro-integration-tests:test            # Real Postgres/Kafka/Valkey (Docker)
+./gradlew :maestro-integration-tests:test            # Real Postgres/Kafka (Docker)
 ./gradlew :maestro-integration-tests:e2eTest         # Loan-origination E2E + chaos (Docker)
 ```
 

@@ -17,10 +17,6 @@ spring:
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
 
-  data:
-    redis:
-      url: redis://${VALKEY_HOST:localhost}:${VALKEY_PORT:6379}
-
 server:
   port: ${SERVER_PORT:8082}
 
@@ -34,9 +30,6 @@ maestro:
     type: kafka
     topics:
       signals: maestro.signals.payment-gateway
-
-  lock:
-    type: valkey
 
   worker:
     task-queues:

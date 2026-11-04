@@ -1,1 +1,2 @@
 classpath:db/maestro/store
+classpath:db/maestro/lock

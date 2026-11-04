@@ -36,12 +36,17 @@ import java.util.concurrent.CopyOnWriteArrayList;
 /**
  * The Testcontainers-orchestrated chaos cluster (chaos-harness-design.md §2):
  * one Docker network carrying shared Postgres (with {@code pg_stat_statements}),
- * Kafka (KRaft, auto-create off), Valkey, and the six loan-origination workload
+ * Kafka (KRaft, auto-create off), and the six loan-origination workload
  * nodes running the sample boot jars as {@code eclipse-temurin:25-jre}
- * containers.
+ * containers. Postgres carries both the workflow store and the distributed
+ * lock ({@code maestro-store-postgres}; {@code maestro.lock.type} defaults to
+ * {@code postgres}), and cross-node signal wake rides its {@code LISTEN/NOTIFY}
+ * {@code SignalNotifier} — so a {@code BACKEND_OUTAGE(postgres)} takes store,
+ * lock and wake down together, which is the realistic failure for the
+ * Postgres + Kafka stack. Kafka carries only the inter-service signal transport.
  *
  * <p>Nodes reach infrastructure by network alias ({@code postgres:5432},
- * {@code kafka:9092}, {@code valkey:6379}); the test JVM reaches the infra
+ * {@code kafka:9092}); the test JVM reaches the infra
  * containers through their mapped host ports, and reaches <em>nodes</em>
  * through the {@link NodeAmbassador} — a never-harassed socat container inside
  * the network that forwards a stable host port to each node alias. A node's own
@@ -66,7 +71,6 @@ public final class ChaosCluster implements AutoCloseable {
 
     private static final String POSTGRES_IMAGE = "postgres:16-alpine";
     private static final String KAFKA_IMAGE = "apache/kafka:3.9.0";
-    private static final String VALKEY_IMAGE = "valkey/valkey:8-alpine";
     private static final String NODE_IMAGE = "eclipse-temurin:25-jre";
     private static final int NODE_PORT = 8080;
 
@@ -87,7 +91,6 @@ public final class ChaosCluster implements AutoCloseable {
     private Network network;
     private PostgreSQLContainer<?> postgres;
     private GenericContainer<?> kafka;
-    private GenericContainer<?> valkey;
     private NodeAmbassador ambassador;
 
     private final Map<NodeRole, ManagedNode> nodes = new ConcurrentHashMap<>();
@@ -165,13 +168,6 @@ public final class ChaosCluster implements AutoCloseable {
                         .withStartupTimeout(Duration.ofMinutes(3)));
         kafka.start();
 
-        valkey = new GenericContainer<>(DockerImageName.parse(VALKEY_IMAGE))
-                .withNetwork(network)
-                .withNetworkAliases("valkey")
-                .withExposedPorts(6379)
-                .waitingFor(Wait.forListeningPort());
-        valkey.start();
-
         createTopics();
 
         // Started before the nodes: socat binds its listeners immediately and
@@ -191,7 +187,7 @@ public final class ChaosCluster implements AutoCloseable {
             node.container.start();
         }
         awaitAllNodesHealthy(Duration.ofMinutes(3));
-        verifyValkeyLockMode();
+        verifyPostgresLockMode();
         log.info("[chaos] cluster healthy: {} nodes live", nodes.size());
     }
 
@@ -315,10 +311,7 @@ public final class ChaosCluster implements AutoCloseable {
         env.put("POSTGRES_USER", "maestro");
         env.put("POSTGRES_PASSWORD", "maestro");
         env.put("KAFKA_BOOTSTRAP", "kafka:9092");
-        env.put("VALKEY_HOST", "valkey");
-        env.put("VALKEY_PORT", "6379");
         env.put("SERVER_PORT", String.valueOf(NODE_PORT));
-        env.put("MAESTRO_LOCK_TYPE", "valkey");
         env.put("MAESTRO_SIGNAL_WAKE_RECHECK_INTERVAL", isoSeconds(config.wakeRecheckInterval()));
         env.put("JAVA_TOOL_OPTIONS", "-Xmx256m");
         // Sample timeouts (chaos-harness-design.md §3): long enough that a
@@ -404,26 +397,6 @@ public final class ChaosCluster implements AutoCloseable {
         s.addAll(partitioned);
         s.addAll(dead);
         return s;
-    }
-
-    // ------------------------------------------------------ Valkey / metrics
-
-    /**
-     * Runs {@code valkey-cli} inside the Valkey container.
-     *
-     * @param args cli arguments (e.g. {@code "INFO", "commandstats"})
-     * @return the raw stdout, or empty string if the exec failed
-     */
-    public String valkeyCli(String... args) {
-        try {
-            var cmd = new ArrayList<String>(List.of("valkey-cli"));
-            cmd.addAll(List.of(args));
-            var result = valkey.execInContainer(cmd.toArray(String[]::new));
-            return result.getStdout();
-        } catch (Exception e) {
-            log.warn("[chaos] valkey-cli {} failed: {}", List.of(args), e.toString());
-            return "";
-        }
     }
 
     // ----------------------------------------------------------- docker ops
@@ -528,7 +501,6 @@ public final class ChaosCluster implements AutoCloseable {
         return switch (backend) {
             case "postgres" -> postgres.getContainerId();
             case "kafka" -> kafka.getContainerId();
-            case "valkey" -> valkey.getContainerId();
             default -> throw new IllegalArgumentException("unknown backend " + backend);
         };
     }
@@ -564,7 +536,7 @@ public final class ChaosCluster implements AutoCloseable {
      * anything dead, then wait for all six roles healthy. Idempotent. Backends
      * are healed first and explicitly — if the controller thread dies mid-
      * {@code BACKEND_OUTAGE} (the soak-failure shape, report §10), the paused
-     * backend would otherwise stay frozen forever and every later DB/Valkey
+     * backend would otherwise stay frozen forever and every later DB/Kafka
      * access would fail while looking like a node problem.
      *
      * <p>Every heal step is attempted per-item (CodeRabbit wave, PR #30): one
@@ -655,18 +627,41 @@ public final class ChaosCluster implements AutoCloseable {
         }
     }
 
-    private void verifyValkeyLockMode() {
-        // The starter logs the effective DistributedLock implementation at boot;
-        // assert every loan node selected the Valkey lock (chaos v1 is
-        // Valkey-only, ruling Q3).
-        for (NodeRole role : List.of(NodeRole.LOAN_A, NodeRole.LOAN_B)) {
-            Path logFile = nodes.get(role).logFiles.get(0);
-            boolean valkeyLock = fileContains(logFile, "Valkey")
-                    && fileContains(logFile, "DistributedLock");
-            if (!valkeyLock) {
-                log.warn("[chaos] could not confirm Valkey lock mode from {} log (continuing)", role);
+    /**
+     * The FQCN {@code MaestroAutoConfiguration} logs at INFO on every boot
+     * ({@code "Maestro distributed-lock backend: <FQCN>"}) when the Postgres lock
+     * won. Same runtime proof the loan E2E's {@code assert_lock_backend} uses:
+     * the class of the {@code DistributedLock} bean actually injected into the
+     * executor, not the property that requested it.
+     */
+    private static final String POSTGRES_LOCK_LOG_LINE =
+            "distributed-lock backend: io.b2mash.maestro.store.postgres.lock.PostgresDistributedLock";
+
+    private void verifyPostgresLockMode() {
+        // Postgres is the only lock backend (maestro.lock.type defaults to
+        // postgres; any other value fails startup), so every node's boot log must carry
+        // the Postgres-lock line. Hard failure, not a warning: a node running
+        // some other lock would silently change what every lock-dependent
+        // invariant (kill/replace adoption, leader hand-off) is measuring. The
+        // nodes are already HTTP-healthy here, so the line was emitted long
+        // ago; the short poll only covers the async stdout-to-file consumer.
+        long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+        var unconfirmed = new ArrayList<NodeRole>(List.of(NodeRole.values()));
+        while (!unconfirmed.isEmpty() && System.nanoTime() < deadline) {
+            unconfirmed.removeIf(role -> {
+                List<Path> files = nodes.get(role).logFiles;
+                return !files.isEmpty() && fileContains(files.get(0), POSTGRES_LOCK_LOG_LINE);
+            });
+            if (!unconfirmed.isEmpty()) {
+                sleep(500);
             }
         }
+        if (!unconfirmed.isEmpty()) {
+            throw new IllegalStateException("nodes " + unconfirmed + " did not log '"
+                    + POSTGRES_LOCK_LOG_LINE + "' at boot — the chaos cluster requires the "
+                    + "Postgres lock on every node");
+        }
+        log.info("[chaos] lock backend verified on all {} nodes: PostgresDistributedLock", nodes.size());
     }
 
     private boolean fileContains(Path file, String needle) {
@@ -701,7 +696,6 @@ public final class ChaosCluster implements AutoCloseable {
         if (ambassador != null) {
             ambassador.close();
         }
-        quietStop(valkey);
         quietStop(kafka);
         quietStop(postgres);
         if (network != null) {

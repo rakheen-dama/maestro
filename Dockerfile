@@ -19,7 +19,6 @@ COPY maestro-spring-boot-starter maestro-spring-boot-starter
 COPY maestro-store-jdbc maestro-store-jdbc
 COPY maestro-store-postgres maestro-store-postgres
 COPY maestro-messaging-kafka maestro-messaging-kafka
-COPY maestro-lock-valkey maestro-lock-valkey
 COPY maestro-test maestro-test
 COPY maestro-admin maestro-admin
 COPY maestro-admin-client maestro-admin-client

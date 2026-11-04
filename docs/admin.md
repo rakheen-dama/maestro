@@ -136,7 +136,7 @@ The admin schema is managed by Flyway and applied automatically on startup. Migr
 
 ### Kafka topic
 
-> **Note:** Lifecycle events reach the dashboard over **Kafka only**. With Postgres messaging (`maestro.messaging.type: postgres`) no lifecycle events are published — `publishLifecycleEvent` is a no-op that logs one WARN. Set `maestro.admin.events.enabled: false` in Postgres-only services to silence it; the dashboard cannot observe those services.
+> **Note:** Lifecycle events reach the dashboard over Kafka, Maestro's only transport. Set `maestro.admin.events.enabled: false` in a service you do not want the dashboard to observe.
 
 The `maestro.admin.events` topic must be pre-created. The `kafka-init` service in `docker-compose.yml` handles this:
 

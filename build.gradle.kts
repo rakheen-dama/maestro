@@ -22,7 +22,8 @@ nexusPublishing {
 //
 // Every module with production code must carry at least one test class. The
 // gap this guards against is not "low coverage" but "no tests at all", which
-// is how maestro-messaging-postgres shipped in releases untested.
+// is how the (since removed) Postgres messaging transport shipped in releases
+// untested.
 //
 // The modules below have no tests today. They are listed explicitly so the
 // gate can pass on a known baseline while still failing the moment a NEW
@@ -36,8 +37,8 @@ val verifyModuleTestCoverage = tasks.register("verifyModuleTestCoverage") {
     description = "Fails if a module with production code has no test classes."
 
     // Samples are covered too: Plan 05 of the 2026-10-24 bug-fix cycle gave every
-    // sample a test, and "covered by the E2E instead" let `sample-postgres-only`
-    // ship with `NO-SOURCE` tests. Container projects (`maestro-samples`,
+    // sample a test, and "covered by the E2E instead" let the (since removed)
+    // Postgres-only sample ship with `NO-SOURCE` tests. Container projects (`maestro-samples`,
     // `sample-loan-origination`) have no `src/main/java`, so `hasMain` skips them.
     val moduleReports = subprojects.map { module ->
         val hasMain = module.file("src/main/java").isDirectory
@@ -88,7 +89,6 @@ val libraryModules = listOf(
     "maestro-store-postgres",
     "maestro-spring-boot-starter",
     "maestro-messaging-kafka",
-    "maestro-lock-valkey",
     "maestro-admin-client",
     "maestro-test",
 )

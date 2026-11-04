@@ -53,8 +53,7 @@ public interface WorkflowMessaging {
      * <p>Lifecycle events are consumed by the Maestro Admin application
      * for observability. Publishing failures should be logged but must
      * not interrupt workflow execution. A transport the dashboard cannot
-     * consume from may implement this as a no-op (the Postgres transport
-     * does, logging one WARN).
+     * consume from may implement this as a no-op, logging one WARN.
      *
      * @param event the lifecycle event
      */

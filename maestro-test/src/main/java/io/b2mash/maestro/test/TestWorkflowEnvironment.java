@@ -34,7 +34,7 @@ import java.util.function.Supplier;
  * In-memory Maestro engine for fast, deterministic workflow tests.
  *
  * <p>Constructs a real {@link WorkflowExecutor} backed by in-memory SPI
- * implementations. No Postgres, Kafka, or Valkey required.
+ * implementations. No Postgres or Kafka required.
  *
  * <h2>Usage</h2>
  * <pre>{@code

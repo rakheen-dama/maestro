@@ -2,14 +2,15 @@ plugins {
     id("maestro.spring-library-conventions")
 }
 
-description = "Maestro Store Postgres — PostgreSQL WorkflowStore with Maestro-owned Flyway migrations"
+description = "Maestro Store Postgres — PostgreSQL WorkflowStore, distributed lock and LISTEN/NOTIFY signal wake, with Maestro-owned Flyway migrations"
 
 dependencies {
     api(project(":maestro-store-jdbc"))
     implementation(libs.postgresql)
 
-    // Spring auto-configuration — contributes the WorkflowStore bean when a
-    // DataSource is present (mirrors maestro-lock-valkey / maestro-messaging-kafka).
+    // Spring auto-configuration — contributes the WorkflowStore, DistributedLock
+    // and SignalNotifier beans when a DataSource is present (mirrors
+    // maestro-messaging-kafka).
     implementation(project(":maestro-spring-boot-starter"))
     implementation(libs.spring.boot.autoconfigure)
     // @DependsOnDatabaseInitialization only — present at runtime wherever a
@@ -18,7 +19,7 @@ dependencies {
     compileOnly(libs.spring.boot.sql)
 
     // Flyway — MaestroSchemaInitializer applies the migration SQL in
-    // src/main/resources/db/maestro/store/ (and every other module's
+    // src/main/resources/db/maestro/{store,lock}/ (and any other module's
     // META-INF/maestro/schema-locations) into maestro_schema_history.
     // Both are runtime dependencies of every consumer, so hosts need neither
     // Flyway nor spring-boot-starter-flyway for Maestro's tables.
@@ -32,4 +33,6 @@ dependencies {
     testImplementation(libs.spring.boot.starter.flyway)
     testImplementation(libs.testcontainers.junit5)
     testImplementation(libs.testcontainers.postgresql)
+    // NOTIFY is delivered asynchronously; the wake tests poll for it.
+    testImplementation(libs.awaitility)
 }

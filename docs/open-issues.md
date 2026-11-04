@@ -917,6 +917,9 @@ happens."
 - **One trigger shape.** Only `PAUSE_RESUME` (freeze past TTL, then resume)
   and `PARTITION`/`BACKEND_OUTAGE(valkey)` are exercised (design §4); a GC
   pause or a partition of a different duration is not separately measured.
+  (*Note 2026-11-04:* Valkey is no longer a backend; the harness's outage
+  targets are `{postgres, kafka}` and pre-2026-11 seeds do not replay
+  identically.)
 
 **Soak-window data point (run `20260801-214325--6973268155056049009`,
 2026-08-01/02).** The multi-hour soak run the earlier placeholder promised
@@ -1020,6 +1023,12 @@ the chaos harness samples the backends directly rather than instrumenting
 | Lock probes / renewals (Postgres lock) | `pg_stat_statements` deltas for the `maestro_lock`-table statements |
 | Wake-subscription churn | Valkey `subscribe`/`unsubscribe` command deltas + the `pubsub_channels` gauge |
 | Parked / running counts, node count | store query + harness controller state |
+
+*Note 2026-11-04:* the two Valkey rows are historical — the Valkey lock module
+was removed and the only lock is the Postgres one, so only the
+`pg_stat_statements` rows still apply; cross-node wake is now one
+`LISTEN/NOTIFY` channel per service with no per-workflow subscription churn to
+sample. Chaos backend-outage targets are `{postgres, kafka}`.
 
 A sampler thread snapshots all of the above every 15s into `metrics.csv`
 (`windowStartUtc,windowSecs,liveNodes,running,waitingSignal,waitingTimer,
@@ -2720,6 +2729,15 @@ requirement and the latency cost of breaking it.
 > the chaos driver's `post()` re-POST and a caller-supplied dedup key on
 > `signal()` (see "Proposed fix" below) — client retries of a signal that did
 > time out for another reason still persist duplicates.
+>
+> **Note 2026-11-04.** `maestro-lock-valkey` and its `ValkeySignalNotifier` no
+> longer exist (Postgres + Kafka is the only stack; see `docs/release-notes.md`),
+> so `ValkeySignalNotifierTest`, `ValkeySignalNotifierAckTimeoutTest` and
+> `ValkeyBrownoutSignalDeliveryIT` were deleted with it. The guarantee this
+> issue established — `deliverSignal` never waits for the notifier — is
+> unchanged and is now pinned by `SignalManagerTest.deliverSignalDoesNotWaitForABlockingNotifier`
+> (core) and `PostgresSignalNotifierTest.publishDoesNotWaitForAConnection` in
+> `maestro-store-postgres`, where the sole notifier (`io.b2mash.maestro.store.postgres.notify.PostgresSignalNotifier`) now lives.
 >
 > Filed from the 2026-10-24 bug-fix cycle's chaos triage (plan 06
 > Task 2): soak run 40674015602 (2026-10-28, `66cdf95`, seed

@@ -2,9 +2,9 @@
 
 ## What Is Maestro
 
-Maestro is an **open-source, embeddable durable workflow engine** delivered as a Spring Boot Starter. It provides Temporal.io-grade workflow durability without a central server, using infrastructure teams already operate: Postgres, Kafka, and Valkey/Redis.
+Maestro is an **open-source, embeddable durable workflow engine** delivered as a Spring Boot Starter. It provides Temporal.io-grade workflow durability without a central server, using infrastructure teams already operate: Postgres and Kafka.
 
-**One-sentence pitch:** Add a Spring Boot Starter to your microservice and get durable, crash-recoverable workflows using your existing database, message broker, and cache.
+**One-sentence pitch:** Add a Spring Boot Starter to your microservice and get durable, crash-recoverable workflows using your existing database and message broker.
 
 ## Architecture Docs
 
@@ -37,7 +37,7 @@ Read these before making architectural decisions:
 | Build | Gradle | Kotlin DSL, Gradle 9 |
 | Database | PostgreSQL | 14+ |
 | Messaging | Apache Kafka | via Spring Kafka 4.x |
-| Cache/Lock | Valkey or Redis | via Lettuce |
+| Lock | PostgreSQL tables (same DB as the store) | `maestro_distributed_lock`, `maestro_leader_election` |
 | Serialization | Jackson 3 | `tools.jackson` packages (NOT `com.fasterxml.jackson`) |
 | Schema migration | Flyway | 11.x |
 | Null safety | JSpecify | `@Nullable`, `@NonNull` |
@@ -62,18 +62,14 @@ maestro/
 ├── maestro-core                    ← Pure Java. NO Spring. Engine, memoization, timers, signals, saga.
 ├── maestro-spring-boot-starter     ← Auto-config, annotations, bean proxying, config binding.
 ├── maestro-store-jdbc              ← Abstract JDBC WorkflowStore SPI.
-├── maestro-store-postgres          ← Postgres implementation + Flyway 11 migrations.
-├── maestro-messaging-kafka         ← Spring Kafka 4.x WorkflowMessaging SPI.
-├── maestro-messaging-postgres      ← PostgreSQL WorkflowMessaging + SignalNotifier (LISTEN/NOTIFY).
-├── maestro-lock-valkey             ← Lettuce DistributedLock SPI.
-├── maestro-lock-postgres           ← PostgreSQL DistributedLock SPI.
+├── maestro-store-postgres          ← Postgres WorkflowStore + DistributedLock + LISTEN/NOTIFY signal wake; Flyway 11 migrations.
+├── maestro-messaging-kafka         ← Spring Kafka 4.x WorkflowMessaging SPI (the only transport).
 ├── maestro-admin-client            ← Lightweight lifecycle event publisher.
 ├── maestro-admin                   ← Standalone dashboard (Thymeleaf + HTMX, own Postgres).
 ├── maestro-test                    ← In-memory SPIs, controllable clock, TestWorkflowEnvironment.
 ├── maestro-samples/
 │   ├── sample-order-service        ← Order fulfilment workflow (e-commerce demo)
 │   ├── sample-payment-gateway      ← Payment processing with durable retries & saga
-│   ├── sample-postgres-only        ← Document approval (Postgres-only, zero external deps)
 │   └── sample-loan-origination     ← Multi-service loan E2E (application/underwriting/verification), nightly CI
 └── docs/
 ```
@@ -147,14 +143,11 @@ io.b2mash.maestro.spring.client              — MaestroClient
 
 io.b2mash.maestro.store.jdbc                — Abstract JDBC WorkflowStore
 io.b2mash.maestro.store.postgres             — Postgres impl + Flyway migrations
+io.b2mash.maestro.store.postgres.lock        — PostgresDistributedLock (maestro_distributed_lock, maestro_leader_election)
+io.b2mash.maestro.store.postgres.notify      — PostgresSignalNotifier + PostgresWakeListener (LISTEN/NOTIFY cross-node wake)
 
 io.b2mash.maestro.messaging.kafka            — Kafka WorkflowMessaging
 io.b2mash.maestro.messaging.kafka.listener   — @MaestroSignalListener processing
-
-io.b2mash.maestro.messaging.postgres         — Postgres WorkflowMessaging + SignalNotifier
-
-io.b2mash.maestro.lock.valkey                — Valkey DistributedLock
-io.b2mash.maestro.lock.postgres              — Postgres DistributedLock
 
 io.b2mash.maestro.admin                      — Dashboard app
 io.b2mash.maestro.admin.client               — Event publisher
@@ -167,13 +160,13 @@ io.b2mash.maestro.samples.payment            — Sample payment gateway (e-comme
 
 ## Database Tables
 
-Prefix `maestro_` (fixed; `maestro.store.table-prefix` was removed). Migrations live in `db/maestro/store` (store-postgres, V1–V5), `db/maestro/lock` (lock-postgres, V100) and `db/maestro/messaging` (messaging-postgres, V200–V202). They run through `MaestroSchemaInitializer` into Maestro's own history table `maestro_schema_history` (`maestro.store.schema.mode` = flyway | validate | none); the host's `flyway_schema_history` is untouched:
+Prefix `maestro_` (fixed; `maestro.store.table-prefix` was removed). Migrations live in maestro-store-postgres under `db/maestro/store` (band 1–99, V1–V5) and `db/maestro/lock` (band 100–199, V100). Band 200–299 (the removed Postgres messaging transport) is retired and must never be reused (orphan-table upgrade note: `docs/configuration.md` § Schema management). They run through `MaestroSchemaInitializer` into Maestro's own history table `maestro_schema_history` (`maestro.store.schema.mode` = flyway | validate | none); the host's `flyway_schema_history` is untouched:
 
 - `maestro_workflow_instance`
 - `maestro_workflow_event` (unique on `workflow_instance_id, sequence_number`)
 - `maestro_workflow_timer`
 - `maestro_workflow_signal` (`workflow_instance_id` nullable for pre-delivery)
-- `maestro_signal_queue` (Postgres transport's only queue table; no task or lifecycle queue tables)
+- `maestro_distributed_lock`, `maestro_leader_election` (lock band; no task, lifecycle or signal queue tables)
 
 ## State Machine
 
@@ -199,14 +192,17 @@ Signals are persisted immediately. Three cases:
 
 Orchestration within, choreography between. Each service owns its state. Kafka events → `@MaestroSignalListener` → workflow signals.
 
-## Valkey Keys
+## Lock Keys
+
+Locks are rows in `maestro_distributed_lock` / `maestro_leader_election` (`lock_key` column; prefix from `maestro.lock.key-prefix`, default `maestro:lock:`):
 
 ```
 maestro:lock:workflow:{workflowId}           — Instance lock (30s TTL, renewed every 10s)
 maestro:lock:activity:{workflowId}:{seq}     — Activity execution lock, best-effort dedup fast path (timeout + 10s TTL)
-maestro:leader:timer-poller:{service}         — Timer leader (15s TTL)
-maestro:signal:{workflowId}                   — Pub/sub for immediate signal wake
+maestro:leader:timer-poller:{service}         — Timer leader in maestro_leader_election (15s TTL)
 ```
+
+Cross-node signal wake is Postgres `LISTEN/NOTIFY` on ONE channel per service, `maestro_signal_wake_<service ≤32 chars>_<8-hex sha256>` (always ≤63 bytes); the payload carries workflowId + signalName and `PostgresWakeListener` dispatches in memory to the parked waiter. `NOTIFY` runs on a virtual thread after the signal row commits and never blocks `deliverSignal`. The listener holds one `DataSource` connection for the app lifetime; `maestro.signal.wake-recheck-interval` (30s) is the correctness fallback. A lock cleaner deletes rows expired for more than a minute every `maestro.lock.cleanup-interval` (10m).
 
 There are no `maestro.tasks.*` topics: `maestro.messaging.topics.tasks` fails startup. `taskQueue` on `@DurableWorkflow` is a per-node concurrency bucket (`maestro.worker.task-queues[]`), not a route.
 
@@ -218,7 +214,7 @@ All under `maestro.*`. Topics are pre-created, declared in config. Full
 reference: `docs/configuration.md`. Notable properties added post-0.3.0:
 `maestro.shutdown.timeout` (default 30s), `maestro.signal.wake-recheck-interval`
 (default 30s), `maestro.messaging.redelivery.*` (bounded retry + dead-letter
-policy, both transports), `maestro.admin.events.enabled` (now actually wired;
+policy, Kafka), `maestro.admin.events.enabled` (now actually wired;
 `.topic` is a deprecated alias for `maestro.messaging.topics.admin-events`),
 `maestro.observability.metrics.enabled` / `maestro.observability.tracing.enabled`
 (both default `true`, both silently inert without a `MeterRegistry` / `Tracer`;
@@ -228,7 +224,11 @@ the tracing flag gates the Kafka W3C header injection too — see
 unconsumed signals of workflows `COMPLETED`/`TERMINATED` longer ago than the
 retention; `FAILED` keeps them for retry), `maestro.worker.task-queues[].concurrency` /
 `activity-concurrency` (bound per node), `maestro.store.schema.mode`
-(flyway | validate | none). Removed (setting either fails startup):
+(flyway | validate | none), `maestro.signal.wake-notify.enabled` (default `true`;
+set `false` behind PgBouncer transaction pooling — wake then falls back to the
+recheck interval), `maestro.lock.cleanup-interval` (default 10m). `maestro.lock.type`
+and `maestro.messaging.type` each accept exactly one value (`postgres`, `kafka`);
+any other value fails startup. Removed (setting either fails startup):
 `maestro.store.table-prefix`, `maestro.messaging.topics.tasks`.
 
 ## Coding Standards
@@ -285,7 +285,7 @@ retention; `FAILED` keeps them for retry), `maestro.worker.task-queues[].concurr
 - **Never add Spring to `maestro-core`.**
 - **Never do I/O between activity calls in workflow code.**
 - **Never use `Thread.sleep()` in workflow code** — use `workflow.sleep()`.
-- **Never store workflow state in memory only** — Postgres is truth, Valkey is optimisation.
+- **Never store workflow state in memory only** — Postgres is truth; locks and NOTIFY wake are an optimisation.
 - **Never assume signal ordering.**
 - **Never break `(workflow_instance_id, sequence_number)` uniqueness.**
 - **Never auto-create Kafka topics** — pre-created, declared in config.

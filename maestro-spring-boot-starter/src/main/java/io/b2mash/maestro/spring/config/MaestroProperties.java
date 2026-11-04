@@ -241,7 +241,9 @@ public class MaestroProperties {
     /**
      * Messaging configuration for signals and lifecycle events.
      *
-     * @param type          messaging implementation type (e.g., {@code "kafka"})
+     * @param type          messaging transport; {@code "kafka"} is the only
+     *                      supported value (the default). Any other value
+     *                      fails startup.
      * @param consumerGroup Kafka consumer group; defaults to the service name at runtime
      * @param topics        topic name configuration
      * @param redelivery    handler-failure redelivery and dead-letter policy
@@ -278,21 +280,18 @@ public class MaestroProperties {
      * is parked. Raise {@code max-attempts} for longer outage tolerance;
      * lower it to contain a poison message sooner.
      *
-     * <p>Dead-letter destinations are never created by Maestro on Kafka: the
+     * <p>Dead-letter destinations are never created by Maestro: the
      * {@code <topic><dead-letter-suffix>} topics are pre-declared by the
-     * operator like every other topic. The Postgres transport needs nothing
-     * created (it parks rows in {@code DEAD_LETTER} status).
+     * operator like every other topic.
      *
      * <p>Setting {@code enabled} to {@code false} is the operator's explicit
-     * opt-out of all of the above, on both transports. On Kafka a failing
+     * opt-out of all of the above. A failing
      * record gets a {@code DefaultErrorHandler} with a zero-length
      * {@code FixedBackOff}: no redelivery, no {@code DeadLetterPublishingRecoverer}
      * — the record is logged and skipped, restoring at-most-once handler
-     * semantics (and the Kafka dead-letter-topic startup probe is skipped
-     * entirely, since nothing will ever publish to a dead-letter topic). On
-     * Postgres a failing row is marked {@code FAILED}
-     * after exactly one attempt instead of being retried and eventually
-     * dead-lettered — the pre-redelivery behaviour. This trades the
+     * semantics (and the dead-letter-topic startup probe is skipped
+     * entirely, since nothing will ever publish to a dead-letter topic). This
+     * trades the
      * durability the rest of this record buys for simpler, at-most-once
      * semantics; it is not a recommended default and defaults to {@code true}.
      *
@@ -344,18 +343,25 @@ public class MaestroProperties {
     /**
      * Distributed lock configuration.
      *
-     * @param type      lock implementation type (e.g., {@code "valkey"})
-     * @param keyPrefix prefix for lock keys in Redis/Valkey
-     * @param ttl       lock time-to-live before expiration
+     * @param type            lock backend; {@code "postgres"} is the only
+     *                        supported value (the default). Any other value
+     *                        fails startup.
+     * @param keyPrefix       prefix of every {@code lock_key} in
+     *                        {@code maestro_distributed_lock}
+     * @param ttl             lock time-to-live before expiration
+     * @param cleanupInterval how often each node deletes expired lock and
+     *                        leader-election rows (with a one-minute grace
+     *                        period past expiry)
      */
     public record LockProperties(
-            @DefaultValue("valkey") String type,
+            @DefaultValue("postgres") String type,
             @DefaultValue("maestro:lock:") String keyPrefix,
-            @DefaultValue("30s") Duration ttl
+            @DefaultValue("30s") Duration ttl,
+            @DefaultValue("10m") Duration cleanupInterval
     ) {
         /** @return the defaults documented above */
         public static LockProperties defaults() {
-            return new LockProperties("valkey", "maestro:lock:", Duration.ofSeconds(30));
+            return new LockProperties("postgres", "maestro:lock:", Duration.ofSeconds(30), Duration.ofMinutes(10));
         }
     }
 
@@ -530,9 +536,9 @@ public class MaestroProperties {
      *                            {@code awaitSignal()} re-checks the store for
      *                            a signal persisted without a notification
      *                            reaching this instance — e.g. ingested on
-     *                            another node in a deployment with no
-     *                            {@code SignalNotifier} (Kafka messaging
-     *                            without Valkey). Bounds cross-node
+     *                            another node while the LISTEN/NOTIFY wake
+     *                            is disabled ({@code wake-notify.enabled=false})
+     *                            or reconnecting. Bounds cross-node
      *                            signal latency in those cases.
      * @param janitorInterval     how often the signal janitor purges
      *                            unconsumed signals addressed to finished
@@ -543,15 +549,38 @@ public class MaestroProperties {
      *                            unconsumed signals are kept before the
      *                            janitor purges them. {@code FAILED} workflows
      *                            keep theirs, because they can be retried.
+     * @param wakeNotify          the cross-node wake over Postgres
+     *                            {@code LISTEN}/{@code NOTIFY}
      */
     public record SignalProperties(
             @DefaultValue("30s") Duration wakeRecheckInterval,
             @DefaultValue("1h") Duration janitorInterval,
-            @DefaultValue("7d") Duration terminalRetention
+            @DefaultValue("7d") Duration terminalRetention,
+            @DefaultValue WakeNotifyProperties wakeNotify
     ) {
         /** @return the defaults documented above */
         public static SignalProperties defaults() {
-            return new SignalProperties(Duration.ofSeconds(30), Duration.ofHours(1), Duration.ofDays(7));
+            return new SignalProperties(Duration.ofSeconds(30), Duration.ofHours(1), Duration.ofDays(7),
+                    WakeNotifyProperties.defaults());
+        }
+    }
+
+    /**
+     * The cross-node signal wake over Postgres {@code LISTEN}/{@code NOTIFY}
+     * ({@code maestro.signal.wake-notify.*}).
+     *
+     * @param enabled whether each node holds a {@code LISTEN} session on the
+     *                service's wake channel and publishes a {@code NOTIFY} per
+     *                signal, so a workflow parked on another node wakes at
+     *                once. Set to {@code false} behind a transaction-pooling
+     *                PgBouncer, where session-level {@code LISTEN} cannot
+     *                work; cross-node wake latency is then bounded by
+     *                {@code wake-recheck-interval}.
+     */
+    public record WakeNotifyProperties(@DefaultValue("true") boolean enabled) {
+        /** @return the defaults documented above */
+        public static WakeNotifyProperties defaults() {
+            return new WakeNotifyProperties(true);
         }
     }
 

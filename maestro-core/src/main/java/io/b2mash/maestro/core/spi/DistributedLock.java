@@ -8,7 +8,8 @@ import java.util.Optional;
  *
  * <p>Used for workflow instance locking (preventing concurrent execution
  * of the same workflow) and timer poller leader election. The reference
- * implementation uses Valkey/Redis via Lettuce.
+ * implementation is the PostgreSQL row-lock backend in
+ * {@code maestro-store-postgres}.
  *
  * <h2>Fencing Tokens</h2>
  * <p>Each acquired lock includes a fencing token ({@link LockHandle#token()}).

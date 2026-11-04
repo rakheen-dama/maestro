@@ -7,8 +7,9 @@ Deviations require updating this file *first*. Binding plan: `docs/test-plan.md`
 
 ## Purpose
 
-Prove Maestro's features against **real backends** — Postgres and Kafka are
-must-work; Valkey is best-effort. Every feature row in the `docs/test-plan.md`
+Prove Maestro's features against **real backends** — Postgres (store, lock and
+`LISTEN/NOTIFY` signal wake) and Kafka (messaging), the only supported stack.
+Every feature row in the `docs/test-plan.md`
 matrix that lacks an **I** marker for a must-work path gets one here, in CI,
 green.
 
@@ -52,9 +53,9 @@ Boot jars for the three loan services are supplied to `e2eTest` via
 `dependsOn` on their `bootJar` tasks plus system-property jar paths (never in
 `build`/`check`).
 
-Two phases deliberately live outside this module: **P3** (lock-postgres and
-messaging-postgres) belongs in those modules' own `src/test`, because a backend
-suite should ship with its backend; and **P4** (loan-origination E2E) stays in
+Two phases deliberately live outside this module: **P3** (the Postgres lock and
+`SignalNotifier`, both inside `maestro-store-postgres`) belongs in that module's
+own `src/test`, because a backend suite should ship with its backend; and **P4** (loan-origination E2E) stays in
 `maestro-samples/sample-loan-origination/e2e/run-e2e.sh`, driven by the
 `e2eTest` tag's nightly CI job — the script already performs real `kill -9`,
 restart and PID-identity checks that a JUnit port would have put at risk.
@@ -94,8 +95,9 @@ abstract class PostgresIntegrationSupport {
 
 - `MaestroSchemaInitializer` migrates **once per container**, from the static
   initialiser — it applies every module's `classpath:db/maestro/*` location, so
-  the store (V1–V99), lock (V100–V199) and messaging (V200–V299) bands together,
-  into `maestro_schema_history`. (`src/test/resources/db/migration` holds only a
+  the store (V1–V99) and lock (V100–V199) bands together (both shipped by
+  `maestro-store-postgres`; the messaging band V200–V299 went with the dropped
+  Postgres messaging transport), into `maestro_schema_history`. (`src/test/resources/db/migration` holds only a
   stand-in *host* `V1__init.sql` for the coexistence suite.) Version bands are pinned by
   `schema.MaestroMigrationsCoexistIT`; never reuse another module's band.
 - `@BeforeEach` truncates every `maestro_*` table for isolation. The container
@@ -194,10 +196,13 @@ Bugs found so far:
   a fresh read, stands down when another runner finalised, and — when the retry
   budget is exhausted — leaves the instance non-terminal for recovery rather
   than inventing an outcome. Pinned by `WorkflowExecutorTerminalTransitionTest`.
-- **BUG5 (fixed):** `maestro-lock-postgres` and `maestro-messaging-postgres` both
-  shipped `V100`; Flyway aborts with *"Found more than one migration with
-  version 100"*, so the Postgres-only profile could not migrate. Fixed by
-  disjoint version bands; pinned by `schema.MaestroMigrationsCoexistIT`.
+- **BUG5 (fixed; moot since 2026-11):** the former `maestro-lock-postgres` and
+  `maestro-messaging-postgres` both shipped `V100`; Flyway aborted with *"Found
+  more than one migration with version 100"*, so the Postgres-only profile could
+  not migrate. Fixed by disjoint version bands; pinned by
+  `schema.MaestroMigrationsCoexistIT`. The Postgres messaging transport has since
+  been removed and the lock folded into `maestro-store-postgres`, which owns
+  both remaining bands.
 - **BUG6 (fixed, P2):** `PostgresNotificationListener.listen()` only *queued*
   the `LISTEN`; it was executed later on the polling thread. Postgres delivers
   a `NOTIFY` only to sessions already listening, so every cross-node signal
@@ -208,7 +213,12 @@ Bugs found so far:
   a guard that was worthless against an asynchronous subscribe. Fixed by making
   `listen()` block until the command has been executed; reproduced by
   `PostgresSignalNotifierTest.publishImmediatelyAfterSubscribe_isDelivered`,
-  pinned end-to-end by `multinode.MultiNodeSignalRoutingIT`.
+  pinned end-to-end by `multinode.MultiNodeSignalRoutingIT`. The notifier now
+  lives in `maestro-store-postgres` (one `LISTEN` channel per service, so
+  Postgres-lock + Kafka nodes get instant cross-node wake); its
+  publish-never-blocks property (Issue 32: a `NOTIFY` must not stall the
+  publishing workflow when the connection is unavailable) is pinned there by
+  `PostgresSignalNotifierTest.publishDoesNotWaitForAConnection`.
 - **BUG7 (fixed, P2):** `WorkflowExecutor` finalised a workflow by writing
   `version + 1` from an earlier read. Any concurrent writer of that row — a
   second node running the workflow (no-lock-backend degradation, a lock lost

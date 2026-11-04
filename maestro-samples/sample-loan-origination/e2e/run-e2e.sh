@@ -66,15 +66,6 @@
 #                                        # the whole run, not just during scenario 6.
 #                                        # Foundation for multi-node failure scenarios;
 #                                        # this task only wires up start/stop plumbing.
-#   E2E_LOCK_BACKEND=postgres ./e2e/run-e2e.sh   # boot every service with
-#                                        # maestro-lock-postgres instead of
-#                                        # maestro-lock-valkey (default
-#                                        # "valkey" - byte-identical to today's
-#                                        # behaviour). Runtime-verified: every
-#                                        # service start blocks on the
-#                                        # effective DistributedLock class
-#                                        # actually logged, not just the
-#                                        # property that requested it.
 #
 # Requires: bash, curl, docker compose, and jq (falls back to python3).
 #
@@ -130,25 +121,15 @@ E2E_CLUSTER="${E2E_CLUSTER:-0}"
 # unchanged). Skipped scenarios do not appear in the results table.
 E2E_ONLY="${E2E_ONLY:-}"
 
-# E2E_LOCK_BACKEND: "valkey" (default, unchanged behaviour) or "postgres".
-# Every service instance this harness starts (start_service_instance, the
-# single choke point for ALL of scenarios 1-10's process launches, including
-# every mid-scenario kill/restart) gets MAESTRO_LOCK_TYPE=<backend> injected
-# via Spring Boot env-var relaxed binding, which overrides application.yml's
-# "maestro.lock.type: valkey" for JUST that property (the JDBC/Postgres
-# driver is already on every service's classpath for the workflow store, and
-# Task 5 adds maestro-lock-postgres as a compile-time dependency alongside
-# maestro-lock-valkey - both auto-configurations are present; maestro.lock.
-# type picks which one's @ConditionalOnProperty wins). "Config says so" is
-# not proof: start_service_instance also blocks on the effective backend's
-# own startup log line (assert_lock_backend) before returning, so a
-# misconfigured classpath or a property that silently failed to bind fails
-# the START, not a downstream scenario assertion three minutes later.
-E2E_LOCK_BACKEND="${E2E_LOCK_BACKEND:-valkey}"
-case "$E2E_LOCK_BACKEND" in
-    valkey|postgres) ;;
-    *) echo "E2E_LOCK_BACKEND must be 'valkey' or 'postgres', got '$E2E_LOCK_BACKEND'" >&2; exit 1 ;;
-esac
+# Lock backend: Postgres is the only one (PostgresDistributedLock in
+# maestro-store-postgres, sharing the workflow store's DataSource;
+# maestro.lock.type defaults to postgres and any other value fails startup),
+# so nothing is injected per service. "Config says so" is still not proof:
+# start_service_instance (the single choke point for ALL of scenarios 1-10's
+# process launches, including every mid-scenario kill/restart) blocks on the
+# effective backend's own startup log line (assert_lock_backend) before
+# returning, so a broken classpath fails the START, not a downstream scenario
+# assertion three minutes later.
 
 # Verification fan-in takes ~8s real time (appraisal latency); allow slack.
 WAIT_PENDING_SECS=90       # create -> underwriting human queue
@@ -461,18 +442,16 @@ psql_verify() {
 }
 
 # expected_lock_class - fully-qualified DistributedLock implementation class
-# name MaestroAutoConfiguration's startup log line should show for the
-# current E2E_LOCK_BACKEND. Overridable via E2E_LOCK_ASSERT_OVERRIDE - same
-# idiom as WAIT_ADOPTION_SECS/EXPECT_FAILED_COUNT elsewhere in this file -
-# so a prove-it-can-fail run can demand the WRONG class without touching
-# assert_lock_backend itself.
+# name MaestroAutoConfiguration's startup log line should show: the Postgres
+# lock in maestro-store-postgres, the only backend. Overridable via
+# E2E_LOCK_ASSERT_OVERRIDE - same idiom as WAIT_ADOPTION_SECS/
+# EXPECT_FAILED_COUNT elsewhere in this file - so a prove-it-can-fail run can
+# demand the WRONG class without touching assert_lock_backend itself.
 expected_lock_class() {
     if [[ -n "${E2E_LOCK_ASSERT_OVERRIDE:-}" ]]; then
         echo "$E2E_LOCK_ASSERT_OVERRIDE"
-    elif [[ "$E2E_LOCK_BACKEND" == "postgres" ]]; then
-        echo "io.b2mash.maestro.lock.postgres.PostgresDistributedLock"
     else
-        echo "io.b2mash.maestro.lock.valkey.ValkeyDistributedLock"
+        echo "io.b2mash.maestro.store.postgres.lock.PostgresDistributedLock"
     fi
 }
 
@@ -484,44 +463,34 @@ expected_lock_class() {
 # WorkflowExecutor - "config says so" is deliberately never treated as proof
 # anywhere in this harness. Called from start_service_instance, the single
 # choke point for every process this harness starts, so EVERY service start
-# across every scenario (both backends) is verified, not just Task 5's new
-# scenario coverage.
+# across every scenario is verified.
 assert_lock_backend() {
     local log_file="$1" label="$2" expected
     expected="$(expected_lock_class)"
     if wait_for_log_line "$log_file" "Maestro distributed-lock backend: $expected" 60; then
-        log "LOCK BACKEND VERIFIED ($label, E2E_LOCK_BACKEND=$E2E_LOCK_BACKEND): $expected"
+        log "LOCK BACKEND VERIFIED ($label): $expected"
         return 0
     fi
-    err "$label: expected lock backend '$expected' (E2E_LOCK_BACKEND=$E2E_LOCK_BACKEND) not confirmed by $log_file within 60s"
+    err "$label: expected lock backend '$expected' not confirmed by $log_file within 60s"
     return 1
 }
 
 # lock_token <psql-fn> <lock-key> - current holder token for an INSTANCE
-# lock, backend-aware: Valkey GET vs a SELECT against maestro_distributed_
-# lock (maestro-lock-postgres's V100 migration - see PostgresDistributedLock
-# Javadoc). <psql-fn> is psql_loan or psql_verify (selects which service's
-# own Postgres database to query - PostgresDistributedLock shares the
-# workflow store's DataSource, so the lock row lives in THAT service's own
-# schema, not a shared one).
+# lock: a SELECT against maestro_distributed_lock (maestro-store-postgres's
+# V100 lock migration - see PostgresDistributedLock Javadoc). <psql-fn> is
+# psql_loan or psql_verify (selects which service's own Postgres database to
+# query - PostgresDistributedLock shares the workflow store's DataSource, so
+# the lock row lives in THAT service's own schema, not a shared one).
 lock_token() {
     local psql_fn="$1" lock_key="$2"
-    if [[ "$E2E_LOCK_BACKEND" == "postgres" ]]; then
-        "$psql_fn" "SELECT token FROM maestro_distributed_lock WHERE lock_key = '$lock_key';" | tr -d '[:space:]'
-    else
-        compose exec -T valkey valkey-cli GET "$lock_key" 2>/dev/null | tr -d '\r'
-    fi
+    "$psql_fn" "SELECT token FROM maestro_distributed_lock WHERE lock_key = '$lock_key';" | tr -d '[:space:]'
 }
 
-# leader_token <psql-fn> <election-key> - current leader candidate id,
-# backend-aware equivalent of lock_token for maestro_leader_election.
+# leader_token <psql-fn> <election-key> - current leader candidate id, the
+# maestro_leader_election equivalent of lock_token.
 leader_token() {
     local psql_fn="$1" election_key="$2"
-    if [[ "$E2E_LOCK_BACKEND" == "postgres" ]]; then
-        "$psql_fn" "SELECT candidate_id FROM maestro_leader_election WHERE election_key = '$election_key';" | tr -d '[:space:]'
-    else
-        compose exec -T valkey valkey-cli GET "$election_key" 2>/dev/null | tr -d '\r'
-    fi
+    "$psql_fn" "SELECT candidate_id FROM maestro_leader_election WHERE election_key = '$election_key';" | tr -d '[:space:]'
 }
 
 # assert_event_log_integrity <workflowId> <expected-missing-csv> - queries
@@ -659,8 +628,8 @@ stop_service_graceful() {
 compose() { docker compose --project-directory "$SAMPLE_DIR" "$@"; }
 
 start_infra() {
-    log "Starting infrastructure (Postgres/Valkey/Kafka) via docker compose..."
-    compose up -d --wait postgres valkey kafka
+    log "Starting infrastructure (Postgres/Kafka) via docker compose..."
+    compose up -d --wait postgres kafka
     compose up -d kafka-init
 
     log "Waiting for kafka-init to finish creating topics..."
@@ -781,13 +750,6 @@ start_service_instance() {
     jar="$(service_jar "$svc")"
     assert_port_free "$iname" "$port" || return 1
     : >"$LOG_DIR/$iname.log"
-    # E2E_LOCK_BACKEND=postgres: append MAESTRO_LOCK_TYPE=postgres AFTER any
-    # scenario-supplied extra_env so a scenario can never accidentally shadow
-    # it (none currently sets MAESTRO_LOCK_TYPE themselves - this is just
-    # "last write wins" made deliberate rather than incidental).
-    if [[ "$E2E_LOCK_BACKEND" == "postgres" ]]; then
-        extra_env+=("MAESTRO_LOCK_TYPE=postgres")
-    fi
     if [[ "${#extra_env[@]}" -gt 0 ]]; then
         log "Starting $iname (service=$svc) on port $port, extra env: ${extra_env[*]}..."
     else
@@ -805,8 +767,8 @@ start_service_instance() {
     SERVER_PORT="$port" env ${extra_env[@]+"${extra_env[@]}"} java -jar "$jar" >>"$LOG_DIR/$iname.log" 2>&1 &
     echo $! >"$PID_DIR/$iname.pid"
     # Runtime-verify the effective lock backend BEFORE returning to the
-    # caller - "config says so" is not proof (see E2E_LOCK_BACKEND comment
-    # above). This is a tighter, independent bound than the wait_for_http
+    # caller - "config says so" is not proof (see the lock-backend comment
+    # above expected_lock_class). This is a tighter, independent bound than the wait_for_http
     # every caller performs afterward; failing here points straight at the
     # classpath/property wiring instead of a much later, harder-to-diagnose
     # scenario timeout.
@@ -1370,16 +1332,16 @@ scenario_owner_kill_adoption() {
     fi
     log "OWNERSHIP PROOF (log): only node A's log ($loan_log) shows 'Requested underwriting round 1 for loan $id'"
 
-    # Extra-credit ownership proof: inspect the Valkey instance-lock key
-    # directly. Best-effort - the compose service name / valkey-cli
-    # availability aren't asserted elsewhere, so a miss here is a warning,
+    # Extra-credit ownership proof: inspect the instance-lock row in
+    # maestro_distributed_lock directly. Best-effort - the row can be
+    # released between the log line and this read, so a miss here is a warning,
     # not a scenario failure (the log-based proof above is authoritative).
     local lock_key="maestro:lock:workflow:$wfid" token_before=""
     token_before="$(lock_token psql_loan "$lock_key")"
     if [[ -n "$token_before" ]]; then
         log "OWNERSHIP PROOF (lock, extra credit): $lock_key = '$token_before' (held pre-kill)"
     else
-        warn "Lock inspection: could not read $lock_key via valkey-cli - proceeding on the log-based proof alone"
+        warn "Lock inspection: could not read $lock_key from maestro_distributed_lock - proceeding on the log-based proof alone"
     fi
 
     # ── kill -9 node A; do NOT restart it for the rest of this scenario ──
@@ -2060,7 +2022,7 @@ scenario_cross_node_admin() {
 }
 
 main() {
-    log "Loan-origination E2E run $RUN_ID (logs: $LOG_DIR) - E2E_LOCK_BACKEND=$E2E_LOCK_BACKEND"
+    log "Loan-origination E2E run $RUN_ID (logs: $LOG_DIR)"
     if [[ "$E2E_CLUSTER" == 1 ]]; then
         log "E2E_CLUSTER=1 - cluster mode: 6 processes (2 per service)."
     fi

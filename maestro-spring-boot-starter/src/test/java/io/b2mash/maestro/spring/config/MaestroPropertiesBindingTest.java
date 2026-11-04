@@ -155,8 +155,9 @@ class MaestroPropertiesBindingTest {
             assertThat(redelivery.multiplier()).isEqualTo(2.0);
             assertThat(redelivery.maxInterval()).isEqualTo(Duration.ofSeconds(30));
             assertThat(redelivery.deadLetterSuffix()).isEqualTo(".DLT");
-            assertThat(properties.getLock().type()).isEqualTo("valkey");
+            assertThat(properties.getLock().type()).isEqualTo("postgres");
             assertThat(properties.getLock().ttl()).isEqualTo(Duration.ofSeconds(30));
+            assertThat(properties.getLock().cleanupInterval()).isEqualTo(Duration.ofMinutes(10));
             assertThat(properties.getTimer().pollInterval()).isEqualTo(Duration.ofSeconds(5));
             assertThat(properties.getTimer().batchSize()).isEqualTo(100);
             assertThat(properties.getRecovery().enabled()).isTrue();
@@ -167,6 +168,7 @@ class MaestroPropertiesBindingTest {
             assertThat(properties.getSignal().wakeRecheckInterval()).isEqualTo(Duration.ofSeconds(30));
             assertThat(properties.getSignal().janitorInterval()).isEqualTo(Duration.ofHours(1));
             assertThat(properties.getSignal().terminalRetention()).isEqualTo(Duration.ofDays(7));
+            assertThat(properties.getSignal().wakeNotify().enabled()).isTrue();
             assertThat(properties.getObservability().metrics().enabled()).isTrue();
             assertThat(properties.getObservability().tracing().enabled()).isTrue();
         });

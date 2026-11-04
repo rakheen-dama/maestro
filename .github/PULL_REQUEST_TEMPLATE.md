@@ -16,7 +16,6 @@
 - [ ] `maestro-spring-boot-starter`
 - [ ] `maestro-store-jdbc` / `maestro-store-postgres`
 - [ ] `maestro-messaging-kafka`
-- [ ] `maestro-lock-valkey`
 - [ ] `maestro-admin` / `maestro-admin-client`
 - [ ] `maestro-test`
 - [ ] `maestro-samples`

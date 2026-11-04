@@ -89,8 +89,8 @@ final class SignalManager {
     /**
      * How often a parked await re-checks the store for a signal persisted
      * without a notification reaching this instance — e.g. ingested on
-     * another node in a deployment with no {@link SignalNotifier} (Kafka
-     * messaging without Valkey), or delivered in the narrow window
+     * another node in a deployment with no {@link SignalNotifier} (the
+     * Postgres wake disabled), or delivered in the narrow window
      * before the park registered. Bounds cross-node signal latency in those
      * cases; with a working notifier the wake is instant and this never fires.
      *
@@ -160,8 +160,9 @@ final class SignalManager {
 
     /**
      * Longest a concurrent waiter waits for the first waiter's wake subscribe
-     * to settle before parking anyway (the periodic re-check covers it). Matches
-     * the Valkey notifier's own acknowledgement bound.
+     * to settle before parking anyway (the periodic re-check covers it). Sized
+     * for a notifier whose subscribe needs a round trip; the Postgres
+     * notifier's is in-memory and returns at once.
      */
     static final Duration WAKE_SUBSCRIBE_JOIN_TIMEOUT = Duration.ofSeconds(5);
 
@@ -193,7 +194,7 @@ final class SignalManager {
      *
      * @param store          workflow store for signal persistence and event memoization
      * @param messaging      optional messaging for lifecycle event publishing
-     * @param signalNotifier optional cross-instance signal notification (e.g., Valkey pub/sub)
+     * @param signalNotifier optional cross-instance signal notification (e.g., Postgres LISTEN/NOTIFY)
      * @param serializer     Jackson serializer for signal payloads
      * @param parkingLot     virtual thread parking mechanism for signal await
      */

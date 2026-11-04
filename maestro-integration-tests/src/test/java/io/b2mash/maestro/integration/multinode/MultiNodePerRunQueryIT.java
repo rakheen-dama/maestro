@@ -8,7 +8,7 @@ import io.b2mash.maestro.integration.support.MaestroEngineHarness;
 import io.b2mash.maestro.integration.support.PostgresIntegrationSupport;
 import io.b2mash.maestro.integration.workflows.CountingActivities;
 import io.b2mash.maestro.integration.workflows.TestWorkflows.TaggedChainWorkflow;
-import io.b2mash.maestro.lock.postgres.PostgresDistributedLock;
+import io.b2mash.maestro.store.postgres.lock.PostgresDistributedLock;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;

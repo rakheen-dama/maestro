@@ -7,8 +7,6 @@ transactions or a central orchestrator.
 
 ---
 
-> **Note:** This guide focuses on Kafka-based cross-service coordination. For the Postgres messaging alternative, see [Configuration](configuration.md). The patterns are the same -- only the transport differs.
-
 ## The Pattern: Orchestration Within, Choreography Between
 
 Maestro follows a simple boundary rule:
@@ -31,7 +29,7 @@ Each service owns its own:
 
 - **Postgres schema** (or at minimum its own table prefix) for workflow state
 - **Kafka consumer group** for message processing
-- **Valkey keyspace** for locks and dedup
+- **Lock rows and wake channel** (`maestro_distributed_lock`, `maestro_leader_election`, one `LISTEN/NOTIFY` channel per service) in that same schema
 - **Workflow definitions** for its domain logic
 
 No service reads another service's Maestro tables. No service sends Maestro
@@ -106,8 +104,8 @@ sequenceDiagram
 
 7. **Order Workflow resumes.** If the workflow is parked on the same instance
    that ingested the signal, it is unparked directly. If it is parked on another
-   instance, the signal notifier (Valkey pub/sub or Postgres LISTEN/NOTIFY)
-   wakes it. If notification fails or no notifier is configured, the parked
+   instance, the signal notifier (Postgres `LISTEN/NOTIFY`, one channel per
+   service) wakes it. If the notification is lost or the wake is disabled, the parked
    workflow finds the persisted signal via its periodic store re-check (every
    30 seconds) — it is never lost (unless the operator has explicitly disabled
    redelivery; see the note below). The workflow continues with shipment and
@@ -148,9 +146,9 @@ public SignalRouting routePaymentResult(PaymentResultEvent event) {
 3. Maestro persists the signal to Postgres immediately. This is critical --
    even if the target workflow is not currently running, the signal is safe.
 4. Maestro unparks the workflow directly if it is waiting on this instance, and
-   publishes a notification (Valkey pub/sub or Postgres LISTEN/NOTIFY) to wake
-   it if it is parked on another instance. If notification fails or no notifier
-   is configured, the workflow picks up the persisted signal via its periodic
+   publishes a Postgres `NOTIFY` (after the row commits, on a virtual thread) to
+   wake it if it is parked on another instance. If the notification is lost or
+   the wake is disabled, the workflow picks up the persisted signal via its periodic
    store re-check (every 30 seconds). Either way, the signal is never lost
    (unless the operator has explicitly disabled redelivery; see the note below).
 
@@ -386,17 +384,18 @@ The full configuration reference is in [Configuration](configuration.md).
 
 ---
 
-## Valkey Coordination
+## Lock and Wake Coordination
 
-Maestro uses Valkey (or Redis) as a performance optimization layer. It is not
-the source of truth -- Postgres is.
+Maestro coordinates nodes through tables and a notification channel in the same
+Postgres database as the workflow state (`maestro-store-postgres`). They are a
+performance optimization layer, not the source of truth -- the workflow tables are.
 
-| Key Pattern | Purpose | TTL |
-|---|---|---|
-| `maestro:lock:workflow:{workflowId}` | Workflow instance lock | 30s (renewed every 10s) |
-| `maestro:lock:activity:{workflowId}:{seq}` | Activity execution lock (fast-path dedup) | activity timeout + 10s |
-| `maestro:leader:timer-poller:{service}` | Timer polling leader election | 15s |
-| `maestro:signal:{workflowId}` (pub/sub) | Signal notification channel | N/A |
+| Key Pattern (`lock_key`) | Table | Purpose | TTL |
+|---|---|---|---|
+| `maestro:lock:workflow:{workflowId}` | `maestro_distributed_lock` | Workflow instance lock | 30s (renewed every 10s) |
+| `maestro:lock:activity:{workflowId}:{seq}` | `maestro_distributed_lock` | Activity execution lock (fast-path dedup) | activity timeout + 10s |
+| `maestro:leader:timer-poller:{service}` | `maestro_leader_election` | Timer polling leader election | 15s |
+| `maestro_signal_wake_<service>_<hash>` | *(LISTEN/NOTIFY channel, one per service)* | Cross-node signal wake | N/A |
 
 ### What each key does
 
@@ -417,32 +416,36 @@ loses and the stored result is returned instead.
 The 15-second TTL means leadership transfers quickly if the current leader
 goes down.
 
-**Signal pub/sub** -- Provides instant cross-instance wake-up when a signal is
-delivered. While a workflow is parked in `awaitSignal`, its instance subscribes
-to this channel; delivering a signal anywhere publishes a notification whose
-callback unparks the waiting virtual thread, which then reads the persisted
-signal from Postgres. If the subscription or notification fails — or no
-notifier is configured at all — the parked workflow re-checks the store every
+**Signal wake channel** -- Provides instant cross-instance wake-up when a signal
+is delivered. Every node of a service `LISTEN`s on one channel named after the
+service (`PostgresWakeListener`, one dedicated connection per node); delivering
+a signal anywhere sends a `NOTIFY` on that channel once the signal row has
+committed (`PostgresSignalNotifier`, on a virtual thread, never awaited by the
+sender) whose payload names the workflow and signal, and the listener unparks
+the waiting virtual thread in memory, which then reads the persisted signal from
+Postgres. If the notification is lost — or the wake is disabled with
+`maestro.signal.wake-notify.enabled=false`, as it must be behind PgBouncer in
+transaction-pooling mode — the parked workflow re-checks the store every
 30 seconds, so the signal is delivered within one interval.
 
 ### Graceful degradation
 
-If Valkey is unavailable, Maestro does not stop working:
+The coordination layer is best-effort by design:
 
-- **Locks** degrade to unlocked execution — the unique constraint on
+- **Locks** — if a lock expires or a renewal is lost, execution continues
+  unlocked and a peer may adopt the instance; the unique constraint on
   `(workflow_instance_id, sequence_number)` and optimistic instance versioning
-  remain the correctness backstop (or use `maestro-lock-postgres` to keep
-  locking without Valkey)
+  remain the correctness backstop
 - **Dedup** falls back to the unique constraint on
   `(workflow_instance_id, sequence_number)` in the event table — this
   deduplicates persisted results, not external side effects
-- **Leader election** falls back so that each node polls independently
-  (safe but slightly less efficient)
+- **Leader election** — a lost lease simply transfers leadership after the
+  15-second TTL; a fired timer is never lost
 - **Signal notification** falls back to store-based delivery -- a parked
   workflow re-checks the store every 30 seconds, so instead of an instant wake
   the signal arrives within one re-check interval
 
-The system is slower without Valkey, but durable workflow state stays
+The system is slower in these cases, but durable workflow state stays
 correct — Postgres is always the source of truth. What unlocked execution
 cannot guarantee is exactly-once *external side effects*: without the lock an
 activity may run more than once, which is why activities must be idempotent
@@ -477,7 +480,7 @@ workflow.
 
 **Pre-create all Kafka topics in your deployment scripts.** Do not rely on
 auto-creation. Include topic creation in your infrastructure-as-code alongside
-database migrations and Valkey configuration. See
+database migrations. See
 [Topic Pre-Creation](#topic-pre-creation) above.
 
 **Give each service its own Postgres schema.** Set `currentSchema` in the JDBC URL (or `spring.datasource.hikari.schema`) so each service's `maestro_*` tables live apart. This prevents workflow ID collisions, keeps event tables smaller, and allows independent backup and migration schedules. Two services should never share a `maestro_workflow_instance` table.

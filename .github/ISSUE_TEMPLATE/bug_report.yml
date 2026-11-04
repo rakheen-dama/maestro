@@ -27,7 +27,6 @@ body:
         - maestro-store-postgres
         - maestro-store-jdbc
         - maestro-messaging-kafka
-        - maestro-lock-valkey
         - maestro-admin
         - maestro-admin-client
         - maestro-test
@@ -81,7 +80,6 @@ body:
         - Spring Boot version:
         - Database: PostgreSQL
         - Kafka version:
-        - Valkey/Redis version:
     validations:
       required: false
 

@@ -210,7 +210,9 @@ public final class ChaosController {
     }
 
     private String randomBackend() {
-        return List.of("postgres", "kafka", "valkey").get(rng.nextInt(3));
+        // 2026-11: the third backend (the former lock cache) was dropped, so
+        // nextInt(3) became nextInt(2) — pre-2026-11 seeds do not replay identically.
+        return List.of("postgres", "kafka").get(rng.nextInt(2));
     }
 
     private long gapMillis() {

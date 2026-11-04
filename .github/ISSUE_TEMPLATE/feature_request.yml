@@ -18,7 +18,6 @@ body:
         - maestro-store-postgres
         - maestro-store-jdbc
         - maestro-messaging-kafka
-        - maestro-lock-valkey
         - maestro-admin
         - maestro-admin-client
         - maestro-test
