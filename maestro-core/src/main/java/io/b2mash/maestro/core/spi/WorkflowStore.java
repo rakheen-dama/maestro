@@ -382,8 +382,12 @@ public interface WorkflowStore {
      * <p><b>Idempotent.</b> Called on an instance with no failure memos it
      * deletes nothing and returns {@code 0}.
      *
-     * <p><b>Implementation note:</b> this is the only operation that removes
-     * rows from the event log. Implementations must scope the delete to the
+     * <p><b>Implementation note:</b> this is the only <em>per-instance</em>
+     * operation that removes rows from the event log of a workflow that may
+     * run again; the only other one is
+     * {@link #purgeTerminalInstancesBefore(io.b2mash.maestro.core.model.WorkflowStatus, Instant, int)},
+     * which removes a long-finished workflow's entire history together with
+     * the instance itself. Implementations must scope this delete to the
      * given instance and to those event types (plus the single failing-timeout
      * memo and its await's park memo and deadline rows) — never to a sequence
      * range, which would take compensation and success memos with it.
@@ -528,6 +532,67 @@ public interface WorkflowStore {
      * @return the number of signal rows deleted
      */
     int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff);
+
+    // ── Retention ────────────────────────────────────────────────────────
+
+    /**
+     * Deletes one batch of long-finished workflow instances together with
+     * their entire history — events, signals and timers — so the store does
+     * not grow without bound.
+     *
+     * <p>Selects at most {@code batchSize} instances whose status equals
+     * {@code status} and whose {@code completedAt} is non-null and strictly
+     * before {@code cutoff}, oldest first, and deletes for each of them:
+     * <ul>
+     *   <li>every event row of the instance,</li>
+     *   <li>every signal row whose {@link WorkflowSignal#workflowInstanceId()}
+     *       is the instance — consumed <em>or not</em> (a workflow that is
+     *       gone can never consume them, and unlike
+     *       {@link #deleteUnconsumedSignalsForTerminalInstancesBefore} this
+     *       purge takes the whole history),</li>
+     *   <li>every timer row of the instance, whatever its status (a
+     *       {@code TERMINATED} workflow may leave {@code PENDING} timers
+     *       behind), and finally</li>
+     *   <li>the instance row itself.</li>
+     * </ul>
+     * Everything else must survive: instances in any other status, instances
+     * with a {@code null} {@code completedAt} or one at or after the cutoff,
+     * and orphaned signals (a {@code null} {@code workflowInstanceId}) —
+     * which may still be adopted by a <em>future</em> instance reusing the
+     * same workflow ID.
+     *
+     * <p><b>One batch is one transaction, and it is all-or-nothing.</b> The
+     * children must be deleted before the parent, because the shipped schema
+     * declares the child foreign keys without {@code ON DELETE CASCADE}. If
+     * the final instance delete removes fewer rows than were selected — a
+     * {@code FAILED} candidate was retried to {@code RUNNING} between the
+     * select and the delete — the whole batch must roll back rather than
+     * leave a now-active workflow with its memoization log gone. A store
+     * that can lock the selected rows (Postgres {@code FOR UPDATE SKIP
+     * LOCKED}) excludes that race outright and also lets two sweepers that
+     * somehow run at once take disjoint batches.
+     *
+     * <p><b>Status is passed by the caller</b>, one status at a time, because
+     * each terminal status has its own retention: {@code FAILED} workflows
+     * are kept longer, since an operator may still retry them. Passing a
+     * non-terminal status is a programming error.
+     *
+     * <p><b>Idempotent.</b> A second call with the same arguments after the
+     * first emptied the candidate set returns {@link PurgeResult#EMPTY}. The
+     * engine's retention sweeper calls this in a loop, under leader election,
+     * until a batch comes back smaller than {@code batchSize}.
+     *
+     * @param status    the terminal status to purge; must satisfy
+     *                  {@link io.b2mash.maestro.core.model.WorkflowStatus#isTerminal()}
+     * @param cutoff    instances with {@code completedAt} strictly before this
+     *                  instant are candidates
+     * @param batchSize the most instances to delete in this call; must be positive
+     * @return how many rows of each table were deleted; never {@code null}
+     * @throws IllegalArgumentException if {@code status} is not terminal or
+     *                                  {@code batchSize} is not positive
+     */
+    PurgeResult purgeTerminalInstancesBefore(io.b2mash.maestro.core.model.WorkflowStatus status,
+                                             Instant cutoff, int batchSize);
 
     // ── Timer operations ─────────────────────────────────────────────────
 

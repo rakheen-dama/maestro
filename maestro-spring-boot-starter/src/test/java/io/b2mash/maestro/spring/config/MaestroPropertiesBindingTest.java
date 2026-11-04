@@ -102,7 +102,14 @@ class MaestroPropertiesBindingTest {
                         "maestro.shutdown.timeout=15s",
                         "maestro.signal.wake-recheck-interval=5s",
                         "maestro.signal.janitor-interval=2h",
-                        "maestro.signal.terminal-retention=3d")
+                        "maestro.signal.terminal-retention=3d",
+                        "maestro.retention.enabled=false",
+                        "maestro.retention.interval=15m",
+                        "maestro.retention.completed-retention=10d",
+                        "maestro.retention.terminated-retention=20d",
+                        "maestro.retention.failed-retention=180d",
+                        "maestro.retention.batch-size=50",
+                        "maestro.retention.max-batches-per-sweep=7")
                 .run(context -> {
                     var properties = context.getBean(MaestroProperties.class);
                     assertThat(properties.getStore().schema().mode()).isEqualTo("validate");
@@ -120,6 +127,14 @@ class MaestroPropertiesBindingTest {
                     assertThat(properties.getSignal().wakeRecheckInterval()).isEqualTo(Duration.ofSeconds(5));
                     assertThat(properties.getSignal().janitorInterval()).isEqualTo(Duration.ofHours(2));
                     assertThat(properties.getSignal().terminalRetention()).isEqualTo(Duration.ofDays(3));
+                    var retention = properties.getRetention();
+                    assertThat(retention.enabled()).isFalse();
+                    assertThat(retention.interval()).isEqualTo(Duration.ofMinutes(15));
+                    assertThat(retention.completedRetention()).isEqualTo(Duration.ofDays(10));
+                    assertThat(retention.terminatedRetention()).isEqualTo(Duration.ofDays(20));
+                    assertThat(retention.failedRetention()).isEqualTo(Duration.ofDays(180));
+                    assertThat(retention.batchSize()).isEqualTo(50);
+                    assertThat(retention.maxBatchesPerSweep()).isEqualTo(7);
                 });
     }
 
@@ -169,6 +184,14 @@ class MaestroPropertiesBindingTest {
             assertThat(properties.getSignal().janitorInterval()).isEqualTo(Duration.ofHours(1));
             assertThat(properties.getSignal().terminalRetention()).isEqualTo(Duration.ofDays(7));
             assertThat(properties.getSignal().wakeNotify().enabled()).isTrue();
+            var retention = properties.getRetention();
+            assertThat(retention.enabled()).isTrue();
+            assertThat(retention.interval()).isEqualTo(Duration.ofHours(1));
+            assertThat(retention.completedRetention()).isEqualTo(Duration.ofDays(30));
+            assertThat(retention.terminatedRetention()).isEqualTo(Duration.ofDays(30));
+            assertThat(retention.failedRetention()).isEqualTo(Duration.ofDays(90));
+            assertThat(retention.batchSize()).isEqualTo(500);
+            assertThat(retention.maxBatchesPerSweep()).isEqualTo(100);
             assertThat(properties.getObservability().metrics().enabled()).isTrue();
             assertThat(properties.getObservability().tracing().enabled()).isTrue();
         });

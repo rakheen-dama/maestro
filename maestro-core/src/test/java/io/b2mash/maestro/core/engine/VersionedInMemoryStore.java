@@ -11,6 +11,7 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.spi.PurgeResult;
 import io.b2mash.maestro.core.spi.RunLease;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
@@ -409,6 +410,11 @@ class VersionedInMemoryStore implements WorkflowStore {
     @Override
     public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
         return 0;
+    }
+
+    @Override
+    public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
+        throw new UnsupportedOperationException();
     }
 
     /** @return every signal row ever saved, oldest first */

@@ -10,7 +10,7 @@ import org.springframework.core.Ordered;
 /**
  * Recovers workflows that were active when the service last stopped
  * and starts the background timer poller, signal janitor and (unless
- * disabled) recovery poller.
+ * disabled) retention sweeper and recovery poller.
  *
  * <p>Runs as an {@link ApplicationRunner} after the full context refresh,
  * ensuring all workflow registrations are available (populated by
@@ -57,6 +57,23 @@ public class StartupRecoveryRunner implements ApplicationRunner, Ordered {
         executor.startSignalJanitor(signal.janitorInterval(), signal.terminalRetention());
         logger.info("Maestro signal janitor started (interval={}, terminalRetention={})",
                 signal.janitorInterval(), signal.terminalRetention());
+
+        // 2c. Start the retention sweeper — purges workflows that finished
+        // longer ago than their status's retention, history included. Only
+        // the elected leader for this service actually purges.
+        var retention = properties.getRetention();
+        if (retention.enabled()) {
+            executor.startRetentionSweeper(new WorkflowExecutor.RetentionSettings(
+                    retention.interval(), retention.completedRetention(), retention.terminatedRetention(),
+                    retention.failedRetention(), retention.batchSize(), retention.maxBatchesPerSweep()));
+            logger.info("Maestro retention sweeper started (interval={}, completedRetention={}, "
+                            + "terminatedRetention={}, failedRetention={}, batchSize={}, maxBatchesPerSweep={})",
+                    retention.interval(), retention.completedRetention(), retention.terminatedRetention(),
+                    retention.failedRetention(), retention.batchSize(), retention.maxBatchesPerSweep());
+        } else {
+            logger.info("Maestro retention sweeper disabled (maestro.retention.enabled=false) — "
+                    + "finished workflows are kept indefinitely");
+        }
 
         // 3. Start the periodic recovery poller — adopts workflows whose
         // owning node has died (instance lock expired) or shut down

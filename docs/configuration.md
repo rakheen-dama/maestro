@@ -93,10 +93,14 @@ Upgrade such a database once, with this procedure, in order (the same text is in
      ALTER TABLE maestro_workflow_signal ADD COLUMN IF NOT EXISTS trace_context VARCHAR(128);  -- V4
      ALTER TABLE maestro_workflow_signal ALTER COLUMN received_at SET DEFAULT now();         -- V5
      ALTER TABLE maestro_workflow_instance ADD COLUMN IF NOT EXISTS lease_epoch BIGINT NOT NULL DEFAULT 0; -- V6
+     CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_wf_instance_terminal                        -- V8
+         ON maestro_workflow_instance (status, completed_at) WHERE completed_at IS NOT NULL;
+     CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_wf_signal_instance                          -- V8
+         ON maestro_workflow_signal (workflow_instance_id);
      DROP TABLE IF EXISTS maestro_signal_queue, maestro_task_queue, maestro_lifecycle_event_queue; -- optional cleanup
      ```
 
-     Do not skip V4, V5 or V6: this build names `trace_context` in every signal insert and leaves `received_at` to the column default, so without them every `saveSignal` fails — inside the Kafka listener, so each signal is redelivered until it is dead-lettered; and it names `lease_epoch` in every instance read and write (it is the lease-fencing token — see [Operations §6](operations.md#6-split-brain-behaviour-issue-11--issue-18)), so without V6 no workflow can be started, resumed or read. V6 is metadata-only on PostgreSQL 11+ (a constant `DEFAULT` on `ADD COLUMN` rewrites no rows) and every pre-existing row reads back as epoch `0`.
+     `V8` is index-only (the retention sweeper works without it, scanning the tables on every batch), so it is written here with `CONCURRENTLY`, which the Flyway-run original cannot use — see [Retention Configuration](#retention-configuration). Do not skip V4, V5 or V6: this build names `trace_context` in every signal insert and leaves `received_at` to the column default, so without them every `saveSignal` fails — inside the Kafka listener, so each signal is redelivered until it is dead-lettered; and it names `lease_epoch` in every instance read and write (it is the lease-fencing token — see [Operations §6](operations.md#6-split-brain-behaviour-issue-11--issue-18)), so without V6 no workflow can be started, resumed or read. V6 is metadata-only on PostgreSQL 11+ (a constant `DEFAULT` on `ADD COLUMN` rewrites no rows) and every pre-existing row reads back as epoch `0`.
 3. **Delete Maestro's rows from your `flyway_schema_history`** (or the table `spring.flyway.table` names) — on either path; skip this step only if the table does not exist. The statement matches each row by version **and** script name, so none of your own migrations can match, and rows your database never had are simply not matched:
 
    ```sql
@@ -108,6 +112,7 @@ Upgrade such a database once, with this procedure, in order (the same text is in
        ('4',   'V4__signal_trace_context.sql'),
        ('5',   'V5__signal_received_at_default.sql'),
        ('6',   'V6__instance_lease_epoch.sql'),
+       ('8',   'V8__retention_indexes.sql'),
        ('100', 'V100__maestro_lock_postgres.sql'),
        ('200', 'V200__maestro_messaging_postgres.sql'),
        ('201', 'V201__redelivery_dead_letter.sql'));
@@ -432,6 +437,46 @@ lock — both honour the same configured prefix.
 
 ---
 
+## Retention Configuration
+
+Finished workflows are not kept forever. The **retention sweeper** deletes
+workflows that reached a terminal status longer ago than that status's
+retention — the instance row *and its whole history*: events, signals (consumed
+or not) and timers, so the four `maestro_*` tables stop growing without bound.
+One node per service sweeps at a time, elected on
+`maestro:leader:retention:{service}` (15 s TTL, re-checked before every batch);
+each batch is one transaction, children deleted before the parent. See
+[Operations § Retention and table growth](operations.md#11-retention-and-table-growth)
+for what a purge means for the dashboard, for workflow-ID reuse and for late
+signals.
+
+| Property                                 | Type       | Default | Description                                                                 |
+|------------------------------------------|------------|---------|-----------------------------------------------------------------------------|
+| `maestro.retention.enabled`              | `boolean`  | `true`  | Whether the sweeper runs at all. `false` keeps every finished workflow forever (the pre-retention behaviour). |
+| `maestro.retention.interval`             | `Duration` | `1h`    | Time between sweeps. The first sweep runs at startup.                        |
+| `maestro.retention.completed-retention`  | `Duration` | `30d`   | How long a `COMPLETED` workflow is kept after it completed.                  |
+| `maestro.retention.terminated-retention` | `Duration` | `30d`   | How long a `TERMINATED` workflow is kept after it was terminated. Its leftover `PENDING` timers go with it. |
+| `maestro.retention.failed-retention`     | `Duration` | `90d`   | How long a `FAILED` workflow is kept after it failed. Longer by default because an operator may still retry it; once purged, a retry reports the workflow not found. |
+| `maestro.retention.batch-size`           | `int`      | `500`   | Instances deleted per transaction (plus all of their child rows). 1 to 10 000; each candidate is one JDBC bind parameter in the batch's deletes and pgjdbc allows 32 767 per statement, so a larger value is rejected at startup rather than failing every batch. |
+| `maestro.retention.max-batches-per-sweep`| `int`      | `100`   | Batches per status per sweep. Bounds one sweep's work on a large backlog: at the defaults, at most 50 000 instances per status per hour; the rest waits for the next interval. |
+
+`maestro.signal.terminal-retention` (above) is independent and narrower: it
+purges only the *unconsumed signals* of `COMPLETED`/`TERMINATED` workflows,
+earlier (7 days), on every node, and leaves everything else. The retention
+sweeper later takes the whole workflow.
+
+Migration `V8__retention_indexes.sql` adds the two indexes the sweeper's
+queries need (`idx_wf_instance_terminal` on `(status, completed_at) WHERE
+completed_at IS NOT NULL`, `idx_wf_signal_instance` on
+`maestro_workflow_signal(workflow_instance_id)`). Flyway applies it in a
+transaction, so it is a plain `CREATE INDEX IF NOT EXISTS`, which holds a
+`SHARE` lock on each table while the index builds — writes wait, reads do not.
+On a large table, create both indexes by hand with `CREATE INDEX CONCURRENTLY`
+under the same names *before* deploying this build; the migration then finds
+them and does nothing.
+
+---
+
 ## Retry Configuration
 
 Properties under `maestro.retry.*` define the default retry policy applied to
@@ -571,6 +616,14 @@ maestro:
     events:
       enabled: true
       topic: maestro.admin.events
+  retention:
+    enabled: true
+    interval: 1h
+    completed-retention: 30d
+    terminated-retention: 30d
+    failed-retention: 90d
+    batch-size: 500
+    max-batches-per-sweep: 100
 
 spring:
   datasource:
@@ -734,6 +787,7 @@ and leader election. The keys below are the `lock_key` values stored in
 | `maestro:lock:workflow:{workflowId}`          | `maestro_distributed_lock`  | Workflow instance lock          | 30s (renewed every 10s) |
 | `maestro:lock:activity:{workflowId}:{seq}`    | `maestro_distributed_lock`  | Activity execution lock (fast-path dedup) | activity timeout + 10s |
 | `maestro:leader:timer-poller:{service}`       | `maestro_leader_election`   | Timer poller leader election    | 15s                |
+| `maestro:leader:retention:{service}`          | `maestro_leader_election`   | Retention sweeper leader election | 15s              |
 
 The `maestro:lock:` prefix is configurable via `maestro.lock.key-prefix`. If you
 change it, the lock keys will use your custom prefix instead. Cross-node signal
@@ -752,9 +806,11 @@ deduplicates *persisted results*, not external side effects. If a lock expires
 or is lost mid-execution, an activity can run more than once, so activities
 must be idempotent (or use fencing/idempotency keys with external systems).
 
-The leader election key ensures that only one node in the cluster runs the timer
-poller. It uses a shorter TTL (15 seconds) so that leadership transfers quickly
-if the current leader goes down.
+The leader election keys ensure that only one node in the cluster runs the timer
+poller, and only one runs the retention sweeper's purge batches. They use a
+shorter TTL (15 seconds) so that leadership transfers quickly if the current
+leader goes down; the retention sweeper re-elects before every batch, which is
+also what renews its claim.
 
 ---
 

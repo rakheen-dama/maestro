@@ -254,6 +254,47 @@ class MaestroAutoConfigurationConfigSeamsTest {
     }
 
     @Test
+    @DisplayName("maestro.retention.* reaches the executor's retention sweeper")
+    void retentionSettingsReachTheExecutor() {
+        runner.withPropertyValues("maestro.retention.interval=2h",
+                        "maestro.retention.completed-retention=10d",
+                        "maestro.retention.terminated-retention=20d",
+                        "maestro.retention.failed-retention=180d",
+                        "maestro.retention.batch-size=50",
+                        "maestro.retention.max-batches-per-sweep=7")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    context.getBean(StartupRecoveryRunner.class).run(new DefaultApplicationArguments());
+                    var executor = context.getBean(WorkflowExecutor.class);
+                    assertThat(executor.isRetentionSweeperRunning()).isTrue();
+                    assertThat(executor.retentionSettings())
+                            .as("the configured values must reach the engine, not the 1h/30d/30d/90d/500/100 defaults")
+                            .isEqualTo(new WorkflowExecutor.RetentionSettings(Duration.ofHours(2), Duration.ofDays(10),
+                                    Duration.ofDays(20), Duration.ofDays(180), 50, 7));
+                    executor.shutdown();
+                    assertThat(executor.isRetentionSweeperRunning()).isFalse();
+                });
+    }
+
+    @Test
+    @DisplayName("maestro.retention.enabled=false leaves the retention sweeper unstarted")
+    void retentionDisabledLeavesTheSweeperUnstarted() {
+        runner.withPropertyValues("maestro.retention.enabled=false")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    context.getBean(StartupRecoveryRunner.class).run(new DefaultApplicationArguments());
+                    var executor = context.getBean(WorkflowExecutor.class);
+                    assertThat(executor.hasRetentionSweeperStarted()).isFalse();
+                    assertThat(executor.isRetentionSweeperRunning()).isFalse();
+                    assertThat(executor.retentionSettings()).isNull();
+                    assertThat(executor.isSignalJanitorRunning())
+                            .as("the signal janitor is independent of maestro.retention.enabled")
+                            .isTrue();
+                    executor.shutdown();
+                });
+    }
+
+    @Test
     @DisplayName("maestro.worker.task-queues[] concurrency and activity-concurrency reach the executor's governor (F8)")
     void workerConcurrencyReachesTheGovernor() {
         runner.withPropertyValues("maestro.worker.task-queues[0].name=orders",

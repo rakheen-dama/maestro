@@ -214,6 +214,11 @@ class SignalSubscriptionRunnerTest {
         }
 
         @Override
+        public io.b2mash.maestro.core.spi.PurgeResult purgeTerminalInstancesBefore(io.b2mash.maestro.core.model.WorkflowStatus status, java.time.Instant cutoff, int batchSize) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
         public void saveTimer(io.b2mash.maestro.core.model.WorkflowTimer timer) {
             throw new UnsupportedOperationException("stub");
         }

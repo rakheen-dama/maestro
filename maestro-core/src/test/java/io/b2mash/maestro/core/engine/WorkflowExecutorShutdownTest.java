@@ -1150,6 +1150,11 @@ class WorkflowExecutorShutdownTest {
         }
 
         @Override
+        public io.b2mash.maestro.core.spi.PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
         public void saveTimer(WorkflowTimer timer) {
             timers.add(timer);
         }

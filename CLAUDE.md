@@ -95,6 +95,7 @@ public interface WorkflowStore {
     boolean markSignalConsumed(UUID signalId);           // CAS: false if already consumed
     void adoptOrphanedSignals(String workflowId, UUID instanceId);
     int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff); // janitor; COMPLETED/TERMINATED only
+    PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize); // retention sweeper; one batch = one transaction, children before parent
 
     void saveTimer(WorkflowTimer timer);
     List<WorkflowTimer> getDueTimers(Instant now, int batchSize);
@@ -200,6 +201,7 @@ Locks are rows in `maestro_distributed_lock` / `maestro_leader_election` (`lock_
 maestro:lock:workflow:{workflowId}           — Instance lock (30s TTL, renewed every 10s)
 maestro:lock:activity:{workflowId}:{seq}     — Activity execution lock, best-effort dedup fast path (timeout + 10s TTL)
 maestro:leader:timer-poller:{service}         — Timer leader in maestro_leader_election (15s TTL)
+maestro:leader:retention:{service}            — Retention sweeper leader in maestro_leader_election (15s TTL, re-elected per batch)
 ```
 
 Cross-node signal wake is Postgres `LISTEN/NOTIFY` on ONE channel per service, `maestro_signal_wake_<service ≤32 chars>_<8-hex sha256>` (always ≤63 bytes); the payload carries workflowId + signalName and `PostgresWakeListener` dispatches in memory to the parked waiter. `NOTIFY` runs on a virtual thread after the signal row commits and never blocks `deliverSignal`. The listener holds one `DataSource` connection for the app lifetime; `maestro.signal.wake-recheck-interval` (30s) is the correctness fallback. A lock cleaner deletes rows expired for more than a minute every `maestro.lock.cleanup-interval` (10m).
@@ -222,7 +224,12 @@ the tracing flag gates the Kafka W3C header injection too — see
 `docs/observability.md`), `maestro.signal.janitor-interval` (default 1h) /
 `maestro.signal.terminal-retention` (default 7d) (the signal janitor purges
 unconsumed signals of workflows `COMPLETED`/`TERMINATED` longer ago than the
-retention; `FAILED` keeps them for retry), `maestro.worker.task-queues[].concurrency` /
+retention; `FAILED` keeps them for retry), `maestro.retention.*` (`enabled` default
+`true`, `interval` 1h, `completed-retention` 30d, `terminated-retention` 30d,
+`failed-retention` 90d, `batch-size` 500, `max-batches-per-sweep` 100 — the
+leader-elected retention sweeper purges finished workflows with their whole
+history via `WorkflowStore.purgeTerminalInstancesBefore`; migration V8 adds its
+indexes), `maestro.worker.task-queues[].concurrency` /
 `activity-concurrency` (bound per node), `maestro.store.schema.mode`
 (flyway | validate | none), `maestro.signal.wake-notify.enabled` (default `true`;
 set `false` behind PgBouncer transaction pooling — wake then falls back to the

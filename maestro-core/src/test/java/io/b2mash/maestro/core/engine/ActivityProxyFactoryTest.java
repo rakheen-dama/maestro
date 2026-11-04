@@ -13,6 +13,8 @@ import io.b2mash.maestro.core.spi.LockHandle;
 import io.b2mash.maestro.core.spi.SignalMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
+import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.spi.PurgeResult;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -386,6 +388,11 @@ class ActivityProxyFactoryTest {
         @Override
         public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
             return 0;
+        }
+
+        @Override
+        public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
+            throw new UnsupportedOperationException();
         }
 
         @Override

@@ -17,6 +17,7 @@ import io.b2mash.maestro.core.observe.RecordingEngineObserver;
 import io.b2mash.maestro.core.observe.StandDownReason;
 import io.b2mash.maestro.core.retry.RetryExecutor;
 import io.b2mash.maestro.core.retry.RetryPolicy;
+import io.b2mash.maestro.core.spi.PurgeResult;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -472,6 +473,11 @@ class WorkflowExecutorDuplicateEventStandDownTest {
         @Override
         public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
             return 0;
+        }
+
+        @Override
+        public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
+            throw new UnsupportedOperationException();
         }
 
         @Override

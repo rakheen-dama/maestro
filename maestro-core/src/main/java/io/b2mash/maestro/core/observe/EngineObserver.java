@@ -160,6 +160,17 @@ public interface EngineObserver {
     /** One recovery pass finished (startup or poller cycle). */
     default void recoveryPass(int scanned, int adopted) {}
 
+    // ── Retention ─────────────────────────────────────────────────────
+
+    /**
+     * One retention sweep finished on this node as the elected leader, having
+     * purged {@code purged} rows in total across its batches. Not emitted by
+     * a node that was not the leader for the sweep; emitted (with an
+     * {@link io.b2mash.maestro.core.spi.PurgeResult#EMPTY empty} result) by
+     * a leader that found nothing to purge.
+     */
+    default void retentionPass(io.b2mash.maestro.core.spi.PurgeResult purged) {}
+
     // ── Stand-down ────────────────────────────────────────────────────
 
     /** A local run stood down without recording a workflow outcome. */

@@ -823,6 +823,112 @@ budget land on the Kafka dead-letter topic — `docs/configuration.md`
 
 ---
 
+## 11. Retention and table growth
+
+*Added with `maestro.retention.*`. Behaviour playbook, like §10: every
+statement is traceable to `RetentionSweeper`, `WorkflowStore.purgeTerminalInstancesBefore`
+and their pinning tests (`RetentionSweeperTest`, `PostgresWorkflowStoreTest.RetentionPurgeTests`,
+`MultiNodeRetentionPurgeIT`), not to a timing run.*
+
+Nothing in Maestro before this purged a finished workflow. Every `COMPLETED`,
+`FAILED` and `TERMINATED` instance stayed in `maestro_workflow_instance` with
+its full event log, its signals and its timers, so the four tables grew with
+the number of workflows ever run. The **retention sweeper** bounds that.
+
+### 11.1 What is purged, when, by whom
+
+Each terminal status has its own retention (`completed-retention` 30 d,
+`terminated-retention` 30 d, `failed-retention` 90 d by default): a workflow is
+a candidate once its `completed_at` is strictly before `now − retention`. A
+candidate is deleted with its entire history — every event, every signal whose
+`workflow_instance_id` is the instance (consumed or not), every timer whatever
+its status (a terminated workflow leaves `PENDING` ones behind) — and then the
+instance row. Instances with a `NULL` `completed_at` are never candidates, and
+orphaned signals (a `NULL` `workflow_instance_id`) are never touched.
+
+Every node runs a sweep loop (`maestro-retention-sweeper` virtual thread, first
+sweep at startup, then every `maestro.retention.interval`), but only the
+**elected leader** for the service purges: before *every batch* the sweeper
+calls `trySetLeader("maestro:leader:retention:<service>", candidateId, 15 s)` —
+the same election the timer poller uses — and a node that is not the leader
+stops at once, emits nothing and logs at `DEBUG`. A leader that dies hands over
+within the 15 s TTL. Each batch (`batch-size` instances, 500 by default) is one
+transaction: Postgres selects the candidates `FOR UPDATE SKIP LOCKED`, deletes
+signals, timers and events, then the instances. A sweep stops a status's loop
+when a batch comes back short or after `max-batches-per-sweep` batches — a
+large backlog (say, the first deploy of this build onto a year-old database) is
+drained at 50 000 instances per status per hour at the defaults, not in one
+go. Raise `batch-size`/`max-batches-per-sweep` or lower `interval` to drain
+faster; the per-batch transaction size is what bounds lock duration and WAL
+burst.
+
+`maestro.signal.terminal-retention` (7 d, every node, no election) is the older,
+narrower purge: it removes only the *unconsumed signals* of `COMPLETED`/
+`TERMINATED` workflows. The two coexist; the retention sweeper later removes
+the workflow itself.
+
+### 11.2 What a purge means downstream
+
+- **The admin dashboard keeps its own copy.** It consumed the lifecycle events
+  and shows the workflow after the engine has purged it. **Retry on a purged
+  `FAILED` workflow reports `NOT_FOUND`** (`WorkflowExecutor.retryWorkflow`
+  reads the instance first) — the operator has `failed-retention` (90 d) to
+  retry; after that the failure is history, not a workflow. Terminate behaves
+  the same way.
+- **The workflow ID becomes free again.** `workflow_id` is unique in
+  `maestro_workflow_instance`, so a purge lets a new `startWorkflow` with the
+  same ID succeed where it would have thrown `WorkflowAlreadyExistsException`.
+  That new instance **adopts any orphaned signals** still addressed to that
+  ID (orphans survive the purge precisely because the SPI promises never to
+  discard a signal). If a late duplicate signal for the *old* run would be
+  wrong for the *new* run, keep the ID unique across time (include a date or
+  version in it) rather than relying on the engine to tell them apart.
+- **A late signal races the purge benignly.** A signal delivered for a
+  workflow that is being purged either resolves no instance and is stored as
+  an orphan, or — if it resolved the instance ID just before the purge
+  committed — fails its insert on the foreign key, inside the Kafka listener,
+  and is redelivered; the redelivery finds no instance and stores the orphan.
+  Nothing is lost; the dead-letter topic is reached only if every redelivery
+  fails for some other reason (`docs/configuration.md` § Redelivery).
+- **A concurrent retry never loses its history.** Postgres: the retry's row
+  update blocks on (or is skipped by) the purge's `FOR UPDATE SKIP LOCKED`;
+  the two cannot interleave. A dialect without row locking (the portable base
+  SQL in `maestro-store-jdbc`) re-checks the status in the instance delete and
+  rolls the whole batch back — children included — when the count falls
+  short, logging a `WARN`.
+
+### 11.3 Observing it
+
+`maestro.retention.sweeps` counts sweeps this node ran as leader (a node that
+never increments it is simply not the leader — expected on all but one node).
+`maestro.retention.purged{kind=instance|event|signal|timer}` moves by the
+sweep's counts. `/actuator/health` reports `retentionSweeperRunning` (`true`,
+`false`, `"starting"`, or `"disabled"` when `maestro.retention.enabled=false`);
+`false` after a start is a dead loop and turns the status `DOWN`. A sweep that
+purged anything logs one `INFO` line with its counts; a store failure logs
+`WARN` and the loop retries next interval.
+
+### 11.4 Deploying it
+
+- **Migration `V8__retention_indexes.sql`** adds `idx_wf_instance_terminal`
+  and `idx_wf_signal_instance`. Flyway applies it in a transaction, so it is a
+  plain `CREATE INDEX IF NOT EXISTS`, which takes a `SHARE` lock on each table
+  for the build — writes block, reads do not. On a large table, pre-create both
+  indexes with `CREATE INDEX CONCURRENTLY` under exactly those names before the
+  deploy; the migration then finds them and does nothing. V8 names only V1
+  objects, so it applies in any order relative to the other pending
+  migrations.
+- **First sweep after the deploy** on a database that has never been purged
+  will find everything older than the retention eligible at once; see §11.1
+  for the drain rate and how to tune it. Set `maestro.retention.enabled:
+  false` on every node to keep the old keep-forever behaviour, or raise the
+  retentions first and lower them later.
+- **Mixed-version deploy** (§10.1 still applies): an older node's engine does
+  not know the sweeper and keeps running; it merely sees finished workflows
+  disappear, which no active-path read depends on.
+
+---
+
 ## See also
 
 - `docs/observability.md` — the full meter catalog (including
@@ -835,7 +941,8 @@ budget land on the Kafka dead-letter topic — `docs/configuration.md`
   guarantee table this document adds measured numbers to.
 - `docs/configuration.md` — `maestro.recovery.poll-interval`,
   `maestro.lock.ttl`, `maestro.signal.wake-recheck-interval`,
-  `maestro.lock.type`, and every other property named above.
+  `maestro.lock.type`, `maestro.retention.*`, and every other property named
+  above.
 - `.superpowers/sdd/multi-instance/chaos-harness-design.md` — the chaos/soak
   harness's full design and implementation changelog.
 - `maestro-samples/sample-loan-origination/README.md` and its `e2e/

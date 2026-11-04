@@ -70,6 +70,8 @@ public class MaestroProperties {
 
     private SignalProperties signal = SignalProperties.defaults();
 
+    private RetentionProperties retention = RetentionProperties.defaults();
+
     private ObservabilityProperties observability = ObservabilityProperties.defaults();
 
     // ── Getters and setters ─────────────────────────────────────────
@@ -176,6 +178,14 @@ public class MaestroProperties {
 
     public void setSignal(SignalProperties signal) {
         this.signal = signal;
+    }
+
+    public RetentionProperties getRetention() {
+        return retention;
+    }
+
+    public void setRetention(RetentionProperties retention) {
+        this.retention = retention;
     }
 
     public ObservabilityProperties getObservability() {
@@ -581,6 +591,56 @@ public class MaestroProperties {
         /** @return the defaults documented above */
         public static WakeNotifyProperties defaults() {
             return new WakeNotifyProperties(true);
+        }
+    }
+
+    /**
+     * Retention of finished workflows ({@code maestro.retention.*}).
+     *
+     * <p>The retention sweeper deletes workflows that reached a terminal
+     * status longer ago than that status's retention — the instance row and
+     * its whole history: events, signals (consumed or not) and timers — so
+     * the store does not grow without bound. One node per service sweeps at a
+     * time (leader-elected on {@code maestro:leader:retention:<service>}),
+     * in batches, each batch one transaction. A purged workflow is gone for
+     * good: the admin dashboard's retry reports it not found, and its
+     * workflow ID becomes free for a new start.
+     *
+     * <p>{@code maestro.signal.terminal-retention} is independent and
+     * narrower: it purges only the <em>unconsumed signals</em> of finished
+     * workflows, earlier (7 days by default), and leaves everything else.
+     *
+     * @param enabled             whether the sweeper runs at all; {@code false}
+     *                            keeps every finished workflow forever
+     * @param interval            time between sweeps
+     * @param completedRetention  how long a {@code COMPLETED} workflow is kept
+     *                            after it completed
+     * @param terminatedRetention how long a {@code TERMINATED} workflow is kept
+     *                            after it was terminated
+     * @param failedRetention     how long a {@code FAILED} workflow is kept
+     *                            after it failed — longer by default, because an
+     *                            operator may still retry it
+     * @param batchSize           instances deleted per transaction; at most
+     *                            10 000 (each candidate is a JDBC bind parameter
+     *                            in the batch's deletes, and the driver caps
+     *                            binds per statement) — startup fails above it
+     * @param maxBatchesPerSweep  batches per status per sweep; bounds one
+     *                            sweep's work on a large backlog (the rest
+     *                            waits for the next interval)
+     */
+    public record RetentionProperties(
+            @DefaultValue("true") boolean enabled,
+            @DefaultValue("1h") Duration interval,
+            @DefaultValue("30d") Duration completedRetention,
+            @DefaultValue("30d") Duration terminatedRetention,
+            @DefaultValue("90d") Duration failedRetention,
+            @DefaultValue("500") int batchSize,
+            @DefaultValue("100") int maxBatchesPerSweep
+    ) {
+        /** @return the defaults documented above */
+        public static RetentionProperties defaults() {
+            return new RetentionProperties(true, Duration.ofHours(1), Duration.ofDays(30), Duration.ofDays(30),
+                    Duration.ofDays(90), 500, 100);
         }
     }
 

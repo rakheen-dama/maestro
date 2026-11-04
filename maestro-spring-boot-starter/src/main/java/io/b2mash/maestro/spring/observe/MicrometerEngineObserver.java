@@ -6,6 +6,7 @@ import io.b2mash.maestro.core.observe.SignalInfo;
 import io.b2mash.maestro.core.observe.StandDownReason;
 import io.b2mash.maestro.core.observe.TimerInfo;
 import io.b2mash.maestro.core.observe.WorkflowInfo;
+import io.b2mash.maestro.core.spi.PurgeResult;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -36,6 +37,8 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <tr><td>{@code maestro.timer.fired}</td><td>Counter</td><td>workflow</td><td>{@link #timerFired} (live only)</td></tr>
  *   <tr><td>{@code maestro.recovery.scanned}</td><td>Counter</td><td>—</td><td>{@link #recoveryPass}</td></tr>
  *   <tr><td>{@code maestro.recovery.adopted}</td><td>Counter</td><td>—</td><td>{@link #recoveryPass}</td></tr>
+ *   <tr><td>{@code maestro.retention.purged}</td><td>Counter</td><td>kind=instance|event|signal|timer</td><td>{@link #retentionPass}</td></tr>
+ *   <tr><td>{@code maestro.retention.sweeps}</td><td>Counter</td><td>—</td><td>{@link #retentionPass}</td></tr>
  *   <tr><td>{@code maestro.lock.renew.failures}</td><td>Counter</td><td>outcome=error|lost</td><td>{@link #instanceLockRenewFailed}/{@link #instanceLockLost}</td></tr>
  *   <tr><td>{@code maestro.standdown}</td><td>Counter</td><td>reason</td><td>{@link #standDown}</td></tr>
  * </table>
@@ -81,6 +84,7 @@ public final class MicrometerEngineObserver implements EngineObserver {
     private static final String TAG_ACTIVITY = "activity";
     private static final String TAG_SIGNAL = "signal";
     private static final String TAG_OUTCOME = "outcome";
+    private static final String TAG_KIND = "kind";
     private static final String TAG_REASON = "reason";
 
     private static final String UNKNOWN_WORKFLOW_TYPE = "unknown";
@@ -162,6 +166,21 @@ public final class MicrometerEngineObserver implements EngineObserver {
                 Counter.builder("maestro.recovery.scanned").register(registry).increment(scanned));
         safely("maestro.recovery.adopted", () ->
                 Counter.builder("maestro.recovery.adopted").register(registry).increment(adopted));
+    }
+
+    @Override
+    public void retentionPass(PurgeResult purged) {
+        safely("maestro.retention.sweeps", () ->
+                Counter.builder("maestro.retention.sweeps").register(registry).increment());
+        purged("instance", purged.instances());
+        purged("event", purged.events());
+        purged("signal", purged.signals());
+        purged("timer", purged.timers());
+    }
+
+    private void purged(String kind, int count) {
+        safely("maestro.retention.purged", () ->
+                Counter.builder("maestro.retention.purged").tag(TAG_KIND, kind).register(registry).increment(count));
     }
 
     @Override

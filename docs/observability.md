@@ -67,7 +67,7 @@ site.
 
 ## Meter catalog
 
-Fourteen meters: **11 counters and 1 timer**, registered by
+Sixteen meters: **13 counters and 1 timer**, registered by
 `MicrometerEngineObserver`, plus **2 gauges**, registered by
 `MaestroEngineGauges` — both in the `io.b2mash.maestro.spring.observe` package
 of `maestro-spring-boot-starter`.
@@ -90,11 +90,15 @@ timer ID. `workflowFailed`'s exception type is deliberately *not* a tag either
 | `maestro.timer.fired` | `workflow` | workflow type | A durable timer fires live |
 | `maestro.recovery.scanned` | *(none)* | — | Incremented by the number of instances a recovery pass scanned |
 | `maestro.recovery.adopted` | *(none)* | — | Incremented by the number of instances that pass adopted |
+| `maestro.retention.sweeps` | *(none)* | — | A retention sweep finished on this node as the elected leader (non-leaders never increment it) |
+| `maestro.retention.purged` | `kind` | `instance`, `event`, `signal`, `timer` | Incremented by the number of rows of that kind a retention sweep deleted |
 | `maestro.lock.renew.failures` | `outcome` | `error`, `lost` | Instance-lock renewal errored (`error`) or the lock was found gone (`lost`) |
 | `maestro.standdown` | `reason` | `unknown_event_type`, `unknown_event_payload`, `nondeterministic_history`, `stale_run`, `lease_fenced` | A local run stood down without recording a workflow outcome |
 
-`maestro.recovery.scanned` and `maestro.recovery.adopted` are `increment(n)`
-calls, not `increment()` — one recovery pass moves them by the pass's counts.
+`maestro.recovery.scanned`, `maestro.recovery.adopted` and
+`maestro.retention.purged` are `increment(n)` calls, not `increment()` — one
+recovery pass or retention sweep moves them by the pass's counts (so a leader
+that found nothing to purge registers the four `kind` series at zero).
 
 The `reason` tag value set is closed at five, mapped from
 `io.b2mash.maestro.core.observe.StandDownReason`:
@@ -544,8 +548,8 @@ their parenting are unaffected.
 
 ## Writing your own observer
 
-`EngineObserver` is a plain interface in `maestro-core` with 23 `default`
-methods — 22 no-ops, plus `wrapActivityAttempt`, whose default returns the
+`EngineObserver` is a plain interface in `maestro-core` with 24 `default`
+methods — 23 no-ops, plus `wrapActivityAttempt`, whose default returns the
 attempt unchanged — so implement only what you need, and register the bean; the
 starter picks up every `EngineObserver` in the context.
 
@@ -560,6 +564,7 @@ The callback surface, grouped:
 | Timers | `timerScheduled(t, replayed)`, `timerFired(t, replayed)`, `timerCancelled(t, replayed)` |
 | Instance lock | `instanceLockAcquired`, `instanceLockRenewFailed`, `instanceLockLost` |
 | Recovery | `recoveryPass(scanned, adopted)` |
+| Retention | `retentionPass(PurgeResult)` — once per sweep this node ran as the elected leader; non-leaders emit nothing |
 | Stand-down | `standDown(StandDownReason, workflowId, detail)` |
 | Run abandonment | `runAbandoned(w, AbandonReason)` — `SHUTDOWN`, `TERMINATED`, `CONVERGED`, `TERMINAL_WRITE_FAILED`, `NODE_ERROR` |
 
