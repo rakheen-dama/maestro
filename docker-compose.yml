@@ -85,6 +85,16 @@ services:
         $$KAFKA --create --if-not-exists --topic maestro.admin.events          --partitions 1 --replication-factor 1
         $$KAFKA --create --if-not-exists --topic payments.requests             --partitions 3 --replication-factor 1
         $$KAFKA --create --if-not-exists --topic payments.results              --partitions 3 --replication-factor 1
+        # .DLT companions: Maestro's redelivery parks an exhausted record on
+        # <topic>.DLT for every topic a Maestro consumer subscribes to — the two
+        # engine signal topics and order-service's @MaestroSignalListener on
+        # payments.results — and each service's startup topic verification
+        # (maestro.messaging.topics.verify-on-startup=fail) refuses to start
+        # without them. payments.requests.DLT is created for symmetry.
+        $$KAFKA --create --if-not-exists --topic maestro.signals.order-service.DLT  --partitions 3 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic maestro.signals.payment-gateway.DLT --partitions 3 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic payments.requests.DLT             --partitions 3 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic payments.results.DLT              --partitions 3 --replication-factor 1
         echo "All Kafka topics created successfully."
 
   # ── Application Services ────────��──────────────────────────────────
