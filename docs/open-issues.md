@@ -10,6 +10,10 @@ was already resolved, issues 11 and 12 remain open by design (see §5,
 **Updated again:** 2026-07-30 — issues 13, 14, and 15 are now resolved too
 (branch `worktree-issues-13-15`); see each section for commits and pinning
 tests.
+**Updated:** 2026-11-04 — Issue 11 (no lock fencing) is **fixed** on branch
+`feat/lease-fencing` (store migration V6, `lease_epoch` validated on every
+run-scoped write); only Issue 12 remains open by design. Its section keeps the
+chaos evidence, which still measures the residual one-step side-effect window.
 
 This document is self-contained. You should not need to read the PR, the commit
 history, or `docs/test-plan.md` to act on anything here — though
@@ -202,8 +206,9 @@ module, then carry on. Never work around a proven engine bug inside a test.
 ## 4. Issue index
 
 **All of issues 1–10 are now resolved** (see each section below for the
-outcome, commit references, and pinning tests). Issues 11 and 12 remain open
-by deliberate decision — see "Known limitations" at the end of §5. Three new
+outcome, commit references, and pinning tests). Issue 12 remains open by
+deliberate decision — see "Known limitations" at the end of §5; Issue 11 sat
+beside it until the lease-epoch fence closed it on 2026-11-04. Three new
 issues (13–15), found while doing this work, were opened along the way and
 are **now resolved too** (see each section below). A fourth (16), found
 during the final whole-branch review of 13–15, is **guarded off — ruled
@@ -260,7 +265,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [8](#issue-8) | Health indicator is documented but does not exist | Library gap (or docs bug) | Low | **Resolved** |
 | [9](#issue-9) | Activity lock prefix ignores `maestro.lock.key-prefix` | Library defect | Low | **Resolved** |
 | [10](#issue-10) | Four modules have no tests at all | Testing gap | Medium | **Resolved** |
-| [11](#issue-11) | Lost locks don't stop the workflow (no fencing) | Library gap — **known limitation** | Medium | Open, by design |
+| [11](#issue-11) | Lost locks don't stop the workflow (no fencing) | Library gap | Medium | **Fixed** — lease epoch fences every run-scoped write (V6) |
 | [12](#issue-12) | Recovery polling doesn't scale | Library gap — **known limitation** | Low now | Open, by design |
 | [13](#issue-13) | `CANCELLED` timers can strand a replaying workflow | Library defect | Medium | **Resolved** |
 | [14](#issue-14) | `SagaManager` re-appends `COMPENSATION_STARTED` on replay | Library gap | Low | **Resolved** |
@@ -815,36 +820,89 @@ added to this document.
 
 ### Known limitations (open by design)
 
-Issues 11 and 12 were deliberately left open rather than fixed in this
-release. Both are accepted trade-offs, not oversights: closing either is a
-real design/SPI change, not a quick patch, and neither blocks a release —
-they're documented so operators know the boundaries.
+Issue 12 was deliberately left open rather than fixed: an accepted trade-off,
+not an oversight — closing it is a real design change, not a quick patch, and
+it does not block a release. It is documented so operators know the boundary.
+Issue 11 sat in this section for the same reason until 2026-11-04, when the
+lease-epoch fence closed it; its entry is kept below, evidence and all,
+because the chaos measurements it carries are still the best data on how
+often the remaining side-effect window is hit.
 
 ### Issue 11 — Lost locks don't stop the workflow (no fencing) {#issue-11}
 
-**What's wrong.** `LockHandle` carries a fencing token, and the SPI documents
-that downstream operations "should" validate it — but nothing does. If a node
-loses its instance lock (a GC pause longer than the TTL, say), the lock renewer
-logs an error and drops the handle, and the workflow keeps running.
+**Status: fixed (2026-11-04).** Every run-scoped store write is fenced on a
+lease epoch carried by the instance row. The "done when" below is met:
+`MultiNodeFencingIT` has a node with a real, expired Postgres lock resume into
+the adopter's run and proves its write is rejected by the fence (sequence 2
+still empty at that moment — the unique index was never consulted), exactly
+one `LEASE_FENCED` stand-down, no step three, no failure, and the adopter
+completing alone with one event per sequence.
 
-**Why it matters.** Two nodes can then execute the same workflow. Duplicate
-*persisted results* are still prevented by the unique event index — the loser's
-writes fail and it stands down, leaving the winner's results as the record
-(since spec row C5 it no longer adopts the winner's value and carries on).
-Duplicate *side effects* are not prevented: both nodes can call a payment API.
+**What was wrong.** `LockHandle` carries a fencing token, and the SPI documented
+that downstream operations "should" validate it — but nothing did. If a node
+lost its instance lock (a GC pause longer than the TTL, say), the lock renewer
+logged an error and dropped the handle, and the workflow kept running.
 
-This is currently **accepted by design** (the architecture doc says split-brain
-is tolerated until fencing lands, and activities must be idempotent). Treat it
-as a known limitation to close deliberately, not a bug report.
+**Why it mattered.** Two nodes could then execute the same workflow. Duplicate
+*persisted results* were prevented only by the unique event index — the loser's
+writes failed and it stood down, leaving the winner's results as the record
+(since spec row C5 it no longer adopted the winner's value and carried on).
+Duplicate *side effects* were not prevented: both nodes could call a payment
+API, for every step the stale node reached before its first collision.
 
-**What a fix looks like.** Validate the fencing token in the store on writes:
-carry it on the instance row, and reject a write from a stale token. That's a
-`WorkflowStore` SPI change and touches every implementation, hence the size.
+**The fix (V6, `feat/lease-fencing`).**
+- `maestro_workflow_instance.lease_epoch BIGINT NOT NULL DEFAULT 0`
+  (`V6__instance_lease_epoch.sql`; metadata-only on PG11+; pre-V6 rows read
+  back 0). Carried on `WorkflowInstance.leaseEpoch()` and
+  `WorkflowContext.lease()` (a `RunLease(instanceId, epoch)`).
+- **Adoption bumps the epoch.** `WorkflowExecutor.launchWorkflow`'s resume
+  path, after its terminal re-check, rewrites the row with `leaseEpoch + 1`
+  under the version CAS; a CAS loser releases its lock and yields like
+  `HELD_ELSEWHERE`. Every adoption bumps, `NO_BACKEND` included. Retry and
+  terminate rewrite the epoch they read; a fresh start writes 0.
+- **Seven fenced `WorkflowStore` overloads** taking the `RunLease`, as
+  `default` methods delegating to the unfenced forms (a store that does not
+  override them is unfenced; the ~23 test stores compile untouched). Loud:
+  `appendEvent`, `completeInstance`, `updateInstance`, `saveTimer` throw
+  `FencedWriteException` and write nothing. Silent: `markSignalConsumed`,
+  `markTimerFired`, `markTimerCancelled` return `false` (each follows a loud
+  fenced append in the same step). `AbstractJdbcWorkflowStore` implements them
+  as `INSERT ... SELECT ... FROM maestro_workflow_instance WHERE id = ? AND
+  lease_epoch = ?` + `fenceRowLockClause()` (Postgres `FOR SHARE`), `AND
+  lease_epoch = ?` on the instance CAS with a `(version, lease_epoch)` probe
+  on zero rows, and `AND EXISTS (...)` on the flips. `InMemoryWorkflowStore`
+  checks under the per-workflow monitor.
+- **Every engine write site passes `ctx.lease()`** and marks the run `STALE`
+  before rethrowing (so a swallowed fence still stops the run at its next live
+  step): `ActivityInvocationHandler`, `DefaultWorkflowOperations`,
+  `SignalManager`, `SagaManager` (with an explicit arm ahead of the
+  `catch (Exception)` that would otherwise have swallowed it),
+  `InstanceStatusWriter`'s context overload, `transitionToTerminal`.
+  `WorkflowExecutor` routes `FencedWriteException` through the stale-run
+  stand-down arms as `StandDownReason.LEASE_FENCED`
+  (`maestro.standdown{reason=lease_fenced}`).
+- **Proactive courtesy.** `WorkflowInstanceLockManager.onLockLost` lets the
+  executor mark a run stale as soon as a renewal reports the lock gone, so it
+  stands down (`stale_run`, `instance lock lost`) before attempting a write the
+  fence would reject. The fence, not the callback, is the guarantee.
+
+**What is still not bounded, deliberately.** The one activity already
+executing on the stale node at the instant of adoption runs to completion
+there (its result is then fenced) while the adopter runs it again. The fence
+bounds *persisted progress*; activities must remain idempotent. Everything
+below — the chaos measurements of how often that window is actually hit —
+still applies to this residual window, which is why it is kept.
+
+**What a fix looked like (as written before it landed).** Validate the
+fencing token in the store on writes: carry it on the instance row, and reject
+a write from a stale token. That's a `WorkflowStore` SPI change and touches
+every implementation, hence the size.
 
 **Done when.** A node that has lost its lock cannot persist workflow progress,
-with a multi-node test proving the stale node is fenced out.
+with a multi-node test proving the stale node is fenced out. *(Met —
+`MultiNodeFencingIT`.)*
 
-**Measured evidence (multi-instance chaos cycle, 2026-08-01).** The chaos
+**Measured evidence (multi-instance chaos cycle, 2026-08-01; pre-fence).** The chaos
 harness (`.superpowers/sdd/multi-instance/chaos-harness-design.md`) drives a
 real six-node loan-origination cluster and mandates at least 2 loan-node
 `PAUSE_RESUME` actions (`docker pause`/`unpause` past the 30s instance-lock
@@ -2864,10 +2922,11 @@ do Issue 10's RabbitMQ suite as part of it, since you'll be touching that code.
 and remove documented-but-false behaviour.
 
 **Later, deliberately:** Issues 11 and 12, both of which are architectural and
-want measurements or an SPI change rather than a quick patch — still open,
-still deliberate.
+want measurements or an SPI change rather than a quick patch. Issue 11 got its
+SPI change on 2026-11-04 (the lease epoch, V6 — see its section); Issue 12 is
+still open, still deliberate.
 
-**What's left:** the two deliberate known limitations, plus one guarded gap.
+**What's left:** the one deliberate known limitation (Issue 12), plus one guarded gap.
 Issues 13, 14, and 15 — none were on the original plan; all three were found
 as a side effect of fixing something else nearby — are now resolved too (see
 each section above for commits and pinning tests). Issue 16 — found during
@@ -2883,10 +2942,11 @@ routine rolling restart, and a transient store outage during a parked
 wake-recheck probe misrecorded as workflow failure), are also resolved (see
 their sections) — Issue 20 in particular surfaced only in the PR-gate
 re-proof run for Issue 19's own fix, the fourth "graceful condition recorded
-as failure" defect the cycle found. Issues 11 and 12 remain open by
-deliberate design decision, but both now carry measured evidence from the
-same cycle — Issue 11's split-brain duplicate-side-effect count and Issue
-12's benchmark — appended to their sections (see "Known limitations" below).
+as failure" defect the cycle found. Issues 11 and 12 remained open by
+deliberate design decision at that point (Issue 11 has since been fixed,
+2026-11-04), but both carry measured evidence from the same cycle — Issue
+11's split-brain duplicate-side-effect count and Issue 12's benchmark —
+appended to their sections (see "Known limitations" below).
 
 **From the 2026-10-24 bug-fix cycle:** Issue 32 — small, in the signal hot
 path, the same shape as Issue 3, and the only one observed failing a workflow

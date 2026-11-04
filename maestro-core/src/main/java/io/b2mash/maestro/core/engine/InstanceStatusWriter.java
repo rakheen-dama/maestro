@@ -1,11 +1,14 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.exception.FencedWriteException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.StaleRunException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.spi.RunLease;
 import io.b2mash.maestro.core.spi.WorkflowStore;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -137,10 +140,15 @@ public final class InstanceStatusWriter {
      */
     static void write(WorkflowStore store, WorkflowContext ctx, WorkflowStatus newStatus) {
         try {
-            write(store, ctx.workflowId(), newStatus);
+            write(store, ctx.workflowId(), newStatus, ctx.lease());
         } catch (StaleRunException stale) {
             ctx.cancellation().requestStale(stale.detail());
             throw stale;
+        } catch (FencedWriteException fenced) {
+            // Issue 11: the store fenced this run's status write — another node
+            // has adopted the workflow. Same stickiness as the stale case.
+            ctx.cancellation().requestStale(fenced.staleDetail());
+            throw fenced;
         }
     }
 
@@ -148,6 +156,11 @@ public final class InstanceStatusWriter {
      * Moves a workflow to a non-terminal status, standing down if the instance
      * has since reached a terminal state, and retrying a lost compare-and-set
      * against a fresh read rather than turning it into a workflow outcome.
+     *
+     * <p>This overload is <em>unfenced</em>: it is for writers that are not a
+     * running workflow's own thread. A run's own writes go through the
+     * {@link #write(WorkflowStore, WorkflowContext, WorkflowStatus)} overload,
+     * which carries the run's lease.
      *
      * @param store      the workflow store to write through
      * @param workflowId the workflow's business ID
@@ -166,6 +179,17 @@ public final class InstanceStatusWriter {
      *                                     stand down
      */
     static void write(WorkflowStore store, String workflowId, WorkflowStatus newStatus) {
+        write(store, workflowId, newStatus, null);
+    }
+
+    /**
+     * The shared loop: with a lease, the compare-and-set is the store's fenced
+     * form and a {@link FencedWriteException} propagates untouched — it is not
+     * a conflict to retry against a fresh read, the row now belongs to another
+     * node's run.
+     */
+    private static void write(WorkflowStore store, String workflowId, WorkflowStatus newStatus,
+                              @Nullable RunLease lease) {
         for (var attempt = 1; ; attempt++) {
             var instance = store.getInstance(workflowId);
             if (instance.isEmpty()) {
@@ -185,11 +209,16 @@ public final class InstanceStatusWriter {
                 throw new StaleRunException(workflowId, current.status(), "status write of " + newStatus);
             }
             try {
-                store.updateInstance(current.toBuilder()
+                var next = current.toBuilder()
                         .status(newStatus)
                         .updatedAt(Instant.now())
                         .version(current.version() + 1)
-                        .build());
+                        .build();
+                if (lease != null) {
+                    store.updateInstance(next, lease);
+                } else {
+                    store.updateInstance(next);
+                }
                 return;
             } catch (OptimisticLockException e) {
                 if (attempt >= STATUS_WRITE_ATTEMPTS) {

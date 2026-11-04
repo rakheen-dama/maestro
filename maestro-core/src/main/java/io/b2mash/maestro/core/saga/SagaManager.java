@@ -5,6 +5,7 @@ import io.b2mash.maestro.core.context.WorkflowContextInternals;
 import io.b2mash.maestro.core.context.WorkflowMDC;
 import io.b2mash.maestro.core.exception.CompensationException;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
+import io.b2mash.maestro.core.exception.FencedWriteException;
 import io.b2mash.maestro.core.exception.MaestroControlFlowError;
 import io.b2mash.maestro.core.exception.NodeErrors;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
@@ -438,7 +439,7 @@ public final class SagaManager {
                 appendEvent(ctx, stepBaseSeq, EventType.COMPENSATION_STEP_COMPLETED, entry.stepName(), null);
                 publishLifecycleEvent(ctx, entry.stepName(),
                         LifecycleEventType.COMPENSATION_STEP_COMPLETED);
-            } catch (DuplicateEventException | StaleRunException staleRun) {
+            } catch (DuplicateEventException | StaleRunException | FencedWriteException staleRun) {
                 // Issue 18: an append collision here means a concurrent runner
                 // owns this workflow's compensation progress (the replay-skip
                 // guard above read the store before the winner's event landed).
@@ -448,12 +449,18 @@ public final class SagaManager {
                 // (WorkflowExecutor leaves the instance COMPENSATING and
                 // recoverable; the winner's run finishes the job) — the exact
                 // treatment ExecutorShutdownException gets here, and ahead of
-                // catch (Exception e) because both are MaestroExceptions. The
-                // collision may come from the action itself: since C5 a
+                // catch (Exception e) because all three are MaestroExceptions.
+                // The collision may come from the action itself: since C5 a
                 // compensation activity that loses its append race propagates
                 // the duplicate instead of adopting the winner's result. A
                 // StaleRunException (a status write inside the action finding
-                // the row finalised by another runner) is the same signal.
+                // the row finalised by another runner) is the same signal, and
+                // so is a FencedWriteException (Issue 11): the store refused
+                // this entry's memo — or a write inside the action — because
+                // another node has adopted the workflow and owns the unwind.
+                // Recording it as a step failure would let this fenced run
+                // carry on to the next entry's ACTION, a side effect the
+                // adopting node also runs.
                 throw staleRun;
             } catch (Exception e) {
                 logger.error("Compensation {} '{}' failed for workflow '{}': {}",
@@ -682,9 +689,12 @@ public final class SagaManager {
             // Rethrow so WorkflowExecutor stands the run down (instance stays
             // COMPENSATING, recoverable; the winner finishes the job). A
             // StaleRunException — a branch's status write finding the row
-            // finalised by another runner — is the same signal.
+            // finalised by another runner — is the same signal, and so is a
+            // FencedWriteException (Issue 11): the store refused a branch's
+            // memo because another node has adopted the workflow.
             var error = errorRef.get();
-            if (error instanceof DuplicateEventException || error instanceof StaleRunException) {
+            if (error instanceof DuplicateEventException || error instanceof StaleRunException
+                    || error instanceof FencedWriteException) {
                 throw (RuntimeException) error;
             }
         }
@@ -800,8 +810,16 @@ public final class SagaManager {
                         .updatedAt(Instant.now())
                         .version(latest.version() + 1)
                         .build();
-                store.updateInstance(compensating);
+                store.updateInstance(compensating, ctx.lease());
                 return;
+            } catch (FencedWriteException fenced) {
+                // Issue 11: another node adopted this workflow while this run
+                // was deciding to compensate. Not a conflict to retry against a
+                // fresh read — the adopting node owns the unwind. Sticky, then
+                // propagate: the executor stands the run down as LEASE_FENCED
+                // with nothing written and no compensation run here.
+                ctx.cancellation().requestStale(fenced.staleDetail());
+                throw fenced;
             } catch (OptimisticLockException e) {
                 if (attempt == InstanceStatusWriter.STATUS_WRITE_ATTEMPTS) {
                     // Exhaustion: this write gates ENTRY into the compensation
@@ -893,10 +911,16 @@ public final class SagaManager {
             ));
             appendEvent(ctx, seq, EventType.COMPENSATION_STEP_FAILED, stepName, errorPayload);
             publishLifecycleEvent(ctx, stepName, LifecycleEventType.COMPENSATION_STEP_FAILED);
-        } catch (DuplicateEventException staleRun) {
+        } catch (DuplicateEventException | FencedWriteException staleRun) {
             // Issue 18: the winner already recorded an outcome at this
             // sequence — this run's view of the step is stale. Stand down
             // rather than mislabelling the collision as a recorded failure.
+            // Issue 11: a fenced append is the same signal from the lease
+            // fence (another node adopted the workflow). Both MUST be rethrown
+            // ahead of catch (Exception) below, which would otherwise swallow
+            // them and let the sequential loop — and executeParallel's failure
+            // collection — carry on running compensation ACTIONS the adopting
+            // node also runs.
             throw staleRun;
         } catch (Exception e) {
             logger.warn("Failed to record compensation step failure for '{}' in workflow '{}'",
@@ -938,7 +962,16 @@ public final class SagaManager {
                     payload,
                     Instant.now()
             );
-            store.appendEvent(event);
+            store.appendEvent(event, ctx.lease());
+        } catch (FencedWriteException fenced) {
+            // Issue 11: the store fenced this run — another node adopted the
+            // workflow. This arm MUST sit ahead of catch (Exception) below,
+            // which would otherwise swallow the fence as "an append problem"
+            // and let a fenced run carry on executing compensation ACTIONS
+            // the adopting node also runs. Sticky, then propagate: the whole
+            // attempt stands down at the executor as LEASE_FENCED.
+            ctx.cancellation().requestStale(fenced.staleDetail());
+            throw fenced;
         } catch (DuplicateEventException staleRun) {
             // Issue 18: a compensation-phase append that hits the store's
             // (instance, sequence) unique guard means a concurrent runner owns

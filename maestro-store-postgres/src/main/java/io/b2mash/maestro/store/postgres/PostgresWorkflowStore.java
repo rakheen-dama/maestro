@@ -73,6 +73,20 @@ public final class PostgresWorkflowStore extends AbstractJdbcWorkflowStore {
     }
 
     /**
+     * Returns {@code FOR SHARE}: the fenced {@code INSERT ... SELECT} of an
+     * event or timer takes a share lock on the instance row it checked, so a
+     * concurrent adoption bump ({@code UPDATE ... SET lease_epoch = ...}) either
+     * waits for the insert to commit or has already committed — in which case
+     * the {@code lease_epoch = ?} predicate sees the new epoch and the insert
+     * writes nothing. Without the lock, a bump could commit between the check
+     * and the insert's commit on a weaker isolation level.
+     */
+    @Override
+    protected String fenceRowLockClause() {
+        return " FOR SHARE";
+    }
+
+    /**
      * Sets a JSON parameter using Postgres {@link PGobject} with type {@code jsonb}.
      *
      * <p>This ensures the PostgreSQL JDBC driver sends the correct wire-protocol

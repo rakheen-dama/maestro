@@ -8,6 +8,7 @@ import io.b2mash.maestro.core.exception.ActivityExecutionException;
 import io.b2mash.maestro.core.exception.ActivityTimeoutException;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
+import io.b2mash.maestro.core.exception.FencedWriteException;
 import io.b2mash.maestro.core.exception.SerializationException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
@@ -724,6 +725,10 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * Appends an event to the memoization log; a lost append race stands this
      * run down.
      *
+     * @throws FencedWriteException    if the instance's lease epoch has moved
+     *                                 past this run's (another node adopted the
+     *                                 workflow) — nothing written, the run stands
+     *                                 down as {@code LEASE_FENCED}
      * @throws DuplicateEventException if a concurrent runner already persisted
      *                                 an event at {@code seq} — rethrown after
      *                                 the winner's type has been checked, so
@@ -748,16 +753,29 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         );
 
         try {
-            store.appendEvent(event);
+            store.appendEvent(event, ctx.lease());
+        } catch (FencedWriteException fenced) {
+            // Issue 11: the instance row's lease epoch has moved past this
+            // run's — another node adopted the workflow (this node lost or
+            // outlived its instance lock) and the store refused to persist this
+            // result. Nothing was written. Sticky, like the collision below, so
+            // workflow code that swallows it still stands down at its next
+            // live step; the executor reports LEASE_FENCED.
+            logger.warn("Workflow '{}': {} append for '{}' at seq {} was fenced — another node has adopted "
+                            + "this workflow; standing this run down ({})",
+                    ctx.workflowId(), type, stepName, seq, fenced.staleDetail());
+            ctx.cancellation().requestStale(fenced.staleDetail());
+            throw fenced;
         } catch (DuplicateEventException e) {
             // Lost the append race: a concurrent runner already persisted an
             // outcome at this sequence (C5). Its payload is never adopted — the
             // winner is alive and ahead — but its TYPE is still checked first
             // (RULING 9): reached with no author error, from the engine's own
-            // tolerated state (locks are best-effort), the winner may be a
-            // newer node whose event type this build does not define, and that
-            // stands down as UNKNOWN_EVENT_TYPE — the reason an operator needs
-            // to see — rather than as a plain stale run.
+            // tolerated state (a current lease but a peer's event already in
+            // the slot), the winner may be a newer node whose event type this
+            // build does not define, and that stands down as UNKNOWN_EVENT_TYPE
+            // — the reason an operator needs to see — rather than as a plain
+            // stale run.
             UnknownHistoryGuard.requireKnown(
                     store.getEventBySequence(ctx.workflowInstanceId(), seq), ctx.workflowId());
             logger.warn("Workflow '{}': {} append for '{}' at seq {} collided with a concurrent runner's "

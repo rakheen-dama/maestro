@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.spi.RunLease;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.test.InMemoryWorkflowStore;
 
@@ -114,5 +115,42 @@ abstract class DelegatingWorkflowStore implements WorkflowStore {
     @Override
     public boolean markTimerCancelled(UUID timerId) {
         return delegate.markTimerCancelled(timerId);
+    }
+
+    // ── fenced overloads: forwarded, so the delegate's fencing is kept ───
+
+    @Override
+    public void appendEvent(WorkflowEvent event, RunLease lease) {
+        delegate.appendEvent(event, lease);
+    }
+
+    @Override
+    public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent, RunLease lease) {
+        return delegate.completeInstance(terminal, terminalEvent, lease);
+    }
+
+    @Override
+    public void updateInstance(WorkflowInstance instance, RunLease lease) {
+        delegate.updateInstance(instance, lease);
+    }
+
+    @Override
+    public void saveTimer(WorkflowTimer timer, RunLease lease) {
+        delegate.saveTimer(timer, lease);
+    }
+
+    @Override
+    public boolean markSignalConsumed(UUID signalId, RunLease lease) {
+        return delegate.markSignalConsumed(signalId, lease);
+    }
+
+    @Override
+    public boolean markTimerFired(UUID timerId, RunLease lease) {
+        return delegate.markTimerFired(timerId, lease);
+    }
+
+    @Override
+    public boolean markTimerCancelled(UUID timerId, RunLease lease) {
+        return delegate.markTimerCancelled(timerId, lease);
     }
 }

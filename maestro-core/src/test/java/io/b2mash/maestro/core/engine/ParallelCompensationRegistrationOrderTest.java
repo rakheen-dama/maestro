@@ -200,6 +200,27 @@ class ParallelCompensationRegistrationOrderTest extends ParallelSagaTestSupport 
     }
 
     @Test
+    @DisplayName("a FencedWriteException in a later branch wins over a plain failure in an earlier one (Issue 11)")
+    void fencedWriteWinsOverEarlierBranchFailure() {
+        freshRun();
+        var b1Done = new CountDownLatch(1);
+        Callable<String> b0 = () -> {
+            await(b1Done);
+            throw new IllegalStateException("plain failure in branch 0");
+        };
+        Callable<String> b1 = () -> {
+            b1Done.countDown();
+            throw new io.b2mash.maestro.core.exception.FencedWriteException(
+                    java.util.UUID.randomUUID(), 0, "appendEvent");
+        };
+
+        assertThrows(io.b2mash.maestro.core.exception.FencedWriteException.class,
+                () -> inScope(() -> ops.parallel(List.of(b0, b1))),
+                "index order would record branch 0's failure FAILED and compensate; the fence must reach "
+                        + "the executor's LEASE_FENCED stand-down arm instead");
+    }
+
+    @Test
     @DisplayName("a node error (NoClassDefFoundError) in a later branch wins over a plain failure in an earlier one, "
             + "rethrown raw (round 2, R33)")
     void nodeErrorWinsOverEarlierBranchFailure() {

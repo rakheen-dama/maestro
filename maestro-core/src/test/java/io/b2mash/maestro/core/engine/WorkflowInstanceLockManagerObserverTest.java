@@ -102,6 +102,49 @@ class WorkflowInstanceLockManagerObserverTest {
                 assertFalse(manager.isHeld("wf-lost"), "a lost lock's handle must be dropped"));
     }
 
+    @Test
+    @DisplayName("lost ownership invokes the onLockLost callback with the workflow ID, once (Issue 11 proactive stand-down)")
+    void lostOwnershipInvokesCallback() {
+        var observer = new RecordingEngineObserver();
+        var lock = new ScriptedLock();
+        var lostCallbacks = new CopyOnWriteArrayList<String>();
+        manager = new WorkflowInstanceLockManager(lock, "svc",
+                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
+                Duration.ofSeconds(30), Duration.ofMillis(50), observer);
+        manager.onLockLost(lostCallbacks::add);
+
+        assertEquals(WorkflowInstanceLockManager.Acquisition.ACQUIRED, manager.tryAcquire("wf-cb"));
+        lock.renewMode.set(RenewMode.LOST);
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertEquals(List.of("wf-cb"), lostCallbacks, "the executor must be told which run to stand down"));
+        // The handle was dropped with the first lost renewal, so later cycles
+        // have nothing to renew and the callback is not repeated.
+        await().during(Duration.ofMillis(200)).atMost(Duration.ofSeconds(2))
+                .until(() -> lostCallbacks.size() == 1);
+        assertEquals(List.of("wf-cb"), observer.lockLost(), "the observer callback is still emitted alongside");
+    }
+
+    @Test
+    @DisplayName("a throwing onLockLost callback is contained — the renewer keeps renewing every other lock")
+    void throwingLockLostCallbackIsContained() {
+        var observer = new RecordingEngineObserver();
+        var lock = new ScriptedLock();
+        manager = new WorkflowInstanceLockManager(lock, "svc",
+                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
+                Duration.ofSeconds(30), Duration.ofMillis(50), observer);
+        manager.onLockLost(_ -> { throw new IllegalStateException("executor callback blew up"); });
+
+        assertEquals(WorkflowInstanceLockManager.Acquisition.ACQUIRED, manager.tryAcquire("wf-x"));
+        assertEquals(WorkflowInstanceLockManager.Acquisition.ACQUIRED, manager.tryAcquire("wf-y"));
+        lock.renewMode.set(RenewMode.LOST);
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
+            assertFalse(manager.isHeld("wf-x"));
+            assertFalse(manager.isHeld("wf-y"), "wf-y must still be processed after the callback threw for wf-x");
+        });
+    }
+
     // ── A throwing observer must never be mistaken for a backend failure ──
 
     @Test

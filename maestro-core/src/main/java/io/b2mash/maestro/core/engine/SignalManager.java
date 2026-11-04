@@ -3,6 +3,7 @@ package io.b2mash.maestro.core.engine;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.context.WorkflowContextInternals;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
+import io.b2mash.maestro.core.exception.FencedWriteException;
 import io.b2mash.maestro.core.exception.SerializationException;
 import io.b2mash.maestro.core.exception.SignalTimeoutException;
 import io.b2mash.maestro.core.exception.StaleRunException;
@@ -571,7 +572,7 @@ final class SignalManager {
                 // TestWorkflowEnvironment — so advanceTime(timeout) is exact.
                 deadline = instantSource.instant().plus(timeout).truncatedTo(ChronoUnit.MICROS);
                 timerDbId = UUID.randomUUID();
-                store.saveTimer(new WorkflowTimer(timerDbId, ctx.workflowInstanceId(), ctx.workflowId(),
+                saveDeadlineRow(ctx, new WorkflowTimer(timerDbId, ctx.workflowInstanceId(), ctx.workflowId(),
                         timerId, deadline, TimerStatus.PENDING, Instant.now()));
             }
             appendEvent(ctx, seq, EventType.TIMER_SCHEDULED, stepName, serializer.serialize(
@@ -672,11 +673,16 @@ final class SignalManager {
     private @Nullable UUID rearmDeadlineRow(WorkflowContext ctx, String timerId, Instant deadline) {
         var rowId = UUID.randomUUID();
         try {
-            store.saveTimer(new WorkflowTimer(rowId, ctx.workflowInstanceId(), ctx.workflowId(),
+            saveDeadlineRow(ctx, new WorkflowTimer(rowId, ctx.workflowInstanceId(), ctx.workflowId(),
                     timerId, deadline, TimerStatus.PENDING, Instant.now()));
             logger.warn("Workflow '{}' await deadline row '{}' was missing on replay — re-armed it at the "
                     + "memoized deadline {}", ctx.workflowId(), timerId, deadline);
             return rowId;
+        } catch (FencedWriteException fenced) {
+            // Not a blip to tolerate: another node owns this workflow now, and
+            // saveDeadlineRow has already marked the run stale. Propagate so the
+            // run stands down instead of parking on a deadline it may not arm.
+            throw fenced;
         } catch (RuntimeException e) {
             logger.warn("Workflow '{}' await deadline row '{}' is missing and could not be re-armed — "
                             + "the memoized deadline {} still applies on the executor's instant source: {}",
@@ -764,7 +770,7 @@ final class SignalManager {
                 var now = instantSource.instant();
                 if (rowStatus != TimerStatus.PENDING || !now.isBefore(deadline)) {
                     if (rowStatus == TimerStatus.PENDING && timerDbId != null) {
-                        selfFire(workflowId, signalName, timerDbId);
+                        selfFire(ctx, signalName, timerDbId);
                     }
                     // R39: a store error on this re-read is a blip, not a
                     // workflow failure — it must not escape into workflow code
@@ -865,12 +871,15 @@ final class SignalManager {
      * the truth, a row left {@code PENDING} only fires later for nobody, and a
      * store blip here must not fail the run (R39).
      */
-    private void selfFire(String workflowId, String signalName, UUID timerDbId) {
+    private void selfFire(WorkflowContext ctx, String signalName, UUID timerDbId) {
         try {
-            store.markTimerFired(timerDbId);
+            // Fenced on the run's lease: a stale run must not retire a deadline
+            // the adopting node's run is still parked on. A fence reads as
+            // false here — the SIGNAL_TIMEOUT append that follows is the loud one.
+            store.markTimerFired(timerDbId, ctx.lease());
         } catch (RuntimeException e) {
             logger.warn("Could not self-fire the deadline row of workflow '{}' signal '{}' — the row "
-                    + "fires later for nobody: {}", workflowId, signalName, e.toString());
+                    + "fires later for nobody: {}", ctx.workflowId(), signalName, e.toString());
         }
     }
 
@@ -885,7 +894,9 @@ final class SignalManager {
         var result = consumeSignal(ctx, outcomeSeq, stepName, signalName, signal, type);
         if (timerDbId != null) {
             try {
-                store.markTimerCancelled(timerDbId);
+                // Fenced on the run's lease; a stale lease cannot reach here,
+                // because consumeSignal's fenced append has already rejected it.
+                store.markTimerCancelled(timerDbId, ctx.lease());
             } catch (RuntimeException e) {
                 logger.debug("Could not cancel the deadline row of workflow '{}' signal '{}' after "
                         + "consuming it — the row fires later for nobody: {}",
@@ -1090,6 +1101,13 @@ final class SignalManager {
         // durable memoized truth for this sequence — consuming a different
         // row now would contradict the event log on replay, so we proceed.
         appendEvent(ctx, seq, EventType.SIGNAL_RECEIVED, stepName, signal.payload());
+        // Deliberately the UNFENCED flip. The fenced append above has committed
+        // under this run's lease, so the SIGNAL_RECEIVED memo is now the
+        // durable truth whatever happens next — including an adopter bumping
+        // the epoch in the gap before this line. A fenced flip would then
+        // return false and leave the row unconsumed beside a memo that says it
+        // was, and a later same-name awaitSignal would consume it a second
+        // time. The row must follow the memo, so this write carries no lease.
         if (!store.markSignalConsumed(signal.id())) {
             logger.warn("Signal '{}' (id={}) for workflow '{}' was already consumed by a "
                             + "concurrent consumer — proceeding with the memoized SIGNAL_RECEIVED "
@@ -1147,12 +1165,32 @@ final class SignalManager {
                 Instant.now()
         );
         try {
-            store.appendEvent(event);
+            store.appendEvent(event, ctx.lease());
+        } catch (FencedWriteException fenced) {
+            // Issue 11: another node adopted this workflow and the store
+            // refused this run's write. Sticky for the same reason as below.
+            ctx.cancellation().requestStale(fenced.staleDetail());
+            throw fenced;
         } catch (DuplicateEventException staleRun) {
             // Another runner owns this slot: the run stands down, and stays
             // stale even if workflow code swallows the duplicate (R33).
             ctx.cancellation().requestStale("append collision at sequence " + seq);
             throw staleRun;
+        }
+    }
+
+    /**
+     * Arms an await's deadline row under the run's lease. A fenced node must
+     * not arm a deadline that would later fire on the adopting node's
+     * workflow, so a stale lease stands the run down — sticky, like a fenced
+     * append.
+     */
+    private void saveDeadlineRow(WorkflowContext ctx, WorkflowTimer timer) {
+        try {
+            store.saveTimer(timer, ctx.lease());
+        } catch (FencedWriteException fenced) {
+            ctx.cancellation().requestStale(fenced.staleDetail());
+            throw fenced;
         }
     }
 

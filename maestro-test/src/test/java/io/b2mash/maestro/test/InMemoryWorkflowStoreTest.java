@@ -1,6 +1,7 @@
 package io.b2mash.maestro.test;
 
 import io.b2mash.maestro.core.exception.DuplicateEventException;
+import io.b2mash.maestro.core.exception.FencedWriteException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowNotFoundException;
@@ -11,6 +12,7 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.spi.RunLease;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -763,14 +765,153 @@ class InMemoryWorkflowStoreTest {
     }
 
     private static WorkflowTimer buildTimer(String workflowId, Instant fireAt, TimerStatus status) {
+        return buildTimer(UUID.randomUUID(), workflowId, fireAt, status);
+    }
+
+    private static WorkflowTimer buildTimer(UUID instanceId, String workflowId, Instant fireAt, TimerStatus status) {
         return new WorkflowTimer(
                 UUID.randomUUID(),
-                UUID.randomUUID(),
+                instanceId,
                 workflowId,
                 "timer-" + UUID.randomUUID().toString().substring(0, 8),
                 fireAt,
                 status,
                 Instant.now()
         );
+    }
+
+    // ── Lease fencing (Issue 11) — twins of PostgresWorkflowStoreTest.LeaseFencingTests ──
+
+    @Nested
+    class LeaseFencingTests {
+
+        private WorkflowInstance instance;
+        private RunLease stale;
+        private RunLease current;
+
+        @BeforeEach
+        void adoptOnce() {
+            instance = store.createInstance(buildInstance("wf-fence"));
+            assertEquals(0, store.getInstance("wf-fence").orElseThrow().leaseEpoch());
+            stale = new RunLease(instance.id(), 0);
+            instance = instance.toBuilder()
+                    .leaseEpoch(instance.leaseEpoch() + 1)
+                    .version(instance.version() + 1)
+                    .build();
+            store.updateInstance(instance);
+            current = new RunLease(instance.id(), 1);
+        }
+
+        @Test
+        void staleAppendIsFencedAndWritesNothing() {
+            var e = assertThrows(FencedWriteException.class,
+                    () -> store.appendEvent(event(instance.id(), 1, EventType.ACTIVITY_COMPLETED), stale));
+            assertEquals(instance.id(), e.instanceId());
+            assertEquals(0, e.leaseEpoch());
+            assertEquals("appendEvent", e.operation());
+            assertTrue(store.getEvents(instance.id()).isEmpty());
+        }
+
+        @Test
+        void currentAppendWritesAndCollisionIsStillDuplicate() {
+            store.appendEvent(event(instance.id(), 1, EventType.ACTIVITY_COMPLETED), current);
+            assertEquals(1, store.getEvents(instance.id()).size());
+            assertThrows(DuplicateEventException.class,
+                    () -> store.appendEvent(event(instance.id(), 1, EventType.ACTIVITY_COMPLETED), current));
+        }
+
+        @Test
+        void saveTimerIsFenced() {
+            var staleTimer = buildTimer(instance.id(), "wf-fence", Instant.now(), TimerStatus.PENDING);
+            assertThrows(FencedWriteException.class, () -> store.saveTimer(staleTimer, stale));
+            assertTrue(store.findTimer(instance.id(), staleTimer.timerId()).isEmpty());
+
+            var liveTimer = buildTimer(instance.id(), "wf-fence", Instant.now(), TimerStatus.PENDING);
+            store.saveTimer(liveTimer, current);
+            assertTrue(store.findTimer(instance.id(), liveTimer.timerId()).isPresent());
+        }
+
+        @Test
+        void staleUpdateIsFencedAndRowUntouched() {
+            var write = instance.toBuilder().status(WorkflowStatus.WAITING_SIGNAL)
+                    .leaseEpoch(0).version(instance.version() + 1).build();
+            assertThrows(FencedWriteException.class, () -> store.updateInstance(write, stale));
+            var stored = store.getInstance("wf-fence").orElseThrow();
+            assertEquals(WorkflowStatus.RUNNING, stored.status());
+            assertEquals(1, stored.version());
+            assertEquals(1, stored.leaseEpoch());
+        }
+
+        @Test
+        void currentUpdateWritesAndVersionConflictIsOptimisticLock() {
+            var parked = instance.toBuilder().status(WorkflowStatus.WAITING_SIGNAL)
+                    .version(instance.version() + 1).build();
+            store.updateInstance(parked, current);
+            assertEquals(WorkflowStatus.WAITING_SIGNAL, store.getInstance("wf-fence").orElseThrow().status());
+            assertThrows(OptimisticLockException.class, () -> store.updateInstance(parked, current));
+            assertThrows(WorkflowNotFoundException.class, () -> store.updateInstance(
+                    buildInstance("wf-missing").toBuilder().version(1).build(), new RunLease(UUID.randomUUID(), 0)));
+        }
+
+        @Test
+        void staleCompleteIsFencedAndWritesNeither() {
+            var terminal = instance.toBuilder().status(WorkflowStatus.COMPLETED).completedAt(Instant.now())
+                    .leaseEpoch(0).version(instance.version() + 1).build();
+            assertThrows(FencedWriteException.class, () -> store.completeInstance(
+                    terminal, event(instance.id(), 1, EventType.WORKFLOW_COMPLETED), stale));
+            assertEquals(WorkflowStatus.RUNNING, store.getInstance("wf-fence").orElseThrow().status());
+            assertTrue(store.getEvents(instance.id()).isEmpty());
+        }
+
+        @Test
+        void currentCompleteWritesBothAndVersionMismatchReturnsFalse() {
+            var terminal = instance.toBuilder().status(WorkflowStatus.COMPLETED).completedAt(Instant.now())
+                    .version(instance.version() + 1).build();
+            assertTrue(store.completeInstance(terminal, event(instance.id(), 1, EventType.WORKFLOW_COMPLETED), current));
+            assertEquals(WorkflowStatus.COMPLETED, store.getInstance("wf-fence").orElseThrow().status());
+            assertFalse(store.completeInstance(terminal, event(instance.id(), 2, EventType.WORKFLOW_COMPLETED), current));
+            assertEquals(1, store.getEvents(instance.id()).size());
+        }
+
+        @Test
+        void silentTrioReturnFalseUnderStaleLeaseAndWriteNothing() {
+            var signal = new WorkflowSignal(UUID.randomUUID(), instance.id(), "wf-fence", "go", null, false, Instant.now());
+            store.saveSignal(signal);
+            var fire = buildTimer(instance.id(), "wf-fence", Instant.now(), TimerStatus.PENDING);
+            var cancel = buildTimer(instance.id(), "wf-fence", Instant.now(), TimerStatus.PENDING);
+            store.saveTimer(fire);
+            store.saveTimer(cancel);
+
+            assertFalse(store.markSignalConsumed(signal.id(), stale));
+            assertFalse(store.markTimerFired(fire.id(), stale));
+            assertFalse(store.markTimerCancelled(cancel.id(), stale));
+            assertEquals(1, store.getUnconsumedSignals("wf-fence", "go").size());
+            assertEquals(TimerStatus.PENDING, store.findTimer(instance.id(), fire.timerId()).orElseThrow().status());
+            assertEquals(TimerStatus.PENDING, store.findTimer(instance.id(), cancel.timerId()).orElseThrow().status());
+
+            assertTrue(store.markSignalConsumed(signal.id(), current));
+            assertTrue(store.markTimerFired(fire.id(), current));
+            assertTrue(store.markTimerCancelled(cancel.id(), current));
+        }
+
+        @Test
+        void unfencedWritesIgnoreTheEpoch() {
+            var signal = new WorkflowSignal(UUID.randomUUID(), instance.id(), "wf-fence", "late", null, false, Instant.now());
+            store.saveSignal(signal);
+            assertEquals(1, store.getUnconsumedSignals("wf-fence", "late").size());
+            var timer = buildTimer(instance.id(), "wf-fence", Instant.now(), TimerStatus.PENDING);
+            store.saveTimer(timer);
+            assertTrue(store.markTimerFired(timer.id()));
+            store.appendEvent(event(instance.id(), 1, EventType.ACTIVITY_COMPLETED));
+            assertEquals(1, store.getEvents(instance.id()).size());
+        }
+
+        @Test
+        void clearForgetsTheInstanceIdIndexToo() {
+            store.clear();
+            // A fenced write against an instance the store no longer knows is fenced, not an NPE.
+            assertThrows(FencedWriteException.class,
+                    () -> store.appendEvent(event(instance.id(), 1, EventType.ACTIVITY_COMPLETED), current));
+        }
     }
 }

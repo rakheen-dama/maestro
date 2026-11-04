@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.context.WorkflowContextInternals;
 import io.b2mash.maestro.core.context.WorkflowMDC;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
+import io.b2mash.maestro.core.exception.FencedWriteException;
 import io.b2mash.maestro.core.exception.MaestroControlFlowError;
 import io.b2mash.maestro.core.exception.NodeErrors;
 import io.b2mash.maestro.core.exception.RetryExhaustedException;
@@ -374,7 +375,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                 TimerStatus.PENDING,
                 Instant.now()
         );
-        store.saveTimer(timer);
+        saveTimer(ctx, timer);
 
         // Append TIMER_SCHEDULED event
         var timerPayload = serializer.serialize(new TimerDetail(timerId, duration.toString()));
@@ -814,13 +815,15 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                 }
             }
 
-            // Stale-run signals next (R27): a DuplicateEventException or
-            // StaleRunException means another runner owns this workflow's
-            // progress, so this run must stand down — not record FAILED and
-            // compensate because an earlier branch happened to throw first.
+            // Stale-run signals next (R27): a DuplicateEventException,
+            // StaleRunException or FencedWriteException (Issue 11) means
+            // another runner owns this workflow's progress, so this run must
+            // stand down — not record FAILED and compensate because an earlier
+            // branch happened to throw first.
             for (int i = 0; i < branchCount; i++) {
                 var error = errors.get(i).get();
-                if (error instanceof DuplicateEventException || error instanceof StaleRunException) {
+                if (error instanceof DuplicateEventException || error instanceof StaleRunException
+                        || error instanceof FencedWriteException) {
                     throw (RuntimeException) error;
                 }
             }
@@ -1178,12 +1181,31 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                 Instant.now()
         );
         try {
-            store.appendEvent(event);
+            store.appendEvent(event, ctx.lease());
+        } catch (FencedWriteException fenced) {
+            // Issue 11: another node adopted this workflow and the store
+            // refused this run's write. Sticky for the same reason as below.
+            ctx.cancellation().requestStale(fenced.staleDetail());
+            throw fenced;
         } catch (DuplicateEventException staleRun) {
             // Another runner owns this slot: the run stands down, and stays
             // stale even if workflow code swallows the duplicate (R33).
             ctx.cancellation().requestStale("append collision at sequence " + seq);
             throw staleRun;
+        }
+    }
+
+    /**
+     * Arms a durable timer row under the run's lease. A fenced node must not
+     * arm a deadline that would later fire on the adopting node's workflow, so
+     * a stale lease is a stand-down here too — sticky, like a fenced append.
+     */
+    private void saveTimer(WorkflowContext ctx, WorkflowTimer timer) {
+        try {
+            store.saveTimer(timer, ctx.lease());
+        } catch (FencedWriteException fenced) {
+            ctx.cancellation().requestStale(fenced.staleDetail());
+            throw fenced;
         }
     }
 

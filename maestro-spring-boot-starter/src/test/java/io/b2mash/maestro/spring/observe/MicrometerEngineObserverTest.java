@@ -164,7 +164,7 @@ class MicrometerEngineObserverTest {
 
     @Test
     @DisplayName("maestro.standdown — Counter, tag reason=unknown_event_type|unknown_event_payload"
-            + "|nondeterministic_history|stale_run")
+            + "|nondeterministic_history|stale_run|lease_fenced")
     void standDown() {
         observer.standDown(StandDownReason.UNKNOWN_EVENT_TYPE, "wf-1", "EVT_FROM_A_NEWER_MAESTRO");
         observer.standDown(StandDownReason.UNKNOWN_EVENT_PAYLOAD, "wf-2", null);
@@ -172,6 +172,7 @@ class MicrometerEngineObserverTest {
         observer.standDown(StandDownReason.STALE_RUN, "wf-4", null);
         observer.standDown(StandDownReason.NONDETERMINISTIC_HISTORY, "wf-5",
                 "seq=2 expected=a stored=b type=ACTIVITY_COMPLETED");
+        observer.standDown(StandDownReason.LEASE_FENCED, "wf-6", "lease epoch 0 superseded at appendEvent");
 
         assertThat(registry.get("maestro.standdown").tag("reason", "unknown_event_type")
                 .counter().count()).isEqualTo(1.0);
@@ -180,6 +181,8 @@ class MicrometerEngineObserverTest {
         assertThat(registry.get("maestro.standdown").tag("reason", "stale_run")
                 .counter().count()).isEqualTo(2.0);
         assertThat(registry.get("maestro.standdown").tag("reason", "nondeterministic_history")
+                .counter().count()).isEqualTo(1.0);
+        assertThat(registry.get("maestro.standdown").tag("reason", "lease_fenced")
                 .counter().count()).isEqualTo(1.0);
     }
 

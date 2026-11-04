@@ -10,11 +10,15 @@ import io.b2mash.maestro.core.model.WorkflowStatus;
  * The meaning is: <em>write nothing, compensate nothing, stand down.</em>
  *
  * <h2>Where it comes from</h2>
- * <p>Instance locks are best-effort (Issue 11): a node frozen past its lock
- * TTL, partitioned, or running without a lock backend can execute a workflow
- * a peer has also adopted. The peer's outcome is the durable truth. This
- * exception is raised by the engine's status writers when they find it, and
- * by the run's cancellation latch once a collision has proved it:
+ * <p>Instance locks are the admission guard, not the write guard: a node
+ * frozen past its lock TTL, partitioned, or running without a lock backend
+ * can still be <em>executing</em> a workflow a peer has also adopted. The
+ * peer's outcome is the durable truth. Since Issue 11 closed, the store's
+ * lease fence ({@link FencedWriteException}) rejects the stale node's writes
+ * outright; this exception is the sibling signal raised by the engine's
+ * status writers when a fresh read finds the peer's outcome already written,
+ * and by the run's cancellation latch once a collision, a fence or a lost
+ * lock has proved the run stale:
  * <ul>
  *   <li>{@code InstanceStatusWriter} — a park/wake status write
  *       ({@code WAITING_SIGNAL}/{@code WAITING_TIMER}/{@code RUNNING}) whose

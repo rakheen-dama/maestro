@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.exception.FencedWriteException;
 import io.b2mash.maestro.core.exception.StaleRunException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.WorkflowInstance;
@@ -52,6 +53,39 @@ class InstanceStatusWriterTest {
                 () -> InstanceStatusWriter.write(store, ctx, WorkflowStatus.RUNNING));
         assertEquals(io.b2mash.maestro.core.context.RunCancellation.Cause.STALE, ctx.cancellation().cause(),
                 "a swallowed StaleRunException must still stop the run's next live activity");
+    }
+
+    @Test
+    @DisplayName("a fenced status write (another node adopted the instance) throws FencedWriteException, writes "
+            + "nothing, and sets the run STALE — it is not a version conflict to retry (Issue 11)")
+    void contextOverload_fencedWriteIsStickyAndNotRetried() {
+        seed("w1f", WorkflowStatus.RUNNING);
+        var instance = store.getInstance("w1f").orElseThrow();
+        var ctx = new io.b2mash.maestro.core.context.WorkflowContext(instance.id(), "w1f", instance.runId(),
+                "TestWorkflow", "default", "test-service", 0, false, null,
+                new io.b2mash.maestro.core.context.RunCancellation(), 0L);
+        // Another node adopts: the row's epoch moves past this run's.
+        store.forceLeaseEpoch("w1f", 1);
+        var attemptsBefore = store.updateAttempts();
+
+        var thrown = assertThrows(FencedWriteException.class,
+                () -> InstanceStatusWriter.write(store, ctx, WorkflowStatus.WAITING_SIGNAL));
+        assertEquals(instance.id(), thrown.instanceId());
+        assertEquals(0, thrown.leaseEpoch());
+        assertEquals(io.b2mash.maestro.core.context.RunCancellation.Cause.STALE, ctx.cancellation().cause(),
+                "a swallowed FencedWriteException must still stop the run's next live activity");
+        assertEquals(WorkflowStatus.RUNNING, store.getInstance("w1f").orElseThrow().status(), "nothing written");
+        assertEquals(1, store.updateAttempts() - attemptsBefore,
+                "a fence is not a lost CAS — the write must not be retried against a fresh read");
+    }
+
+    @Test
+    @DisplayName("the unfenced workflowId overload ignores the epoch — it is for writers that are not a run")
+    void workflowIdOverload_isUnfenced() {
+        seed("w1u", WorkflowStatus.RUNNING);
+        store.forceLeaseEpoch("w1u", 5);
+        InstanceStatusWriter.write(store, "w1u", WorkflowStatus.WAITING_TIMER);
+        assertEquals(WorkflowStatus.WAITING_TIMER, store.getInstance("w1u").orElseThrow().status());
     }
 
     @Test

@@ -219,17 +219,46 @@ the recheck interval.
 
 ## 6. Split-brain behaviour (Issue 11 + Issue 18)
 
-**The stance, unchanged by this cycle:** Maestro does not implement lock
-fencing (`docs/open-issues.md` Issue 11, open by design). A node that loses
-its instance lock — a GC pause longer than the TTL, `docker pause`, a
-partition — keeps running. The unique `(workflow_instance_id,
-sequence_number)` event index is the store-correctness backstop: two nodes
-racing on the same workflow cannot both persist a step's result, so **state
-correctness does not depend on fencing.** Duplicate *external side effects*
-(a payment API called twice) are not prevented — activities must be
-idempotent.
+**The stance: the store fences a stale node's writes.** Maestro implements
+lock fencing with a lease epoch on the instance row (`docs/open-issues.md`
+Issue 11, resolved; `db/maestro/store` V6). A node that loses its instance
+lock — a GC pause longer than the TTL, `docker pause`, a partition — may
+keep running, but it cannot persist progress once a peer has adopted the
+workflow: the adoption bumps `maestro_workflow_instance.lease_epoch` under
+the row's version CAS, every write a run makes on its own behalf carries the
+epoch it adopted at, and the store rejects a write whose epoch has been
+superseded (`FencedWriteException`, zero rows written, the check and the
+write one atomic statement under `FOR SHARE`). The fenced run stands down as
+`lease_fenced` — no failure recorded, no compensation run, the adopter's
+durable state governs. **State correctness no longer depends on the lock
+being honoured**, and it no longer depends on the unique
+`(workflow_instance_id, sequence_number)` event index either — that index
+stays as depth beneath the fence. What the fence does *not* bound is the
+activity already executing on the stale node at the instant of adoption: it
+runs to completion there (its result is then fenced) and the adopter runs it
+again, so duplicate *external side effects* (a payment API called twice)
+remain possible for exactly that one step — activities must be idempotent.
 
-**What changed this cycle: the loser now loses fast and clean.** Before
+**How the fence surfaces.** The stale node logs one WARN per fenced write
+(`... was fenced — another node has adopted this workflow; standing this run
+down (lease epoch 0 superseded at appendEvent)`) and one stand-down
+(`stood down (LEASE_FENCED): ...`), and `maestro.standdown{reason=lease_fenced}`
+increments once. If the node's lock renewer noticed the loss first, the run
+is marked stale proactively and stands down at its next stop point as
+`stale_run` with detail `instance lock lost` instead — same outcome, earlier.
+Pinned by `MultiNodeFencingIT` (a node with a real, expired Postgres lock
+resumes into the adopter's run: exactly one `LEASE_FENCED`, sequence 2 still
+empty at that moment, the adopter completes alone), `MultiNodeNoLockBackendIT`
+and `EnginePostgresDualExecutionIT` (no lock backend at all: the loser is
+fenced at its first write).
+
+**No lock backend.** Multi-node without a `DistributedLock` is unsupported,
+but the fence makes it *safe*: two lock-less nodes adopting the same
+workflow either race the adoption CAS (one loses and never launches) or adopt
+in turn (the earlier adopter's first write is fenced). The in-flight step
+still executes on both — see the idempotency rule above.
+
+**What changed in the earlier cycle: the loser loses fast and clean.** Before
 Issue 18 was fixed, a stale node's post-thaw event-append collision
 (`DuplicateEventException`) was misrecorded as *the workflow failing* — a
 workflow that had **succeeded** on the winner was durably marked `FAILED`
@@ -259,10 +288,13 @@ total to 0/2,587. Full numbers and the run's provenance caveats (a pre-fix
 PR-gate `@Timeout` collision in the same JVM, leaked-checker console noise,
 binary-vs-stamp commit skew) live in that same Issue 11 subsection.
 
-**Practical guidance, unchanged:** activities must still be idempotent. This
-cycle's evidence says duplicate side effects are *rare* under the measured
-conditions, not that they are impossible — do not remove idempotency
-handling on the strength of a 0/2,587 sample.
+**Practical guidance, unchanged:** activities must still be idempotent. The
+fence makes the *persisted-state* guarantee unconditional; the measured
+0/2,587 duplicate side effects says the remaining *side-effect* window (the
+one step in flight at adoption) is rare under the measured conditions, not
+that it is impossible — do not remove idempotency handling on the strength
+of either. The chaos harness's `SideEffectCensus` tolerances are unchanged
+this cycle; tighten them after one green soak on a fenced build.
 
 ---
 
@@ -290,6 +322,13 @@ latency; admin-command convergence is Kafka-session-timeout-bound. A lock
 cleaner on every node deletes rows expired for more than a minute every
 `maestro.lock.cleanup-interval` (default 10m) — expired rows are already
 takeable, so the cleaner only bounds table growth.
+
+The lock is the *admission* guard only. The guarantee that a node which lost
+its lock cannot persist progress does not live in this table: it is the lease
+epoch on the instance row (§6), which every adoption bumps and every
+run-scoped write is validated against. The lock's TTL therefore bounds how
+long a dead owner blocks adoption, not how much damage a live-but-stale owner
+can do.
 
 *History:* a Valkey/Redis lock module (`maestro-lock-valkey`, the former
 default, selected with `E2E_LOCK_BACKEND`) was measured alongside Postgres in
@@ -388,9 +427,13 @@ measured:
   `docs/open-issues.md` Issue 11 for the full caveats, including the soak
   run's provenance caveats (pre-fix PR-gate collision in the same JVM,
   leaked-checker console noise, binary-vs-stamp commit skew).
-- **No lock fencing exists** (`docs/open-issues.md` Issue 11, open by
-  design). Everything in §6 describes measured behaviour *given* that
-  design decision, not a claim that split-brain is prevented.
+- **The chaos evidence in §6 predates the lease fence** (`docs/open-issues.md`
+  Issue 11, fixed 2026-11-04). It measured how often a stale node's *side
+  effects* duplicated under the old no-fencing design; the fence now makes the
+  *persisted-state* guarantee unconditional, but the one-step side-effect
+  window it leaves open has not yet been re-measured on a fenced build. The
+  harness's `SideEffectCensus` tolerances are unchanged until one green soak
+  on this build.
 - **Recovery-polling scale (`docs/open-issues.md` Issue 12)** now has its
   vs-node-count benchmark of record from the soak run's chaos-free tail:
   cluster recovery-query rate is proportional to node count — consistent

@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.exception.DuplicateEventException;
+import io.b2mash.maestro.core.exception.FencedWriteException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.model.EventType;
@@ -10,6 +11,7 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.spi.RunLease;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
 import tools.jackson.databind.JsonNode;
@@ -124,6 +126,89 @@ class VersionedInMemoryStore implements WorkflowStore {
     /** @param count how many of the next {@code updateInstance} calls must conflict */
     void failNextUpdates(int count) {
         updatesToFail.set(count);
+    }
+
+    // ── Lease fencing (Issue 11) ────────────────────────────────────────
+
+    /**
+     * Writes a lease epoch straight into the row, bypassing the version — how
+     * these tests model "another node adopted this workflow": every write a
+     * run holding the old epoch makes from now on is fenced.
+     *
+     * @param workflowId the workflow whose row to rewrite
+     * @param epoch      the epoch the adopting node wrote
+     */
+    synchronized void forceLeaseEpoch(String workflowId, long epoch) {
+        var stored = byWorkflowId.get(workflowId);
+        if (stored == null) {
+            throw new IllegalStateException("no such instance: " + workflowId);
+        }
+        byWorkflowId.put(workflowId, stored.toBuilder()
+                .leaseEpoch(epoch)
+                .version(stored.version() + 1)
+                .build());
+    }
+
+    private synchronized boolean leaseIsCurrent(RunLease lease) {
+        return byWorkflowId.values().stream()
+                .anyMatch(i -> i.id().equals(lease.instanceId()) && i.leaseEpoch() == lease.epoch());
+    }
+
+    // The fenced overloads check the lease and then delegate to the unfenced
+    // form WITHOUT holding this store's monitor across the delegate call:
+    // subclasses (BarrierStore) override the unfenced form to park a thread on
+    // a barrier, and holding the monitor there would deadlock the sibling
+    // branch. The check-then-write is therefore not atomic in this fixture;
+    // the tests that exercise fencing flip the epoch while no write is in
+    // flight, and the atomic variant is pinned against the real stores.
+
+    @Override
+    public void updateInstance(WorkflowInstance instance, RunLease lease) {
+        if (!leaseIsCurrent(lease)) {
+            updateAttempts.incrementAndGet();
+            throw new FencedWriteException(lease.instanceId(), lease.epoch(), "updateInstance");
+        }
+        updateInstance(instance);
+    }
+
+    @Override
+    public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent, RunLease lease) {
+        if (!leaseIsCurrent(lease)) {
+            throw new FencedWriteException(lease.instanceId(), lease.epoch(), "completeInstance");
+        }
+        return completeInstance(terminal, terminalEvent);
+    }
+
+    @Override
+    public void appendEvent(WorkflowEvent event, RunLease lease) {
+        if (!leaseIsCurrent(lease)) {
+            appendAttempts.incrementAndGet();
+            throw new FencedWriteException(lease.instanceId(), lease.epoch(), "appendEvent");
+        }
+        appendEvent(event);
+    }
+
+    @Override
+    public void saveTimer(WorkflowTimer timer, RunLease lease) {
+        if (!leaseIsCurrent(lease)) {
+            throw new FencedWriteException(lease.instanceId(), lease.epoch(), "saveTimer");
+        }
+        saveTimer(timer);
+    }
+
+    @Override
+    public boolean markSignalConsumed(UUID signalId, RunLease lease) {
+        return leaseIsCurrent(lease) && markSignalConsumed(signalId);
+    }
+
+    @Override
+    public boolean markTimerFired(UUID timerId, RunLease lease) {
+        return leaseIsCurrent(lease) && markTimerFired(timerId);
+    }
+
+    @Override
+    public boolean markTimerCancelled(UUID timerId, RunLease lease) {
+        return leaseIsCurrent(lease) && markTimerCancelled(timerId);
     }
 
     /** @return how many times {@code updateInstance} has been called */

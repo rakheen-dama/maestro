@@ -3,6 +3,7 @@ package io.b2mash.maestro.core.context;
 import io.b2mash.maestro.core.engine.WorkflowOperations;
 import io.b2mash.maestro.core.exception.BranchSequenceExhaustedException;
 import io.b2mash.maestro.core.retry.RetryUntilOptions;
+import io.b2mash.maestro.core.spi.RunLease;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -85,6 +86,7 @@ public final class WorkflowContext {
     private final @Nullable WorkflowOperations operations;
     private final @Nullable BranchBound bound;
     private final RunCancellation cancellation;
+    private final RunLease lease;
 
     /**
      * The sequence block a bounded branch context may draw from.
@@ -188,7 +190,47 @@ public final class WorkflowContext {
             RunCancellation cancellation
     ) {
         this(workflowInstanceId, workflowId, runId, workflowType, taskQueue,
-                serviceName, initialSequence, replaying, operations, null, cancellation);
+                serviceName, initialSequence, replaying, operations, cancellation, 0L);
+    }
+
+    /**
+     * Creates a fully operational workflow context carrying the run's lease
+     * epoch — the form the {@code WorkflowExecutor} uses for every run it
+     * launches.
+     *
+     * <p>Every other constructor fixes the epoch at {@code 0}, which is the
+     * epoch of a freshly started instance and of every test context; a resumed
+     * run passes the epoch its adoption compare-and-set wrote, so that the
+     * store fences the writes of any earlier holder (see {@link #lease()}).
+     *
+     * @param workflowInstanceId the workflow instance UUID (primary key)
+     * @param workflowId         the business workflow ID (e.g., {@code "order-abc"})
+     * @param runId              the current run ID (changes on manual retry)
+     * @param workflowType       the workflow type name
+     * @param taskQueue          the task queue name
+     * @param serviceName        the owning service name
+     * @param initialSequence    the starting sequence number (0 for new, higher for resumed)
+     * @param replaying          whether this execution is replaying stored events
+     * @param operations         the workflow operations delegate, or {@code null} for test contexts
+     * @param cancellation       the run's cancellation latch, shared with every branch context
+     * @param leaseEpoch         the instance's {@code lease_epoch} this run adopted it at
+     */
+    public WorkflowContext(
+            UUID workflowInstanceId,
+            String workflowId,
+            UUID runId,
+            String workflowType,
+            String taskQueue,
+            String serviceName,
+            int initialSequence,
+            boolean replaying,
+            @Nullable WorkflowOperations operations,
+            RunCancellation cancellation,
+            long leaseEpoch
+    ) {
+        this(workflowInstanceId, workflowId, runId, workflowType, taskQueue,
+                serviceName, initialSequence, replaying, operations, null, cancellation,
+                new RunLease(workflowInstanceId, leaseEpoch));
     }
 
     private WorkflowContext(
@@ -202,10 +244,12 @@ public final class WorkflowContext {
             boolean replaying,
             @Nullable WorkflowOperations operations,
             @Nullable BranchBound bound,
-            RunCancellation cancellation
+            RunCancellation cancellation,
+            RunLease lease
     ) {
         this.bound = bound;
         this.cancellation = cancellation;
+        this.lease = lease;
         this.workflowInstanceId = workflowInstanceId;
         this.workflowId = workflowId;
         this.runId = runId;
@@ -291,7 +335,8 @@ public final class WorkflowContext {
                 parent.workflowInstanceId, parent.workflowId, parent.runId,
                 parent.workflowType, parent.taskQueue, parent.serviceName,
                 baseSeq, parent.replaying, operations,
-                new BranchBound(branchIndex, baseSeq, limitExclusive), parent.cancellation);
+                new BranchBound(branchIndex, baseSeq, limitExclusive), parent.cancellation,
+                parent.lease);
     }
 
     // ── ScopedValue management ─────────────────────────────────────────
@@ -402,6 +447,29 @@ public final class WorkflowContext {
     /** Returns the current run ID (changes on manual retry). */
     public UUID runId() {
         return runId;
+    }
+
+    /**
+     * Returns the lease this run writes under: the instance id and the
+     * {@code lease_epoch} the run adopted the instance at.
+     *
+     * <p>Every run-scoped store write the engine makes on this run's behalf —
+     * event appends, park/wake status writes, timer arms, the terminal write —
+     * passes this lease to the store's fenced overloads, which reject the write
+     * ({@link io.b2mash.maestro.core.exception.FencedWriteException}) once
+     * another node has adopted the instance and bumped its epoch. Branch
+     * contexts share the parent's lease.
+     *
+     * @return the run's lease; its epoch is {@code 0} for a fresh start and for
+     *         contexts built without an explicit epoch
+     */
+    public RunLease lease() {
+        return lease;
+    }
+
+    /** Returns {@link #lease()}'s epoch. */
+    public long leaseEpoch() {
+        return lease.epoch();
     }
 
     /** Returns the workflow type name. */
