@@ -67,7 +67,8 @@ class KafkaSignalChannelIT extends KafkaSpringIntegrationSupport {
      */
     @BeforeAll
     static void createChannelTopics() throws ExecutionException, InterruptedException {
-        createTopics(SIGNAL_TOPIC, ADMIN_TOPIC);
+        // .DLT companion included — required by the startup topic verification.
+        createTopics(SIGNAL_TOPIC, SIGNAL_TOPIC + ".DLT", ADMIN_TOPIC);
     }
 
     @Test

@@ -1,10 +1,7 @@
 package io.b2mash.maestro.integration.kafka;
 
-import ch.qos.logback.classic.spi.ILoggingEvent;
-import ch.qos.logback.core.read.ListAppender;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.spi.SignalMessage;
-import io.b2mash.maestro.messaging.kafka.KafkaDeadLetterTopicCheck;
 import io.b2mash.maestro.messaging.kafka.KafkaMessagingConfig;
 import io.b2mash.maestro.messaging.kafka.KafkaWorkflowMessaging;
 import io.b2mash.maestro.spring.annotation.MaestroSignalListener;
@@ -16,10 +13,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import org.slf4j.LoggerFactory;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.annotation.Bean;
 
 import java.time.Duration;
@@ -73,10 +72,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
                 // suite's bound; the production default is 10 attempts over
                 // ~2.5 minutes. The transient test fails twice, still under 4.
                 "maestro.messaging.redelivery.max-attempts=4",
-                "maestro.messaging.redelivery.initial-interval=250ms"
+                "maestro.messaging.redelivery.initial-interval=250ms",
+                // This suite deliberately leaves one .DLT uncreated (see
+                // MISSING_DLT_CHANNEL_TOPIC) and pins the WARN that names it, so
+                // it runs under `warn`; under the default `fail` the context
+                // would — correctly — refuse to start.
+                "maestro.messaging.topics.verify-on-startup=warn"
         })
 @Tag("integration")
 @DisplayName("A failing signal handler must not lose the signal")
+// Captures console output from beforeAll — i.e. from before Spring loads the
+// context whose refresh runs the topic verification — so the startup WARN can
+// be asserted. (A Logback appender attached in @BeforeAll is not reliable
+// here: Boot's logging initialisation resets the Logback context when the
+// first SpringApplication in the JVM boots, detaching it.)
+@ExtendWith(OutputCaptureExtension.class)
 class KafkaAckOnFailureIT extends KafkaSpringIntegrationSupport {
 
     static final String SERVICE = "kafka-ack";
@@ -96,9 +106,10 @@ class KafkaAckOnFailureIT extends KafkaSpringIntegrationSupport {
     static final String POISON_CHANNEL_DLT = POISON_CHANNEL_TOPIC + ".DLT";
 
     /**
-     * A source topic that exists but whose {@code .DLT} companion is
-     * deliberately never pre-created — the missing-dead-letter-topic WARN test
-     * needs exactly this gap.
+     * A source topic that exists, is consumed by a {@code @MaestroSignalListener}
+     * ({@link MissingDltRouter}) and whose {@code .DLT} companion is deliberately
+     * never pre-created — the missing-dead-letter-topic WARN test needs exactly
+     * this gap in the set the startup verification requires.
      */
     static final String MISSING_DLT_CHANNEL_TOPIC = "it.ack.channel.missing-dlt";
 
@@ -122,9 +133,12 @@ class KafkaAckOnFailureIT extends KafkaSpringIntegrationSupport {
     @BeforeAll
     static void createAckTopics() throws ExecutionException, InterruptedException {
         // MISSING_DLT_CHANNEL_TOPIC itself is created; its .DLT companion
-        // deliberately is not — see its Javadoc.
+        // deliberately is not — see its Javadoc. Every other required topic,
+        // .DLTs included, exists, so that gap is the only thing the startup
+        // verification can complain about.
         createTopics(EVENT_TOPIC, DLT_TOPIC, CHANNEL_TOPIC, POISON_CHANNEL_TOPIC, POISON_CHANNEL_DLT,
-                MISSING_DLT_CHANNEL_TOPIC, ADMIN_TOPIC, "maestro.signals." + SERVICE);
+                MISSING_DLT_CHANNEL_TOPIC, ADMIN_TOPIC,
+                "maestro.signals." + SERVICE, "maestro.signals." + SERVICE + ".DLT");
     }
 
     @BeforeEach
@@ -192,32 +206,23 @@ class KafkaAckOnFailureIT extends KafkaSpringIntegrationSupport {
     }
 
     @Test
-    @DisplayName("subscribing to a topic with no pre-created .DLT companion logs a WARN naming it")
-    void missingDeadLetterTopic_logsWarnAtSubscribeTime() {
-        var config = channelConfig(MISSING_DLT_CHANNEL_TOPIC, 3);
-        var messaging = new KafkaWorkflowMessaging(
-                producer(), consumerFactory(config.consumerGroup()), objectMapper, config);
-
-        var logAppender = new ListAppender<ILoggingEvent>();
-        logAppender.start();
-        var checkLogger = (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(KafkaDeadLetterTopicCheck.class);
-        checkLogger.addAppender(logAppender);
-
-        try {
-            // Container startup — subscribeSignals runs the dead-letter-topic
-            // probe synchronously before the container is created.
-            messaging.subscribeSignals(SERVICE, message -> { });
-
-            var expectedDlt = MISSING_DLT_CHANNEL_TOPIC + ".DLT";
-            assertTrue(logAppender.list.stream().anyMatch(event ->
-                            "WARN".equals(event.getLevel().toString())
-                                    && event.getFormattedMessage().contains(expectedDlt)),
-                    "expected a WARN naming '" + expectedDlt + "', saw: "
-                            + logAppender.list.stream().map(ILoggingEvent::getFormattedMessage).toList());
-        } finally {
-            checkLogger.detachAppender(logAppender);
-            messaging.destroy();
-        }
+    @DisplayName("under verify-on-startup=warn, a listener topic with no pre-created .DLT companion is named "
+            + "in one startup WARN — and the context still started")
+    void missingDeadLetterTopic_isNamedInTheStartupWarning(CapturedOutput output) {
+        // The context is up (this test is running inside it), so `warn` did what it
+        // says: the verification ran during refresh, found the gap, and continued.
+        var expectedDlt = MISSING_DLT_CHANNEL_TOPIC + ".DLT";
+        var startupLog = output.getAll();
+        var warnLines = startupLog.lines()
+                .filter(line -> line.contains("WARN") && line.contains("KafkaTopicVerifier"))
+                .toList();
+        assertTrue(warnLines.stream().anyMatch(line -> line.contains(expectedDlt)),
+                "expected a startup WARN from KafkaTopicVerifier naming '" + expectedDlt + "', saw: " + warnLines);
+        assertTrue(startupLog.contains("--create --topic " + expectedDlt),
+                "the WARN must carry a ready kafka-topics.sh create line for the missing topic");
+        assertTrue(warnLines.stream().noneMatch(line -> line.contains(DLT_TOPIC + ",")
+                        || line.contains(DLT_TOPIC + "]")),
+                "a pre-created .DLT must not be reported missing: " + warnLines);
     }
 
     @Test
@@ -304,6 +309,29 @@ class KafkaAckOnFailureIT extends KafkaSpringIntegrationSupport {
         @Bean
         FailingRouter failingRouter() {
             return new FailingRouter();
+        }
+
+        /** @return the listener whose topic has no {@code .DLT} — the startup verification's one finding */
+        @Bean
+        MissingDltRouter missingDltRouter() {
+            return new MissingDltRouter();
+        }
+    }
+
+    /**
+     * Subscribes to {@link #MISSING_DLT_CHANNEL_TOPIC} so that topic — and its
+     * never-created {@code .DLT} — is part of what the startup verification
+     * requires. Nothing is ever published to it.
+     */
+    public static class MissingDltRouter {
+
+        /**
+         * @param event never delivered
+         * @return a routing that is never used
+         */
+        @MaestroSignalListener(topic = MISSING_DLT_CHANNEL_TOPIC, signalName = "never-sent")
+        public SignalRouting route(ApprovalEvent event) {
+            return SignalRouting.builder().workflowId(event.workflowId()).payload(event.decision()).build();
         }
     }
 
