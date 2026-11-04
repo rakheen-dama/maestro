@@ -106,3 +106,14 @@ live implementer first; (2) a gate that fails only on "Could not write XML
 test results" is INVALID, not red: do not treat it as a test failure, do not
 dispatch an investigator, rerun it alone; (3) sequence gate runs after the
 implementer's commit lands, never beside it.
+
+## 2026-11-04 — a failed edit script did not stop the commit that followed it
+A `python3 - <<'EOF' … EOF` edit of `tasks/todo.md` asserted and exited 1,
+but the `git commit` / `git push` / `gh pr create` on the following lines were
+not chained with `&&`, so PR #42 opened with the pre-edit file and needed a
+second commit. Rules: (1) every multi-step "edit, then commit, then push"
+shell call chains each step with `&&` so a failed edit halts the rest;
+(2) match replacement anchors on a regex that tolerates blank-line variance,
+or assert on a single unique line, never on a multi-line literal that spans a
+separator the script itself emitted; (3) read the diff (`git diff --stat` or
+a grep for the new text) before `gh pr create`, not after.
