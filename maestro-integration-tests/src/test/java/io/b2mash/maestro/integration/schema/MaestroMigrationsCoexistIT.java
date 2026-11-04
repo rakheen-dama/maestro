@@ -98,7 +98,7 @@ class MaestroMigrationsCoexistIT {
 
         new MaestroSchemaInitializer(ds, SchemaMode.FLYWAY, getClass().getClassLoader()).initialize();
 
-        assertEquals(List.of("1", "2", "3", "4", "5", "6", "8", "100"),
+        assertEquals(List.of("1", "2", "3", "4", "5", "6", "7", "8", "100"),
                 versions(MaestroSchemaInitializer.HISTORY_TABLE));
         assertEquals(List.of("1"), versions("flyway_schema_history"),
                 "Maestro wrote nothing into the host's history");
@@ -262,7 +262,7 @@ class MaestroMigrationsCoexistIT {
         // Step 4.
         Flyway.configure().dataSource(ds).locations("filesystem:" + hostMigrations).load().migrate();
         new MaestroSchemaInitializer(ds, SchemaMode.FLYWAY, getClass().getClassLoader()).initialize();
-        assertEquals(List.of("1", "2", "3", "4", "5", "6", "8", "100"),
+        assertEquals(List.of("1", "2", "3", "4", "5", "6", "7", "8", "100"),
                 versions(MaestroSchemaInitializer.HISTORY_TABLE));
         new PostgresWorkflowStore(ds, JsonMapper.builder().build()).saveSignal(preDeliverySignal());
     }
@@ -277,6 +277,7 @@ class MaestroMigrationsCoexistIT {
                 ('4',   'V4__signal_trace_context.sql'),
                 ('5',   'V5__signal_received_at_default.sql'),
                 ('6',   'V6__instance_lease_epoch.sql'),
+                ('7',   'V7__workflow_event_args_hash.sql'),
                 ('8',   'V8__retention_indexes.sql'),
                 ('100', 'V100__maestro_lock_postgres.sql'),
                 ('200', 'V200__maestro_messaging_postgres.sql'),
