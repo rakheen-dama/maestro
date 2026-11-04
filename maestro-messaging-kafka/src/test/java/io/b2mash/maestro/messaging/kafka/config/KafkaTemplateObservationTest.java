@@ -36,7 +36,9 @@ class KafkaTemplateObservationTest {
             .withConfiguration(AutoConfigurations.of(KafkaMessagingAutoConfiguration.class))
             .withUserConfiguration(PropertiesConfiguration.class)
             .withBean(ObjectMapper.class, ObjectMapper::new)
-            .withPropertyValues("maestro.service-name=template-observation-test");
+            .withPropertyValues("maestro.service-name=template-observation-test",
+                    // No broker in this test; see KafkaTopicVerificationStartupTest for the gate itself.
+                    "maestro.messaging.topics.verify-on-startup=off");
 
     @Test
     @DisplayName("observation defaults on when a Tracer+Propagator pair is present")

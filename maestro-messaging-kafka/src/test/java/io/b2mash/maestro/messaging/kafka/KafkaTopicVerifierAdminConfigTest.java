@@ -13,16 +13,16 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Pins CR-14: {@link KafkaDeadLetterTopicCheck#adminConfigFrom} must derive
- * the probe's {@code Admin} config from the <em>whole</em> consumer factory
+ * Pins CR-14: {@link KafkaTopicVerifier#adminConfigFrom} must derive the
+ * probe's {@code Admin} config from the <em>whole</em> consumer factory
  * configuration — not just {@code bootstrap.servers} — so security settings
  * (SASL/SSL) reach the probe on a secured cluster, while consumer-only keys
  * {@code AdminClientConfig} does not recognise are filtered out.
  *
- * <p>Plain unit test — no broker required, unlike {@link KafkaDeadLetterTopicCheckTest}.
+ * <p>Plain unit test — no broker required, unlike {@link KafkaTopicVerificationStartupTest}.
  */
-@DisplayName("KafkaDeadLetterTopicCheck.adminConfigFrom")
-class KafkaDeadLetterTopicCheckAdminConfigTest {
+@DisplayName("KafkaTopicVerifier.adminConfigFrom")
+class KafkaTopicVerifierAdminConfigTest {
 
     @Test
     @DisplayName("carries bootstrap servers and security settings over, and excludes consumer-only keys")
@@ -41,7 +41,7 @@ class KafkaDeadLetterTopicCheckAdminConfigTest {
         );
         var consumerFactory = new DefaultKafkaConsumerFactory<String, byte[]>(consumerProps);
 
-        var adminConfig = KafkaDeadLetterTopicCheck.adminConfigFrom(consumerFactory);
+        var adminConfig = KafkaTopicVerifier.adminConfigFrom(consumerFactory);
 
         assertThat(adminConfig)
                 .as("Admin-accepted keys, including security.*/sasl.*/ssl.*, must be carried over")

@@ -259,6 +259,9 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
                     false); // redeliveryEnabled
             var disabledMessaging = new KafkaWorkflowMessaging(
                     kafkaTemplate, consumerFactory, objectMapper, disabledConfig);
+            // The broker does not auto-create, and the container is started with
+            // missingTopicsFatal under the config's default fail policy.
+            createTopics("flagoff-" + testSuffix);
 
             try {
                 disabledMessaging.subscribeSignals("svc-flagoff-" + testSuffix, message -> { });

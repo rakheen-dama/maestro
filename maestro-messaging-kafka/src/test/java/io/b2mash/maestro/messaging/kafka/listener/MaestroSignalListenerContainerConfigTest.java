@@ -64,7 +64,25 @@ class MaestroSignalListenerContainerConfigTest {
             .withBean(WorkflowExecutor.class, () -> mock(WorkflowExecutor.class))
             .withPropertyValues(
                     "maestro.service-name=signal-listener-container-test",
-                    "spring.kafka.bootstrap-servers=localhost:19092");
+                    "spring.kafka.bootstrap-servers=localhost:19092",
+                    // No broker here: under the default `fail` the startup
+                    // verification would wait out its 5s probe (inconclusive, WARN)
+                    // and missingTopicsFatal would then fail container start. The
+                    // FAIL-mode wiring is pinned against a real broker in
+                    // KafkaTopicVerificationStartupTest.
+                    "maestro.messaging.topics.verify-on-startup=off");
+
+    @Test
+    @DisplayName("verify-on-startup=off leaves missingTopicsFatal off but still sets the auth-exception retry interval")
+    void offMode_containerIsTolerantOfMissingTopicsButRetriesAuthExceptions() {
+        runner.run(ctx -> {
+            assertThat(ctx).hasNotFailed();
+            var bpp = ctx.getBean(MaestroSignalListenerBeanPostProcessor.class);
+            var props = bpp.containersForTesting().get(0).getContainerProperties();
+            assertThat(props.isMissingTopicsFatal()).isFalse();
+            assertThat(props.getAuthExceptionRetryInterval()).isEqualTo(java.time.Duration.ofSeconds(10));
+        });
+    }
 
     @Test
     @DisplayName("container observationEnabled follows the shared rule: on when a Tracer+Propagator pair is present")

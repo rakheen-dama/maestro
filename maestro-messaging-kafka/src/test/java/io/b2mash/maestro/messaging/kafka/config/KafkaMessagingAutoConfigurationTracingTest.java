@@ -35,7 +35,9 @@ class KafkaMessagingAutoConfigurationTracingTest {
             .withConfiguration(AutoConfigurations.of(KafkaMessagingAutoConfiguration.class))
             .withUserConfiguration(PropertiesConfiguration.class)
             .withBean(ObjectMapper.class, ObjectMapper::new)
-            .withPropertyValues("maestro.service-name=kafka-tracing-test");
+            .withPropertyValues("maestro.service-name=kafka-tracing-test",
+                    // No broker in this test; see KafkaTopicVerificationStartupTest for the gate itself.
+                    "maestro.messaging.topics.verify-on-startup=off");
 
     /**
      * The same ordering exposure Task 4's fix round 1 found for meters and Task
@@ -57,7 +59,8 @@ class KafkaMessagingAutoConfigurationTracingTest {
                         KafkaMessagingAutoConfiguration.class))
                 .withUserConfiguration(PropertiesConfiguration.class)
                 .withBean(ObjectMapper.class, ObjectMapper::new)
-                .withPropertyValues("maestro.service-name=kafka-tracing-chain-test")
+                .withPropertyValues("maestro.service-name=kafka-tracing-chain-test",
+                        "maestro.messaging.topics.verify-on-startup=off")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     assertThat(context)

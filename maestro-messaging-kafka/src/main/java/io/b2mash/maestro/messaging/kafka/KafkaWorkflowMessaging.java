@@ -3,6 +3,7 @@ package io.b2mash.maestro.messaging.kafka;
 import io.b2mash.maestro.core.spi.SignalMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
+import io.b2mash.maestro.spring.config.MaestroProperties.TopicsProperties.TopicVerification;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -17,9 +18,12 @@ import org.springframework.kafka.listener.MessageListener;
 import org.springframework.util.backoff.FixedBackOff;
 import tools.jackson.databind.ObjectMapper;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 
 /**
@@ -67,6 +71,17 @@ import java.util.function.Consumer;
 public final class KafkaWorkflowMessaging implements WorkflowMessaging, DisposableBean {
 
     private static final Logger logger = LoggerFactory.getLogger(KafkaWorkflowMessaging.class);
+
+    /**
+     * How long {@link #publishSignal} waits for the broker's acknowledgement
+     * before failing the publish. The producer's own {@code max.block.ms}
+     * (Maestro's default 10s) bounds the metadata fetch inside {@code send()};
+     * this bounds the acknowledgement after it.
+     */
+    static final Duration SEND_TIMEOUT = Duration.ofSeconds(30);
+
+    /** How often a container whose poll hit an auth exception retries, instead of stopping. */
+    static final Duration AUTH_EXCEPTION_RETRY_INTERVAL = Duration.ofSeconds(10);
 
     private final KafkaTemplate<String, byte[]> kafkaTemplate;
     private final ConsumerFactory<String, byte[]> consumerFactory;
@@ -147,9 +162,11 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
     @Override
     public void subscribeSignals(String serviceName, Consumer<SignalMessage> handler) {
         var topic = resolveSignalTopic(serviceName);
-        if (config.redeliveryEnabled()) {
-            KafkaDeadLetterTopicCheck.warnOnMissing(consumerFactory, topic, config.deadLetterSuffix());
-        }
+        // Topic existence (this topic and its .DLT) was verified once at startup by
+        // KafkaTopicVerifier, from MaestroSignalListenerBeanPostProcessor — not
+        // per subscription here; the container below is additionally started
+        // with missingTopicsFatal under verify-on-startup=fail.
+        //
         // Nothing is caught here on purpose: a handler failure — or an
         // undeserializable record — must reach the container's error handler so
         // the offset is not committed. See the class Javadoc. This is also the
@@ -188,12 +205,18 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
     private void send(String topic, String key, Object message) {
         var record = tracedRecord(topic, key, serialize(message));
         try {
-            // Block on the future to ensure at-least-once delivery.
+            // Block on the future to ensure at-least-once delivery, but never
+            // without bound: an unacknowledged record must surface as a failure
+            // the caller can act on, not hold a signal publisher forever.
             // Safe on virtual threads — yields the carrier thread while waiting.
-            kafkaTemplate.send(record).get();
+            kafkaTemplate.send(record).get(SEND_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
         } catch (ExecutionException e) {
             throw new IllegalStateException(
                     "Failed to publish message to Kafka topic '" + topic + "' (key=" + key + ")", e.getCause());
+        } catch (TimeoutException e) {
+            throw new IllegalStateException(
+                    "Timed out after " + SEND_TIMEOUT + " waiting for Kafka to acknowledge a message on topic '"
+                            + topic + "' (key=" + key + ")", e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(
@@ -222,6 +245,16 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
         containerProps.setGroupId(config.consumerGroup());
         containerProps.setMessageListener(listener);
         containerProps.setAckMode(ContainerProperties.AckMode.RECORD);
+        // Under verify-on-startup=fail a topic that is gone at container start
+        // fails start() instead of leaving a consumer polling nothing forever;
+        // warn/off keep the container tolerant, matching the operator's choice.
+        // (Spring Kafka counts an unreachable broker as "missing" here, which is
+        // exactly why this is not unconditional.)
+        containerProps.setMissingTopicsFatal(config.verifyOnStartup() == TopicVerification.FAIL);
+        // Without an interval an AuthenticationException/AuthorizationException
+        // from poll() stops the container silently; with one it retries, so a
+        // credential or ACL fix is picked up without a restart.
+        containerProps.setAuthExceptionRetryInterval(AUTH_EXCEPTION_RETRY_INTERVAL);
         var container = new ConcurrentMessageListenerContainer<>(consumerFactory, containerProps);
         container.setCommonErrorHandler(config.redeliveryEnabled()
                 ? KafkaRedeliveryErrorHandlers.deadLettering(
@@ -257,8 +290,6 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
     }
 
     private String resolveSignalTopic(String serviceName) {
-        return config.signalsTopic() != null
-                ? config.signalsTopic()
-                : "maestro.signals." + serviceName;
+        return config.signalTopicFor(serviceName);
     }
 }

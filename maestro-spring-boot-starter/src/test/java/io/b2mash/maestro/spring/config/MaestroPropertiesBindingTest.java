@@ -42,13 +42,25 @@ class MaestroPropertiesBindingTest {
                         "maestro.messaging.type=kafka",
                         "maestro.messaging.consumer-group=custom-group",
                         "maestro.messaging.topics.signals=custom.signals",
-                        "maestro.messaging.topics.admin-events=custom.admin.events")
+                        "maestro.messaging.topics.admin-events=custom.admin.events",
+                        "maestro.messaging.topics.verify-on-startup=warn")
                 .run(context -> {
                     var messaging = context.getBean(MaestroProperties.class).getMessaging();
                     assertThat(messaging.consumerGroup()).isEqualTo("custom-group");
                     assertThat(messaging.topics().signals()).isEqualTo("custom.signals");
                     assertThat(messaging.topics().adminEvents()).isEqualTo("custom.admin.events");
+                    assertThat(messaging.topics().verifyOnStartup())
+                            .isEqualTo(MaestroProperties.TopicsProperties.TopicVerification.WARN);
                 });
+    }
+
+    @Test
+    @DisplayName("verify-on-startup defaults to fail")
+    void verifyOnStartupDefaultsToFail() {
+        runner.withPropertyValues("maestro.service-name=binding-test")
+                .run(context -> assertThat(
+                        context.getBean(MaestroProperties.class).getMessaging().topics().verifyOnStartup())
+                        .isEqualTo(MaestroProperties.TopicsProperties.TopicVerification.FAIL));
     }
 
     @Test

@@ -299,8 +299,8 @@ public class MaestroProperties {
      * record gets a {@code DefaultErrorHandler} with a zero-length
      * {@code FixedBackOff}: no redelivery, no {@code DeadLetterPublishingRecoverer}
      * — the record is logged and skipped, restoring at-most-once handler
-     * semantics (and the dead-letter-topic startup probe is skipped
-     * entirely, since nothing will ever publish to a dead-letter topic). This
+     * semantics (and the {@code .DLT} topics drop out of the set the startup
+     * topic verification requires, since nothing will ever publish to one). This
      * trades the
      * durability the rest of this record buys for simpler, at-most-once
      * semantics; it is not a recommended default and defaults to {@code true}.
@@ -337,16 +337,53 @@ public class MaestroProperties {
      * {@code maestro.messaging.topics.tasks} property fails startup if it is
      * still set, whichever transport is in use ({@code MaestroAutoConfiguration}).
      *
-     * @param signals     topic for cross-service signal delivery
-     * @param adminEvents topic for admin dashboard lifecycle events
+     * @param signals         topic for cross-service signal delivery
+     * @param adminEvents     topic for admin dashboard lifecycle events
+     * @param verifyOnStartup what happens when a topic this service needs does
+     *                        not exist at startup — see {@link TopicVerification};
+     *                        default {@link TopicVerification#FAIL}
      */
     public record TopicsProperties(
             @Nullable String signals,
-            @DefaultValue("maestro.admin.events") String adminEvents
+            @DefaultValue("maestro.admin.events") String adminEvents,
+            @DefaultValue("fail") TopicVerification verifyOnStartup
     ) {
         /** @return the defaults documented above */
         public static TopicsProperties defaults() {
-            return new TopicsProperties(null, "maestro.admin.events");
+            return new TopicsProperties(null, "maestro.admin.events", TopicVerification.FAIL);
+        }
+
+        /**
+         * Startup policy for the Kafka topics a service needs
+         * ({@code maestro.messaging.topics.verify-on-startup}).
+         *
+         * <p>Maestro never creates topics. Before this policy existed, a
+         * missing topic surfaced only later and indirectly: a producer that
+         * blocked for {@code max.block.ms} on every publish, or a consumer that
+         * polled nothing forever — or, for a missing {@code .DLT}, a redelivery
+         * that could not park its record once the attempt budget was spent.
+         * The Kafka transport now resolves every topic it needs once, during
+         * context refresh (the engine's signal topic and, with redelivery
+         * enabled, its {@code .DLT} companion; the admin-events topic when
+         * lifecycle publishing is enabled; every {@code @MaestroSignalListener}
+         * topic and its {@code .DLT}), and asks the broker whether they exist.
+         */
+        public enum TopicVerification {
+            /**
+             * A topic confirmed missing fails startup with one exception that
+             * lists every missing topic and a ready {@code kafka-topics.sh
+             * --create} line for each. Listener containers are additionally
+             * started with {@code missingTopicsFatal}, so a topic that vanishes
+             * later fails the container rather than polling nothing. A probe
+             * that cannot reach the broker is <em>inconclusive</em>, logged at
+             * WARN, and does not fail startup — a broker blip must not become a
+             * fleet-wide restart loop. The default.
+             */
+            FAIL,
+            /** Missing topics are logged at WARN, naming each one; startup continues. */
+            WARN,
+            /** No verification at all — the pre-0.5 behaviour. */
+            OFF
         }
     }
 

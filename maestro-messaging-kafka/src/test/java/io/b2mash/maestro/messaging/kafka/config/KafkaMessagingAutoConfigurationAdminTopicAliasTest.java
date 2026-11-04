@@ -43,7 +43,9 @@ class KafkaMessagingAutoConfigurationAdminTopicAliasTest {
             .withConfiguration(AutoConfigurations.of(KafkaMessagingAutoConfiguration.class))
             .withUserConfiguration(PropertiesConfiguration.class)
             .withBean(ObjectMapper.class, ObjectMapper::new)
-            .withPropertyValues("maestro.service-name=alias-test");
+            .withPropertyValues("maestro.service-name=alias-test",
+                    // No broker in this test; see KafkaTopicVerificationStartupTest for the gate itself.
+                    "maestro.messaging.topics.verify-on-startup=off");
 
     private ListAppender<ILoggingEvent> logAppender;
 

@@ -127,6 +127,13 @@ public class KafkaMessagingAutoConfiguration {
 
     private static final Logger logger = LoggerFactory.getLogger(KafkaMessagingAutoConfiguration.class);
 
+    /**
+     * Maestro's default for the producer's {@code max.block.ms} when
+     * {@code spring.kafka.producer.*} does not set one: 10 seconds, down from
+     * Kafka's 60. See {@link #maestroKafkaProducerFactory}.
+     */
+    static final int DEFAULT_MAX_BLOCK_MS = 10_000;
+
     @Bean
     @ConditionalOnMissingBean(name = "maestroKafkaProducerFactory")
     public ProducerFactory<String, byte[]> maestroKafkaProducerFactory(
@@ -143,6 +150,12 @@ public class KafkaMessagingAutoConfiguration {
         props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
         props.put(ProducerConfig.ACKS_CONFIG, "all");
+        // Not a wire-format invariant — a user's explicit
+        // spring.kafka.producer.properties.max.block.ms wins. Bounds how long
+        // send() blocks fetching metadata for a topic that does not exist: Kafka's
+        // own default is 60s, which is how a missing admin-events topic once cost
+        // a minute per lifecycle publish.
+        props.putIfAbsent(ProducerConfig.MAX_BLOCK_MS_CONFIG, DEFAULT_MAX_BLOCK_MS);
         return new DefaultKafkaProducerFactory<>(props);
     }
 
@@ -200,6 +213,12 @@ public class KafkaMessagingAutoConfiguration {
         // Not a wire-format invariant — a user's explicit
         // spring.kafka.consumer.auto-offset-reset wins.
         props.putIfAbsent(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        // "Never auto-create Kafka topics", in code: a Maestro consumer must not
+        // conjure a topic into existence on a broker that still allows it. Also
+        // a default, not forced — spring.kafka.consumer.properties.allow.auto.create.topics
+        // can override it. Topic existence itself is verified at startup by
+        // KafkaTopicVerifier (maestro.messaging.topics.verify-on-startup).
+        props.putIfAbsent(ConsumerConfig.ALLOW_AUTO_CREATE_TOPICS_CONFIG, "false");
         // Default group ID — overridden per-container, but prevents confusing
         // errors if this factory is accidentally used outside container scope.
         // Engine-owned, so it is forced rather than putIfAbsent.
@@ -242,7 +261,8 @@ public class KafkaMessagingAutoConfiguration {
                 redelivery.multiplier(),
                 redelivery.maxInterval(),
                 redelivery.deadLetterSuffix(),
-                redelivery.enabled()
+                redelivery.enabled(),
+                topics.verifyOnStartup()
         );
     }
 
