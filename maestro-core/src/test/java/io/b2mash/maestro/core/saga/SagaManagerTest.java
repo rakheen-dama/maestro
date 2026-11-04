@@ -876,11 +876,78 @@ class SagaManagerTest {
         return store.getEvents(instance.id()).stream().filter(e -> e.eventType() == type).count();
     }
 
+    // ── Lease fencing (Issue 11) ──────────────────────────────────────
+
+    @Test
+    @DisplayName("a fenced compensation memo append is NOT swallowed by appendEvent's catch (Exception): it "
+            + "propagates, marks the run STALE, and no later compensation action runs")
+    void fencedCompensationAppendPropagatesAndStopsTheUnwind() {
+        var ran = new ArrayList<String>();
+        var stack = new CompensationStack();
+        stack.push("step-A", () -> ran.add("A"));
+        stack.push("step-B", () -> {
+            ran.add("B");
+            // Another node adopts the workflow while B's action is running: the
+            // row's epoch moves past this run's, so B's COMPENSATION_STEP_COMPLETED
+            // memo — the very next write — is fenced.
+            store.rowLeaseEpoch = 1;
+        });
+
+        var thrown = org.junit.jupiter.api.Assertions.assertThrows(
+                io.b2mash.maestro.core.exception.FencedWriteException.class,
+                () -> sagaManager.compensate(ctx, instance, stack, false));
+
+        assertEquals("appendEvent", thrown.operation());
+        assertEquals(List.of("B"), ran, "A must never run — the adopting node owns the unwind now");
+        assertEquals(io.b2mash.maestro.core.context.RunCancellation.Cause.STALE, ctx.cancellation().cause(),
+                "sticky, so workflow code that swallows the exception still stands down");
+        assertEquals(0, countEvents(EventType.COMPENSATION_STEP_COMPLETED), "the fenced memo was not written");
+        assertEquals(0, countEvents(EventType.COMPENSATION_COMPLETED));
+    }
+
+    @Test
+    @DisplayName("a fenced COMPENSATING transition propagates without compensating anything")
+    void fencedCompensatingTransitionPropagates() {
+        var ran = new AtomicInteger();
+        var stack = new CompensationStack();
+        stack.push("step-A", ran::incrementAndGet);
+        store.rowLeaseEpoch = 1; // adopted elsewhere before this run reached its failure handling
+
+        org.junit.jupiter.api.Assertions.assertThrows(
+                io.b2mash.maestro.core.exception.FencedWriteException.class,
+                () -> sagaManager.compensate(ctx, instance, stack, false));
+
+        assertEquals(0, ran.get(), "no compensation action may run against an unconfirmed status");
+        assertEquals(WorkflowStatus.RUNNING, store.getInstance("test-workflow").orElseThrow().status(),
+                "nothing written");
+        assertEquals(io.b2mash.maestro.core.context.RunCancellation.Cause.STALE, ctx.cancellation().cause());
+    }
+
     // ── In-memory store ───────────────────────────────────────────────
 
     private static class InMemoryStore implements WorkflowStore {
         private final ConcurrentHashMap<String, WorkflowInstance> instancesByWorkflowId = new ConcurrentHashMap<>();
         private final CopyOnWriteArrayList<WorkflowEvent> events = new CopyOnWriteArrayList<>();
+        /** The epoch "the row" carries; a lease with a different epoch is fenced (Issue 11). */
+        volatile long rowLeaseEpoch = 0;
+
+        @Override
+        public void appendEvent(WorkflowEvent event, io.b2mash.maestro.core.spi.RunLease lease) {
+            if (lease.epoch() != rowLeaseEpoch) {
+                throw new io.b2mash.maestro.core.exception.FencedWriteException(
+                        lease.instanceId(), lease.epoch(), "appendEvent");
+            }
+            appendEvent(event);
+        }
+
+        @Override
+        public void updateInstance(WorkflowInstance instance, io.b2mash.maestro.core.spi.RunLease lease) {
+            if (lease.epoch() != rowLeaseEpoch) {
+                throw new io.b2mash.maestro.core.exception.FencedWriteException(
+                        lease.instanceId(), lease.epoch(), "updateInstance");
+            }
+            updateInstance(instance);
+        }
 
         @Override
         public WorkflowInstance createInstance(WorkflowInstance instance) {

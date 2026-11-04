@@ -952,6 +952,157 @@ class WorkflowExecutorTest {
         }
     }
 
+    // ── Lease fencing (Issue 11): adoption bump and proactive stand-down ──
+
+    @Test
+    @DisplayName("Resume adopts the instance: the lease epoch is bumped under the version CAS and the run completes under it")
+    void resumeBumpsLeaseEpochAndRunsUnderIt() throws Exception {
+        var versioned = new VersionedInMemoryStore();
+        var lock = new MapLock();
+        var fencedExecutor = new WorkflowExecutor(versioned, lock, messaging, null, serializer, "test-service");
+        try {
+            var seeded = recoverableInstance("adopt-win");
+            versioned.createInstance(seeded);
+            assertEquals(0, seeded.leaseEpoch());
+
+            var latch = new CountDownLatch(1);
+            var workflow = new SimpleWorkflow(latch);
+            var method = SimpleWorkflow.class.getMethod("run", String.class);
+
+            assertTrue(fencedExecutor.resumeWorkflow(seeded, () -> workflow, method));
+            assertTrue(latch.await(5, TimeUnit.SECONDS));
+            await().atMost(Duration.ofSeconds(2)).untilAsserted(() -> {
+                var stored = versioned.getInstance("adopt-win").orElseThrow();
+                assertEquals(WorkflowStatus.COMPLETED, stored.status(),
+                        "the terminal write under the adopted lease must succeed");
+                assertEquals(1, stored.leaseEpoch(), "exactly one adoption");
+            });
+            assertEquals(1, versioned.getEvents(seeded.id()).size(), "WORKFLOW_COMPLETED written under epoch 1");
+            assertFalse(lock.isHeld("maestro:lock:workflow:adopt-win"));
+        } finally {
+            fencedExecutor.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("Resume whose adoption CAS loses (another adopter got there first) returns false, runs nothing and releases the lock")
+    void resumeLosingTheAdoptionCas_yieldsAndReleasesTheLock() throws Exception {
+        var versioned = new VersionedInMemoryStore();
+        var lock = new MapLock();
+        var fencedExecutor = new WorkflowExecutor(versioned, lock, messaging, null, serializer, "test-service");
+        try {
+            var seeded = recoverableInstance("adopt-lose");
+            versioned.createInstance(seeded);
+            versioned.failNextUpdates(1); // the adoption bump is the next updateInstance
+
+            var latch = new CountDownLatch(1);
+            var workflow = new SimpleWorkflow(latch);
+            var method = SimpleWorkflow.class.getMethod("run", String.class);
+
+            assertFalse(fencedExecutor.resumeWorkflow(seeded, () -> workflow, method),
+                    "losing the adoption CAS must read exactly like HELD_ELSEWHERE");
+            assertFalse(latch.await(300, TimeUnit.MILLISECONDS), "the workflow must not run");
+            assertFalse(fencedExecutor.isRunning("adopt-lose"));
+            assertFalse(lock.isHeld("maestro:lock:workflow:adopt-lose"), "the acquired lock must be released");
+            var stored = versioned.getInstance("adopt-lose").orElseThrow();
+            assertEquals(0, stored.leaseEpoch(), "nothing written by the loser");
+            assertEquals(WorkflowStatus.RUNNING, stored.status());
+        } finally {
+            fencedExecutor.shutdown();
+        }
+    }
+
+    @Test
+    @DisplayName("A run whose instance lock is lost is stood down proactively: it stops at its next live activity (STALE_RUN, 'instance lock lost') and the instance stays recoverable")
+    void lostLock_standsTheRunDownBeforeItsNextActivity() throws Exception {
+        var observer = new io.b2mash.maestro.core.observe.RecordingEngineObserver();
+        var lock = new MapLock();
+        // 300 ms TTL → the renewer runs every 100 ms, so a lost lock is noticed quickly.
+        var fencedExecutor = new WorkflowExecutor(store, lock, messaging, null, serializer, "test-service",
+                "maestro:lock:", Duration.ofMillis(300), true, Duration.ofSeconds(5), Duration.ofSeconds(30),
+                observer, Map.of());
+        var gate = new CountDownLatch(1);
+        try {
+            var entered = new CountDownLatch(1);
+            var activityImpl = new GatedHandlerActivity(entered, gate);
+            var activityProxy = new ActivityProxyFactory().createProxy(
+                    HandlerActivity.class, activityImpl, store, null, messaging,
+                    RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
+            var done = new CountDownLatch(1);
+            var workflow = new TwoActivityWorkflow(activityProxy, done);
+            var method = TwoActivityWorkflow.class.getMethod("run", String.class);
+
+            var instanceId = fencedExecutor.startWorkflow("lost-1", "TwoActivityWorkflow", "default",
+                    "x", () -> workflow, method);
+            assertTrue(entered.await(5, TimeUnit.SECONDS), "the run must be inside activity one");
+
+            // The lock vanishes under the run (a peer re-acquired it after a TTL expiry).
+            lock.releaseForeign("maestro:lock:workflow:lost-1");
+            await().atMost(Duration.ofSeconds(5)).until(() -> observer.lockLost().contains("lost-1"));
+
+            gate.countDown(); // activity one returns; its memo lands (no adopter bumped the epoch) …
+            await().atMost(Duration.ofSeconds(5)).until(() -> !fencedExecutor.isRunning("lost-1"));
+
+            // … and the run stands down before activity two instead of carrying on.
+            assertFalse(done.await(200, TimeUnit.MILLISECONDS), "the workflow body must not finish");
+            assertEquals(List.of("one:x"), activityImpl.calls, "activity two must never execute");
+            assertEquals(List.of(io.b2mash.maestro.core.observe.StandDownReason.STALE_RUN),
+                    observer.standDownReasons("lost-1"));
+            assertEquals("instance lock lost", observer.standDowns().getFirst().detail());
+            var stored = store.getInstance("lost-1").orElseThrow();
+            assertEquals(WorkflowStatus.RUNNING, stored.status(), "nothing terminal written; recoverable");
+            assertEquals(1, store.getEvents(instanceId).size(), "only activity one's memo exists");
+            assertTrue(observer.failed().isEmpty(), "a lost lock is never a workflow failure");
+        } finally {
+            gate.countDown();
+            fencedExecutor.shutdown();
+        }
+    }
+
+    /** Two proxied activities in a row; the fixture for the lost-lock stand-down. */
+    public static class TwoActivityWorkflow {
+        private final HandlerActivity activity;
+        private final CountDownLatch done;
+
+        public TwoActivityWorkflow(HandlerActivity activity, CountDownLatch done) {
+            this.activity = activity;
+            this.done = done;
+        }
+
+        public String run(String input) {
+            var one = activity.handle("one:" + input);
+            var two = activity.handle("two:" + input);
+            done.countDown();
+            return one + "|" + two;
+        }
+    }
+
+    /** Records every call; the first "one:" call parks on {@code gate} after signalling {@code entered}. */
+    private static final class GatedHandlerActivity implements HandlerActivity {
+        final CopyOnWriteArrayList<String> calls = new CopyOnWriteArrayList<>();
+        private final CountDownLatch entered;
+        private final CountDownLatch gate;
+
+        GatedHandlerActivity(CountDownLatch entered, CountDownLatch gate) {
+            this.entered = entered;
+            this.gate = gate;
+        }
+
+        @Override
+        public String handle(String input) {
+            calls.add(input);
+            if (input.startsWith("one:")) {
+                entered.countDown();
+                try {
+                    gate.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            return input;
+        }
+    }
+
     private WorkflowInstance recoverableInstance(String workflowId) {
         return WorkflowInstance.builder()
                 .id(UUID.randomUUID())

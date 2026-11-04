@@ -8,8 +8,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -26,13 +28,21 @@ import java.util.function.Supplier;
  *
  * <p><b>Graceful degradation:</b> with no {@link DistributedLock} backend
  * (or a failing one), acquisition reports {@link Acquisition#NO_BACKEND}
- * and callers proceed exactly as before this lock existed — the store's
- * unique event index and optimistic instance versioning remain the
- * correctness backstop.
+ * and callers proceed exactly as before this lock existed. The lock is an
+ * <em>admission</em> guard — it stops a second node from starting a redundant
+ * run in the first place; it is not what keeps a stale run from persisting
+ * progress. That is the store's lease fencing (Issue 11): every adoption bumps
+ * the instance row's {@code lease_epoch}, and every run-scoped write is
+ * validated against the epoch the run adopted at, so a run whose lock expired
+ * or was never held cannot write once another node has adopted the workflow.
  *
  * <p><b>Lost locks:</b> if a renewal reports lost ownership, the handle is
- * dropped and an ERROR is logged, but the running workflow is not aborted —
- * fencing-token validation in the store is future work.
+ * dropped, an ERROR is logged and the {@link #onLockLost} callback is invoked,
+ * which the executor uses to mark the run stale so it stands down at its next
+ * stop point instead of first trying a write the store would fence anyway.
+ * The callback is proactive courtesy, not the guarantee — the fence holds
+ * even when the renewer notices nothing (a frozen JVM notices only after it
+ * thaws).
  *
  * <p><b>Thread safety:</b> all methods are thread-safe.
  */
@@ -65,6 +75,20 @@ final class WorkflowInstanceLockManager {
     private final AtomicBoolean renewerStarted = new AtomicBoolean(false);
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private volatile @Nullable Thread renewerThread;
+    private volatile Consumer<String> lockLostCallback = _ -> { };
+
+    /**
+     * Registers the callback {@link #renewLoop} invokes with a workflow ID when
+     * a renewal reports that its instance lock was lost. Invoked at most once
+     * per lost handle, on the renewer thread, through the same containment as
+     * the observer callbacks — a throwing callback cannot kill the renewer.
+     * Replaces any previously registered callback.
+     *
+     * @param callback receives the workflow ID whose lock was lost
+     */
+    void onLockLost(Consumer<String> callback) {
+        this.lockLostCallback = Objects.requireNonNull(callback, "callback");
+    }
 
     /**
      * Test seam: builds the (not-yet-started) renewer thread. Package-private
@@ -280,8 +304,8 @@ final class WorkflowInstanceLockManager {
         try {
             if (!distributedLock.renew(handle, ttl)) {
                 logger.error("Instance lock for workflow '{}' was lost — another node may now be "
-                                + "executing this workflow; DB constraints remain the "
-                                + "duplicate-execution guard",
+                                + "executing this workflow; this run is being stood down and the "
+                                + "store's lease fence rejects any write it still attempts",
                         workflowId);
                 heldLocks.remove(workflowId, handle);
                 lost = true;
@@ -300,6 +324,9 @@ final class WorkflowInstanceLockManager {
         // renewer thread — that would silently stop renewing EVERY held lock.
         if (lost) {
             emit("instanceLockLost", workflowId, () -> observer.instanceLockLost(workflowId));
+            // Proactive stand-down: tell the executor now, so the run stops at
+            // its next stop point rather than after a write the store fences.
+            emit("onLockLost", workflowId, () -> lockLostCallback.accept(workflowId));
         }
     }
 

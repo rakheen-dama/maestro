@@ -7,6 +7,7 @@ import io.b2mash.maestro.core.context.WorkflowContextInternals;
 import io.b2mash.maestro.core.context.WorkflowMDC;
 import io.b2mash.maestro.core.exception.CompensationException;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
+import io.b2mash.maestro.core.exception.FencedWriteException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.MaestroControlFlowError;
@@ -544,6 +545,17 @@ public final class WorkflowExecutor {
         this.lifecycleEventPublisher = new LifecycleEventPublisher(serviceName);
         this.runningWorkflows = new ConcurrentHashMap<>();
         this.shuttingDown = new AtomicBoolean(false);
+        // Proactive stand-down (Issue 11): a run whose instance lock was lost
+        // is marked stale now, so it stops at its next stop point — live
+        // activity, sleep(), awaitSignal(), terminal write — instead of first
+        // attempting a write the store's lease fence rejects anyway. The fence
+        // is the guarantee; this only shortens the window.
+        this.instanceLockManager.onLockLost(workflowId -> {
+            var running = runningWorkflows.get(workflowId);
+            if (running != null) {
+                running.cancellation().requestStale("instance lock lost");
+            }
+        });
     }
 
     /**
@@ -1752,48 +1764,75 @@ public final class WorkflowExecutor {
     // ── Internal: workflow launch ──────────────────────────────────────
 
     private boolean launchWorkflow(
-            WorkflowInstance instance,
+            WorkflowInstance snapshot,
             Supplier<Object> workflowFactory,
             Method workflowMethod,
             @Nullable JsonNode inputPayload,
             boolean replaying,
             WorkflowInstanceLockManager.@Nullable Acquisition preAcquired
     ) {
-        // The per-instance distributed lock guarantees a second node can never
-        // concurrently execute this workflow. Fresh starts acquire it in
-        // startWorkflow (before createInstance) and pass the result in; resume
-        // paths acquire here. Held — renewed — until executeWorkflow's
-        // finally, including parked waits and saga compensation.
+        // The per-instance distributed lock is the admission guard: it stops a
+        // second node from starting a redundant run while this one is live.
+        // Fresh starts acquire it in startWorkflow (before createInstance) and
+        // pass the result in; resume paths acquire here. Held — renewed — until
+        // executeWorkflow's finally, including parked waits and saga
+        // compensation. What stops a run that LOST the lock from persisting
+        // progress is not the lock but the lease fence below (Issue 11).
         var acquisition = preAcquired != null
                 ? preAcquired
-                : instanceLockManager.tryAcquire(instance.workflowId());
+                : instanceLockManager.tryAcquire(snapshot.workflowId());
         if (acquisition == WorkflowInstanceLockManager.Acquisition.HELD_ELSEWHERE) {
             if (replaying) {
                 logger.info("Workflow '{}' instance lock is held elsewhere — skipping resume",
-                        instance.workflowId());
+                        snapshot.workflowId());
                 return false;
             }
             // Fresh start: createInstance just succeeded, so this node is the
             // legitimate owner — a held lock here is a stale-lock anomaly
             logger.warn("Could not acquire instance lock for new workflow '{}' — proceeding; "
-                            + "store constraints remain the duplicate-execution guard",
-                    instance.workflowId());
+                            + "the lease fence and the store's unique index remain the "
+                            + "duplicate-execution guards",
+                    snapshot.workflowId());
         }
 
+        // The instance this run executes: the fresh start's own row, or — on a
+        // resume — the row as re-read and ADOPTED here, carrying the lease
+        // epoch this run will write under. Assigned exactly once on each path.
+        WorkflowInstance instance;
         if (replaying) {
             // Close the recovery-query→resume race: the previous owner may
             // have finished the workflow after the recovery snapshot was
             // taken. Run the re-check regardless of lock acquisition — with
             // no lock backend (NO_BACKEND) the snapshot can be just as stale.
-            var current = store.getInstance(instance.workflowId());
+            var current = store.getInstance(snapshot.workflowId());
             if (current.isEmpty() || !current.get().status().isActive()) {
                 logger.debug("Workflow '{}' turned terminal before resume — skipping",
-                        instance.workflowId());
+                        snapshot.workflowId());
                 if (acquisition == WorkflowInstanceLockManager.Acquisition.ACQUIRED) {
-                    instanceLockManager.release(instance.workflowId());
+                    instanceLockManager.release(snapshot.workflowId());
                 }
                 return false;
             }
+            // Adoption (Issue 11): bump the row's lease epoch under its version
+            // CAS. From this write on, every run-scoped write by any EARLIER
+            // holder of this instance — a node frozen past its lock TTL, a
+            // partitioned peer, a no-lock-backend twin — is fenced by the store,
+            // whatever its lock renewer did or did not notice. Losing this CAS
+            // means another adopter got here first in the same instant; this
+            // node yields exactly as if the lock had been held elsewhere. The
+            // bump happens on every adoption, NO_BACKEND included: two
+            // lock-less nodes adopting in turn would fence each other, which is
+            // why multi-node without a lock backend is unsupported (documented).
+            var adopted = adopt(current.get());
+            if (adopted == null) {
+                if (acquisition == WorkflowInstanceLockManager.Acquisition.ACQUIRED) {
+                    instanceLockManager.release(snapshot.workflowId());
+                }
+                return false;
+            }
+            instance = adopted;
+        } else {
+            instance = snapshot;
         }
 
         var compensationStack = new CompensationStack();
@@ -1812,7 +1851,8 @@ public final class WorkflowExecutor {
                 0,
                 replaying,
                 operations,
-                cancellation
+                cancellation,
+                instance.leaseEpoch()
         );
 
         // Detect @Saga on the workflow method
@@ -1879,6 +1919,39 @@ public final class WorkflowExecutor {
         return true;
     }
 
+    /**
+     * The adoption compare-and-set: rewrites {@code current} with
+     * {@code leaseEpoch + 1} under its version. This is the one instance write
+     * that is deliberately <em>unfenced</em> — it is what moves the fence.
+     *
+     * @param current the row as freshly re-read by the resume path
+     * @return the row as written, carrying the new epoch and version; or
+     *         {@code null} if the CAS was lost (another adopter or writer got
+     *         there first) or the row vanished — the caller yields
+     */
+    private @Nullable WorkflowInstance adopt(WorkflowInstance current) {
+        var now = Instant.now();
+        var adopted = current.toBuilder()
+                .leaseEpoch(current.leaseEpoch() + 1)
+                .updatedAt(now)
+                .version(current.version() + 1)
+                .build();
+        try {
+            store.updateInstance(adopted);
+        } catch (OptimisticLockException lost) {
+            logger.info("Workflow '{}' adoption lost its compare-and-set (expected version {}, found {}) — "
+                            + "another node adopted it first; skipping resume",
+                    current.workflowId(), lost.expectedVersion(), lost.actualVersion());
+            return null;
+        } catch (WorkflowNotFoundException gone) {
+            logger.debug("Workflow '{}' vanished before adoption — skipping resume", current.workflowId());
+            return null;
+        }
+        logger.debug("Workflow '{}' adopted at lease epoch {} (version {})",
+                adopted.workflowId(), adopted.leaseEpoch(), adopted.version());
+        return adopted;
+    }
+
     // ── Internal: workflow execution (virtual thread body) ─────────────
 
     private void executeWorkflow(
@@ -1930,8 +2003,8 @@ public final class WorkflowExecutor {
             try {
                 completed = transitionToTerminal(ctx, instance, WorkflowStatus.COMPLETED,
                         EventType.WORKFLOW_COMPLETED, outputPayload);
-            } catch (DuplicateEventException | StaleRunException routed) {
-                throw routed; // keep their stale-run stand-down arm below
+            } catch (DuplicateEventException | StaleRunException | FencedWriteException routed) {
+                throw routed; // keep their stale-run / lease-fenced stand-down arm below
             } catch (RuntimeException terminalWriteFailed) {
                 // R31: any other store error here (a DB blip surfacing as an
                 // unchecked SQL exception, a failed re-read) is NOT a workflow
@@ -2011,24 +2084,28 @@ public final class WorkflowExecutor {
             // them the ordering is readability-only, since the exception is an
             // Error and catch (Exception e) below could never reach it.
             handleUnknownHistoryStandDown(ctx, unreadableHistory);
-        } catch (DuplicateEventException | StaleRunException staleRun) {
-            // Issue 18: a DuplicateEventException that reaches this level means
-            // "another run owns this workflow's progress — this node's view is
-            // stale". It is the store's (workflow_instance_id, sequence_number)
-            // dedup guard doing its job in the Issue 11 no-fencing window: this
-            // node lost its instance lock (frozen past TTL, partitioned, or a
-            // no-lock-backend race), a peer adopted the workflow, and the peer's
-            // event at this sequence is already the durable truth. Recording a
-            // FAILURE here — as the generic catch below would — durably marks a
-            // workflow that SUCCEEDED on the winner as FAILED and compensates
-            // completed work. Instead this run STANDS DOWN like the shutdown and
-            // termination cases above: write nothing, compensate nothing,
-            // release the local run. The winner's durable state governs; if no
-            // winner exists (a pure self-conflict), the instance stays active
-            // and recovery replays it from the log. A StaleRunException is the
-            // same signal from a status write (C5): a fresh read found COMPLETED
-            // or FAILED written by another runner. MUST stay ahead of
-            // catch (Exception e) — both are MaestroExceptions.
+        } catch (DuplicateEventException | StaleRunException | FencedWriteException staleRun) {
+            // Issue 18 / Issue 11: all three mean "another run owns this
+            // workflow's progress — this node's view is stale". A
+            // FencedWriteException is the store's lease fence doing its job:
+            // this node lost or outlived its instance lock (frozen past TTL,
+            // partitioned, or a no-lock-backend race), a peer ADOPTED the
+            // workflow and bumped the row's lease epoch, and the store refused
+            // this run's write — nothing was persisted. A
+            // DuplicateEventException is the (workflow_instance_id,
+            // sequence_number) unique index catching the same race in the
+            // window before the fence applied (a peer's event already in the
+            // slot under a still-current lease). Recording a FAILURE here — as
+            // the generic catch below would — durably marks a workflow that
+            // SUCCEEDED on the winner as FAILED and compensates completed work.
+            // Instead this run STANDS DOWN like the shutdown and termination
+            // cases above: write nothing, compensate nothing, release the local
+            // run. The winner's durable state governs; if no winner exists (a
+            // pure self-conflict), the instance stays active and recovery
+            // replays it from the log. A StaleRunException is the same signal
+            // from a status write (C5): a fresh read found COMPLETED or FAILED
+            // written by another runner. MUST stay ahead of catch (Exception e)
+            // — all three are MaestroExceptions.
             handleStaleRunStandDown(ctx, staleRun);
         } catch (Error e) {
             // Sits after the control-flow arms above and before catch (Exception e):
@@ -2198,21 +2275,28 @@ public final class WorkflowExecutor {
      *            pass
      */
     private void handleStaleRunStandDown(WorkflowContext ctx, MaestroException e) {
+        var reason = switch (e) {
+            case DuplicateEventException _, StaleRunException _ -> StandDownReason.STALE_RUN;
+            case FencedWriteException _ -> StandDownReason.LEASE_FENCED;
+            default -> throw new IllegalArgumentException(
+                    "not a stale-run signal: " + e.getClass().getName(), e);
+        };
         var detail = switch (e) {
             case DuplicateEventException duplicate -> "append collision at sequence " + duplicate.sequenceNumber();
             case StaleRunException stale -> stale.detail();
+            case FencedWriteException fenced -> fenced.staleDetail();
             default -> throw new IllegalArgumentException(
                     "not a stale-run signal: " + e.getClass().getName(), e);
         };
         var status = store.getInstance(ctx.workflowId())
                 .map(WorkflowInstance::status)
                 .orElse(null);
-        logger.warn("Workflow '{}' stood down: another runner owns its progress ({}; instance status "
+        logger.warn("Workflow '{}' stood down ({}): another runner owns its progress ({}; instance status "
                         + "now {}) — no failure recorded, no compensation run; the concurrent runner's "
                         + "durable state governs",
-                ctx.workflowId(), detail, status);
+                ctx.workflowId(), reason, detail, status);
         emit("standDown", ctx.workflowId(), () ->
-                observer.standDown(StandDownReason.STALE_RUN, ctx.workflowId(), detail));
+                observer.standDown(reason, ctx.workflowId(), detail));
     }
 
     // ── Internal: unknown-history stand-down (spec §C2) ────────────────
@@ -2339,17 +2423,20 @@ public final class WorkflowExecutor {
             // active and recoverable — and an upgraded node finishes the
             // unwind. Nothing is written here.
             handleUnknownHistoryStandDown(ctx, unreadableDuringCompensation);
-        } catch (DuplicateEventException | StaleRunException staleDuringCompensation) {
-            // The duplicate landed while compensating a genuine failure:
-            // another runner adopted the workflow and is compensating it
-            // (or already finished). SagaManager rethrows instead of
+        } catch (DuplicateEventException | StaleRunException | FencedWriteException staleDuringCompensation) {
+            // The duplicate (or the fence) landed while compensating a genuine
+            // failure: another runner adopted the workflow and is compensating
+            // it (or already finished). SagaManager rethrows instead of
             // recording COMPENSATION_STEP_FAILED, exactly like the shutdown
             // case; the instance stays COMPENSATING — active and
             // recoverable — and the winner's compensation run finishes the
             // job. Nothing is written here. A StaleRunException is the
             // status-write form: the COMPENSATING transition (or a status
             // write inside a compensation action) found the row already
-            // finalised by another runner, which then stands as written.
+            // finalised by another runner, which then stands as written. A
+            // FencedWriteException is the lease fence's form (Issue 11): the
+            // COMPENSATING transition or a compensation memo was refused
+            // because the adopting node now holds the row's epoch.
             handleStaleRunStandDown(ctx, staleDuringCompensation);
         } catch (Error nodeErrorDuringCompensation) {
             // R28: a node-level error from a compensation action — thrown by
@@ -2533,7 +2620,17 @@ public final class WorkflowExecutor {
                     .build();
             var terminalEvent = new WorkflowEvent(
                     UUID.randomUUID(), ctx.workflowInstanceId(), seq, terminalType, null, output, now);
-            if (store.completeInstance(updated, terminalEvent)) {
+            boolean written;
+            try {
+                // Fenced on the run's lease (Issue 11): a run that has been
+                // superseded by another node's adoption must not finalise the
+                // workflow — the adopter's run owns the outcome now.
+                written = store.completeInstance(updated, terminalEvent, ctx.lease());
+            } catch (FencedWriteException fenced) {
+                ctx.cancellation().requestStale(fenced.staleDetail());
+                throw fenced;
+            }
+            if (written) {
                 return true;
             }
             if (attempt >= TERMINAL_TRANSITION_ATTEMPTS) {

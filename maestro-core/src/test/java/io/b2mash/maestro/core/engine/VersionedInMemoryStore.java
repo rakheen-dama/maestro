@@ -154,8 +154,16 @@ class VersionedInMemoryStore implements WorkflowStore {
                 .anyMatch(i -> i.id().equals(lease.instanceId()) && i.leaseEpoch() == lease.epoch());
     }
 
+    // The fenced overloads check the lease and then delegate to the unfenced
+    // form WITHOUT holding this store's monitor across the delegate call:
+    // subclasses (BarrierStore) override the unfenced form to park a thread on
+    // a barrier, and holding the monitor there would deadlock the sibling
+    // branch. The check-then-write is therefore not atomic in this fixture;
+    // the tests that exercise fencing flip the epoch while no write is in
+    // flight, and the atomic variant is pinned against the real stores.
+
     @Override
-    public synchronized void updateInstance(WorkflowInstance instance, RunLease lease) {
+    public void updateInstance(WorkflowInstance instance, RunLease lease) {
         if (!leaseIsCurrent(lease)) {
             updateAttempts.incrementAndGet();
             throw new FencedWriteException(lease.instanceId(), lease.epoch(), "updateInstance");
@@ -164,8 +172,7 @@ class VersionedInMemoryStore implements WorkflowStore {
     }
 
     @Override
-    public synchronized boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent,
-                                                 RunLease lease) {
+    public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent, RunLease lease) {
         if (!leaseIsCurrent(lease)) {
             throw new FencedWriteException(lease.instanceId(), lease.epoch(), "completeInstance");
         }
@@ -174,44 +181,34 @@ class VersionedInMemoryStore implements WorkflowStore {
 
     @Override
     public void appendEvent(WorkflowEvent event, RunLease lease) {
-        synchronized (this) {
-            if (!leaseIsCurrent(lease)) {
-                appendAttempts.incrementAndGet();
-                throw new FencedWriteException(lease.instanceId(), lease.epoch(), "appendEvent");
-            }
-            appendEvent(event);
+        if (!leaseIsCurrent(lease)) {
+            appendAttempts.incrementAndGet();
+            throw new FencedWriteException(lease.instanceId(), lease.epoch(), "appendEvent");
         }
+        appendEvent(event);
     }
 
     @Override
     public void saveTimer(WorkflowTimer timer, RunLease lease) {
-        synchronized (this) {
-            if (!leaseIsCurrent(lease)) {
-                throw new FencedWriteException(lease.instanceId(), lease.epoch(), "saveTimer");
-            }
-            saveTimer(timer);
+        if (!leaseIsCurrent(lease)) {
+            throw new FencedWriteException(lease.instanceId(), lease.epoch(), "saveTimer");
         }
+        saveTimer(timer);
     }
 
     @Override
     public boolean markSignalConsumed(UUID signalId, RunLease lease) {
-        synchronized (this) {
-            return leaseIsCurrent(lease) && markSignalConsumed(signalId);
-        }
+        return leaseIsCurrent(lease) && markSignalConsumed(signalId);
     }
 
     @Override
     public boolean markTimerFired(UUID timerId, RunLease lease) {
-        synchronized (this) {
-            return leaseIsCurrent(lease) && markTimerFired(timerId);
-        }
+        return leaseIsCurrent(lease) && markTimerFired(timerId);
     }
 
     @Override
     public boolean markTimerCancelled(UUID timerId, RunLease lease) {
-        synchronized (this) {
-            return leaseIsCurrent(lease) && markTimerCancelled(timerId);
-        }
+        return leaseIsCurrent(lease) && markTimerCancelled(timerId);
     }
 
     /** @return how many times {@code updateInstance} has been called */
