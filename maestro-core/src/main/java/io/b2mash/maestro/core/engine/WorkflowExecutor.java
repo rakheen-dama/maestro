@@ -2262,7 +2262,12 @@ public final class WorkflowExecutor {
      *       value but lets the duplicate unwind to here, because the winner is
      *       alive and ahead;</li>
      *   <li>a {@link StaleRunException} — a status write's fresh read found
-     *       {@code COMPLETED} or {@code FAILED} written by another runner.</li>
+     *       {@code COMPLETED} or {@code FAILED} written by another runner;</li>
+     *   <li>a {@link FencedWriteException} — the store's lease fence (Issue 11)
+     *       refused one of this run's writes because another node has adopted
+     *       the workflow and bumped the row's {@code lease_epoch}; reported as
+     *       {@link StandDownReason#LEASE_FENCED}, the other two as
+     *       {@link StandDownReason#STALE_RUN}.</li>
      * </ul>
      * Deliberately writes nothing: the other runner's durable state — its
      * events, its terminal outcome, its compensation progress — is the record.
@@ -2270,9 +2275,9 @@ public final class WorkflowExecutor {
      * replays it from the log.
      *
      * @param ctx the stale run's context
-     * @param e   the {@link DuplicateEventException} or {@link StaleRunException}
-     *            that unwound the run — the only two types the stand-down arms
-     *            pass
+     * @param e   the {@link DuplicateEventException}, {@link StaleRunException}
+     *            or {@link FencedWriteException} that unwound the run — the
+     *            only three types the stand-down arms pass
      */
     private void handleStaleRunStandDown(WorkflowContext ctx, MaestroException e) {
         var reason = switch (e) {

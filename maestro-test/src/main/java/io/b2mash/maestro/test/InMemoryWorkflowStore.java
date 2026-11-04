@@ -15,6 +15,7 @@ import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.spi.RunLease;
 import io.b2mash.maestro.core.spi.TerminalWrites;
 import io.b2mash.maestro.core.spi.WorkflowStore;
+import org.jspecify.annotations.Nullable;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -24,6 +25,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 /**
  * In-memory {@link WorkflowStore} for fast, deterministic workflow tests.
@@ -95,80 +97,83 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
      * section with respect to every instance write, so an adoption bump
      * ({@link #updateInstance}) orders strictly before or after them.
      *
-     * @return {@code true} if the lease is current and {@code write} ran;
-     *         {@code false} if the lease is stale or the instance is unknown
-     *         (nothing ran)
+     * @return {@code write}'s result if the lease is current; {@code null} if
+     *         the lease is stale or the instance is unknown (nothing ran)
      */
-    private boolean ifLeaseCurrent(RunLease lease, Runnable write) {
+    private <T> @Nullable T underCurrentLease(RunLease lease, Supplier<T> write) {
         var workflowId = idToWorkflowId.get(lease.instanceId());
         var lock = workflowId == null ? null : instanceLocks.get(workflowId);
         if (lock == null) {
-            return false;
+            return null;
         }
         synchronized (lock) {
             var current = instances.get(workflowId);
             if (current == null || current.leaseEpoch() != lease.epoch()) {
-                return false;
+                return null;
             }
-            write.run();
-            return true;
+            return write.get();
         }
+    }
+
+    /** The loud form: a stale lease (or an unknown instance) is a {@link FencedWriteException}. */
+    private <T> T requireCurrentLease(RunLease lease, String operation, Supplier<T> write) {
+        var result = underCurrentLease(lease, write);
+        if (result == null) {
+            throw new FencedWriteException(lease.instanceId(), lease.epoch(), operation);
+        }
+        return result;
     }
 
     @Override
     public void appendEvent(WorkflowEvent event, RunLease lease) {
-        if (!ifLeaseCurrent(lease, () -> appendEvent(event))) {
-            throw new FencedWriteException(lease.instanceId(), lease.epoch(), "appendEvent");
-        }
+        requireCurrentLease(lease, "appendEvent", () -> {
+            appendEvent(event);
+            return Boolean.TRUE;
+        });
     }
 
     @Override
     public void saveTimer(WorkflowTimer timer, RunLease lease) {
-        if (!ifLeaseCurrent(lease, () -> saveTimer(timer))) {
-            throw new FencedWriteException(lease.instanceId(), lease.epoch(), "saveTimer");
-        }
+        requireCurrentLease(lease, "saveTimer", () -> {
+            saveTimer(timer);
+            return Boolean.TRUE;
+        });
     }
 
     @Override
     public void updateInstance(WorkflowInstance instance, RunLease lease) {
+        if (idToWorkflowId.get(lease.instanceId()) == null) {
+            throw new WorkflowNotFoundException(instance.workflowId());
+        }
         // Same monitor as the unfenced form, so the epoch check and the version
         // CAS are one critical section; the inner call re-takes it reentrantly.
-        if (!ifLeaseCurrent(lease, () -> updateInstance(instance))) {
-            if (idToWorkflowId.get(lease.instanceId()) == null) {
-                throw new WorkflowNotFoundException(instance.workflowId());
-            }
-            throw new FencedWriteException(lease.instanceId(), lease.epoch(), "updateInstance");
-        }
+        requireCurrentLease(lease, "updateInstance", () -> {
+            updateInstance(instance);
+            return Boolean.TRUE;
+        });
     }
 
     @Override
     public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent, RunLease lease) {
-        var written = new boolean[1];
-        if (!ifLeaseCurrent(lease, () -> written[0] = completeInstance(terminal, terminalEvent))) {
-            if (idToWorkflowId.get(lease.instanceId()) == null) {
-                throw new WorkflowNotFoundException(terminal.workflowId());
-            }
-            throw new FencedWriteException(lease.instanceId(), lease.epoch(), "completeInstance");
+        if (idToWorkflowId.get(lease.instanceId()) == null) {
+            throw new WorkflowNotFoundException(terminal.workflowId());
         }
-        return written[0];
+        return requireCurrentLease(lease, "completeInstance", () -> completeInstance(terminal, terminalEvent));
     }
 
     @Override
     public boolean markSignalConsumed(UUID signalId, RunLease lease) {
-        var flipped = new boolean[1];
-        return ifLeaseCurrent(lease, () -> flipped[0] = markSignalConsumed(signalId)) && flipped[0];
+        return Boolean.TRUE.equals(underCurrentLease(lease, () -> markSignalConsumed(signalId)));
     }
 
     @Override
     public boolean markTimerFired(UUID timerId, RunLease lease) {
-        var flipped = new boolean[1];
-        return ifLeaseCurrent(lease, () -> flipped[0] = markTimerFired(timerId)) && flipped[0];
+        return Boolean.TRUE.equals(underCurrentLease(lease, () -> markTimerFired(timerId)));
     }
 
     @Override
     public boolean markTimerCancelled(UUID timerId, RunLease lease) {
-        var flipped = new boolean[1];
-        return ifLeaseCurrent(lease, () -> flipped[0] = markTimerCancelled(timerId)) && flipped[0];
+        return Boolean.TRUE.equals(underCurrentLease(lease, () -> markTimerCancelled(timerId)));
     }
 
     @Override
