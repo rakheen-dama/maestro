@@ -8,7 +8,7 @@
 
 ## Overview
 
-Maestro gives your Spring Boot microservice Temporal.io-grade workflow durability without a central server. Add a starter dependency, point it at your existing Postgres, Kafka, and Valkey/Redis, and your workflows become crash-recoverable.
+Maestro gives your Spring Boot microservice Temporal.io-grade workflow durability without a central server. Add a starter dependency, point it at your existing Postgres and Kafka, and your workflows become crash-recoverable.
 
 The three infrastructure components (store, messaging, lock) are each defined as a Service Provider Interface (SPI), allowing different implementations to be swapped via configuration. See [Configuration](configuration.md) for available backends.
 
@@ -298,7 +298,7 @@ workflow.sleep(Duration.ofMinutes(30));
 var status = payment.checkStatus(orderId);
 ```
 
-A leader-elected **timer poller** runs on one node in the cluster, querying Postgres for due timers and firing them. The leader election uses Valkey with a 15-second TTL lease.
+A leader-elected **timer poller** runs on one node in the cluster, querying Postgres for due timers and firing them. The leader election is a row in the `maestro_leader_election` Postgres table with a 15-second TTL lease.
 
 ### Cancelling a timer
 

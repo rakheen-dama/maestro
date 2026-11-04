@@ -40,20 +40,14 @@ alone.
 
 | Lock backend | Observed adoption latency | Bound | Source |
 |---|---|---|---|
-| Valkey (default) | 84s, 29s, 35s (3 consecutive runs); 48s (tightened re-run); 46s (Task 5 smoke) | 150s (30s lock TTL + 60s recovery poll-interval + slack) | `.superpowers/sdd/task-2-report.md` §"Scenario 7, 3 consecutive runs"; `evidence/task2/run{1,2,3}-scenario7.log` |
-| Postgres | 45s, 43s, 50s (3 consecutive runs) | 150s (unchanged — no wait-bound change was needed for Postgres) | `.superpowers/sdd/task-5-report.md` §"3× consecutive green runs on postgres"; `evidence/task5/postgres-run{1,2,3}-s7-8.log`, `backend-timings.md` |
+| Postgres | 45s, 43s, 50s (3 consecutive runs) | 150s (30s lock TTL + 60s recovery poll-interval + slack) | `.superpowers/sdd/task-5-report.md` §"3× consecutive green runs on postgres"; `evidence/task5/postgres-run{1,2,3}-s7-8.log`, `backend-timings.md` |
 
-**What dominates the bound.** On both backends, adoption latency is
-**recovery-poll-interval-dominated, not lock-aging-dominated**. Valkey ages
-the instance lock by key TTL expiry; Postgres ages it by the `expires_at <
-now()` predicate in `PostgresDistributedLock`'s `ON CONFLICT` clause — both
-amount to "the lock becomes takeable once its TTL has lapsed," so the spread
-(29-84s valkey, 43-50s postgres) reflects where the kill happened to land in
-the peer's 60s `maestro.recovery.poll-interval` cycle, not a backend
-difference. The two backends are statistically indistinguishable at this
-sample size (`backend-timings.md`'s own conclusion; Postgres showed the
-tighter spread in this data, which is noise at n=3, not a claim that
-Postgres is faster).
+**What dominates the bound.** Adoption latency is
+**recovery-poll-interval-dominated, not lock-aging-dominated**. The instance
+lock ages by the `expires_at < now()` predicate in `PostgresDistributedLock`'s
+`ON CONFLICT` clause — "the lock becomes takeable once its TTL has lapsed" —
+so the spread (43-50s) reflects where the kill happened to land in the peer's
+60s `maestro.recovery.poll-interval` cycle.
 
 **Operational takeaway.** If you need faster adoption after a hard node
 death, lower `maestro.recovery.poll-interval` (default 60s) — that is the
@@ -73,7 +67,6 @@ down.
 
 | Lock backend | Observed scenario duration (3 runs) | Zero FAILED? | Zero compensation? |
 |---|---|---|---|
-| Valkey (default) | 29s, 30s, 32s | Yes, all 3 runs | Yes, all 3 runs |
 | Postgres | 38s, 37s, 41s | Yes, all 3 runs | Yes, all 3 runs |
 
 Source: `.superpowers/sdd/task-3-report.md` §"Scenario 8, 3 consecutive
@@ -123,8 +116,7 @@ progress, bounded by leader-TTL + poll-interval + wake-recheck.
 
 | Lock backend | Observed failover latency | Bound |
 |---|---|---|
-| Valkey (default) | 12s, 12s, 19s (3 runs); 18s (smoke) | 60s (15s leader TTL + 5s poll + 5s wake-recheck + slack) |
-| Postgres | 14s, 16s, 15s (3 runs) | 60s (unchanged) |
+| Postgres | 14s, 16s, 15s (3 runs) | 60s (15s leader TTL + 5s poll + 5s wake-recheck + slack) |
 
 Source: `.superpowers/sdd/task-4-report.md` §"3× consecutive green runs";
 `.superpowers/sdd/task-5-report.md` §"3× consecutive green runs on
@@ -153,8 +145,7 @@ lifecycle events land on the admin-events topic in every run.
 
 | Lock backend | Observed admin-command convergence (3 runs) | Kill→first-command latency (worst case) |
 |---|---|---|
-| Valkey (default) | 44s, 44s, 44s | ~46s observed (`.superpowers/sdd/task-4-report.md` pitfall #5, kill `20:48:42` → retry executed `20:49:28`) |
-| Postgres | 43s, 0s, 42s | Not separately measured; consistent with the ~43s worst case above |
+| Postgres | 43s, 0s, 42s | ~46s observed (`.superpowers/sdd/task-4-report.md` pitfall #5, kill `20:48:42` → retry executed `20:49:28`) |
 
 Bound: `WAIT_ADMIN_COMMAND_SECS=90`. Source:
 `.superpowers/sdd/task-4-report.md`, `.superpowers/sdd/task-5-report.md`
@@ -165,9 +156,8 @@ command published to a partition the dead node owned isn't delivered to the
 survivor until the Kafka consumer-group coordinator evicts the dead node's
 session and reassigns its partitions — bounded by Kafka's default
 `session.timeout.ms` (~45s, unconfigured by this sample). Every command
-*after* that first rebalance is near-instant (Postgres run 2's `0s` is the
-already-rebalanced case). The identical ~43-46s worst case on both lock
-backends confirms the lock backend is not in this path at all — if you need
+*after* that first rebalance is near-instant (run 2's `0s` is the
+already-rebalanced case). The lock backend is not in this path at all — if you need
 faster admin-command delivery after a hard node death, tune Kafka's
 `session.timeout.ms`, not anything in Maestro.
 
@@ -202,26 +192,28 @@ verification latencies. This is a sample choice, not an engine default;
 choose your own interval as a latency/overhead trade-off (a shorter interval
 means more parked workflows re-reading one indexed row more often).
 
-**Lock-backend interaction.** Valkey's `ValkeyLockAutoConfiguration` provides
-both the `DistributedLock` *and* the `SignalNotifier` (instant pub/sub wake).
-With `maestro.lock.type: postgres`, the whole Valkey auto-config is disabled
-— **Postgres-lock deployments have no `SignalNotifier`**, so cross-node
-signal wake rides the wake-recheck interval alone (bounded ≤ the configured
-interval, by design — the recheck exists precisely so pub/sub is an
-optimisation, never a correctness dependency). The notification itself is
-best-effort and bounded: `signal()` returns once the row is saved and never
-waits for the notifier, so a Valkey (or `NOTIFY`) outage delays the remote
-wake by at most one recheck interval instead of stalling the sender (Issue 32).
-During an outage, notifications back up in proportion to the signal rate: up
-to *rate × 60 s* (Lettuce's command timeout) pending `PUBLISH`es on each
-Valkey publish connection, or *rate × the pool's `connectionTimeout`* (Hikari
-default 30 s) parked `NOTIFY` threads for Postgres. Each node also keeps at
-most 1,000 notification hand-offs in flight and drops the excess, logged at
-`DEBUG`. A dropped or failed notification costs latency (one recheck
-interval), never a signal. A brownout shorter than the command timeout logs
-nothing from the Valkey notifier — the queued `PUBLISH`es simply complete
-late. While failures persist, the outage `WARN` repeats every 5 minutes. See §7 below for the
-lock-backend matrix in full.
+**Signal wake is instant; the recheck is the fallback.** Cross-node *signal*
+wake does not ride the recheck interval: `maestro-store-postgres` ships
+`PostgresSignalNotifier` + `PostgresWakeListener`, which use Postgres
+`LISTEN/NOTIFY` on one channel per service (auto-configured whenever the engine
+is active; `maestro.signal.wake-notify.enabled=false` turns it off, which you
+want behind PgBouncer in transaction-pooling mode). A signal ingested on node A
+for a workflow parked on node B wakes B as soon as the `NOTIFY` lands — the
+recheck interval only bounds the cases where that cannot happen: the wake
+disabled, the listener's connection down (it reconnects with 1 s → 30 s backoff
+and holds one `DataSource` connection for the application's lifetime), or a
+notification lost in between. The notification itself is best-effort and
+bounded: `signal()` returns once the row is saved and never waits for the
+notifier — the `NOTIFY` runs on a virtual thread after the commit — so a
+database outage delays the remote wake by at most one recheck interval instead
+of stalling the sender (Issue 32). During an outage, pending `NOTIFY` threads
+back up in proportion to the signal rate, up to *rate × the pool's
+`connectionTimeout`* (Hikari default 30 s); each node keeps at most 1,000
+notification hand-offs in flight and drops the excess, logged at `DEBUG`. A
+dropped or failed notification costs latency (one recheck interval), never a
+signal. While failures persist, the outage `WARN` repeats every 5 minutes. The
+cross-node *timer* wake described above has no notify path and always rides
+the recheck interval.
 
 ---
 
@@ -274,44 +266,37 @@ handling on the strength of a 0/2,587 sample.
 
 ---
 
-## 7. Lock-backend matrix: Valkey vs Postgres
+## 7. Lock backend
 
-Both `maestro-lock-valkey` (default) and `maestro-lock-postgres` are
-verified across the full multi-node scenario set (owner-kill adoption,
-rolling restart, timer-leader failover, cross-node admin commands), 3
-consecutive green runs each, via `E2E_LOCK_BACKEND=postgres` on
-`sample-loan-origination`'s E2E script. Full comparison:
-`.superpowers/sdd/multi-instance/evidence/task5/backend-timings.md`.
+Maestro has one lock backend: the table-backed `PostgresDistributedLock` in
+`maestro-store-postgres` (`maestro_distributed_lock`, `maestro_leader_election`;
+`maestro.lock.type` accepts only `postgres`). It is verified across the full
+multi-node scenario set above (owner-kill adoption, rolling restart,
+timer-leader failover, cross-node admin commands), 3 consecutive green runs,
+on `sample-loan-origination`'s E2E script.
 
-| Dimension | Valkey (default) | Postgres |
-|---|---|---|
-| Adoption latency (§1) | 29-84s | 43-50s |
-| Rolling-restart total (§2) | 29-32s | 37-41s |
-| Timer-leader failover (§3) | 12-19s | 14-16s |
-| Admin-command convergence (§4) | 44s | 0-43s |
-| Cross-node signal wake | Instant (pub/sub `SignalNotifier`) | ≤ wake-recheck interval only (no `SignalNotifier`) |
-| Extra infra dependency | Valkey/Redis | None (reuses the service's Postgres) |
+| Dimension | Postgres |
+|---|---|
+| Adoption latency (§1) | 43-50s |
+| Rolling-restart total (§2) | 37-41s |
+| Timer-leader failover (§3) | 14-16s |
+| Admin-command convergence (§4) | 0-43s |
+| Cross-node signal wake | Instant (`LISTEN/NOTIFY`, one channel per service; §5) |
+| Cross-node timer wake | ≤ `maestro.signal.wake-recheck-interval` (§5) |
+| Extra infra dependency | None (reuses the service's Postgres) |
 
-**Conclusion (backend-timings.md):** leader failover and adoption are
-equivalent within noise on both backends — both age locks by the same
-mechanism (TTL expiry vs. an `expires_at < now()` predicate) and are
-dominated by poll intervals, not backend-specific latency. Admin-command
-convergence is Kafka-session-timeout-bound, not lock-backend-related on
-either side. The one durable behavioural difference is signal-wake latency
-with no Valkey pub/sub present — bounded, by design, never a correctness
-dependency.
+Adoption and leader failover are dominated by poll intervals, not lock
+latency; admin-command convergence is Kafka-session-timeout-bound. A lock
+cleaner on every node deletes rows expired for more than a minute every
+`maestro.lock.cleanup-interval` (default 10m) — expired rows are already
+takeable, so the cleaner only bounds table growth.
 
-**Schema footprint note.** Because the sample now depends on both lock
-modules to make the `E2E_LOCK_BACKEND` switch possible, Maestro's schema
-initializer picks up the Postgres-lock migration regardless of which backend is
-configured — a **default (Valkey) boot now also creates the (unused, inert)
-`maestro_distributed_lock`/`maestro_leader_election` tables** in the sample's
-databases. See `maestro-samples/sample-loan-origination/README.md` and
-`.superpowers/sdd/task-5-report.md`'s coordinator note for the full
-explanation. This is specific to how the *sample* wires its dependencies
-(both lock modules on the classpath) — it is not something `maestro-lock-valkey`
-or `maestro-lock-postgres` do on their own; a production service that only
-depends on one lock module only gets that module's migrations.
+*History:* a Valkey/Redis lock module (`maestro-lock-valkey`, the former
+default, selected with `E2E_LOCK_BACKEND`) was measured alongside Postgres in
+`.superpowers/sdd/multi-instance/evidence/task5/backend-timings.md` and found
+equivalent within noise on every dimension except signal wake, where only
+Valkey was instant. It was removed in 2026-11 once the Postgres path gained the
+`LISTEN/NOTIFY` wake; see `docs/release-notes.md`.
 
 ---
 
@@ -449,14 +434,12 @@ every node together, or drain parked awaits first; **after a rollback, roll
 forward** — redeploying the older build again (§10.7's first remedy) does not
 heal these stand-downs.
 
-**Postgres transport: an old node's stale claim gets one uncounted attempt.**
-This release counts a queue row's attempt when it is *claimed* (Issue 27). A
-row an older node claimed carries no such count, so if that node dies
-mid-handler during a rolling upgrade, the upgraded node's stale reclaim sees
-budget left and re-invokes the handler — one extra attempt beyond
-`max-attempts` (or a second attempt with redelivery disabled) for that row,
-once. Handlers must be idempotent anyway; drain the queues first if even one
-extra attempt is unacceptable.
+**Lock backends do not mix.** A node on a build that locked in Valkey and a
+node on this build locking in `maestro_distributed_lock` do not exclude each
+other — both can run the same workflow at once. The upgrade that removed the
+Valkey lock therefore cannot roll: stop every older node first
+(`docs/configuration.md` § Schema management → "Upgrading an existing
+database").
 
 ### 10.2 `workflow.version()` — changing workflow code with instances in flight
 
@@ -634,7 +617,7 @@ recovery pass it feeds, still completes
 
 Maestro's migrations always target `maestro_*` tables and are applied by Maestro itself at startup in the connection's current schema, so under the default `maestro.store.schema.mode: flyway` an upgrade between builds that both keep `maestro_schema_history` needs no manual SQL (the one-time move to that history table does — last paragraph below). The former custom-prefix mode (`maestro.store.table-prefix`) is gone; to isolate services sharing a database, give each its own Postgres schema (see `docs/configuration.md` § Store Configuration).
 
-Maestro records what it applied in its **own Flyway history table, `maestro_schema_history`** — never your application's `flyway_schema_history`, whose `spring.flyway.*` settings it ignores. Each Maestro Postgres module ships its SQL under its own location and version band (`classpath:db/maestro/store` 1–99, `classpath:db/maestro/lock` 100–199, `classpath:db/maestro/messaging` 200–299), and every location on the classpath is applied. The first node of the new build applies the new migrations before its engine starts, and Flyway's database lock makes concurrent starts safe. **Do not assume older nodes keep working against the newer schema**: most of Maestro's migrations add a column, index or default, but not all — `V202` drops `maestro_task_queue` and `maestro_lifecycle_event_queue`, which a 0.4.0 node's Postgres transport still reads and writes. Before a deploy that ships a migration, read its release-notes entry; a migration that drops or renames anything means stopping every older node first, on top of the deploy rule in §10.1. `maestro.store.schema.mode: validate` makes a node fail startup instead when migrations are pending; `none` hands the DDL to you entirely. A database migrated by a build from before Maestro owned its history (0.4.0 and earlier) needs a one-time procedure — stop every node; then either drop the `maestro_*` tables, or keep them under `maestro.store.schema.mode: none` with `V4`, `V5` and `V202` applied by hand; delete Maestro's rows from `flyway_schema_history`; start the new build. The SQL for each step is in `docs/configuration.md` § Schema management → "Upgrading an existing database".
+Maestro records what it applied in its **own Flyway history table, `maestro_schema_history`** — never your application's `flyway_schema_history`, whose `spring.flyway.*` settings it ignores. `maestro-store-postgres` ships its SQL under two locations with their own version bands (`classpath:db/maestro/store` 1–99, `classpath:db/maestro/lock` 100–199; band 200–299 belonged to the removed Postgres messaging transport and is never reused), and every location on the classpath is applied. The first node of the new build applies the new migrations before its engine starts, and Flyway's database lock makes concurrent starts safe. **Do not assume older nodes keep working against the newer schema**: most of Maestro's migrations add a column, index or default, but not all. Before a deploy that ships a migration, read its release-notes entry; a migration that drops or renames anything means stopping every older node first, on top of the deploy rule in §10.1. `maestro.store.schema.mode: validate` makes a node fail startup instead when migrations are pending; `none` hands the DDL to you entirely. A database migrated by a build from before Maestro owned its history (0.4.0 and earlier) needs a one-time procedure — stop every node; then either drop the `maestro_*` tables, or keep them under `maestro.store.schema.mode: none` with `V4` and `V5` applied by hand; delete Maestro's rows from `flyway_schema_history`; start the new build. A database that once ran the Postgres messaging transport keeps an orphan `maestro_signal_queue` table (Flyway's default `ignoreMigrationPatterns=*:future` tolerates its history rows); dropping it is optional. The SQL for each step is in `docs/configuration.md` § Schema management → "Upgrading an existing database".
 
 ### 10.7 Replay drift: `nondeterministic_history`
 
@@ -764,11 +747,10 @@ classpath, raise the heap — or terminate the workflow if it cannot be healed.
 `StackOverflowError`, `AssertionError` and every other `Error` remain workflow
 failures (`FAILED` + compensation): they recur identically on every node.
 
-### 10.9 Store-side faults that need a human: `TERMINAL_WRITE_FAILED` and retired queue rows
+### 10.9 Store-side faults that need a human: `TERMINAL_WRITE_FAILED`
 
-Two store-side outcomes are deliberately *not* workflow failures, and both are
-logged at `ERROR` — alert on them together, as "the store is refusing or losing
-writes":
+One store-side outcome is deliberately *not* a workflow failure, and it is
+logged at `ERROR` — alert on it as "the store is refusing or losing writes":
 
 - **`TERMINAL_WRITE_FAILED`** — `runAbandoned(..., TERMINAL_WRITE_FAILED)`
   (span attribute `maestro.abandon.reason=TERMINAL_WRITE_FAILED`), with the
@@ -789,18 +771,12 @@ writes":
   if it is already `COMPLETED`/`FAILED`, the outcome stands and only
   downstream consumers of the lifecycle event (the admin dashboard, any
   listener) missed it.
-- **Retired queue rows (Postgres transport, Issue 27)** — `Retired <n> stale
-  PROCESSING claim(s) in maestro_signal_queue for '<service>' as DEAD_LETTER ...`. The
-  handler's final status write was lost with no attempt budget left, so the
-  row was parked in `DEAD_LETTER` with `last_error` containing `outcome
-  unknown`, in both redelivery modes. Triage each with
-  `listDeadLetterSignals`: check whether the handler's
-  effect happened, then `replaySignal` or delete it
-  (`docs/configuration.md` → "Retired rows").
 
-Suggested rule: any `ERROR` from either source → page; the same run id
+Suggested rule: any such `ERROR` → page; the same run id
 abandoning `TERMINAL_WRITE_FAILED` on consecutive recovery passes → treat as
-deterministic and escalate.
+deterministic and escalate. (Signals whose handler exhausts its redelivery
+budget land on the Kafka dead-letter topic — `docs/configuration.md`
+§ Redelivery — not in the store.)
 
 ---
 

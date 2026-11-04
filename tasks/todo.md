@@ -1,3 +1,69 @@
+# Milestone: Postgres + Kafka only (2026-11-04)
+
+Branch: `worktree-postgres-kafka-only`. Plan: `~/.claude/plans/velvet-snacking-petal.md`
+(copied below in brief). Driver: the 2026-11-04 assessment
+(`reports/Maestro framework value assessment.md`) — breadth is where the
+unreliability lives; the target is Java 25 + Postgres + Kafka teams.
+
+Decisions: drop `maestro-lock-valkey`, `maestro-messaging-postgres`,
+`sample-postgres-only`; fold `maestro-lock-postgres` into
+`maestro-store-postgres`; move LISTEN/NOTIFY signal wake into
+`maestro-store-postgres` as one channel per service (fixes the 63-byte
+identifier truncation and case/punctuation channel collisions); schedule the
+lock cleaner; `maestro.lock.type` default `postgres`, only `postgres`/`kafka`
+accepted for lock/messaging type; chaos backends `{postgres, kafka}`.
+
+- [x] Phase A — new core Postgres path in `maestro-store-postgres`
+      (`notify/` package, lock fold, `PostgresSignalWakeAutoConfiguration`,
+      scheduled cleaner, starter properties + rejection, tests, repoint
+      `MultiNodeSignalRoutingIT`)
+- [x] Phase B — delete the three modules + sample; fix settings/BOM/libs/
+      Dockerfile/integration-tests build + `PostgresIntegrationSupport`,
+      `MaestroMigrationsCoexistIT`; delete `ValkeyBrownoutSignalDeliveryIT`;
+      stale Javadoc
+- [x] Phase C — samples (order, payment, loan ×3) build/yml/ContextBootTests;
+      root/loan/demo compose; demo scripts
+- [x] Phase D — chaos harness (`ChaosCluster`, `ChaosController`,
+      `SideEffectCensus`, `MetricsSampler`), `run-e2e.sh`, `e2e-nightly.yml`
+- [x] Phase E — docs sweep (CLAUDE.md, README, configuration, operations,
+      architecture, cross-service, getting-started, concepts, admin, testing,
+      test plans, sample READMEs, CONTRIBUTING, RELEASING, templates) +
+      release-notes entry
+- [x] Gate — `./gradlew build` green (5m14s, Docker); grep gate clean;
+      code-reviewer pass on Phase A (3 findings, all fixed + pinned)
+- [ ] Gate — dispatched `e2e-nightly.yml` on the branch (scenarios 1–10 +
+      chaos PR gate ×3) green
+
+## Review (2026-11-04)
+
+- Four commits on the branch: store-postgres path + deletions (2729a57),
+  samples/compose/demo (1449391), chaos/E2E/CI (8334f30), docs (this one).
+- `./gradlew build` BUILD SUCCESSFUL on the pre-review tree; after the
+  review fixes `:maestro-store-postgres:test` = 159 tests, 0 failures
+  (was ~95 before the fold). `MultiNodeSignalRoutingIT` (15 s wake bound)
+  green on the new notifier.
+- Bug pins proven red-then-green: a 300-char workflow id and the
+  `Order-1`/`order_1` collision both failed against the old
+  per-workflow-channel notifier (throwaway test, deleted with the module)
+  and pass against `WakeChannel` + `PostgresWakeListener`.
+- Code review (feature-dev:code-reviewer) found three real defects in the
+  new code, all fixed with tests: `WakeChannel.decode` int overflow on a
+  hostile length prefix could kill the poll thread (guard + poll-loop
+  `catch (RuntimeException)` + `"2147483647:x"` case);
+  `pg_notify` on an auto-commit=false pool was silently rolled back
+  (`setAutoCommit(true)` + `publishDeliversOnAutoCommitFalsePool`);
+  `close()` racing `connect()` could leak the LISTEN connection
+  (`synchronized` + running re-check).
+- Grep gate: only intentional history (release notes, PRD, open-issues,
+  test plans), the applied V1/V100 migration comments (checksums), and the
+  rejection message in `MaestroAutoConfiguration` still mention Valkey or
+  the Postgres transport.
+- Size: 11 → 8 library modules, 4 → 3 samples; net −3,650 lines in the
+  store/starter/core commit alone.
+- Left for the user: push + PR, and the dispatched nightly run.
+
+---
+
 # Milestone: Open Issues Cycle (2026-08-06)
 
 Branch: `worktree-open-issues-cycle`. SDD: `.superpowers/sdd/2026-08-06-open-issues-cycle/`.

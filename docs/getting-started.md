@@ -11,12 +11,12 @@ Build a crash-recoverable workflow in under 30 minutes. This tutorial takes you 
 | Requirement | Why |
 |---|---|
 | **Java 25+** | Virtual threads and scoped values power the workflow engine |
-| **Docker** | Runs Postgres, Kafka, and Valkey locally |
+| **Docker** | Runs Postgres and Kafka locally |
 | **Gradle 9** | Or use the Gradle wrapper (`./gradlew`) |
 
-> **Simpler setup available:** If you want to skip Kafka and Valkey entirely, see the
-> [`sample-postgres-only`](../maestro-samples/sample-postgres-only/) sample — it runs with
-> just PostgreSQL. The guide below uses the full Kafka + Valkey stack.
+> Postgres and Kafka are the whole stack: Postgres holds workflow state, the
+> distributed lock and the cross-node signal wake (`LISTEN/NOTIFY`); Kafka
+> carries cross-service signals and lifecycle events.
 
 ---
 
@@ -47,7 +47,6 @@ dependencies {
     implementation("io.b2mash.maestro:maestro-spring-boot-starter")
     implementation("io.b2mash.maestro:maestro-store-postgres")
     implementation("io.b2mash.maestro:maestro-messaging-kafka")
-    implementation("io.b2mash.maestro:maestro-lock-valkey")
 
     // Spring Boot
     implementation("org.springframework.boot:spring-boot-starter-webmvc")
@@ -94,11 +93,6 @@ services:
       POSTGRES_PASSWORD: maestro
     ports:
       - "5432:5432"
-
-  valkey:
-    image: valkey/valkey:8-alpine
-    ports:
-      - "6379:6379"
 
   kafka:
     image: apache/kafka:3.9.0
@@ -152,11 +146,11 @@ maestro:
   store:
     type: postgres
   messaging:
-    type: kafka    # Also supports: postgres
+    type: kafka    # the only transport
     topics:
       signals: maestro.signals.my-service
   lock:
-    type: valkey   # Also supports: postgres
+    type: postgres # the only lock backend; lives in the same database as the store
   worker:
     task-queues:
       - name: default
@@ -169,10 +163,6 @@ spring:
     password: maestro
   kafka:
     bootstrap-servers: localhost:29092
-  data:
-    redis:
-      host: localhost
-      port: 6379
 ```
 
 Maestro creates and upgrades its own `maestro_*` tables at startup with an embedded Flyway run, recorded in its own history table `maestro_schema_history`. Your application's Flyway (if any) and its `flyway_schema_history` are untouched — a `V1__init.sql` of your own does not collide with Maestro's `V1`. Set `maestro.store.schema.mode: validate` to fail startup instead when migrations are pending, or `none` to apply the SQL yourself.
@@ -324,7 +314,7 @@ public class WelcomeController {
 
 `MaestroClient` is auto-configured by the starter. Inject it wherever you need to start workflows, send signals, or query state.
 
-The `startAsync` method persists the workflow instance to Postgres and enqueues execution on Kafka. It returns immediately with the instance UUID.
+The `startAsync` method persists the workflow instance to Postgres and starts it in-process on a virtual thread of this node — there is no task queue on Kafka; a workflow always runs on the node that started it (or that adopted it after a crash). It returns immediately with the instance UUID.
 
 ---
 
@@ -523,7 +513,7 @@ Signals are persisted immediately on delivery. If the service is down when the a
 
 ## Step 9: Write a Test
 
-The `maestro-test` module provides `TestWorkflowEnvironment` -- an in-memory engine that requires no Postgres, Kafka, or Valkey. It includes a controllable clock for advancing through durable timers instantly.
+The `maestro-test` module provides `TestWorkflowEnvironment` -- an in-memory engine that requires no Postgres or Kafka. It includes a controllable clock for advancing through durable timers instantly.
 
 ```java
 package com.example.demo.workflow;

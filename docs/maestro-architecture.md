@@ -10,7 +10,7 @@
 
 ## 1. System Overview
 
-Maestro is an embedded durable workflow engine delivered as a Spring Boot Starter. There is no central server. Each microservice includes the Maestro library, which provides the workflow runtime using the service's existing Postgres, Kafka, and Valkey infrastructure.
+Maestro is an embedded durable workflow engine delivered as a Spring Boot Starter. There is no central server. Each microservice includes the Maestro library, which provides the workflow runtime using the service's existing Postgres and Kafka infrastructure.
 
 ### Product Boundary
 
@@ -45,10 +45,9 @@ graph TB
     end
 
     subgraph "Infrastructure"
-        PG_A[("Postgres<br/>(A schema)")]
-        PG_B[("Postgres<br/>(B schema)")]
+        PG_A[("Postgres<br/>(A schema: state + locks)")]
+        PG_B[("Postgres<br/>(B schema: state + locks)")]
         KAFKA["Kafka"]
-        VALKEY["Valkey"]
     end
 
     subgraph "Maestro Admin (optional)"
@@ -58,10 +57,8 @@ graph TB
 
     B_ACTIVITIES --> EXT
     A_ENGINE <--> PG_A
-    A_ENGINE <--> VALKEY
     A_ENGINE <--> KAFKA
     B_ENGINE <--> PG_B
-    B_ENGINE <--> VALKEY
     B_ENGINE <--> KAFKA
     KAFKA --> ADMIN
     ADMIN <--> PG_ADMIN
@@ -80,10 +77,9 @@ graph TB
     subgraph "Maestro Product"
         STARTER["maestro-spring-boot-starter"]
         CORE["maestro-core<br/><i>Pure Java — no Spring</i>"]
-        STORE_PG["maestro-store-postgres"]
+        STORE_PG["maestro-store-postgres<br/><i>store + lock + NOTIFY wake</i>"]
         STORE_JDBC["maestro-store-jdbc"]
         MSG_KAFKA["maestro-messaging-kafka"]
-        LOCK_VALKEY["maestro-lock-valkey"]
         ADMIN["maestro-admin"]
         ADMIN_CLIENT["maestro-admin-client"]
         TEST["maestro-test"]
@@ -102,9 +98,7 @@ graph TB
     CORE --> SPI_LOCK
     SPI_STORE --> STORE_JDBC --> STORE_PG
     SPI_MSG --> MSG_KAFKA
-    SPI_MSG --> MSG_PG["maestro-messaging-postgres"]
-    SPI_LOCK --> LOCK_VALKEY
-    SPI_LOCK --> LOCK_PG["maestro-lock-postgres"]
+    SPI_LOCK --> STORE_PG
 
     style CORE fill:#4A90D9,color:#fff
     style STARTER fill:#5BA85A,color:#fff
@@ -118,16 +112,13 @@ graph TB
 | `maestro-core` | Execution engine, hybrid memoization, virtual threads, timers, signals, saga, queries. | **No** |
 | `maestro-spring-boot-starter` | Auto-configuration, annotation scanning, activity proxy creation, config binding, health indicators. | Yes |
 | `maestro-store-jdbc` | Abstract JDBC `WorkflowStore`. | No (JDBC only) |
-| `maestro-store-postgres` | Postgres implementation + Flyway 11 migrations (own history table). | No |
+| `maestro-store-postgres` | Postgres `WorkflowStore`; table-backed `DistributedLock` + leader election (`io.b2mash.maestro.store.postgres.lock`); `LISTEN/NOTIFY` cross-node signal wake (`...store.postgres.notify`); Flyway 11 migrations (own history table). | No |
 | `maestro-messaging-kafka` | Spring Kafka 4.x `WorkflowMessaging` implementation. `@MaestroSignalListener` processing. | Yes |
-| `maestro-messaging-postgres` | PostgreSQL-based `WorkflowMessaging` + `SignalNotifier`. No external broker required. | No |
-| `maestro-lock-valkey` | Lettuce-based `DistributedLock`. | No |
-| `maestro-lock-postgres` | PostgreSQL-based `DistributedLock` using TTL-based lock tables. | No |
 | `maestro-admin` | Standalone dashboard app (Thymeleaf + HTMX, own Postgres schema). | Yes |
 | `maestro-admin-client` | Publishes lifecycle events to Kafka. Lightweight. | Minimal |
 | `maestro-test` | In-memory SPIs, controllable clock, `TestWorkflowEnvironment`. | No |
 
-> **Operators choose one messaging implementation and one lock implementation for their deployment.** For example, a Postgres-only deployment uses `maestro-messaging-postgres` + `maestro-lock-postgres`, while a full infrastructure deployment uses `maestro-messaging-kafka` + `maestro-lock-valkey`.
+> **One implementation per SPI ships today.** `maestro-store-postgres` provides both the `WorkflowStore` and the `DistributedLock` (same database, same `DataSource`); `maestro-messaging-kafka` is the only `WorkflowMessaging`. The SPIs remain the seam — `maestro-test` provides in-memory implementations of all three — but there is no second production backend to choose between.
 
 ---
 
@@ -217,7 +208,7 @@ flowchart TD
     B --> C["Step key = activityName + seq"]
     C --> D{"Stored result<br/>exists?"}
     D -- "Yes (replay)" --> E["Return stored result"]
-    D -- "No (live)" --> F["Acquire Valkey lock"]
+    D -- "No (live)" --> F["Acquire activity lock<br/>(maestro_distributed_lock)"]
     F --> G["Execute activity"]
     G --> H{"Success?"}
     H -- "Yes" --> I["Persist result<br/>(unique constraint)"]
@@ -467,25 +458,29 @@ A dead-letter topic is required for every topic Maestro *consumes* — the signa
 topics and each `@MaestroSignalListener` topic — and is
 declared by the operator like every other topic; Maestro auto-creates none. If
 one is missing, the exhausted record cannot be published, the offset is not
-committed and consumption stalls noisily rather than dropping the message. The
-Postgres transport needs no destination (rows move to `DEAD_LETTER` status).
+committed and consumption stalls noisily rather than dropping the message.
 See `docs/configuration.md` for the
 `maestro.messaging.redelivery.*` properties and the inspect/replay recipes.
 
 ---
 
-## 8. Distributed Coordination (Valkey)
+## 8. Distributed Coordination (Postgres)
 
-| Key Pattern | Purpose | TTL |
-|---|---|---|
-| `maestro:lock:workflow:{workflowId}` | Workflow instance lock | 30s (renewed every 10s) |
-| `maestro:lock:activity:{workflowId}:{seq}` | Activity execution lock (fast-path dedup) | activity timeout + 10s |
-| `maestro:leader:timer-poller:{service}` | Timer polling leader election | 15s |
-| `maestro:signal:{workflowId}` (pub/sub) | Immediate signal notification | N/A |
+Coordination lives in the same Postgres database as the workflow state, in two tables created by the lock migration band (`db/maestro/lock`, V100) and driven by `PostgresDistributedLock` (`io.b2mash.maestro.store.postgres.lock`):
+
+| Table | Key Pattern (`lock_key`) | Purpose | TTL |
+|---|---|---|---|
+| `maestro_distributed_lock` | `maestro:lock:workflow:{workflowId}` | Workflow instance lock | 30s (renewed every 10s) |
+| `maestro_distributed_lock` | `maestro:lock:activity:{workflowId}:{seq}` | Activity execution lock (fast-path dedup) | activity timeout + 10s |
+| `maestro_leader_election` | `maestro:leader:timer-poller:{service}` | Timer polling leader election | 15s |
+
+**CAS semantics.** `tryAcquire` is one statement: `INSERT ... ON CONFLICT (lock_key) DO UPDATE` whose update predicate requires the existing row's `expires_at` to be in the past (database clock). An unexpired row held by another node is never stolen; an expired one is taken over atomically. The handle carries a random owner token, and `release` and `renew` are conditioned on that token, so a holder whose lock expired and was re-acquired elsewhere cannot release or extend the new owner's row. `trySetLeader` applies the same predicate to `maestro_leader_election`. A cleaner on every node deletes rows expired for more than a minute every `maestro.lock.cleanup-interval` (default 10m); expired rows are already takeable, so this only bounds table growth.
 
 If an instance-lock renewal reports lost ownership (e.g. after a long GC pause), the engine logs an error and drops the handle — the running workflow is not aborted; the unique event index remains the duplicate-execution guard.
 
-**Fallback:** If the lock backend is down, workflows proceed unlocked — the Postgres unique index on `(workflow_instance_id, sequence_number)` and optimistic instance versioning remain the correctness backstop. Signals are always persisted in Postgres; if pub/sub notification fails (or no notifier is configured), a parked workflow finds them via its periodic store re-check (every 30s) or during recovery replay. Postgres is the source of truth; Valkey is a performance optimisation.
+**Cross-node signal wake.** A signal ingested on node A for a workflow parked on node B wakes B through Postgres `LISTEN/NOTIFY`: `PostgresSignalNotifier` sends, on a virtual thread after the signal row has committed, a `NOTIFY` on **one channel per service** — `maestro_signal_wake_<service-name ≤32 chars>_<8-hex sha256>`, always within the 63-byte identifier limit however long the workflow ID is — whose payload carries the workflow ID and signal name; `PostgresWakeListener` on every node of that service holds one `DataSource` connection for the application's lifetime, `LISTEN`s on the channel and dispatches each payload in memory to the parked waiter. The sender never waits for the notification (`deliverSignal` returns once the row is saved); the listener reconnects with 1 s → 30 s backoff. `maestro.signal.wake-notify.enabled=false` turns the path off (needed behind PgBouncer in transaction-pooling mode, where `LISTEN` has no session).
+
+**Fallback:** Locks are best-effort guards. If a lock expires or is lost, the Postgres unique index on `(workflow_instance_id, sequence_number)` and optimistic instance versioning remain the correctness backstop — they dedup *persisted results*, not external side effects, so activities must be idempotent. Signals are always persisted in Postgres; if the `NOTIFY` is lost or disabled, a parked workflow finds them via its periodic store re-check (`maestro.signal.wake-recheck-interval`, 30s) or during recovery replay. Postgres is the source of truth; the lock tables and the wake channel are performance optimisations.
 
 ---
 
@@ -497,7 +492,6 @@ sequenceDiagram
     participant Engine
     participant Store as Postgres
     participant Leader as Timer Poller
-    participant Valkey
 
     WF->>Engine: workflow.sleep(30 days)
     Engine->>Store: INSERT timer (fire_at = now+30d, PENDING)
@@ -509,11 +503,11 @@ sequenceDiagram
     Leader->>Store: SELECT timers WHERE fire_at <= now<br/>AND status = PENDING<br/>FOR UPDATE SKIP LOCKED
     Store-->>Leader: [timer-xyz]
     Leader->>Store: UPDATE status = FIRED
-    Leader->>Valkey: PUBLISH signal
+    Note over WF: Local fire unparks instantly;<br/>a remote fire is seen on the sleeping node's<br/>next timer-row re-read (wake-recheck-interval)
     Note over WF: Wakes, continues
 ```
 
-Timer leader election uses a 15-second TTL claim, renewed on every poll cycle (default 5s, `maestro.timer.poll-interval`). One instance per service polls.
+Timer leader election uses a 15-second TTL claim in `maestro_leader_election`, renewed on every poll cycle (default 5s, `maestro.timer.poll-interval`). One instance per service polls. There is no notify path for timers: a timer fired by a leader on another node is observed by the sleeping node's periodic re-read of the durable timer row (`docs/operations.md` §5).
 
 ---
 
@@ -633,7 +627,7 @@ flowchart TD
 
 ### Graceful Shutdown
 
-SIGTERM → stop accepting new workflows → stop Kafka consumers → wait for in-flight activities (30s by default, configurable via `maestro.shutdown.timeout`) → release Valkey locks → shutdown.
+SIGTERM → stop accepting new workflows → stop Kafka consumers → wait for in-flight activities (30s by default, configurable via `maestro.shutdown.timeout`) → release instance locks → shutdown.
 
 A workflow parked mid-drain (awaiting a signal or timer, or mid-compensation)
 is abandoned rather than failed: shutdown raises `ExecutorShutdownException`
@@ -655,9 +649,10 @@ failed compensation step.
 | **Activity timeout** | Each attempt is bounded by `startToCloseTimeout` on its own virtual thread; a timed-out attempt is interrupted and counts as a retryable failure (`ActivityTimeoutException`). Exhausted → saga or fail. |
 | **External API down** | Activity retries with backoff (configurable: attempts, backoff, max interval). The attempt counter is in-memory: after a restart the activity restarts at attempt 1 with the full schedule; a completed attempt is never re-executed. |
 | **Kafka rebalance** | In-progress workflows continue. New tasks reroute. |
-| **Postgres lost** | Execution blocks until restored. No activity without persistence. |
-| **Valkey down** | Workflows proceed unlocked (unique event index is the backstop; or use `maestro-lock-postgres`). Poll-based signals. |
-| **Duplicate Kafka delivery** | Valkey dedup + unique constraint. |
+| **Postgres lost** | Execution blocks until restored. No activity without persistence; locks and the wake channel live in the same database. |
+| **Lock expired / renewal lost** | The running workflow continues; the unique event index is the backstop. A peer may adopt the instance after the TTL — activities must be idempotent. |
+| **NOTIFY listener disconnected** | Cross-node signal wake falls back to the 30s store re-check; the listener reconnects with backoff. No signal is lost. |
+| **Duplicate Kafka delivery** | Activity-lock dedup + unique constraint. |
 | **Signal before workflow** | Stored with null instance. Adopted on start. |
 | **Signal before await** | Stored unconsumed. Consumed when await reached. |
 
@@ -687,7 +682,7 @@ evidence file.
 | Build | Gradle Kotlin DSL (Gradle 9) |
 | Database | PostgreSQL 14+ |
 | Messaging | Apache Kafka via Spring Kafka 4.x |
-| Coordination | Valkey / Redis via Lettuce |
+| Coordination | PostgreSQL tables (locks, leader election) + `LISTEN/NOTIFY` wake |
 | Serialization | Jackson 3 (`tools.jackson` packages) |
 | Schema migration | Flyway 11.x |
 | Null safety | JSpecify (aligned with Spring 7) |

@@ -35,6 +35,15 @@ This results in fragile, hard-to-debug systems where the "happy path" is 20% of 
 
 **The gap:** There is no lightweight, embeddable durable workflow engine that leverages existing Spring Boot infrastructure (Postgres, Kafka, Redis/Valkey) without requiring a separate central server.
 
+> **Scope note, 2026-11-04.** Valkey/Redis was dropped from the stack, together
+> with the Postgres messaging transport and the Postgres-only sample: Maestro
+> runs on **Postgres + Kafka only**. Locks, leader election and the cross-node
+> signal wake (`LISTEN/NOTIFY`) live in the same Postgres database as the
+> workflow state, shipped by `maestro-store-postgres`. Mentions of Valkey and
+> of a Postgres transport below are kept as the original product history; see
+> `docs/release-notes.md` and `docs/maestro-architecture.md` §8 for the current
+> design.
+
 ---
 
 ## 2. Vision
@@ -43,11 +52,11 @@ This results in fragile, hard-to-debug systems where the "happy path" is 20% of 
 
 ### Core Principles
 
-1. **No central server.** The engine runs embedded in each microservice. Postgres stores state, Kafka handles messaging, Valkey manages coordination. Nothing new to deploy or operate.
+1. **No central server.** The engine runs embedded in each microservice. Postgres stores state, Kafka handles messaging, Valkey manages coordination (*since 2026-11-04: Postgres manages coordination too*). Nothing new to deploy or operate.
 
 2. **Write workflows as code.** Workflows are plain Java methods. Activities are Spring beans. No XML, no BPMN, no visual designers — just annotated Java with a clean API.
 
-3. **Opinionated stack, swappable components.** First-class support for Postgres + Kafka + Valkey on Spring Boot 4 / Java 25+. Storage and messaging backends are behind SPIs for future extensibility.
+3. **Opinionated stack, swappable components.** First-class support for Postgres + Kafka + Valkey (*since 2026-11-04: Postgres + Kafka*) on Spring Boot 4 / Java 25+. Storage and messaging backends are behind SPIs for future extensibility.
 
 4. **Orchestration within, choreography between.** Each service owns its workflows. Cross-service coordination happens via Kafka events and signals — not distributed transactions.
 
@@ -367,7 +376,7 @@ maestro/
 ├── maestro-store-jdbc              # JDBC WorkflowStore abstraction
 ├── maestro-store-postgres          # Postgres implementation + Flyway migrations
 ├── maestro-messaging-kafka         # Kafka WorkflowMessaging implementation
-├── maestro-lock-valkey             # Valkey/Redis distributed locking
+├── maestro-lock-valkey             # Valkey/Redis distributed locking (removed 2026-11-04; lock now in maestro-store-postgres)
 ├── maestro-admin                   # Standalone dashboard (Spring Boot + Thymeleaf + HTMX)
 ├── maestro-admin-client            # Lifecycle event publisher for services
 ├── maestro-test                    # In-memory engine, time control, TestWorkflowEnvironment
@@ -398,7 +407,7 @@ maestro:
       admin-events: maestro.admin.events
 
   lock:
-    type: valkey
+    type: valkey   # since 2026-11-04: postgres (the only value)
     key-prefix: "maestro:lock:"
     ttl: 30s
 
@@ -499,7 +508,7 @@ class OrderFulfilmentWorkflowTest {
 | Build | Gradle | Kotlin DSL, Gradle 9 |
 | Database | PostgreSQL | 14+ |
 | Messaging | Apache Kafka | via Spring Kafka 4.x |
-| Cache/Lock | Valkey or Redis | via Lettuce |
+| Cache/Lock | Valkey or Redis | via Lettuce — *removed 2026-11-04; locks are PostgreSQL tables* |
 | Serialization | Jackson 3 | `tools.jackson` packages |
 | Schema migration | Flyway | 11.x |
 | Null safety | JSpecify | Aligned with Spring Framework 7 |

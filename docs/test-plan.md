@@ -1,8 +1,20 @@
 # Maestro Test Plan — Verification Status and Gaps
 
 **Date:** 2026-07-28 · **Scope:** every feature Maestro provides · **Inventory refreshed:** 2026-10-28 (197 test classes / 1299 `@Test` across 18 modules — counts from `find … -name '*Test.java' -o -name '*IT.java'` and `grep -rhE '^\s*@(Test|ParameterizedTest|RepeatedTest)\b'`; `maestro-bom` has no sources and is excluded)
-**Must-work integrations:** **Kafka** and **Postgres** (Valkey is
-best-effort; Postgres-messaging is secondary).
+**Must-work integrations:** **Kafka** and **Postgres** — since 2026-11-04 the
+*only* integrations: `maestro-lock-valkey`, `maestro-messaging-postgres` and
+`sample-postgres-only` were removed and `maestro-lock-postgres` folded into
+`maestro-store-postgres` (`docs/release-notes.md`).
+
+> **Superseded 2026-11-04.** Rows and narrative below that name the Valkey lock
+> module, the Postgres messaging transport, `E2E_LOCK_BACKEND`,
+> `ValkeyBrownoutSignalDeliveryIT`, `ValkeySignalNotifier*Test` or
+> `PostgresWorkflowMessagingTest` describe past cycles and are kept as history.
+> Current state: one lock backend (Postgres, in `maestro-store-postgres`), one
+> transport (Kafka); `PostgresSignalNotifierTest` lives in
+> `maestro-store-postgres` and its `publishDoesNotWaitForAConnection` pins the
+> Issue 32 never-blocks guarantee; `MultiNodeSignalRoutingIT` wakes through the
+> store-postgres `LISTEN/NOTIFY` notifier; the loan E2E runs on Postgres only.
 
 > **Status (updated after P0–P3, P5):** the integration module
 > `maestro-integration-tests` now runs **65 tests** against real Postgres and
@@ -119,17 +131,17 @@ entire integration seams unverified. This plan makes those seams explicit.
 | PostgresStoreAutoConfiguration | ✅ | — | ✅ | |
 | Flyway migrations | ◐ | ✅ | ✅ | `MaestroMigrationsCoexistIT` — all modules on one DB. **Found BUG5** |
 | **Engine × real Postgres store** (start→signal→timer→saga→recover on PG) | — | ✅ | ✅ | **CLOSED** — 32 tests across 8 `EnginePostgres*IT` suites |
-| maestro-lock-postgres (acquire/release/renew/leader, LockBackendException) | ✅ | ✅ | ✅ | `PostgresDistributedLockContractTest` (24, Testcontainers) + the pre-existing 4 backend-failure unit tests (the module was **not** testless — the earlier claim was wrong) |
-| maestro-messaging-postgres (queues, SKIP LOCKED claim, LISTEN/NOTIFY notifier, redelivery/dead-letter) | — | ✅ | — | 17 tests: `PostgresWorkflowMessagingTest` (10, incl. redelivery/dead-letter) + `PostgresSignalNotifierTest` (7). **Found BUG9**; ack-on-failure signal loss fixed (former Issue 1) |
+| Postgres lock (acquire/release/renew/leader, LockBackendException) — now in `maestro-store-postgres`, formerly `maestro-lock-postgres` | ✅ | ✅ | ✅ | `PostgresDistributedLockContractTest` (24, Testcontainers) + the pre-existing 4 backend-failure unit tests (the module was **not** testless — the earlier claim was wrong) |
+| maestro-messaging-postgres (queues, SKIP LOCKED claim, LISTEN/NOTIFY notifier, redelivery/dead-letter) — *module removed 2026-11-04* | — | ✅ | — | Historical: 17 tests, `PostgresWorkflowMessagingTest` (10, deleted with the module) + `PostgresSignalNotifierTest` (7, now in `maestro-store-postgres` covering the per-service wake channel). **Found BUG9**; ack-on-failure signal loss fixed (former Issue 1) |
 
 ### Other
 
 | Area | Status |
 |---|---|
 | maestro-test kit (in-memory SPIs, TestWorkflowEnvironment, clock) | ✅ U (7 classes, 72 tests) |
-| maestro-lock-valkey | ✅ I (lock + notifier mechanics) |
+| maestro-lock-valkey — *module removed 2026-11-04* | Historical: ✅ I (lock + notifier mechanics) |
 | maestro-admin / admin-client | ✅ real suites (`DashboardSmokeMockMvcTest`, `EventIngestionRoundTripTest`, `AdminEventPublisherTest`, `AdminCommandDispatcherTest`, `AdminCommandKafkaIT`, others). `$maestro:retry`/`terminate` commands are now consumed end-to-end by a starter-side `AdminCommandDispatcher` — dashboard buttons are functional; see `docs/open-issues.md` Issue 15 (**Resolved**) |
-| Loan-origination E2E (10 scenarios, incl. 5 multi-node) | ✅ E — nightly + on-demand in CI, both Valkey and Postgres lock backends (`.github/workflows/e2e-nightly.yml`) — schedule was auto-disabled 2026-10-10 → 2026-10-24 (GitHub 60-day inactivity rule, see § CI wiring); soak failed 5/5 and PR-gate 2/30 between 2026-08-09 and 2026-10-04, baseline dispatch 40593820947 (2026-10-27) at 66cdf95 was wholly green; the second dispatch 40674015602 (2026-10-28, same SHA) failed the soak with one I1 workflow (a Valkey outage stalled signal sends, so retries duplicated a signature — Issue 32), PR-gate and both loan E2Es green; triaged in docs/superpowers/plans/2026-10-24-bugfix-cycle/triage/ViolationTriageReport.md and fixed (Issue 32, `1da4f1a`); the bug-fix-branch dispatch 40762898010 (2026-10-28) at ec9286d was wholly green — all four jobs success, the 2 h soak ran 2320 workflows with 0 violations (`triage/branch-verification.md`) |
+| Loan-origination E2E (10 scenarios, incl. 5 multi-node) | ✅ E — nightly + on-demand in CI; Postgres lock only since 2026-11-04 (earlier runs below covered both Valkey and Postgres lock backends via `E2E_LOCK_BACKEND`, now gone) (`.github/workflows/e2e-nightly.yml`) — schedule was auto-disabled 2026-10-10 → 2026-10-24 (GitHub 60-day inactivity rule, see § CI wiring); soak failed 5/5 and PR-gate 2/30 between 2026-08-09 and 2026-10-04, baseline dispatch 40593820947 (2026-10-27) at 66cdf95 was wholly green; the second dispatch 40674015602 (2026-10-28, same SHA) failed the soak with one I1 workflow (a Valkey outage stalled signal sends, so retries duplicated a signature — Issue 32), PR-gate and both loan E2Es green; triaged in docs/superpowers/plans/2026-10-24-bugfix-cycle/triage/ViolationTriageReport.md and fixed (Issue 32, `1da4f1a`); the bug-fix-branch dispatch 40762898010 (2026-10-28) at ec9286d was wholly green — all four jobs success, the 2 h soak ran 2320 workflows with 0 violations (`triage/branch-verification.md`) |
 | Multi-instance chaos/soak harness (`maestro-integration-tests` `e2eTest`, `@Tag("e2e")`) | ✅ E — 6-node Testcontainers cluster, scripted failure injection; nightly PR-gate mode (3× consecutive) + weekly soak mode in CI. Found and fixed Issues 17-20. See `docs/operations.md` — schedule was auto-disabled 2026-10-10 → 2026-10-24 (GitHub 60-day inactivity rule, see § CI wiring); soak failed 5/5 and PR-gate 2/30 between 2026-08-09 and 2026-10-04, baseline dispatch 40593820947 (2026-10-27) at 66cdf95 was wholly green; the second dispatch 40674015602 (2026-10-28, same SHA) failed the soak with one I1 workflow (a Valkey outage stalled signal sends, so retries duplicated a signature — Issue 32), PR-gate and both loan E2Es green; triaged in docs/superpowers/plans/2026-10-24-bugfix-cycle/triage/ViolationTriageReport.md and fixed (Issue 32, `1da4f1a`); the bug-fix-branch dispatch 40762898010 (2026-10-28) at ec9286d was wholly green — all four jobs success, the 2 h soak ran 2320 workflows with 0 violations (`triage/branch-verification.md`) |
 
 ### Bug-fix cycle 2026-10-24 — new pins

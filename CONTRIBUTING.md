@@ -4,7 +4,7 @@
 
 Thank you for your interest in contributing to Maestro! Whether you are reporting a bug, proposing a feature, improving documentation, writing tests, or submitting code, your contributions are welcome and appreciated.
 
-Maestro is an embeddable durable workflow engine delivered as a Spring Boot Starter. It provides Temporal.io-grade workflow durability without a central server, using infrastructure teams already operate: Postgres, Kafka, and Valkey/Redis.
+Maestro is an embeddable durable workflow engine delivered as a Spring Boot Starter. It provides Temporal.io-grade workflow durability without a central server, using infrastructure teams already operate: Postgres and Kafka.
 
 ---
 
@@ -93,11 +93,8 @@ Before you begin, ensure you have the following installed:
 | `maestro-core` | Pure Java engine. No Spring dependency. |
 | `maestro-spring-boot-starter` | Spring Boot auto-configuration, annotations, bean proxying. |
 | `maestro-store-jdbc` | Abstract JDBC `WorkflowStore` SPI implementation. |
-| `maestro-store-postgres` | Postgres implementation with Flyway 11 migrations. |
-| `maestro-messaging-kafka` | Spring Kafka 4.x `WorkflowMessaging` SPI implementation. |
-| `maestro-lock-valkey` | Lettuce-based `DistributedLock` SPI implementation. |
-| `maestro-messaging-postgres` | PostgreSQL `WorkflowMessaging` + `SignalNotifier`. |
-| `maestro-lock-postgres` | PostgreSQL `DistributedLock` using advisory locks. |
+| `maestro-store-postgres` | Postgres `WorkflowStore`, table-backed `DistributedLock` + leader election, LISTEN/NOTIFY signal wake, Flyway 11 migrations. |
+| `maestro-messaging-kafka` | Spring Kafka 4.x `WorkflowMessaging` SPI implementation (the only transport). |
 | `maestro-admin` | Standalone dashboard (Thymeleaf + HTMX). |
 | `maestro-admin-client` | Lightweight lifecycle event publisher. |
 | `maestro-test` | In-memory SPIs, controllable clock, `TestWorkflowEnvironment`. |
@@ -225,7 +222,7 @@ The three SPI interfaces are defined in `maestro-core`:
 - `WorkflowMessaging` -- messaging abstraction
 - `DistributedLock` -- distributed locking abstraction
 
-Implementations are in their respective modules (`maestro-store-postgres`, `maestro-messaging-kafka`, `maestro-lock-valkey`). This separation allows users to swap implementations without changing application code.
+Implementations are in their respective modules (`maestro-store-postgres` for the store and the lock, `maestro-messaging-kafka` for messaging). This separation keeps the engine independent of any backend and allows implementations to be swapped without changing application code.
 
 ### Each module has a clear, single responsibility
 
@@ -235,9 +232,9 @@ Do not add cross-cutting concerns to the wrong module. If you are unsure where c
 
 Kafka topics must be pre-created and declared in configuration. Auto-creation is unreliable in production environments and masks configuration errors.
 
-### Postgres is truth, Valkey is optimization
+### Postgres is truth, locks are an optimization
 
-All durable state is persisted to Postgres. Valkey/Redis is used only for distributed locks, deduplication caches, and pub/sub notifications. If Valkey is unavailable, the system must remain correct (though possibly slower).
+All durable state is persisted to Postgres. The distributed lock, leader election and LISTEN/NOTIFY wake are best-effort guards and fast paths: if a lock expires or a notification is lost, the unique event index and the signal recheck interval keep the system correct (though possibly slower). Never make correctness depend on a lock being held or a notification arriving.
 
 ### Workflow determinism
 
