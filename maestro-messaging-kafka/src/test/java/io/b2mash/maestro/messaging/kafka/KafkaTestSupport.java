@@ -35,12 +35,17 @@ import java.util.concurrent.ExecutionException;
  * {@link ConsumerFactory}, and Jackson 3 {@link ObjectMapper}.
  */
 @Testcontainers
-abstract class KafkaTestSupport {
+public abstract class KafkaTestSupport {
 
     @Container
-    static final KafkaContainer kafka =
+    protected static final KafkaContainer kafka =
             new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1"))
-                    .withKraft();
+                    .withKraft()
+                    // Maestro never auto-creates topics, and neither may the
+                    // broker behind its tests: every suite pre-creates what it
+                    // uses via createTopics, so a forgotten topic fails loudly
+                    // here instead of only in production.
+                    .withEnv("KAFKA_AUTO_CREATE_TOPICS_ENABLE", "false");
 
     protected KafkaTemplate<String, byte[]> kafkaTemplate;
     protected ProducerFactory<String, byte[]> producerFactory;

@@ -126,7 +126,7 @@ final class SignalManager {
     private final AtomicInteger notificationsInFlight = new AtomicInteger();
 
     private final WorkflowStore store;
-    private final @Nullable WorkflowMessaging messaging;
+    private final LifecycleEventSink lifecycleEventSink;
     private final @Nullable SignalNotifier signalNotifier;
     private final PayloadSerializer serializer;
     private final ParkingLot parkingLot;
@@ -275,17 +275,12 @@ final class SignalManager {
     /**
      * Creates a new signal manager with every setting of the governor
      * constructor plus the {@link InstantSource} its await deadlines are armed
-     * and decided on (R59).
+     * and decided on (R59), publishing lifecycle events inline on
+     * {@code messaging} (see {@link LifecycleEventSink#direct}).
      *
      * @param instantSource the clock a live await reads to arm its deadline
-     *                      ({@code now + timeout}) and to decide that the
-     *                      deadline has passed. Production passes
-     *                      {@link InstantSource#system()} — every shorter
-     *                      constructor does — so deadlines live on the same
-     *                      clock as the timer poller's due check;
-     *                      {@code TestWorkflowEnvironment} passes its
-     *                      controllable test clock. A memoized deadline is
-     *                      read back from history, never re-armed from it.
+     *                      and to decide that the deadline has passed; see the
+     *                      sink constructor below
      */
     SignalManager(
             WorkflowStore store,
@@ -298,8 +293,43 @@ final class SignalManager {
             TaskQueueGovernor governor,
             InstantSource instantSource
     ) {
+        this(store, LifecycleEventSink.direct(messaging), signalNotifier, serializer, parkingLot,
+                wakeRecheckInterval, observer, governor, instantSource);
+    }
+
+    /**
+     * Creates a new signal manager with every setting of the governor
+     * constructor plus the {@link InstantSource} its await deadlines are armed
+     * and decided on (R59), publishing lifecycle events through an explicit
+     * {@link LifecycleEventSink} — {@link WorkflowExecutor} passes its
+     * off-thread sink here so {@code SIGNAL_RECEIVED} never blocks a workflow
+     * thread on the transport.
+     *
+     * @param lifecycleEventSink where {@code SIGNAL_RECEIVED} events go; never
+     *                           {@code null} (pass {@link LifecycleEventSink#NOOP})
+     * @param instantSource the clock a live await reads to arm its deadline
+     *                      ({@code now + timeout}) and to decide that the
+     *                      deadline has passed. Production passes
+     *                      {@link InstantSource#system()} — every shorter
+     *                      constructor does — so deadlines live on the same
+     *                      clock as the timer poller's due check;
+     *                      {@code TestWorkflowEnvironment} passes its
+     *                      controllable test clock. A memoized deadline is
+     *                      read back from history, never re-armed from it.
+     */
+    SignalManager(
+            WorkflowStore store,
+            LifecycleEventSink lifecycleEventSink,
+            @Nullable SignalNotifier signalNotifier,
+            PayloadSerializer serializer,
+            ParkingLot parkingLot,
+            Duration wakeRecheckInterval,
+            EngineObserver observer,
+            TaskQueueGovernor governor,
+            InstantSource instantSource
+    ) {
         this.store = store;
-        this.messaging = messaging;
+        this.lifecycleEventSink = lifecycleEventSink;
         this.signalNotifier = signalNotifier;
         this.serializer = serializer;
         this.parkingLot = parkingLot;
@@ -1260,21 +1290,17 @@ final class SignalManager {
     }
 
     private void publishLifecycleEvent(WorkflowContext ctx, String stepName, LifecycleEventType eventType) {
-        if (messaging == null) return;
-        try {
-            messaging.publishLifecycleEvent(new WorkflowLifecycleEvent(
-                    ctx.workflowInstanceId(),
-                    ctx.workflowId(),
-                    ctx.workflowType(),
-                    ctx.serviceName(),
-                    ctx.taskQueue(),
-                    eventType,
-                    stepName,
-                    null,
-                    Instant.now()
-            ));
-        } catch (Exception e) {
-            logger.warn("Failed to publish {} lifecycle event for workflow '{}'", eventType, ctx.workflowId(), e);
-        }
+        // Never blocks and never throws — see LifecycleEventSink.
+        lifecycleEventSink.publish(new WorkflowLifecycleEvent(
+                ctx.workflowInstanceId(),
+                ctx.workflowId(),
+                ctx.workflowType(),
+                ctx.serviceName(),
+                ctx.taskQueue(),
+                eventType,
+                stepName,
+                null,
+                Instant.now()
+        ));
     }
 }

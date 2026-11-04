@@ -2212,6 +2212,42 @@ in the callout above.
 > `MaestroSignalListenerContainerConfigTest`, `PostgresWorkflowMessagingTest`,
 > `MaestroPropertiesBindingTest`. The rest of this section is kept as the
 > record of the defect.
+>
+> **Addendum (2026-11, Feature 3 — fail fast on missing topics).** Measure (2)
+> was too weak: a warn-only probe that ran per subscription could never stop a
+> misconfigured node, and the assessment found "Maestro never auto-creates
+> Kafka topics" was policy, not code — nothing set `allow.auto.create.topics`,
+> nothing set `missingTopicsFatal`, and a missing admin-events topic still cost
+> `max.block.ms` (60 s) on every lifecycle publish, inline on the workflow
+> thread for activity, timer, signal and compensation events.
+> `KafkaDeadLetterTopicCheck` is **replaced** by `KafkaTopicVerifier`: one pass
+> at startup (`MaestroSignalListenerBeanPostProcessor.afterSingletonsInstantiated`,
+> before any container starts) over every topic the service needs — the engine
+> signal topic and `.DLT`, the admin-events topic when enabled, every
+> `@MaestroSignalListener` topic and `.DLT` — governed by the new
+> `maestro.messaging.topics.verify-on-startup = fail | warn | off`, **default
+> `fail`**: a confirmed-missing topic fails startup with one exception listing
+> every missing topic and a `kafka-topics.sh --create` line each; an
+> unreachable broker is inconclusive and only WARNs. Under `fail`, once the
+> probe confirmed every topic present (`KafkaTopicVerifier.fatalOnMissing`),
+> both container builders also set `missingTopicsFatal(true)` (and all set
+> `setAuthExceptionRetryInterval(10s)`); the engine consumer defaults
+> `allow.auto.create.topics=false`; the engine producer defaults
+> `max.block.ms=10000` and `publishSignal` bounds its acknowledgement wait to
+> 30 s. Every lifecycle publish now leaves the workflow thread through
+> `core.engine.LifecycleEventSink` / `WorkflowExecutor.lifecycleEventSink()`
+> (a ten-activity workflow against a missing admin topic completes in ~0.4 s
+> where it took 20 × `max.block.ms`). The six Kafka IT suites and the chaos
+> cluster pre-create every `.DLT`; the shared IT broker and the module's test
+> broker run with `KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`; the root
+> `docker-compose.yml` gained its `.DLT` topics. Pinned by
+> `KafkaTopicVerifierTest`, `KafkaTopicVerifierAdminConfigTest`,
+> `KafkaTopicVerificationStartupTest` (real broker, context fails naming the
+> `.DLT`), `MaestroSignalListenerContainerConfigTest`,
+> `KafkaMessagingAutoConfigurationPropertiesTest`, `KafkaAckOnFailureIT`
+> (under `warn`), `KafkaLifecycleEventLatencyIT`, `LifecycleEventSinkTest` and
+> `WorkflowExecutorLifecycleEventPublishingTest`. Docs: `configuration.md`
+> § Kafka Topic Verification, `operations.md` § 12.
 
 **Kind:** Library gap — configuration and documentation, not code.
 **Severity:** Medium. Nothing is lost; the failure mode is a long silence

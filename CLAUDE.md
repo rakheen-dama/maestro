@@ -212,8 +212,11 @@ Locks fence persisted progress: every adoption bumps `maestro_workflow_instance.
 
 ## Configuration Namespace
 
-All under `maestro.*`. Topics are pre-created, declared in config. Full
-reference: `docs/configuration.md`. Notable properties added post-0.3.0:
+All under `maestro.*`. Topics are pre-created, declared in config, and verified
+at startup (`maestro.messaging.topics.verify-on-startup` = fail | warn | off,
+default `fail`: a confirmed-missing topic fails startup naming every missing
+topic with a `kafka-topics.sh --create` line each; an unreachable broker only
+WARNs). Full reference: `docs/configuration.md`. Notable properties added post-0.3.0:
 `maestro.shutdown.timeout` (default 30s), `maestro.signal.wake-recheck-interval`
 (default 30s), `maestro.messaging.redelivery.*` (bounded retry + dead-letter
 policy, Kafka), `maestro.admin.events.enabled` (now actually wired;
@@ -295,6 +298,7 @@ any other value fails startup. Removed (setting either fails startup):
 - **Never store workflow state in memory only** — Postgres is truth; locks and NOTIFY wake are an optimisation.
 - **Never assume signal ordering.**
 - **Never break `(workflow_instance_id, sequence_number)` uniqueness.**
-- **Never auto-create Kafka topics** — pre-created, declared in config.
+- **Never auto-create Kafka topics** — pre-created, declared in config, and enforced at startup: `KafkaTopicVerifier` fails the context on a confirmed-missing topic (`maestro.messaging.topics.verify-on-startup=fail`, the default), the engine consumer defaults `allow.auto.create.topics=false`, and under `fail` — once the probe has confirmed every required topic present (`KafkaTopicVerifier.fatalOnMissing`; never after an inconclusive probe, which must not turn into a restart loop) — every Maestro container is `missingTopicsFatal`. Every suite that touches a broker pre-creates its topics — `.DLT` companions included — against a broker with `KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`.
+- **Never publish a lifecycle event on the workflow thread** — go through `LifecycleEventSink` (`WorkflowExecutor.lifecycleEventSink()`), never `WorkflowMessaging.publishLifecycleEvent` directly; a Kafka producer blocks up to `max.block.ms` on a missing topic.
 - **Never use `com.fasterxml.jackson`** — Jackson 3 uses `tools.jackson`.
 - **Never use a Jakarta EE `javax.*` namespace** (`javax.servlet`, `javax.persistence`, `javax.annotation`, etc.) — Spring Boot 4 is Jakarta EE 11, so these are `jakarta.*` now. This does **not** cover Java SE's own `javax.*` packages, which never moved and have no `jakarta.*` equivalent — `javax.sql.DataSource`, `javax.crypto.*`, and similar are correct and required as-is.

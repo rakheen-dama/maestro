@@ -74,7 +74,8 @@ class KafkaLifecycleEventsIT extends KafkaSpringIntegrationSupport {
      */
     @BeforeAll
     static void createLifecycleTopics() throws ExecutionException, InterruptedException {
-        createTopics(ADMIN_TOPIC, "maestro.signals." + SERVICE);
+        // .DLT companion included — required by the startup topic verification.
+        createTopics(ADMIN_TOPIC, "maestro.signals." + SERVICE, "maestro.signals." + SERVICE + ".DLT");
     }
 
     @Test

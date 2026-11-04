@@ -56,6 +56,7 @@ final class LifecycleEventPublisher {
 
     private final ThreadPoolExecutor executor;
     private final AtomicLong droppedSinceLastLog = new AtomicLong();
+    private final AtomicLong droppedTotal = new AtomicLong();
 
     // Seeded one interval in the past (not a sentinel like Long.MIN_VALUE) so the
     // very first drop logs immediately: nanoTime() deltas are only meaningful —
@@ -88,14 +89,29 @@ final class LifecycleEventPublisher {
         try {
             executor.execute(publishTask);
         } catch (RejectedExecutionException e) {
-            // Only reachable once the executor has been shut down.
-            recordDropped();
+            // Only reachable once the executor has been shut down — not
+            // backpressure, so not the rate-limited WARN: this is expected during
+            // a stop and would only be noise.
+            droppedTotal.incrementAndGet();
+            logger.debug("Dropped a lifecycle event: the publisher is shutting down");
         }
     }
 
     /**
+     * Total lifecycle events dropped since construction — under backpressure
+     * (queue full) or because the publisher was already shutting down. A
+     * monotonic count suitable for binding to a gauge.
+     *
+     * @return the number of dropped events
+     */
+    long dropped() {
+        return droppedTotal.get();
+    }
+
+    /**
      * Shuts the publisher down, giving queued and in-flight publishes a short
-     * window to finish before forcing termination. Called once from
+     * window to finish before forcing termination, then reports any
+     * backpressure drops the rate limiter was still holding. Called once from
      * {@link WorkflowExecutor#shutdown()}.
      */
     void shutdown() {
@@ -108,11 +124,17 @@ final class LifecycleEventPublisher {
             Thread.currentThread().interrupt();
             executor.shutdownNow();
         }
+        var unreported = droppedSinceLastLog.getAndSet(0);
+        if (unreported > 0) {
+            logger.warn("Dropped {} lifecycle event(s) due to backpressure since the last report "
+                    + "({} dropped in total)", unreported, droppedTotal.get());
+        }
     }
 
     // ── Internal: rate-limited drop logging ─────────────────────────────
 
     private void recordDropped() {
+        droppedTotal.incrementAndGet();
         droppedSinceLastLog.incrementAndGet();
         var now = System.nanoTime();
         var last = lastDropLogAtNanos.get();

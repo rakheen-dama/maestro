@@ -82,7 +82,11 @@ class KafkaSignalListenerRoundTripIT extends KafkaSpringIntegrationSupport {
      */
     @BeforeAll
     static void createRoundTripTopics() throws ExecutionException, InterruptedException {
-        createTopics(EVENT_TOPIC, ADMIN_TOPIC, "maestro.signals." + SERVICE);
+        // Every topic a Maestro consumer subscribes to needs its .DLT companion:
+        // the startup verification (verify-on-startup=fail, the default) refuses
+        // to start the context otherwise.
+        createTopics(EVENT_TOPIC, EVENT_TOPIC + ".DLT", ADMIN_TOPIC,
+                "maestro.signals." + SERVICE, "maestro.signals." + SERVICE + ".DLT");
     }
 
     @Test

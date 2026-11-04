@@ -34,12 +34,16 @@ import java.util.function.Consumer;
  * argument with this class and hands the wrapped reference to every
  * component it builds ({@link SignalManager}, {@link
  * io.b2mash.maestro.core.saga.SagaManager}, {@link
- * DefaultWorkflowOperations}). Callers that build activity proxies outside
- * {@code WorkflowExecutor} — the Spring Boot starter's
+ * DefaultWorkflowOperations}) — since Feature 3 as a {@link LifecycleEventSink}
+ * built over the gated reference, {@link WorkflowExecutor#lifecycleEventSink()},
+ * which also moves every publish off the workflow thread. Callers that build
+ * activity proxies outside {@code WorkflowExecutor} — the Spring Boot starter's
  * {@code ActivityStubBeanPostProcessor} in production, or a test that wires
- * one up directly — must wrap their {@code WorkflowMessaging} reference with
- * {@link #wrap} themselves before calling {@link
- * ActivityProxyFactory#createProxy}, since activity proxies are not built by
+ * one up directly — should pass that sink to the {@link
+ * ActivityProxyFactory#createProxy} overload that takes a
+ * {@link LifecycleEventSink}; a caller that instead hands a raw
+ * {@code WorkflowMessaging} to the older overloads must wrap it with
+ * {@link #wrap} itself, since activity proxies are not built by
  * {@code WorkflowExecutor}.
  *
  * <h2>Thread Safety</h2>

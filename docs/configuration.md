@@ -142,6 +142,7 @@ on the node that started it.
 |------------------------------------------|----------|--------------------------|-------------------------------------------------------------------|
 | `maestro.messaging.topics.signals`       | `String` | `null`                   | Topic for inbound cross-service signals. Resolved at runtime based on the service name.        |
 | `maestro.messaging.topics.admin-events`  | `String` | `"maestro.admin.events"` | Topic for lifecycle events consumed by the admin dashboard.       |
+| `maestro.messaging.topics.verify-on-startup` | `fail` \| `warn` \| `off` | `fail` | What happens when a topic this service needs does not exist at startup — see [Kafka Topic Verification](#kafka-topic-verification). |
 
 `maestro.messaging.topics.tasks` has been removed. It configured a task topic
 nothing ever consumed; setting it now **fails startup** — on either transport,
@@ -175,51 +176,86 @@ it is not a recommended default, and defaults to `true`: the listener container
 gets a `DefaultErrorHandler` backed by a zero-length `FixedBackOff` instead of
 `KafkaRedeliveryErrorHandlers.deadLettering(...)`. A failing record gets **zero
 retries** and **no `DeadLetterPublishingRecoverer`** — it is logged and skipped,
-restoring plain at-most-once handler semantics. The
-[dead-letter-topic startup probe](#kafka-dead-letter-topic-check) below is
-skipped entirely, since nothing will ever publish to a `.DLT` topic;
-`max-attempts` and the backoff properties are ignored while the flag is off.
+restoring plain at-most-once handler semantics. The `.DLT` topics drop out of
+the set the [startup topic verification](#kafka-topic-verification) requires,
+since nothing will ever publish to one; `max-attempts` and the backoff
+properties are ignored while the flag is off.
 
-### Kafka Dead-Letter-Topic Check
+### Kafka Topic Verification
 
-Maestro never creates topics, `.DLT` companions included (see below) — an
-operator who forgets to pre-create one does not find out until a handler's
-attempt budget is first exhausted, and the failure then shows up as a stalled,
-noisily-retrying consumer rather than a clear message while the gap could
-still be fixed for free.
+Maestro never creates topics, `.DLT` companions included (see
+[Pre-creating Topics](#pre-creating-topics)). Before this check existed a
+forgotten topic surfaced late and indirectly: the producer blocked for
+`max.block.ms` on *every* publish to a missing admin-events topic, a consumer
+on a missing signal topic polled nothing forever, and a missing `.DLT` only
+showed up once a handler's attempt budget was first exhausted — as a recoverer
+that could not publish, at the exact moment an operator was already debugging
+something else.
 
-`KafkaDeadLetterTopicCheck` closes that gap: at every point Maestro subscribes
-to a topic — `KafkaWorkflowMessaging.subscribeSignals` (the engine's own
-signal channel) and `MaestroSignalListenerBeanPostProcessor`'s
-container activation (every `@MaestroSignalListener` topic) — it probes whether
-`<topic><dead-letter-suffix>` exists and logs:
+`KafkaTopicVerifier` closes that gap **once, at startup**, from
+`MaestroSignalListenerBeanPostProcessor.afterSingletonsInstantiated` — after
+every singleton exists (so every `@MaestroSignalListener` is known), before any
+consumer container starts, and before `StartupRecoveryRunner` resumes a
+workflow. It composes the set of topics this service needs and asks the broker,
+in one `describeTopics` call bounded to 5 seconds, whether each exists:
 
-```text
-WARN Dead-letter topic '<topic>.DLT' does not exist — redelivery for '<topic>' will
-     exhaust its attempts and then fail to publish; pre-create it or set
-     maestro.messaging.redelivery.enabled=false
-```
-
-The probe is **warn-only**: it never fails startup, is bounded to 5 seconds,
-and its own failure (an unreachable broker, for instance) is logged at `DEBUG`
-and otherwise ignored — a diagnostic, not a gate. It is skipped entirely when
-`maestro.messaging.redelivery.enabled=false`, since nothing will ever publish
-to a dead-letter topic in that mode.
-
-**`.DLT` pre-creation checklist.** Before deploying a service with Kafka
-messaging and redelivery enabled (the default), pre-create a `.DLT` companion
-for every topic **a Maestro consumer subscribes to**:
-
-- [ ] The engine's inbound signal topic: `maestro.signals.{serviceName}.DLT`
-      (or the fixed override `maestro.messaging.topics.signals` + suffix).
-- [ ] Every `@MaestroSignalListener(topic = "...")` topic this service
-      declares.
+| Required topic                                                   | When                                              |
+|------------------------------------------------------------------|---------------------------------------------------|
+| `maestro.signals.{serviceName}` (or `maestro.messaging.topics.signals`) | always                                     |
+| `maestro.signals.{serviceName}.DLT` (`+ dead-letter-suffix`)     | `maestro.messaging.redelivery.enabled=true` (default) |
+| `maestro.messaging.topics.admin-events`                          | `maestro.admin.events.enabled=true` (default)     |
+| every `@MaestroSignalListener(topic = "...")` topic              | always                                            |
+| each listener topic `+ dead-letter-suffix`                       | `maestro.messaging.redelivery.enabled=true` (default) |
 
 Plain `@KafkaListener`-consumed topics are **not** in scope — they run outside
-Maestro's redelivery path entirely and get no dead-lettering error handler, so
-they need no `.DLT` companion. The admin-events topic is publish-only from a
-workflow service's perspective (only `maestro-admin` consumes it, over its own
-listener, not this mechanism) and is likewise out of scope.
+Maestro entirely.
+
+`maestro.messaging.topics.verify-on-startup` decides what a gap means:
+
+- **`fail`** (default) — a topic the broker confirms **missing** fails
+  startup with one `IllegalStateException` that lists every missing topic and
+  a ready `kafka-topics.sh --create` line for each:
+
+  ```text
+  2 of 5 Kafka topic(s) Maestro needs do not exist on kafka:9092:
+  [maestro.signals.order-service.DLT, payments.results.DLT]. Maestro never creates
+  topics — pre-create them (or set maestro.messaging.topics.verify-on-startup=warn
+  to start without them):
+    kafka-topics.sh --bootstrap-server kafka:9092 --create --topic maestro.signals.order-service.DLT --partitions 3 --replication-factor 3
+    kafka-topics.sh --bootstrap-server kafka:9092 --create --topic payments.results.DLT --partitions 3 --replication-factor 3
+    (adjust --partitions/--replication-factor to the cluster; a single-broker development cluster needs --replication-factor 1)
+  ```
+
+  Under `fail`, once the probe has confirmed **every** required topic present,
+  the consumer containers (the engine's signal channel and every listener) are
+  also started with Spring Kafka's `missingTopicsFatal`, so a topic that
+  disappears *after* startup fails the container instead of leaving it polling
+  nothing. (Not after an inconclusive probe — see below.)
+- **`warn`** — the same message at `WARN`; startup continues and the
+  containers stay tolerant. The escape hatch for a deploy that cannot create
+  topics yet.
+- **`off`** — no verification; the pre-0.5 behaviour.
+
+A topic is *missing* only when the broker says so
+(`UnknownTopicOrPartitionException`). A probe that cannot reach the broker —
+timeout, connection refused, authentication or authorization failure — is
+**inconclusive**: logged at `WARN` naming the unverified topics, and never
+fatal under any mode, because a broker blip at deploy time must not become a
+fleet-wide restart loop. That boot's consumer containers then stay tolerant
+too — Spring Kafka's `missingTopicsFatal` check counts an unreachable broker
+as "missing" and would otherwise fail `start()` right after the WARN — so a
+topic that really is missing polls nothing until it is created, and the next
+restart re-verifies. The verifier's `Admin` client is derived from the
+engine consumer factory's full configuration (`bootstrap.servers`, `security.*`,
+`sasl.*`, `ssl.*`), so it authenticates the way the consumers do.
+
+Two client defaults back the policy up in code (both are defaults, not
+invariants — see [Kafka Client Configuration](#kafka-client-configuration)):
+the engine consumer sets `allow.auto.create.topics=false`, so a Maestro consumer
+cannot conjure a topic into existence on a broker that still allows it; and
+the engine producer sets `max.block.ms=10000`, down from Kafka's 60 s, so a
+publish to a topic that is missing anyway costs at most ten seconds — off the
+workflow thread (see [Operations § Startup fails: missing Kafka topic](operations.md#12-startup-fails-missing-kafka-topic)).
 
 The delay before the attempt following the *n*-th failure is
 `min(initial-interval × multiplier^(n-1), max-interval)`. The defaults give
@@ -693,9 +729,18 @@ silently corrupt engine topics:
 | Producer `acks`                     | `all`                            |
 | Consumer `group.id`                 | `maestro-{serviceName}` (or `maestro.messaging.consumer-group`) |
 
-`spring.kafka.consumer.auto-offset-reset` is **not** an invariant — Maestro
-only supplies a default of `earliest` when the property is unset; an explicit
-value wins.
+Three further settings are **defaults, not invariants** — Maestro supplies them
+only when the property is unset, and an explicit `spring.kafka.*` value wins:
+
+| Default                                 | Maestro's value | Why                                                                                                    |
+|-----------------------------------------|-----------------|--------------------------------------------------------------------------------------------------------|
+| Consumer `auto.offset.reset`            | `earliest`      | A new consumer group must not skip signals published before it first joined.                            |
+| Consumer `allow.auto.create.topics`     | `false`         | "Never auto-create Kafka topics", in code — see [Kafka Topic Verification](#kafka-topic-verification). |
+| Producer `max.block.ms`                 | `10000`         | Bounds how long `send()` blocks fetching metadata for a missing topic; Kafka's own default is 60 s.    |
+
+Override with `spring.kafka.consumer.auto-offset-reset`,
+`spring.kafka.consumer.properties.allow.auto.create.topics` and
+`spring.kafka.producer.properties.max.block.ms` respectively.
 
 Boot's own `kafkaTemplate` / `kafkaProducerFactory` / `kafkaConsumerFactory`
 beans are **deliberately suppressed**: `KafkaMessagingAutoConfiguration`
@@ -762,17 +807,37 @@ for the full contract.
 
 ### Pre-creating Topics
 
-Create topics before starting your service. Example using the Kafka CLI:
+Create topics before starting your service — with the default
+`maestro.messaging.topics.verify-on-startup=fail` the service refuses to start
+otherwise, and prints exactly these commands for whatever is missing (see
+[Kafka Topic Verification](#kafka-topic-verification)). For a service named
+`order-service` with one `@MaestroSignalListener(topic = "payments.results")`,
+redelivery on (default) and lifecycle events on (default):
 
 ```bash
+# The engine's inbound signal topic and its dead-letter companion
 kafka-topics.sh --create --topic maestro.signals.order-service \
   --partitions 6 --replication-factor 3 \
   --bootstrap-server localhost:9092
+kafka-topics.sh --create --topic maestro.signals.order-service.DLT \
+  --partitions 6 --replication-factor 3 \
+  --bootstrap-server localhost:9092
 
+# Every @MaestroSignalListener topic and its dead-letter companion
+kafka-topics.sh --create --topic payments.results.DLT \
+  --partitions 6 --replication-factor 3 \
+  --bootstrap-server localhost:9092
+# (payments.results itself is usually created by the service that publishes it)
+
+# Lifecycle events for the admin dashboard (skip with maestro.admin.events.enabled=false)
 kafka-topics.sh --create --topic maestro.admin.events \
   --partitions 3 --replication-factor 3 \
   --bootstrap-server localhost:9092
 ```
+
+The `.DLT` companions are plain topics; use the same partition count as their
+source so a dead-lettered record keeps its partition. With
+`maestro.messaging.redelivery.enabled=false` none of them is needed.
 
 ---
 

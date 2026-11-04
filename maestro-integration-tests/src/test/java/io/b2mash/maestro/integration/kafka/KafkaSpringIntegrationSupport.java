@@ -102,7 +102,11 @@ abstract class KafkaSpringIntegrationSupport extends PostgresIntegrationSupport 
     @SuppressWarnings("resource")
     private static final KafkaContainer KAFKA =
             new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.7.1"))
-                    .withKraft();
+                    .withKraft()
+                    // Production posture: the broker never auto-creates topics, so a
+                    // suite that forgets to pre-create one — a .DLT companion,
+                    // say — fails its startup verification here, not in production.
+                    .withEnv("KAFKA_AUTO_CREATE_TOPICS_ENABLE", "false");
 
     /** Producer shared by every suite — the broker is shared, so this can be too. */
     private static final KafkaTemplate<String, byte[]> PRODUCER;

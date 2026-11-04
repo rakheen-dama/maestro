@@ -98,7 +98,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
 
     private final WorkflowStore store;
     private final @Nullable DistributedLock distributedLock;
-    private final @Nullable WorkflowMessaging messaging;
+    private final LifecycleEventSink lifecycleEventSink;
     private final PayloadSerializer serializer;
     private final ParkingLot parkingLot;
     private final CompensationStack compensationStack;
@@ -250,9 +250,46 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             EngineObserver observer,
             TaskQueueGovernor governor
     ) {
+        this(store, distributedLock, serializer, parkingLot, compensationStack, signalManager,
+                wakeRecheckInterval, observer, governor, LifecycleEventSink.direct(messaging));
+    }
+
+    /**
+     * Creates workflow operations with every setting of the governor
+     * constructor, publishing lifecycle events through an explicit
+     * {@link LifecycleEventSink} instead of inline on a {@link WorkflowMessaging}
+     * — {@link WorkflowExecutor} passes its off-thread sink here so
+     * {@code TIMER_*} events never block a workflow thread on the transport.
+     *
+     * @param store               workflow store for event persistence and signal management
+     * @param distributedLock     optional distributed lock backend
+     * @param serializer          Jackson serializer for payloads
+     * @param parkingLot          virtual thread parking mechanism
+     * @param compensationStack   LIFO compensation stack (shared with WorkflowExecutor)
+     * @param signalManager       signal lifecycle manager for await/consume operations
+     * @param wakeRecheckInterval how often a live {@link #sleep(Duration)} park
+     *                            re-reads the durable timer row
+     * @param observer            engine observation seam; never {@code null}
+     * @param governor            per-task-queue concurrency limits; pass
+     *                            {@link TaskQueueGovernor#UNBOUNDED} for none
+     * @param lifecycleEventSink  where {@code TIMER_*} events go; never
+     *                            {@code null} (pass {@link LifecycleEventSink#NOOP})
+     */
+    public DefaultWorkflowOperations(
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            PayloadSerializer serializer,
+            ParkingLot parkingLot,
+            CompensationStack compensationStack,
+            SignalManager signalManager,
+            Duration wakeRecheckInterval,
+            EngineObserver observer,
+            TaskQueueGovernor governor,
+            LifecycleEventSink lifecycleEventSink
+    ) {
         this.store = store;
         this.distributedLock = distributedLock;
-        this.messaging = messaging;
+        this.lifecycleEventSink = lifecycleEventSink;
         this.serializer = serializer;
         this.parkingLot = parkingLot;
         this.compensationStack = compensationStack;
@@ -1214,22 +1251,18 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
     }
 
     private void publishLifecycleEvent(WorkflowContext ctx, String stepName, LifecycleEventType eventType) {
-        if (messaging == null) return;
-        try {
-            messaging.publishLifecycleEvent(new WorkflowLifecycleEvent(
-                    ctx.workflowInstanceId(),
-                    ctx.workflowId(),
-                    ctx.workflowType(),
-                    ctx.serviceName(),
-                    ctx.taskQueue(),
-                    eventType,
-                    stepName,
-                    null,
-                    Instant.now()
-            ));
-        } catch (Exception e) {
-            logger.warn("Failed to publish {} lifecycle event for workflow '{}'", eventType, ctx.workflowId(), e);
-        }
+        // Never blocks and never throws — see LifecycleEventSink.
+        lifecycleEventSink.publish(new WorkflowLifecycleEvent(
+                ctx.workflowInstanceId(),
+                ctx.workflowId(),
+                ctx.workflowType(),
+                ctx.serviceName(),
+                ctx.taskQueue(),
+                eventType,
+                stepName,
+                null,
+                Instant.now()
+        ));
     }
 
     // ── Data records for event payloads ────────────────────────────────

@@ -514,3 +514,32 @@ FUNDED loan misses seq {9,16}; FAILED saga has compensation events ~seq 19000.
 - Report: `.superpowers/sdd/task-7-report.md` §10; evidence
   `.superpowers/sdd/multi-instance/evidence/task7/` (soak-console.log,
   *-777-BEFORE, *-910203, *-558112, prgate-postfix.log)
+
+## Feature 3 — Kafka fail-fast + no workflow stalls on Kafka (branch `feat/kafka-fail-fast`, 2026-11-04)
+
+Plan: `~/.claude/plans/velvet-snacking-petal.md` § Feature 3. No migration.
+
+- [x] Core: `LifecycleEventSink`, `WorkflowExecutor.lifecycleEventSink()`, the
+      four inline publish sites (activity/signal/timer/saga) routed off-thread;
+      `ActivityProxyFactory.createProxy` sink overload; starter BPP + harness wired
+- [x] Kafka: `KafkaTopicVerifier` replaces `KafkaDeadLetterTopicCheck`;
+      `maestro.messaging.topics.verify-on-startup` (fail|warn|off, default fail);
+      one pass in `MaestroSignalListenerBeanPostProcessor.afterSingletonsInstantiated`;
+      consumer `allow.auto.create.topics=false`; `missingTopicsFatal` under fail;
+      `authExceptionRetryInterval=10s`; producer `max.block.ms=10000`; `send().get(30s)`
+- [x] Tests: verifier unit tests (mock Admin), real-broker startup test
+      (context fails naming the `.DLT`), container-config pins, properties pins,
+      `KafkaAckOnFailureIT` under `warn`, `KafkaLifecycleEventLatencyIT` 10-activity
+      workflow < 1 s (measured ~370 ms at max.block.ms=2000)
+- [x] Fixtures: auto-create off on module + IT brokers; `.DLT`s in every suite,
+      `SignalListenerTraceContextIT`, `ChaosCluster`; root compose DLTs
+- [x] Docs: configuration § Kafka Topic Verification + defaults table +
+      pre-creation; operations § 12 runbook; open-issues Issue 24 addendum;
+      CLAUDE.md; release notes
+- Deviation: `missingTopicsFatal` is tied to `fail` AND a confirmed-present
+  probe (`KafkaTopicVerifier.fatalOnMissing`), not unconditional — Spring Kafka
+  counts an unreachable broker as "missing", so anything else fails start()
+  right after the verifier's "starting anyway" WARN (review finding 1).
+- Review finding 2: `publishSignal` waits `max.block.ms + delivery.timeout.ms
+  + 5 s` (read from the producer factory), not a fixed 30 s, so a thrown
+  publish can never be followed by a late delivery; SPI Javadoc documents it.

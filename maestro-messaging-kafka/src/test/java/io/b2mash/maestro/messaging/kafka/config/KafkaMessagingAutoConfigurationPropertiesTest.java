@@ -41,7 +41,45 @@ class KafkaMessagingAutoConfigurationPropertiesTest {
             .withBean(ObjectMapper.class, ObjectMapper::new)
             .withPropertyValues(
                     "maestro.service-name=props-test",
-                    "spring.kafka.bootstrap-servers=broker-from-props:9092");
+                    "spring.kafka.bootstrap-servers=broker-from-props:9092",
+                    // No broker behind that address: keep the startup topic
+                    // verification out of a test about property precedence.
+                    "maestro.messaging.topics.verify-on-startup=off");
+
+    @Test
+    void maxBlockMsDefaultsTo10sButAnExplicitProducerPropertyWins() {
+        runner.run(ctx -> {
+            var pf = (DefaultKafkaProducerFactory<?, ?>) ctx.getBean("maestroKafkaProducerFactory");
+            assertThat(pf.getConfigurationProperties().get(ProducerConfig.MAX_BLOCK_MS_CONFIG))
+                    .as("Maestro lowers Kafka's 60s max.block.ms default so a missing topic costs "
+                            + "a publish at most 10s, not a minute")
+                    .hasToString("10000");
+        });
+        runner.withPropertyValues("spring.kafka.producer.properties.max.block.ms=2500")
+                .run(ctx -> {
+                    var pf = (DefaultKafkaProducerFactory<?, ?>) ctx.getBean("maestroKafkaProducerFactory");
+                    assertThat(pf.getConfigurationProperties().get(ProducerConfig.MAX_BLOCK_MS_CONFIG))
+                            .as("max.block.ms is a default, not an invariant — the user's value wins")
+                            .hasToString("2500");
+                });
+    }
+
+    @Test
+    void consumerNeverAutoCreatesTopicsByDefaultButAnExplicitPropertyWins() {
+        runner.run(ctx -> {
+            var cf = (DefaultKafkaConsumerFactory<?, ?>) ctx.getBean("maestroKafkaConsumerFactory");
+            assertThat(cf.getConfigurationProperties().get(ConsumerConfig.ALLOW_AUTO_CREATE_TOPICS_CONFIG))
+                    .as("\"Never auto-create Kafka topics\" is enforced in the consumer config, not just by policy")
+                    .hasToString("false");
+        });
+        runner.withPropertyValues("spring.kafka.consumer.properties.allow.auto.create.topics=true")
+                .run(ctx -> {
+                    var cf = (DefaultKafkaConsumerFactory<?, ?>) ctx.getBean("maestroKafkaConsumerFactory");
+                    assertThat(cf.getConfigurationProperties().get(ConsumerConfig.ALLOW_AUTO_CREATE_TOPICS_CONFIG))
+                            .as("a default, not an invariant — the user's explicit value wins")
+                            .hasToString("true");
+                });
+    }
 
     @Test
     void producerPropertiesReachMaestroFactory() {

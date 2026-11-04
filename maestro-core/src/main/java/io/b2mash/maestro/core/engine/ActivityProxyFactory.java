@@ -202,6 +202,57 @@ public final class ActivityProxyFactory {
             EngineObserver observer,
             TaskQueueGovernor governor
     ) {
+        return createProxy(activityInterface, activityImpl, store, distributedLock, retryPolicy,
+                startToCloseTimeout, serializer, retryExecutor, lockKeyPrefix, observer, governor,
+                LifecycleEventSink.direct(messaging));
+    }
+
+    /**
+     * Creates a memoizing proxy with every setting of the governor overload,
+     * publishing {@code ACTIVITY_*} lifecycle events through an explicit
+     * {@link LifecycleEventSink} rather than inline on a {@link WorkflowMessaging}.
+     *
+     * <p>This is the overload production wiring should use: pass
+     * {@link WorkflowExecutor#lifecycleEventSink()} and the proxy's lifecycle
+     * events take the executor's off-thread route, so a transport that blocks
+     * (Kafka's producer on a missing topic, up to {@code max.block.ms}) costs
+     * the workflow thread nothing. The executor's sink is already gated on
+     * {@code maestro.admin.events.enabled}, so no {@link GatedWorkflowMessaging}
+     * wrapping is needed here.
+     *
+     * @param <T>                 the activity interface type
+     * @param activityInterface   the activity interface class (must be an interface)
+     * @param activityImpl        the real implementation to delegate live calls to
+     * @param store               the workflow store for memoization
+     * @param distributedLock     optional distributed lock for dedup optimization
+     * @param retryPolicy         retry policy for failed invocations
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
+     *                            base of the per-activity lock TTL
+     * @param serializer          Jackson serializer for payloads
+     * @param retryExecutor       retry executor for live invocations
+     * @param lockKeyPrefix       prefix for the per-activity distributed lock key
+     * @param observer            engine observation seam; never {@code null}
+     * @param governor            bounds live executions per task queue; pass
+     *                            {@link TaskQueueGovernor#UNBOUNDED} for none
+     * @param lifecycleEventSink  where {@code ACTIVITY_*} events go; never
+     *                            {@code null} (pass {@link LifecycleEventSink#NOOP})
+     * @return a proxy instance that implements {@code activityInterface}
+     * @throws IllegalArgumentException if {@code activityInterface} is not an interface
+     */
+    public <T> T createProxy(
+            Class<T> activityInterface,
+            T activityImpl,
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            RetryPolicy retryPolicy,
+            Duration startToCloseTimeout,
+            PayloadSerializer serializer,
+            RetryExecutor retryExecutor,
+            String lockKeyPrefix,
+            EngineObserver observer,
+            TaskQueueGovernor governor,
+            LifecycleEventSink lifecycleEventSink
+    ) {
         if (!activityInterface.isInterface()) {
             throw new IllegalArgumentException(
                     "Activity type must be an interface, got: " + activityInterface.getName());
@@ -216,14 +267,14 @@ public final class ActivityProxyFactory {
                 activityName,
                 store,
                 distributedLock,
-                messaging,
                 retryPolicy,
                 startToCloseTimeout,
                 serializer,
                 retryExecutor,
                 lockKeyPrefix,
                 observer,
-                governor
+                governor,
+                lifecycleEventSink
         );
 
         var proxy = Proxy.newProxyInstance(

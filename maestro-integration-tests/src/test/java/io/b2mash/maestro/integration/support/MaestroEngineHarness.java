@@ -347,19 +347,21 @@ public final class MaestroEngineHarness implements AutoCloseable {
                                 + " required by " + workflowImpl.getClass().getName()
                                 + " — call registerActivities(...) before starting or recovering it");
             }
+            // The executor's off-thread sink, exactly as the Spring starter wires
+            // it: ACTIVITY_* events never block the workflow thread on Kafka.
             var proxy = proxyFactory.createProxy(
                     (Class) activityInterface,
                     impl,
                     store,
                     lock,
-                    messaging,
                     RetryPolicy.fromAnnotation(stub.retryPolicy()),
                     Duration.parse(stub.startToCloseTimeout()),
                     serializer,
                     retryExecutor,
                     lockKeyPrefix,
                     observer,
-                    executor.taskQueueGovernor());
+                    executor.taskQueueGovernor(),
+                    executor.lifecycleEventSink());
             try {
                 field.setAccessible(true);
                 field.set(workflowImpl, proxy);

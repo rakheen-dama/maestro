@@ -104,11 +104,10 @@ services:
         # @MaestroSignalListener topic (the two business-event topics
         # loan-application actually *consumes* — the *.requests topics are
         # consumed by plain @KafkaListeners, outside Maestro's redelivery
-        # path, so they get no companion). Without these, KafkaDeadLetterTopicCheck
-        # WARNs at subscribe time and, once a handler's attempt budget is
-        # first exhausted, the recoverer's publish fails and consumption
-        # stalls noisily instead of parking the record. See
-        # docs/configuration.md § Redelivery and Dead-Letter Properties.
+        # path, so they get no companion). Without these, each service's
+        # startup topic verification (maestro.messaging.topics.verify-on-startup,
+        # default fail) refuses to start it, naming the missing topics. See
+        # docs/configuration.md § Kafka Topic Verification.
         $$KAFKA --create --if-not-exists --topic maestro.signals.loan-application.DLT     --partitions 3 --replication-factor 1
         $$KAFKA --create --if-not-exists --topic maestro.signals.verification-gateway.DLT --partitions 3 --replication-factor 1
         $$KAFKA --create --if-not-exists --topic maestro.signals.underwriting.DLT         --partitions 3 --replication-factor 1

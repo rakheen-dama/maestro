@@ -51,4 +51,15 @@ public class KafkaSignalTestApplication {
     public AdminCommandWorkflows.FlakyActivitiesImpl flakyActivities() {
         return new AdminCommandWorkflows.FlakyActivitiesImpl();
     }
+
+    /**
+     * @return the {@link KafkaTestWorkflows.TenStepActivities} implementation
+     *         every context needs so the scanned
+     *         {@link KafkaTestWorkflows.TenStepWorkflow} can be wired — same
+     *         reasoning as {@link #flakyActivities()}
+     */
+    @Bean
+    public KafkaTestWorkflows.TenStepActivitiesImpl tenStepActivities() {
+        return new KafkaTestWorkflows.TenStepActivitiesImpl();
+    }
 }

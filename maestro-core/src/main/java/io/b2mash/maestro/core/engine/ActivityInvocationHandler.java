@@ -138,7 +138,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     private final String activityName;
     private final WorkflowStore store;
     private final @Nullable DistributedLock distributedLock;
-    private final @Nullable WorkflowMessaging messaging;
+    private final LifecycleEventSink lifecycleEventSink;
     private final RetryPolicy retryPolicy;
     private final Duration startToCloseTimeout;
     private final PayloadSerializer serializer;
@@ -300,6 +300,51 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             EngineObserver observer,
             TaskQueueGovernor governor
     ) {
+        this(activityImpl, activityName, store, distributedLock, retryPolicy, startToCloseTimeout,
+                serializer, retryExecutor, lockKeyPrefix, observer, governor,
+                LifecycleEventSink.direct(messaging));
+    }
+
+    /**
+     * Creates a new handler with every setting of the governor constructor,
+     * publishing lifecycle events through an explicit {@link LifecycleEventSink}
+     * instead of inline on a {@link WorkflowMessaging}. Pass
+     * {@link WorkflowExecutor#lifecycleEventSink()} so {@code ACTIVITY_*}
+     * events never block the workflow thread on the transport — a blocking
+     * producer used to cost every activity call up to {@code max.block.ms}
+     * twice.
+     *
+     * @param activityImpl        the real activity implementation to delegate to
+     * @param activityName        the activity group name (for step name prefix)
+     * @param store               the workflow store for memoization lookups and event persistence
+     * @param distributedLock     optional distributed lock for dedup optimization
+     * @param retryPolicy         retry policy for failed activity invocations
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
+     *                            base of the per-activity lock TTL
+     * @param serializer          Jackson serializer for payloads
+     * @param retryExecutor       retry executor for live activity invocations
+     * @param lockKeyPrefix       prefix for the per-activity distributed lock key
+     * @param observer            engine observation seam; never {@code null}
+     * @param governor            bounds live executions per task queue; pass
+     *                            {@link TaskQueueGovernor#UNBOUNDED} for none
+     * @param lifecycleEventSink  where {@code ACTIVITY_*} events go; never
+     *                            {@code null} (pass {@link LifecycleEventSink#NOOP})
+     * @throws IllegalArgumentException if {@code startToCloseTimeout} is zero or negative
+     */
+    public ActivityInvocationHandler(
+            Object activityImpl,
+            String activityName,
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            RetryPolicy retryPolicy,
+            Duration startToCloseTimeout,
+            PayloadSerializer serializer,
+            RetryExecutor retryExecutor,
+            String lockKeyPrefix,
+            EngineObserver observer,
+            TaskQueueGovernor governor,
+            LifecycleEventSink lifecycleEventSink
+    ) {
         Objects.requireNonNull(startToCloseTimeout, "startToCloseTimeout must not be null");
         if (startToCloseTimeout.isZero() || startToCloseTimeout.isNegative()) {
             throw new IllegalArgumentException(
@@ -310,7 +355,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         this.activityName = activityName;
         this.store = store;
         this.distributedLock = distributedLock;
-        this.messaging = messaging;
+        this.lifecycleEventSink = lifecycleEventSink;
         this.retryPolicy = retryPolicy;
         this.startToCloseTimeout = startToCloseTimeout;
         this.serializer = serializer;
@@ -888,32 +933,23 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     // ── Lifecycle event publishing ────────────────────────────────────
 
     /**
-     * Publishes a lifecycle event for observability. Failures are logged but
-     * never interrupt workflow execution.
+     * Publishes a lifecycle event for observability. The sink never blocks
+     * and never throws, so this can never interrupt — or delay — the activity.
      */
     private void publishLifecycleEvent(
             WorkflowContext ctx, String stepName, LifecycleEventType eventType
     ) {
-        if (messaging == null) {
-            return;
-        }
-
-        try {
-            messaging.publishLifecycleEvent(new WorkflowLifecycleEvent(
-                    ctx.workflowInstanceId(),
-                    ctx.workflowId(),
-                    ctx.workflowType(),
-                    ctx.serviceName(),
-                    ctx.taskQueue(),
-                    eventType,
-                    stepName,
-                    null,
-                    Instant.now()
-            ));
-        } catch (Exception e) {
-            logger.warn("Failed to publish {} lifecycle event for activity '{}'",
-                    eventType, stepName, e);
-        }
+        lifecycleEventSink.publish(new WorkflowLifecycleEvent(
+                ctx.workflowInstanceId(),
+                ctx.workflowId(),
+                ctx.workflowType(),
+                ctx.serviceName(),
+                ctx.taskQueue(),
+                eventType,
+                stepName,
+                null,
+                Instant.now()
+        ));
     }
 
     // ── @Compensate registration ────────────────────────────────

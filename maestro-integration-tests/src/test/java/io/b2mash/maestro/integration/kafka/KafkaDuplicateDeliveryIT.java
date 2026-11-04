@@ -72,7 +72,9 @@ class KafkaDuplicateDeliveryIT extends KafkaSpringIntegrationSupport {
      */
     @BeforeAll
     static void createDuplicateTopics() throws ExecutionException, InterruptedException {
-        createTopics(EVENT_TOPIC, ADMIN_TOPIC, "maestro.signals." + SERVICE);
+        // .DLT companions included — required by the startup topic verification.
+        createTopics(EVENT_TOPIC, EVENT_TOPIC + ".DLT", ADMIN_TOPIC,
+                "maestro.signals." + SERVICE, "maestro.signals." + SERVICE + ".DLT");
     }
 
     @Test

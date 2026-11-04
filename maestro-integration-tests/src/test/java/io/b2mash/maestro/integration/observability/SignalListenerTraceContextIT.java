@@ -98,7 +98,13 @@ class SignalListenerTraceContextIT extends PostgresIntegrationSupport {
     @DisplayName("a valid W3C traceparent on the routed event survives BeanPostProcessor -> deliverSignal -> "
             + "saveSignal and lands on the signal row carrying the same trace id")
     void inboundTraceparentIsPersistedOnTheSignalRow() throws Exception {
-        createTopics(TOPIC);
+        // The real auto-configuration chain below verifies every topic this
+        // service needs at startup (verify-on-startup=fail, the default): the
+        // listener topic and its .DLT, the engine's own signal topic and its
+        // .DLT, and the default admin-events topic.
+        createTopics(TOPIC, TOPIC + ".DLT",
+                "maestro.signals." + SERVICE, "maestro.signals." + SERVICE + ".DLT",
+                "maestro.admin.events");
 
         var workflowId = "trace-probe-" + UUID.randomUUID().toString().substring(0, 8);
         var traceId = "4bf92f3577b34da6a3ce929d0e0e4736";

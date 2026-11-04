@@ -143,6 +143,7 @@ public final class WorkflowExecutor {
     private final EngineObserver observer;
     private final InstantSource instantSource;
     private final LifecycleEventPublisher lifecycleEventPublisher;
+    private final LifecycleEventSink lifecycleEventSink;
     private final ConcurrentHashMap<String, RunningWorkflow> runningWorkflows;
     private final AtomicBoolean shuttingDown;
     private final AtomicReference<TimerPoller> timerPoller = new AtomicReference<>();
@@ -533,18 +534,23 @@ public final class WorkflowExecutor {
                 ? TaskQueueGovernor.UNBOUNDED
                 : new TaskQueueGovernor(taskQueueLimits);
         this.instantSource = Objects.requireNonNull(instantSource, "instantSource");
+        this.lifecycleEventsEnabled = lifecycleEventsEnabled;
+        // Built before the components below so they can share the one off-thread
+        // sink: every lifecycle event this executor or its components produce is
+        // handed to the publisher's bounded queue, never published on a
+        // workflow's own thread — see LifecycleEventSink.
+        this.lifecycleEventPublisher = new LifecycleEventPublisher(serviceName);
+        this.lifecycleEventSink = buildLifecycleEventSink(this.messaging, lifecycleEventsEnabled);
         this.signalManager = new SignalManager(
-                store, this.messaging, signalNotifier, serializer, parkingLot, wakeRecheckInterval,
+                store, this.lifecycleEventSink, signalNotifier, serializer, parkingLot, wakeRecheckInterval,
                 observer, taskQueueGovernor, instantSource);
-        this.sagaManager = new SagaManager(store, this.messaging, serializer, serviceName, observer);
+        this.sagaManager = new SagaManager(store, serializer, serviceName, observer, this.lifecycleEventSink);
         this.instanceLockManager = new WorkflowInstanceLockManager(
                 distributedLock, serviceName, lockKeyPrefix, instanceLockTtl,
                 instanceLockTtl.dividedBy(3), observer);
         this.queryRegistry = new QueryRegistry();
-        this.lifecycleEventsEnabled = lifecycleEventsEnabled;
         this.shutdownTimeout = shutdownTimeout;
         this.wakeRecheckInterval = wakeRecheckInterval;
-        this.lifecycleEventPublisher = new LifecycleEventPublisher(serviceName);
         this.runningWorkflows = new ConcurrentHashMap<>();
         this.shuttingDown = new AtomicBoolean(false);
         // Proactive stand-down (Issue 11): a run whose instance lock was lost
@@ -1785,6 +1791,25 @@ public final class WorkflowExecutor {
     }
 
     /**
+     * Returns the sink through which this executor — and every component it
+     * built — publishes lifecycle events <em>off</em> the workflow thread.
+     *
+     * <p>Hand it to the {@code ActivityProxyFactory.createProxy} overload that
+     * takes a {@link LifecycleEventSink} (the Spring starter's
+     * {@code ActivityStubBeanPostProcessor} does) so {@code ACTIVITY_*} events
+     * take the same route: a transport that blocks — Kafka's producer on a
+     * missing topic, up to {@code max.block.ms} — then costs the workflow
+     * nothing. Already honours {@code maestro.admin.events.enabled}: with
+     * publishing disabled, or no messaging at all, this is
+     * {@link LifecycleEventSink#NOOP}.
+     *
+     * @return the off-thread sink; never {@code null}
+     */
+    public LifecycleEventSink lifecycleEventSink() {
+        return lifecycleEventSink;
+    }
+
+    /**
      * Returns whether the background timer poller is currently running on
      * this executor.
      *
@@ -1989,8 +2014,8 @@ public final class WorkflowExecutor {
 
         var compensationStack = new CompensationStack();
         var operations = new DefaultWorkflowOperations(
-                store, distributedLock, messaging, serializer, parkingLot, compensationStack,
-                signalManager, wakeRecheckInterval, observer, taskQueueGovernor);
+                store, distributedLock, serializer, parkingLot, compensationStack,
+                signalManager, wakeRecheckInterval, observer, taskQueueGovernor, lifecycleEventSink);
 
         var cancellation = new RunCancellation();
         var ctx = new WorkflowContext(
@@ -2896,15 +2921,15 @@ public final class WorkflowExecutor {
      * to {@code max.block.ms}), and the calling thread here is a workflow's
      * own virtual thread — most notably during {@code startWorkflow} itself.
      * The actual publish, and its failure handling, happens on
-     * {@link #lifecycleEventPublisher}; see {@link LifecycleEventPublisher}
-     * for the backpressure and shutdown contract.
+     * {@link #lifecycleEventPublisher} via {@link #lifecycleEventSink}; see
+     * {@link LifecycleEventPublisher} for the backpressure and shutdown contract.
      */
     private void publishLifecycleEvent(
             WorkflowInstance instance, LifecycleEventType eventType,
             @Nullable String stepName
     ) {
         if (messaging == null || !lifecycleEventsEnabled) return;
-        var event = new WorkflowLifecycleEvent(
+        lifecycleEventSink.publish(new WorkflowLifecycleEvent(
                 instance.id(),
                 instance.workflowId(),
                 instance.workflowType(),
@@ -2914,14 +2939,29 @@ public final class WorkflowExecutor {
                 stepName,
                 null,
                 Instant.now()
-        );
-        lifecycleEventPublisher.submit(() -> {
+        ));
+    }
+
+    /**
+     * The one off-thread sink shared by this executor and every component it
+     * builds: each event is handed to {@link #lifecycleEventPublisher}'s bounded
+     * queue and published there, with the SPI's never-interrupt failure
+     * handling. {@link LifecycleEventSink#NOOP} when there is no messaging or
+     * publishing is disabled, so disabled deployments queue nothing.
+     */
+    private LifecycleEventSink buildLifecycleEventSink(
+            @Nullable WorkflowMessaging messaging, boolean enabled
+    ) {
+        if (messaging == null || !enabled) {
+            return LifecycleEventSink.NOOP;
+        }
+        return event -> lifecycleEventPublisher.submit(() -> {
             try {
                 messaging.publishLifecycleEvent(event);
             } catch (Exception e) {
                 // SPI contract: lifecycle event failures must not interrupt workflow execution
                 logger.warn("Failed to publish {} lifecycle event for workflow '{}'",
-                        eventType, instance.workflowId(), e);
+                        event.eventType(), event.workflowId(), e);
             }
         });
     }

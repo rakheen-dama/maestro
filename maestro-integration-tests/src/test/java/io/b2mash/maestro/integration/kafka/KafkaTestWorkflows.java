@@ -1,5 +1,6 @@
 package io.b2mash.maestro.integration.kafka;
 
+import io.b2mash.maestro.core.annotation.ActivityStub;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
@@ -90,6 +91,61 @@ public final class KafkaTestWorkflows {
         @WorkflowMethod
         public String run(String input) {
             throw new IllegalStateException(BOOM);
+        }
+    }
+
+    /**
+     * Ten sequential activity calls — twenty {@code ACTIVITY_*} lifecycle
+     * events plus the workflow's own pair — the fixture
+     * {@code KafkaLifecycleEventLatencyIT} drives against a missing admin-events
+     * topic. Before lifecycle publishing left the workflow thread, each of
+     * those publishes blocked for the producer's {@code max.block.ms}.
+     */
+    @DurableWorkflow(name = "KafkaTenStepWorkflow")
+    public static class TenStepWorkflow {
+
+        /** How many activity calls the workflow makes. */
+        public static final int STEPS = 10;
+
+        @ActivityStub(startToCloseTimeout = "PT10S")
+        private TenStepActivities activities;
+
+        /**
+         * @param input the seed value
+         * @return the seed with every step number appended
+         */
+        @WorkflowMethod
+        public String run(String input) {
+            var carry = input;
+            for (int step = 1; step <= STEPS; step++) {
+                carry = activities.step(carry, step);
+            }
+            return carry;
+        }
+    }
+
+    /** The activity {@link TenStepWorkflow} calls ten times. */
+    public interface TenStepActivities {
+
+        /**
+         * @param carry the value so far
+         * @param step  the 1-based step number
+         * @return {@code carry} with the step appended
+         */
+        String step(String carry, int step);
+    }
+
+    /**
+     * Trivial, stateless {@link TenStepActivities}; declared as a bean in
+     * {@link KafkaSignalTestApplication} so every P1 context can wire the
+     * scanned {@link TenStepWorkflow} (the Spring starter resolves activity
+     * beans at discovery), and registered directly on the engine harness by
+     * the latency suite.
+     */
+    public static class TenStepActivitiesImpl implements TenStepActivities {
+        @Override
+        public String step(String carry, int step) {
+            return carry + ":" + step;
         }
     }
 }

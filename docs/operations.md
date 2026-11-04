@@ -929,6 +929,70 @@ purged anything logs one `INFO` line with its counts; a store failure logs
 
 ---
 
+## 12. Startup fails: missing Kafka topic
+
+**Symptom.** A node refuses to start; the last lines of its log are one
+`IllegalStateException` from `KafkaTopicVerifier`:
+
+```text
+3 of 5 Kafka topic(s) Maestro needs do not exist on kafka:9092:
+[maestro.signals.order-service.DLT, payments.results.DLT, maestro.admin.events].
+Maestro never creates topics — pre-create them (or set
+maestro.messaging.topics.verify-on-startup=warn to start without them):
+  kafka-topics.sh --bootstrap-server kafka:9092 --create --topic maestro.signals.order-service.DLT --partitions 3 --replication-factor 3
+  kafka-topics.sh --bootstrap-server kafka:9092 --create --topic payments.results.DLT --partitions 3 --replication-factor 3
+  kafka-topics.sh --bootstrap-server kafka:9092 --create --topic maestro.admin.events --partitions 3 --replication-factor 3
+  (adjust --partitions/--replication-factor to the cluster; a single-broker development cluster needs --replication-factor 1)
+```
+
+**What it means.** The node asked the broker, once during context refresh,
+whether every topic it needs exists — its own `maestro.signals.<service>`
+channel and (with redelivery on) its `.DLT`, the admin-events topic (with
+lifecycle events on), and every `@MaestroSignalListener` topic and its `.DLT`
+— and the broker confirmed these do not. Maestro never creates topics, on
+purpose: an engine that auto-created `maestro.signals.ordre-service` on a typo
+would silently split a service's signals across two topics. This check is what
+turned the old failure modes — a producer stalling `max.block.ms` on every
+lifecycle publish (the never-explained six-of-six loan E2E failures), a
+consumer polling a non-existent topic, a dead-letter publish failing minutes
+after the handler gave up — into a message at the moment the gap can still be
+fixed for free. See `docs/configuration.md` § Kafka Topic Verification.
+
+**Fix.** Run the printed `kafka-topics.sh` lines (adjust partitions and
+replication to the cluster) and restart the node. Nothing else is needed; the
+node did not get far enough to touch Postgres or start a consumer.
+
+**If you cannot create topics right now** — a cluster where topic creation is
+a ticket, say — set `maestro.messaging.topics.verify-on-startup=warn`. The
+node starts, logs the same message at `WARN`, and runs; its consumer on a
+missing topic polls nothing until the topic appears, and a lifecycle publish
+to a missing admin-events topic is dropped off-thread after `max.block.ms`
+(10 s by Maestro's default) without ever blocking a workflow. Switch back to
+`fail` once the topics exist.
+
+**A different WARN: "Could not verify that N Kafka topic(s) exist".** The
+probe could not get an answer — the broker was unreachable, slow (5 s bound),
+or refused the request (authentication, authorization). This is
+*inconclusive*, not *missing*, and never fails startup under any mode: a broker
+blip during a rolling deploy must not become a fleet-wide restart loop. The
+node continues with **tolerant** consumer containers for this boot — Spring
+Kafka's `missingTopicsFatal` check counts an unreachable broker as "missing"
+and would otherwise fail `start()` a moment after the WARN — so a topic that
+really is missing polls nothing until it is created. Once the broker is
+reachable again, restart the node to re-verify: a restart that then prints the
+missing-topic failure above is a genuinely missing topic — apply the fix.
+(`Topic(s) [...] is/are not present and missingTopicsFatal is true` from a
+container therefore only ever appears on a node whose startup probe *did*
+confirm the topics, i.e. a topic deleted while the node was running.)
+
+**Upgrading from a build without the check.** A service whose `.DLT`
+companions were never created used to start and run until its first exhausted
+redelivery; it now stops at startup with the list above. Create the topics
+before deploying (both compose stacks in this repository do), or deploy with
+`warn` first and tighten afterwards.
+
+---
+
 ## See also
 
 - `docs/observability.md` — the full meter catalog (including

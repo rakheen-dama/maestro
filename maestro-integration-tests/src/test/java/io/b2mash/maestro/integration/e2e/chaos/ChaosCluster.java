@@ -74,12 +74,23 @@ public final class ChaosCluster implements AutoCloseable {
     private static final String NODE_IMAGE = "eclipse-temurin:25-jre";
     private static final int NODE_PORT = 8080;
 
-    /** All topics the sample uses; Maestro never auto-creates topics. */
+    /**
+     * All topics the sample uses; Maestro never auto-creates topics. The
+     * {@code .DLT} companions mirror {@code sample-loan-origination/docker-compose.yml}:
+     * one for each topic a Maestro consumer subscribes to (the three engine
+     * signal topics and the two {@code @MaestroSignalListener} topics in
+     * loan-application). Each node's startup verification
+     * ({@code maestro.messaging.topics.verify-on-startup=fail}) refuses to
+     * start without them.
+     */
     private static final List<String> TOPICS = List.of(
             "maestro.signals.loan-application", "maestro.signals.verification-gateway",
             "maestro.signals.underwriting",
             "maestro.admin.events", "loans.verification.requests", "loans.verification.results",
-            "loans.underwriting.requests", "loans.underwriting.decisions");
+            "loans.underwriting.requests", "loans.underwriting.decisions",
+            "maestro.signals.loan-application.DLT", "maestro.signals.verification-gateway.DLT",
+            "maestro.signals.underwriting.DLT",
+            "loans.verification.results.DLT", "loans.underwriting.decisions.DLT");
 
     private final ChaosConfig config;
     private final EvidenceWriter evidence;
