@@ -14,9 +14,11 @@ import java.util.Map;
 
 /**
  * Issue 12 metrics capture (chaos-harness-design.md §6): a sampler thread that
- * snapshots recovery-query rate ({@code pg_stat_statements}), lock probe/renew
- * and wake-subscription churn (Valkey {@code INFO commandstats} / {@code PUBSUB})
- * and parked/running counts every window, appending a row to {@code metrics.csv}.
+ * snapshots recovery-query rate, lock probe/renew/leader-election churn and
+ * {@code LISTEN}/{@code NOTIFY} wake traffic (all from {@code pg_stat_statements}
+ * — Postgres carries store, lock and signal wake, so one cluster-wide view
+ * covers every backend-side rate) plus parked/running counts every window,
+ * appending a row to {@code metrics.csv}.
  *
  * <p>Measurement is backend-side (no engine seam, ruling Q10). Per-node rates
  * are {@code clusterRate / liveNodes}, valid only in calm windows
@@ -35,7 +37,7 @@ public final class MetricsSampler {
 
     private static final String HEADER = "windowStartUtc,windowSecs,liveNodes,running,"
             + "waitingSignal,waitingTimer,compensating,recoveryCalls,recoveryRatePerSec,"
-            + "lockProbeCalls,lockRenewCalls,subscribeCalls,unsubscribeCalls,pubsubChannels,chaosActive";
+            + "lockProbeCalls,lockRenewCalls,leaderElectionCalls,listenCalls,notifyCalls,chaosActive";
 
     // The normalised recovery-poll statement (AbstractJdbcWorkflowStore
     // .getRecoverableInstances): FROM maestro_workflow_instance WHERE status IN
@@ -45,6 +47,23 @@ public final class MetricsSampler {
             "SELECT COALESCE(SUM(calls),0) FROM pg_stat_statements "
             + "WHERE query LIKE '%maestro_workflow_instance WHERE status IN%' "
             + "AND query LIKE '%ORDER BY started_at ASC%'";
+
+    // Postgres-lock and LISTEN/NOTIFY statement shapes (PostgresDistributedLock,
+    // PostgresSignalNotifier in maestro-store-postgres), pinned by text like the
+    // recovery poll above. pg_stat_statements is cluster-wide, so one query from
+    // any loan database sees every node's statements; its own literals are
+    // normalised to $n so it never matches itself. LISTEN/NOTIFY are utility
+    // statements, counted because the cluster starts Postgres with
+    // pg_stat_statements.track_utility=on.
+    private static final String LOCK_CALLS_SQL =
+            "SELECT "
+            + "COALESCE(SUM(calls) FILTER (WHERE query LIKE '%INSERT INTO maestro_distributed_lock%'), 0), "
+            + "COALESCE(SUM(calls) FILTER (WHERE query LIKE '%UPDATE maestro_distributed_lock%'), 0), "
+            + "COALESCE(SUM(calls) FILTER (WHERE query LIKE '%maestro_leader_election%'), 0), "
+            + "COALESCE(SUM(calls) FILTER (WHERE query LIKE 'LISTEN %'), 0), "
+            + "COALESCE(SUM(calls) FILTER (WHERE query LIKE 'NOTIFY %'), 0) "
+            + "FROM pg_stat_statements";
+    private static final String[] LOCK_CALL_KEYS = {"acquire", "renew", "leader", "listen", "notify"};
 
     private final ChaosCluster cluster;
     private final ChaosConfig config;
@@ -62,6 +81,7 @@ public final class MetricsSampler {
     // soak's blindness knee). Sampler-thread confined.
     private boolean statusProbeFailingStreak;
     private boolean recoveryProbeFailingStreak;
+    private boolean lockProbeFailingStreak;
 
     /**
      * @param cluster  the live cluster
@@ -139,13 +159,13 @@ public final class MetricsSampler {
         lastRecoveryCalls = recoveryCalls;
         double recoveryRate = (double) recoveryDelta / windowSecs;
 
-        Map<String, Long> cmd = valkeyCommandCalls();
-        long lockProbe = delta(cmd, "set");
-        long lockRenew = delta(cmd, "evalsha") + delta(cmd, "eval");
-        long subscribe = delta(cmd, "subscribe");
-        long unsubscribe = delta(cmd, "unsubscribe");
+        Map<String, Long> cmd = lockStatementCalls();
+        long lockProbe = delta(cmd, "acquire");
+        long lockRenew = delta(cmd, "renew");
+        long leaderElection = delta(cmd, "leader");
+        long listen = delta(cmd, "listen");
+        long notify = delta(cmd, "notify");
         lastCmdCalls.putAll(cmd);
-        long pubsubChannels = pubsubChannels();
 
         String row = String.join(",",
                 windowStart, str(windowSecs), str(liveNodes),
@@ -154,8 +174,8 @@ public final class MetricsSampler {
                 str(statusCounts.getOrDefault("WAITING_TIMER", 0L)),
                 str(statusCounts.getOrDefault("COMPENSATING", 0L)),
                 str(recoveryDelta), String.format("%.3f", recoveryRate),
-                str(lockProbe), str(lockRenew), str(subscribe), str(unsubscribe),
-                str(pubsubChannels), Boolean.toString(chaosActive));
+                str(lockProbe), str(lockRenew), str(leaderElection), str(listen),
+                str(notify), Boolean.toString(chaosActive));
         csv.append(row);
     }
 
@@ -222,38 +242,33 @@ public final class MetricsSampler {
         return lastRecoveryCalls < 0 ? 0 : lastRecoveryCalls;
     }
 
-    /** Parses {@code cmdstat_<cmd>:calls=N,...} from Valkey {@code INFO commandstats}. */
-    private Map<String, Long> valkeyCommandCalls() {
+    /**
+     * Cumulative {@code pg_stat_statements} call counts for the Postgres-lock and
+     * LISTEN/NOTIFY statement shapes, keyed by {@link #LOCK_CALL_KEYS}. On a probe
+     * failure (Postgres paused) the previous cumulative values are returned so
+     * the window's deltas read as zero rather than as a negative/garbage spike.
+     */
+    private Map<String, Long> lockStatementCalls() {
         var out = new HashMap<String, Long>();
-        String info = cluster.valkeyCli("INFO", "commandstats");
-        for (String line : info.split("\\R")) {
-            if (!line.startsWith("cmdstat_")) {
-                continue;
-            }
-            int colon = line.indexOf(':');
-            if (colon < 0) {
-                continue;
-            }
-            String cmd = line.substring("cmdstat_".length(), colon);
-            for (String field : line.substring(colon + 1).split(",")) {
-                if (field.startsWith("calls=")) {
-                    try {
-                        out.put(cmd, Long.parseLong(field.substring("calls=".length())));
-                    } catch (NumberFormatException ignore) {
-                        // skip
-                    }
+        try (Connection c = cluster.dataSource(Service.LOAN_APPLICATION).getConnection();
+             var st = c.createStatement();
+             ResultSet rs = st.executeQuery(LOCK_CALLS_SQL)) {
+            if (rs.next()) {
+                for (int i = 0; i < LOCK_CALL_KEYS.length; i++) {
+                    out.put(LOCK_CALL_KEYS[i], rs.getLong(i + 1));
                 }
+                lockProbeFailingStreak = false;
+                return out;
+            }
+        } catch (Exception e) {
+            if (!lockProbeFailingStreak) {
+                log.warn("[chaos] metrics: lock-calls probe failed — {} "
+                        + "(first of streak)", e.toString());
+                lockProbeFailingStreak = true;
             }
         }
+        out.putAll(lastCmdCalls);
         return out;
-    }
-
-    private long pubsubChannels() {
-        String out = cluster.valkeyCli("PUBSUB", "CHANNELS");
-        if (out.isBlank()) {
-            return 0;
-        }
-        return out.split("\\R").length;
     }
 
     private long delta(Map<String, Long> current, String cmd) {

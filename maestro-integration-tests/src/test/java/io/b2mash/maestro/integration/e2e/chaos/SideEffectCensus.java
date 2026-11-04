@@ -22,8 +22,16 @@ import java.util.Map;
  * logs (all container generations), computes duplicates, and correlates each
  * duplicate against the chaos action log: <em>explained</em> if the workflow
  * wrote events during a lock-loss-with-live-process window (a loan node
- * {@code PAUSE_RESUME}/{@code PARTITION}, or {@code BACKEND_OUTAGE(valkey)}),
- * else <em>unexplained</em>.
+ * {@code PAUSE_RESUME}/{@code PARTITION}), else <em>unexplained</em>.
+ *
+ * <p>{@code BACKEND_OUTAGE} windows never qualify. The former
+ * lock-cache-outage tolerance covered the Issue 32 brownout class:
+ * the lock backend gone while the store stayed up, so a live node kept
+ * executing and persisting with a lock it no longer held. Postgres now carries
+ * the lock, so a lock loss <em>is</em> a store loss — the node whose lock lapsed
+ * cannot persist a result either — and no analogous live-process window exists
+ * to explain a duplicate away. Duplicates that arise around a Postgres outage
+ * are therefore surfaced as unexplained, for triage.
  *
  * <p>Duplicates never fail the run (ruling Q8). Explained duplicates are the
  * Issue 11 evidence base; unexplained duplicates are surfaced prominently as
@@ -153,9 +161,8 @@ public final class SideEffectCensus {
                 String action = text(n, "action");
                 String target = text(n, "target");
                 boolean qualifies =
-                        (("PAUSE_RESUME".equals(action) || "PARTITION".equals(action))
-                                && target != null && target.startsWith("LOAN_"))
-                        || ("BACKEND_OUTAGE".equals(action) && "valkey".equals(target));
+                        ("PAUSE_RESUME".equals(action) || "PARTITION".equals(action))
+                                && target != null && target.startsWith("LOAN_");
                 if (qualifies) {
                     windows.add(new Window(Instant.parse(text(n, "startedTs")),
                             Instant.parse(text(n, "healedTs"))));
