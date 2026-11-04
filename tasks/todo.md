@@ -1,3 +1,58 @@
+# Milestone: Four reliability hardenings (2026-11-04)
+
+Plan: `~/.claude/plans/velvet-snacking-petal.md`. Driver: the 2026-11-04
+assessment's "what would move the no-negative-impact confidence to 80%" list.
+Wave 1 in parallel (three branches, three PRs merged in order); wave 2 after V6
+is merged. FAILED retention default 90d (maintainer decision).
+
+- [x] F1 fencing — PR #38 merged 7ad7182 (`feat/lease-fencing`, V6 `lease_epoch`); `FencedWriteException`,
+      `RunLease`, fenced `default` SPI overloads, adoption CAS bump, proactive
+      stand-down on lock loss, `StandDownReason.LEASE_FENCED`, `MultiNodeFencingIT`
+- [x] F2 retention — PR #39 merged ee17041, all gates green incl. soak (`feat/retention-purge` e4f5a41, V8 indexes); `maestro.retention.*`,
+      `purgeTerminalInstancesBefore`, leader-gated `RetentionSweeper`,
+      `retentionPass` observer + meters, `MultiNodeRetentionPurgeIT`
+- [x] F3 Kafka fail-fast — PR #40 merged 21ea931, all gates green incl. soak (`feat/kafka-fail-fast` 1a6d598); `KafkaTopicVerifier` +
+      `verify-on-startup=fail|warn|off`, `max.block.ms` default, lifecycle
+      publishes off the workflow thread (`LifecycleEventSink`),
+      `missingTopicsFatal`, `allow.auto.create.topics=false`
+- [x] F4 argument hash — PR #41 merged bf0aaeb, all gates green incl. soak (`feat/args-hash` 14249e1, V7 `args_hash`);
+      `ArgumentFingerprint`, `ReplayGuard.requireArgumentsMatch`,
+      `maestro.replay.verify-arguments`, HashMap-order IT
+- [x] Gates per branch: `./gradlew build`; feature IT proof; dispatched
+      `e2e-nightly.yml`; code-reviewer pass; grep gate; PR opened
+- [x] Final: nightly on merged `main` bf0aaeb (run 41878690111) — E2E 1–10,
+      chaos PR-gate ×3 and 2 h soak all green (2,424 workflows, 0 duplicate
+      side effects)
+
+## Review (2026-11-04)
+
+- Four PRs, each built by one engineer agent in an isolated worktree, each
+  independently code-reviewed before merge: #38 fencing (6 findings fixed:
+  two swallowed-fence catches, FAILED terminal write mis-attributed, lock leak
+  on adoption-write error, signal-consumed window, Javadoc overclaim);
+  #39 retention (3: batch-size cap, IT await, stop between batches);
+  #40 Kafka (2: inconclusive probe still fatal via missingTopicsFatal, send
+  wait shorter than the producer budget); #41 args hash (1: hand-apply IT
+  did not exercise V7).
+- Per-branch gates: full `./gradlew build`, loan E2E 1–10, chaos PR-gate ×3,
+  2 h soak — all green on every branch and again on the merged `main`.
+- Sequencing as decided: V6 → (V8, Kafka in parallel) → V7 after V6 merged;
+  rebases resolved by the owning engineers (version lists → 1–8,100;
+  release-notes subsection order Fencing, Retention, Kafka, Replay;
+  operations §11 retention / §12 Kafka runbook).
+- Deviations accepted: `missingTopicsFatal` only after a confirmed-present
+  probe (Spring Kafka treats any describe failure as missing); ten-activity
+  latency bound 2 s (971 ms under parallel test load, 300–600 ms isolated,
+  old path 40 s); `MultiNodeNoLockBackendIT` accepts 1 or 2 launches.
+- Behaviour changes for deployers: V6/V7/V8 migrations; missing `.DLT`/admin
+  topics fail startup unless `verify-on-startup=warn`; terminal workflows
+  purged after 30 d (FAILED 90 d); stale nodes and drifted arguments stand
+  down instead of persisting / silently replaying.
+- Not built (known gaps carried forward): continue-as-new / history
+  compaction, cron, child workflows, search, mixed-version cluster test,
+  stand-down backoff, recovery-scan filtering at scale.
+
+---
 # Milestone: Postgres + Kafka only (2026-11-04)
 
 Branch: `worktree-postgres-kafka-only`. Plan: `~/.claude/plans/velvet-snacking-petal.md`
