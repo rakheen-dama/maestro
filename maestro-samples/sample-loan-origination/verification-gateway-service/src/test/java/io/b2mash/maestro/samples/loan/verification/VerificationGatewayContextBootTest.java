@@ -25,11 +25,16 @@ import static org.junit.jupiter.api.Assertions.assertNotSame;
  * registration in any loan service would only surface when the E2E cluster
  * failed to start.
  *
- * <p>Only the transports differ from production: Postgres messaging and
- * locking replace Kafka and Valkey so the test needs no broker or cache, and
- * Boot's {@code @KafkaListener} containers are not started (the
- * {@code KafkaTemplate} the activities inject is still created — it connects
- * lazily). Workflow discovery and validation do not depend on the transport.
+ * <p>Only the transport differs from production: Maestro's Kafka messaging
+ * auto-configuration is excluded, so no {@code WorkflowMessaging} bean exists
+ * (the engine tolerates that — inbound signal subscription is simply
+ * disabled) and {@code @MaestroSignalListener} is inert (its
+ * {@code BeanPostProcessor} is registered by that auto-configuration). Boot's
+ * {@code @KafkaListener} containers are not started, and the
+ * {@code KafkaTemplate} the activities inject is still created by Boot's own
+ * Kafka auto-configuration — it connects lazily, so no broker is needed.
+ * Locking is the Postgres lock, as in production. Workflow discovery and
+ * validation do not depend on the transport.
  *
  * <p>The container is started from a static initialiser, not
  * {@code @Container}, so it outlives Spring's cached context; Ryuk removes it
@@ -38,8 +43,8 @@ import static org.junit.jupiter.api.Assertions.assertNotSame;
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
         properties = {
-                "maestro.messaging.type=postgres",
-                "maestro.lock.type=postgres",
+                "spring.autoconfigure.exclude="
+                        + "io.b2mash.maestro.messaging.kafka.config.KafkaMessagingAutoConfiguration",
                 "spring.kafka.listener.auto-startup=false",
         })
 class VerificationGatewayContextBootTest {

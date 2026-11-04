@@ -8,15 +8,6 @@ dependencies {
     implementation(project(":maestro-spring-boot-starter"))
     implementation(project(":maestro-store-postgres"))
     implementation(project(":maestro-messaging-kafka"))
-    implementation(project(":maestro-lock-valkey"))
-    // Both lock backends on the classpath; maestro.lock.type (default
-    // "valkey", set by application.yml) picks which auto-configuration
-    // activates - see PostgresLockAutoConfiguration/ValkeyLockAutoConfiguration's
-    // @ConditionalOnProperty. Lets the E2E harness switch backends via
-    // MAESTRO_LOCK_TYPE=postgres (E2E_LOCK_BACKEND=postgres) without a
-    // rebuild. Runtime default is unchanged: Valkey wins whenever the
-    // property is absent (matchIfMissing = true on the Valkey side).
-    implementation(project(":maestro-lock-postgres"))
     implementation(libs.spring.boot.starter.webmvc)
     implementation(libs.spring.boot.starter.actuator)
     implementation(libs.spring.boot.micrometer.tracing.opentelemetry)
@@ -41,9 +32,10 @@ dependencies {
     testImplementation(project(":maestro-test"))
     testImplementation(libs.spring.boot.starter.test)
     // The *ContextBootTest boots the real application context against a
-    // Testcontainers Postgres, with Postgres messaging and locking standing in
-    // for Kafka/Valkey so no broker or cache is needed: far enough for
-    // WorkflowRegistrar to validate every @DurableWorkflow bean (R55).
-    testImplementation(project(":maestro-messaging-postgres"))
+    // Testcontainers Postgres with Maestro's Kafka transport auto-configuration
+    // excluded (the engine tolerates a null WorkflowMessaging), so no broker is
+    // needed: far enough for WorkflowRegistrar to validate every
+    // @DurableWorkflow bean (R55). The Postgres lock ships with
+    // maestro-store-postgres, so nothing extra is needed for locking.
     testImplementation(libs.testcontainers.postgresql)
 }

@@ -121,6 +121,5 @@ makes them narratable to a non-engineer:
 | loan-application-service | 8091 | Applications, documents, signatures, withdrawal |
 | verification-gateway-service | 8092 | Per-type verification webhooks |
 | underwriting-service | 8093 | Underwriter and senior decision endpoints |
-| Postgres | 5433 | Databases `loan_application`, `verification_gateway`, `underwriting` |
-| Valkey | 6380 | Locks, signal notifications |
+| Postgres | 5433 | Databases `loan_application`, `verification_gateway`, `underwriting`; also the distributed locks and leader election |
 | Kafka | 29093 | External listener for host-run services |

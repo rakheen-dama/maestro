@@ -26,8 +26,6 @@ export POSTGRES_HOST="${POSTGRES_HOST:-localhost}"
 export POSTGRES_PORT="${POSTGRES_PORT:-5433}"
 export POSTGRES_USER="${POSTGRES_USER:-maestro}"
 export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-maestro}"
-export VALKEY_HOST="${VALKEY_HOST:-localhost}"
-export VALKEY_PORT="${VALKEY_PORT:-6380}"
 export KAFKA_BOOTSTRAP="${KAFKA_BOOTSTRAP:-localhost:29093}"
 
 # Jaeger's OTLP/HTTP receiver. NOT bound in the samples' application.yml —
@@ -145,7 +143,7 @@ _kafka_observation_props=(
 # still reach Jaeger.
 _otlp_endpoint_prop="-Dmanagement.opentelemetry.tracing.export.otlp.endpoint=$OTEL_EXPORTER_OTLP_ENDPOINT"
 
-# Every JVM is capped at 256m of heap: four of these plus seven containers has
+# Every JVM is capped at 256m of heap: four of these plus six containers has
 # to fit on a laptop.
 MAESTRO_JVM_OPTS=(
     -Xmx256m

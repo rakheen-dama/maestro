@@ -1,6 +1,5 @@
-# Default infrastructure: Kafka + Valkey variant.
-# For the Postgres-only alternative, see the sample's own docker-compose file:
-#   maestro-samples/sample-postgres-only/docker-compose.yml
+# Default infrastructure: Postgres + Kafka. Postgres holds workflow state and
+# the distributed locks; Kafka is the only messaging transport.
 #
 # Maestro Demo — Full e-commerce workflow across two services + admin dashboard.
 #
@@ -8,8 +7,7 @@
 #   docker-compose up --build
 #
 # Services:
-#   - postgres:16       → Workflow state store (Flyway auto-migrates)
-#   - valkey:8          → Distributed locks and signal notifications
+#   - postgres:16       → Workflow state store + distributed locks (Flyway auto-migrates)
 #   - kafka (KRaft)     → Signals, lifecycle events, cross-service events
 #   - kafka-init        → Pre-creates all required Kafka topics
 #   - order-service     → REST API + OrderFulfilmentWorkflow (port 8081)
@@ -35,16 +33,6 @@ services:
       - ./docker/init-admin-db.sh:/docker-entrypoint-initdb.d/init-admin-db.sh
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U maestro -d maestro"]
-      interval: 3s
-      timeout: 3s
-      retries: 10
-
-  valkey:
-    image: valkey/valkey:8-alpine
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "valkey-cli", "ping"]
       interval: 3s
       timeout: 3s
       retries: 10
@@ -114,13 +102,9 @@ services:
       POSTGRES_USER: maestro
       POSTGRES_PASSWORD: maestro
       KAFKA_BOOTSTRAP: kafka:9092
-      VALKEY_HOST: valkey
-      VALKEY_PORT: 6379
       SERVER_PORT: 8081
     depends_on:
       postgres:
-        condition: service_healthy
-      valkey:
         condition: service_healthy
       kafka:
         condition: service_healthy
@@ -140,13 +124,9 @@ services:
       POSTGRES_USER: maestro
       POSTGRES_PASSWORD: maestro
       KAFKA_BOOTSTRAP: kafka:9092
-      VALKEY_HOST: valkey
-      VALKEY_PORT: 6379
       SERVER_PORT: 8082
     depends_on:
       postgres:
-        condition: service_healthy
-      valkey:
         condition: service_healthy
       kafka:
         condition: service_healthy

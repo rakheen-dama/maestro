@@ -18,7 +18,7 @@
 # demo/docker-compose.yml.
 #
 # Prerequisite: `docker compose -f demo/docker-compose.yml up -d` first. This
-# script blocks on Postgres/Kafka/Valkey/Jaeger being reachable before it
+# script blocks on Postgres/Kafka/Jaeger being reachable before it
 # starts anything, so a forgotten `compose up` fails here rather than as a
 # confusing Spring context failure 30 seconds later.
 #
@@ -202,7 +202,6 @@ wait_for_domain_listeners() {
 
 preflight() {
     require_tcp Postgres "$POSTGRES_HOST" "$POSTGRES_PORT" || return 1
-    require_tcp Valkey   "$VALKEY_HOST"   "$VALKEY_PORT"   || return 1
     require_tcp Kafka    "${KAFKA_BOOTSTRAP%%:*}" "${KAFKA_BOOTSTRAP##*:}" || return 1
     require_tcp Jaeger-OTLP localhost 4318 || return 1
     require_kafka_topics || return 1

@@ -41,7 +41,7 @@ Out-of-order cases exercised: signal-before-await, signal-before-workflow-exists
 
 ## How to run
 
-Start the shared infrastructure (Postgres, Kafka, Valkey — all topics are
+Start the shared infrastructure (Postgres and Kafka — all topics are
 pre-created by the `kafka-init` container; Maestro never auto-creates topics):
 
 ```bash
@@ -73,8 +73,7 @@ can run side by side.
 | loan-application-service | 8091 | REST API for applications, documents, signatures, withdrawal |
 | verification-gateway-service | 8092 | Webhook endpoints per verification type |
 | underwriting-service | 8093 | Underwriter / senior decision endpoints |
-| Postgres | 5433 | Databases: `loan_application`, `verification_gateway`, `underwriting` |
-| Valkey | 6380 | Locks and signal notifications |
+| Postgres | 5433 | Databases: `loan_application`, `verification_gateway`, `underwriting`; each also holds that service's distributed locks and leader election |
 | Kafka | 29093 | External listener for host-run services |
 
 `E2E_CLUSTER=1 ./e2e/run-e2e.sh` runs a second instance of every service for
@@ -83,24 +82,10 @@ group/store per service pair, ports offset by +3: loan-application 8094,
 verification-gateway 8095, underwriting 8096. See the port-allocation
 comment at the top of `e2e/run-e2e.sh`.
 
-`E2E_LOCK_BACKEND=postgres ./e2e/run-e2e.sh` boots every service with
-`maestro-lock-postgres` instead of the default `maestro-lock-valkey`, with
-the effective backend runtime-verified from each service's own boot log
-(not just the property that requested it). See
-`.superpowers/sdd/multi-instance/evidence/task5/backend-timings.md` for a
-timing comparison of the two backends across the multi-node scenarios below.
-
-**Schema footprint note.** All three services now depend on both
-`maestro-lock-valkey` and `maestro-lock-postgres` (to make the switch above
-possible), so Maestro's schema initializer (which applies every Maestro
-module's migrations found on the classpath) picks up
-`V100__maestro_lock_postgres.sql` regardless of which backend is configured.
-A **default (Valkey) boot now also creates the `maestro_distributed_lock` and
-`maestro_leader_election` tables** in all three sample databases — unused and
-inert when `maestro.lock.type` is `valkey` (the default), since nothing reads
-or writes them in that mode. If you're diffing this sample's schema against
-an older version and see two new empty tables on a Valkey-only run, this is
-why.
+Locking is Postgres-backed: `maestro-store-postgres` ships the
+`DistributedLock` implementation along with the store, so each service's
+database carries the `maestro_distributed_lock` and `maestro_leader_election`
+tables next to its workflow tables. There is no separate lock service to run.
 
 ## REST API, workflows, and scenarios
 

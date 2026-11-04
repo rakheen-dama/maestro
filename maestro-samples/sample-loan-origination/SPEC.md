@@ -26,7 +26,7 @@ maestro-samples/sample-loan-origination/
 ├── loan-application-service/      ← orchestrator + funding saga (port 8091)
 ├── verification-gateway-service/  ← simulated credit/employment/appraisal (port 8092)
 ├── underwriting-service/          ← auto-rules + human decision queue (port 8093)
-├── docker-compose.yml             ← Postgres (per-service DBs), Kafka, Valkey
+├── docker-compose.yml             ← Postgres (per-service DBs + locks), Kafka
 ├── e2e/run-e2e.sh                 ← end-to-end scenario driver (curl + assertions)
 ├── SPEC.md                        ← this file
 └── README.md
@@ -36,8 +36,8 @@ Root `settings.gradle.kts` gains three includes:
 `maestro-samples:sample-loan-origination:loan-application-service`, etc.
 Each module uses the same convention plugin as existing samples
 (`maestro.spring-app-conventions`) and depends on `maestro-spring-boot-starter`,
-`maestro-store-postgres`, `maestro-messaging-kafka`, `maestro-lock-valkey`,
-plus `maestro-test` (testImplementation).
+`maestro-store-postgres` (store + Postgres distributed lock),
+`maestro-messaging-kafka`, plus `maestro-test` (testImplementation).
 
 Packages: `io.b2mash.maestro.samples.loan.application`,
 `...loan.verification`, `...loan.underwriting`.

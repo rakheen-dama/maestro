@@ -27,7 +27,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Fast, in-memory tests for {@link VerificationWorkflow} using
- * {@link TestWorkflowEnvironment} — no Postgres, Kafka or Valkey.
+ * {@link TestWorkflowEnvironment} — no Postgres or Kafka.
  */
 class VerificationWorkflowTest {
 

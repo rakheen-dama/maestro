@@ -10,10 +10,6 @@ spring:
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:29093}
 
-  data:
-    redis:
-      url: redis://${VALKEY_HOST:localhost}:${VALKEY_PORT:6380}
-
 server:
   port: ${SERVER_PORT:8091}
 
@@ -81,9 +77,6 @@ maestro:
     type: kafka
     topics:
       signals: maestro.signals.loan-application
-
-  lock:
-    type: valkey
 
   worker:
     task-queues:

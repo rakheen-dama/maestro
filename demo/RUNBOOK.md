@@ -26,7 +26,7 @@ reference these numbers.
 | loan-application | <http://localhost:8091> |
 | verification-gateway | <http://localhost:8092> |
 | underwriting | <http://localhost:8093> |
-| Postgres / Valkey / Kafka | 5433 / 6380 / 29093 |
+| Postgres / Kafka | 5433 / 29093 |
 
 **The scripts, and when each one is the right answer**
 
@@ -113,7 +113,7 @@ failed. Fix it now, not on stage.
 
 | Symptom | Fix |
 |---|---|
-| `ports held by something that is not this demo: 5433 6380 29093` | The loan sample's *own* compose stack is up. `docker compose -f maestro-samples/sample-loan-origination/docker-compose.yml down`. The two stacks cannot both run. |
+| `ports held by something that is not this demo: 5433 29093` | The loan sample's *own* compose stack is up. `docker compose -f maestro-samples/sample-loan-origination/docker-compose.yml down`. The two stacks cannot both run. |
 | `ports held by something that is not this demo: 8091 8092 8093 8080` | `demo/scripts/stop-services.sh` |
 | `topics still missing after 120s` | `docker compose -f demo/docker-compose.yml logs kafka-init`. Topics are **never** auto-created (`KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"`); a missing topic makes `startWorkflow` hang, not fail. |
 | `loan-application-v2.jar missing` | `./gradlew :maestro-samples:sample-loan-origination:loan-application-service:v2BootJar`. Deep dive D1 cannot run without it. |
@@ -150,9 +150,9 @@ After the v1→v2 move (D1) the loan-application row must read
 demo/scripts/reset.sh
 ```
 
-Stops the four JVMs, truncates the Maestro tables in all three service
-databases, clears `maestro_admin`, flushes Valkey, restarts the JVMs **from
-the v1 jars**. Containers stay up, so Grafana history and Jaeger traces
+Stops the four JVMs, truncates the Maestro tables (workflow state plus the
+distributed-lock and leader-election tables) in all three service databases,
+clears `maestro_admin`, restarts the JVMs **from the v1 jars**. Containers stay up, so Grafana history and Jaeger traces
 survive on purpose. Idempotent; safe to run twice.
 
 **Timing:** measured **21–22 s** (`demo/.evidence/task-6-REVERIFY-timing-drift.log`;
@@ -781,9 +781,9 @@ Four sentences:
    cluster to run, no control plane to upgrade, nothing to page someone about
    at 3am.
 2. **Three SPIs:** `WorkflowStore`, `WorkflowMessaging`, `DistributedLock`.
-   This demo runs Postgres + Kafka + Valkey; the same code runs
-   Postgres-only (`sample-postgres-only`) with zero external dependencies.
-3. **Postgres is truth, Valkey is optimisation.** Every lock is best-effort.
+   This demo runs them on Postgres + Kafka — the two things your platform team
+   already operates. Postgres holds the workflow state *and* the locks.
+3. **Postgres is truth, locks are an optimisation.** Every lock is best-effort.
    If a lock is lost, the unique event index still prevents a duplicate
    *persisted* result — which is why activities must be idempotent, and why we
    say that out loud rather than claiming exactly-once.
@@ -792,11 +792,11 @@ Four sentences:
    domain events on Kafka.
 
 Point at the running stack as proof of (1): `docker compose -f
-demo/docker-compose.yml ps` — **six** containers, none of them Maestro:
-postgres, valkey, kafka, prometheus, grafana, jaeger. (The compose file defines
-seven services; the seventh, `kafka-init`, created the eleven topics and
-exited, so it shows up under `ps -a` and not under `ps`. Say six — that is what
-the room can count on the projector.)
+demo/docker-compose.yml ps` — **five** containers, none of them Maestro:
+postgres, kafka, prometheus, grafana, jaeger. (The compose file defines six
+services; the sixth, `kafka-init`, created the eleven topics and exited, so it
+shows up under `ps -a` and not under `ps`. Say five — that is what the room can
+count on the projector.)
 
 **If asked about footprint:** the whole demo peaked at **2.42 GiB**
 (2,480.7 MiB) against a ~4 GB budget — that is the *true simultaneous* peak,
@@ -999,8 +999,10 @@ in its own docs.
 Running ones are virtual threads. The demo box runs everything in `-Xmx256m`
 per service.
 
-**"Can I run this without Kafka?"** Yes — `sample-postgres-only` uses
-Postgres for store, messaging and locking. Zero external dependencies.
+**"Can I run this without Kafka?"** No. Postgres carries the store, the lock
+and the cross-node signal wake; Kafka carries cross-service signals and admin
+events. The Postgres-only transport was removed in 2026-11 so there is one
+stack to test and operate.
 
 ---
 
@@ -1022,7 +1024,7 @@ docker compose -f demo/docker-compose.yml down -v
 Verify nothing is left holding a port:
 
 ```bash
-lsof -nP -iTCP:3000,4317,4318,5433,6380,8080,8091,8092,8093,8094,9090,16686,29093 -sTCP:LISTEN
+lsof -nP -iTCP:3000,4317,4318,5433,8080,8091,8092,8093,8094,9090,16686,29093 -sTCP:LISTEN
 ```
 
 Empty output means you are done.

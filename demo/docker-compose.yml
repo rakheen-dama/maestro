@@ -20,7 +20,7 @@
 #   maestro-admin http://localhost:8080  (host JVM)
 #   loan services http://localhost:8091-8093 (host JVMs; 8094 with TWO_NODE=1)
 #
-# Infrastructure host ports (5433 / 6380 / 29093) are deliberately IDENTICAL to
+# Infrastructure host ports (5433 / 29093) are deliberately IDENTICAL to
 # maestro-samples/sample-loan-origination/docker-compose.yml, so the loan
 # services' application.yml defaults apply unchanged. The consequence is that
 # the two stacks cannot be up at the same time — the port bind fails loudly,
@@ -30,11 +30,11 @@
 # Every container gets an explicit mem_limit: the whole stack has to fit
 # alongside four 256m-heap JVMs on a laptop (five under TWO_NODE=1).
 #
-# READ THESE AS CEILINGS, NOT RESERVATIONS. The seven limits sum to 3.38 GiB and
+# READ THESE AS CEILINGS, NOT RESERVATIONS. The six limits sum to 3.25 GiB and
 # five host JVMs peak around 340 MiB RSS each, so the theoretical worst case is
-# ~5.1 GiB — above the ~4 GB budget the demo quotes. The budget holds because
-# nothing approaches its ceiling: the measured true simultaneous peak across all
-# 11 components is 2.42 GiB (demo/.evidence/task-6-peak-memory.log, 1213
+# ~5 GiB — above the ~4 GB budget the demo quotes. The budget holds because
+# nothing approaches its ceiling: the measured true simultaneous peak across the
+# whole stack is 2.42 GiB (demo/.evidence/task-6-peak-memory.log, 1213
 # samples), with Kafka the largest single consumer at 627.6 MiB against its 1g
 # limit. "Every container is capped" is not the same claim as "the stack fits
 # 4 GB"; the second one is true by measurement, not by these numbers.
@@ -59,17 +59,6 @@ services:
       - ./docker/init-demo-dbs.sh:/docker-entrypoint-initdb.d/init-demo-dbs.sh
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U maestro -d maestro"]
-      interval: 3s
-      timeout: 3s
-      retries: 10
-
-  valkey:
-    image: valkey/valkey:8-alpine
-    mem_limit: 128m
-    ports:
-      - "6380:6379"
-    healthcheck:
-      test: ["CMD", "valkey-cli", "ping"]
       interval: 3s
       timeout: 3s
       retries: 10
