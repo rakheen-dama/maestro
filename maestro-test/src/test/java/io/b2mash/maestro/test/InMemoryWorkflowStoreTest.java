@@ -855,6 +855,20 @@ class InMemoryWorkflowStoreTest {
         }
 
         @Test
+        void purge_makesTheInstanceUnknownToFencedWrites() {
+            var old = store.getInstance(idFor(WorkflowStatus.COMPLETED)).orElseThrow();
+            var lease = new RunLease(old.id(), old.leaseEpoch());
+            store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, cutoff, 500);
+
+            assertThrows(FencedWriteException.class,
+                    () -> store.appendEvent(event(old.id(), 9, EventType.ACTIVITY_COMPLETED), lease),
+                    "a run still holding a lease on a purged instance must be fenced, and write nothing");
+            assertTrue(store.getEvents(old.id()).isEmpty());
+            assertThrows(WorkflowNotFoundException.class,
+                    () -> store.updateInstance(old.toBuilder().version(old.version() + 1).build(), lease));
+        }
+
+        @Test
         void purge_freesTheWorkflowIdForReuse() {
             var old = store.getInstance(idFor(WorkflowStatus.COMPLETED)).orElseThrow();
             store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, cutoff, 500);

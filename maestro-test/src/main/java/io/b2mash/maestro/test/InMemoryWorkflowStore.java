@@ -532,6 +532,8 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
                         removedTimers += timersBefore - timers.size();
                         instances.remove(current.workflowId());
                         instanceLocks.remove(current.workflowId());
+                        // A lease on a purged instance must look unknown, not stale.
+                        idToWorkflowId.remove(id);
                         removedInstances++;
                     }
                 }
