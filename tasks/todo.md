@@ -31,8 +31,9 @@ accepted for lock/messaging type; chaos backends `{postgres, kafka}`.
       release-notes entry
 - [x] Gate — `./gradlew build` green (5m14s, Docker); grep gate clean;
       code-reviewer pass on Phase A (3 findings, all fixed + pinned)
-- [ ] Gate — dispatched `e2e-nightly.yml` on the branch (scenarios 1–10 +
-      chaos PR gate ×3) green
+- [x] Gate — dispatched `e2e-nightly.yml` on the branch (run 41757247020):
+      E2E scenarios 1–10 success; chaos PR gate ×3 success; 2 h soak success
+      (2,399 workflows, 0 duplicate side effects). PR #36 opened.
 
 ## Review (2026-11-04)
 
@@ -60,7 +61,8 @@ accepted for lock/messaging type; chaos backends `{postgres, kafka}`.
   the Postgres transport.
 - Size: 11 → 8 library modules, 4 → 3 samples; net −3,650 lines in the
   store/starter/core commit alone.
-- Left for the user: push + PR, and the dispatched nightly run.
+- Branch pushed; PR #36 opened after E2E + PR-gate went green; soak
+  (41757247020) finished green afterwards. Merge is the maintainer's call.
 
 ---
 
