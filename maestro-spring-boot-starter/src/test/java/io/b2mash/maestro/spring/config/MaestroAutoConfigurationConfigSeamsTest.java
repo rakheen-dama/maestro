@@ -9,6 +9,8 @@ import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowSignal;
+import io.b2mash.maestro.core.observe.EngineObserver;
+import io.b2mash.maestro.core.observe.StandDownReason;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
 import io.b2mash.maestro.core.spi.WorkflowStore;
@@ -37,11 +39,15 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 
 /**
@@ -359,6 +365,88 @@ class MaestroAutoConfigurationConfigSeamsTest {
                 });
     }
 
+    @Test
+    @DisplayName("maestro.replay.verify-arguments (default true) reaches the @ActivityStub proxies: a retried run "
+            + "whose activity argument drifted stands down as nondeterministic_history (Feature 4)")
+    void verifyArgumentsReachesActivityInvocationHandler() {
+        var probe = new DriftProbe();
+        var observer = new StandDownRecorder();
+        runner.withBean(DriftProbe.class, () -> probe)
+                .withBean(EngineObserver.class, () -> observer)
+                .withBean(DriftEchoActivities.class, () -> new DriftEchoActivitiesImpl(probe))
+                .withBean(ArgDriftWorkflow.class, () -> new ArgDriftWorkflow(probe), PROTOTYPE)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    failFirstRunThenDriftTheArgument(context, probe, "args-seam-1");
+
+                    retry(context, "args-seam-1");
+
+                    await().atMost(Duration.ofSeconds(10)).until(() -> !observer.standDowns.isEmpty());
+                    var standDown = observer.standDowns.getFirst();
+                    assertThat(standDown.reason()).isEqualTo(StandDownReason.NONDETERMINISTIC_HISTORY);
+                    assertThat(standDown.detail()).startsWith("seq=1 step=DriftEchoActivities.echo argsHash expected=");
+                    assertThat(probe.calls.get())
+                            .as("the drifted call must neither re-execute nor replay into a continuing run")
+                            .isEqualTo(1);
+                });
+    }
+
+    @Test
+    @DisplayName("maestro.replay.verify-arguments=false reaches the proxies: the drifted argument replays the "
+            + "recorded result and the retried run completes")
+    void verifyArgumentsOffReplaysDespiteDrift() {
+        var probe = new DriftProbe();
+        var observer = new StandDownRecorder();
+        runner.withBean(DriftProbe.class, () -> probe)
+                .withBean(EngineObserver.class, () -> observer)
+                .withBean(DriftEchoActivities.class, () -> new DriftEchoActivitiesImpl(probe))
+                .withBean(ArgDriftWorkflow.class, () -> new ArgDriftWorkflow(probe), PROTOTYPE)
+                .withPropertyValues("maestro.replay.verify-arguments=false")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    failFirstRunThenDriftTheArgument(context, probe, "args-seam-2");
+
+                    retry(context, "args-seam-2");
+
+                    var store = context.getBean(WorkflowStore.class);
+                    await().atMost(Duration.ofSeconds(10)).until(() ->
+                            store.getInstance("args-seam-2").orElseThrow().status() == WorkflowStatus.COMPLETED);
+                    assertThat(observer.standDowns).isEmpty();
+                    assertThat(probe.calls.get()).as("replayed, not re-executed").isEqualTo(1);
+                });
+    }
+
+    /**
+     * Run 1: the activity is called with {@code "a"} and memoized; the workflow
+     * then fails, so the instance is FAILED with the ACTIVITY_COMPLETED memo in
+     * place (admin retry deletes only failure memos). Then the argument source
+     * is changed to {@code "b"} and the failure switched off — the retried run
+     * will ask the memoized step a different question.
+     */
+    private static void failFirstRunThenDriftTheArgument(
+            org.springframework.context.ApplicationContext context, DriftProbe probe, String workflowId) {
+        probe.argument.set("a");
+        probe.failAfterActivity.set(true);
+        var client = context.getBean(MaestroClient.class);
+        assertThatThrownBy(() -> client.newWorkflow(ArgDriftWorkflow.class, options(workflowId))
+                .startAndWait(null, Duration.ofSeconds(10), String.class))
+                .isInstanceOf(RuntimeException.class);
+        var store = context.getBean(WorkflowStore.class);
+        await().atMost(Duration.ofSeconds(10)).until(() ->
+                store.getInstance(workflowId).orElseThrow().status() == WorkflowStatus.FAILED);
+        assertThat(probe.calls.get()).isEqualTo(1);
+
+        probe.argument.set("b");
+        probe.failAfterActivity.set(false);
+    }
+
+    /** The admin retry path: {@code AdminCommandDispatcher}'s exact call. */
+    private static void retry(org.springframework.context.ApplicationContext context, String workflowId) {
+        var registration = context.getBean(WorkflowRegistrar.class).getRegistration(ArgDriftWorkflow.class);
+        var outcome = context.getBean(WorkflowExecutor.class).retryWorkflow(workflowId, registration);
+        assertThat(outcome).isEqualTo(WorkflowExecutor.RetryOutcome.RETRIED);
+    }
+
     /** Workflow beans must be prototype-scoped: Maestro creates one object per run. */
     private static final BeanDefinitionCustomizer PROTOTYPE =
             bd -> bd.setScope(BeanDefinition.SCOPE_PROTOTYPE);
@@ -488,6 +576,81 @@ class MaestroAutoConfigurationConfigSeamsTest {
         @Override
         public void doWork() {
             // no-op
+        }
+    }
+
+    /**
+     * Context-scoped source of {@link ArgDriftWorkflow}'s activity argument and
+     * failure switch — "the node's config", changed between the first run and
+     * the retry — plus the live-call counter.
+     */
+    static final class DriftProbe {
+        final AtomicReference<String> argument = new AtomicReference<>("a");
+        final AtomicBoolean failAfterActivity = new AtomicBoolean(true);
+        final AtomicInteger calls = new AtomicInteger();
+    }
+
+    /** Calls one activity with an argument read from the probe, then fails if the probe says so. */
+    @DurableWorkflow(name = "ConfigSeamsArgDriftWorkflow")
+    public static class ArgDriftWorkflow {
+
+        @ActivityStub
+        private DriftEchoActivities activities;
+
+        private final DriftProbe probe;
+
+        ArgDriftWorkflow(DriftProbe probe) {
+            this.probe = probe;
+        }
+
+        /**
+         * @param input ignored
+         * @return the echoed argument, once the probe stops failing the run
+         */
+        @WorkflowMethod
+        public String run(String input) {
+            var echoed = activities.echo(probe.argument.get());
+            if (probe.failAfterActivity.get()) {
+                throw new IllegalStateException("fail after the activity so the memo survives into a retry");
+            }
+            return echoed;
+        }
+    }
+
+    /** Single-method activity interface whose argument is what drifts. */
+    @Activity(name = "DriftEchoActivities")
+    public interface DriftEchoActivities {
+        /**
+         * @param value the value to echo
+         * @return the value
+         */
+        String echo(String value);
+    }
+
+    /** Counts live calls on the probe. */
+    public static class DriftEchoActivitiesImpl implements DriftEchoActivities {
+        private final DriftProbe probe;
+
+        DriftEchoActivitiesImpl(DriftProbe probe) {
+            this.probe = probe;
+        }
+
+        @Override
+        public String echo(String value) {
+            probe.calls.incrementAndGet();
+            return value;
+        }
+    }
+
+    /** Records stand-downs; every other callback is the no-op default. */
+    static final class StandDownRecorder implements EngineObserver {
+        record StandDown(StandDownReason reason, String workflowId, @Nullable String detail) {}
+
+        final List<StandDown> standDowns = new CopyOnWriteArrayList<>();
+
+        @Override
+        public void standDown(StandDownReason reason, String workflowId, @Nullable String detail) {
+            standDowns.add(new StandDown(reason, workflowId, detail));
         }
     }
 

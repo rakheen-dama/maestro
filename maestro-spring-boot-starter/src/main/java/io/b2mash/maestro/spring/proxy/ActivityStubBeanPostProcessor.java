@@ -88,6 +88,7 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
     private MaestroProperties.@Nullable RetryProperties retryDefaults;
     private EngineObserver observer = EngineObserver.NOOP;
     private TaskQueueGovernor governor = TaskQueueGovernor.UNBOUNDED;
+    private boolean verifyArguments = true;
 
     /** Workflow class → the proxies to inject into its {@code @ActivityStub} fields. */
     private final ConcurrentHashMap<Class<?>, List<StubInjection>> injectionPlans = new ConcurrentHashMap<>();
@@ -155,6 +156,10 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
         var properties = ctx.getBean(MaestroProperties.class);
         lockKeyPrefix = properties.getLock().keyPrefix();
         retryDefaults = properties.getRetry();
+        // Feature 4: whether replays compare the arguments' fingerprint with the
+        // recorded outcome's (maestro.replay.verify-arguments). Live outcomes
+        // record the fingerprint either way.
+        verifyArguments = properties.getReplay().verifyArguments();
 
         // Optional SPIs — null when not available
         distributedLock = ctx.getBeanProvider(DistributedLock.class).getIfAvailable();
@@ -289,7 +294,8 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
                     lockKeyPrefix,
                     observer,
                     governor,
-                    lifecycleEventSink
+                    lifecycleEventSink,
+                    verifyArguments
             );
 
             field.setAccessible(true);
