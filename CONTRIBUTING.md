@@ -234,7 +234,7 @@ Kafka topics must be pre-created and declared in configuration. Auto-creation is
 
 ### Postgres is truth, locks are an optimization
 
-All durable state is persisted to Postgres. The distributed lock, leader election and LISTEN/NOTIFY wake are best-effort guards and fast paths: if a lock expires or a notification is lost, the unique event index and the signal recheck interval keep the system correct (though possibly slower). Never make correctness depend on a lock being held or a notification arriving.
+All durable state is persisted to Postgres. The distributed lock, leader election and LISTEN/NOTIFY wake are admission guards and fast paths, not correctness guards: if a lock expires or a notification is lost, the lease epoch on the instance row (every run-scoped `WorkflowStore` write carries the run's `RunLease` and is fenced once another node has adopted the workflow), the unique event index beneath it, and the signal recheck interval keep the system correct (though possibly slower). Never make correctness depend on a lock being held or a notification arriving — and never write to the store on a running workflow's behalf without its lease.
 
 ### Workflow determinism
 

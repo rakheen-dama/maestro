@@ -41,12 +41,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <h2>Why the original scope was too narrow</h2>
  * <p>The exposure needs <b>no author error at all</b>; it comes out of the
- * engine's own normal tolerated state. Instance locks are best-effort and
- * expire on TTL, so two runners of one workflow is a state the engine is
+ * engine's own normal tolerated state. Instance locks are the admission guard
+ * and expire on TTL, so two runners of one workflow is a state the engine is
  * designed to survive: an old node reads sequence N empty, executes the
  * activity live, and loses the append race to a newer node whose event at N
- * carries a type — or a payload shape — this build does not define. The old
- * node then adopts that winner. Before this guard it either
+ * carries a type — or a payload shape — this build does not define. (Since
+ * the lease fence closed Issue 11 the old node's append is usually fenced
+ * before it reaches the unique index; this guard covers the window in which
+ * both runs still hold the current lease.) The old node then adopts that
+ * winner. Before this guard it either
  *
  * <ul>
  *   <li>deserialized a foreign payload as the activity's return type, throwing

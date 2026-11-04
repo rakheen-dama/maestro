@@ -91,12 +91,12 @@ timer ID. `workflowFailed`'s exception type is deliberately *not* a tag either
 | `maestro.recovery.scanned` | *(none)* | — | Incremented by the number of instances a recovery pass scanned |
 | `maestro.recovery.adopted` | *(none)* | — | Incremented by the number of instances that pass adopted |
 | `maestro.lock.renew.failures` | `outcome` | `error`, `lost` | Instance-lock renewal errored (`error`) or the lock was found gone (`lost`) |
-| `maestro.standdown` | `reason` | `unknown_event_type`, `unknown_event_payload`, `nondeterministic_history`, `stale_run` | A local run stood down without recording a workflow outcome |
+| `maestro.standdown` | `reason` | `unknown_event_type`, `unknown_event_payload`, `nondeterministic_history`, `stale_run`, `lease_fenced` | A local run stood down without recording a workflow outcome |
 
 `maestro.recovery.scanned` and `maestro.recovery.adopted` are `increment(n)`
 calls, not `increment()` — one recovery pass moves them by the pass's counts.
 
-The `reason` tag value set is closed at four, mapped from
+The `reason` tag value set is closed at five, mapped from
 `io.b2mash.maestro.core.observe.StandDownReason`:
 
 | `reason` | Meaning |
@@ -104,7 +104,8 @@ The `reason` tag value set is closed at four, mapped from
 | `unknown_event_type` | A persisted `event_type` string this build's `EventType` enum does not define — written by a **newer** node |
 | `unknown_event_payload` | A stored payload this build could not deserialize while replaying |
 | `nondeterministic_history` | C10 — the recorded event at a replayed sequence was written by a different operation than the current code performs there (an ungated workflow edit; roll back — see [Operations §10.7](operations.md#107-replay-drift-nondeterministic_history)) |
-| `stale_run` | Issue 18 / C5 — another runner owns this workflow. Either an event append collided with a concurrent runner's history (`DuplicateEventException`), or a fresh read found the row already finalised (`COMPLETED`/`FAILED`) by another runner (`StaleRunException`) — at a park/wake status write, an `awaitSignal()` wake, the transition to `COMPENSATING`, or before a sequential compensation entry. Also raised at the next stop point (live activity, `sleep()`, `awaitSignal()`, terminal write) of a run whose earlier stand-down the workflow code swallowed, and by a parked `sleep()`'s wake on a finalised row. |
+| `stale_run` | Issue 18 / C5 — another runner owns this workflow. Either an event append collided with a concurrent runner's history (`DuplicateEventException`), or a fresh read found the row already finalised (`COMPLETED`/`FAILED`) by another runner (`StaleRunException`) — at a park/wake status write, an `awaitSignal()` wake, the transition to `COMPENSATING`, or before a sequential compensation entry. Also raised at the next stop point (live activity, `sleep()`, `awaitSignal()`, terminal write) of a run whose earlier stand-down the workflow code swallowed, by a parked `sleep()`'s wake on a finalised row, and by a run whose instance lock the renewer reported lost (detail `instance lock lost` — the proactive form of the fence below). |
+| `lease_fenced` | Issue 11 — the store **fenced** one of this run's writes (`FencedWriteException`): the instance row's `lease_epoch` had moved past the epoch this run adopted at, because another node adopted the workflow — this node lost or outlived its instance lock (frozen past the TTL, partitioned, or no lock backend). Nothing was written; the adopting node's progress is the durable truth. Raised at any run-scoped write: an event append, a park/wake status write, a timer arm, the transition to `COMPENSATING`, a compensation memo, or the terminal write; the detail names the superseded epoch and the operation (`lease epoch 0 superseded at appendEvent`). A rising count on a fleet with a working lock backend means nodes are outliving their lock TTL (long GC pauses, `docker pause`) — see [Operations §6](operations.md#6-split-brain-behaviour-issue-11--issue-18). |
 
 See [Operations §10](operations.md#10-versioning-and-mixed-version-deploys) for
 what a rising `maestro.standdown` means and how to act on each reason. The two

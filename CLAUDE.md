@@ -206,7 +206,7 @@ Cross-node signal wake is Postgres `LISTEN/NOTIFY` on ONE channel per service, `
 
 There are no `maestro.tasks.*` topics: `maestro.messaging.topics.tasks` fails startup. `taskQueue` on `@DurableWorkflow` is a per-node concurrency bucket (`maestro.worker.task-queues[]`), not a route.
 
-Locks are best-effort guards: if one expires or is lost, the unique event index dedups *persisted results*, not external side effects — activities must be idempotent.
+Locks fence persisted progress: every adoption bumps `maestro_workflow_instance.lease_epoch` under the version CAS, every run-scoped write (`WorkflowStore` overloads taking a `RunLease`) is rejected with `FencedWriteException` once the epoch has moved on, and the fenced run stands down as `LEASE_FENCED` — writes nothing, fails nothing. The activity already in flight at adoption can still run twice (the fence bounds persisted progress, not external side effects) — activities must stay idempotent.
 
 ## Configuration Namespace
 
