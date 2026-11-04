@@ -549,7 +549,7 @@ There are three history reasons and **they mean different things**:
 |---|---|
 | `unknown_event_type` | An `event_type` string this build's enum does not define. Only a **newer** build can have written it. |
 | `unknown_event_payload` | A stored payload this build could not deserialize while replaying. A newer build *or* an incompatible payload change. |
-| `nondeterministic_history` | The current code performs a different operation at this sequence than the one recorded (step renamed/reordered, `parallel()` arity changed). Only a code change can cause it. See §10.7. |
+| `nondeterministic_history` | The current code performs a different operation at this sequence than the one recorded (step renamed/reordered, `parallel()` arity changed), or calls the recorded activity with different arguments (`argsHash` detail). A code change, or a non-deterministic activity input. See §10.7. |
 
 (A fourth value, `stale_run`, is normally unrelated to versioning — it is the
 split-brain convergence of §6: another runner owns the workflow. The one
@@ -682,6 +682,22 @@ is started. The `version()` peek itself
 is not a drift check: a non-marker event there means "this history predates
 the change", by design.
 
+It also means, for an activity slot whose step name *does* match, that the
+activity is being called with **different arguments** than the recorded run
+passed. Every `ACTIVITY_COMPLETED` / `ACTIVITY_FAILED` event carries a SHA-256
+fingerprint of its arguments (`maestro_workflow_event.args_hash`, V7); replay
+fingerprints the current call and compares. This drift has two causes, and
+the detail cannot tell them apart: an ungated change to *how the argument is
+built* (a code change, the remedies below apply), or a **non-deterministic
+input** — the argument came from a `HashMap`'s iteration order, from
+`Instant.now()`, from a per-node config value, from anything the determinism
+rule (`docs/concepts.md`) forbids between activity calls. Before this check
+the second cause was *silent*: the recorded result replayed for an input the
+recorded run never saw, and the workflow carried on with it. A stored row
+without a fingerprint (written before V7, or by an older node mid-rollout) is
+unverified and replays as before; the check is also switchable
+(`maestro.replay.verify-arguments`, `docs/configuration.md`).
+
 **Why it stands down rather than fails.** The history is fine; the code is the
 problem, and rolling the code back is the fix. Recording `FAILED` here would run
 compensations for work that never failed — the same argument as §10.3. Before
@@ -699,9 +715,12 @@ seq=<n> expected=<step the code performs> stored=<step recorded> type=<EVENT_TYP
 ```
 
 (for a `parallel()` arity change: `seq=<n> expected=$maestro:parallel
-branches=<code> stored=$maestro:parallel branches=<recorded>`). The instance
-keeps its status (`RUNNING`, `WAITING_*` or `COMPENSATING`) and stays
-recoverable.
+branches=<code> stored=$maestro:parallel branches=<recorded>`; for an
+argument mismatch on a matching step: `seq=<n> step=<group.method> argsHash
+expected=<8 hex of the current call> stored=<8 hex recorded>` — the hashes
+only, never an argument value, since arguments routinely carry customer
+data). The instance keeps its status (`RUNNING`, `WAITING_*` or
+`COMPENSATING`) and stays recoverable.
 
 **The two remedies.**
 
@@ -709,6 +728,26 @@ recoverable.
    The next recovery pass adopts the instance and it finishes normally.
 2. **Gate the change behind `workflow.version()`** (§10.2) — the old path for
    histories that predate it, the new one for new instances — and redeploy.
+
+**For an `argsHash` detail, first decide which cause you have.** If the way
+the argument is built changed in the deploy, it is a code change and the two
+remedies above apply. If it did not — the same build, or the drift appears on
+a node that never deployed anything — the input is non-deterministic, and
+*no build can replay this instance correctly*: the recorded run passed a
+value this run cannot reproduce. Then:
+
+- **Fix the workflow** so the argument is deterministic (compute it inside an
+  activity, or from `workflow.currentTime()` / `workflow.randomUUID()`, or
+  iterate a sorted view), gated behind `workflow.version()` so histories that
+  predate the fix keep their path; and
+- for the instances already in flight, either **terminate** them (admin
+  dashboard) and complete their business outcome by hand, or — if you have
+  established that the drifted argument is benign for these instances (the
+  activity would have produced the same result) — set
+  `maestro.replay.verify-arguments: false` on the fleet long enough for them
+  to drain, then set it back. Live outcomes keep recording their fingerprint
+  while it is off, so nothing is lost for later checks. The engine WARNs at
+  startup while the check is off; do not leave it off.
 
 **Exception — `stored=$maestro:awaitSignal:* type=TIMER_SCHEDULED` after a
 rollback → roll forward.** When `expected` and `stored` name the same

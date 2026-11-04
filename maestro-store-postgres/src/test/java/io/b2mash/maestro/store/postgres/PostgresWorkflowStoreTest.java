@@ -434,6 +434,39 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
         }
 
         @Test
+        @DisplayName("args_hash (V7) round-trips through the unfenced and the fenced insert and both reads")
+        void appendEvent_roundTripsArgsHash() {
+            var instance = store.createInstance(newInstance("order-args-hash"));
+            var hash = "0123456789abcdef".repeat(4);
+            var unfenced = new WorkflowEvent(
+                    UUID.randomUUID(), instance.id(), 1, EventType.ACTIVITY_COMPLETED, "Acts.a",
+                    jsonNode("{\"result\":\"ok\"}"), Instant.now().truncatedTo(ChronoUnit.MILLIS), hash);
+            var fenced = new WorkflowEvent(
+                    UUID.randomUUID(), instance.id(), 2, EventType.ACTIVITY_FAILED, "Acts.b",
+                    jsonNode("{\"exceptionType\":\"x\"}"), Instant.now().truncatedTo(ChronoUnit.MILLIS), hash);
+
+            store.appendEvent(unfenced);
+            store.appendEvent(fenced, new RunLease(instance.id(), instance.leaseEpoch()));
+
+            assertEquals(hash, store.getEventBySequence(instance.id(), 1).orElseThrow().argsHash());
+            assertEquals(hash, store.getEventBySequence(instance.id(), 2).orElseThrow().argsHash());
+            assertEquals(List.of(hash, hash),
+                    store.getEvents(instance.id()).stream().map(WorkflowEvent::argsHash).toList());
+        }
+
+        @Test
+        @DisplayName("a null args_hash round-trips as null — the unverified form every other event takes")
+        void appendEvent_roundTripsNullArgsHash() {
+            var instance = store.createInstance(newInstance("order-null-args-hash"));
+
+            store.appendEvent(newEvent(instance.id(), 1, EventType.ACTIVITY_COMPLETED));   // 7-arg form
+
+            var found = store.getEventBySequence(instance.id(), 1).orElseThrow();
+            assertNull(found.argsHash());
+            assertNull(store.getEvents(instance.id()).getFirst().argsHash());
+        }
+
+        @Test
         @DisplayName("appendEvent throws DuplicateEventException on same sequence")
         void appendEvent_throwsDuplicateEventException() {
             var instance = newInstance("order-dup-evt");

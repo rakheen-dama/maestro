@@ -74,6 +74,8 @@ public class MaestroProperties {
 
     private ObservabilityProperties observability = ObservabilityProperties.defaults();
 
+    private ReplayProperties replay = ReplayProperties.defaults();
+
     // ── Getters and setters ─────────────────────────────────────────
 
     public boolean isEnabled() {
@@ -194,6 +196,14 @@ public class MaestroProperties {
 
     public void setObservability(ObservabilityProperties observability) {
         this.observability = observability;
+    }
+
+    public ReplayProperties getReplay() {
+        return replay;
+    }
+
+    public void setReplay(ReplayProperties replay) {
+        this.replay = replay;
     }
 
     // ── Nested configuration records ────────────────────────────────
@@ -721,6 +731,34 @@ public class MaestroProperties {
         /** @return the defaults documented above */
         public static TracingProperties defaults() {
             return new TracingProperties(true);
+        }
+    }
+
+    /**
+     * Replay configuration ({@code maestro.replay.*}).
+     *
+     * @param verifyArguments whether a replayed activity call compares the
+     *                        fingerprint of its arguments with the one the
+     *                        recorded outcome carries
+     *                        ({@code maestro_workflow_event.args_hash}, V7) and
+     *                        stands the run down as
+     *                        {@code nondeterministic_history} when they differ —
+     *                        the activity is being asked a different question
+     *                        than the recorded run asked (a {@code HashMap}'s
+     *                        iteration order, the clock, a per-node config value,
+     *                        or an ungated code change). A missing fingerprint on
+     *                        either side is never a mismatch, so a rolling deploy
+     *                        from a build without the column is safe. Set to
+     *                        {@code false} only to ride out a known-benign drift
+     *                        while it is fixed: live outcomes still record their
+     *                        fingerprint, so re-enabling covers the rows written
+     *                        meanwhile. The engine logs a WARN at startup while
+     *                        it is off.
+     */
+    public record ReplayProperties(@DefaultValue("true") boolean verifyArguments) {
+        /** @return the defaults documented above */
+        public static ReplayProperties defaults() {
+            return new ReplayProperties(true);
         }
     }
 }

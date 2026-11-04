@@ -161,7 +161,7 @@ io.b2mash.maestro.samples.payment            — Sample payment gateway (e-comme
 
 ## Database Tables
 
-Prefix `maestro_` (fixed; `maestro.store.table-prefix` was removed). Migrations live in maestro-store-postgres under `db/maestro/store` (band 1–99, V1–V5) and `db/maestro/lock` (band 100–199, V100). Band 200–299 (the removed Postgres messaging transport) is retired and must never be reused (orphan-table upgrade note: `docs/configuration.md` § Schema management). They run through `MaestroSchemaInitializer` into Maestro's own history table `maestro_schema_history` (`maestro.store.schema.mode` = flyway | validate | none); the host's `flyway_schema_history` is untouched:
+Prefix `maestro_` (fixed; `maestro.store.table-prefix` was removed). Migrations live in maestro-store-postgres under `db/maestro/store` (band 1–99, V1–V8) and `db/maestro/lock` (band 100–199, V100). Band 200–299 (the removed Postgres messaging transport) is retired and must never be reused (orphan-table upgrade note: `docs/configuration.md` § Schema management). They run through `MaestroSchemaInitializer` into Maestro's own history table `maestro_schema_history` (`maestro.store.schema.mode` = flyway | validate | none); the host's `flyway_schema_history` is untouched:
 
 - `maestro_workflow_instance`
 - `maestro_workflow_event` (unique on `workflow_instance_id, sequence_number`)
@@ -232,7 +232,13 @@ retention; `FAILED` keeps them for retry), `maestro.retention.*` (`enabled` defa
 `failed-retention` 90d, `batch-size` 500, `max-batches-per-sweep` 100 — the
 leader-elected retention sweeper purges finished workflows with their whole
 history via `WorkflowStore.purgeTerminalInstancesBefore`; migration V8 adds its
-indexes), `maestro.worker.task-queues[].concurrency` /
+indexes), `maestro.replay.verify-arguments` (default `true`; every
+`ACTIVITY_COMPLETED`/`ACTIVITY_FAILED` event carries a SHA-256 fingerprint of
+the call's arguments — `maestro_workflow_event.args_hash`, migration V7 — and a
+replay whose arguments fingerprint differently stands down as
+`nondeterministic_history` instead of returning the recorded result; `NULL` on
+either side is unverified, never a mismatch; `false` skips the comparison but
+still writes the hash), `maestro.worker.task-queues[].concurrency` /
 `activity-concurrency` (bound per node), `maestro.store.schema.mode`
 (flyway | validate | none), `maestro.signal.wake-notify.enabled` (default `true`;
 set `false` behind PgBouncer transaction pooling — wake then falls back to the

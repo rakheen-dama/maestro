@@ -600,16 +600,18 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     }
 
     private String insertEventSql(boolean fenced) {
+        // args_hash (V7) is last so the seven V1 parameters keep their indices;
+        // the fenced form's lease parameters follow it.
         var columns = " (id, workflow_instance_id, sequence_number, event_type, step_name,"
-                + " payload, created_at)";
+                + " payload, created_at, args_hash)";
         if (!fenced) {
-            return "INSERT INTO " + tableName("workflow_event") + columns + " VALUES (?, ?, ?, ?, ?, ?, ?)";
+            return "INSERT INTO " + tableName("workflow_event") + columns + " VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
         }
         // The SELECT yields one row iff the instance still carries the lease's
         // epoch; the row lock (dialect hook) orders a concurrent bump strictly
         // before or after this insert.
         return "INSERT INTO " + tableName("workflow_event") + columns
-                + " SELECT ?, ?, ?, ?, ?, ?, ? FROM " + tableName("workflow_instance")
+                + " SELECT ?, ?, ?, ?, ?, ?, ?, ? FROM " + tableName("workflow_instance")
                 + " WHERE id = ? AND lease_epoch = ?" + fenceRowLockClause();
     }
 
@@ -632,9 +634,10 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             setNullableString(ps, 5, event.stepName());
             setJsonParameter(ps, 6, event.payload());
             ps.setTimestamp(7, Timestamp.from(event.createdAt()));
+            setNullableString(ps, 8, event.argsHash());
             if (lease != null) {
-                ps.setObject(8, lease.instanceId());
-                ps.setLong(9, lease.epoch());
+                ps.setObject(9, lease.instanceId());
+                ps.setLong(10, lease.epoch());
             }
             return ps.executeUpdate();
         }
@@ -645,7 +648,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         Objects.requireNonNull(instanceId, "instanceId");
 
         String sql = "SELECT id, workflow_instance_id, sequence_number, event_type, "
-                + "step_name, payload, created_at FROM " + tableName("workflow_event")
+                + "step_name, payload, created_at, args_hash FROM " + tableName("workflow_event")
                 + " WHERE workflow_instance_id = ? AND sequence_number = ?";
 
         return querySingle(sql, ps -> {
@@ -659,7 +662,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         Objects.requireNonNull(instanceId, "instanceId");
 
         String sql = "SELECT id, workflow_instance_id, sequence_number, event_type, "
-                + "step_name, payload, created_at FROM " + tableName("workflow_event")
+                + "step_name, payload, created_at, args_hash FROM " + tableName("workflow_event")
                 + " WHERE workflow_instance_id = ? ORDER BY sequence_number ASC";
 
         return queryList(sql, ps -> ps.setObject(1, instanceId), this::mapEvent);
@@ -1379,7 +1382,8 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                 eventType,
                 rs.getString("step_name"),
                 getJsonValue(rs, "payload"),
-                rs.getTimestamp("created_at").toInstant()
+                rs.getTimestamp("created_at").toInstant(),
+                rs.getString("args_hash")
         );
     }
 

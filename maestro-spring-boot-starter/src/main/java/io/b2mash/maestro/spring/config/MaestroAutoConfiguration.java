@@ -55,6 +55,18 @@ public class MaestroAutoConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(MaestroAutoConfiguration.class);
 
+    /**
+     * Logged at WARN once at startup while {@code maestro.replay.verify-arguments=false}:
+     * a replayed activity then returns its recorded result even when it is being
+     * called with different arguments than the recorded run — the silent failure
+     * the fingerprint exists to catch. Package-private so the wording is pinned.
+     */
+    static final String REPLAY_VERIFICATION_DISABLED_WARNING =
+            "maestro.replay.verify-arguments=false: replayed activities will NOT be checked against the "
+                    + "arguments they were recorded with — a non-deterministic input (map order, clock, "
+                    + "per-node config) replays the recorded result silently. Live outcomes still record "
+                    + "their fingerprint; re-enable as soon as the drift is fixed.";
+
     @Bean
     @ConditionalOnMissingBean
     public PayloadSerializer maestroPayloadSerializer(ObjectMapper objectMapper) {
@@ -100,6 +112,9 @@ public class MaestroAutoConfiguration {
         log.info("Maestro cross-node signal wake: {}",
                 signalNotifier != null ? signalNotifier.getClass().getName()
                         : "none (cross-node wake falls back to maestro.signal.wake-recheck-interval)");
+        if (!properties.getReplay().verifyArguments()) {
+            log.warn(REPLAY_VERIFICATION_DISABLED_WARNING);
+        }
         var lock = properties.getLock();
         var lifecycleEventsEnabled = properties.getAdmin().events().enabled();
         var shutdownTimeout = properties.getShutdown().timeout();

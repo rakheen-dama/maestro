@@ -165,6 +165,16 @@ class MaestroPropertiesBindingTest {
     }
 
     @Test
+    @DisplayName("the replay block binds from configuration")
+    void replayBlockBinds() {
+        runner.withPropertyValues(
+                        "maestro.service-name=binding-test",
+                        "maestro.replay.verify-arguments=false")
+                .run(context -> assertThat(context.getBean(MaestroProperties.class).getReplay().verifyArguments())
+                        .isFalse());
+    }
+
+    @Test
     @DisplayName("unset nested properties keep their documented defaults")
     void defaultsSurviveWhenNothingIsConfigured() {
         runner.withPropertyValues("maestro.service-name=binding-test").run(context -> {
@@ -206,6 +216,7 @@ class MaestroPropertiesBindingTest {
             assertThat(retention.maxBatchesPerSweep()).isEqualTo(100);
             assertThat(properties.getObservability().metrics().enabled()).isTrue();
             assertThat(properties.getObservability().tracing().enabled()).isTrue();
+            assertThat(properties.getReplay().verifyArguments()).isTrue();
         });
     }
 

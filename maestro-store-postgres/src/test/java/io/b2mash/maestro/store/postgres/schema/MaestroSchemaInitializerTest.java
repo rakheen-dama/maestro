@@ -77,7 +77,7 @@ class MaestroSchemaInitializerTest {
                 .contains("maestro_workflow_instance", MaestroSchemaInitializer.HISTORY_TABLE)
                 .doesNotContain("flyway_schema_history");
         assertThat(versions(MaestroSchemaInitializer.HISTORY_TABLE))
-                .containsExactly("1", "2", "3", "4", "5", "6", "8", "100");
+                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "100");
     }
 
     @Test
@@ -87,7 +87,7 @@ class MaestroSchemaInitializerTest {
         new MaestroSchemaInitializer(ds, SchemaMode.FLYWAY, cl).initialize();
 
         assertThat(versions(MaestroSchemaInitializer.HISTORY_TABLE))
-                .containsExactly("1", "2", "3", "4", "5", "6", "8", "100");
+                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "100");
     }
 
     /**
@@ -108,7 +108,7 @@ class MaestroSchemaInitializerTest {
 
         assertThat(tables()).contains("host_customer", "maestro_workflow_instance");
         assertThat(versions(MaestroSchemaInitializer.HISTORY_TABLE))
-                .containsExactly("1", "2", "3", "4", "5", "6", "8", "100");
+                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "100");
     }
 
     /**
@@ -134,7 +134,7 @@ class MaestroSchemaInitializerTest {
         }
         new MaestroSchemaInitializer(ds, SchemaMode.FLYWAY, cl).initialize();
         assertThat(versions(MaestroSchemaInitializer.HISTORY_TABLE))
-                .containsExactly("1", "2", "3", "4", "5", "6", "8", "100");
+                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "100");
     }
 
     @Test
