@@ -432,10 +432,20 @@ maestro:
       enabled: true
       topic: maestro.admin.events
 
-  archival:
-    retention: 90d
-    strategy: delete
+  retention:                      # shipped as maestro.retention.* (this block was planned as `archival`)
+    enabled: true
+    interval: 1h
+    completed-retention: 30d
+    terminated-retention: 30d
+    failed-retention: 90d         # FAILED is kept longer: an operator may still retry it
+    batch-size: 500
+    max-batches-per-sweep: 100
 ```
+
+Retention is implemented by a leader-elected sweeper that deletes a finished
+workflow's instance row together with its events, signals and timers once it
+is older than its status's retention; the only strategy is delete (there is no
+archive target). See `docs/operations.md` § Retention and table growth.
 
 ---
 
