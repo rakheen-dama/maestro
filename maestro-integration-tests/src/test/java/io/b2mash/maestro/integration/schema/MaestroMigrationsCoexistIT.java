@@ -136,6 +136,38 @@ class MaestroMigrationsCoexistIT {
         }
     }
 
+    /**
+     * V6's column is the fencing token; it must default so that every row an
+     * earlier build created — or any raw INSERT that does not name it — reads
+     * back as epoch 0, the epoch that build's still-running runs implicitly
+     * hold. The engine's first adoption then moves it to 1.
+     */
+    @Test
+    @DisplayName("V6 adds maestro_workflow_instance.lease_epoch NOT NULL DEFAULT 0 — a row inserted without it reads back 0")
+    void v6AddsLeaseEpochDefaultingToZero() throws SQLException {
+        new MaestroSchemaInitializer(ds, SchemaMode.FLYWAY, getClass().getClassLoader()).initialize();
+
+        try (var conn = ds.getConnection();
+             var stmt = conn.prepareStatement(
+                     "SELECT data_type, is_nullable, column_default FROM information_schema.columns "
+                             + "WHERE table_name = 'maestro_workflow_instance' AND column_name = 'lease_epoch'");
+             var rs = stmt.executeQuery()) {
+            assertTrue(rs.next(), "V6 must have added maestro_workflow_instance.lease_epoch");
+            assertEquals("bigint", rs.getString("data_type"));
+            assertEquals("NO", rs.getString("is_nullable"), "the fence compares against it — it can never be NULL");
+            assertEquals("0", rs.getString("column_default"));
+        }
+
+        // The pre-V6 INSERT shape: an earlier build's row, or a raw seed, names no lease_epoch.
+        var id = UUID.randomUUID();
+        execute("INSERT INTO maestro_workflow_instance (id, workflow_id, run_id, workflow_type, task_queue, status, "
+                + "service_name, event_sequence, started_at, updated_at, version) VALUES ('" + id + "', 'wf-v6', '"
+                + UUID.randomUUID() + "', 'T', 'default', 'RUNNING', 'svc', 0, now(), now(), 0)");
+        var store = new PostgresWorkflowStore(ds, JsonMapper.builder().build());
+        assertEquals(0, store.getInstance("wf-v6").orElseThrow().leaseEpoch(),
+                "a row that predates V6 is at epoch 0, which is what its still-running run implicitly holds");
+    }
+
     @Test
     @DisplayName("no two Maestro migrations declare the same version, across every module")
     void maestroMigrationVersionsAreUniqueAcrossModules() {
@@ -186,10 +218,11 @@ class MaestroMigrationsCoexistIT {
         var unresolved = assertThrows(FlywayException.class, hostFlyway::migrate);
         assertTrue(unresolved.getMessage().contains("not resolved locally"), unresolved.getMessage());
 
-        // Step 2, keep the data.
+        // Step 2, keep the data (the documented hand-apply block, verbatim).
         execute("""
                 ALTER TABLE maestro_workflow_signal ADD COLUMN IF NOT EXISTS trace_context VARCHAR(128);  -- V4
                 ALTER TABLE maestro_workflow_signal ALTER COLUMN received_at SET DEFAULT now();         -- V5
+                ALTER TABLE maestro_workflow_instance ADD COLUMN IF NOT EXISTS lease_epoch BIGINT NOT NULL DEFAULT 0; -- V6
                 """);
         // Step 3.
         assertEquals(4, execute(DELETE_MAESTRO_HISTORY_ROWS),
@@ -202,6 +235,8 @@ class MaestroMigrationsCoexistIT {
         new MaestroSchemaInitializer(ds, SchemaMode.NONE, getClass().getClassLoader()).initialize();
         store.saveSignal(preDeliverySignal());
         assertTrue(store.getUnconsumedSignals("wf-upgrade", "go").size() >= 1);
+        assertTrue(store.getRecoverableInstances().isEmpty(),
+                "this build names lease_epoch in every instance SELECT — the hand-applied V6 makes it readable");
         assertFalse(tables().contains(MaestroSchemaInitializer.HISTORY_TABLE), "mode none writes no history");
     }
 
@@ -241,6 +276,7 @@ class MaestroMigrationsCoexistIT {
                 ('3',   'V3__timer_lookup_index.sql'),
                 ('4',   'V4__signal_trace_context.sql'),
                 ('5',   'V5__signal_received_at_default.sql'),
+                ('6',   'V6__instance_lease_epoch.sql'),
                 ('100', 'V100__maestro_lock_postgres.sql'),
                 ('200', 'V200__maestro_messaging_postgres.sql'),
                 ('201', 'V201__redelivery_dead_letter.sql'));

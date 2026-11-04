@@ -25,18 +25,22 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Spec row C5, end to end on real PostgreSQL: two nodes execute the same
- * workflow at once, and the one that loses the {@code (workflow_instance_id,
- * sequence_number)} race stands down at its first collision.
+ * Spec row C5 / Issue 11, end to end on real PostgreSQL: two nodes execute the
+ * same workflow at once, and the one whose lease the adoption superseded is
+ * fenced at its first write.
  *
  * <h2>How the dual execution is produced</h2>
  * <p>Both harnesses share one store and have <b>no lock backend</b> — the
- * Issue 11 lost-lock window (a node frozen past its instance-lock TTL while a
- * peer adopts the workflow) made permanent, so nothing but the store's unique
- * index stands between the two runs. Node A starts the workflow and is held
- * inside {@code stepOne}; node B recovers the still-{@code RUNNING} instance,
- * persists {@code stepOne} and is held inside {@code stepTwo}; then node A's
- * {@code stepOne} returns and its append at sequence 1 collides with node B's.
+ * lost-lock window (a node frozen past its instance-lock TTL while a peer
+ * adopts the workflow) made permanent, so nothing but the store stands between
+ * the two runs. Node A starts the workflow (lease epoch 0) and is held inside
+ * {@code stepOne}; node B recovers the still-{@code RUNNING} instance — its
+ * adoption bumps the row to epoch 1 — persists {@code stepOne} and is held
+ * inside {@code stepTwo}; then node A's {@code stepOne} returns and its append
+ * at sequence 1, carrying epoch 0, is <em>fenced</em>: the store writes
+ * nothing and node A stands down as {@code LEASE_FENCED}. (Before lease
+ * fencing the same append reached the unique index and stood down as
+ * {@code STALE_RUN}; the index remains as depth, but the fence fires first.)
  * Only once node A has finished is node B released to complete the workflow.
  *
  * <h2>Why node B is held in {@code stepTwo}</h2>
@@ -50,12 +54,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <h2>What the loser must do</h2>
  * <p>Accept the winner's record and stop: no adoption of the winner's value,
- * no further activity, nothing written, and a {@code STALE_RUN} stand-down
+ * no further activity, nothing written, and a {@code LEASE_FENCED} stand-down
  * reported — the winner is alive and ahead, so anything the loser did next
- * would either collide again or repeat a side effect the winner also runs.
+ * would either be fenced again or repeat a side effect the winner also runs.
  */
 @Tag("integration")
-@DisplayName("A dual-execution loser stands down at its first append collision")
+@DisplayName("A dual-execution loser is fenced at its first write and stands down")
 class EnginePostgresDualExecutionIT extends PostgresIntegrationSupport {
 
     private static final Duration BOUND = Duration.ofSeconds(30);
@@ -83,8 +87,8 @@ class EnginePostgresDualExecutionIT extends PostgresIntegrationSupport {
     }
 
     @Test
-    @DisplayName("with the lock lost, the loser stands down at its first append collision and runs no further activity")
-    void lostLock_loserStandsDownAtFirstCollision() throws Exception {
+    @DisplayName("with the lock lost, the loser is fenced at its first write (LEASE_FENCED) and runs no further activity")
+    void lostLock_loserIsFencedAtFirstWrite() throws Exception {
         var enteredA = new CountDownLatch(1);
         var enteredB = new CountDownLatch(1);
         var gated = new GatedChainActivities(new CountingActivities.RecordingChainActivities(recorder),
@@ -114,9 +118,13 @@ class EnginePostgresDualExecutionIT extends PostgresIntegrationSupport {
         assertEquals("x-one-two-three", handle.result(String.class));
         assertEquals(3, handle.events().stream().filter(e -> e.eventType() == EventType.ACTIVITY_COMPLETED).count(),
                 "exactly one durable result per sequence");
-        assertEquals(List.of(StandDownReason.STALE_RUN), observerA.standDowns().stream()
-                .filter(s -> s.workflowId().equals(workflowId)).map(RecordingObserver.StandDownCall::reason).toList());
+        assertEquals(List.of(StandDownReason.LEASE_FENCED), observerA.standDowns().stream()
+                        .filter(s -> s.workflowId().equals(workflowId)).map(RecordingObserver.StandDownCall::reason).toList(),
+                "node B's adoption moved the lease epoch to 1; node A's epoch-0 append is fenced before the "
+                        + "unique index is ever consulted");
+        assertTrue(observerA.failed().isEmpty(), "a fenced run is never a workflow failure");
         assertTrue(observerB.standDowns().isEmpty());
+        assertEquals(1, handle.instance().leaseEpoch(), "one adoption, one epoch bump");
     }
 
     // ── helpers ───────────────────────────────────────────────────────────

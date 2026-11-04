@@ -87,15 +87,16 @@ Upgrade such a database once, with this procedure, in order (the same text is in
          maestro_signal_queue, maestro_task_queue, maestro_lifecycle_event_queue;
      ```
 
-   - **Keep the data.** Set `maestro.store.schema.mode: none` on every node — you own Maestro's DDL from then on, applying each later migration by hand before deploying the build that ships it — and apply by hand the two migrations a 0.4.0 database lacks: `V4__signal_trace_context.sql` and `V5__signal_received_at_default.sql` (`maestro-store-postgres`, `classpath:db/maestro/store`). As written here they are safe to re-run, including on a database a pre-release build already took to V4 or V5; the retired messaging transport's queue tables may be dropped at the same time (optional — nothing on this build reads them):
+   - **Keep the data.** Set `maestro.store.schema.mode: none` on every node — you own Maestro's DDL from then on, applying each later migration by hand before deploying the build that ships it — and apply by hand the three migrations a 0.4.0 database lacks: `V4__signal_trace_context.sql`, `V5__signal_received_at_default.sql` and `V6__instance_lease_epoch.sql` (`maestro-store-postgres`, `classpath:db/maestro/store`). As written here they are safe to re-run, including on a database a pre-release build already took to V4, V5 or V6; the retired messaging transport's queue tables may be dropped at the same time (optional — nothing on this build reads them):
 
      ```sql
      ALTER TABLE maestro_workflow_signal ADD COLUMN IF NOT EXISTS trace_context VARCHAR(128);  -- V4
      ALTER TABLE maestro_workflow_signal ALTER COLUMN received_at SET DEFAULT now();         -- V5
+     ALTER TABLE maestro_workflow_instance ADD COLUMN IF NOT EXISTS lease_epoch BIGINT NOT NULL DEFAULT 0; -- V6
      DROP TABLE IF EXISTS maestro_signal_queue, maestro_task_queue, maestro_lifecycle_event_queue; -- optional cleanup
      ```
 
-     Do not skip V4 or V5: this build names `trace_context` in every signal insert and leaves `received_at` to the column default, so without them every `saveSignal` fails — inside the Kafka listener, so each signal is redelivered until it is dead-lettered.
+     Do not skip V4, V5 or V6: this build names `trace_context` in every signal insert and leaves `received_at` to the column default, so without them every `saveSignal` fails — inside the Kafka listener, so each signal is redelivered until it is dead-lettered; and it names `lease_epoch` in every instance read and write (it is the lease-fencing token — see [Operations §6](operations.md#6-split-brain-behaviour-issue-11--issue-18)), so without V6 no workflow can be started, resumed or read. V6 is metadata-only on PostgreSQL 11+ (a constant `DEFAULT` on `ADD COLUMN` rewrites no rows) and every pre-existing row reads back as epoch `0`.
 3. **Delete Maestro's rows from your `flyway_schema_history`** (or the table `spring.flyway.table` names) — on either path; skip this step only if the table does not exist. The statement matches each row by version **and** script name, so none of your own migrations can match, and rows your database never had are simply not matched:
 
    ```sql
@@ -106,6 +107,7 @@ Upgrade such a database once, with this procedure, in order (the same text is in
        ('3',   'V3__timer_lookup_index.sql'),
        ('4',   'V4__signal_trace_context.sql'),
        ('5',   'V5__signal_received_at_default.sql'),
+       ('6',   'V6__instance_lease_epoch.sql'),
        ('100', 'V100__maestro_lock_postgres.sql'),
        ('200', 'V200__maestro_messaging_postgres.sql'),
        ('201', 'V201__redelivery_dead_letter.sql'));
