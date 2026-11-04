@@ -17,6 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * C10: replay must compare the stored event's <em>step name</em> (and a
@@ -118,6 +119,53 @@ class ReplayGuardTest {
                         "Acts.new", EventType.ACTIVITY_COMPLETED));
         var warn = ex.getMessage() + "; " + WorkflowExecutor.standDownRemedy(ex.kind());
         assertEquals(1, warn.split("roll back", -1).length - 1, warn);
+    }
+
+    // ── requireArgumentsMatch ─────────────────────────────────────────
+
+    private static final String HASH_A = "a".repeat(64);
+    private static final String HASH_B = "b".repeat(64);
+
+    @Test
+    void sameArgsHash_returnsTheEvent() {
+        var e = eventWithArgsHash(3, HASH_A);
+        assertSame(e, ReplayGuard.requireArgumentsMatch(e, "wf", "Acts.a", HASH_A));
+    }
+
+    @Test
+    @DisplayName("a stored row without a hash (older node, pre-V7 row) is unverified, not a mismatch")
+    void nullStoredHash_isAccepted() {
+        var e = eventWithArgsHash(3, null);
+        assertSame(e, ReplayGuard.requireArgumentsMatch(e, "wf", "Acts.a", HASH_A));
+    }
+
+    @Test
+    @DisplayName("arguments that could not be fingerprinted are unverified, not a mismatch")
+    void nullComputedHash_isAccepted() {
+        var e = eventWithArgsHash(3, HASH_A);
+        assertSame(e, ReplayGuard.requireArgumentsMatch(e, "wf", "Acts.a", null));
+    }
+
+    @Test
+    void differentArgsHash_standsDownAsNondeterministic_quotingEightHexOfEach() {
+        var ex = assertThrows(UnknownWorkflowHistoryException.class, () ->
+                ReplayGuard.requireArgumentsMatch(eventWithArgsHash(3, HASH_B), "wf", "Acts.a", HASH_A));
+        assertAll(
+                () -> assertEquals(UnknownWorkflowHistoryException.Kind.NONDETERMINISTIC_HISTORY, ex.kind()),
+                () -> assertEquals("wf", ex.workflowId()),
+                () -> assertEquals(3, ex.sequenceNumber()),
+                () -> assertEquals("seq=3 step=Acts.a argsHash expected=aaaaaaaa stored=bbbbbbbb", ex.detail()),
+                () -> assertTrue(ex.getMessage().contains("activity 'Acts.a' is being called with different "
+                        + "arguments than the recorded run"), ex.getMessage()),
+                () -> assertTrue(ex.getMessage().contains("non-deterministic input"), ex.getMessage()),
+                // R17: the detail quotes hashes only, never the full value or the argument itself.
+                () -> assertEquals(-1, ex.detail().indexOf(HASH_A)),
+                () -> assertEquals(-1, ex.detail().indexOf(HASH_B)));
+    }
+
+    private static WorkflowEvent eventWithArgsHash(int seq, @Nullable String argsHash) {
+        return new WorkflowEvent(UUID.randomUUID(), UUID.randomUUID(), seq, EventType.ACTIVITY_COMPLETED,
+                "Acts.a", null, Instant.now(), argsHash);
     }
 
     private static WorkflowEvent event(int seq, EventType type, @Nullable String stepName) {

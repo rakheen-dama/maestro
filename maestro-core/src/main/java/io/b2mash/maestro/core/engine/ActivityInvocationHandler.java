@@ -55,6 +55,23 @@ import java.util.concurrent.TimeoutException;
  *       persists the result, and returns it.</li>
  * </ol>
  *
+ * <h2>Argument verification</h2>
+ * <p>A stored outcome is matched to the current call by sequence number and
+ * step name ({@link ReplayGuard#requireMatch}) <em>and</em> by a fingerprint
+ * of the arguments ({@link ArgumentFingerprint}, stored as
+ * {@link WorkflowEvent#argsHash()}). A replay whose arguments fingerprint
+ * differently from the recorded run's stands down as
+ * {@code NONDETERMINISTIC_HISTORY} ({@link ReplayGuard#requireArgumentsMatch})
+ * instead of returning the recorded result for an input that run never saw —
+ * the silent failure mode of an activity input derived from a {@code HashMap}'s
+ * iteration order, the clock or a per-node config value. The check runs before
+ * the payload is returned and before any {@code @Compensate} entry is
+ * registered, so compensation calls are covered too. A missing fingerprint on
+ * either side (a row written before the column existed or by an older node, or
+ * arguments the mapper cannot serialize) is <em>unverified</em>, never a
+ * mismatch. {@code verifyArguments=false} skips the comparison but still
+ * writes fingerprints on live outcomes.
+ *
  * <h2>Idempotency</h2>
  * <p>The Postgres unique constraint on {@code (workflow_instance_id, sequence_number)}
  * is the primary idempotency guard: at most one outcome is ever persisted per
@@ -139,6 +156,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     private final WorkflowStore store;
     private final @Nullable DistributedLock distributedLock;
     private final LifecycleEventSink lifecycleEventSink;
+    private final boolean verifyArguments;
     private final RetryPolicy retryPolicy;
     private final Duration startToCloseTimeout;
     private final PayloadSerializer serializer;
@@ -345,6 +363,53 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             TaskQueueGovernor governor,
             LifecycleEventSink lifecycleEventSink
     ) {
+        this(activityImpl, activityName, store, distributedLock, retryPolicy, startToCloseTimeout,
+                serializer, retryExecutor, lockKeyPrefix, observer, governor, lifecycleEventSink, true);
+    }
+
+    /**
+     * Creates a new handler with every collaborator explicit, including
+     * whether replays verify the activity's arguments.
+     *
+     * @param activityImpl        the real activity implementation to delegate to
+     * @param activityName        the activity group name (for step name prefix)
+     * @param store               the workflow store for memoization lookups and event persistence
+     * @param distributedLock     optional distributed lock for dedup optimization
+     * @param retryPolicy         retry policy for failed activity invocations
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
+     *                            base of the per-activity lock TTL
+     * @param serializer          Jackson serializer for payloads
+     * @param retryExecutor       retry executor for live activity invocations
+     * @param lockKeyPrefix       prefix for the per-activity distributed lock key
+     * @param observer            engine observation seam; never {@code null}
+     * @param governor            bounds live executions per task queue; pass
+     *                            {@link TaskQueueGovernor#UNBOUNDED} for none
+     * @param lifecycleEventSink  where {@code ACTIVITY_*} events go; never
+     *                            {@code null} (pass {@link LifecycleEventSink#NOOP})
+     * @param verifyArguments     whether a replay compares the fingerprint of the
+     *                            current call's arguments with the one the recorded
+     *                            outcome carries and stands down on a difference
+     *                            ({@code maestro.replay.verify-arguments}). Live
+     *                            outcomes carry a fingerprint either way, so turning
+     *                            verification back on later covers the rows written
+     *                            while it was off.
+     * @throws IllegalArgumentException if {@code startToCloseTimeout} is zero or negative
+     */
+    public ActivityInvocationHandler(
+            Object activityImpl,
+            String activityName,
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            RetryPolicy retryPolicy,
+            Duration startToCloseTimeout,
+            PayloadSerializer serializer,
+            RetryExecutor retryExecutor,
+            String lockKeyPrefix,
+            EngineObserver observer,
+            TaskQueueGovernor governor,
+            LifecycleEventSink lifecycleEventSink,
+            boolean verifyArguments
+    ) {
         Objects.requireNonNull(startToCloseTimeout, "startToCloseTimeout must not be null");
         if (startToCloseTimeout.isZero() || startToCloseTimeout.isNegative()) {
             throw new IllegalArgumentException(
@@ -363,6 +428,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         this.lockKeyPrefix = lockKeyPrefix;
         this.observer = observer;
         this.governor = governor;
+        this.verifyArguments = verifyArguments;
     }
 
     @Override
@@ -383,6 +449,13 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         MDC.put("sequence", String.valueOf(seq));
 
         try {
+            // The arguments' fingerprint: compared with the recorded outcome's on
+            // replay and written with this call's outcome when live. Computed
+            // once, here, when verifying — before the lookup, so a replay
+            // compares what the caller actually passed; with verification off it
+            // is computed only if the call goes live (the write still happens).
+            var argsHash = verifyArguments ? ArgumentFingerprint.of(serializer, args) : null;
+
             // ── Memoization lookup ────────────────────────────────────
             var storedEvent = store.getEventBySequence(ctx.workflowInstanceId(), seq);
 
@@ -396,6 +469,14 @@ public final class ActivityInvocationHandler implements InvocationHandler {
                 // before another step's payload could be returned.
                 ReplayGuard.requireMatch(storedEvent.get(), ctx.workflowId(), stepName,
                         EventType.ACTIVITY_COMPLETED, EventType.ACTIVITY_FAILED);
+                // And the step must be asked the same question: an input that
+                // drifted (map order, clock, per-node config) must not replay
+                // the recorded answer. Before the payload is returned and before
+                // a @Compensate entry is registered for it. A null on either
+                // side is unverified (pre-V7 row, older node, unhashable args).
+                if (verifyArguments) {
+                    ReplayGuard.requireArgumentsMatch(storedEvent.get(), ctx.workflowId(), stepName, argsHash);
+                }
                 var info = new ActivityInfo(ctx.workflowId(), ctx.workflowType(), stepName, seq);
                 if (storedEvent.get().eventType() == EventType.ACTIVITY_FAILED) {
                     // handleReplay throws for a memoized failure — observe it
@@ -414,7 +495,10 @@ public final class ActivityInvocationHandler implements InvocationHandler {
 
             // ── Live execution ────────────────────────────────────────
             WorkflowContextInternals.setReplaying(ctx, false);
-            var result = executeLive(method, args, ctx, seq, stepName);
+            if (!verifyArguments) {
+                argsHash = ArgumentFingerprint.of(serializer, args);
+            }
+            var result = executeLive(method, args, ctx, seq, stepName, argsHash);
             // Register compensation after successful live execution
             registerCompensationIfAnnotated(proxy, method, args, result, ctx);
             return result;
@@ -507,7 +591,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      */
     private @Nullable Object executeLive(
             Method method, @Nullable Object @Nullable [] args,
-            WorkflowContext ctx, int seq, String stepName
+            WorkflowContext ctx, int seq, String stepName, @Nullable String argsHash
     ) throws Throwable {
         // F8: a live execution holds one activity slot of its run's task queue
         // — blocking while the queue is at its activity-concurrency limit —
@@ -528,7 +612,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
                             + "run and the workflow stays recoverable").formatted(stepName, ctx.workflowId()));
                 }
             }
-            return executeLiveHoldingSlot(method, args, ctx, seq, stepName);
+            return executeLiveHoldingSlot(method, args, ctx, seq, stepName, argsHash);
         } finally {
             governor.releaseActivitySlot(ctx.taskQueue());
         }
@@ -537,7 +621,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     /** {@link #executeLive}'s body, run while holding the activity slot. */
     private @Nullable Object executeLiveHoldingSlot(
             Method method, @Nullable Object @Nullable [] args,
-            WorkflowContext ctx, int seq, String stepName
+            WorkflowContext ctx, int seq, String stepName, @Nullable String argsHash
     ) throws Throwable {
         // A terminated run stops here (checked after the slot wait, so one
         // terminated while it waited for a slot stops too) — before the lock,
@@ -580,7 +664,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
                 var elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
                 // Retries exhausted — persist the failure.
                 try {
-                    persistFailure(ctx, seq, stepName, e);
+                    persistFailure(ctx, seq, stepName, argsHash, e);
                 } catch (DuplicateEventException staleRun) {
                     // A concurrent runner already recorded an outcome at this
                     // sequence (Review Focus 4). The duplicate propagates
@@ -602,7 +686,8 @@ public final class ActivityInvocationHandler implements InvocationHandler {
 
             // Persist success.
             try {
-                appendEventSafe(ctx, seq, EventType.ACTIVITY_COMPLETED, stepName, serializer.serialize(result));
+                appendEventSafe(ctx, seq, EventType.ACTIVITY_COMPLETED, stepName,
+                        serializer.serialize(result), argsHash);
             } catch (DuplicateEventException staleRun) {
                 // The winner is alive and ahead: stand down rather than adopt
                 // its value (class Javadoc, "Idempotency"). No ACTIVITY_COMPLETED
@@ -785,7 +870,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      */
     private void appendEventSafe(
             WorkflowContext ctx, int seq, EventType type,
-            String stepName, @Nullable JsonNode payload
+            String stepName, @Nullable JsonNode payload, @Nullable String argsHash
     ) {
         var event = new WorkflowEvent(
                 UUID.randomUUID(),
@@ -794,7 +879,8 @@ public final class ActivityInvocationHandler implements InvocationHandler {
                 type,
                 stepName,
                 payload,
-                Instant.now()
+                Instant.now(),
+                argsHash
         );
 
         try {
@@ -842,7 +928,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      *                                 {@link #appendEventSafe}
      */
     private void persistFailure(
-            WorkflowContext ctx, int seq, String stepName,
+            WorkflowContext ctx, int seq, String stepName, @Nullable String argsHash,
             ActivityExecutionException exception
     ) {
         JsonNode errorPayload;
@@ -857,7 +943,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             errorPayload = null;
         }
 
-        appendEventSafe(ctx, seq, EventType.ACTIVITY_FAILED, stepName, errorPayload);
+        appendEventSafe(ctx, seq, EventType.ACTIVITY_FAILED, stepName, errorPayload, argsHash);
     }
 
     /**

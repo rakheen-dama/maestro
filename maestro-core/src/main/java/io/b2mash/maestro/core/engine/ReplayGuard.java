@@ -3,6 +3,7 @@ package io.b2mash.maestro.core.engine;
 import io.b2mash.maestro.core.exception.UnknownWorkflowHistoryException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
+import org.jspecify.annotations.Nullable;
 
 import java.util.Arrays;
 import java.util.Optional;
@@ -144,6 +145,63 @@ public final class ReplayGuard {
                 "seq=%d expected=%s branches=%d stored=%s branches=%d"
                         .formatted(seq, stored.stepName(), expectedBranchCount,
                                 stored.stepName(), actual));
+    }
+
+    /**
+     * Returns {@code stored} when the arguments the activity is being called
+     * with fingerprint to the hash the recorded run stored — or when either
+     * side has no fingerprint; otherwise the run stands down.
+     *
+     * <p>{@link #requireMatch} proves the slot holds <em>this step's</em>
+     * outcome; this proves the step is being asked the <em>same question</em>.
+     * Without it a workflow whose activity input depends on something
+     * non-deterministic — a {@code HashMap}'s iteration order, the clock, a
+     * per-node config value — replays the recorded answer for a question the
+     * recorded run never asked, silently.
+     *
+     * <p>A {@code null} on either side is <em>unverified</em>, never a
+     * mismatch: the stored row predates the fingerprint column or was written
+     * by an older node mid-rollout, or the arguments could not be serialized
+     * ({@link ArgumentFingerprint#of}). Only two present, different hashes
+     * stand down.
+     *
+     * <p>The detail quotes the first eight hex characters of each hash and
+     * never an argument value (R17: payloads and arguments routinely carry
+     * customer data, and the detail reaches logs and metric backends).
+     *
+     * @param stored           the event just read from the store at the
+     *                         current sequence — already admitted by
+     *                         {@link UnknownHistoryGuard#requireKnown} and
+     *                         {@link #requireMatch}
+     * @param workflowId       the workflow being replayed, for the message
+     * @param expectedStepName the step name the current code performs here,
+     *                         for the detail
+     * @param computedArgsHash the fingerprint of the current call's arguments,
+     *                         or {@code null} if they could not be fingerprinted
+     * @return {@code stored}, for chaining into a replay decision
+     * @throws UnknownWorkflowHistoryException with
+     *         {@link UnknownWorkflowHistoryException.Kind#NONDETERMINISTIC_HISTORY}
+     *         if both fingerprints are present and differ
+     */
+    public static WorkflowEvent requireArgumentsMatch(WorkflowEvent stored, String workflowId,
+                                                      String expectedStepName,
+                                                      @Nullable String computedArgsHash) {
+        var storedArgsHash = stored.argsHash();
+        if (storedArgsHash == null || computedArgsHash == null || storedArgsHash.equals(computedArgsHash)) {
+            return stored;
+        }
+        var seq = stored.sequenceNumber();
+        throw nondeterministic(workflowId, seq,
+                ("activity '%s' is being called with different arguments than the recorded run — a "
+                        + "non-deterministic input (time, random, map order, config) or an ungated code change")
+                        .formatted(expectedStepName),
+                "seq=%d step=%s argsHash expected=%s stored=%s"
+                        .formatted(seq, expectedStepName, abbreviate(computedArgsHash), abbreviate(storedArgsHash)));
+    }
+
+    /** The first eight hex characters — enough to tell two hashes apart in a log line. */
+    private static String abbreviate(String hash) {
+        return hash.length() > 8 ? hash.substring(0, 8) : hash;
     }
 
     private static UnknownWorkflowHistoryException mismatch(WorkflowEvent stored, String workflowId,

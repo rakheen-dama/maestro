@@ -99,6 +99,157 @@ class ActivityInvocationHandlerTest {
         ScopedValue.where(WorkflowContext.scopedValue(), createContext()).run(block);
     }
 
+    // ── Argument verification (Feature 4) ─────────────────────────────
+
+    private String argsHashOf(Object... args) {
+        return java.util.Objects.requireNonNull(ArgumentFingerprint.of(serializer, args));
+    }
+
+    private void storeCompletedGreet(@org.jspecify.annotations.Nullable String argsHash) {
+        store.appendEvent(new WorkflowEvent(
+                UUID.randomUUID(), INSTANCE_ID, 1,
+                EventType.ACTIVITY_COMPLETED, "GreetingActivities.greet",
+                MAPPER.valueToTree(new Greeting("Hello, Recorded!")), Instant.now(), argsHash));
+        store.appendedEvents.clear();
+    }
+
+    /** A {@link GreetingActivities} that counts live calls. */
+    static final class CountingGreetingActivities implements GreetingActivities {
+        final AtomicInteger calls = new AtomicInteger();
+
+        @Override
+        public Greeting greet(String name) {
+            calls.incrementAndGet();
+            return new Greeting("Hello, " + name + "!");
+        }
+
+        @Override
+        public void doNothing() {
+            calls.incrementAndGet();
+        }
+    }
+
+    @Test
+    @DisplayName("Replay: matching argument fingerprint replays the stored result and never calls the impl")
+    void replayWithMatchingArguments_replaysWithoutCallingImpl() {
+        storeCompletedGreet(argsHashOf("World"));
+        var impl = new CountingGreetingActivities();
+
+        withContext(() -> {
+            var result = createProxy(GreetingActivities.class, impl).greet("World");
+            assertEquals("Hello, Recorded!", result.message());
+        });
+        assertEquals(0, impl.calls.get(), "replay must not execute the activity");
+        assertTrue(store.appendedEvents.isEmpty(), "replay writes nothing");
+    }
+
+    @Test
+    @DisplayName("Replay: a different argument fingerprint stands down as NONDETERMINISTIC_HISTORY — "
+            + "the impl is not called and nothing is written")
+    void replayWithDifferentArguments_standsDownWithoutCallingImpl() {
+        storeCompletedGreet(argsHashOf("Mars"));
+        var impl = new CountingGreetingActivities();
+
+        withContext(() -> {
+            var proxy = createProxy(GreetingActivities.class, impl);
+            var ex = assertThrows(io.b2mash.maestro.core.exception.UnknownWorkflowHistoryException.class,
+                    () -> proxy.greet("World"));
+            assertAll(
+                    () -> assertEquals(io.b2mash.maestro.core.exception.UnknownWorkflowHistoryException.Kind
+                            .NONDETERMINISTIC_HISTORY, ex.kind()),
+                    () -> assertEquals(WORKFLOW_ID, ex.workflowId()),
+                    () -> assertEquals(1, ex.sequenceNumber()),
+                    () -> assertEquals("seq=1 step=GreetingActivities.greet argsHash expected="
+                            + argsHashOf("World").substring(0, 8) + " stored="
+                            + argsHashOf("Mars").substring(0, 8), ex.detail()),
+                    // R17: the detail never quotes the argument values.
+                    () -> assertFalse(ex.detail().contains("World")),
+                    () -> assertFalse(ex.detail().contains("Mars")));
+        });
+        assertEquals(0, impl.calls.get(), "a stand-down must not execute the activity");
+        assertTrue(store.appendedEvents.isEmpty(), "a stand-down writes nothing");
+        assertTrue(messaging.publishedEvents.isEmpty(), "no ACTIVITY_* lifecycle event for a stand-down");
+    }
+
+    @Test
+    @DisplayName("Replay: a stored row without a fingerprint (pre-V7, older node) replays — unverified, not a mismatch")
+    void replayWithNullStoredHash_replays() {
+        storeCompletedGreet(null);
+        var impl = new CountingGreetingActivities();
+
+        withContext(() -> {
+            var result = createProxy(GreetingActivities.class, impl).greet("Anything");
+            assertEquals("Hello, Recorded!", result.message());
+        });
+        assertEquals(0, impl.calls.get());
+    }
+
+    @Test
+    @DisplayName("Replay: verify-arguments=false replays the stored result despite a fingerprint mismatch")
+    void verificationOff_replaysDespiteMismatch() {
+        storeCompletedGreet(argsHashOf("Mars"));
+        var impl = new CountingGreetingActivities();
+
+        withContext(() -> {
+            var result = createProxy(GreetingActivities.class, impl, false).greet("World");
+            assertEquals("Hello, Recorded!", result.message());
+        });
+        assertEquals(0, impl.calls.get());
+    }
+
+    @Test
+    @DisplayName("Live: ACTIVITY_COMPLETED carries the 64-hex fingerprint of the call's arguments")
+    void liveCompleted_writesArgsHash() {
+        withContext(() -> {
+            createProxy(GreetingActivities.class, new GreetingActivitiesImpl()).greet("World");
+        });
+        var event = store.appendedEvents.getFirst();
+        assertEquals(EventType.ACTIVITY_COMPLETED, event.eventType());
+        assertNotNull(event.argsHash());
+        assertTrue(event.argsHash().matches("[0-9a-f]{64}"), event.argsHash());
+        assertEquals(argsHashOf("World"), event.argsHash());
+    }
+
+    @Test
+    @DisplayName("Live: ACTIVITY_FAILED carries the 64-hex fingerprint too")
+    void liveFailed_writesArgsHash() {
+        withContext(() -> {
+            var proxy = createProxy(GreetingActivities.class, new FailingActivities());
+            assertThrows(ActivityExecutionException.class, () -> proxy.greet("World"));
+        });
+        var failed = store.appendedEvents.stream()
+                .filter(e -> e.eventType() == EventType.ACTIVITY_FAILED).findFirst().orElseThrow();
+        assertNotNull(failed.argsHash());
+        assertTrue(failed.argsHash().matches("[0-9a-f]{64}"), failed.argsHash());
+        assertEquals(argsHashOf("World"), failed.argsHash());
+    }
+
+    @Test
+    @DisplayName("Live: a no-argument method fingerprints its (empty) argument list")
+    void liveNoArgs_writesArgsHash() {
+        withContext(() -> createProxy(GreetingActivities.class, new GreetingActivitiesImpl()).doNothing());
+        assertEquals(argsHashOf(), store.appendedEvents.getFirst().argsHash());
+    }
+
+    @Test
+    @DisplayName("Live: verify-arguments=false still writes the fingerprint, so re-enabling covers these rows")
+    void verificationOff_liveStillWritesArgsHash() {
+        withContext(() -> {
+            createProxy(GreetingActivities.class, new GreetingActivitiesImpl(), false).greet("World");
+        });
+        assertEquals(argsHashOf("World"), store.appendedEvents.getFirst().argsHash());
+    }
+
+    private <T> T createProxy(Class<T> iface, T impl, boolean verifyArguments) {
+        return factory.createProxy(
+                iface, impl, store, lock,
+                RetryPolicy.noRetry(), Duration.ofSeconds(30),
+                serializer, retryExecutor, WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
+                EngineObserver.NOOP, TaskQueueGovernor.UNBOUNDED, LifecycleEventSink.direct(messaging),
+                verifyArguments
+        );
+    }
+
     // ── Replay path tests ─────────────────────────────────────────────
 
     @Test
