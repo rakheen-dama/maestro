@@ -68,7 +68,7 @@ The ordering covers only database initializers that Spring Boot knows about (`sp
 
 The initializer belongs to `maestro-store-postgres` and runs only when `maestro.store.type` is `postgres` (the only supported store). The lock tables are created by that same initializer, from the same module.
 
-**`validate` and `none`.** With `maestro.store.schema.mode: validate` Maestro applies nothing and fails startup — naming the pending versions — if any migration is pending, or if an applied one no longer matches the shipped SQL; it reads `maestro_schema_history`, so whoever applies the SQL out of band must record it there (e.g. the Flyway CLI with `-table=maestro_schema_history`, the locations above, and — on a schema that already holds your tables — `-baselineOnMigrate=true -baselineVersion=0`, exactly as Maestro's own run does). With `none` Maestro does nothing and reads no history: you apply the SQL under the locations above yourself, in version order, before deploying the build that ships it. A build at or past V5 omits `received_at` from signal inserts, so a self-managed database must have V5 applied (`ALTER TABLE maestro_workflow_signal ALTER COLUMN received_at SET DEFAULT now()`) before that build is deployed, or every signal insert fails. A build at or past V6 names `maestro_workflow_instance.lease_epoch` in every instance read and write (the lease-fencing token), so V6 (`ALTER TABLE maestro_workflow_instance ADD COLUMN IF NOT EXISTS lease_epoch BIGINT NOT NULL DEFAULT 0`) must likewise be applied first, or no workflow can be started, resumed or read.
+**`validate` and `none`.** With `maestro.store.schema.mode: validate` Maestro applies nothing and fails startup — naming the pending versions — if any migration is pending, or if an applied one no longer matches the shipped SQL; it reads `maestro_schema_history`, so whoever applies the SQL out of band must record it there (e.g. the Flyway CLI with `-table=maestro_schema_history`, the locations above, and — on a schema that already holds your tables — `-baselineOnMigrate=true -baselineVersion=0`, exactly as Maestro's own run does). With `none` Maestro does nothing and reads no history: you apply the SQL under the locations above yourself, in version order, before deploying the build that ships it. A build at or past V5 omits `received_at` from signal inserts, so a self-managed database must have V5 applied (`ALTER TABLE maestro_workflow_signal ALTER COLUMN received_at SET DEFAULT now()`) before that build is deployed, or every signal insert fails. A build at or past V6 names `maestro_workflow_instance.lease_epoch` in every instance read and write (the lease-fencing token), so V6 (`ALTER TABLE maestro_workflow_instance ADD COLUMN IF NOT EXISTS lease_epoch BIGINT NOT NULL DEFAULT 0`) must likewise be applied first, or no workflow can be started, resumed or read. A build at or past V7 names `maestro_workflow_event.args_hash` in every event insert and read (the activity-argument fingerprint), so V7 (`ALTER TABLE maestro_workflow_event ADD COLUMN IF NOT EXISTS args_hash VARCHAR(64)`) must likewise be applied first, or no activity outcome can be recorded or replayed.
 
 **Upgrading an existing database.** A database migrated by an earlier Maestro build, before Maestro owned its history (0.4.0 applied `V1`–`V3`, `V100`, `V200` and `V201`), has Maestro's rows in your `flyway_schema_history` and no `maestro_schema_history`, and the new build's first start fails either way:
 
@@ -87,12 +87,13 @@ Upgrade such a database once, with this procedure, in order (the same text is in
          maestro_signal_queue, maestro_task_queue, maestro_lifecycle_event_queue;
      ```
 
-   - **Keep the data.** Set `maestro.store.schema.mode: none` on every node — you own Maestro's DDL from then on, applying each later migration by hand before deploying the build that ships it — and apply by hand the three migrations a 0.4.0 database lacks: `V4__signal_trace_context.sql`, `V5__signal_received_at_default.sql` and `V6__instance_lease_epoch.sql` (`maestro-store-postgres`, `classpath:db/maestro/store`). As written here they are safe to re-run, including on a database a pre-release build already took to V4, V5 or V6; the retired messaging transport's queue tables may be dropped at the same time (optional — nothing on this build reads them):
+   - **Keep the data.** Set `maestro.store.schema.mode: none` on every node — you own Maestro's DDL from then on, applying each later migration by hand before deploying the build that ships it — and apply by hand the four migrations a 0.4.0 database lacks: `V4__signal_trace_context.sql`, `V5__signal_received_at_default.sql`, `V6__instance_lease_epoch.sql` and `V7__workflow_event_args_hash.sql` (`maestro-store-postgres`, `classpath:db/maestro/store`). As written here they are safe to re-run, including on a database a pre-release build already took to V4, V5, V6 or V7; the retired messaging transport's queue tables may be dropped at the same time (optional — nothing on this build reads them):
 
      ```sql
      ALTER TABLE maestro_workflow_signal ADD COLUMN IF NOT EXISTS trace_context VARCHAR(128);  -- V4
      ALTER TABLE maestro_workflow_signal ALTER COLUMN received_at SET DEFAULT now();         -- V5
      ALTER TABLE maestro_workflow_instance ADD COLUMN IF NOT EXISTS lease_epoch BIGINT NOT NULL DEFAULT 0; -- V6
+     ALTER TABLE maestro_workflow_event ADD COLUMN IF NOT EXISTS args_hash VARCHAR(64);       -- V7
      CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_wf_instance_terminal                        -- V8
          ON maestro_workflow_instance (status, completed_at) WHERE completed_at IS NOT NULL;
      CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_wf_signal_instance                          -- V8
@@ -100,7 +101,7 @@ Upgrade such a database once, with this procedure, in order (the same text is in
      DROP TABLE IF EXISTS maestro_signal_queue, maestro_task_queue, maestro_lifecycle_event_queue; -- optional cleanup
      ```
 
-     `V8` is index-only (the retention sweeper works without it, scanning the tables on every batch), so it is written here with `CONCURRENTLY`, which the Flyway-run original cannot use — see [Retention Configuration](#retention-configuration). Do not skip V4, V5 or V6: this build names `trace_context` in every signal insert and leaves `received_at` to the column default, so without them every `saveSignal` fails — inside the Kafka listener, so each signal is redelivered until it is dead-lettered; and it names `lease_epoch` in every instance read and write (it is the lease-fencing token — see [Operations §6](operations.md#6-split-brain-behaviour-issue-11--issue-18)), so without V6 no workflow can be started, resumed or read. V6 is metadata-only on PostgreSQL 11+ (a constant `DEFAULT` on `ADD COLUMN` rewrites no rows) and every pre-existing row reads back as epoch `0`.
+     `V8` is index-only (the retention sweeper works without it, scanning the tables on every batch), so it is written here with `CONCURRENTLY`, which the Flyway-run original cannot use — see [Retention Configuration](#retention-configuration). Do not skip V4, V5, V6 or V7: this build names `trace_context` in every signal insert and leaves `received_at` to the column default, so without them every `saveSignal` fails — inside the Kafka listener, so each signal is redelivered until it is dead-lettered; it names `lease_epoch` in every instance read and write (it is the lease-fencing token — see [Operations §6](operations.md#6-split-brain-behaviour-issue-11--issue-18)), so without V6 no workflow can be started, resumed or read; and it names `args_hash` in every event insert and read (the activity-argument fingerprint — see [Operations §10.7](operations.md#107-replay-drift-nondeterministic_history)), so without V7 no activity outcome can be recorded or replayed. V6 and V7 are metadata-only on PostgreSQL 11+ (a constant `DEFAULT` on `ADD COLUMN`, or no default at all, rewrites no rows); every pre-existing row reads back as epoch `0` and as an unverified (`NULL`) fingerprint.
 3. **Delete Maestro's rows from your `flyway_schema_history`** (or the table `spring.flyway.table` names) — on either path; skip this step only if the table does not exist. The statement matches each row by version **and** script name, so none of your own migrations can match, and rows your database never had are simply not matched:
 
    ```sql
@@ -112,6 +113,7 @@ Upgrade such a database once, with this procedure, in order (the same text is in
        ('4',   'V4__signal_trace_context.sql'),
        ('5',   'V5__signal_received_at_default.sql'),
        ('6',   'V6__instance_lease_epoch.sql'),
+       ('7',   'V7__workflow_event_args_hash.sql'),
        ('8',   'V8__retention_indexes.sql'),
        ('100', 'V100__maestro_lock_postgres.sql'),
        ('200', 'V200__maestro_messaging_postgres.sql'),
@@ -419,6 +421,17 @@ per-instance distributed lock guarantees only one of them wins each workflow.
 
 ---
 
+## Replay Configuration
+
+Properties under `maestro.replay.*` control what a recovering node checks when
+it replays a workflow against its recorded history.
+
+| Property                            | Type      | Default | Description |
+|-------------------------------------|-----------|---------|-------------|
+| `maestro.replay.verify-arguments`   | `boolean` | `true`  | Whether a replayed activity call compares the SHA-256 fingerprint of its arguments with the one the recorded outcome carries (`maestro_workflow_event.args_hash`, V7) and stands the run down as `nondeterministic_history` when they differ — the activity is being asked a different question than the recorded run asked (a `HashMap`'s iteration order, the clock, a per-node config value, or an ungated code change; see [Operations §10.7](operations.md#107-replay-drift-nondeterministic_history)). A missing fingerprint on either side is never a mismatch, so a rolling deploy from a build without the column is safe. Set to `false` only to ride out a known-benign drift while it is fixed: live outcomes still record their fingerprint, so re-enabling covers the rows written meanwhile. The engine logs a WARN at startup while it is off. |
+
+---
+
 ## Shutdown and Signal Configuration
 
 | Property                              | Type       | Default | Description                                                                                                    |
@@ -648,6 +661,8 @@ maestro:
     default-initial-interval: 1s
     default-max-interval: 60s
     default-backoff-multiplier: 2.0
+  replay:
+    verify-arguments: true
   admin:
     events:
       enabled: true
