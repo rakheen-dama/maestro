@@ -13,6 +13,7 @@ import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.spi.RunLease;
+import io.b2mash.maestro.core.spi.PurgeResult;
 import tools.jackson.databind.JsonNode;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -1082,6 +1083,257 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
                 try (var rs = ps.executeQuery()) {
                     return rs.next() && rs.getBoolean(1);
                 }
+            }
+        }
+    }
+
+    // ── Retention purge ───────────────────────────────────────────────────
+
+    /**
+     * {@code purgeTerminalInstancesBefore}: one instance per
+     * {@link WorkflowStatus}, each finished 10 days ago with two events, a
+     * PENDING and a FIRED timer, and a consumed and an unconsumed signal; a
+     * COMPLETED instance finished 1 day ago; a COMPLETED instance finished
+     * exactly at the cutoff; a COMPLETED instance with no {@code completed_at};
+     * and an orphan signal addressed to the old COMPLETED instance's workflow
+     * ID. The cutoff is 7 days ago.
+     */
+    @Nested
+    @DisplayName("Retention purge")
+    class RetentionPurgeTests {
+
+        private final Instant now = Instant.now().truncatedTo(ChronoUnit.MILLIS);
+        private final Instant cutoff = now.minus(Duration.ofDays(7));
+        private final String recentCompletedId = "wf-recent-completed";
+        private final String atCutoffId = "wf-at-cutoff";
+        private final String neverStampedId = "wf-never-stamped";
+
+        @BeforeEach
+        void fixture() {
+            for (var status : WorkflowStatus.values()) {
+                var instance = store.createInstance(newInstance(idFor(status), status).toBuilder()
+                        .completedAt(now.minus(Duration.ofDays(10)))
+                        .build());
+                attachHistory(instance);
+            }
+            attachHistory(store.createInstance(newInstance(recentCompletedId, WorkflowStatus.COMPLETED).toBuilder()
+                    .completedAt(now.minus(Duration.ofDays(1)))
+                    .build()));
+            attachHistory(store.createInstance(newInstance(atCutoffId, WorkflowStatus.COMPLETED).toBuilder()
+                    .completedAt(cutoff)
+                    .build()));
+            attachHistory(store.createInstance(newInstance(neverStampedId, WorkflowStatus.COMPLETED)));
+            // An orphan for a workflow ID that is about to be purged: it may
+            // still be adopted by a future instance reusing the ID.
+            store.saveSignal(newSignal(idFor(WorkflowStatus.COMPLETED), null, "late"));
+        }
+
+        /** Two events, a PENDING and a FIRED timer, an unconsumed and a consumed signal. */
+        private void attachHistory(WorkflowInstance instance) {
+            store.appendEvent(newEvent(instance.id(), 1, EventType.ACTIVITY_COMPLETED));
+            store.appendEvent(newEvent(instance.id(), 2, EventType.WORKFLOW_COMPLETED));
+            store.saveTimer(newTimer(instance.id(), instance.workflowId(), now.plusSeconds(60), TimerStatus.PENDING));
+            store.saveTimer(newTimer(instance.id(), instance.workflowId(), now.minusSeconds(60), TimerStatus.FIRED));
+            store.saveSignal(newSignal(instance.workflowId(), instance.id(), "s"));
+            var consumed = newSignal(instance.workflowId(), instance.id(), "s");
+            store.saveSignal(consumed);
+            assertTrue(store.markSignalConsumed(consumed.id()));
+        }
+
+        @Test
+        @DisplayName("purging COMPLETED removes the old COMPLETED instance with its whole history and nothing else")
+        void purgeCompleted_removesInstanceAndChildren_leavesEverythingElse() throws Exception {
+            var old = store.getInstance(idFor(WorkflowStatus.COMPLETED)).orElseThrow();
+
+            var result = store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, cutoff, 500);
+
+            assertEquals(new PurgeResult(1, 2, 2, 2), result,
+                    "one instance, its 2 events, both signals (consumed too) and both timers (PENDING too)");
+            assertTrue(store.getInstance(old.workflowId()).isEmpty());
+            assertEquals(0, childRows("maestro_workflow_event", old.id()));
+            assertEquals(0, childRows("maestro_workflow_signal", old.id()));
+            assertEquals(0, childRows("maestro_workflow_timer", old.id()));
+
+            for (var status : WorkflowStatus.values()) {
+                if (status != WorkflowStatus.COMPLETED) {
+                    assertIntact(idFor(status), status + " must survive a COMPLETED purge");
+                }
+            }
+            assertIntact(recentCompletedId, "finished after the cutoff");
+            assertIntact(atCutoffId, "finished exactly at the cutoff is not strictly before it");
+            assertIntact(neverStampedId, "a null completed_at is never a candidate");
+            assertEquals(1, orphanRows(old.workflowId()), "the orphan signal survives for a future instance");
+        }
+
+        @Test
+        @DisplayName("purging TERMINATED takes its PENDING timers with it and leaves COMPLETED and FAILED alone")
+        void purgeTerminated_removesPendingTimers_leavesOtherStatuses() throws Exception {
+            var old = store.getInstance(idFor(WorkflowStatus.TERMINATED)).orElseThrow();
+            assertEquals(1, store.getDueTimers(now.plusSeconds(120), 100).stream()
+                    .filter(t -> t.workflowInstanceId().equals(old.id())).count());
+
+            var result = store.purgeTerminalInstancesBefore(WorkflowStatus.TERMINATED, cutoff, 500);
+
+            assertEquals(new PurgeResult(1, 2, 2, 2), result);
+            assertEquals(0, childRows("maestro_workflow_timer", old.id()));
+            assertIntact(idFor(WorkflowStatus.COMPLETED), "COMPLETED has its own retention");
+            assertIntact(idFor(WorkflowStatus.FAILED), "FAILED has its own, longer retention");
+        }
+
+        @Test
+        @DisplayName("purging FAILED removes only the old FAILED instance")
+        void purgeFailed_removesOnlyFailed() throws Exception {
+            var result = store.purgeTerminalInstancesBefore(WorkflowStatus.FAILED, cutoff, 500);
+
+            assertEquals(new PurgeResult(1, 2, 2, 2), result);
+            assertTrue(store.getInstance(idFor(WorkflowStatus.FAILED)).isEmpty());
+            assertIntact(idFor(WorkflowStatus.COMPLETED), "COMPLETED survives a FAILED purge");
+            assertIntact(idFor(WorkflowStatus.TERMINATED), "TERMINATED survives a FAILED purge");
+        }
+
+        @Test
+        @DisplayName("is idempotent: a second call finds nothing")
+        void purge_isIdempotent() {
+            store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, cutoff, 500);
+            assertEquals(PurgeResult.EMPTY, store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, cutoff, 500));
+        }
+
+        @Test
+        @DisplayName("batches take the oldest instances first and stop short on the last batch")
+        void purge_batchesOldestFirst() throws Exception {
+            truncateFixture();
+            for (int i = 0; i < 5; i++) {
+                attachHistory(store.createInstance(newInstance("wf-old-" + i, WorkflowStatus.COMPLETED).toBuilder()
+                        .completedAt(now.minus(Duration.ofDays(30 - i))) // wf-old-0 is the oldest
+                        .build()));
+            }
+
+            var first = store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, cutoff, 2);
+            assertEquals(2, first.instances());
+            assertTrue(store.getInstance("wf-old-0").isEmpty() && store.getInstance("wf-old-1").isEmpty(),
+                    "the two oldest go first");
+            assertTrue(store.getInstance("wf-old-2").isPresent());
+
+            assertEquals(2, store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, cutoff, 2).instances());
+            var last = store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, cutoff, 2);
+            assertEquals(new PurgeResult(1, 2, 2, 2), last, "a short batch — the sweeper's stop signal");
+            assertEquals(PurgeResult.EMPTY, store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, cutoff, 2));
+        }
+
+        @Test
+        @DisplayName("rejects a non-terminal status and a non-positive batch size")
+        void purge_rejectsBadArguments() {
+            assertThrows(IllegalArgumentException.class,
+                    () -> store.purgeTerminalInstancesBefore(WorkflowStatus.RUNNING, cutoff, 10));
+            assertThrows(IllegalArgumentException.class,
+                    () -> store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, cutoff, 0));
+        }
+
+        /**
+         * Race guard, Postgres flavour: a retry that is mid-transaction holds
+         * the FAILED candidate's row lock, so {@code FOR UPDATE SKIP LOCKED}
+         * skips it; once the retry commits, the row is RUNNING and no longer
+         * qualifies. Either way its history is never deleted.
+         */
+        @Test
+        @DisplayName("a candidate locked by a concurrent retry is skipped, and once RUNNING is no longer a candidate")
+        void purge_skipsARowAConcurrentRetryHolds_andNeverDeletesItsHistory() throws Exception {
+            var failed = store.getInstance(idFor(WorkflowStatus.FAILED)).orElseThrow();
+            try (Connection retry = dataSource.getConnection()) {
+                retry.setAutoCommit(false);
+                try (var ps = retry.prepareStatement("UPDATE maestro_workflow_instance "
+                        + "SET status = 'RUNNING', completed_at = NULL, version = version + 1 WHERE id = ?")) {
+                    ps.setObject(1, failed.id());
+                    assertEquals(1, ps.executeUpdate());
+                }
+                // The retry's transaction is open: the row is locked.
+                assertEquals(PurgeResult.EMPTY,
+                        store.purgeTerminalInstancesBefore(WorkflowStatus.FAILED, cutoff, 500),
+                        "SKIP LOCKED must skip the row the retry holds, not wait for it or delete it");
+                retry.commit();
+            }
+            assertEquals(PurgeResult.EMPTY, store.purgeTerminalInstancesBefore(WorkflowStatus.FAILED, cutoff, 500),
+                    "committed as RUNNING with no completed_at — no longer a candidate");
+            assertEquals(2, store.getEvents(failed.id()).size(), "the retried workflow keeps its memoization log");
+        }
+
+        /**
+         * Race guard, portable flavour: if the instance delete removes fewer
+         * rows than were selected, the whole batch — children included — must
+         * roll back. A {@code BEFORE DELETE} trigger that suppresses the delete
+         * of one row stands in for a candidate that stopped qualifying between
+         * the (non-locking) select and the delete.
+         */
+        @Test
+        @DisplayName("a batch whose instance delete falls short rolls back its child deletes too")
+        void purge_rollsBackTheBatchWhenTheInstanceDeleteFallsShort() throws Exception {
+            var completed = store.getInstance(idFor(WorkflowStatus.COMPLETED)).orElseThrow();
+            try (Connection conn = dataSource.getConnection(); var stmt = conn.createStatement()) {
+                stmt.execute("""
+                        CREATE OR REPLACE FUNCTION maestro_test_keep_row() RETURNS trigger AS $$
+                        BEGIN
+                            IF OLD.id = '%s' THEN RETURN NULL; END IF;
+                            RETURN OLD;
+                        END $$ LANGUAGE plpgsql
+                        """.formatted(completed.id()));
+                stmt.execute("CREATE TRIGGER maestro_test_keep_row BEFORE DELETE ON maestro_workflow_instance "
+                        + "FOR EACH ROW EXECUTE FUNCTION maestro_test_keep_row()");
+            }
+            try {
+                assertEquals(PurgeResult.EMPTY,
+                        store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, cutoff, 500),
+                        "a count mismatch reports nothing purged");
+                assertIntact(completed.workflowId(), "the children must have been rolled back with the parent");
+            } finally {
+                try (Connection conn = dataSource.getConnection(); var stmt = conn.createStatement()) {
+                    stmt.execute("DROP TRIGGER IF EXISTS maestro_test_keep_row ON maestro_workflow_instance");
+                    stmt.execute("DROP FUNCTION IF EXISTS maestro_test_keep_row()");
+                }
+            }
+        }
+
+        // ── helpers ─────────────────────────────────────────────────────
+
+        private static String idFor(WorkflowStatus status) {
+            return "wf-" + status.name().toLowerCase();
+        }
+
+        private void assertIntact(String workflowId, String why) throws Exception {
+            var instance = store.getInstance(workflowId);
+            assertTrue(instance.isPresent(), workflowId + " must still exist: " + why);
+            var id = instance.get().id();
+            assertEquals(2, childRows("maestro_workflow_event", id), workflowId + " events: " + why);
+            assertEquals(2, childRows("maestro_workflow_signal", id), workflowId + " signals: " + why);
+            assertEquals(2, childRows("maestro_workflow_timer", id), workflowId + " timers: " + why);
+        }
+
+        private int childRows(String table, UUID instanceId) throws Exception {
+            try (Connection conn = dataSource.getConnection();
+                 var ps = conn.prepareStatement("SELECT count(*) FROM " + table + " WHERE workflow_instance_id = ?")) {
+                ps.setObject(1, instanceId);
+                try (var rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getInt(1);
+                }
+            }
+        }
+
+        private int orphanRows(String workflowId) throws Exception {
+            try (Connection conn = dataSource.getConnection();
+                 var ps = conn.prepareStatement("SELECT count(*) FROM maestro_workflow_signal "
+                         + "WHERE workflow_id = ? AND workflow_instance_id IS NULL")) {
+                ps.setString(1, workflowId);
+                try (var rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getInt(1);
+                }
+            }
+        }
+
+        private void truncateFixture() throws Exception {
+            try (Connection conn = dataSource.getConnection(); var stmt = conn.createStatement()) {
+                stmt.execute("TRUNCATE maestro_workflow_signal, maestro_workflow_timer, "
+                        + "maestro_workflow_event, maestro_workflow_instance CASCADE");
             }
         }
     }

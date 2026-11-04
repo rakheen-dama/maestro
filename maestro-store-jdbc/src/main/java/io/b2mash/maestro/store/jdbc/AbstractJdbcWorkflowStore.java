@@ -14,6 +14,7 @@ import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.spi.RunLease;
+import io.b2mash.maestro.core.spi.PurgeResult;
 import io.b2mash.maestro.core.spi.TerminalWrites;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
@@ -50,6 +51,10 @@ import java.util.stream.Collectors;
  * <ul>
  *   <li>{@link #getDueTimersSql()} — <b>abstract</b>, must provide row-level
  *       locking SQL (e.g., {@code FOR UPDATE SKIP LOCKED} in Postgres).</li>
+ *   <li>{@link #getPurgeCandidatesSql()} — override to lock the retention
+ *       purge's candidate rows (Postgres: {@code LIMIT ? FOR UPDATE SKIP
+ *       LOCKED}); the portable default uses {@code FETCH FIRST ? ROWS ONLY}
+ *       and relies on the batch's count check instead.</li>
  *   <li>{@link #setJsonParameter(PreparedStatement, int, JsonNode)} — override
  *       to use database-native JSON types (e.g., Postgres JSONB via PGobject).</li>
  *   <li>{@link #getJsonValue(ResultSet, String)} — override if the database
@@ -146,6 +151,34 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      */
     protected String fenceRowLockClause() {
         return "";
+    }
+
+    /**
+     * Returns the SQL selecting one batch of retention-purge candidates — the
+     * {@code id}s of instances in one terminal status finished before a
+     * cutoff, oldest first.
+     *
+     * <p>The SQL must take exactly three parameters, in order: the status name
+     * ({@code VARCHAR}), the cutoff ({@code TIMESTAMP}), and the batch size
+     * ({@code INT}); select {@code id} only; filter on
+     * {@code status = ? AND completed_at < ?}; and order by {@code completed_at}
+     * ascending. The default is the portable
+     * {@code ORDER BY completed_at ASC FETCH FIRST ? ROWS ONLY}, which locks
+     * nothing — the batch then depends on the final instance delete's count
+     * check to roll back if a candidate changed under it. A dialect that can
+     * lock the selected rows for the transaction (Postgres
+     * {@code LIMIT ? FOR UPDATE SKIP LOCKED}) should override this: it rules
+     * that race out and lets two sweepers running at once take disjoint
+     * batches.
+     *
+     * @return the parameterized SQL string
+     * @see #purgeTerminalInstancesBefore(WorkflowStatus, Instant, int)
+     */
+    protected String getPurgeCandidatesSql() {
+        return "SELECT id FROM " + tableName("workflow_instance")
+                + " WHERE status = ? AND completed_at < ?"
+                + " ORDER BY completed_at ASC"
+                + " FETCH FIRST ? ROWS ONLY";
     }
 
     /**
@@ -660,6 +693,122 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
         log.debug("Deleted {} failure event(s) for workflow instance {}", deleted, instanceId);
         return deleted;
+    }
+
+    // ── Retention ─────────────────────────────────────────────────────────
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One connection, one transaction ({@code autoCommit=false}): the
+     * candidate select ({@link #getPurgeCandidatesSql()}), the three child
+     * deletes and the instance delete commit together or not at all. The
+     * children go first because the shipped schema's foreign keys carry no
+     * {@code ON DELETE CASCADE}. The instance delete repeats the status and
+     * cutoff predicates, and if it removes fewer rows than were selected —
+     * possible only on a dialect whose candidate select does not lock, when a
+     * retry flipped a {@code FAILED} candidate to {@code RUNNING} in between —
+     * the batch is rolled back, logged at {@code WARN}, and reported as
+     * {@link PurgeResult#EMPTY}; the sweeper then ends this status's loop and
+     * tries again next interval.
+     */
+    @Override
+    public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
+        Objects.requireNonNull(status, "status");
+        Objects.requireNonNull(cutoff, "cutoff");
+        if (!status.isTerminal()) {
+            throw new IllegalArgumentException("Only terminal statuses can be purged, got " + status);
+        }
+        if (batchSize < 1) {
+            throw new IllegalArgumentException("batchSize must be at least 1, got " + batchSize);
+        }
+
+        try (var conn = dataSource.getConnection()) {
+            conn.setAutoCommit(false);
+            boolean settled = false; // committed or rolled back — see endTransaction
+            try {
+                var ids = selectPurgeCandidates(conn, status, cutoff, batchSize);
+                if (ids.isEmpty()) {
+                    conn.rollback();
+                    settled = true;
+                    return PurgeResult.EMPTY;
+                }
+                var in = inClause(ids.size());
+                int signals = executeUpdate(conn, "DELETE FROM " + tableName("workflow_signal")
+                        + " WHERE workflow_instance_id IN (" + in + ")", ps -> setIds(ps, ids, 1));
+                int timers = executeUpdate(conn, "DELETE FROM " + tableName("workflow_timer")
+                        + " WHERE workflow_instance_id IN (" + in + ")", ps -> setIds(ps, ids, 1));
+                int events = executeUpdate(conn, "DELETE FROM " + tableName("workflow_event")
+                        + " WHERE workflow_instance_id IN (" + in + ")", ps -> setIds(ps, ids, 1));
+                int instances = executeUpdate(conn, "DELETE FROM " + tableName("workflow_instance")
+                        + " WHERE id IN (" + in + ") AND status = ? AND completed_at < ?", ps -> {
+                    int next = setIds(ps, ids, 1);
+                    ps.setString(next, status.name());
+                    ps.setTimestamp(next + 1, Timestamp.from(cutoff));
+                });
+                if (instances != ids.size()) {
+                    // A candidate stopped qualifying between select and delete
+                    // (a retry flipped it to RUNNING). Its memoization log is
+                    // in this transaction's delete set — roll everything back
+                    // rather than leave a live workflow with no history.
+                    conn.rollback();
+                    settled = true;
+                    log.warn("Retention purge of {} {} instance(s) rolled back: only {} still qualified at delete "
+                            + "time — a candidate was retried concurrently; will retry next sweep",
+                            ids.size(), status, instances);
+                    return PurgeResult.EMPTY;
+                }
+                conn.commit();
+                settled = true;
+                var result = new PurgeResult(instances, events, signals, timers);
+                log.debug("Purged {} {} instance(s) finished before {}: {} event(s), {} signal(s), {} timer(s)",
+                        instances, status, cutoff, events, signals, timers);
+                return result;
+            } catch (SQLException | RuntimeException e) {
+                settled = rollbackAfter(conn, e);
+                throw e;
+            } finally {
+                endTransaction(conn, settled);
+            }
+        } catch (SQLException e) {
+            throw new UncheckedSqlException("Failed to purge " + status + " workflow instances finished before "
+                    + cutoff, e);
+        }
+    }
+
+    /** The candidate select of {@link #purgeTerminalInstancesBefore}, on the caller's transaction. */
+    private List<UUID> selectPurgeCandidates(Connection conn, WorkflowStatus status, Instant cutoff,
+                                             int batchSize) throws SQLException {
+        try (var ps = conn.prepareStatement(getPurgeCandidatesSql())) {
+            ps.setString(1, status.name());
+            ps.setTimestamp(2, Timestamp.from(cutoff));
+            ps.setInt(3, batchSize);
+            try (var rs = ps.executeQuery()) {
+                var ids = new ArrayList<UUID>();
+                while (rs.next()) {
+                    ids.add(rs.getObject("id", UUID.class));
+                }
+                return ids;
+            }
+        }
+    }
+
+    /** {@code "?, ?, ..."} with {@code n} placeholders. */
+    private static String inClause(int n) {
+        return String.join(", ", java.util.Collections.nCopies(n, "?"));
+    }
+
+    /**
+     * Binds {@code ids} from parameter index {@code from}.
+     *
+     * @return the next free parameter index
+     */
+    private static int setIds(PreparedStatement ps, List<UUID> ids, int from) throws SQLException {
+        int index = from;
+        for (var id : ids) {
+            ps.setObject(index++, id);
+        }
+        return index;
     }
 
     /** The deletes of {@link #deleteFailureEvents(UUID)}, on the caller's transaction. */

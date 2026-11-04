@@ -18,7 +18,8 @@ import java.sql.Types;
  * <p>Extends the abstract JDBC store with Postgres-specific optimizations:
  * <ul>
  *   <li>JSONB parameters via {@link PGobject} for native type handling.</li>
- *   <li>{@code FOR UPDATE SKIP LOCKED} for concurrent timer polling.</li>
+ *   <li>{@code FOR UPDATE SKIP LOCKED} for concurrent timer polling and for
+ *       the retention purge's candidate rows.</li>
  * </ul>
  *
  * <p>Flyway migrations for the schema are in
@@ -84,6 +85,26 @@ public final class PostgresWorkflowStore extends AbstractJdbcWorkflowStore {
     @Override
     protected String fenceRowLockClause() {
         return " FOR SHARE";
+    }
+
+    /**
+     * Returns the retention purge's candidate select with Postgres
+     * {@code FOR UPDATE SKIP LOCKED}.
+     *
+     * <p>The selected instance rows stay locked for the batch's transaction,
+     * so a concurrent retry (which updates the row) blocks until the purge
+     * commits — and then finds nothing to retry — rather than slipping between
+     * the select and the delete; and a row another transaction already holds
+     * (a retry in flight, or another sweeper's batch) is skipped rather than
+     * waited on.
+     */
+    @Override
+    protected String getPurgeCandidatesSql() {
+        return "SELECT id FROM " + tableName("workflow_instance")
+                + " WHERE status = ? AND completed_at < ?"
+                + " ORDER BY completed_at ASC"
+                + " LIMIT ?"
+                + " FOR UPDATE SKIP LOCKED";
     }
 
     /**

@@ -13,6 +13,7 @@ import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.spi.RunLease;
+import io.b2mash.maestro.core.spi.PurgeResult;
 import io.b2mash.maestro.core.spi.TerminalWrites;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
@@ -475,6 +476,73 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
                     && purgeable.contains(s.workflowInstanceId()));
             return before - signals.size();
         }
+    }
+
+    // ── Retention ────────────────────────────────────────────────────────
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Performed under the signal and timer locks, and each candidate's own
+     * per-workflow lock: the candidate's status and {@code completedAt} are
+     * re-checked under that lock immediately before it is removed, so a
+     * concurrent retry (which writes under the same lock) can never leave a
+     * now-active workflow with its history gone. Where the JDBC store rolls
+     * the whole batch back on that race, this store simply skips the one
+     * instance that stopped qualifying — the same guarantee, without a
+     * transaction to roll back.
+     */
+    @Override
+    public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
+        if (!status.isTerminal()) {
+            throw new IllegalArgumentException("Only terminal statuses can be purged, got " + status);
+        }
+        if (batchSize < 1) {
+            throw new IllegalArgumentException("batchSize must be at least 1, got " + batchSize);
+        }
+        synchronized (signalLock) {
+            synchronized (timerLock) {
+                var candidates = instances.values().stream()
+                        .filter(i -> qualifies(i, status, cutoff))
+                        .sorted(Comparator.comparing(WorkflowInstance::completedAt))
+                        .limit(batchSize)
+                        .toList();
+                int removedInstances = 0;
+                int removedEvents = 0;
+                int removedSignals = 0;
+                int removedTimers = 0;
+                for (var candidate : candidates) {
+                    var lock = instanceLocks.get(candidate.workflowId());
+                    if (lock == null) {
+                        continue; // removed concurrently
+                    }
+                    synchronized (lock) {
+                        var current = instances.get(candidate.workflowId());
+                        if (current == null || !qualifies(current, status, cutoff)) {
+                            continue; // retried (or purged) since the candidate select
+                        }
+                        var id = current.id();
+                        var instanceEvents = events.remove(id);
+                        removedEvents += instanceEvents == null ? 0 : instanceEvents.size();
+                        int signalsBefore = signals.size();
+                        signals.removeIf(s -> id.equals(s.workflowInstanceId()));
+                        removedSignals += signalsBefore - signals.size();
+                        int timersBefore = timers.size();
+                        timers.removeIf(t -> id.equals(t.workflowInstanceId()));
+                        removedTimers += timersBefore - timers.size();
+                        instances.remove(current.workflowId());
+                        instanceLocks.remove(current.workflowId());
+                        removedInstances++;
+                    }
+                }
+                return new PurgeResult(removedInstances, removedEvents, removedSignals, removedTimers);
+            }
+        }
+    }
+
+    private static boolean qualifies(WorkflowInstance instance, WorkflowStatus status, Instant cutoff) {
+        var completedAt = instance.completedAt();
+        return instance.status() == status && completedAt != null && completedAt.isBefore(cutoff);
     }
 
     // ── Timer operations ─────────────────────────────────────────────────

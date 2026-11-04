@@ -13,6 +13,7 @@ import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.spi.RunLease;
+import io.b2mash.maestro.core.spi.PurgeResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -739,6 +740,156 @@ class InMemoryWorkflowStoreTest {
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────
+
+    // ── Retention purge ──────────────────────────────────────────────────
+
+    /**
+     * {@link InMemoryWorkflowStore#purgeTerminalInstancesBefore}: one instance
+     * per {@link WorkflowStatus}, each finished 10 days ago with two events, a
+     * PENDING and a FIRED timer, and a consumed and an unconsumed signal; a
+     * COMPLETED instance finished 1 day ago; one finished exactly at the
+     * cutoff; one with no {@code completedAt}; and an orphan signal addressed
+     * to the old COMPLETED instance's workflow ID. The cutoff is 7 days ago.
+     */
+    @Nested
+    class RetentionPurgeTests {
+
+        private final Instant now = Instant.now();
+        private final Instant cutoff = now.minus(Duration.ofDays(7));
+        private final String recentCompletedId = "wf-recent-completed";
+        private final String atCutoffId = "wf-at-cutoff";
+        private final String neverStampedId = "wf-never-stamped";
+
+        @BeforeEach
+        void fixture() {
+            for (var status : WorkflowStatus.values()) {
+                attachHistory(store.createInstance(buildInstance(idFor(status), status).toBuilder()
+                        .completedAt(now.minus(Duration.ofDays(10)))
+                        .build()));
+            }
+            attachHistory(store.createInstance(buildInstance(recentCompletedId, WorkflowStatus.COMPLETED).toBuilder()
+                    .completedAt(now.minus(Duration.ofDays(1)))
+                    .build()));
+            attachHistory(store.createInstance(buildInstance(atCutoffId, WorkflowStatus.COMPLETED).toBuilder()
+                    .completedAt(cutoff)
+                    .build()));
+            attachHistory(store.createInstance(buildInstance(neverStampedId, WorkflowStatus.COMPLETED)));
+            store.saveSignal(signal(idFor(WorkflowStatus.COMPLETED), null, false));
+        }
+
+        private void attachHistory(WorkflowInstance instance) {
+            store.appendEvent(event(instance.id(), 1, EventType.ACTIVITY_COMPLETED));
+            store.appendEvent(event(instance.id(), 2, EventType.WORKFLOW_COMPLETED));
+            store.saveTimer(timer(instance, TimerStatus.PENDING));
+            store.saveTimer(timer(instance, TimerStatus.FIRED));
+            store.saveSignal(signal(instance.workflowId(), instance.id(), false));
+            store.saveSignal(signal(instance.workflowId(), instance.id(), true));
+        }
+
+        @Test
+        void purgeCompleted_removesInstanceAndChildren_leavesEverythingElse() {
+            var old = store.getInstance(idFor(WorkflowStatus.COMPLETED)).orElseThrow();
+
+            var result = store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, cutoff, 500);
+
+            assertEquals(new PurgeResult(1, 2, 2, 2), result);
+            assertTrue(store.getInstance(old.workflowId()).isEmpty());
+            assertTrue(store.getEvents(old.id()).isEmpty());
+            assertEquals(0, store.getAllSignals().stream().filter(s -> old.id().equals(s.workflowInstanceId())).count());
+            assertEquals(0, store.getAllTimers().stream().filter(t -> old.id().equals(t.workflowInstanceId())).count());
+
+            for (var status : WorkflowStatus.values()) {
+                if (status != WorkflowStatus.COMPLETED) {
+                    assertIntact(idFor(status));
+                }
+            }
+            assertIntact(recentCompletedId);
+            assertIntact(atCutoffId);
+            assertIntact(neverStampedId);
+            assertEquals(1, store.getAllSignals().stream()
+                    .filter(s -> s.workflowInstanceId() == null && s.workflowId().equals(old.workflowId()))
+                    .count(), "the orphan survives for a future instance");
+        }
+
+        @Test
+        void purgeTerminated_andFailed_eachRemoveOnlyTheirOwn() {
+            assertEquals(new PurgeResult(1, 2, 2, 2),
+                    store.purgeTerminalInstancesBefore(WorkflowStatus.TERMINATED, cutoff, 500));
+            assertIntact(idFor(WorkflowStatus.COMPLETED));
+            assertIntact(idFor(WorkflowStatus.FAILED));
+
+            assertEquals(new PurgeResult(1, 2, 2, 2),
+                    store.purgeTerminalInstancesBefore(WorkflowStatus.FAILED, cutoff, 500));
+            assertIntact(idFor(WorkflowStatus.COMPLETED));
+            assertTrue(store.getInstance(idFor(WorkflowStatus.FAILED)).isEmpty());
+        }
+
+        @Test
+        void purge_isIdempotent() {
+            store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, cutoff, 500);
+            assertEquals(PurgeResult.EMPTY, store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, cutoff, 500));
+        }
+
+        @Test
+        void purge_batchesOldestFirst() {
+            store.clear();
+            for (int i = 0; i < 5; i++) {
+                attachHistory(store.createInstance(buildInstance("wf-old-" + i, WorkflowStatus.COMPLETED).toBuilder()
+                        .completedAt(now.minus(Duration.ofDays(30 - i)))
+                        .build()));
+            }
+            assertEquals(2, store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, cutoff, 2).instances());
+            assertTrue(store.getInstance("wf-old-0").isEmpty() && store.getInstance("wf-old-1").isEmpty());
+            assertTrue(store.getInstance("wf-old-2").isPresent());
+            assertEquals(2, store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, cutoff, 2).instances());
+            assertEquals(new PurgeResult(1, 2, 2, 2), store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, cutoff, 2));
+            assertEquals(PurgeResult.EMPTY, store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, cutoff, 2));
+        }
+
+        @Test
+        void purge_rejectsBadArguments() {
+            assertThrows(IllegalArgumentException.class,
+                    () -> store.purgeTerminalInstancesBefore(WorkflowStatus.RUNNING, cutoff, 10));
+            assertThrows(IllegalArgumentException.class,
+                    () -> store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, cutoff, 0));
+        }
+
+        @Test
+        void purge_freesTheWorkflowIdForReuse() {
+            var old = store.getInstance(idFor(WorkflowStatus.COMPLETED)).orElseThrow();
+            store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, cutoff, 500);
+
+            var fresh = store.createInstance(buildInstance(old.workflowId()));
+            store.adoptOrphanedSignals(fresh.workflowId(), fresh.id());
+            assertEquals(1, store.getUnconsumedSignals(fresh.workflowId(), "s").size(),
+                    "the surviving orphan is adopted by the new instance");
+            store.updateInstance(fresh.toBuilder().status(WorkflowStatus.COMPLETED).version(1).build());
+        }
+
+        private void assertIntact(String workflowId) {
+            var instance = store.getInstance(workflowId);
+            assertTrue(instance.isPresent(), workflowId + " must still exist");
+            var id = instance.get().id();
+            assertEquals(2, store.getEvents(id).size(), workflowId + " events");
+            assertEquals(2, store.getAllSignals().stream().filter(s -> id.equals(s.workflowInstanceId())).count(),
+                    workflowId + " signals");
+            assertEquals(2, store.getAllTimers().stream().filter(t -> id.equals(t.workflowInstanceId())).count(),
+                    workflowId + " timers");
+        }
+
+        private static String idFor(WorkflowStatus status) {
+            return "wf-" + status.name().toLowerCase();
+        }
+
+        private static WorkflowSignal signal(String workflowId, UUID instanceId, boolean consumed) {
+            return new WorkflowSignal(UUID.randomUUID(), instanceId, workflowId, "s", null, consumed, Instant.now());
+        }
+
+        private static WorkflowTimer timer(WorkflowInstance instance, TimerStatus status) {
+            return new WorkflowTimer(UUID.randomUUID(), instance.id(), instance.workflowId(),
+                    "timer-" + UUID.randomUUID().toString().substring(0, 8), Instant.now(), status, Instant.now());
+        }
+    }
 
     private static WorkflowInstance buildInstance(String workflowId) {
         return buildInstance(workflowId, WorkflowStatus.RUNNING);
