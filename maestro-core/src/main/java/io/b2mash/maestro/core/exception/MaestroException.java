@@ -47,6 +47,7 @@ public sealed class MaestroException extends RuntimeException
                 SequenceSpaceExhaustedException,
                 BranchSequenceExhaustedException,
                 StaleRunException,
+                FencedWriteException,
                 WorkflowInstantiationException {
 
     /**

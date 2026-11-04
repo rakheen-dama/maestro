@@ -54,6 +54,7 @@ public final class WorkflowInstance {
     private final @Nullable Instant completedAt;
     private final Instant updatedAt;
     private final int version;
+    private final long leaseEpoch;
 
     private WorkflowInstance(Builder builder) {
         this.id = Objects.requireNonNull(builder.id, "id");
@@ -70,6 +71,7 @@ public final class WorkflowInstance {
         this.completedAt = builder.completedAt;
         this.updatedAt = Objects.requireNonNull(builder.updatedAt, "updatedAt");
         this.version = builder.version;
+        this.leaseEpoch = builder.leaseEpoch;
     }
 
     /** Returns a new builder for constructing a {@code WorkflowInstance}. */
@@ -96,7 +98,8 @@ public final class WorkflowInstance {
                 .startedAt(startedAt)
                 .completedAt(completedAt)
                 .updatedAt(updatedAt)
-                .version(version);
+                .version(version)
+                .leaseEpoch(leaseEpoch);
     }
 
     /** Primary key (UUID). */
@@ -141,6 +144,19 @@ public final class WorkflowInstance {
     /** Optimistic lock version. Incremented on every store update. */
     public int version() { return version; }
 
+    /**
+     * Lease epoch: how many times this instance has been adopted by a run
+     * since it started. {@code 0} for a fresh start; bumped by one, under the
+     * {@link #version()} compare-and-set, each time a node adopts the instance
+     * (recovery resume, manual retry's relaunch). A run carries the epoch it
+     * adopted at as its {@link io.b2mash.maestro.core.spi.RunLease}, and the
+     * store rejects every run-scoped write whose lease epoch no longer equals
+     * this value — the fence that stops a node that lost its instance lock from
+     * persisting progress (Issue 11). Writers other than the adopting run
+     * ({@code terminateWorkflow}, retry) rewrite the epoch they read.
+     */
+    public long leaseEpoch() { return leaseEpoch; }
+
     @Override
     public boolean equals(@Nullable Object o) {
         if (this == o) return true;
@@ -166,7 +182,8 @@ public final class WorkflowInstance {
      * {@code workflowType}, {@code taskQueue}, {@code status},
      * {@code serviceName}, {@code startedAt}, {@code updatedAt}.
      *
-     * <p>Defaults: {@code eventSequence = 0}, {@code version = 0}.
+     * <p>Defaults: {@code eventSequence = 0}, {@code version = 0},
+     * {@code leaseEpoch = 0}.
      */
     @JsonPOJOBuilder(withPrefix = "")
     public static final class Builder {
@@ -185,6 +202,7 @@ public final class WorkflowInstance {
         private @Nullable Instant completedAt;
         private @Nullable Instant updatedAt;
         private int version;
+        private long leaseEpoch;
 
         private Builder() {}
 
@@ -229,6 +247,9 @@ public final class WorkflowInstance {
 
         /** Sets the optimistic lock version. Defaults to {@code 0}. */
         public Builder version(int version) { this.version = version; return this; }
+
+        /** Sets the lease epoch (see {@link WorkflowInstance#leaseEpoch()}). Defaults to {@code 0}. */
+        public Builder leaseEpoch(long leaseEpoch) { this.leaseEpoch = leaseEpoch; return this; }
 
         /**
          * Builds a new {@link WorkflowInstance}.

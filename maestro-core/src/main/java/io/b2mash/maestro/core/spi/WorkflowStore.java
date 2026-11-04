@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.spi;
 
 import io.b2mash.maestro.core.exception.DuplicateEventException;
+import io.b2mash.maestro.core.exception.FencedWriteException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowNotFoundException;
@@ -34,6 +35,34 @@ import java.util.UUID;
  *   <li>Methods that return lists must never return {@code null} — return an
  *       empty list instead.</li>
  * </ul>
+ *
+ * <h2>Lease fencing</h2>
+ * <p>Every write a <em>running workflow's own thread</em> makes has a fenced
+ * overload taking a {@link RunLease}: {@link #appendEvent(WorkflowEvent, RunLease)},
+ * {@link #completeInstance(WorkflowInstance, WorkflowEvent, RunLease)},
+ * {@link #updateInstance(WorkflowInstance, RunLease)},
+ * {@link #saveTimer(WorkflowTimer, RunLease)},
+ * {@link #markSignalConsumed(UUID, RunLease)}, {@link #markTimerFired(UUID, RunLease)}
+ * and {@link #markTimerCancelled(UUID, RunLease)}. A fenced write is applied if
+ * and only if the instance row's {@link WorkflowInstance#leaseEpoch()} still
+ * equals the lease's epoch — atomically with the write itself, so a concurrent
+ * adoption bump cannot slip between the check and the write. The four "loud"
+ * overloads reject a stale lease with {@link FencedWriteException} and write
+ * nothing; the three CAS flips report it silently by returning {@code false},
+ * because each follows a loud fenced append in the same step. This is what
+ * makes an instance lock that expired, was lost or was never configured
+ * unable to let a stale node persist progress (Issue 11).
+ *
+ * <p>The unfenced forms stay for writes that are <em>not</em> a run's own:
+ * {@link #createInstance} (no lease exists yet), {@link #saveSignal} and
+ * {@link #adoptOrphanedSignals} (signal ingestion from any node), the timer
+ * leader's {@link #markTimerFired(UUID)}, an operator's terminate and retry
+ * ({@code updateInstance}, {@code deleteFailureEvents}), and the adoption bump
+ * itself — all of which are arbitrated by the version compare-and-set or are
+ * idempotent. The fenced overloads are {@code default} methods that delegate to
+ * the unfenced forms: <b>a store that does not override them is unfenced</b>
+ * and gives only the unique-index guarantee the engine always had. The shipped
+ * JDBC store and the in-memory test store override all seven.
  *
  * <h2>Thread Safety</h2>
  * <p>Implementations must be thread-safe. Multiple virtual threads may call
@@ -102,6 +131,32 @@ public interface WorkflowStore {
     void updateInstance(WorkflowInstance instance);
 
     /**
+     * {@link #updateInstance(WorkflowInstance)} fenced on the writer's lease:
+     * the row is written if and only if its stored version equals
+     * {@code instance.version() - 1} <em>and</em> its stored
+     * {@code lease_epoch} equals {@code lease.epoch()}, both checked in the
+     * one compare-and-set. A stale lease throws {@link FencedWriteException}
+     * and writes nothing; a bare version mismatch is reported exactly as the
+     * unfenced form reports it. The instance being written must carry the
+     * lease's epoch unchanged ({@code instance.leaseEpoch() == lease.epoch()}).
+     *
+     * <p>Used for the status moves a running workflow makes as it parks and
+     * wakes, and for the transition to {@code COMPENSATING}. The default
+     * delegates to the unfenced form — see the class Javadoc.
+     *
+     * @param instance the fully-built updated instance (version already incremented)
+     * @param lease    the writing run's lease
+     * @throws FencedWriteException      if the stored lease epoch differs from
+     *                                   {@code lease.epoch()} (nothing was written)
+     * @throws WorkflowNotFoundException if the workflow does not exist
+     * @throws OptimisticLockException   if the stored version does not match
+     *                                   {@code instance.version() - 1}
+     */
+    default void updateInstance(WorkflowInstance instance, RunLease lease) {
+        updateInstance(instance);
+    }
+
+    /**
      * Atomically finalises a workflow instance: writes its terminal status and
      * appends its terminal event as <b>one</b> all-or-nothing operation.
      *
@@ -164,6 +219,31 @@ public interface WorkflowStore {
      */
     boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent);
 
+    /**
+     * {@link #completeInstance(WorkflowInstance, WorkflowEvent)} fenced on the
+     * writer's lease: the terminal status and event are written, together,
+     * only if the stored version equals {@code terminal.version() - 1}
+     * <em>and</em> the stored {@code lease_epoch} equals {@code lease.epoch()}.
+     * A stale lease throws {@link FencedWriteException} and writes nothing;
+     * a bare version mismatch returns {@code false} exactly as the unfenced
+     * form does. The default delegates to the unfenced form — see the class
+     * Javadoc.
+     *
+     * @param terminal      as for the unfenced form
+     * @param terminalEvent as for the unfenced form
+     * @param lease         the finalising run's lease
+     * @return {@code true} if both were written; {@code false} on a version
+     *         mismatch with a current lease (nothing was written)
+     * @throws FencedWriteException      if the stored lease epoch differs from
+     *                                   {@code lease.epoch()} (nothing was written)
+     * @throws WorkflowNotFoundException as for the unfenced form
+     * @throws DuplicateEventException   as for the unfenced form
+     * @throws IllegalArgumentException  as for the unfenced form
+     */
+    default boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent, RunLease lease) {
+        return completeInstance(terminal, terminalEvent);
+    }
+
     // ── Event operations ─────────────────────────────────────────────────
 
     /**
@@ -179,6 +259,31 @@ public interface WorkflowStore {
      *         and sequence number already exists
      */
     void appendEvent(WorkflowEvent event);
+
+    /**
+     * {@link #appendEvent(WorkflowEvent)} fenced on the writer's lease: the
+     * event is inserted if and only if the instance row of
+     * {@code lease.instanceId()} currently carries {@code lease.epoch()},
+     * checked atomically with the insert (a relational store does this with
+     * one {@code INSERT ... SELECT ... FROM instance WHERE id = ? AND
+     * lease_epoch = ?}, holding a share lock on the row so a concurrent
+     * adoption bump orders strictly before or after it). A stale lease throws
+     * {@link FencedWriteException} and writes nothing. The
+     * {@code (workflow_instance_id, sequence_number)} uniqueness check applies
+     * as for the unfenced form; a collision under a current lease is still a
+     * {@link DuplicateEventException}. The default delegates to the unfenced
+     * form — see the class Javadoc.
+     *
+     * @param event the event to append; {@code event.workflowInstanceId()}
+     *              must equal {@code lease.instanceId()}
+     * @param lease the appending run's lease
+     * @throws FencedWriteException    if the stored lease epoch differs from
+     *                                 {@code lease.epoch()} (nothing was written)
+     * @throws DuplicateEventException as for the unfenced form
+     */
+    default void appendEvent(WorkflowEvent event, RunLease lease) {
+        appendEvent(event);
+    }
 
     /**
      * Retrieves a specific event by workflow instance ID and sequence number.
@@ -340,6 +445,25 @@ public interface WorkflowStore {
     boolean markSignalConsumed(UUID signalId);
 
     /**
+     * {@link #markSignalConsumed(UUID)} fenced on the consuming run's lease:
+     * the flip is applied only while the instance row of
+     * {@code lease.instanceId()} carries {@code lease.epoch()}. A stale lease
+     * is reported <em>silently</em> — {@code false}, nothing written —
+     * because the engine calls this right after the loud fenced append of the
+     * {@code SIGNAL_RECEIVED} memo in the same step, which has already stood
+     * the run down. The default delegates to the unfenced form — see the
+     * class Javadoc.
+     *
+     * @param signalId the signal UUID to mark as consumed
+     * @param lease    the consuming run's lease
+     * @return {@code true} if the transition was applied; {@code false} if the
+     *         signal was already consumed <em>or</em> the lease is stale
+     */
+    default boolean markSignalConsumed(UUID signalId, RunLease lease) {
+        return markSignalConsumed(signalId);
+    }
+
+    /**
      * Adopts orphaned signals by setting their {@code workflowInstanceId}.
      *
      * <p>Orphaned signals are those persisted with a {@code null}
@@ -403,6 +527,25 @@ public interface WorkflowStore {
     void saveTimer(WorkflowTimer timer);
 
     /**
+     * {@link #saveTimer(WorkflowTimer)} fenced on the arming run's lease: the
+     * row is inserted if and only if the instance row of
+     * {@code lease.instanceId()} currently carries {@code lease.epoch()},
+     * checked atomically with the insert. A stale lease throws
+     * {@link FencedWriteException} and writes nothing — a fenced node must
+     * not arm a deadline that later fires on the adopting node's workflow. The
+     * default delegates to the unfenced form — see the class Javadoc.
+     *
+     * @param timer the timer to persist; {@code timer.workflowInstanceId()}
+     *              must equal {@code lease.instanceId()}
+     * @param lease the arming run's lease
+     * @throws FencedWriteException if the stored lease epoch differs from
+     *                              {@code lease.epoch()} (nothing was written)
+     */
+    default void saveTimer(WorkflowTimer timer, RunLease lease) {
+        saveTimer(timer);
+    }
+
+    /**
      * Retrieves timers that are due to fire.
      *
      * <p>Returns timers where {@code fireAt <= now} and {@code status = PENDING}.
@@ -458,6 +601,25 @@ public interface WorkflowStore {
     boolean markTimerFired(UUID timerId);
 
     /**
+     * {@link #markTimerFired(UUID)} fenced on the run's lease — the form a
+     * workflow's own thread uses when it self-fires a deadline it has decided
+     * has elapsed. The flip is applied only while the instance row of
+     * {@code lease.instanceId()} carries {@code lease.epoch()}; a stale lease
+     * is reported silently as {@code false}, nothing written. The timer
+     * <em>leader</em> keeps using the unfenced form: it fires on behalf of
+     * whichever run owns the workflow, so no single lease applies. The
+     * default delegates to the unfenced form — see the class Javadoc.
+     *
+     * @param timerId the timer UUID to mark as fired
+     * @param lease   the firing run's lease
+     * @return {@code true} if the transition was applied; {@code false} if the
+     *         timer was already terminal <em>or</em> the lease is stale
+     */
+    default boolean markTimerFired(UUID timerId, RunLease lease) {
+        return markTimerFired(timerId);
+    }
+
+    /**
      * Marks a timer as cancelled (atomic compare-and-set: PENDING → CANCELLED).
      *
      * <p>Only transitions timers in {@code PENDING} status. If the timer is
@@ -474,4 +636,21 @@ public interface WorkflowStore {
      *         {@code false} if the timer was already in a terminal state
      */
     boolean markTimerCancelled(UUID timerId);
+
+    /**
+     * {@link #markTimerCancelled(UUID)} fenced on the run's lease: the flip is
+     * applied only while the instance row of {@code lease.instanceId()}
+     * carries {@code lease.epoch()}; a stale lease is reported silently as
+     * {@code false}, nothing written (the engine cancels a deadline row right
+     * after the loud fenced append of the outcome that made it moot). The
+     * default delegates to the unfenced form — see the class Javadoc.
+     *
+     * @param timerId the timer UUID to cancel
+     * @param lease   the cancelling run's lease
+     * @return {@code true} if the transition was applied; {@code false} if the
+     *         timer was already terminal <em>or</em> the lease is stale
+     */
+    default boolean markTimerCancelled(UUID timerId, RunLease lease) {
+        return markTimerCancelled(timerId);
+    }
 }
