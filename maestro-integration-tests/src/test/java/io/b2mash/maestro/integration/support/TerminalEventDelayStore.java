@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.spi.RunLease;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 
 import java.time.Duration;
@@ -72,16 +73,57 @@ public final class TerminalEventDelayStore implements WorkflowStore {
 
     @Override
     public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+        holdTerminalWrite();
+        return delegate.completeInstance(terminal, terminalEvent);
+    }
+
+    /** The engine's actual terminal write is the fenced form; it is held the same way. */
+    @Override
+    public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent, RunLease lease) {
+        holdTerminalWrite();
+        return delegate.completeInstance(terminal, terminalEvent, lease);
+    }
+
+    private void holdTerminalWrite() {
         delayedCompletions.incrementAndGet();
         try {
             Thread.sleep(delay);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-        return delegate.completeInstance(terminal, terminalEvent);
     }
 
     // ── straight delegation ───────────────────────────────────────────────
+
+    @Override
+    public void appendEvent(WorkflowEvent event, RunLease lease) {
+        delegate.appendEvent(event, lease);
+    }
+
+    @Override
+    public void updateInstance(WorkflowInstance instance, RunLease lease) {
+        delegate.updateInstance(instance, lease);
+    }
+
+    @Override
+    public void saveTimer(WorkflowTimer timer, RunLease lease) {
+        delegate.saveTimer(timer, lease);
+    }
+
+    @Override
+    public boolean markSignalConsumed(UUID signalId, RunLease lease) {
+        return delegate.markSignalConsumed(signalId, lease);
+    }
+
+    @Override
+    public boolean markTimerFired(UUID timerId, RunLease lease) {
+        return delegate.markTimerFired(timerId, lease);
+    }
+
+    @Override
+    public boolean markTimerCancelled(UUID timerId, RunLease lease) {
+        return delegate.markTimerCancelled(timerId, lease);
+    }
 
     @Override
     public WorkflowInstance createInstance(WorkflowInstance instance) {

@@ -98,7 +98,7 @@ class MaestroMigrationsCoexistIT {
 
         new MaestroSchemaInitializer(ds, SchemaMode.FLYWAY, getClass().getClassLoader()).initialize();
 
-        assertEquals(List.of("1", "2", "3", "4", "5", "100"),
+        assertEquals(List.of("1", "2", "3", "4", "5", "6", "100"),
                 versions(MaestroSchemaInitializer.HISTORY_TABLE));
         assertEquals(List.of("1"), versions("flyway_schema_history"),
                 "Maestro wrote nothing into the host's history");
@@ -227,7 +227,7 @@ class MaestroMigrationsCoexistIT {
         // Step 4.
         Flyway.configure().dataSource(ds).locations("filesystem:" + hostMigrations).load().migrate();
         new MaestroSchemaInitializer(ds, SchemaMode.FLYWAY, getClass().getClassLoader()).initialize();
-        assertEquals(List.of("1", "2", "3", "4", "5", "100"),
+        assertEquals(List.of("1", "2", "3", "4", "5", "6", "100"),
                 versions(MaestroSchemaInitializer.HISTORY_TABLE));
         new PostgresWorkflowStore(ds, JsonMapper.builder().build()).saveSignal(preDeliverySignal());
     }

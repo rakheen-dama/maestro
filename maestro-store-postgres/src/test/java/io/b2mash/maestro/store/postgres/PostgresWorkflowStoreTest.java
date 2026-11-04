@@ -1,6 +1,7 @@
 package io.b2mash.maestro.store.postgres;
 
 import io.b2mash.maestro.core.exception.DuplicateEventException;
+import io.b2mash.maestro.core.exception.FencedWriteException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowNotFoundException;
@@ -11,6 +12,7 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.spi.RunLease;
 import tools.jackson.databind.JsonNode;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -1385,6 +1387,207 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
                     connA.rollback();
                 }
             }
+        }
+    }
+
+    // ── Lease fencing (Issue 11) ──────────────────────────────────────────
+
+    /**
+     * Pins the fenced {@link io.b2mash.maestro.core.spi.WorkflowStore}
+     * overloads against the real SQL: a write under a lease whose epoch the
+     * instance row has moved past is rejected — loudly for the four writes
+     * that carry progress, silently for the three CAS flips — and writes
+     * nothing; a write under the current epoch behaves exactly as the unfenced
+     * form; the unfenced forms are untouched by an epoch bump.
+     */
+    @Nested
+    @DisplayName("Lease fencing")
+    class LeaseFencingTests {
+
+        private WorkflowInstance instance;
+        private RunLease stale;
+        private RunLease current;
+
+        @BeforeEach
+        void adoptOnce() {
+            instance = store.createInstance(newInstance("wf-fence"));
+            assertEquals(0, store.getInstance("wf-fence").orElseThrow().leaseEpoch(),
+                    "a fresh start is epoch 0");
+            stale = new RunLease(instance.id(), 0);
+            // The adoption bump: version CAS, epoch + 1 — exactly what
+            // WorkflowExecutor.launchWorkflow does when it resumes an instance.
+            instance = instance.toBuilder()
+                    .leaseEpoch(instance.leaseEpoch() + 1)
+                    .version(instance.version() + 1)
+                    .build();
+            store.updateInstance(instance);
+            current = new RunLease(instance.id(), 1);
+        }
+
+        @Test
+        @DisplayName("lease_epoch round-trips through updateInstance and mapInstance")
+        void leaseEpochRoundTrips() {
+            var stored = store.getInstance("wf-fence").orElseThrow();
+            assertEquals(1, stored.leaseEpoch());
+            assertEquals(1, stored.version());
+            assertEquals(1, store.getRecoverableInstances().getFirst().leaseEpoch());
+        }
+
+        @Test
+        @DisplayName("appendEvent under a stale lease throws FencedWriteException and writes nothing")
+        void staleAppendIsFenced() {
+            var e = assertThrows(FencedWriteException.class,
+                    () -> store.appendEvent(newEvent(instance.id(), 1, EventType.ACTIVITY_COMPLETED), stale));
+            assertEquals(instance.id(), e.instanceId());
+            assertEquals(0, e.leaseEpoch());
+            assertEquals("appendEvent", e.operation());
+            assertTrue(store.getEvents(instance.id()).isEmpty(), "nothing written");
+        }
+
+        @Test
+        @DisplayName("appendEvent under the current lease writes — including a null payload and step name")
+        void currentAppendWrites() {
+            store.appendEvent(newEvent(instance.id(), 1, EventType.ACTIVITY_COMPLETED), current);
+            store.appendEvent(new WorkflowEvent(UUID.randomUUID(), instance.id(), 2,
+                    EventType.WORKFLOW_COMPLETED, null, null, Instant.now()), current);
+            var events = store.getEvents(instance.id());
+            assertEquals(List.of(1, 2), events.stream().map(WorkflowEvent::sequenceNumber).toList());
+            assertNull(events.get(1).payload());
+            assertNull(events.get(1).stepName());
+            assertEquals("step-1", events.get(0).stepName());
+        }
+
+        @Test
+        @DisplayName("a collision under the current lease is still a DuplicateEventException")
+        void currentAppendCollisionIsDuplicate() {
+            store.appendEvent(newEvent(instance.id(), 1, EventType.ACTIVITY_COMPLETED), current);
+            assertThrows(DuplicateEventException.class,
+                    () -> store.appendEvent(newEvent(instance.id(), 1, EventType.ACTIVITY_COMPLETED), current));
+            assertEquals(1, store.getEvents(instance.id()).size());
+        }
+
+        @Test
+        @DisplayName("saveTimer under a stale lease throws and writes no row; under the current lease it writes")
+        void saveTimerIsFenced() {
+            var staleTimer = newTimer(instance.id(), "wf-fence", Instant.now().plusSeconds(60), TimerStatus.PENDING);
+            var e = assertThrows(FencedWriteException.class, () -> store.saveTimer(staleTimer, stale));
+            assertEquals("saveTimer", e.operation());
+            assertTrue(store.findTimer(instance.id(), staleTimer.timerId()).isEmpty(), "nothing written");
+
+            var liveTimer = newTimer(instance.id(), "wf-fence", Instant.now().plusSeconds(60), TimerStatus.PENDING);
+            store.saveTimer(liveTimer, current);
+            assertEquals(liveTimer.id(), store.findTimer(instance.id(), liveTimer.timerId()).orElseThrow().id());
+        }
+
+        @Test
+        @DisplayName("updateInstance under a stale lease throws and leaves the row untouched")
+        void staleUpdateIsFenced() {
+            var write = instance.toBuilder()
+                    .status(WorkflowStatus.WAITING_SIGNAL)
+                    .leaseEpoch(0)
+                    .version(instance.version() + 1)
+                    .build();
+            var e = assertThrows(FencedWriteException.class, () -> store.updateInstance(write, stale));
+            assertEquals("updateInstance", e.operation());
+            var stored = store.getInstance("wf-fence").orElseThrow();
+            assertEquals(WorkflowStatus.RUNNING, stored.status());
+            assertEquals(1, stored.version());
+            assertEquals(1, stored.leaseEpoch());
+        }
+
+        @Test
+        @DisplayName("updateInstance under the current lease writes; a version conflict is still an OptimisticLockException")
+        void currentUpdateWritesAndKeepsVersionSemantics() {
+            var parked = instance.toBuilder()
+                    .status(WorkflowStatus.WAITING_SIGNAL)
+                    .version(instance.version() + 1)
+                    .build();
+            store.updateInstance(parked, current);
+            assertEquals(WorkflowStatus.WAITING_SIGNAL, store.getInstance("wf-fence").orElseThrow().status());
+
+            // Same expected previous version again: the stored row has moved on.
+            assertThrows(OptimisticLockException.class, () -> store.updateInstance(parked, current));
+            assertThrows(WorkflowNotFoundException.class, () -> store.updateInstance(
+                    newInstance("wf-missing").toBuilder().version(1).build(),
+                    new RunLease(UUID.randomUUID(), 0)));
+        }
+
+        @Test
+        @DisplayName("completeInstance under a stale lease throws and writes neither the status nor the event")
+        void staleCompleteIsFenced() {
+            var terminal = instance.toBuilder()
+                    .status(WorkflowStatus.COMPLETED)
+                    .completedAt(Instant.now())
+                    .leaseEpoch(0)
+                    .version(instance.version() + 1)
+                    .build();
+            var event = newEvent(instance.id(), 1, EventType.WORKFLOW_COMPLETED);
+            var e = assertThrows(FencedWriteException.class, () -> store.completeInstance(terminal, event, stale));
+            assertEquals("completeInstance", e.operation());
+            assertEquals(WorkflowStatus.RUNNING, store.getInstance("wf-fence").orElseThrow().status());
+            assertTrue(store.getEvents(instance.id()).isEmpty());
+        }
+
+        @Test
+        @DisplayName("completeInstance under the current lease writes both; a version mismatch still returns false")
+        void currentCompleteWritesAndKeepsCasSemantics() {
+            var terminal = instance.toBuilder()
+                    .status(WorkflowStatus.COMPLETED)
+                    .completedAt(Instant.now())
+                    .version(instance.version() + 1)
+                    .build();
+            assertTrue(store.completeInstance(terminal, newEvent(instance.id(), 1, EventType.WORKFLOW_COMPLETED), current));
+            assertEquals(WorkflowStatus.COMPLETED, store.getInstance("wf-fence").orElseThrow().status());
+            assertEquals(1, store.getEvents(instance.id()).size());
+
+            // Stale version, current epoch: the ordinary converge-loser outcome.
+            assertFalse(store.completeInstance(terminal, newEvent(instance.id(), 2, EventType.WORKFLOW_COMPLETED), current));
+            assertEquals(1, store.getEvents(instance.id()).size(), "the loser wrote nothing");
+        }
+
+        @Test
+        @DisplayName("markSignalConsumed under a stale lease returns false and leaves the signal unconsumed")
+        void markSignalConsumedIsFenced() {
+            var signal = newSignal("wf-fence", instance.id(), "go");
+            store.saveSignal(signal);
+            assertFalse(store.markSignalConsumed(signal.id(), stale));
+            assertEquals(1, store.getUnconsumedSignals("wf-fence", "go").size(), "still unconsumed");
+            assertTrue(store.markSignalConsumed(signal.id(), current));
+            assertTrue(store.getUnconsumedSignals("wf-fence", "go").isEmpty());
+        }
+
+        @Test
+        @DisplayName("markTimerFired / markTimerCancelled under a stale lease return false and leave the row PENDING")
+        void timerFlipsAreFenced() {
+            var fire = newTimer(instance.id(), "wf-fence", Instant.now(), TimerStatus.PENDING);
+            var cancel = newTimer(instance.id(), "wf-fence", Instant.now(), TimerStatus.PENDING);
+            store.saveTimer(fire);
+            store.saveTimer(cancel);
+
+            assertFalse(store.markTimerFired(fire.id(), stale));
+            assertFalse(store.markTimerCancelled(cancel.id(), stale));
+            assertEquals(TimerStatus.PENDING, store.findTimer(instance.id(), fire.timerId()).orElseThrow().status());
+            assertEquals(TimerStatus.PENDING, store.findTimer(instance.id(), cancel.timerId()).orElseThrow().status());
+
+            assertTrue(store.markTimerFired(fire.id(), current));
+            assertTrue(store.markTimerCancelled(cancel.id(), current));
+            assertEquals(TimerStatus.FIRED, store.findTimer(instance.id(), fire.timerId()).orElseThrow().status());
+            assertEquals(TimerStatus.CANCELLED, store.findTimer(instance.id(), cancel.timerId()).orElseThrow().status());
+        }
+
+        @Test
+        @DisplayName("the unfenced forms ignore the epoch: saveSignal and the leader's markTimerFired still apply after a bump")
+        void unfencedWritesAreUnaffected() {
+            var signal = newSignal("wf-fence", instance.id(), "late");
+            store.saveSignal(signal);
+            assertEquals(1, store.getUnconsumedSignals("wf-fence", "late").size());
+
+            var timer = newTimer(instance.id(), "wf-fence", Instant.now(), TimerStatus.PENDING);
+            store.saveTimer(timer);
+            assertTrue(store.markTimerFired(timer.id()), "the timer leader fires on behalf of whoever owns the run");
+
+            store.appendEvent(newEvent(instance.id(), 1, EventType.ACTIVITY_COMPLETED));
+            assertEquals(1, store.getEvents(instance.id()).size(), "the unfenced append has no epoch to check");
         }
     }
 }

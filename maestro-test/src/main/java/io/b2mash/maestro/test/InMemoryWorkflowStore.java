@@ -1,6 +1,7 @@
 package io.b2mash.maestro.test;
 
 import io.b2mash.maestro.core.exception.DuplicateEventException;
+import io.b2mash.maestro.core.exception.FencedWriteException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowNotFoundException;
@@ -11,6 +12,7 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.spi.RunLease;
 import io.b2mash.maestro.core.spi.TerminalWrites;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 
@@ -65,6 +67,11 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
     // Lock object per workflowId for updateInstance optimistic locking
     private final ConcurrentHashMap<String, Object> instanceLocks = new ConcurrentHashMap<>();
 
+    // instanceId → workflowId: the fenced overloads are keyed by instance id
+    // (a RunLease names the instance, not the business id) and must check the
+    // epoch under the same per-workflow monitor the instance writes use.
+    private final ConcurrentHashMap<UUID, String> idToWorkflowId = new ConcurrentHashMap<>();
+
     // ── Instance operations ──────────────────────────────────────────────
 
     @Override
@@ -74,7 +81,94 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
             throw new WorkflowAlreadyExistsException(instance.workflowId());
         }
         instanceLocks.putIfAbsent(instance.workflowId(), new Object());
+        idToWorkflowId.put(instance.id(), instance.workflowId());
         return instance;
+    }
+
+    // ── Lease fencing (Issue 11) ─────────────────────────────────────────
+
+    /**
+     * Runs {@code write} under the per-workflow monitor of the lease's
+     * instance, after checking that the stored row still carries the lease's
+     * epoch. Mirrors the JDBC store's {@code INSERT ... SELECT ... WHERE
+     * lease_epoch = ?} + row lock: the check and the write are one critical
+     * section with respect to every instance write, so an adoption bump
+     * ({@link #updateInstance}) orders strictly before or after them.
+     *
+     * @return {@code true} if the lease is current and {@code write} ran;
+     *         {@code false} if the lease is stale or the instance is unknown
+     *         (nothing ran)
+     */
+    private boolean ifLeaseCurrent(RunLease lease, Runnable write) {
+        var workflowId = idToWorkflowId.get(lease.instanceId());
+        var lock = workflowId == null ? null : instanceLocks.get(workflowId);
+        if (lock == null) {
+            return false;
+        }
+        synchronized (lock) {
+            var current = instances.get(workflowId);
+            if (current == null || current.leaseEpoch() != lease.epoch()) {
+                return false;
+            }
+            write.run();
+            return true;
+        }
+    }
+
+    @Override
+    public void appendEvent(WorkflowEvent event, RunLease lease) {
+        if (!ifLeaseCurrent(lease, () -> appendEvent(event))) {
+            throw new FencedWriteException(lease.instanceId(), lease.epoch(), "appendEvent");
+        }
+    }
+
+    @Override
+    public void saveTimer(WorkflowTimer timer, RunLease lease) {
+        if (!ifLeaseCurrent(lease, () -> saveTimer(timer))) {
+            throw new FencedWriteException(lease.instanceId(), lease.epoch(), "saveTimer");
+        }
+    }
+
+    @Override
+    public void updateInstance(WorkflowInstance instance, RunLease lease) {
+        // Same monitor as the unfenced form, so the epoch check and the version
+        // CAS are one critical section; the inner call re-takes it reentrantly.
+        if (!ifLeaseCurrent(lease, () -> updateInstance(instance))) {
+            if (idToWorkflowId.get(lease.instanceId()) == null) {
+                throw new WorkflowNotFoundException(instance.workflowId());
+            }
+            throw new FencedWriteException(lease.instanceId(), lease.epoch(), "updateInstance");
+        }
+    }
+
+    @Override
+    public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent, RunLease lease) {
+        var written = new boolean[1];
+        if (!ifLeaseCurrent(lease, () -> written[0] = completeInstance(terminal, terminalEvent))) {
+            if (idToWorkflowId.get(lease.instanceId()) == null) {
+                throw new WorkflowNotFoundException(terminal.workflowId());
+            }
+            throw new FencedWriteException(lease.instanceId(), lease.epoch(), "completeInstance");
+        }
+        return written[0];
+    }
+
+    @Override
+    public boolean markSignalConsumed(UUID signalId, RunLease lease) {
+        var flipped = new boolean[1];
+        return ifLeaseCurrent(lease, () -> flipped[0] = markSignalConsumed(signalId)) && flipped[0];
+    }
+
+    @Override
+    public boolean markTimerFired(UUID timerId, RunLease lease) {
+        var flipped = new boolean[1];
+        return ifLeaseCurrent(lease, () -> flipped[0] = markTimerFired(timerId)) && flipped[0];
+    }
+
+    @Override
+    public boolean markTimerCancelled(UUID timerId, RunLease lease) {
+        var flipped = new boolean[1];
+        return ifLeaseCurrent(lease, () -> flipped[0] = markTimerCancelled(timerId)) && flipped[0];
     }
 
     @Override
@@ -484,6 +578,7 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
     public void clear() {
         instances.clear();
         instanceLocks.clear();
+        idToWorkflowId.clear();
         events.clear();
         synchronized (signalLock) {
             signals.clear();

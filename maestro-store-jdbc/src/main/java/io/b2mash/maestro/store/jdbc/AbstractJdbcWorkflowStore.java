@@ -1,6 +1,7 @@
 package io.b2mash.maestro.store.jdbc;
 
 import io.b2mash.maestro.core.exception.DuplicateEventException;
+import io.b2mash.maestro.core.exception.FencedWriteException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.SerializationException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
@@ -12,6 +13,7 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.spi.RunLease;
 import io.b2mash.maestro.core.spi.TerminalWrites;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
@@ -52,7 +54,23 @@ import java.util.stream.Collectors;
  *       to use database-native JSON types (e.g., Postgres JSONB via PGobject).</li>
  *   <li>{@link #getJsonValue(ResultSet, String)} — override if the database
  *       returns JSON in a non-string format.</li>
+ *   <li>{@link #fenceRowLockClause()} — override to lock the instance row the
+ *       fenced {@code INSERT ... SELECT} checked (Postgres: {@code FOR SHARE}).</li>
  * </ul>
+ *
+ * <h2>Lease fencing</h2>
+ * <p>The seven fenced {@link WorkflowStore} overloads are implemented here, not
+ * left to their unfenced defaults. An event or timer insert under a lease is
+ * one {@code INSERT ... SELECT ?, ?, ... FROM maestro_workflow_instance WHERE
+ * id = ? AND lease_epoch = ?} (+ {@link #fenceRowLockClause()}): zero rows
+ * means the epoch has moved on and the write is rejected with
+ * {@link FencedWriteException}; a unique violation is still a
+ * {@link DuplicateEventException}. The instance compare-and-set adds
+ * {@code AND lease_epoch = ?} to its {@code WHERE}, and a zero-row result is
+ * resolved by probing {@code version, lease_epoch}: a changed epoch is a fence,
+ * a changed version the usual conflict. The three CAS flips add
+ * {@code AND EXISTS (SELECT 1 FROM maestro_workflow_instance WHERE id = ? AND
+ * lease_epoch = ?)} and report a fence as {@code false}.
  *
  * <h2>Thread Safety</h2>
  * <p>This class is thread-safe. All state is immutable after construction.
@@ -113,6 +131,22 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * @return the parameterized SQL string
      */
     protected abstract String getDueTimersSql();
+
+    /**
+     * Returns the row-locking clause appended to the fenced
+     * {@code INSERT ... SELECT ... FROM maestro_workflow_instance WHERE id = ?
+     * AND lease_epoch = ?} that writes an event or a timer under a
+     * {@link RunLease}. The default is the empty string (no lock), which is
+     * correct only on a database whose single-statement {@code INSERT ...
+     * SELECT} is already serialised against a concurrent {@code UPDATE} of the
+     * selected row. Postgres overrides this with {@code " FOR SHARE"} so the
+     * adoption bump orders strictly before or after the insert.
+     *
+     * @return the clause, with a leading space, or {@code ""}
+     */
+    protected String fenceRowLockClause() {
+        return "";
+    }
 
     /**
      * Sets a JSON parameter on a {@link PreparedStatement}.
@@ -211,7 +245,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
         String sql = "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, "
                 + "input, output, service_name, event_sequence, started_at, completed_at, "
-                + "updated_at, version FROM " + tableName("workflow_instance")
+                + "updated_at, version, lease_epoch FROM " + tableName("workflow_instance")
                 + " WHERE workflow_id = ?";
 
         return querySingle(sql, ps -> ps.setString(1, workflowId), this::mapInstance);
@@ -221,7 +255,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     public List<WorkflowInstance> getRecoverableInstances() {
         String sql = "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, "
                 + "input, output, service_name, event_sequence, started_at, completed_at, "
-                + "updated_at, version FROM " + tableName("workflow_instance")
+                + "updated_at, version, lease_epoch FROM " + tableName("workflow_instance")
                 + " WHERE status IN (" + ACTIVE_STATUS_SQL + ")"
                 + " ORDER BY started_at ASC";
 
@@ -230,17 +264,35 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
     @Override
     public void updateInstance(WorkflowInstance instance) {
+        doUpdateInstance(instance, null);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The compare-and-set {@code WHERE} gains {@code AND lease_epoch = ?}; a
+     * zero-row result is resolved by probing the row's {@code version} and
+     * {@code lease_epoch} (a changed epoch is a fence, otherwise the usual
+     * version conflict).
+     */
+    @Override
+    public void updateInstance(WorkflowInstance instance, RunLease lease) {
+        Objects.requireNonNull(lease, "lease");
+        doUpdateInstance(instance, lease);
+    }
+
+    private void doUpdateInstance(WorkflowInstance instance, @Nullable RunLease lease) {
         Objects.requireNonNull(instance, "instance");
 
         int updated;
         try (var conn = dataSource.getConnection()) {
-            updated = updateInstanceRow(conn, instance);
+            updated = updateInstanceRow(conn, instance, lease);
         } catch (SQLException e) {
-            throw new UncheckedSqlException("Update failed: " + updateInstanceSql(), e);
+            throw new UncheckedSqlException("Update failed: " + updateInstanceSql(lease != null), e);
         }
 
         if (updated == 0) {
-            resolveUpdateFailure(instance);
+            resolveUpdateFailure(instance, lease);
         }
 
         log.debug("Updated workflow instance: workflowId={}, version={}→{}",
@@ -262,6 +314,28 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      */
     @Override
     public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
+        return doCompleteInstance(terminal, terminalEvent, null);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The row {@code UPDATE} carries {@code AND lease_epoch = ?}; because it
+     * locks the row for the rest of the transaction, the terminal event's
+     * {@code INSERT} in the same transaction needs no fence of its own. A
+     * zero-row {@code UPDATE} rolls back and probes {@code version,
+     * lease_epoch} outside the transaction: a changed epoch is a
+     * {@link FencedWriteException}, a missing row a
+     * {@link WorkflowNotFoundException}, anything else {@code false}.
+     */
+    @Override
+    public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent, RunLease lease) {
+        Objects.requireNonNull(lease, "lease");
+        return doCompleteInstance(terminal, terminalEvent, lease);
+    }
+
+    private boolean doCompleteInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent,
+                                       @Nullable RunLease lease) {
         Objects.requireNonNull(terminal, "terminal");
         Objects.requireNonNull(terminalEvent, "terminalEvent");
         TerminalWrites.requireValid(terminal, terminalEvent);
@@ -271,9 +345,9 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             conn.setAutoCommit(false);
             boolean settled = false; // committed or rolled back — see endTransaction
             try {
-                written = updateInstanceRow(conn, terminal) > 0;
+                written = updateInstanceRow(conn, terminal, lease) > 0;
                 if (written) {
-                    insertEvent(conn, terminalEvent);
+                    insertEvent(conn, terminalEvent, null);
                     conn.commit();
                 } else {
                     conn.rollback();
@@ -299,8 +373,12 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         if (!written) {
             // Probed after the transaction's connection is released, so a
             // single-connection pool cannot deadlock on the nested borrow.
-            if (currentVersion(terminal).isEmpty()) {
+            var probe = probeRow(terminal);
+            if (probe.isEmpty()) {
                 throw new WorkflowNotFoundException(terminal.workflowId());
+            }
+            if (lease != null && probe.get().leaseEpoch() != lease.epoch()) {
+                throw new FencedWriteException(lease.instanceId(), lease.epoch(), "completeInstance");
             }
             return false;
         }
@@ -368,26 +446,31 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         }
     }
 
-    private String updateInstanceSql() {
+    private String updateInstanceSql(boolean fenced) {
         // Canonical optimistic-lock convention: the caller has already built
         // the updated instance with version = current + 1, so the row is
-        // persisted verbatim iff the stored version equals version - 1.
+        // persisted verbatim iff the stored version equals version - 1. The
+        // fenced form additionally requires the stored lease_epoch to equal the
+        // writer's lease epoch, in the same compare-and-set.
         return "UPDATE " + tableName("workflow_instance")
                 + " SET run_id = ?, workflow_type = ?, task_queue = ?, status = ?, "
                 + "input = ?, output = ?, service_name = ?, event_sequence = ?, "
-                + "started_at = ?, completed_at = ?, updated_at = ?, version = ?"
-                + " WHERE id = ? AND version = ?";
+                + "started_at = ?, completed_at = ?, updated_at = ?, version = ?, lease_epoch = ?"
+                + " WHERE id = ? AND version = ?"
+                + (fenced ? " AND lease_epoch = ?" : "");
     }
 
     /**
-     * Executes the version-checked instance {@code UPDATE} on {@code conn},
-     * inside whatever transaction mode the caller set.
+     * Executes the version-checked (and, with a lease, epoch-checked) instance
+     * {@code UPDATE} on {@code conn}, inside whatever transaction mode the
+     * caller set.
      *
-     * @return the number of rows updated; {@code 0} means a missing row or a
-     *         version conflict
+     * @return the number of rows updated; {@code 0} means a missing row, a
+     *         version conflict or — with a lease — a stale lease epoch
      */
-    private int updateInstanceRow(Connection conn, WorkflowInstance instance) throws SQLException {
-        try (var ps = conn.prepareStatement(updateInstanceSql())) {
+    private int updateInstanceRow(Connection conn, WorkflowInstance instance,
+                                  @Nullable RunLease lease) throws SQLException {
+        try (var ps = conn.prepareStatement(updateInstanceSql(lease != null))) {
             ps.setObject(1, instance.runId());
             ps.setString(2, instance.workflowType());
             ps.setString(3, instance.taskQueue());
@@ -400,8 +483,12 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             setNullableTimestamp(ps, 10, instance.completedAt());
             ps.setTimestamp(11, Timestamp.from(instance.updatedAt()));
             ps.setInt(12, instance.version());
-            ps.setObject(13, instance.id());
-            ps.setInt(14, instance.version() - 1);
+            ps.setLong(13, instance.leaseEpoch());
+            ps.setObject(14, instance.id());
+            ps.setInt(15, instance.version() - 1);
+            if (lease != null) {
+                ps.setLong(16, lease.epoch());
+            }
             return ps.executeUpdate();
         }
     }
@@ -411,6 +498,53 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     @Override
     public void appendEvent(WorkflowEvent event) {
         Objects.requireNonNull(event, "event");
+        requireNotUnknown(event);
+
+        try (var conn = dataSource.getConnection()) {
+            insertEvent(conn, event, null);
+        } catch (SQLException e) {
+            if (UNIQUE_VIOLATION.equals(e.getSQLState())) {
+                var ex = new DuplicateEventException(event.workflowInstanceId(),
+                        event.sequenceNumber());
+                ex.initCause(e);
+                throw ex;
+            }
+            throw new UncheckedSqlException("Update failed: " + insertEventSql(false), e);
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One {@code INSERT ... SELECT ... FROM maestro_workflow_instance WHERE
+     * id = ? AND lease_epoch = ?} (+ {@link #fenceRowLockClause()}): the epoch
+     * check and the insert are a single statement, so an adoption bump cannot
+     * slip between them. Zero rows inserted is the fence.
+     */
+    @Override
+    public void appendEvent(WorkflowEvent event, RunLease lease) {
+        Objects.requireNonNull(event, "event");
+        Objects.requireNonNull(lease, "lease");
+        requireNotUnknown(event);
+
+        int inserted;
+        try (var conn = dataSource.getConnection()) {
+            inserted = insertEvent(conn, event, lease);
+        } catch (SQLException e) {
+            if (UNIQUE_VIOLATION.equals(e.getSQLState())) {
+                var ex = new DuplicateEventException(event.workflowInstanceId(),
+                        event.sequenceNumber());
+                ex.initCause(e);
+                throw ex;
+            }
+            throw new UncheckedSqlException("Update failed: " + insertEventSql(true), e);
+        }
+        if (inserted == 0) {
+            throw new FencedWriteException(lease.instanceId(), lease.epoch(), "appendEvent");
+        }
+    }
+
+    private void requireNotUnknown(WorkflowEvent event) {
         if (event.eventType() == EventType.UNKNOWN) {
             // The sentinel is how the READ path represents a type this build
             // does not know. Persisting it would durably record "unreadable",
@@ -421,34 +555,34 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                             + "(workflowInstanceId=%s, sequenceNumber=%d)"
                                     .formatted(event.workflowInstanceId(), event.sequenceNumber()));
         }
-
-        try (var conn = dataSource.getConnection()) {
-            insertEvent(conn, event);
-        } catch (SQLException e) {
-            if (UNIQUE_VIOLATION.equals(e.getSQLState())) {
-                var ex = new DuplicateEventException(event.workflowInstanceId(),
-                        event.sequenceNumber());
-                ex.initCause(e);
-                throw ex;
-            }
-            throw new UncheckedSqlException("Update failed: " + insertEventSql(), e);
-        }
     }
 
-    private String insertEventSql() {
-        return "INSERT INTO " + tableName("workflow_event")
-                + " (id, workflow_instance_id, sequence_number, event_type, step_name,"
-                + " payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)";
+    private String insertEventSql(boolean fenced) {
+        var columns = " (id, workflow_instance_id, sequence_number, event_type, step_name,"
+                + " payload, created_at)";
+        if (!fenced) {
+            return "INSERT INTO " + tableName("workflow_event") + columns + " VALUES (?, ?, ?, ?, ?, ?, ?)";
+        }
+        // The SELECT yields one row iff the instance still carries the lease's
+        // epoch; the row lock (dialect hook) orders a concurrent bump strictly
+        // before or after this insert.
+        return "INSERT INTO " + tableName("workflow_event") + columns
+                + " SELECT ?, ?, ?, ?, ?, ?, ? FROM " + tableName("workflow_instance")
+                + " WHERE id = ? AND lease_epoch = ?" + fenceRowLockClause();
     }
 
     /**
      * Executes the event {@code INSERT} on {@code conn}, inside whatever
-     * transaction mode the caller set. A duplicate
-     * {@code (workflow_instance_id, sequence_number)} surfaces as an
-     * {@link SQLException} whose SQL state is the unique-violation code.
+     * transaction mode the caller set — fenced on {@code lease} when one is
+     * given. A duplicate {@code (workflow_instance_id, sequence_number)}
+     * surfaces as an {@link SQLException} whose SQL state is the
+     * unique-violation code.
+     *
+     * @return the number of rows inserted: {@code 1}, or {@code 0} when the
+     *         lease is stale (fenced form only)
      */
-    private void insertEvent(Connection conn, WorkflowEvent event) throws SQLException {
-        try (var ps = conn.prepareStatement(insertEventSql())) {
+    private int insertEvent(Connection conn, WorkflowEvent event, @Nullable RunLease lease) throws SQLException {
+        try (var ps = conn.prepareStatement(insertEventSql(lease != null))) {
             ps.setObject(1, event.id());
             ps.setObject(2, event.workflowInstanceId());
             ps.setInt(3, event.sequenceNumber());
@@ -456,7 +590,11 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             setNullableString(ps, 5, event.stepName());
             setJsonParameter(ps, 6, event.payload());
             ps.setTimestamp(7, Timestamp.from(event.createdAt()));
-            ps.executeUpdate();
+            if (lease != null) {
+                ps.setObject(8, lease.instanceId());
+                ps.setLong(9, lease.epoch());
+            }
+            return ps.executeUpdate();
         }
     }
 
@@ -717,6 +855,30 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     }
 
     @Override
+    public boolean markSignalConsumed(UUID signalId, RunLease lease) {
+        Objects.requireNonNull(signalId, "signalId");
+        Objects.requireNonNull(lease, "lease");
+
+        String sql = "UPDATE " + tableName("workflow_signal")
+                + " SET consumed = true WHERE id = ? AND consumed = false" + leaseExistsClause();
+
+        return update(sql, ps -> {
+            ps.setObject(1, signalId);
+            ps.setObject(2, lease.instanceId());
+            ps.setLong(3, lease.epoch());
+        }) > 0;
+    }
+
+    /**
+     * The predicate the three silent CAS flips append: the write applies only
+     * while the lease's instance row still carries the lease's epoch.
+     */
+    private String leaseExistsClause() {
+        return " AND EXISTS (SELECT 1 FROM " + tableName("workflow_instance")
+                + " WHERE id = ? AND lease_epoch = ?)";
+    }
+
+    @Override
     public void adoptOrphanedSignals(String workflowId, UUID instanceId) {
         Objects.requireNonNull(workflowId, "workflowId");
         Objects.requireNonNull(instanceId, "instanceId");
@@ -755,19 +917,48 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     public void saveTimer(WorkflowTimer timer) {
         Objects.requireNonNull(timer, "timer");
 
-        String sql = "INSERT INTO " + tableName("workflow_timer")
-                + " (id, workflow_instance_id, workflow_id, timer_id, fire_at, status,"
-                + " created_at) VALUES (?, ?, ?, ?, ?, ?, ?)";
+        String sql = "INSERT INTO " + tableName("workflow_timer") + TIMER_COLUMNS
+                + " VALUES (?, ?, ?, ?, ?, ?, ?)";
 
-        update(sql, ps -> {
-            ps.setObject(1, timer.id());
-            ps.setObject(2, timer.workflowInstanceId());
-            ps.setString(3, timer.workflowId());
-            ps.setString(4, timer.timerId());
-            ps.setTimestamp(5, Timestamp.from(timer.fireAt()));
-            ps.setString(6, timer.status().name());
-            ps.setTimestamp(7, Timestamp.from(timer.createdAt()));
+        update(sql, ps -> setTimerParameters(ps, timer));
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The same {@code INSERT ... SELECT ... FROM maestro_workflow_instance
+     * WHERE id = ? AND lease_epoch = ?} shape as the fenced event append.
+     */
+    @Override
+    public void saveTimer(WorkflowTimer timer, RunLease lease) {
+        Objects.requireNonNull(timer, "timer");
+        Objects.requireNonNull(lease, "lease");
+
+        String sql = "INSERT INTO " + tableName("workflow_timer") + TIMER_COLUMNS
+                + " SELECT ?, ?, ?, ?, ?, ?, ? FROM " + tableName("workflow_instance")
+                + " WHERE id = ? AND lease_epoch = ?" + fenceRowLockClause();
+
+        int inserted = update(sql, ps -> {
+            setTimerParameters(ps, timer);
+            ps.setObject(8, lease.instanceId());
+            ps.setLong(9, lease.epoch());
         });
+        if (inserted == 0) {
+            throw new FencedWriteException(lease.instanceId(), lease.epoch(), "saveTimer");
+        }
+    }
+
+    private static final String TIMER_COLUMNS =
+            " (id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at)";
+
+    private static void setTimerParameters(PreparedStatement ps, WorkflowTimer timer) throws SQLException {
+        ps.setObject(1, timer.id());
+        ps.setObject(2, timer.workflowInstanceId());
+        ps.setString(3, timer.workflowId());
+        ps.setString(4, timer.timerId());
+        ps.setTimestamp(5, Timestamp.from(timer.fireAt()));
+        ps.setString(6, timer.status().name());
+        ps.setTimestamp(7, Timestamp.from(timer.createdAt()));
     }
 
     /**
@@ -822,6 +1013,11 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     }
 
     @Override
+    public boolean markTimerFired(UUID timerId, RunLease lease) {
+        return flipTimerFenced(timerId, TimerStatus.FIRED, lease);
+    }
+
+    @Override
     public boolean markTimerCancelled(UUID timerId) {
         Objects.requireNonNull(timerId, "timerId");
 
@@ -831,13 +1027,33 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         return update(sql, ps -> ps.setObject(1, timerId)) > 0;
     }
 
+    @Override
+    public boolean markTimerCancelled(UUID timerId, RunLease lease) {
+        return flipTimerFenced(timerId, TimerStatus.CANCELLED, lease);
+    }
+
+    private boolean flipTimerFenced(UUID timerId, TimerStatus target, RunLease lease) {
+        Objects.requireNonNull(timerId, "timerId");
+        Objects.requireNonNull(lease, "lease");
+
+        String sql = "UPDATE " + tableName("workflow_timer")
+                + " SET status = '" + target.name() + "' WHERE id = ? AND status = 'PENDING'"
+                + leaseExistsClause();
+
+        return update(sql, ps -> {
+            ps.setObject(1, timerId);
+            ps.setObject(2, lease.instanceId());
+            ps.setLong(3, lease.epoch());
+        }) > 0;
+    }
+
     // ── Internal helpers ──────────────────────────────────────────────────
 
     private void insertInstance(Connection conn, WorkflowInstance instance) throws SQLException {
         String sql = "INSERT INTO " + tableName("workflow_instance")
                 + " (id, workflow_id, run_id, workflow_type, task_queue, status, "
                 + "input, output, service_name, event_sequence, started_at, completed_at, "
-                + "updated_at, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                + "updated_at, version, lease_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
         try (var ps = conn.prepareStatement(sql)) {
             ps.setObject(1, instance.id());
@@ -854,6 +1070,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             setNullableTimestamp(ps, 12, instance.completedAt());
             ps.setTimestamp(13, Timestamp.from(instance.updatedAt()));
             ps.setInt(14, instance.version());
+            ps.setLong(15, instance.leaseEpoch());
             ps.executeUpdate();
         }
     }
@@ -876,27 +1093,36 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     }
 
     /**
-     * Determines whether an update failure was caused by a missing workflow
-     * or a version conflict, and throws the appropriate exception.
+     * Determines whether a zero-row instance update was caused by a missing
+     * workflow, a stale lease (fenced form only) or a version conflict, and
+     * throws the appropriate exception. The epoch is checked before the
+     * version: a fenced writer's version is stale too (the adoption bump
+     * incremented it), and the fence is the reason that matters.
      */
-    private void resolveUpdateFailure(WorkflowInstance instance) {
-        Optional<Integer> currentVersion = currentVersion(instance);
+    private void resolveUpdateFailure(WorkflowInstance instance, @Nullable RunLease lease) {
+        var probe = probeRow(instance);
 
-        if (currentVersion.isEmpty()) {
+        if (probe.isEmpty()) {
             throw new WorkflowNotFoundException(instance.workflowId());
+        }
+        if (lease != null && probe.get().leaseEpoch() != lease.epoch()) {
+            throw new FencedWriteException(lease.instanceId(), lease.epoch(), "updateInstance");
         }
         // The caller expected the stored row to still be at version - 1
         throw new OptimisticLockException(instance.workflowId(),
-                instance.version() - 1, currentVersion.get());
+                instance.version() - 1, probe.get().version());
     }
 
-    /** Reads the instance row's stored version; empty when the row does not exist. */
-    private Optional<Integer> currentVersion(WorkflowInstance instance) {
-        String sql = "SELECT version FROM " + tableName("workflow_instance")
+    /** The two compare-and-set columns of an instance row, as stored. */
+    private record RowProbe(int version, long leaseEpoch) {}
+
+    /** Reads the instance row's stored version and lease epoch; empty when the row does not exist. */
+    private Optional<RowProbe> probeRow(WorkflowInstance instance) {
+        String sql = "SELECT version, lease_epoch FROM " + tableName("workflow_instance")
                 + " WHERE id = ?";
         return querySingle(sql,
                 ps -> ps.setObject(1, instance.id()),
-                rs -> rs.getInt("version"));
+                rs -> new RowProbe(rs.getInt("version"), rs.getLong("lease_epoch")));
     }
 
     // ── Row mappers ───────────────────────────────────────────────────────
@@ -956,6 +1182,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                 .completedAt(getNullableInstant(rs, "completed_at"))
                 .updatedAt(rs.getTimestamp("updated_at").toInstant())
                 .version(rs.getInt("version"))
+                .leaseEpoch(rs.getLong("lease_epoch"))
                 .build();
     }
 
