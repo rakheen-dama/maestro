@@ -165,6 +165,7 @@ class CompositeEngineObserverTest {
             assertEquals(1, recorder.lockRenewFailed().size(), "instanceLockRenewFailed");
             assertEquals(1, recorder.lockLost().size(), "instanceLockLost");
             assertEquals(1, recorder.recoveryPasses().size(), "recoveryPass");
+            assertEquals(1, recorder.retentionPasses().size(), "retentionPass");
             assertEquals(1, recorder.standDowns().size(), "standDown");
         }
     }
@@ -282,6 +283,7 @@ class CompositeEngineObserverTest {
         o.instanceLockRenewFailed("wf-1");
         o.instanceLockLost("wf-1");
         o.recoveryPass(3, 2);
+        o.retentionPass(new io.b2mash.maestro.core.spi.PurgeResult(2, 9, 1, 0));
         o.standDown(StandDownReason.STALE_RUN, "wf-1", "seq 7");
     }
 }

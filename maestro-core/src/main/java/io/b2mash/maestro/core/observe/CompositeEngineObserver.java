@@ -206,6 +206,11 @@ public final class CompositeEngineObserver implements EngineObserver {
     }
 
     @Override
+    public void retentionPass(io.b2mash.maestro.core.spi.PurgeResult purged) {
+        fanOut("retentionPass", d -> d.retentionPass(purged));
+    }
+
+    @Override
     public void standDown(StandDownReason reason, String workflowId, @Nullable String detail) {
         fanOut("standDown", d -> d.standDown(reason, workflowId, detail));
     }

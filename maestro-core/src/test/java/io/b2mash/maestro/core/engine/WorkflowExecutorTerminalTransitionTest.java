@@ -15,6 +15,7 @@ import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.observe.AbandonReason;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.RecordingEngineObserver;
+import io.b2mash.maestro.core.spi.PurgeResult;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -503,6 +504,11 @@ class WorkflowExecutorTerminalTransitionTest {
         @Override
         public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
             return 0;
+        }
+
+        @Override
+        public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
+            throw new UnsupportedOperationException();
         }
 
         @Override

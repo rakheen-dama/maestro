@@ -151,6 +151,8 @@ public final class WorkflowExecutor {
     private final AtomicBoolean recoveryPollerStarted = new AtomicBoolean(false);
     private final AtomicReference<SignalJanitor> signalJanitor = new AtomicReference<>();
     private volatile @Nullable SignalJanitorSettings signalJanitorSettings;
+    private final AtomicReference<RetentionSweeper> retentionSweeper = new AtomicReference<>();
+    private volatile @Nullable RetentionSettings retentionSettings;
 
     /**
      * Creates a new workflow executor with the default lock key prefix
@@ -1428,6 +1430,91 @@ public final class WorkflowExecutor {
         signalJanitorSettings = new SignalJanitorSettings(interval, retention);
     }
 
+    // ── Retention sweeper ───────────────────────────────────────────────
+
+    /**
+     * The settings a retention sweeper is started with — see
+     * {@link #startRetentionSweeper(RetentionSettings)}.
+     *
+     * @param interval            time between sweeps; positive
+     * @param completedRetention  how long a {@code COMPLETED} workflow is kept
+     *                            after it completed; positive
+     * @param terminatedRetention how long a {@code TERMINATED} workflow is kept
+     *                            after it was terminated; positive
+     * @param failedRetention     how long a {@code FAILED} workflow is kept after
+     *                            it failed — typically longer, since an operator
+     *                            may still retry it; positive
+     * @param batchSize           instances deleted per transaction; at least 1
+     * @param maxBatchesPerSweep  batches per status per sweep, bounding one
+     *                            sweep's work; at least 1
+     */
+    public record RetentionSettings(Duration interval,
+                                    Duration completedRetention,
+                                    Duration terminatedRetention,
+                                    Duration failedRetention,
+                                    int batchSize,
+                                    int maxBatchesPerSweep) {
+
+        /**
+         * Validates the settings.
+         *
+         * @throws IllegalArgumentException if any duration is {@code null}, zero
+         *                                  or negative, or either count is below 1
+         */
+        public RetentionSettings {
+            requirePositive("interval", interval);
+            requirePositive("completedRetention", completedRetention);
+            requirePositive("terminatedRetention", terminatedRetention);
+            requirePositive("failedRetention", failedRetention);
+            if (batchSize < 1) {
+                throw new IllegalArgumentException("batchSize must be at least 1, got " + batchSize);
+            }
+            if (maxBatchesPerSweep < 1) {
+                throw new IllegalArgumentException("maxBatchesPerSweep must be at least 1, got " + maxBatchesPerSweep);
+            }
+        }
+
+        private static void requirePositive(String name, @Nullable Duration value) {
+            if (value == null || value.isNegative() || value.isZero()) {
+                throw new IllegalArgumentException(name + " must be positive, got " + value);
+            }
+        }
+    }
+
+    /**
+     * Starts the background retention sweeper.
+     *
+     * <p>Every {@code settings.interval()} the elected leader for this service
+     * purges workflows that reached {@code COMPLETED}, {@code TERMINATED} or
+     * {@code FAILED} longer ago than that status's retention — the instance
+     * row and its whole history (events, signals, timers) — via
+     * {@link WorkflowStore#purgeTerminalInstancesBefore(io.b2mash.maestro.core.model.WorkflowStatus, Instant, int)},
+     * in batches of {@code settings.batchSize()}. Leadership is held on
+     * {@code maestro:leader:retention:<serviceName>} through the
+     * {@link DistributedLock} (always held when there is none) and re-checked
+     * before every batch. A store failure is logged and retried on the next
+     * interval. {@link #shutdown()} stops it.
+     *
+     * <p>If this method is never called, nothing is ever purged and the store
+     * grows without bound. The Spring Boot starter calls it automatically
+     * unless {@code maestro.retention.enabled=false}.
+     *
+     * @param settings interval, per-status retention and batching
+     * @throws NullPointerException  if {@code settings} is {@code null}
+     * @throws IllegalStateException if the sweeper is already started or the
+     *                               executor is shutting down
+     */
+    public void startRetentionSweeper(RetentionSettings settings) {
+        Objects.requireNonNull(settings, "settings");
+        if (shuttingDown.get()) {
+            throw new IllegalStateException(
+                    "WorkflowExecutor is shutting down — cannot start retention sweeper");
+        }
+        var sweeper = new RetentionSweeper(store, distributedLock, serviceName, settings, observer);
+        installAndStart(retentionSweeper, sweeper, "Retention sweeper", sweeper::start, sweeper::stop);
+        retentionSettings = settings;
+    }
+
     /**
      * Claims a background-loop slot, starts the loop, then re-checks for a
      * concurrent {@link #shutdown()}. The up-front {@code shuttingDown} check
@@ -1506,6 +1593,10 @@ public final class WorkflowExecutor {
         var janitor = signalJanitor.getAndSet(null);
         if (janitor != null) {
             janitor.stop();
+        }
+        var sweeper = retentionSweeper.getAndSet(null);
+        if (sweeper != null) {
+            sweeper.stop();
         }
 
         logger.info("Shutting down WorkflowExecutor, {} workflow(s) in-flight",
@@ -1759,6 +1850,45 @@ public final class WorkflowExecutor {
      */
     public @Nullable SignalJanitorSettings signalJanitorSettings() {
         return signalJanitorSettings;
+    }
+
+    /**
+     * Returns whether the background retention sweeper is currently running
+     * on this executor.
+     *
+     * @return {@code true} if {@link #startRetentionSweeper(RetentionSettings)}
+     *         has been called and the sweeper has not since stopped (e.g. via
+     *         {@link #shutdown()})
+     */
+    public boolean isRetentionSweeperRunning() {
+        var sweeper = retentionSweeper.get();
+        return sweeper != null && sweeper.isRunning();
+    }
+
+    /**
+     * Returns whether {@link #startRetentionSweeper(RetentionSettings)} has
+     * ever been called successfully on this executor. Monotonic — see
+     * {@link #hasTimerPollerStarted()} for the startup-vs-fault rationale.
+     *
+     * @return {@code true} once the retention sweeper has been started at least once
+     */
+    public boolean hasRetentionSweeperStarted() {
+        return retentionSettings != null;
+    }
+
+    /**
+     * Returns the settings the retention sweeper was started with.
+     *
+     * <p>Lets a caller (such as the Spring Boot starter's configuration tests)
+     * verify which settings actually reached the engine. The value is retained
+     * after {@link #shutdown()} stops the sweeper.
+     *
+     * @return the settings passed to
+     *         {@link #startRetentionSweeper(RetentionSettings)}, or {@code null}
+     *         if it has never been called successfully
+     */
+    public @Nullable RetentionSettings retentionSettings() {
+        return retentionSettings;
     }
 
     // ── Internal: workflow launch ──────────────────────────────────────

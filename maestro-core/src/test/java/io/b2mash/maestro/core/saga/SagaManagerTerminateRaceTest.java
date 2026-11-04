@@ -17,6 +17,7 @@ import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.spi.SignalMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
+import io.b2mash.maestro.core.spi.PurgeResult;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -428,6 +429,11 @@ class SagaManagerTerminateRaceTest {
         @Override public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
             return delegate.deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff);
         }
+
+        @Override
+        public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
+            return delegate.purgeTerminalInstancesBefore(status, cutoff, batchSize);
+        }
         @Override public void saveTimer(WorkflowTimer timer) { delegate.saveTimer(timer); }
         @Override public List<WorkflowTimer> getDueTimers(Instant now, int batchSize) {
             return delegate.getDueTimers(now, batchSize);
@@ -609,6 +615,7 @@ class SagaManagerTerminateRaceTest {
         @Override public boolean markSignalConsumed(UUID signalId) { return true; }
         @Override public void adoptOrphanedSignals(String wfId, UUID instanceId) {}
         @Override public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) { return 0; }
+        @Override public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) { throw new UnsupportedOperationException(); }
         @Override public void saveTimer(WorkflowTimer timer) {}
         @Override public List<WorkflowTimer> getDueTimers(Instant now, int batchSize) { return List.of(); }
         @Override public Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId) {
