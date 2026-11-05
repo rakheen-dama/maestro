@@ -86,8 +86,12 @@ sequenceDiagram
    crashes after this step, replay will skip it and return the stored result.
 
 3. **Payment request is published.** The workflow publishes a domain event
-   (`PaymentRequest`) to a Kafka topic. This is also a memoized activity --
-   the publish is idempotent via the dedup key.
+   (`PaymentRequest`) to a Kafka topic. This is also a memoized activity, and
+   it sets the `maestro-message-id` header to
+   `SignalMessageIds.forCurrentActivity()` — the same id on every retry of the
+   activity — so a send repeated after a crash is one signal, not two, at any
+   `@MaestroSignalListener` that receives it (see
+   [Signal identity](#signal-identity)).
 
 4. **Payment Gateway consumes the event.** It starts its own Maestro workflow
    to process the payment. This workflow is completely independent -- it has its
@@ -171,6 +175,65 @@ model — unless the operator has explicitly disabled redelivery
 (`maestro.messaging.redelivery.enabled=false`), which restores at-most-once
 handler semantics and trades this guarantee away on purpose; see
 `docs/configuration.md`.
+
+### Signal identity
+
+Kafka is at-least-once, so one logical signal can arrive more than once: a
+record redelivered because the consumer crashed (or a rebalance hit) after the
+signal row committed but before the offset did, a producer that republished
+after a send whose acknowledgement it never saw, an HTTP client that retried.
+Each signal therefore carries a **message id**, and the engine persists at most
+one `maestro_workflow_signal` row per `(workflow_id, signal_name, message_id)`
+(partial unique index `idx_wf_signal_message_id`, migration V9). A repeated
+delivery of a stored identity — consumed or not, adopted or still an orphan —
+writes nothing, is counted as `maestro.signal.duplicates`, and is acknowledged
+like any success.
+
+This matters most for workflows that await the same name more than once — a
+review loop, `collectSignals("document.uploaded", n)`. Without an identity a
+redelivered twin is a *new* signal, and the next await of that name consumes it
+as if it were the next event.
+
+**Where the id comes from.** Each source has its own namespace, so no source
+can forge another's key and suppress a genuine signal:
+
+| Source | Stored as | Set by |
+|---|---|---|
+| `SignalMessage.messageId` (engine channel envelope) | `env:<id>` | `publishSignal` callers, the admin dashboard (`admin:<uuid>` per action) |
+| `maestro-message-id` Kafka header | `hdr:<topic>:<id>` | domain producers — `MaestroSignalHeaders.setMessageId(record.headers(), SignalMessageIds.forCurrentActivity())` from the publishing activity |
+| neither: the record's coordinate | `kafka:<topicId>:<partition>:<offset>` | the consumer, using the topic's KIP-516 topic id (never the name — a recreated topic restarts its offsets) |
+| `WorkflowHandle.signal(name, payload, messageId)` | `client:<id>` | callers that may retry — e.g. an `Idempotency-Key` request header |
+
+The consumer resolves envelope → header → coordinate; an envelope and a header
+that disagree log one `WARN` and the envelope wins. The header carries the
+source topic in its key, so one topic's ids cannot suppress another's; a
+republish lands on the same topic and is still suppressed. A header longer than
+512 UTF-8 bytes, or containing a control character, is ignored (the record
+falls back to its coordinate) rather than allowed to fail the insert; likewise
+the engine treats any stored id over 512 characters as absent.
+
+**Rules for producers.**
+
+- Every retry or republish of one logical signal must carry **the same** id;
+  two distinct signals must carry **distinct** ids, or the second is dropped as
+  a duplicate. Identity is the id, never the payload: two voters sending an
+  identical `"yes"` are two votes if their ids differ.
+- `SignalMessageIds.forCurrentActivity()` returns `"<workflowId>:<seq>"` — the
+  publishing activity's own sequence, stable across its retries and its
+  re-execution after a crash. An activity that publishes the same signal name
+  to the same target more than once must add a distinct suffix
+  (`forCurrentActivity("credit")`).
+- The coordinate fallback covers only redelivery of the *same* record. A
+  producer that republishes writes a new record at a new offset; only an
+  envelope or header id makes that a duplicate.
+- A record with no id at all and no resolvable topic id (a broker without
+  topic ids, no `DESCRIBE` permission) is delivered without deduplication.
+
+Consumption is atomic too: the `SIGNAL_RECEIVED` memo and the row's `consumed`
+flip commit in one transaction (`WorkflowStore.appendEventAndConsumeSignal`),
+so a crash between them cannot leave a consumed memo beside a row a later await
+would consume again, and two parallel branches awaiting one name never both
+take one row.
 
 ---
 

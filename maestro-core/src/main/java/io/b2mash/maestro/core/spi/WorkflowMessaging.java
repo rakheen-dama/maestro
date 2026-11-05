@@ -23,10 +23,17 @@ import java.util.function.Consumer;
  *       transport's delivery budget before failing, so a caller may retry a
  *       failed publish without that attempt producing a duplicate. (The Kafka
  *       adapter waits {@code max.block.ms + delivery.timeout.ms + 5s}.)</li>
- *   <li>Consumers must be idempotent — duplicate messages are possible
- *       during Kafka rebalances or retries, and a handler that throws is
- *       re-invoked with the same message until it succeeds or the message is
- *       dead-lettered.</li>
+ *   <li>Duplicate messages are possible — during Kafka rebalances or retries,
+ *       and a handler that throws is re-invoked with the same message until it
+ *       succeeds or the message is dead-lettered. An implementation must hand
+ *       the {@link #subscribeSignals} handler a message whose
+ *       {@link SignalMessage#messageId()} is the same on every delivery of one
+ *       logical signal (and namespaced by source, so one source cannot forge
+ *       another's id), or {@code null} when it has none: the engine's handler
+ *       delivers with it, and persists at most one signal per
+ *       {@code (workflowId, signalName, messageId)} — a redelivery is
+ *       suppressed rather than becoming a second signal. A message with a
+ *       {@code null} id is not deduplicated.</li>
  *   <li>Message ordering is guaranteed <b>per workflow ID</b> (by using
  *       workflow ID as the Kafka partition key).</li>
  * </ul>
