@@ -1,4 +1,50 @@
-# Milestone: Signal idempotency and atomic consumption (2026-11-05)
+# Milestone: DX front door + replay test kit (2026-11-05)
+
+Plan: `~/.claude/plans/velvet-snacking-petal.md` (dx-front-door section), planned
+by an Opus agent and built by an Opus engineer in an isolated worktree.
+Driver: assessment findings #1 (order sample saga never compensates) and #5
+(test kit never exercises replay); the two items that most raise "useful".
+
+- [x] Order sample throws `OrderFailedException` on decline/timeout → saga
+      releases the reservation, FAILED with reason; `OrderResult(orderId,
+      trackingNumber)`; `OrderStatusResponse` via `status()` + guarded
+      `query()` + new `WorkflowHandle.failure()`; 404 on unknown order
+- [x] Test kit: `crashAfter/crashAfterPersisting/crashBeforePersisting/crashNow`
+      → `SimulatedCrash`, `recover()`/`recover(Class...)`; handle
+      `awaitStatus/awaitTerminal/getFailure/liveSteps/replayedSteps/standDowns/
+      awaitStandDown`; `NodeStoreView` (reflective `WorkflowStore` proxy, writes
+      from the dead node's bound threads throw `ExecutorShutdownException`,
+      write/dead-check atomic under a shared lock); `RunRecorder`;
+      `DeterminismChecker.assertRecoverable`
+- [x] Docs: `docs/pitfalls.md` (ten rules, wrong/right/what-you-see, verified);
+      `testing.md` compiling example + crash-recovery section; getting-started,
+      concepts, self-recovery, PRD anti-pattern examples corrected; CLAUDE.md
+      Jackson-annotations exception
+- [x] Gates: `./gradlew build` green (941a814), `maestro-core` diff empty, no
+      migrations; E2E 1–10; chaos PR-gate ×3 (run 42094711104); independent
+      review: 3 real items + 5 tidy-ups fixed with tests; PR #45 merged 90aafcc
+- [ ] Soak on run 42094711104 (reported separately)
+
+## Review (2026-11-05)
+
+- Before the fix the sample's failure-path test read `expected FAILED but was
+  COMPLETED` with `releaseReservation` never called — the assessment's #1
+  finding reproduced exactly, then fixed.
+- The crash mechanism reuses the engine's own control-flow `Error`
+  (`ExecutorShutdownException`) so user `catch (Exception)` cannot swallow the
+  simulated kill and the executor takes its shutdown-suspension arm; a fake
+  `VirtualMachineError` would have logged a misleading NODE_ERROR.
+- Review caught that the crash was announced before the node was dead (a
+  second workflow on the node could persist a write in the window) and that
+  "query after terminal throws" raced the executor's `finally`; both fixed
+  with deterministic tests (20-round loops, two-workflow pin).
+- Engine observation for a later fix (not changed here): a crash between the
+  `TIMER_SCHEDULED` memo and the `WAITING_TIMER` status write leaves the
+  recovered run sleeping correctly with stored status `RUNNING`.
+- Next on the "useful" list: Maven Central publication; then continue-as-new
+  and a retry-compensation admin command.
+
+---# Milestone: Signal idempotency and atomic consumption (2026-11-05)
 
 Plan: `~/.claude/plans/velvet-snacking-petal.md` (signal idempotency section).
 Driver: the two holes left after the four-hardenings cycle — twin
