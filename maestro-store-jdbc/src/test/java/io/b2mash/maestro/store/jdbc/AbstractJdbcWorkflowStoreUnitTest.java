@@ -188,6 +188,43 @@ class AbstractJdbcWorkflowStoreUnitTest {
             assertFalse(conn.calls.contains("abort"), "calls were " + conn.calls);
         }
 
+        @Test
+        @DisplayName("appendEventAndConsumeSignal: statement fails, rollback fails → abort, never setAutoCommit(true)")
+        void consume_failedRollback_abortsInsteadOfRestoringAutoCommit() {
+            var conn = new ScriptedConnection(true);
+            var store = new TestStore(new SingleConnectionDataSource(conn.proxy()),
+                    JdbcStoreConfiguration.withDefaults(mapper));
+
+            assertThrows(AbstractJdbcWorkflowStore.UncheckedSqlException.class, () ->
+                    store.appendEventAndConsumeSignal(memo(), new io.b2mash.maestro.core.spi.RunLease(
+                            UUID.randomUUID(), 0), UUID.randomUUID()));
+
+            assertFalse(conn.calls.contains("setAutoCommit(true)"), "calls were " + conn.calls);
+            assertTrue(conn.calls.contains("abort"), "calls were " + conn.calls);
+        }
+
+        @Test
+        @DisplayName("appendEventAndConsumeSignal: a serialization failure (40001) or deadlock (40P01) rolls back → false")
+        void consume_serializationFailure_rollsBackAndReportsNothingWritten() {
+            for (var state : List.of("40001", "40P01")) {
+                var conn = new ScriptedConnection(false, state);
+                var store = new TestStore(new SingleConnectionDataSource(conn.proxy()),
+                        JdbcStoreConfiguration.withDefaults(mapper));
+
+                assertFalse(store.appendEventAndConsumeSignal(memo(), new io.b2mash.maestro.core.spi.RunLease(
+                        UUID.randomUUID(), 0), UUID.randomUUID()), state);
+
+                assertTrue(conn.calls.contains("rollback"), state + ": calls were " + conn.calls);
+                assertFalse(conn.calls.contains("commit"), state + ": calls were " + conn.calls);
+                assertTrue(conn.calls.contains("setAutoCommit(true)"), state + ": calls were " + conn.calls);
+            }
+        }
+
+        private WorkflowEvent memo() {
+            return new WorkflowEvent(UUID.randomUUID(), UUID.randomUUID(), 1, EventType.SIGNAL_RECEIVED,
+                    "$maestro:awaitSignal:go", null, Instant.now());
+        }
+
         private WorkflowInstance instance() {
             var now = Instant.now();
             return WorkflowInstance.builder()
@@ -215,9 +252,15 @@ class AbstractJdbcWorkflowStoreUnitTest {
 
         final List<String> calls = new ArrayList<>();
         private final boolean rollbackFails;
+        private final String statementSqlState;
 
         ScriptedConnection(boolean rollbackFails) {
+            this(rollbackFails, "XX000");
+        }
+
+        ScriptedConnection(boolean rollbackFails, String statementSqlState) {
             this.rollbackFails = rollbackFails;
+            this.statementSqlState = statementSqlState;
         }
 
         Connection proxy() {
@@ -238,16 +281,16 @@ class AbstractJdbcWorkflowStoreUnitTest {
                             calls.add(method.getName());
                             yield null;
                         }
-                        case "prepareStatement" -> failingStatement();
+                        case "prepareStatement" -> failingStatement(statementSqlState);
                         default -> throw new UnsupportedOperationException(method.getName());
                     });
         }
 
-        private static PreparedStatement failingStatement() {
+        private static PreparedStatement failingStatement(String sqlState) {
             return (PreparedStatement) Proxy.newProxyInstance(PreparedStatement.class.getClassLoader(),
                     new Class<?>[] {PreparedStatement.class}, (p, method, args) -> switch (method.getName()) {
                         case "executeUpdate", "executeQuery", "execute" ->
-                                throw new SQLException("statement failed", "XX000");
+                                throw new SQLException("statement failed", sqlState);
                         case "close" -> null;
                         default -> method.getName().startsWith("set") ? null
                                 : unsupported(method.getName());

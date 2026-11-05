@@ -133,6 +133,15 @@ public interface EngineObserver {
     /** A workflow's {@code awaitSignal} consumed (or replayed) a signal. */
     default void signalConsumed(SignalInfo s, boolean replayed) {}
 
+    /**
+     * A delivery carried a message id already stored for the same workflow
+     * and signal name, so no row was written (delivery side, any node). A
+     * transport redelivery, a producer republish or a client retry — the
+     * signal itself is already durable. Never fires for a signal without a
+     * message id.
+     */
+    default void signalDuplicateSuppressed(SignalInfo s) {}
+
     // ── Timers ────────────────────────────────────────────────────────
 
     /** A durable timer was scheduled (or its scheduling replayed). */

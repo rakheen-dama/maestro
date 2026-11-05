@@ -128,6 +128,33 @@ class MicrometerEngineObserverTest {
     }
 
     @Test
+    @DisplayName("maestro.signal.duplicates — Counter, tags workflow/signal, live delivery side")
+    void signalDuplicateSuppressed() {
+        observer.signalDuplicateSuppressed(new SignalInfo("wf-1", "OrderWorkflow", "payment-approved", null));
+        observer.signalDuplicateSuppressed(new SignalInfo("wf-1", "OrderWorkflow", "payment-approved", null));
+
+        assertThat(registry.get("maestro.signal.duplicates")
+                .tag("workflow", "OrderWorkflow")
+                .tag("signal", "payment-approved")
+                .counter().count()).isEqualTo(2.0);
+    }
+
+    @Test
+    @DisplayName("an orphan duplicate's off-the-wire signal name never becomes a tag value — fixed placeholder")
+    void orphanDuplicateDoesNotMintSignalTagValues() {
+        for (int i = 0; i < 50; i++) {
+            observer.signalDuplicateSuppressed(new SignalInfo("wf-" + i, null, "attacker-name-" + i, null));
+        }
+
+        var counters = registry.get("maestro.signal.duplicates").counters();
+        assertThat(counters).hasSize(1);
+        var only = counters.iterator().next();
+        assertThat(only.getId().getTag("signal")).isEqualTo("unknown");
+        assertThat(only.getId().getTag("workflow")).isEqualTo("unknown");
+        assertThat(only.count()).isEqualTo(50.0);
+    }
+
+    @Test
     @DisplayName("maestro.timer.fired — Counter, tag workflow, live only")
     void timerFired() {
         var timer = new TimerInfo("wf-1", "OrderWorkflow", "sleep-1");

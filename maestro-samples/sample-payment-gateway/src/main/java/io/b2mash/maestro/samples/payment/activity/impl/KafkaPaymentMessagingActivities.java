@@ -1,6 +1,9 @@
 package io.b2mash.maestro.samples.payment.activity.impl;
 
+import io.b2mash.maestro.messaging.kafka.MaestroSignalHeaders;
+import io.b2mash.maestro.messaging.kafka.SignalMessageIds;
 import io.b2mash.maestro.samples.payment.activity.PaymentMessagingActivities;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import io.b2mash.maestro.samples.payment.domain.PaymentResult;
 import io.b2mash.maestro.samples.payment.domain.PaymentResultEvent;
 import org.slf4j.Logger;
@@ -44,7 +47,10 @@ public class KafkaPaymentMessagingActivities implements PaymentMessagingActiviti
 
         try {
             var bytes = objectMapper.writeValueAsBytes(event);
-            kafkaTemplate.send(TOPIC, orderId, bytes).get(SEND_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
+            var record = new ProducerRecord<String, byte[]>(TOPIC, orderId, bytes);
+            // Stable across retries of this activity (see SignalMessageIds).
+            MaestroSignalHeaders.setMessageId(record.headers(), SignalMessageIds.forCurrentActivity());
+            kafkaTemplate.send(record).get(SEND_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
             logger.info("Published payment result for order {}: success={}", orderId, result.success());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

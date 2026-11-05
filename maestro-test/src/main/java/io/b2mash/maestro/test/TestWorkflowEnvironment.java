@@ -276,7 +276,9 @@ public final class TestWorkflowEnvironment {
                 signalName,
                 jsonPayload,
                 false,
-                Instant.now()
+                Instant.now(),
+                null,
+                null // no message id: every pre-delivery is a distinct signal
         );
         store.saveSignal(signal);
     }

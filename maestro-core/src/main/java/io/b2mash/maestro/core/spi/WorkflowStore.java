@@ -71,6 +71,17 @@ import java.util.UUID;
  * and gives only the unique-index guarantee the engine always had. The shipped
  * JDBC store and the in-memory test store override all seven.
  *
+ * <h2>Signal identity and atomic consumption</h2>
+ * <p>Two further defaults carry the signal-idempotency guarantees:
+ * {@link #saveSignalIfAbsent} (at most one row per
+ * {@code (workflowId, signalName, messageId)}) and
+ * {@link #appendEventAndConsumeSignal} (the {@code SIGNAL_RECEIVED} memo and
+ * the consumed flip in one transaction, fenced on the run's lease). Their
+ * defaults keep the pre-V9 behaviour — no deduplication, and a two-step
+ * consume with a crash window — so a store that does not override them loses
+ * no signal but gives neither guarantee. The shipped JDBC store and the
+ * in-memory test store override both.
+ *
  * <h2>Thread Safety</h2>
  * <p>Implementations must be thread-safe. Multiple virtual threads may call
  * store methods concurrently for different workflow instances.
@@ -429,6 +440,38 @@ public interface WorkflowStore {
     void saveSignal(WorkflowSignal signal);
 
     /**
+     * Persists a signal unless one with the same identity is already stored —
+     * the delivery path's idempotent insert.
+     *
+     * <p>A signal's identity is {@code (workflowId, signalName, messageId)}.
+     * When {@link WorkflowSignal#messageId()} is non-{@code null} and a row
+     * with the same three values exists — consumed or not, adopted or still
+     * orphaned — nothing is written and this returns {@code false}: the
+     * delivery is a duplicate (a transport redelivery, a producer republish, a
+     * client retry) of a signal already durable. A signal with a {@code null}
+     * message id has no identity and is always inserted. Otherwise this
+     * behaves exactly as {@link #saveSignal}, including the store-assigned
+     * {@code receivedAt}.
+     *
+     * <p>The check and the insert must be atomic with respect to concurrent
+     * calls: two nodes delivering the same identity at once must leave exactly
+     * one row (a relational store uses a unique index on the three columns,
+     * partial on {@code message_id IS NOT NULL}).
+     *
+     * <p>The default delegates to {@link #saveSignal} and returns {@code true}
+     * — no deduplication. A store that cannot enforce identity still loses no
+     * signal; it only keeps today's at-least-once duplicates.
+     *
+     * @param signal the signal to persist
+     * @return {@code true} if a row was inserted; {@code false} if a row with
+     *         the same non-null identity already existed (nothing written)
+     */
+    default boolean saveSignalIfAbsent(WorkflowSignal signal) {
+        saveSignal(signal);
+        return true;
+    }
+
+    /**
      * Retrieves unconsumed signals for a workflow by workflow ID and signal name.
      *
      * <p>Returns signals where {@code consumed = false}. Results are ordered
@@ -462,13 +505,11 @@ public interface WorkflowStore {
      * the same statement but without locking the row (best-effort). A stale
      * lease is reported <em>silently</em> — {@code false}, nothing written.
      *
-     * <p>The engine's own consume path does <b>not</b> use this overload: once
-     * its fenced {@code SIGNAL_RECEIVED} append has committed, that memo is
-     * the durable truth and the row must follow it even if an adopter bumps
-     * the epoch in between, so it flips with the unfenced form. This overload
-     * is for a store user that wants the flip refused once the lease is
-     * stale. The default delegates to the unfenced form — see the class
-     * Javadoc.
+     * <p>The engine's own consume path does <b>not</b> use this overload: it
+     * writes the {@code SIGNAL_RECEIVED} memo and the flip together through
+     * {@link #appendEventAndConsumeSignal}. This overload is for a store user
+     * that wants the flip refused once the lease is stale. The default
+     * delegates to the unfenced form — see the class Javadoc.
      *
      * @param signalId the signal UUID to mark as consumed
      * @param lease    the consuming run's lease
@@ -477,6 +518,64 @@ public interface WorkflowStore {
      */
     default boolean markSignalConsumed(UUID signalId, RunLease lease) {
         return markSignalConsumed(signalId);
+    }
+
+    /**
+     * Consumes one signal row: appends its {@code SIGNAL_RECEIVED} memo
+     * (fenced on {@code lease}, exactly as {@link #appendEvent(WorkflowEvent,
+     * RunLease)}) and flips the row's {@code consumed} flag, as one unit.
+     *
+     * <h4>Overriding stores — atomic</h4>
+     * <p>A store that overrides this writes both or neither, in one
+     * transaction:
+     * <ul>
+     *   <li>both written → {@code true};</li>
+     *   <li>the row was no longer unconsumed (a concurrent consumer — another
+     *       parallel branch, another runner — took it first), or the
+     *       transaction lost a serialization conflict → {@code false} and
+     *       <b>nothing was written</b>: no memo, row untouched. The caller may
+     *       pick another row for the same sequence;</li>
+     *   <li>stale lease → {@link FencedWriteException}, nothing written;</li>
+     *   <li>an event already at {@code memo}'s sequence →
+     *       {@link DuplicateEventException}, nothing written.</li>
+     * </ul>
+     * Atomicity closes two holes the two-statement form leaves open: a crash
+     * between the memo and the flip left a consumed memo beside an unconsumed
+     * row that the next same-name await consumed a second time; and two
+     * consumers racing for one row both appended memos and both took its
+     * payload.
+     *
+     * <h4>The default — at-least-once</h4>
+     * <p>The default composes {@link #appendEvent(WorkflowEvent, RunLease)}
+     * and the unfenced {@link #markSignalConsumed(UUID)}, and <b>always
+     * returns {@code true} once the memo is appended</b>: the appended memo is
+     * the durable truth for its sequence, so a lost flip must not send the
+     * caller looking for another row to memoize at the same sequence. A lost
+     * flip is logged at {@code WARN}. The crash window between the two writes
+     * remains — a store relying on the default keeps the pre-V9 at-least-once
+     * consume semantics.
+     *
+     * @param memo     the {@code SIGNAL_RECEIVED} event to append;
+     *                 {@code memo.workflowInstanceId()} must equal
+     *                 {@code lease.instanceId()}
+     * @param lease    the consuming run's lease
+     * @param signalId the signal row to consume
+     * @return {@code true} if the memo was written (and, for an atomic store,
+     *         the row consumed); {@code false} only from an atomic store, when
+     *         nothing was written
+     * @throws FencedWriteException    if the lease is stale (nothing written)
+     * @throws DuplicateEventException if an event already exists at the
+     *                                 memo's sequence (nothing written)
+     */
+    default boolean appendEventAndConsumeSignal(WorkflowEvent memo, RunLease lease, UUID signalId) {
+        appendEvent(memo, lease);
+        if (!markSignalConsumed(signalId)) {
+            org.slf4j.LoggerFactory.getLogger(WorkflowStore.class).warn(
+                    "Signal row {} was already consumed when instance {} memoized it at seq {} — the "
+                            + "memo stands (this store's consume is not atomic)",
+                    signalId, memo.workflowInstanceId(), memo.sequenceNumber());
+        }
+        return true;
     }
 
     /**

@@ -45,6 +45,7 @@ public final class RecordingEngineObserver implements EngineObserver {
     private final List<ActivityFailure> activityFailed = new CopyOnWriteArrayList<>();
     private final List<SignalInfo> signalPersisted = new CopyOnWriteArrayList<>();
     private final List<SignalConsumption> signalConsumed = new CopyOnWriteArrayList<>();
+    private final List<SignalInfo> signalDuplicates = new CopyOnWriteArrayList<>();
     private final List<TimerCallback> timerScheduled = new CopyOnWriteArrayList<>();
     private final List<TimerCallback> timerFired = new CopyOnWriteArrayList<>();
     private final List<TimerCallback> timerCancelled = new CopyOnWriteArrayList<>();
@@ -138,6 +139,12 @@ public final class RecordingEngineObserver implements EngineObserver {
     }
 
     @Override
+    public void signalDuplicateSuppressed(SignalInfo s) {
+        record("signalDuplicateSuppressed", s);
+        signalDuplicates.add(s);
+    }
+
+    @Override
     public void timerScheduled(TimerInfo t, boolean replayed) {
         record("timerScheduled", t, replayed);
         timerScheduled.add(new TimerCallback(t, replayed));
@@ -215,6 +222,7 @@ public final class RecordingEngineObserver implements EngineObserver {
     public List<ActivityFailure> activityFailed() { return List.copyOf(activityFailed); }
     public List<SignalInfo> signalPersisted() { return List.copyOf(signalPersisted); }
     public List<SignalConsumption> signalConsumed() { return List.copyOf(signalConsumed); }
+    public List<SignalInfo> signalDuplicates() { return List.copyOf(signalDuplicates); }
     public List<TimerCallback> timerScheduled() { return List.copyOf(timerScheduled); }
     public List<TimerCallback> timerFired() { return List.copyOf(timerFired); }
     public List<TimerCallback> timerCancelled() { return List.copyOf(timerCancelled); }

@@ -37,6 +37,15 @@ import java.util.UUID;
  *                            engine logic parses or branches on its contents,
  *                            and its absence degrades to an untraced (fresh
  *                            root) resume, never an error.
+ * @param messageId           the producer-assigned identity of the logical
+ *                            signal this row records, or {@code null} (no
+ *                            identity, never deduplicated). A store keeps at
+ *                            most one row per
+ *                            {@code (workflowId, signalName, messageId)} — see
+ *                            {@link io.b2mash.maestro.core.spi.WorkflowStore#saveSignalIfAbsent}.
+ *                            Like {@code traceContext} it is metadata: the
+ *                            consume path and the {@code SIGNAL_RECEIVED} memo
+ *                            never read it.
  * @see io.b2mash.maestro.core.spi.WorkflowStore#saveSignal(WorkflowSignal)
  * @see io.b2mash.maestro.core.observe.TraceContextHolder
  */
@@ -48,17 +57,50 @@ public record WorkflowSignal(
         @Nullable JsonNode payload,
         boolean consumed,
         Instant receivedAt,
-        @Nullable String traceContext
+        @Nullable String traceContext,
+        @Nullable String messageId
 ) {
 
     /**
-     * Creates a signal with no trace context — the shape of every signal that
-     * did not arrive over a traced transport.
+     * Creates a signal with no message identity — the shape of every signal
+     * whose producer did not name it.
      *
      * <p><b>Never use this to copy an existing signal.</b> A copy site (status
      * transition, orphan adoption) must call the canonical constructor and
-     * carry {@link #traceContext()} forward; this overload would silently drop
+     * carry {@link #messageId()} forward; this overload would silently drop
      * it.
+     *
+     * @param id                 primary key
+     * @param workflowInstanceId owning instance UUID, {@code null} pre-delivery
+     * @param workflowId         business workflow ID
+     * @param signalName         the signal name
+     * @param payload            signal data, may be {@code null}
+     * @param consumed           whether the signal has been consumed
+     * @param receivedAt         when the signal was persisted
+     * @param traceContext       raw W3C {@code traceparent}, or {@code null}
+     */
+    public WorkflowSignal(
+            UUID id,
+            @Nullable UUID workflowInstanceId,
+            String workflowId,
+            String signalName,
+            @Nullable JsonNode payload,
+            boolean consumed,
+            Instant receivedAt,
+            @Nullable String traceContext
+    ) {
+        this(id, workflowInstanceId, workflowId, signalName, payload, consumed, receivedAt, traceContext, null);
+    }
+
+    /**
+     * Creates a signal with no trace context and no message identity — the
+     * shape of every signal that did not arrive over a traced transport from
+     * a producer that named it.
+     *
+     * <p><b>Never use this to copy an existing signal.</b> A copy site (status
+     * transition, orphan adoption) must call the canonical constructor and
+     * carry {@link #traceContext()} and {@link #messageId()} forward; this
+     * overload would silently drop them.
      *
      * @param id                 primary key
      * @param workflowInstanceId owning instance UUID, {@code null} pre-delivery
@@ -77,6 +119,6 @@ public record WorkflowSignal(
             boolean consumed,
             Instant receivedAt
     ) {
-        this(id, workflowInstanceId, workflowId, signalName, payload, consumed, receivedAt, null);
+        this(id, workflowInstanceId, workflowId, signalName, payload, consumed, receivedAt, null, null);
     }
 }

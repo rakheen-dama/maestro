@@ -1,6 +1,9 @@
 package io.b2mash.maestro.samples.loan.underwriting.activity.impl;
 
+import io.b2mash.maestro.messaging.kafka.MaestroSignalHeaders;
+import io.b2mash.maestro.messaging.kafka.SignalMessageIds;
 import io.b2mash.maestro.samples.loan.underwriting.activity.DecisionMessagingActivities;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import io.b2mash.maestro.samples.loan.underwriting.domain.UnderwritingDecision;
 import io.b2mash.maestro.samples.loan.underwriting.queue.PendingReviewRegistry;
 import org.slf4j.Logger;
@@ -43,10 +46,13 @@ public class KafkaDecisionMessagingActivities implements DecisionMessagingActivi
     public void publishDecision(UnderwritingDecision decision) {
         try {
             var bytes = objectMapper.writeValueAsBytes(decision);
+            var record = new ProducerRecord<String, byte[]>(TOPIC, decision.loanId(), bytes);
+            // Stable across retries of this activity: one decision signal at the
+            // loan service however often the send is repeated.
+            MaestroSignalHeaders.setMessageId(record.headers(), SignalMessageIds.forCurrentActivity());
             // Bounded wait: an unresponsive broker must fail the activity (and
             // enter the durable retry policy) instead of pinning the thread.
-            kafkaTemplate.send(TOPIC, decision.loanId(), bytes)
-                    .get(SEND_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
+            kafkaTemplate.send(record).get(SEND_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new RuntimeException(

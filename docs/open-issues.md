@@ -2890,6 +2890,23 @@ within a bound far below a typical client timeout and persists exactly one row
 — pinned by a unit test with a blocking `SignalNotifier` fake and an
 `@Tag("integration")` test that pauses a real Valkey container.
 
+**Addendum (2026-11) — the caller-supplied dedup key exists now.** The
+"larger API decision" above was taken as signal idempotency (migration V9,
+release notes "Signals — idempotent delivery and atomic consumption"). A
+signal carries a message id and the store keeps at most one row per
+`(workflow_id, signal_name, message_id)`: `WorkflowHandle.signal(name,
+payload, messageId)` (stored as `client:<id>`) makes a client retry a no-op,
+and the Kafka transport identifies every record (envelope `env:<id>`, header
+`hdr:<topic>:<id>`, else the topic-id coordinate) so a redelivery is
+suppressed. The same change made consumption atomic — the `SIGNAL_RECEIVED`
+memo and the consumed flip are one transaction, and a consumer that loses the
+row moves to the next one or parks instead of proceeding with a row another
+consumer took. The loan sample's REST signal endpoints accept an
+`Idempotency-Key` header, the chaos `WorkloadDriver` sends one per logical
+event, and `InvariantChecker` I4 now fails on `consumedTwin=true` too. A
+caller that passes no id still gets one row per call; the off-thread
+notification fix above remains what bounds the call itself.
+
 ---
 
 ### Issue 33 — Admin retry attributes the failure to the highest-sequenced `SIGNAL_TIMEOUT`, which can be a caught gate {#issue-33}

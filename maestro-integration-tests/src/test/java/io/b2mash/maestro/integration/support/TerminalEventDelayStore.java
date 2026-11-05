@@ -173,6 +173,16 @@ public final class TerminalEventDelayStore implements WorkflowStore {
     }
 
     @Override
+    public boolean saveSignalIfAbsent(WorkflowSignal signal) {
+        return delegate.saveSignalIfAbsent(signal);
+    }
+
+    @Override
+    public boolean appendEventAndConsumeSignal(WorkflowEvent memo, RunLease lease, UUID signalId) {
+        return delegate.appendEventAndConsumeSignal(memo, lease, signalId);
+    }
+
+    @Override
     public List<WorkflowSignal> getUnconsumedSignals(String workflowId, String signalName) {
         return delegate.getUnconsumedSignals(workflowId, signalName);
     }

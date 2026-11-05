@@ -207,6 +207,44 @@ class MaestroClientTest {
         }
 
         @Test
+        @DisplayName("signal(name, payload, messageId) twice with one id — one signal row, the retry returns false")
+        void signalWithMessageIdIsIdempotent() {
+            runner.run(context -> {
+                var client = context.getBean(MaestroClient.class);
+                var store = context.getBean(WorkflowStore.class);
+
+                // No workflow yet: the signals are pre-delivered (orphans), the
+                // path a retried HTTP request most often races.
+                var handle = client.getWorkflow("idem-1");
+                assertTrue(handle.signal(ParkingWorkflow.SIGNAL, "go", "req-1"));
+                assertEquals(false, handle.signal(ParkingWorkflow.SIGNAL, "go", "req-1"),
+                        "the retry of req-1 is a duplicate");
+                assertTrue(handle.signal(ParkingWorkflow.SIGNAL, "go", "req-2"));
+                assertEquals(2, store.getUnconsumedSignals("idem-1", ParkingWorkflow.SIGNAL).size());
+            });
+        }
+
+        @Test
+        @DisplayName("signal ids: 505 characters deduplicate; 506 (513 with the client: prefix) are no identity")
+        void signalIdLimitIsAfterTheClientPrefix() {
+            runner.run(context -> {
+                var store = context.getBean(WorkflowStore.class);
+                var handle = context.getBean(MaestroClient.class).getWorkflow("idem-limit");
+
+                var atLimit = "a".repeat(505);
+                assertTrue(handle.signal(ParkingWorkflow.SIGNAL, "x", atLimit));
+                assertEquals(false, handle.signal(ParkingWorkflow.SIGNAL, "x", atLimit),
+                        "505 characters + 'client:' = 512: kept, so the retry is a duplicate");
+
+                var overLimit = "b".repeat(506);
+                assertTrue(handle.signal(ParkingWorkflow.SIGNAL, "y", overLimit));
+                assertTrue(handle.signal(ParkingWorkflow.SIGNAL, "y", overLimit),
+                        "506 characters exceed the stored limit: no identity, delivered, not deduplicated");
+                assertEquals(3, store.getUnconsumedSignals("idem-limit", ParkingWorkflow.SIGNAL).size());
+            });
+        }
+
+        @Test
         @DisplayName("query reads state from a running workflow")
         void queryReadsRunningState() {
             runner.run(context -> {

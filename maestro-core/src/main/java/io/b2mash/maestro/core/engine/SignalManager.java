@@ -123,7 +123,30 @@ final class SignalManager {
      */
     static final int MAX_IN_FLIGHT_NOTIFICATIONS = 1000;
 
+    /**
+     * Rows one consume pass tries before giving up for this pass. Each failed
+     * attempt means the chosen row was taken by a concurrent consumer (another
+     * parallel branch, another runner) or the store lost a serialization
+     * conflict; the next attempt picks the earliest row still unconsumed. The
+     * bound only stops a store that refuses every attempt from spinning the
+     * workflow thread — a pass that hits it falls through to the park path,
+     * which re-decides on the next wake or re-check.
+     */
+    static final int MAX_CONSUME_ATTEMPTS = 10;
+
+    /**
+     * Longest message id a delivery keeps. A longer one is treated as absent —
+     * delivered, not deduplicated — never a failed delivery: like an
+     * over-long trace context, identity metadata must never cost a signal its
+     * delivery.
+     */
+    static final int MAX_MESSAGE_ID_LENGTH = 512;
+
     private final AtomicInteger notificationsInFlight = new AtomicInteger();
+
+    /** Whether the invalid message id WARN has been logged (once per manager; DEBUG after). */
+    private final java.util.concurrent.atomic.AtomicBoolean invalidIdWarned =
+            new java.util.concurrent.atomic.AtomicBoolean();
 
     private final WorkflowStore store;
     private final LifecycleEventSink lifecycleEventSink;
@@ -378,6 +401,39 @@ final class SignalManager {
      * @param payload    the signal payload, or {@code null}
      */
     void deliverSignal(String workflowId, String signalName, @Nullable Object payload) {
+        deliverSignal(workflowId, signalName, payload, null);
+    }
+
+    /**
+     * Delivers a signal carrying the producer's message identity.
+     *
+     * <p>As {@link #deliverSignal(String, String, Object)}, but the row is
+     * written through {@link WorkflowStore#saveSignalIfAbsent}: when a row
+     * with the same {@code (workflowId, signalName, messageId)} already exists
+     * the delivery is a duplicate — a transport redelivery, a producer
+     * republish, a client retry — and nothing is written,
+     * {@code signalPersisted} is not emitted ({@code signalDuplicateSuppressed}
+     * is), and this returns {@code false}. The local unpark and the
+     * cross-instance wake still run either way: waking an await that has
+     * nothing new to read is harmless, and skipping it could strand an await
+     * whose wake for the original delivery was lost.
+     *
+     * <p>A {@code null} id, one longer than {@link #MAX_MESSAGE_ID_LENGTH}, or
+     * one containing a control character is no identity: the signal is always
+     * inserted. Callers namespace their ids by source (the Kafka transport:
+     * {@code env:}, {@code hdr:<topic>:}, {@code kafka:}; the client handle:
+     * {@code client:}) so no source can forge another's key.
+     *
+     * @param workflowId the target workflow's business ID
+     * @param signalName the signal name
+     * @param payload    the signal payload, or {@code null}
+     * @param messageId  the producer's identity for this logical signal, or
+     *                   {@code null}
+     * @return {@code true} if a new row was persisted; {@code false} if the
+     *         delivery was a duplicate of a row already stored
+     */
+    boolean deliverSignal(String workflowId, String signalName, @Nullable Object payload,
+                          @Nullable String messageId) {
         // Determine workflow instance ID (may be null for pre-delivery)
         UUID workflowInstanceId = null;
         String workflowType = null;
@@ -408,6 +464,28 @@ final class SignalManager {
             traceContext = null;
         }
 
+        // The same bound protects the message id, for the same reason: the id
+        // is identity metadata, and an over-long one must degrade to "no
+        // identity" (delivered, not deduplicated), never fail the insert.
+        // A control character (NUL above all, which Postgres TEXT rejects)
+        // would fail the insert the same way, so it is treated as absent too.
+        // The limit applies to the id as passed — a transport's namespaced form
+        // ("env:", "hdr:<topic>:", "kafka:", "client:") included.
+        if (messageId != null && (messageId.length() > MAX_MESSAGE_ID_LENGTH || hasControlChar(messageId))) {
+            var why = messageId.length() > MAX_MESSAGE_ID_LENGTH
+                    ? messageId.length() + " characters (limit " + MAX_MESSAGE_ID_LENGTH + ")"
+                    : "a control character";
+            if (invalidIdWarned.compareAndSet(false, true)) {
+                logger.warn("Ignoring a message id with {} for signal '{}' on workflow '{}'. The signal is "
+                                + "delivered without deduplication (logged once; later occurrences at DEBUG).",
+                        why, signalName, workflowId);
+            } else {
+                logger.debug("Ignoring a message id with {} for signal '{}' on workflow '{}'",
+                        why, signalName, workflowId);
+            }
+            messageId = null;
+        }
+
         // Persist the signal — always before in-memory delivery
         var signalPayload = payload != null ? serializer.serialize(payload) : null;
         var signal = new WorkflowSignal(
@@ -418,10 +496,18 @@ final class SignalManager {
                 signalPayload,
                 false,
                 Instant.now(),
-                traceContext
+                traceContext,
+                messageId
         );
-        store.saveSignal(signal);
-        observer.signalPersisted(new SignalInfo(workflowId, workflowType, signalName, traceContext));
+        var info = new SignalInfo(workflowId, workflowType, signalName, traceContext);
+        var persisted = store.saveSignalIfAbsent(signal);
+        if (persisted) {
+            observer.signalPersisted(info);
+        } else {
+            logger.debug("Suppressed duplicate signal '{}' for workflow '{}' (messageId={}) — already stored",
+                    signalName, workflowId, messageId);
+            observer.signalDuplicateSuppressed(info);
+        }
 
         // Unpark if waiting locally
         var parkKey = workflowId + ":signal:" + signalName;
@@ -433,6 +519,18 @@ final class SignalManager {
         }
 
         logger.debug("Delivered signal '{}' to workflow '{}'", signalName, workflowId);
+        return persisted;
+    }
+
+    /** Whether {@code id} contains a character below {@code U+0020} or {@code U+007F}. */
+    private static boolean hasControlChar(String id) {
+        for (int i = 0; i < id.length(); i++) {
+            var c = id.charAt(i);
+            if (c < 0x20 || c == 0x7F) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -545,8 +643,13 @@ final class SignalManager {
         // Check for already-arrived signals (self-recovery)
         var unconsumed = store.getUnconsumedSignals(ctx.workflowId(), signalName);
         if (!unconsumed.isEmpty()) {
-            var signal = unconsumed.getFirst();
-            return consumeSignal(ctx, seq, stepName, signalName, signal, type);
+            var attempt = consumeSignal(ctx, seq, stepName, signalName, unconsumed.getFirst(), type);
+            if (attempt.consumed()) {
+                return attempt.value();
+            }
+            // Every visible row was taken by a concurrent consumer (another
+            // parallel branch awaiting the same name) — this await has nothing
+            // to consume after all, and continues as if none had arrived.
         }
 
         // Review Focus 2: nothing to wait for. Time out now, memoized, and
@@ -569,7 +672,10 @@ final class SignalManager {
                 // us. Without a notifier there is no such race to close.
                 var raced = store.getUnconsumedSignals(ctx.workflowId(), signalName);
                 if (!raced.isEmpty()) {
-                    return consumeSignal(ctx, seq, stepName, signalName, raced.getFirst(), type);
+                    var attempt = consumeSignal(ctx, seq, stepName, signalName, raced.getFirst(), type);
+                    if (attempt.consumed()) {
+                        return attempt.value();
+                    }
                 }
             }
 
@@ -728,7 +834,9 @@ final class SignalManager {
      * <p>The one rule, applied on every pass:
      * <ol>
      *   <li>A visible unconsumed signal wins: consume it at the outcome slot,
-     *       best-effort cancel the deadline row, return.</li>
+     *       best-effort cancel the deadline row, return. If a concurrent
+     *       consumer (a sibling branch awaiting the same name) takes every
+     *       visible row first, the pass continues as if none were visible.</li>
      *   <li>Otherwise, if the timer row is no longer {@code PENDING} (fired by
      *       a poller, or cancelled), or the deadline has passed: self-fire a
      *       still-{@code PENDING} row (CAS; the result does not matter), re-read
@@ -779,8 +887,15 @@ final class SignalManager {
                         () -> store.getUnconsumedSignals(workflowId, signalName),
                         List.<WorkflowSignal>of());
                 if (!signals.isEmpty()) {
-                    return consumeOutcome(ctx, outcomeSeq, stepName, signalName, signals.getFirst(), type,
-                            timerDbId);
+                    var attempt = consumeOutcome(ctx, outcomeSeq, stepName, signalName, signals.getFirst(),
+                            type, timerDbId);
+                    if (attempt.consumed()) {
+                        return attempt.value();
+                    }
+                    // Nothing takeable this pass — every row went to a
+                    // concurrent consumer, or the store refused the bounded
+                    // attempts. Decide as if no signal were visible: the
+                    // deadline check below, else park until the next wake.
                 }
 
                 // 2. The durable row arbitrates the deadline. A blip reads as
@@ -817,8 +932,25 @@ final class SignalManager {
                         continue;
                     }
                     if (!late.isEmpty()) {
-                        return consumeOutcome(ctx, outcomeSeq, stepName, signalName, late.getFirst(), type,
-                                timerDbId);
+                        var attempt = consumeOutcome(ctx, outcomeSeq, stepName, signalName, late.getFirst(),
+                                type, timerDbId);
+                        if (attempt.consumed()) {
+                            return attempt.value();
+                        }
+                        if (attempt.rowsRemain()) {
+                            // Rows are still visible but the store refused every
+                            // bounded attempt. A visible signal must not lose to
+                            // the deadline, and retrying at once would spin: park
+                            // one re-check interval and decide again.
+                            logger.warn("Workflow '{}' could not consume a visible signal '{}' at its deadline "
+                                            + "in {} attempts — parking one more re-check interval ({}) before "
+                                            + "deciding the timeout",
+                                    workflowId, signalName, MAX_CONSUME_ATTEMPTS, wakeRecheckInterval);
+                            parkChunk(ctx, parkKey, signalName, wakeRecheckInterval);
+                            continue;
+                        }
+                        // Every late row was taken by a concurrent consumer:
+                        // none is left for this await, which times out.
                     }
                     // Memoize the timeout BEFORE throwing (Issue 19): replay
                     // re-raises it instead of consuming a signal that arrived
@@ -917,11 +1049,17 @@ final class SignalManager {
      * Records a signal as the outcome of a parked await, best-effort cancels
      * the now-moot deadline row (the {@code SIGNAL_RECEIVED} memo is the
      * truth; a row left {@code PENDING} only fires later for nobody), and
-     * closes the park.
+     * closes the park. An attempt that consumed nothing (every row taken
+     * concurrently, or the bound reached) changes nothing and is returned
+     * as is — the await is still parked.
      */
-    private <T> T consumeOutcome(WorkflowContext ctx, int outcomeSeq, String stepName, String signalName,
-                                 WorkflowSignal signal, Class<T> type, @Nullable UUID timerDbId) {
+    private <T> ConsumeAttempt<T> consumeOutcome(WorkflowContext ctx, int outcomeSeq, String stepName,
+                                                 String signalName, WorkflowSignal signal, Class<T> type,
+                                                 @Nullable UUID timerDbId) {
         var result = consumeSignal(ctx, outcomeSeq, stepName, signalName, signal, type);
+        if (!result.consumed()) {
+            return result;
+        }
         if (timerDbId != null) {
             try {
                 // Fenced on the run's lease; a stale lease cannot reach here,
@@ -1120,30 +1258,105 @@ final class SignalManager {
 
     // ── Internal helpers ────────────────────────────────────────────────
 
-    private <T> T consumeSignal(
-            WorkflowContext ctx, int seq, String stepName,
-            String signalName, WorkflowSignal signal, Class<T> type
-    ) {
-        // Persist the SIGNAL_RECEIVED event BEFORE marking consumed.
-        // If appendEvent fails, the signal stays unconsumed and can be
-        // retried on recovery. The reverse order would lose the signal.
-        // If the CAS below then loses, the appended event is already the
-        // durable memoized truth for this sequence — consuming a different
-        // row now would contradict the event log on replay, so we proceed.
-        appendEvent(ctx, seq, EventType.SIGNAL_RECEIVED, stepName, signal.payload());
-        // Deliberately the UNFENCED flip. The fenced append above has committed
-        // under this run's lease, so the SIGNAL_RECEIVED memo is now the
-        // durable truth whatever happens next — including an adopter bumping
-        // the epoch in the gap before this line. A fenced flip would then
-        // return false and leave the row unconsumed beside a memo that says it
-        // was, and a later same-name awaitSignal would consume it a second
-        // time. The row must follow the memo, so this write carries no lease.
-        if (!store.markSignalConsumed(signal.id())) {
-            logger.warn("Signal '{}' (id={}) for workflow '{}' was already consumed by a "
-                            + "concurrent consumer — proceeding with the memoized SIGNAL_RECEIVED "
-                            + "event at seq {}",
-                    signalName, signal.id(), ctx.workflowId(), seq);
+    /**
+     * Outcome of one bounded consume pass ({@link #consumeSignal}).
+     *
+     * @param consumed   whether a row was consumed and memoized at the slot
+     * @param value      the consumed payload, deserialized — meaningful only
+     *                   when {@code consumed} (a {@code null} payload is a
+     *                   legitimate value)
+     * @param rowsRemain when nothing was consumed: whether unconsumed rows were
+     *                   still visible when the pass gave up (the attempt bound
+     *                   was reached), as opposed to every row having been
+     *                   taken by a concurrent consumer
+     */
+    private record ConsumeAttempt<T>(boolean consumed, @Nullable T value, boolean rowsRemain) {
+
+        static <T> ConsumeAttempt<T> taken(@Nullable T value) {
+            return new ConsumeAttempt<>(true, value, false);
         }
+
+        static <T> ConsumeAttempt<T> nothingTaken(boolean rowsRemain) {
+            return new ConsumeAttempt<>(false, null, rowsRemain);
+        }
+    }
+
+    /**
+     * Consumes one unconsumed signal row at {@code seq}: its
+     * {@code SIGNAL_RECEIVED} memo and its consumed flip are written together
+     * by {@link WorkflowStore#appendEventAndConsumeSignal} (one transaction in
+     * the shipped stores, fenced on the run's lease).
+     *
+     * <p>Tries {@code first}, then — each time the store reports the row was
+     * no longer unconsumed (a concurrent consumer took it; nothing was
+     * written) — the earliest row still unconsumed, at most
+     * {@link #MAX_CONSUME_ATTEMPTS} times. Before the atomic write, a lost
+     * flip appended its memo anyway and the run proceeded with the payload of
+     * a row another consumer also took — two parallel branches awaiting one
+     * name both consumed one signal — and a crash between the memo and the
+     * flip left a consumed memo beside an unconsumed row that the next
+     * same-name await consumed a second time.
+     *
+     * <p>The memo's payload is the raw signal payload, exactly as before: a
+     * replay reads it and nothing else (the message id is never memoized).
+     *
+     * @return the consumed payload, or "nothing taken" — the caller then
+     *         continues as if no signal were visible (the park path)
+     * @throws FencedWriteException    the lease is stale; the run is marked
+     *                                 stale, nothing was written
+     * @throws DuplicateEventException another runner owns {@code seq}; the run
+     *                                 is marked stale, nothing was written
+     */
+    private <T> ConsumeAttempt<T> consumeSignal(
+            WorkflowContext ctx, int seq, String stepName,
+            String signalName, WorkflowSignal first, Class<T> type
+    ) {
+        @Nullable WorkflowSignal candidate = first;
+        for (int attempt = 1; attempt <= MAX_CONSUME_ATTEMPTS && candidate != null; attempt++) {
+            if (consumeRow(ctx, seq, stepName, candidate)) {
+                return ConsumeAttempt.taken(consumed(ctx, seq, stepName, signalName, candidate, type));
+            }
+            logger.debug("Signal '{}' row {} for workflow '{}' was taken by a concurrent consumer before seq {} "
+                            + "could memoize it (attempt {}/{}) — trying the next unconsumed row",
+                    signalName, candidate.id(), ctx.workflowId(), seq, attempt, MAX_CONSUME_ATTEMPTS);
+            var remaining = store.getUnconsumedSignals(ctx.workflowId(), signalName);
+            candidate = remaining.isEmpty() ? null : remaining.getFirst();
+        }
+        return ConsumeAttempt.nothingTaken(candidate != null);
+    }
+
+    /**
+     * One atomic memo-and-flip of {@code signal} at {@code seq}. A fence or a
+     * slot collision marks the run stale (sticky, R33) and propagates — the
+     * same handling as every other memo append ({@link #appendEvent}).
+     *
+     * @return {@code true} if consumed; {@code false} if the row was no longer
+     *         unconsumed and nothing was written
+     */
+    private boolean consumeRow(WorkflowContext ctx, int seq, String stepName, WorkflowSignal signal) {
+        var memo = new WorkflowEvent(
+                UUID.randomUUID(),
+                ctx.workflowInstanceId(),
+                seq,
+                EventType.SIGNAL_RECEIVED,
+                stepName,
+                signal.payload(),
+                Instant.now()
+        );
+        try {
+            return store.appendEventAndConsumeSignal(memo, ctx.lease(), signal.id());
+        } catch (FencedWriteException fenced) {
+            ctx.cancellation().requestStale(fenced.staleDetail());
+            throw fenced;
+        } catch (DuplicateEventException staleRun) {
+            ctx.cancellation().requestStale("append collision at sequence " + seq);
+            throw staleRun;
+        }
+    }
+
+    /** Everything after a successful consume: lifecycle event, observer, payload. */
+    private <T> @Nullable T consumed(WorkflowContext ctx, int seq, String stepName, String signalName,
+                                     WorkflowSignal signal, Class<T> type) {
         publishLifecycleEvent(ctx, stepName, LifecycleEventType.SIGNAL_RECEIVED);
         // The durable hop (design §4.3(b)): the row's trace context reaches the
         // observer on the workflow thread — possibly a different thread on a

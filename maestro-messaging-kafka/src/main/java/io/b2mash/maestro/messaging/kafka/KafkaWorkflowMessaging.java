@@ -57,8 +57,19 @@ import java.util.function.Consumer;
  * error handler redelivers the record with exponential backoff and, once the
  * attempt budget is spent, publishes it to {@code <topic><deadLetterSuffix>}.
  * The offset is committed only after the handler succeeds or the record is
- * dead-lettered, so a message is never acknowledged unprocessed. Handlers may
- * therefore be re-invoked with the same message and must be idempotent.
+ * dead-lettered, so a message is never acknowledged unprocessed. A handler may
+ * therefore be re-invoked with the same message.
+ *
+ * <h2>Message identity</h2>
+ * <p>Every message handed to a signal handler carries a resolved
+ * {@link SignalMessage#messageId()} — the envelope's, else the
+ * {@value MaestroSignalHeaders#MESSAGE_ID} header's, else the record's
+ * topic-id/partition/offset coordinate (see {@link KafkaSignalIdentity}) —
+ * which the engine's handler delivers with, so a redelivered record is
+ * suppressed rather than persisted as a second signal. {@link #publishSignal}
+ * writes the envelope id into the header as well. A record for which none of
+ * the three can be resolved is delivered without an id and is not
+ * deduplicated.
  *
  * <h2>Thread Safety</h2>
  * <p>This class is thread-safe. Publishing can be called concurrently from
@@ -91,6 +102,7 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
     private final KafkaMessagingConfig config;
     private final @Nullable KafkaTracePropagation tracePropagation;
     private final Duration sendTimeout;
+    private final KafkaSignalIdentity signalIdentity;
     private final List<ConcurrentMessageListenerContainer<String, byte[]>> containers =
             new CopyOnWriteArrayList<>();
 
@@ -145,6 +157,7 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
         this.config = config;
         this.tracePropagation = tracePropagation;
         this.sendTimeout = sendTimeoutFor(producerConfigOf(kafkaTemplate));
+        this.signalIdentity = new KafkaSignalIdentity(consumerFactory);
     }
 
     /**
@@ -256,7 +269,13 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
     public void publishSignal(String serviceName, SignalMessage message) {
         var topic = resolveSignalTopic(serviceName);
         var key = message.workflowId();
-        send(topic, key, message);
+        var record = tracedRecord(topic, key, serialize(message));
+        // The envelope already carries the id; the header repeats it so a
+        // consumer that reads headers only (a tap, a bridge) sees it too.
+        if (message.messageId() != null && !message.messageId().isBlank()) {
+            MaestroSignalHeaders.setMessageId(record.headers(), message.messageId());
+        }
+        send(topic, key, record);
     }
 
     @Override
@@ -289,7 +308,13 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
         // only place the raw ConsumerRecord — and therefore its W3C headers — is
         // visible before the payload-typed handler runs.
         var container = createContainer(topic, record -> {
-            var message = deserialize(record.value(), SignalMessage.class);
+            var envelope = deserialize(record.value(), SignalMessage.class);
+            // Identity: envelope field → maestro-message-id header → the
+            // record's topic-id coordinate (KafkaSignalIdentity). The handler
+            // delivers with it, so a redelivered record is suppressed.
+            var messageId = signalIdentity.resolve(envelope.messageId(), record);
+            var message = java.util.Objects.equals(messageId, envelope.messageId())
+                    ? envelope : envelope.withMessageId(messageId);
             if (tracePropagation == null) {
                 handler.accept(message);
             } else {
@@ -318,8 +343,7 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
 
     // ── Internal helpers ─────────────────────────────────────────────────
 
-    private void send(String topic, String key, Object message) {
-        var record = tracedRecord(topic, key, serialize(message));
+    private void send(String topic, String key, ProducerRecord<String, byte[]> record) {
         try {
             // Block on the future to ensure at-least-once delivery, but never
             // without bound: an unacknowledged record must surface as a failure
@@ -376,6 +400,9 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
         // from poll() stops the container silently; with one it retries, so a
         // credential or ACL fix is picked up without a restart.
         containerProps.setAuthExceptionRetryInterval(AUTH_EXCEPTION_RETRY_INTERVAL);
+        // A (re)assignment drops the cached topic id, so a topic recreated
+        // under the same name is never identified by its old incarnation's id.
+        containerProps.setConsumerRebalanceListener(signalIdentity.rebalanceListener());
         var container = new ConcurrentMessageListenerContainer<>(consumerFactory, containerProps);
         container.setCommonErrorHandler(config.redeliveryEnabled()
                 ? KafkaRedeliveryErrorHandlers.deadLettering(

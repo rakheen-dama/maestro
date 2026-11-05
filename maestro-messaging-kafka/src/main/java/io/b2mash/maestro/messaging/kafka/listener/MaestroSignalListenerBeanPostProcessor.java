@@ -3,6 +3,7 @@ package io.b2mash.maestro.messaging.kafka.listener;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.messaging.kafka.KafkaMessagingConfig;
 import io.b2mash.maestro.messaging.kafka.KafkaRedeliveryErrorHandlers;
+import io.b2mash.maestro.messaging.kafka.KafkaSignalIdentity;
 import io.b2mash.maestro.messaging.kafka.KafkaTopicVerifier;
 import io.b2mash.maestro.messaging.kafka.KafkaTracePropagation;
 import io.b2mash.maestro.messaging.kafka.KafkaWorkflowMessaging;
@@ -64,11 +65,24 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * <h2>Per-Message Flow</h2>
  * <pre>
  * Kafka message (byte[])
+ *   → resolve the message id (maestro-message-id header, else the record's
+ *     topic-id coordinate — {@link KafkaSignalIdentity})
  *   → deserialize to method parameter type (Jackson 3)
  *   → invoke annotated method
  *   → extract {@link SignalRouting} (workflowId + payload)
- *   → call {@link WorkflowExecutor#deliverSignal}
+ *   → call {@link WorkflowExecutor#deliverSignal(String, String, Object, String)}
  * </pre>
+ *
+ * <h2>Idempotency</h2>
+ * <p>The engine persists at most one signal per {@code (workflowId,
+ * signalName, messageId)}, so a record redelivered after a crash or rebalance
+ * (its signal row committed, its offset not) is suppressed and acknowledged.
+ * A <em>republished</em> record (a producer retry at a new offset) is
+ * suppressed only when the producer set the
+ * {@code maestro-message-id} header ({@code MaestroSignalHeaders}); without it
+ * the republish is a second signal. Two registrations that route the same
+ * record to the same workflow and signal name share its coordinate, so the
+ * second delivery is a duplicate.
  *
  * <h2>Failure Handling</h2>
  * <p>Anything that throws — a deserialization failure, the user's routing
@@ -184,11 +198,15 @@ public class MaestroSignalListenerBeanPostProcessor
         var listenerObservation = ctx.getEnvironment()
                 .getProperty("spring.kafka.listener.observation-enabled", Boolean.class);
 
+        // One topic-id cache for every listener container (KafkaSignalIdentity).
+        var signalIdentity = new KafkaSignalIdentity(consumerFactory);
+
         logger.info("Activating {} @MaestroSignalListener registration(s)", registrations.size());
 
         for (var reg : registrations) {
             var container = createListenerContainer(reg, consumerFactory, executor, objectMapper, baseGroup,
-                    kafkaTemplate, redelivery, fatalOnMissing, tracePropagation, listenerObservation);
+                    kafkaTemplate, redelivery, fatalOnMissing, tracePropagation, listenerObservation,
+                    signalIdentity);
             containers.add(container);
             container.start();
 
@@ -286,7 +304,8 @@ public class MaestroSignalListenerBeanPostProcessor
             MaestroProperties.RedeliveryProperties redelivery,
             boolean fatalOnMissing,
             @Nullable KafkaTracePropagation tracePropagation,
-            @Nullable Boolean listenerObservation
+            @Nullable Boolean listenerObservation,
+            KafkaSignalIdentity signalIdentity
     ) {
         var groupId = reg.groupIdSuffix().isEmpty()
                 ? baseGroup
@@ -312,12 +331,18 @@ public class MaestroSignalListenerBeanPostProcessor
         // Javadoc for why.
         containerProps.setObservationEnabled(
                 listenerObservation != null ? listenerObservation : tracePropagation != null);
+        containerProps.setConsumerRebalanceListener(signalIdentity.rebalanceListener());
         containerProps.setMessageListener((MessageListener<String, byte[]>) record -> {
+            // A domain record has no envelope: its identity is the
+            // maestro-message-id header, else its topic-id coordinate. Resolved
+            // before the user's method runs, so a failure there is still a
+            // redelivery of the same identity.
+            var messageId = signalIdentity.resolve(null, record);
             if (tracePropagation != null) {
                 tracePropagation.runWithExtractedContext(record.headers(),
-                        () -> handleMessage(record.value(), reg, executor, objectMapper));
+                        () -> handleMessage(record.value(), messageId, reg, executor, objectMapper));
             } else {
-                handleMessage(record.value(), reg, executor, objectMapper);
+                handleMessage(record.value(), messageId, reg, executor, objectMapper);
             }
         });
 
@@ -377,6 +402,7 @@ public class MaestroSignalListenerBeanPostProcessor
 
     private void handleMessage(
             byte[] value,
+            @Nullable String messageId,
             ListenerRegistration reg,
             WorkflowExecutor executor,
             ObjectMapper objectMapper
@@ -395,11 +421,14 @@ public class MaestroSignalListenerBeanPostProcessor
                                 + "' — signals must not be discarded");
             }
 
-            // Deliver the signal to the workflow engine
-            executor.deliverSignal(routing.workflowId(), reg.signalName(), routing.payload());
+            // Deliver the signal to the workflow engine. A duplicate (same
+            // identity already stored) returns false and is acked like a success.
+            var persisted = executor.deliverSignal(routing.workflowId(), reg.signalName(), routing.payload(),
+                    messageId);
 
-            logger.debug("Delivered signal '{}' to workflow '{}' via @MaestroSignalListener {}.{}",
-                    reg.signalName(), routing.workflowId(), reg.beanName(), reg.method().getName());
+            logger.debug("{} signal '{}' to workflow '{}' via @MaestroSignalListener {}.{} (messageId={})",
+                    persisted ? "Delivered" : "Suppressed duplicate", reg.signalName(), routing.workflowId(),
+                    reg.beanName(), reg.method().getName(), messageId);
 
         } catch (InvocationTargetException e) {
             // Unwrap to log the actual cause from the user's listener method.

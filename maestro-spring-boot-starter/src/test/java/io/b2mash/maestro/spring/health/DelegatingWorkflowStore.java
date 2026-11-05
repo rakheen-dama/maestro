@@ -152,6 +152,16 @@ abstract class DelegatingWorkflowStore implements WorkflowStore {
     }
 
     @Override
+    public boolean saveSignalIfAbsent(WorkflowSignal signal) {
+        return delegate.saveSignalIfAbsent(signal);
+    }
+
+    @Override
+    public boolean appendEventAndConsumeSignal(WorkflowEvent memo, RunLease lease, UUID signalId) {
+        return delegate.appendEventAndConsumeSignal(memo, lease, signalId);
+    }
+
+    @Override
     public boolean markTimerFired(UUID timerId, RunLease lease) {
         return delegate.markTimerFired(timerId, lease);
     }

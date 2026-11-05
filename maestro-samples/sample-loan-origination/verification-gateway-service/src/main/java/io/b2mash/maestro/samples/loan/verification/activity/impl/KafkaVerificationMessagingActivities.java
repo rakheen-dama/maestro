@@ -1,6 +1,10 @@
 package io.b2mash.maestro.samples.loan.verification.activity.impl;
 
+import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.messaging.kafka.MaestroSignalHeaders;
+import io.b2mash.maestro.messaging.kafka.SignalMessageIds;
 import io.b2mash.maestro.samples.loan.verification.activity.VerificationMessagingActivities;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import io.b2mash.maestro.samples.loan.verification.domain.VerificationResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,10 +47,16 @@ public class KafkaVerificationMessagingActivities implements VerificationMessagi
     public void publishResult(VerificationResult result) {
         try {
             var bytes = objectMapper.writeValueAsBytes(result);
+            var record = new ProducerRecord<String, byte[]>(TOPIC, result.loanId(), bytes);
+            // From the workflow's activity: a stable id, so a retried send is
+            // one signal at the loan service. The webhook controller calls this
+            // as a plain method (no workflow bound) and sends no id.
+            if (WorkflowContext.scopedValue().isBound()) {
+                MaestroSignalHeaders.setMessageId(record.headers(), SignalMessageIds.forCurrentActivity());
+            }
             // Bounded wait: an unresponsive broker must fail the activity (and
             // enter the durable retry policy) instead of pinning the thread.
-            kafkaTemplate.send(TOPIC, result.loanId(), bytes)
-                    .get(SEND_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
+            kafkaTemplate.send(record).get(SEND_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
             logger.info("Published {} verification result for loan {}: approved={}",
                     result.type(), result.loanId(), result.approved());
         } catch (InterruptedException e) {

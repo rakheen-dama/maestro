@@ -78,6 +78,21 @@ class TestWorkflowEnvironmentTest {
         assertEquals("Got: approved", result);
     }
 
+    @Test
+    void redeliveredSignalWithTheSameIdDoesNotSatisfyTheNextAwait() throws TimeoutException {
+        env = TestWorkflowEnvironment.create();
+        var handle = env.startWorkflow(TwoApprovalsWorkflow.class, null);
+
+        assertTrue(handle.signal("approval", "first", "msg-1"));
+        assertFalse(handle.signal("approval", "first", "msg-1"),
+                "a redelivery of msg-1 is a duplicate, not a second approval");
+        waitForStatus(handle, WorkflowStatus.WAITING_SIGNAL, Duration.ofSeconds(2));
+        assertTrue(handle.signal("approval", "second", "msg-2"));
+
+        assertEquals("first,second", handle.getResult(String.class, Duration.ofSeconds(5)),
+                "without identity the redelivered twin would have answered the second await");
+    }
+
     // ── Pre-delivered signal (self-recovery test) ────────────────────────
 
     @Test
@@ -296,6 +311,17 @@ class TestWorkflowEnvironmentTest {
             var workflow = WorkflowContext.current();
             String approval = workflow.awaitSignal("approval", String.class, Duration.ofMinutes(10));
             return "Got: " + approval;
+        }
+    }
+
+    @DurableWorkflow(name = "test-two-approvals", taskQueue = "test")
+    public static class TwoApprovalsWorkflow {
+        @WorkflowMethod
+        public String collect() {
+            var workflow = WorkflowContext.current();
+            var first = workflow.awaitSignal("approval", String.class, Duration.ofMinutes(10));
+            var second = workflow.awaitSignal("approval", String.class, Duration.ofMinutes(10));
+            return first + "," + second;
         }
     }
 

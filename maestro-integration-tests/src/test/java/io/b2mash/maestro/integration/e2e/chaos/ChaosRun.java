@@ -344,8 +344,8 @@ public final class ChaosRun {
         System.out.println("[chaos] side-effect duplicates: total=" + census.totalDuplicates()
                 + " explained=" + census.explained() + " unexplained=" + census.unexplained());
         if (!verify.redeliveredUnconsumedSignals().isEmpty()) {
-            System.out.println("[chaos] FINDING (Ruling 3): redelivered-but-unconsumed signals "
-                    + "(consumedTwin=true, Kafka at-least-once redelivery): "
+            System.out.println("[chaos] redelivered-but-unconsumed signals (consumedTwin=true — a hard "
+                    + "I4 violation since V9 message-id deduplication): "
                     + verify.redeliveredUnconsumedSignals());
         }
         if (census.unexplained() > 0) {

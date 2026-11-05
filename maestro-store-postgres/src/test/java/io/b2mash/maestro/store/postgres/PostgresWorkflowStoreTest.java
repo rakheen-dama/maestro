@@ -1678,6 +1678,187 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
         }
     }
 
+    // ── Signal identity (V9) and atomic consumption ──────────────────────
+
+    @Nested
+    @DisplayName("Signal identity and atomic consume")
+    class SignalIdentityAndAtomicConsumeTests {
+
+        private WorkflowInstance instance;
+        private RunLease lease;
+
+        @BeforeEach
+        void create() {
+            instance = store.createInstance(newInstance("wf-idem"));
+            lease = new RunLease(instance.id(), instance.leaseEpoch());
+        }
+
+        private WorkflowSignal signal(String name, String messageId) {
+            return new WorkflowSignal(UUID.randomUUID(), instance.id(), "wf-idem", name,
+                    jsonNode("\"p\""), false, Instant.now(), null, messageId);
+        }
+
+        private WorkflowEvent memo(int seq) {
+            return new WorkflowEvent(UUID.randomUUID(), instance.id(), seq, EventType.SIGNAL_RECEIVED,
+                    "$maestro:awaitSignal:go", jsonNode("\"p\""), Instant.now().truncatedTo(ChronoUnit.MILLIS));
+        }
+
+        private int rows(String sql) throws Exception {
+            try (Connection conn = dataSource.getConnection(); var stmt = conn.createStatement();
+                 var rs = stmt.executeQuery(sql)) {
+                rs.next();
+                return rs.getInt(1);
+            }
+        }
+
+        @Test
+        @DisplayName("saveSignalIfAbsent: a repeated identity returns false and leaves one row")
+        void duplicateIdentityIsSuppressed() throws Exception {
+            assertTrue(store.saveSignalIfAbsent(signal("go", "m-1")));
+            assertFalse(store.saveSignalIfAbsent(signal("go", "m-1")));
+            assertEquals(1, rows("SELECT count(*) FROM maestro_workflow_signal"));
+            assertEquals("m-1", store.getUnconsumedSignals("wf-idem", "go").getFirst().messageId(),
+                    "message_id round-trips through mapSignal");
+
+            assertTrue(store.saveSignalIfAbsent(signal("other", "m-1")), "identity is per signal name");
+            assertTrue(store.saveSignalIfAbsent(signal("go", null)));
+            assertTrue(store.saveSignalIfAbsent(signal("go", null)), "NULL ids never collide (partial index)");
+            assertEquals(4, rows("SELECT count(*) FROM maestro_workflow_signal"));
+        }
+
+        @Test
+        @DisplayName("saveSignalIfAbsent: a consumed row and an orphan still suppress their duplicates")
+        void consumedAndOrphanRowsStillSuppress() {
+            var first = signal("go", "m-1");
+            assertTrue(store.saveSignalIfAbsent(first));
+            assertTrue(store.appendEventAndConsumeSignal(memo(1), lease, first.id()));
+            assertFalse(store.saveSignalIfAbsent(signal("go", "m-1")),
+                    "a redelivery after consumption must not become a second signal");
+
+            var orphan = new WorkflowSignal(UUID.randomUUID(), null, "wf-not-yet", "go", null, false,
+                    Instant.now(), null, "m-9");
+            assertTrue(store.saveSignalIfAbsent(orphan));
+            assertFalse(store.saveSignalIfAbsent(new WorkflowSignal(UUID.randomUUID(), null, "wf-not-yet", "go",
+                    null, false, Instant.now(), null, "m-9")));
+        }
+
+        @Test
+        @DisplayName("saveSignalIfAbsent: a primary-key collision is still an error, not a duplicate")
+        void primaryKeyCollisionStillThrows() {
+            var first = signal("go", "m-1");
+            assertTrue(store.saveSignalIfAbsent(first));
+            var sameIdOtherIdentity = new WorkflowSignal(first.id(), instance.id(), "wf-idem", "go",
+                    null, false, Instant.now(), null, "m-2");
+            assertThrows(RuntimeException.class, () -> store.saveSignalIfAbsent(sameIdOtherIdentity),
+                    "23505 from the PK must not be mistaken for the identity index");
+            var sameIdNoIdentity = new WorkflowSignal(first.id(), instance.id(), "wf-idem", "go",
+                    null, false, Instant.now());
+            assertThrows(RuntimeException.class, () -> store.saveSignalIfAbsent(sameIdNoIdentity));
+        }
+
+        @Test
+        @DisplayName("appendEventAndConsumeSignal writes the memo and flips the row together")
+        void consumeWritesBoth() {
+            var s = signal("go", null);
+            store.saveSignal(s);
+            assertTrue(store.appendEventAndConsumeSignal(memo(1), lease, s.id()));
+            assertEquals(EventType.SIGNAL_RECEIVED,
+                    store.getEventBySequence(instance.id(), 1).orElseThrow().eventType());
+            assertTrue(store.getUnconsumedSignals("wf-idem", "go").isEmpty());
+        }
+
+        @Test
+        @DisplayName("appendEventAndConsumeSignal on a row already consumed rolls back — no memo")
+        void lostRaceLeavesNoMemo() {
+            var s = signal("go", null);
+            store.saveSignal(s);
+            assertTrue(store.markSignalConsumed(s.id()));
+            assertFalse(store.appendEventAndConsumeSignal(memo(1), lease, s.id()));
+            assertTrue(store.getEventBySequence(instance.id(), 1).isEmpty(),
+                    "the memo insert must roll back with the failed flip");
+        }
+
+        @Test
+        @DisplayName("appendEventAndConsumeSignal under a stale lease is fenced and writes nothing")
+        void staleLeaseIsFenced() {
+            var s = signal("go", null);
+            store.saveSignal(s);
+            var bumped = instance.toBuilder().leaseEpoch(instance.leaseEpoch() + 1)
+                    .version(instance.version() + 1).build();
+            store.updateInstance(bumped);
+
+            var e = assertThrows(FencedWriteException.class,
+                    () -> store.appendEventAndConsumeSignal(memo(1), lease, s.id()));
+            assertEquals("appendEventAndConsumeSignal", e.operation());
+            assertTrue(store.getEvents(instance.id()).isEmpty());
+            assertEquals(1, store.getUnconsumedSignals("wf-idem", "go").size());
+        }
+
+        @Test
+        @DisplayName("appendEventAndConsumeSignal on an occupied slot is a DuplicateEventException; the row stays")
+        void occupiedSlotIsDuplicate() {
+            var s = signal("go", null);
+            store.saveSignal(s);
+            store.appendEvent(newEvent(instance.id(), 1, EventType.ACTIVITY_COMPLETED));
+            assertThrows(DuplicateEventException.class,
+                    () -> store.appendEventAndConsumeSignal(memo(1), lease, s.id()));
+            assertEquals(1, store.getUnconsumedSignals("wf-idem", "go").size());
+        }
+
+        @Test
+        @DisplayName("two connections racing for one row — exactly one consumes it, one memo is written")
+        void twoConnectionRaceExactlyOneWins() throws Exception {
+            for (int round = 0; round < 25; round++) {
+                var s = signal("go-" + round, null);
+                store.saveSignal(s);
+                var start = new CountDownLatch(1);
+                var wins = new AtomicInteger();
+                var errors = new AtomicReference<Throwable>();
+                var seqA = 2 * round + 1;
+                var seqB = 2 * round + 2;
+                var a = Thread.startVirtualThread(() -> race(start, wins, errors, memo(seqA), s.id()));
+                var b = Thread.startVirtualThread(() -> race(start, wins, errors, memo(seqB), s.id()));
+                start.countDown();
+                a.join(10_000);
+                b.join(10_000);
+                assertNull(errors.get(), "neither racer may fail");
+                assertEquals(1, wins.get(), "round " + round);
+            }
+            assertEquals(25, store.getEvents(instance.id()).size(), "only the winners' memos are written");
+        }
+
+        private void race(CountDownLatch start, AtomicInteger wins, AtomicReference<Throwable> errors,
+                          WorkflowEvent memo, UUID signalId) {
+            try {
+                start.await();
+                if (store.appendEventAndConsumeSignal(memo, lease, signalId)) {
+                    wins.incrementAndGet();
+                }
+            } catch (Throwable t) {
+                errors.set(t);
+            }
+        }
+
+        @Test
+        @DisplayName("getUnconsumedSignals breaks a received_at tie by id")
+        void orderByTiebreak() throws Exception {
+            var ids = new java.util.ArrayList<UUID>();
+            for (int i = 0; i < 5; i++) {
+                var s = signal("tie", null);
+                store.saveSignal(s);
+                ids.add(s.id());
+            }
+            try (Connection conn = dataSource.getConnection(); var stmt = conn.createStatement()) {
+                stmt.executeUpdate("UPDATE maestro_workflow_signal SET received_at = TIMESTAMPTZ "
+                        + "'2026-01-01 00:00:00+00' WHERE signal_name = 'tie'");
+            }
+            var expected = ids.stream().sorted(java.util.Comparator.comparing(UUID::toString)).toList();
+            // Postgres orders uuid by its bytes, which matches the canonical string order.
+            assertEquals(expected, store.getUnconsumedSignals("wf-idem", "tie").stream()
+                    .map(WorkflowSignal::id).toList());
+        }
+    }
+
     // ── Lease fencing (Issue 11) ──────────────────────────────────────────
 
     /**

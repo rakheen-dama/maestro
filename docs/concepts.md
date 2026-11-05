@@ -285,6 +285,14 @@ Signals are persisted to Postgres immediately on delivery. This means:
 
 Signals are never lost — unless the operator has explicitly disabled redelivery (`maestro.messaging.redelivery.enabled=false`), which restores at-most-once handler semantics; see [Configuration Reference](configuration.md). See [Self-Recovery](self-recovery.md) for the full durability model.
 
+Signals are also never *doubled* when they carry a message id: at most one signal is stored per `(workflowId, signalName, messageId)`, so a transport redelivery or a client retry of the same signal is suppressed. The Kafka transport gives every record an id (envelope, `maestro-message-id` header, or the record's coordinate); from your own code pass one when the call may be retried:
+
+```java
+maestro.getWorkflow("order-abc").signal("payment.result", paymentResult, idempotencyKey);
+```
+
+A signal without an id is not deduplicated — a second delivery is a second signal, which a later await of the same name consumes. See [Cross-service § Signal identity](cross-service.md#signal-identity).
+
 ---
 
 ## Durable Timers

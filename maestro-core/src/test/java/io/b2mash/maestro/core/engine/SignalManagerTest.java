@@ -1125,24 +1125,39 @@ class SignalManagerTest {
         assertEquals(List.of("paid"), resultHolder);
     }
 
-    // ── consumeSignal — CAS loses ──────────────────────────────────────
+    // ── consumeSignal — atomic memo + flip ─────────────────────────────
 
-    @Test
-    @DisplayName("consumeSignal proceeds when the consumed-flag CAS loses — appended event is the memoized truth")
-    void consumeSignalProceedsWhenCasLoses() {
-        var casLosingStore = new InMemoryWorkflowStore() {
-            @Override
-            public boolean markSignalConsumed(UUID signalId) {
-                super.markSignalConsumed(signalId);
+    /**
+     * A store whose first {@code n} atomic consumes lose the row to a
+     * "concurrent consumer": the row is flipped behind the caller's back and
+     * the call reports {@code false} with nothing written — exactly the
+     * contract of an atomic store that lost the race.
+     */
+    private static final class RowStealingStore extends InMemoryWorkflowStore {
+        private final java.util.concurrent.atomic.AtomicInteger steals;
+        final java.util.concurrent.atomic.AtomicInteger attempts = new java.util.concurrent.atomic.AtomicInteger();
+
+        RowStealingStore(int steals) {
+            this.steals = new java.util.concurrent.atomic.AtomicInteger(steals);
+        }
+
+        @Override
+        public synchronized boolean appendEventAndConsumeSignal(WorkflowEvent memo,
+                                                                io.b2mash.maestro.core.spi.RunLease lease,
+                                                                UUID signalId) {
+            attempts.incrementAndGet();
+            if (steals.getAndDecrement() > 0) {
+                markSignalConsumed(signalId); // the other consumer's commit
                 return false;
             }
-        };
-        var sm = new SignalManager(casLosingStore, messaging, null, serializer, parkingLot);
+            return super.appendEventAndConsumeSignal(memo, lease, signalId);
+        }
+    }
 
-        var instanceId = UUID.randomUUID();
-        casLosingStore.createInstance(WorkflowInstance.builder()
+    private void createInstanceIn(WorkflowStore target, String workflowId, UUID instanceId) {
+        target.createInstance(WorkflowInstance.builder()
                 .id(instanceId)
-                .workflowId("order-1")
+                .workflowId(workflowId)
                 .runId(UUID.randomUUID())
                 .workflowType("TestWorkflow")
                 .taskQueue("default")
@@ -1151,18 +1166,236 @@ class SignalManagerTest {
                 .startedAt(Instant.now())
                 .updatedAt(Instant.now())
                 .build());
-        casLosingStore.saveSignal(new WorkflowSignal(
-                UUID.randomUUID(), instanceId, "order-1",
-                "payment.result", serializer.serialize("paid"), false, Instant.now()));
+    }
+
+    private UUID plantSignal(WorkflowStore target, UUID instanceId, String payload, Instant receivedAt) {
+        var id = UUID.randomUUID();
+        target.saveSignal(new WorkflowSignal(id, instanceId, "order-1", "payment.result",
+                serializer.serialize(payload), false, receivedAt));
+        return id;
+    }
+
+    @Test
+    @DisplayName("consume loses the first row to a concurrent consumer — the next row is consumed and memoized")
+    void consumeSignalTakesTheNextRowWhenTheFirstIsTaken() {
+        var stealing = new RowStealingStore(1);
+        var sm = new SignalManager(stealing, messaging, null, serializer, parkingLot);
+        var instanceId = UUID.randomUUID();
+        createInstanceIn(stealing, "order-1", instanceId);
+        var first = plantSignal(stealing, instanceId, "first", Instant.now().minusSeconds(2));
+        var second = plantSignal(stealing, instanceId, "second", Instant.now().minusSeconds(1));
 
         var ctx = createContext(instanceId, "order-1", 0, false);
-        ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() -> {
-            var result = sm.awaitSignal(ctx, "payment.result", String.class, Duration.ofSeconds(10));
-            assertEquals("paid", result, "payload from the appended event must still be returned");
-            assertTrue(casLosingStore.getEvents(instanceId).stream()
-                            .anyMatch(e -> e.eventType() == EventType.SIGNAL_RECEIVED),
-                    "SIGNAL_RECEIVED event must be appended even when the CAS loses");
+        var result = ScopedValue.where(WorkflowContext.scopedValue(), ctx).call(() ->
+                sm.awaitSignal(ctx, "payment.result", String.class, Duration.ofSeconds(10)));
+
+        assertEquals("second", result, "the row the other consumer took is not this await's");
+        var memos = stealing.getEvents(instanceId).stream()
+                .filter(e -> e.eventType() == EventType.SIGNAL_RECEIVED).toList();
+        assertEquals(1, memos.size(), "exactly one memo at the await's sequence");
+        assertEquals("second", serializer.deserialize(memos.getFirst().payload(), String.class),
+                "the memo records the row actually consumed");
+        assertTrue(stealing.getAllSignals().stream().allMatch(WorkflowSignal::consumed),
+                List.of(first, second) + " must both be consumed — one by each consumer");
+        assertEquals(2, stealing.attempts.get());
+    }
+
+    @Test
+    @DisplayName("consume loses the only row — the await parks (TIMER_SCHEDULED at seq) and a later delivery lands at seq+1")
+    void consumeSignalParksWhenEveryRowIsTaken() throws Exception {
+        var stealing = new RowStealingStore(1);
+        var sm = new SignalManager(stealing, messaging, null, serializer, parkingLot);
+        var instanceId = UUID.randomUUID();
+        createInstanceIn(stealing, "order-1", instanceId);
+        plantSignal(stealing, instanceId, "stolen", Instant.now());
+
+        var result = new AtomicReference<String>();
+        var done = new CountDownLatch(1);
+        Thread.ofVirtual().start(() -> {
+            var ctx = createContext(instanceId, "order-1", 0, false);
+            ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() -> {
+                result.set(sm.awaitSignal(ctx, "payment.result", String.class, Duration.ofSeconds(30)));
+                done.countDown();
+            });
         });
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> parkingLot.isParked("order-1:signal:payment.result"));
+        var parkedAt = stealing.getEventBySequence(instanceId, 1).orElseThrow();
+        assertEquals(EventType.TIMER_SCHEDULED, parkedAt.eventType(),
+                "with no row left to take the await parks, memoizing its deadline at seq");
+
+        sm.deliverSignal("order-1", "payment.result", "fresh");
+        assertTrue(done.await(5, TimeUnit.SECONDS));
+        assertEquals("fresh", result.get());
+        var outcome = stealing.getEventBySequence(instanceId, 2).orElseThrow();
+        assertEquals(EventType.SIGNAL_RECEIVED, outcome.eventType());
+        assertEquals("fresh", serializer.deserialize(outcome.payload(), String.class));
+    }
+
+    @Test
+    @DisplayName("fenced consume — FencedWriteException, no memo, row stays unconsumed, run marked stale")
+    void fencedConsumeWritesNothingAndStandsDown() {
+        var fencing = new InMemoryWorkflowStore() {
+            @Override
+            public synchronized boolean appendEventAndConsumeSignal(WorkflowEvent memo,
+                                                                    io.b2mash.maestro.core.spi.RunLease lease,
+                                                                    UUID signalId) {
+                throw new io.b2mash.maestro.core.exception.FencedWriteException(
+                        lease.instanceId(), lease.epoch(), "appendEventAndConsumeSignal");
+            }
+        };
+        var sm = new SignalManager(fencing, messaging, null, serializer, parkingLot);
+        var instanceId = UUID.randomUUID();
+        createInstanceIn(fencing, "order-1", instanceId);
+        plantSignal(fencing, instanceId, "paid", Instant.now());
+
+        var ctx = createContext(instanceId, "order-1", 0, false);
+        assertThrows(io.b2mash.maestro.core.exception.FencedWriteException.class, () ->
+                ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() ->
+                        sm.awaitSignal(ctx, "payment.result", String.class, Duration.ofSeconds(10))));
+
+        assertTrue(fencing.getEvents(instanceId).isEmpty(), "a fenced consume writes no memo");
+        assertEquals(1, fencing.getUnconsumedSignals("order-1", "payment.result").size(),
+                "the row stays for the adopter's run");
+        assertEquals(io.b2mash.maestro.core.context.RunCancellation.Cause.STALE, ctx.cancellation().cause());
+    }
+
+    @Test
+    @DisplayName("consume collides with an event already at seq — DuplicateEventException, row stays unconsumed, run stale")
+    void consumeCollisionLeavesTheRowUnconsumed() {
+        var colliding = new InMemoryWorkflowStore() {
+            @Override
+            public synchronized boolean appendEventAndConsumeSignal(WorkflowEvent memo,
+                                                                    io.b2mash.maestro.core.spi.RunLease lease,
+                                                                    UUID signalId) {
+                // Another runner wrote this slot between the replay read and the consume.
+                appendEvent(new WorkflowEvent(UUID.randomUUID(), memo.workflowInstanceId(),
+                        memo.sequenceNumber(), EventType.SIGNAL_RECEIVED, memo.stepName(),
+                        serializer.serialize("winner"), Instant.now()));
+                return super.appendEventAndConsumeSignal(memo, lease, signalId);
+            }
+        };
+        var sm = new SignalManager(colliding, messaging, null, serializer, parkingLot);
+        var instanceId = UUID.randomUUID();
+        createInstanceIn(colliding, "order-1", instanceId);
+        plantSignal(colliding, instanceId, "paid", Instant.now());
+
+        var ctx = createContext(instanceId, "order-1", 0, false);
+        assertThrows(io.b2mash.maestro.core.exception.DuplicateEventException.class, () ->
+                ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() ->
+                        sm.awaitSignal(ctx, "payment.result", String.class, Duration.ofSeconds(10))));
+
+        assertEquals(1, colliding.getUnconsumedSignals("order-1", "payment.result").size(),
+                "the losing runner must not consume the row");
+        assertEquals(io.b2mash.maestro.core.context.RunCancellation.Cause.STALE, ctx.cancellation().cause());
+    }
+
+    @Test
+    @DisplayName("a store that never lets a consume land — attempts are bounded per pass and the await parks")
+    void consumeAttemptsAreBounded() throws Exception {
+        var refuse = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var attempts = new java.util.concurrent.atomic.AtomicInteger();
+        var refusing = new InMemoryWorkflowStore() {
+            @Override
+            public synchronized boolean appendEventAndConsumeSignal(WorkflowEvent memo,
+                                                                    io.b2mash.maestro.core.spi.RunLease lease,
+                                                                    UUID signalId) {
+                attempts.incrementAndGet();
+                if (refuse.get()) {
+                    return false; // e.g. a serialization conflict on every try
+                }
+                return super.appendEventAndConsumeSignal(memo, lease, signalId);
+            }
+        };
+        var sm = new SignalManager(refusing, messaging, null, serializer, parkingLot);
+        var instanceId = UUID.randomUUID();
+        createInstanceIn(refusing, "order-1", instanceId);
+        plantSignal(refusing, instanceId, "paid", Instant.now());
+
+        var result = new AtomicReference<String>();
+        var done = new CountDownLatch(1);
+        Thread.ofVirtual().start(() -> {
+            var ctx = createContext(instanceId, "order-1", 0, false);
+            ScopedValue.where(WorkflowContext.scopedValue(), ctx).run(() -> {
+                result.set(sm.awaitSignal(ctx, "payment.result", String.class, Duration.ofSeconds(30)));
+                done.countDown();
+            });
+        });
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> parkingLot.isParked("order-1:signal:payment.result"));
+        assertEquals(2 * SignalManager.MAX_CONSUME_ATTEMPTS, attempts.get(),
+                "one bounded pass on the live path and one at the parked outcome slot, then a park — no spin");
+        assertEquals(EventType.TIMER_SCHEDULED, refusing.getEventBySequence(instanceId, 1).orElseThrow().eventType());
+
+        refuse.set(false);
+        parkingLot.unpark("order-1:signal:payment.result", null);
+        assertTrue(done.await(5, TimeUnit.SECONDS));
+        assertEquals("paid", result.get(), "once the store lets it land, the visible row is consumed");
+        assertEquals(EventType.SIGNAL_RECEIVED, refusing.getEventBySequence(instanceId, 2).orElseThrow().eventType());
+    }
+
+    // ── deliverSignal — message identity ───────────────────────────────
+
+    @Test
+    @DisplayName("deliverSignal with a repeated message id — one row, signalDuplicateSuppressed once, signalPersisted once")
+    void duplicateMessageIdIsSuppressed() {
+        var observer = new RecordingEngineObserver();
+        var sm = new SignalManager(store, messaging, null, serializer, parkingLot,
+                Duration.ofSeconds(30), observer);
+        createInstance("order-1", UUID.randomUUID());
+
+        assertTrue(sm.deliverSignal("order-1", "payment.result", "paid", "msg-1"));
+        assertFalse(sm.deliverSignal("order-1", "payment.result", "paid", "msg-1"),
+                "the second delivery of the same identity is a duplicate");
+
+        var rows = store.getUnconsumedSignals("order-1", "payment.result");
+        assertEquals(1, rows.size());
+        assertEquals("msg-1", rows.getFirst().messageId());
+        assertEquals(1, observer.signalPersisted().size(), "no second signalPersisted");
+        assertEquals(1, observer.signalDuplicates().size());
+        assertEquals("payment.result", observer.signalDuplicates().getFirst().signalName());
+
+        assertTrue(sm.deliverSignal("order-1", "payment.result", "paid", "msg-2"),
+                "a different id is a different signal, even with an identical payload");
+        assertTrue(sm.deliverSignal("order-1", "other.signal", "paid", "msg-1"),
+                "identity is per signal name");
+        assertEquals(2, store.getUnconsumedSignals("order-1", "payment.result").size());
+    }
+
+    @Test
+    @DisplayName("deliverSignal without a message id — never deduplicated")
+    void absentMessageIdIsNeverDeduplicated() {
+        createInstance("order-1", UUID.randomUUID());
+        assertTrue(signalManager.deliverSignal("order-1", "payment.result", "paid", null));
+        assertTrue(signalManager.deliverSignal("order-1", "payment.result", "paid", null));
+        signalManager.deliverSignal("order-1", "payment.result", "paid");
+        assertEquals(3, store.getUnconsumedSignals("order-1", "payment.result").size());
+    }
+
+    @Test
+    @DisplayName("an over-long message id is treated as absent — delivered, not deduplicated, never a failure")
+    void overLongMessageIdIsTreatedAsAbsent() {
+        createInstance("order-1", UUID.randomUUID());
+        var tooLong = "x".repeat(SignalManager.MAX_MESSAGE_ID_LENGTH + 1);
+        assertTrue(signalManager.deliverSignal("order-1", "payment.result", "a", tooLong));
+        assertTrue(signalManager.deliverSignal("order-1", "payment.result", "b", tooLong));
+
+        var rows = store.getUnconsumedSignals("order-1", "payment.result");
+        assertEquals(2, rows.size());
+        assertTrue(rows.stream().allMatch(r -> r.messageId() == null));
+
+        assertTrue(signalManager.deliverSignal("order-1", "payment.result", "nul", "hdr:t:a\u0000b"),
+                "a NUL would fail the Postgres insert — it must degrade to no identity, not a failed delivery");
+        assertTrue(signalManager.deliverSignal("order-1", "payment.result", "nul", "hdr:t:a\u0000b"));
+        assertTrue(signalManager.deliverSignal("order-1", "payment.result", "ctl", "env:x\u001fy\u007f"));
+        assertEquals(5, store.getUnconsumedSignals("order-1", "payment.result").size());
+        assertTrue(store.getUnconsumedSignals("order-1", "payment.result").stream()
+                .allMatch(r -> r.messageId() == null));
+
+        var atLimit = "y".repeat(SignalManager.MAX_MESSAGE_ID_LENGTH);
+        assertTrue(signalManager.deliverSignal("order-1", "payment.result", "c", atLimit));
+        assertFalse(signalManager.deliverSignal("order-1", "payment.result", "c", atLimit),
+                "an id exactly at the limit is kept and deduplicates");
     }
 
     // ── Lifecycle events ───────────────────────────────────────────────
@@ -1487,6 +1720,19 @@ class SignalManagerTest {
                     .toList();
         }
 
+        /** Mirrors the shipped stores: one row per non-null (workflowId, signalName, messageId). */
+        @Override
+        public synchronized boolean saveSignalIfAbsent(WorkflowSignal signal) {
+            if (signal.messageId() != null && signals.stream().anyMatch(s ->
+                    s.workflowId().equals(signal.workflowId())
+                            && s.signalName().equals(signal.signalName())
+                            && signal.messageId().equals(s.messageId()))) {
+                return false;
+            }
+            signals.add(signal);
+            return true;
+        }
+
         @Override
         public synchronized boolean markSignalConsumed(UUID signalId) {
             // synchronized: the check-then-set below must be atomic so two
@@ -1496,11 +1742,34 @@ class SignalManagerTest {
                 if (s.id().equals(signalId) && !s.consumed()) {
                     signals.set(i, new WorkflowSignal(
                             s.id(), s.workflowInstanceId(), s.workflowId(),
-                            s.signalName(), s.payload(), true, s.receivedAt()));
+                            s.signalName(), s.payload(), true, s.receivedAt(),
+                            s.traceContext(), s.messageId()));
                     return true;
                 }
             }
             return false;
+        }
+
+        /**
+         * Atomic like the shipped stores (no lease check — this fixture has no
+         * epochs): a duplicate sequence throws, a row no longer unconsumed is
+         * {@code false}, and either way nothing is written.
+         */
+        @Override
+        public synchronized boolean appendEventAndConsumeSignal(WorkflowEvent memo,
+                                                                io.b2mash.maestro.core.spi.RunLease lease,
+                                                                UUID signalId) {
+            if (getEventBySequence(memo.workflowInstanceId(), memo.sequenceNumber()).isPresent()) {
+                throw new io.b2mash.maestro.core.exception.DuplicateEventException(
+                        memo.workflowInstanceId(), memo.sequenceNumber());
+            }
+            var unconsumed = signals.stream().anyMatch(s -> s.id().equals(signalId) && !s.consumed());
+            if (!unconsumed) {
+                return false;
+            }
+            events.add(memo);
+            markSignalConsumed(signalId);
+            return true;
         }
 
         @Override
@@ -1510,7 +1779,8 @@ class SignalManagerTest {
                 if (s.workflowId().equals(workflowId) && s.workflowInstanceId() == null) {
                     signals.set(i, new WorkflowSignal(
                             s.id(), instanceId, s.workflowId(),
-                            s.signalName(), s.payload(), s.consumed(), s.receivedAt()));
+                            s.signalName(), s.payload(), s.consumed(), s.receivedAt(),
+                            s.traceContext(), s.messageId()));
                 }
             }
         }

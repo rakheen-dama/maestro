@@ -407,6 +407,17 @@ class EnginePostgresParallelIT extends PostgresIntegrationSupport {
         }
 
         @Override
+        public boolean saveSignalIfAbsent(WorkflowSignal signal) {
+            return delegate.saveSignalIfAbsent(signal);
+        }
+
+        @Override
+        public boolean appendEventAndConsumeSignal(WorkflowEvent memo, io.b2mash.maestro.core.spi.RunLease lease,
+                                                   UUID signalId) {
+            return delegate.appendEventAndConsumeSignal(memo, lease, signalId);
+        }
+
+        @Override
         public List<WorkflowSignal> getUnconsumedSignals(String workflowId, String signalName) {
             return delegate.getUnconsumedSignals(workflowId, signalName);
         }

@@ -196,8 +196,8 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
     }
 
     @Test
-    @DisplayName("losing the consume CAS to a concurrent consumer still completes the workflow from the memoized event")
-    void lostConsumeCas_completesFromTheMemoizedSignalEvent() throws Exception {
+    @DisplayName("losing the atomic consume to a concurrent consumer writes nothing; the await waits for the next signal")
+    void lostConsume_writesNothingAndWaitsForTheNextSignal() throws Exception {
         var parked = new CountDownLatch(1);
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("signal-cas");
         var racingStore = new ConsumeStealingStore(
@@ -212,20 +212,28 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
         assertTrue(parked.await(15, TimeUnit.SECONDS), "workflow never reached its await point");
         handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
 
+        harness.deliverSignal(workflowId, TestWorkflows.SignalWorkflow.SIGNAL, "stolen");
+
+        // The competing consumer takes the row between the engine's read and its
+        // atomic consume: the consume rolls back (no memo) and, with no other
+        // row visible, the await keeps waiting — it must not take the stolen
+        // row's payload, which belongs to whoever consumed it.
+        org.awaitility.Awaitility.await().atMost(BOUND).until(racingStore::stole);
+        org.awaitility.Awaitility.await().atMost(BOUND).until(() -> racingStore.engineConsumeResults().contains(false));
+        assertEquals(0, eventsOfType(handle.events(), EventType.SIGNAL_RECEIVED).size(),
+                "a lost consume must leave no SIGNAL_RECEIVED behind");
+        assertEquals(WorkflowStatus.WAITING_SIGNAL, handle.instance().status());
+
         harness.deliverSignal(workflowId, TestWorkflows.SignalWorkflow.SIGNAL, "approved");
 
         assertEquals(WorkflowStatus.COMPLETED, handle.awaitTerminal(BOUND));
-        assertEquals("seed-one:approved-two", handle.result(String.class));
-
-        // The steal ran, and the engine's own CAS therefore lost.
-        assertTrue(racingStore.stole(), "the injected competing consumer never ran");
-        assertEquals(List.of(false), racingStore.engineCasResults(),
-                "the engine's markSignalConsumed must observe the lost CAS");
-
-        // The memoized event is the durable truth, and it was written exactly once.
-        assertEquals(1, eventsOfType(handle.events(), EventType.SIGNAL_RECEIVED).size());
-        assertTrue(readSingleSignalRow(workflowId).consumed(),
-                "the row stays consumed — it can never satisfy a second consumer");
+        assertEquals("seed-one:approved-two", handle.result(String.class),
+                "the await is answered by the next signal, not the stolen one");
+        assertEquals(List.of(false, true), racingStore.engineConsumeResults(),
+                "one lost atomic consume, then one that landed");
+        var received = eventsOfType(handle.events(), EventType.SIGNAL_RECEIVED);
+        assertEquals(1, received.size(), "exactly one memo, for the row actually consumed");
+        assertEquals("approved", serializer.deserialize(received.getFirst().payload(), String.class));
     }
 
     @Test
@@ -401,12 +409,11 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
     }
 
     /**
-     * A {@link WorkflowStore} decorator that simulates another node consuming
-     * the signal in the window between the engine's read and its own CAS.
-     *
-     * <p>The engine appends {@code SIGNAL_RECEIVED} immediately before calling
-     * {@code markSignalConsumed}; stealing the row during that append lands the
-     * competing consumer exactly inside the race the CAS exists to arbitrate.
+     * A {@link WorkflowStore} decorator that simulates another consumer taking
+     * the signal in the window between the engine's read and its atomic
+     * consume ({@code appendEventAndConsumeSignal}): the first consume of the
+     * workflow's signal steals every unconsumed row and then lets the real
+     * Postgres consume run — which finds the row taken and rolls back.
      *
      * <h2>Thread Safety</h2>
      * <p>Safe for concurrent use — the steal is one-shot via a CAS flag and the
@@ -418,7 +425,7 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
         private final String workflowId;
         private final String signalName;
         private final AtomicBoolean stealAttempted = new AtomicBoolean(false);
-        private final List<Boolean> engineCasResults = new CopyOnWriteArrayList<>();
+        private final List<Boolean> engineConsumeResults = new CopyOnWriteArrayList<>();
         private volatile int stolenRows;
 
         ConsumeStealingStore(WorkflowStore delegate, String workflowId, String signalName) {
@@ -432,15 +439,15 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
             return stolenRows > 0;
         }
 
-        /** @return the result of every {@code markSignalConsumed} the engine issued */
-        List<Boolean> engineCasResults() {
-            return List.copyOf(engineCasResults);
+        /** @return the result of every atomic consume the engine issued */
+        List<Boolean> engineConsumeResults() {
+            return List.copyOf(engineConsumeResults);
         }
 
         @Override
-        public void appendEvent(WorkflowEvent event) {
-            if (event.eventType() == EventType.SIGNAL_RECEIVED
-                    && stealAttempted.compareAndSet(false, true)) {
+        public boolean appendEventAndConsumeSignal(WorkflowEvent memo, io.b2mash.maestro.core.spi.RunLease lease,
+                                                   UUID signalId) {
+            if (stealAttempted.compareAndSet(false, true)) {
                 var won = 0;
                 for (var signal : delegate.getUnconsumedSignals(workflowId, signalName)) {
                     if (delegate.markSignalConsumed(signal.id())) {
@@ -449,7 +456,24 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
                 }
                 stolenRows = won;
             }
+            var consumed = delegate.appendEventAndConsumeSignal(memo, lease, signalId);
+            engineConsumeResults.add(consumed);
+            return consumed;
+        }
+
+        @Override
+        public boolean saveSignalIfAbsent(WorkflowSignal signal) {
+            return delegate.saveSignalIfAbsent(signal);
+        }
+
+        @Override
+        public void appendEvent(WorkflowEvent event) {
             delegate.appendEvent(event);
+        }
+
+        @Override
+        public void appendEvent(WorkflowEvent event, io.b2mash.maestro.core.spi.RunLease lease) {
+            delegate.appendEvent(event, lease);
         }
 
         @Override
@@ -459,9 +483,7 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
 
         @Override
         public boolean markSignalConsumed(UUID signalId) {
-            var applied = delegate.markSignalConsumed(signalId);
-            engineCasResults.add(applied);
-            return applied;
+            return delegate.markSignalConsumed(signalId);
         }
 
         // ── straight delegation ────────────────────────────────────────

@@ -58,6 +58,26 @@ public final class KafkaTestWorkflows {
     }
 
     /**
+     * Collects two {@code approval} signals ({@code collectSignals(name, 2)})
+     * and joins their payloads — a quorum: two signals with identical payloads
+     * but distinct message ids are two votes, never one.
+     */
+    @DurableWorkflow(name = "KafkaQuorumWorkflow")
+    public static class QuorumWorkflow {
+
+        /**
+         * @param input the seed value
+         * @return the seed joined with both payloads
+         */
+        @WorkflowMethod
+        public String run(String input) {
+            var votes = WorkflowContext.current()
+                    .collectSignals(APPROVAL_SIGNAL, String.class, 2, AWAIT_TIMEOUT);
+            return input + ":" + String.join(",", votes);
+        }
+    }
+
+    /**
      * Completes immediately — the fixture for lifecycle events that need a
      * clean start/complete pair with no signal in the way.
      */

@@ -1079,4 +1079,207 @@ class InMemoryWorkflowStoreTest {
                     () -> store.appendEvent(event(instance.id(), 1, EventType.ACTIVITY_COMPLETED), current));
         }
     }
+
+    // ── Signal identity and atomic consume — twins of PostgresWorkflowStoreTest ──
+
+    @Nested
+    class SignalIdentityAndAtomicConsumeTests {
+
+        private WorkflowInstance instance;
+        private RunLease lease;
+
+        @BeforeEach
+        void create() {
+            instance = store.createInstance(buildInstance("wf-idem"));
+            lease = new RunLease(instance.id(), instance.leaseEpoch());
+        }
+
+        private WorkflowSignal signal(String name, String messageId) {
+            return new WorkflowSignal(UUID.randomUUID(), instance.id(), "wf-idem", name, json("\"p\""),
+                    false, Instant.now(), null, messageId);
+        }
+
+        private WorkflowEvent memo(int seq) {
+            return new WorkflowEvent(UUID.randomUUID(), instance.id(), seq, EventType.SIGNAL_RECEIVED,
+                    "$maestro:awaitSignal:go", json("\"p\""), Instant.now());
+        }
+
+        @Test
+        void saveSignalIfAbsentSuppressesTheSameIdentity() {
+            assertTrue(store.saveSignalIfAbsent(signal("go", "m-1")));
+            assertFalse(store.saveSignalIfAbsent(signal("go", "m-1")), "same (workflow, name, id) is a duplicate");
+            assertEquals(1, store.getAllSignals().size());
+            assertEquals("m-1", store.getUnconsumedSignals("wf-idem", "go").getFirst().messageId());
+
+            assertTrue(store.saveSignalIfAbsent(signal("other", "m-1")), "identity is per signal name");
+            assertTrue(store.saveSignalIfAbsent(signal("go", "m-2")));
+            assertTrue(store.saveSignalIfAbsent(signal("go", null)));
+            assertTrue(store.saveSignalIfAbsent(signal("go", null)), "no id, no identity — never deduplicated");
+            assertEquals(5, store.getAllSignals().size());
+        }
+
+        @Test
+        void saveSignalIfAbsentStillSuppressesOnceConsumedOrAdopted() {
+            var first = signal("go", "m-1");
+            store.saveSignalIfAbsent(first);
+            assertTrue(store.appendEventAndConsumeSignal(memo(1), lease, first.id()));
+            assertFalse(store.saveSignalIfAbsent(signal("go", "m-1")),
+                    "a redelivery after the signal was consumed must not become a second signal");
+
+            var orphan = new WorkflowSignal(UUID.randomUUID(), null, "wf-later", "go", null, false, Instant.now(),
+                    null, "m-9");
+            assertTrue(store.saveSignalIfAbsent(orphan));
+            assertFalse(store.saveSignalIfAbsent(new WorkflowSignal(
+                    UUID.randomUUID(), null, "wf-later", "go", null, false, Instant.now(), null, "m-9")),
+                    "a duplicate of an orphan (pre-delivery) is suppressed too");
+            var later = store.createInstance(buildInstance("wf-later"));
+            store.adoptOrphanedSignals("wf-later", later.id());
+            var adopted = store.getUnconsumedSignals("wf-later", "go");
+            assertEquals(1, adopted.size());
+            assertEquals("m-9", adopted.getFirst().messageId(), "adoption carries the id forward");
+        }
+
+        @Test
+        void appendEventAndConsumeSignalWritesBoth() {
+            var s = signal("go", null);
+            store.saveSignal(s);
+            assertTrue(store.appendEventAndConsumeSignal(memo(1), lease, s.id()));
+            assertTrue(store.getEventBySequence(instance.id(), 1).isPresent());
+            assertTrue(store.getUnconsumedSignals("wf-idem", "go").isEmpty());
+        }
+
+        @Test
+        void appendEventAndConsumeSignalOnATakenRowWritesNothing() {
+            var s = signal("go", null);
+            store.saveSignal(s);
+            assertTrue(store.markSignalConsumed(s.id()));
+            assertFalse(store.appendEventAndConsumeSignal(memo(1), lease, s.id()));
+            assertTrue(store.getEvents(instance.id()).isEmpty(), "a lost race must leave no memo behind");
+        }
+
+        @Test
+        void appendEventAndConsumeSignalUnderAStaleLeaseIsFencedAndWritesNothing() {
+            var s = signal("go", null);
+            store.saveSignal(s);
+            var stale = new RunLease(instance.id(), instance.leaseEpoch() + 7);
+            var e = assertThrows(FencedWriteException.class,
+                    () -> store.appendEventAndConsumeSignal(memo(1), stale, s.id()));
+            assertEquals("appendEventAndConsumeSignal", e.operation());
+            assertTrue(store.getEvents(instance.id()).isEmpty());
+            assertEquals(1, store.getUnconsumedSignals("wf-idem", "go").size());
+        }
+
+        @Test
+        void appendEventAndConsumeSignalOnAnOccupiedSlotIsDuplicateAndLeavesTheRow() {
+            var s = signal("go", null);
+            store.saveSignal(s);
+            store.appendEvent(event(instance.id(), 1, EventType.ACTIVITY_COMPLETED));
+            assertThrows(DuplicateEventException.class,
+                    () -> store.appendEventAndConsumeSignal(memo(1), lease, s.id()));
+            assertEquals(1, store.getUnconsumedSignals("wf-idem", "go").size(),
+                    "the row must stay for the runner that owns the slot");
+        }
+
+        @Test
+        void occupiedSlotIsDuplicateEvenWhenTheRowIsAlreadyConsumed() {
+            // The JDBC store inserts the memo first, so an occupied slot is a
+            // DuplicateEventException whatever the row's state; this store must agree.
+            var s = signal("go", null);
+            store.saveSignal(s);
+            assertTrue(store.markSignalConsumed(s.id()));
+            store.appendEvent(event(instance.id(), 1, EventType.ACTIVITY_COMPLETED));
+            assertThrows(DuplicateEventException.class,
+                    () -> store.appendEventAndConsumeSignal(memo(1), lease, s.id()));
+            assertEquals(EventType.ACTIVITY_COMPLETED,
+                    store.getEventBySequence(instance.id(), 1).orElseThrow().eventType(),
+                    "nothing written: the occupying event is untouched");
+            assertEquals(1, store.getAllSignals().size());
+        }
+
+        @Test
+        void twoConcurrentConsumersOfOneRowExactlyOneWins() throws Exception {
+            for (int round = 0; round < 200; round++) {
+                var s = signal("go-" + round, null);
+                store.saveSignal(s);
+                var start = new java.util.concurrent.CountDownLatch(1);
+                var wins = new java.util.concurrent.atomic.AtomicInteger();
+                var seqA = 2 * round + 1;
+                var seqB = 2 * round + 2;
+                var a = Thread.ofVirtual().start(() -> race(start, wins, memo(seqA), s.id()));
+                var b = Thread.ofVirtual().start(() -> race(start, wins, memo(seqB), s.id()));
+                start.countDown();
+                a.join();
+                b.join();
+                assertEquals(1, wins.get(), "round " + round);
+                assertEquals(round + 1, store.getEvents(instance.id()).size(),
+                        "only the winner's memo is written (round " + round + ")");
+            }
+        }
+
+        private void race(java.util.concurrent.CountDownLatch start, java.util.concurrent.atomic.AtomicInteger wins,
+                          WorkflowEvent memo, UUID signalId) {
+            try {
+                start.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            if (store.appendEventAndConsumeSignal(memo, lease, signalId)) {
+                wins.incrementAndGet();
+            }
+        }
+
+        /**
+         * The purge takes {@code signalLock → timerLock → instanceLock}. A
+         * fenced data write that took the instance lock first and then its
+         * data lock deadlocked against it when both touched the same
+         * instance: a stale run writing to a workflow whose terminal row the
+         * purge was removing.
+         */
+        @Test
+        void purgeConcurrentWithFencedDataWritesDoesNotDeadlock() throws Exception {
+            var old = Instant.now().minus(Duration.ofDays(30));
+            for (int round = 0; round < 300; round++) {
+                var victim = store.createInstance(buildInstance("wf-purge-" + round, WorkflowStatus.COMPLETED)
+                        .toBuilder().completedAt(old).build());
+                var victimLease = new RunLease(victim.id(), victim.leaseEpoch());
+                var sig = new WorkflowSignal(UUID.randomUUID(), victim.id(), victim.workflowId(), "go", null,
+                        false, Instant.now());
+                store.saveSignal(sig);
+                var timer = buildTimer(victim.id(), victim.workflowId(), Instant.now(), TimerStatus.PENDING);
+                store.saveTimer(timer);
+
+                var start = new java.util.concurrent.CountDownLatch(1);
+                var purger = Thread.ofVirtual().start(() -> {
+                    awaitQuietly(start);
+                    store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, Instant.now(), 10);
+                });
+                var writer = Thread.ofVirtual().start(() -> {
+                    awaitQuietly(start);
+                    store.markSignalConsumed(sig.id(), victimLease);
+                    store.markTimerFired(timer.id(), victimLease);
+                    store.markTimerCancelled(timer.id(), victimLease);
+                    try {
+                        store.saveTimer(buildTimer(victim.id(), victim.workflowId(), Instant.now(),
+                                TimerStatus.PENDING), victimLease);
+                        store.appendEventAndConsumeSignal(new WorkflowEvent(UUID.randomUUID(), victim.id(), 1,
+                                EventType.SIGNAL_RECEIVED, "s", null, Instant.now()), victimLease, sig.id());
+                    } catch (FencedWriteException purgedMeanwhile) {
+                        // expected once the purge has removed the instance
+                    }
+                });
+                start.countDown();
+                assertTrue(purger.join(Duration.ofSeconds(5)), "purge deadlocked in round " + round);
+                assertTrue(writer.join(Duration.ofSeconds(5)), "fenced writer deadlocked in round " + round);
+            }
+        }
+
+        private static void awaitQuietly(java.util.concurrent.CountDownLatch latch) {
+            try {
+                latch.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
 }

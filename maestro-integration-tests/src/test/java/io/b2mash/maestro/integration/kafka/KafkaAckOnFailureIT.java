@@ -99,6 +99,9 @@ class KafkaAckOnFailureIT extends KafkaSpringIntegrationSupport {
     /** The engine channel used by the adapter-level test. */
     static final String CHANNEL_TOPIC = "it.ack.channel";
 
+    /** The engine channel used by the failure-after-committed-save test. */
+    static final String AFTER_SAVE_CHANNEL_TOPIC = "it.ack.channel.after-save";
+
     /** The engine channel used by the adapter-level poison test. */
     static final String POISON_CHANNEL_TOPIC = "it.ack.channel.poison";
 
@@ -126,6 +129,9 @@ class KafkaAckOnFailureIT extends KafkaSpringIntegrationSupport {
     @Autowired
     private FailingRouter router;
 
+    @Autowired
+    private io.b2mash.maestro.core.engine.WorkflowExecutor executor;
+
     /**
      * @throws ExecutionException   if topic creation fails
      * @throws InterruptedException if interrupted while waiting
@@ -136,7 +142,8 @@ class KafkaAckOnFailureIT extends KafkaSpringIntegrationSupport {
         // deliberately is not — see its Javadoc. Every other required topic,
         // .DLTs included, exists, so that gap is the only thing the startup
         // verification can complain about.
-        createTopics(EVENT_TOPIC, DLT_TOPIC, CHANNEL_TOPIC, POISON_CHANNEL_TOPIC, POISON_CHANNEL_DLT,
+        createTopics(EVENT_TOPIC, DLT_TOPIC, CHANNEL_TOPIC, AFTER_SAVE_CHANNEL_TOPIC,
+                AFTER_SAVE_CHANNEL_TOPIC + ".DLT", POISON_CHANNEL_TOPIC, POISON_CHANNEL_DLT,
                 MISSING_DLT_CHANNEL_TOPIC, ADMIN_TOPIC,
                 "maestro.signals." + SERVICE, "maestro.signals." + SERVICE + ".DLT");
     }
@@ -200,6 +207,47 @@ class KafkaAckOnFailureIT extends KafkaSpringIntegrationSupport {
                             "a signal whose handler failed must be redelivered until it is durable; "
                                     + "attempts=" + attempts.get()));
             assertTrue(attempts.get() >= 3, "expected redelivery, saw " + attempts.get() + " attempt(s)");
+        } finally {
+            messaging.destroy();
+        }
+    }
+
+    @Test
+    @DisplayName("a failure after the signal row committed is redelivered — and the redelivery is still one row")
+    void failureAfterCommittedSave_redeliveryIsStillOneRow() throws Exception {
+        // Its own topic: a consumer group of the other channel test reading this
+        // record would count it as one of its own deliveries.
+        var config = channelConfig(AFTER_SAVE_CHANNEL_TOPIC, 5);
+        var messaging = new KafkaWorkflowMessaging(
+                producer(), consumerFactory(config.consumerGroup()), objectMapper, config);
+        var workflowId = "ack-after-save-" + UUID.randomUUID().toString().substring(0, 8);
+
+        var attempts = new AtomicInteger();
+        var outcomes = new java.util.concurrent.CopyOnWriteArrayList<Boolean>();
+        try {
+            messaging.subscribeSignals(SERVICE, message -> {
+                if (!message.workflowId().equals(workflowId)) {
+                    return;
+                }
+                // The real ingestion call, with the identity the adapter resolved
+                // (an id-less envelope: the record's topic-id coordinate) ...
+                outcomes.add(executor.deliverSignal(message.workflowId(), message.signalName(),
+                        message.payload(), message.messageId()));
+                // ... then the listener dies before the offset commits.
+                if (attempts.incrementAndGet() == 1) {
+                    throw new IllegalStateException("injected: crash after the signal row committed");
+                }
+            });
+
+            messaging.publishSignal(SERVICE, new SignalMessage(
+                    workflowId, KafkaTestWorkflows.APPROVAL_SIGNAL, objectMapper.valueToTree("granted")));
+
+            await().atMost(BOUND).pollInterval(Duration.ofMillis(200)).untilAsserted(() ->
+                    assertEquals(2, attempts.get(), "the record must be redelivered once"));
+            assertEquals(java.util.List.of(true, false), outcomes,
+                    "the first attempt persists the signal, the redelivery is suppressed as a duplicate");
+            assertEquals(1, signalRows(workflowId).size(),
+                    "a redelivered record must not become a second signal row");
         } finally {
             messaging.destroy();
         }

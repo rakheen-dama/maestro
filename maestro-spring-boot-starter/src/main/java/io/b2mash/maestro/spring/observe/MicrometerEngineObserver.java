@@ -34,6 +34,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <tr><td>{@code maestro.workflow.terminated}</td><td>Counter</td><td>workflow</td><td>{@link #workflowTerminated}</td></tr>
  *   <tr><td>{@code maestro.activity.duration}</td><td>Timer</td><td>workflow, activity, outcome</td><td>{@link #activityCompleted}/{@link #activityFailed} (live only)</td></tr>
  *   <tr><td>{@code maestro.signal.consumed}</td><td>Counter</td><td>workflow, signal</td><td>{@link #signalConsumed} (live only)</td></tr>
+ *   <tr><td>{@code maestro.signal.duplicates}</td><td>Counter</td><td>workflow, signal</td><td>{@link #signalDuplicateSuppressed}</td></tr>
  *   <tr><td>{@code maestro.timer.fired}</td><td>Counter</td><td>workflow</td><td>{@link #timerFired} (live only)</td></tr>
  *   <tr><td>{@code maestro.recovery.scanned}</td><td>Counter</td><td>—</td><td>{@link #recoveryPass}</td></tr>
  *   <tr><td>{@code maestro.recovery.adopted}</td><td>Counter</td><td>—</td><td>{@link #recoveryPass}</td></tr>
@@ -150,6 +151,29 @@ public final class MicrometerEngineObserver implements EngineObserver {
         }
         var workflowType = s.workflowType() != null ? s.workflowType() : UNKNOWN_WORKFLOW_TYPE;
         increment("maestro.signal.consumed", TAG_WORKFLOW, workflowType, TAG_SIGNAL, s.signalName());
+    }
+
+    /**
+     * Counts a suppressed duplicate delivery.
+     *
+     * <p>Unlike {@link #signalConsumed}, whose signal name is the literal an
+     * {@code awaitSignal} call names, this callback runs on the <em>delivery</em>
+     * side: the name comes off the wire. For a pre-delivered (orphan) signal —
+     * no instance yet, so no workflow type — nothing bounds it, and an external
+     * producer could mint one tag value per name it sends. So the {@code signal}
+     * tag carries the name only when the workflow type is known (the instance
+     * exists), and the fixed placeholder {@value #UNKNOWN_WORKFLOW_TYPE}
+     * otherwise.
+     */
+    @Override
+    public void signalDuplicateSuppressed(SignalInfo s) {
+        var workflowType = s.workflowType();
+        if (workflowType == null) {
+            increment("maestro.signal.duplicates", TAG_WORKFLOW, UNKNOWN_WORKFLOW_TYPE,
+                    TAG_SIGNAL, UNKNOWN_WORKFLOW_TYPE);
+            return;
+        }
+        increment("maestro.signal.duplicates", TAG_WORKFLOW, workflowType, TAG_SIGNAL, s.signalName());
     }
 
     @Override
