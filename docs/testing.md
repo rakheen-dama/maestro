@@ -351,7 +351,7 @@ assertEquals(List.of("InventoryActivities.reserve", "MessagingActivities.publish
 | `env.crashBeforePersisting(e -> ...)` | just before the first matching event is written | lost |
 | `env.crashNow()` | immediately (typically while its workflows are parked) | none |
 
-The predicates see every event a workflow writes: activity outcomes, `SIGNAL_RECEIVED`, `TIMER_SCHEDULED`/`TIMER_FIRED`, the `COMPENSATION_*` records, version markers, and the terminal `WORKFLOW_COMPLETED`/`WORKFLOW_FAILED`. Only one crash can be armed at a time; arming a second throws `IllegalStateException`. The returned `SimulatedCrash` reports `hasCrashed()`, the triggering `event()` and `workflowId()`. `awaitCrash(timeout)` waits for the crash and for the crashed run to finish unwinding.
+The predicates see every event a workflow writes: activity outcomes, `SIGNAL_RECEIVED`, `TIMER_SCHEDULED`/`TIMER_FIRED`, the `COMPENSATION_*` records, version markers, and the terminal `WORKFLOW_COMPLETED`/`WORKFLOW_FAILED`. Only one crash can be armed at a time; arming a second throws `IllegalStateException`. The returned `SimulatedCrash` reports `hasCrashed()`, the triggering `event()` and `workflowId()`. `awaitCrash(timeout)` waits for the crash and for the crashed run to finish unwinding. The crash is announced only once every write in flight on the node has finished. Once `hasCrashed()` is `true`, nothing more from that node reaches the store, whichever of its workflows triggered the crash.
 
 ### Persisted Versus Lost
 
@@ -396,7 +396,7 @@ assertEquals(StandDownReason.NONDETERMINISTIC_HISTORY, handle.awaitStandDown(Dur
 | Method | Returns |
 |---|---|
 | `handle.liveSteps()` | every activity step executed live, across every node (recorded as the execution starts, so a lost result still counts) |
-| `handle.replayedSteps()` | every step whose recorded outcome (result or failure) was replayed |
+| `handle.replayedSteps()` | every **activity** step whose recorded outcome (result or failure) was replayed; replayed signals, timers, side effects and version markers are not counted |
 | `handle.liveExecutions(step)` / `handle.replays(step)` | the count for one step, e.g. `"InventoryActivities.reserve"` |
 | `handle.recoveries()` | how many times a recovering node re-adopted the workflow |
 | `handle.standDowns()` / `handle.awaitStandDown(timeout)` | runs that stopped without recording an outcome: `StandDown(reason, detail)` |
@@ -431,6 +431,7 @@ It runs the workflow once uninterrupted. Then, for every `k` from 1 to that run'
 - A crash fires at an event write. To crash between two non-event writes (a timer row and its memo, for instance), use `crashNow()` at a moment the test controls.
 - The in-memory store keeps payloads as Jackson trees and never renders them to text. A type whose round trip depends on the JSON text form is covered only against Postgres.
 - `crashNow()` lets another workflow's in-flight activity finish (up to 30 seconds) before that workflow stops.
+- With `parallel()` branches, `crashAfter(n)` counts completions across the branches in the order they happen to land, so which step is the `n`-th depends on thread timing. Sibling branches still mid-activity at the crash run that activity again after recovery. `assertRecoverable` can therefore report a live-step difference for a parallel workflow that is in fact correct. Use it on sequential workflows, and test parallel ones with targeted `crashAfterPersisting` predicates instead.
 
 ---
 

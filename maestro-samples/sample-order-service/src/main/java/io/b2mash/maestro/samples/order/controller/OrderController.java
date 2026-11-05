@@ -1,7 +1,9 @@
 package io.b2mash.maestro.samples.order.controller;
 
+import io.b2mash.maestro.core.exception.WorkflowNotFoundException;
 import io.b2mash.maestro.core.exception.WorkflowNotQueryableException;
 import io.b2mash.maestro.core.model.WorkflowFailureDetail;
+import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.samples.order.domain.OrderInput;
 import io.b2mash.maestro.samples.order.domain.OrderResponse;
 import io.b2mash.maestro.samples.order.domain.OrderStatus;
@@ -54,11 +56,17 @@ public class OrderController {
      * store, so any node can answer; the fine-grained step comes from the
      * workflow's {@code @QueryMethod}, which only the node running the workflow
      * can answer — elsewhere, or once the order has ended, it is {@code null}.
+     * An unknown order is a 404.
      */
     @GetMapping("/orders/{orderId}/status")
-    public OrderStatusResponse getStatus(@PathVariable String orderId) {
+    public ResponseEntity<OrderStatusResponse> getStatus(@PathVariable String orderId) {
         var handle = maestro.getWorkflow("order-" + orderId);
-        var status = handle.status();
+        WorkflowStatus status;
+        try {
+            status = handle.status();
+        } catch (WorkflowNotFoundException unknownOrder) {
+            return ResponseEntity.notFound().build();
+        }
         String step;
         try {
             step = handle.query("getStatus", OrderStatus.class).currentStep();
@@ -66,6 +74,6 @@ public class OrderController {
             step = null;
         }
         var failureReason = handle.failure().map(WorkflowFailureDetail::message).orElse(null);
-        return new OrderStatusResponse(orderId, status, step, failureReason);
+        return ResponseEntity.ok(new OrderStatusResponse(orderId, status, step, failureReason));
     }
 }

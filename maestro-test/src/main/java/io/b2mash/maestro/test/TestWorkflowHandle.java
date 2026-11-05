@@ -281,6 +281,8 @@ public final class TestWorkflowHandle {
     /**
      * Returns every activity step whose recorded outcome (result or failure)
      * was replayed from history, in replay order, across every recovery.
+     * Activities only: replayed signals, timers, side effects and version
+     * markers are not listed.
      *
      * @return the replayed step names
      */

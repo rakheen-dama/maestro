@@ -172,6 +172,7 @@ public class OrderFulfilmentWorkflow {
     @WorkflowMethod
     @Saga(parallelCompensation = false)
     public OrderResult fulfil(OrderInput input) {
+        var workflow = WorkflowContext.current();
 
         // Step 1: Reserve inventory (compensatable — released on failure)
         ReservationConfirmation reservation = inventory.reserve(input.items());
@@ -182,24 +183,25 @@ public class OrderFulfilmentWorkflow {
         );
 
         // Step 3: Await payment result (self-recovery: signal may arrive before we get here)
-        PaymentResult paymentResult = workflow.awaitSignal(
-            "payment.result",
-            PaymentResult.class,
-            Duration.ofHours(1)
-        );
-
-        if (paymentResult == null) {
+        PaymentResult paymentResult;
+        try {
+            paymentResult = workflow.awaitSignal(
+                "payment.result",
+                PaymentResult.class,
+                Duration.ofHours(1)
+            );
+        } catch (SignalTimeoutException e) {
             // Timeout — no response from payment gateway
             notifications.notifyCustomer(input.customerId(), "Payment timed out");
-            return OrderResult.failed("Payment timed out");
-            // @Saga compensation: inventory.releaseReservation() runs automatically
+            throw new OrderFailedException("Payment timed out");
+            // The throw is what compensates: @Saga runs inventory.releaseReservation()
+            // and the order ends FAILED. Returning a "failed" result would complete it.
         }
 
-        if (!paymentResult.isSuccess()) {
-            notifications.notifyCustomer(input.customerId(),
-                "Payment failed: " + paymentResult.reason());
-            return OrderResult.failed(paymentResult.reason());
-            // @Saga compensation: inventory.releaseReservation() runs automatically
+        if (!paymentResult.success()) {
+            var reason = "Payment failed: " + paymentResult.reason();
+            notifications.notifyCustomer(input.customerId(), reason);
+            throw new OrderFailedException(reason);   // @Saga releases the reservation
         }
 
         // Step 4: Arrange shipment
@@ -463,46 +465,56 @@ Standalone Spring Boot application. Consumes `maestro.admin.events` from Kafka, 
 @MaestroTest
 class OrderFulfilmentWorkflowTest {
 
-    @Inject
-    private TestWorkflowEnvironment testEnv;
-
     @Test
-    void shouldFulfilOrder_whenPaymentSucceeds() {
-        testEnv.registerActivities(new InventoryActivitiesImpl(mockRepo));
-        testEnv.registerActivities(mock(MessagingActivities.class));
-        testEnv.registerActivities(mock(ShippingActivities.class));
-        testEnv.registerActivities(mock(NotificationActivities.class));
+    void shouldFulfilOrder_whenPaymentSucceeds(TestWorkflowEnvironment testEnv) throws Exception {
+        testEnv.registerActivities(InventoryActivities.class, inventoryActivities);
+        testEnv.registerActivities(MessagingActivities.class, mock(MessagingActivities.class));
+        testEnv.registerActivities(ShippingActivities.class, shippingActivities);
+        testEnv.registerActivities(NotificationActivities.class, mock(NotificationActivities.class));
 
         var handle = testEnv.startWorkflow(OrderFulfilmentWorkflow.class, orderInput);
 
         handle.signal("payment.result", PaymentResult.success("txn-123"));
 
-        OrderResult result = handle.getResult(Duration.ofSeconds(5));
-        assertThat(result.status()).isEqualTo(Status.SUCCESS);
+        OrderResult result = handle.getResult(OrderResult.class, Duration.ofSeconds(5));
+        assertThat(result.orderId()).isEqualTo(orderInput.orderId());
     }
 
     @Test
-    void shouldCompensateInventory_whenPaymentFails() {
+    void shouldCompensateInventory_whenPaymentFails(TestWorkflowEnvironment testEnv) throws Exception {
         // ... setup ...
         var handle = testEnv.startWorkflow(OrderFulfilmentWorkflow.class, orderInput);
 
         handle.signal("payment.result", PaymentResult.failed("Card declined"));
 
-        OrderResult result = handle.getResult(Duration.ofSeconds(5));
-        assertThat(result.status()).isEqualTo(Status.FAILED);
+        // The workflow threw OrderFailedException: the saga compensated and the order FAILED
+        assertThat(handle.awaitTerminal(Duration.ofSeconds(5))).isEqualTo(WorkflowStatus.FAILED);
+        assertThat(handle.getFailure().orElseThrow().message()).isEqualTo("Payment failed: Card declined");
         verify(inventoryActivities).releaseReservation(any());
     }
 
     @Test
-    void shouldHandleSelfRecovery_paymentResultArrivesEarly() {
+    void shouldHandleSelfRecovery_paymentResultArrivesEarly(TestWorkflowEnvironment testEnv) throws Exception {
         testEnv.preDeliverSignal("order-abc", "payment.result",
             PaymentResult.success("txn-123"));
 
-        var handle = testEnv.startWorkflow(OrderFulfilmentWorkflow.class, orderInput);
+        var handle = testEnv.startWorkflow("order-abc", OrderFulfilmentWorkflow.class, orderInput);
 
         // Workflow picks up pre-delivered signal immediately
-        OrderResult result = handle.getResult(Duration.ofSeconds(5));
-        assertThat(result.status()).isEqualTo(Status.SUCCESS);
+        OrderResult result = handle.getResult(OrderResult.class, Duration.ofSeconds(5));
+        assertThat(result.orderId()).isEqualTo(orderInput.orderId());
+    }
+
+    @Test
+    void shouldReplayAfterACrash(TestWorkflowEnvironment testEnv) throws Exception {
+        // ... setup ...
+        var crash = testEnv.crashAfter(2);     // reserve and the payment request are recorded
+        var handle = testEnv.startWorkflow(OrderFulfilmentWorkflow.class, orderInput);
+        crash.recover();                       // a fresh node replays both and waits for payment
+
+        handle.signal("payment.result", PaymentResult.success("txn-123"));
+        handle.getResult(OrderResult.class, Duration.ofSeconds(5));
+        verify(inventoryActivities, times(1)).reserve(any());
     }
 }
 ```

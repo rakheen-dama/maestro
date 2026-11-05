@@ -138,6 +138,10 @@ public final class DeterminismChecker {
      *
      * <p>Like {@link #assertDeterministic}, every run gets its own workflow ID, so
      * a workflow that passes its own ID into an activity argument cannot pass.
+     * Meant for sequential workflows: with {@code parallel()} branches the
+     * {@code k}-th completion depends on thread timing, and a sibling branch
+     * mid-activity at the crash re-runs that activity after recovery, which this
+     * check reports as a live-step difference.
      *
      * <h2>Usage</h2>
      * <pre>{@code
