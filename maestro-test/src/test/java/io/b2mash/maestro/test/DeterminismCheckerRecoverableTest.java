@@ -39,6 +39,15 @@ class DeterminismCheckerRecoverableTest {
     }
 
     @Test
+    void aFailingSagaRecoversFromEveryCrashPoint_includingInsideTheCompensation() {
+        // Baseline: reserve, charge, ship fails, refund, release — four completions,
+        // two of them compensations, so two crash points fall inside the unwind.
+        env.registerActivities(CrashRecoverySagaTest.Shop.class, new CrashRecoverySagaTest.RecordingShop());
+
+        DeterminismChecker.assertRecoverable(env, CrashRecoverySagaTest.PurchaseWorkflow.class, "sku-1");
+    }
+
+    @Test
     void aResultTypeThatCannotBeReadBack_isReportedAsAStandDown() {
         var error = assertThrows(AssertionError.class,
                 () -> DeterminismChecker.assertRecoverable(env, Unreadable.class, "in"));
