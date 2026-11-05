@@ -16,8 +16,10 @@ import tools.jackson.databind.JsonNode;
  * {@code (workflowId, signalName, messageId)} — a redelivered or republished
  * duplicate is suppressed rather than becoming a second row that a later
  * same-name await would consume. A message without an id is not deduplicated
- * (each delivery is a new signal). An id longer than 512 characters is treated
- * as absent. The field is additive on the wire: a consumer built before it
+ * (each delivery is a new signal). The consuming transport stores the id
+ * namespaced by its source (the Kafka transport: {@code "env:<id>"}); an id
+ * whose stored form exceeds 512 characters, or that contains a control
+ * character, is treated as absent. The field is additive on the wire: a consumer built before it
  * existed ignores it (Jackson 3 does not fail on unknown properties by
  * default).
  *

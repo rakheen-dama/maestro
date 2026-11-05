@@ -27,14 +27,21 @@ import java.util.function.LongSupplier;
  * engine deduplicates on ({@code WorkflowExecutor.deliverSignal(..., messageId)}).
  *
  * <h2>Resolution order</h2>
+ * <p>Each source has its own namespace, so no source can forge another's key
+ * and suppress a genuine signal (a header set to the literal form of a
+ * coordinate, say, or to an id another topic's producer used):
  * <ol>
  *   <li><b>Envelope</b> — {@code SignalMessage.messageId()}, on the engine
- *       signal channel. If the {@value MaestroSignalHeaders#MESSAGE_ID} header
- *       is also present and differs, the envelope wins and the mismatch is
- *       logged at {@code WARN} once.</li>
+ *       signal channel, stored as {@code "env:<id>"}. If the
+ *       {@value MaestroSignalHeaders#MESSAGE_ID} header is also present and
+ *       differs, the envelope wins and the mismatch is logged at {@code WARN}
+ *       once. An envelope id containing a control character is ignored.</li>
  *   <li><b>Header</b> — {@value MaestroSignalHeaders#MESSAGE_ID}, the only
  *       producer-side id a domain record reaching a
- *       {@code @MaestroSignalListener} can carry.</li>
+ *       {@code @MaestroSignalListener} can carry, stored as
+ *       {@code "hdr:<topic>:<id>"}: one topic cannot suppress another's
+ *       signals, and a republish lands on the same topic. Invalid header
+ *       values are ignored ({@link MaestroSignalHeaders#messageId}).</li>
  *   <li><b>Coordinate</b> — {@code "kafka:<topicId>:<partition>:<offset>"},
  *       using the topic's KIP-516 topic id. A record's coordinate is the same
  *       on every redelivery of it, so a redelivery after a crash or rebalance
@@ -106,21 +113,31 @@ public final class KafkaSignalIdentity {
      */
     public @Nullable String resolve(@Nullable String envelopeId, ConsumerRecord<?, ?> record) {
         var headerId = MaestroSignalHeaders.messageId(record.headers());
-        if (envelopeId != null && !envelopeId.isBlank()) {
+        if (envelopeId != null && !envelopeId.isBlank() && MaestroSignalHeaders.isStorable(envelopeId)) {
             if (headerId != null && !headerId.equals(envelopeId) && mismatchWarned.compareAndSet(false, true)) {
                 logger.warn("Signal record on {}-{}@{} carries message id '{}' in its envelope but '{}' in its {} "
                                 + "header — using the envelope's (logged once; later mismatches are not logged)",
                         record.topic(), record.partition(), record.offset(), envelopeId, headerId,
                         MaestroSignalHeaders.MESSAGE_ID);
             }
-            return envelopeId;
+            return ENVELOPE_PREFIX + envelopeId;
         }
         if (headerId != null) {
-            return headerId;
+            return HEADER_PREFIX + record.topic() + ":" + headerId;
         }
         var topicId = topicId(record.topic());
-        return topicId == null ? null : "kafka:" + topicId + ":" + record.partition() + ":" + record.offset();
+        return topicId == null ? null
+                : COORDINATE_PREFIX + topicId + ":" + record.partition() + ":" + record.offset();
     }
+
+    /** Namespace of an id taken from the {@code SignalMessage} envelope. */
+    public static final String ENVELOPE_PREFIX = "env:";
+
+    /** Namespace of an id taken from the header; followed by the source topic and {@code ':'}. */
+    public static final String HEADER_PREFIX = "hdr:";
+
+    /** Namespace of a coordinate fallback; followed by {@code <topicId>:<partition>:<offset>}. */
+    public static final String COORDINATE_PREFIX = "kafka:";
 
     /**
      * A rebalance listener that drops the cached topic id of every topic whose

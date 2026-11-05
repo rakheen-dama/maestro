@@ -77,7 +77,9 @@ public final class TestWorkflowHandle {
      *         signal with the same name and id was already stored
      */
     public boolean signal(String signalName, @Nullable Object payload, @Nullable String messageId) {
-        return executor.deliverSignal(workflowId, signalName, payload, messageId);
+        // Same namespace as the starter's WorkflowHandle.signal(name, payload, id).
+        return executor.deliverSignal(workflowId, signalName, payload,
+                messageId == null ? null : "client:" + messageId);
     }
 
     // ── Result retrieval ─────────────────────────────────────────────────

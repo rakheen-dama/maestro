@@ -1384,6 +1384,14 @@ class SignalManagerTest {
         assertEquals(2, rows.size());
         assertTrue(rows.stream().allMatch(r -> r.messageId() == null));
 
+        assertTrue(signalManager.deliverSignal("order-1", "payment.result", "nul", "hdr:t:a\u0000b"),
+                "a NUL would fail the Postgres insert — it must degrade to no identity, not a failed delivery");
+        assertTrue(signalManager.deliverSignal("order-1", "payment.result", "nul", "hdr:t:a\u0000b"));
+        assertTrue(signalManager.deliverSignal("order-1", "payment.result", "ctl", "env:x\u001fy\u007f"));
+        assertEquals(5, store.getUnconsumedSignals("order-1", "payment.result").size());
+        assertTrue(store.getUnconsumedSignals("order-1", "payment.result").stream()
+                .allMatch(r -> r.messageId() == null));
+
         var atLimit = "y".repeat(SignalManager.MAX_MESSAGE_ID_LENGTH);
         assertTrue(signalManager.deliverSignal("order-1", "payment.result", "c", atLimit));
         assertFalse(signalManager.deliverSignal("order-1", "payment.result", "c", atLimit),

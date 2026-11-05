@@ -197,7 +197,7 @@ class MaestroSignalListenerContainerConfigTest {
                     // not just that runWithExtractedContext was called.
                     var executor = ctx.getBean(WorkflowExecutor.class);
                     // ...and delivered with the record's maestro-message-id header as its identity.
-                    verify(executor).deliverSignal(eq("wf-hello"), eq("test.signal"), any(), eq("evt-1"));
+                    verify(executor).deliverSignal(eq("wf-hello"), eq("test.signal"), any(), eq("hdr:test.topic:evt-1"));
                 });
     }
 

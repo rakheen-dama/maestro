@@ -144,8 +144,8 @@ final class SignalManager {
 
     private final AtomicInteger notificationsInFlight = new AtomicInteger();
 
-    /** Whether the over-long message id WARN has been logged (once per manager; DEBUG after). */
-    private final java.util.concurrent.atomic.AtomicBoolean overLongIdWarned =
+    /** Whether the invalid message id WARN has been logged (once per manager; DEBUG after). */
+    private final java.util.concurrent.atomic.AtomicBoolean invalidIdWarned =
             new java.util.concurrent.atomic.AtomicBoolean();
 
     private final WorkflowStore store;
@@ -418,8 +418,11 @@ final class SignalManager {
      * nothing new to read is harmless, and skipping it could strand an await
      * whose wake for the original delivery was lost.
      *
-     * <p>A {@code null} id, or one longer than {@link #MAX_MESSAGE_ID_LENGTH},
-     * is no identity: the signal is always inserted.
+     * <p>A {@code null} id, one longer than {@link #MAX_MESSAGE_ID_LENGTH}, or
+     * one containing a control character is no identity: the signal is always
+     * inserted. Callers namespace their ids by source (the Kafka transport:
+     * {@code env:}, {@code hdr:<topic>:}, {@code kafka:}; the client handle:
+     * {@code client:}) so no source can forge another's key.
      *
      * @param workflowId the target workflow's business ID
      * @param signalName the signal name
@@ -464,15 +467,21 @@ final class SignalManager {
         // The same bound protects the message id, for the same reason: the id
         // is identity metadata, and an over-long one must degrade to "no
         // identity" (delivered, not deduplicated), never fail the insert.
-        if (messageId != null && messageId.length() > MAX_MESSAGE_ID_LENGTH) {
-            if (overLongIdWarned.compareAndSet(false, true)) {
-                logger.warn("Ignoring a {}-character message id for signal '{}' on workflow '{}' — the "
-                                + "limit is {}. The signal is delivered without deduplication (logged once; "
-                                + "later occurrences at DEBUG).",
-                        messageId.length(), signalName, workflowId, MAX_MESSAGE_ID_LENGTH);
+        // A control character (NUL above all, which Postgres TEXT rejects)
+        // would fail the insert the same way, so it is treated as absent too.
+        // The limit applies to the id as passed — a transport's namespaced form
+        // ("env:", "hdr:<topic>:", "kafka:", "client:") included.
+        if (messageId != null && (messageId.length() > MAX_MESSAGE_ID_LENGTH || hasControlChar(messageId))) {
+            var why = messageId.length() > MAX_MESSAGE_ID_LENGTH
+                    ? messageId.length() + " characters (limit " + MAX_MESSAGE_ID_LENGTH + ")"
+                    : "a control character";
+            if (invalidIdWarned.compareAndSet(false, true)) {
+                logger.warn("Ignoring a message id with {} for signal '{}' on workflow '{}'. The signal is "
+                                + "delivered without deduplication (logged once; later occurrences at DEBUG).",
+                        why, signalName, workflowId);
             } else {
-                logger.debug("Ignoring a {}-character message id for signal '{}' on workflow '{}'",
-                        messageId.length(), signalName, workflowId);
+                logger.debug("Ignoring a message id with {} for signal '{}' on workflow '{}'",
+                        why, signalName, workflowId);
             }
             messageId = null;
         }
@@ -511,6 +520,17 @@ final class SignalManager {
 
         logger.debug("Delivered signal '{}' to workflow '{}'", signalName, workflowId);
         return persisted;
+    }
+
+    /** Whether {@code id} contains a character below {@code U+0020} or {@code U+007F}. */
+    private static boolean hasControlChar(String id) {
+        for (int i = 0; i < id.length(); i++) {
+            var c = id.charAt(i);
+            if (c < 0x20 || c == 0x7F) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

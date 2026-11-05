@@ -41,17 +41,68 @@ class KafkaSignalIdentityTest {
             return "TOPICID";
         }, System::nanoTime);
 
-        assertEquals("env", identity.resolve("env", record("t", 0, 5, "hdr")),
+        assertEquals("env:e", identity.resolve("e", record("t", 0, 5, "h")),
                 "a mismatching header loses to the envelope");
-        assertEquals("env", identity.resolve("env", record("t", 0, 5, null)));
-        assertEquals("hdr", identity.resolve(null, record("t", 0, 5, "hdr")));
-        assertEquals("hdr", identity.resolve(" ", record("t", 0, 5, "hdr")), "a blank envelope id is absent");
+        assertEquals("env:e", identity.resolve("e", record("t", 0, 5, null)));
+        assertEquals("hdr:t:h", identity.resolve(null, record("t", 0, 5, "h")));
+        assertEquals("hdr:t:h", identity.resolve(" ", record("t", 0, 5, "h")), "a blank envelope id is absent");
+        assertEquals("hdr:t:h", identity.resolve("bad\u0000id", record("t", 0, 5, "h")),
+                "an envelope id with a control character is ignored");
         assertEquals(0, lookups.get(), "no topic lookup while a producer id exists");
 
         assertEquals("kafka:TOPICID:2:41", identity.resolve(null, record("t", 2, 41, null)));
         assertEquals("kafka:TOPICID:2:41", identity.resolve(null, record("t", 2, 41, null)),
                 "a redelivery of the same record resolves to the same id");
         assertEquals(1, lookups.get(), "the topic id is cached");
+    }
+
+    @Test
+    @DisplayName("sources cannot forge each other's keys: a header spelling a coordinate, or another topic's id, "
+            + "never collides")
+    void namespacesPreventSpoofing() {
+        var identity = new KafkaSignalIdentity(topic -> "TOPICID", System::nanoTime);
+
+        // A producer sets the header to the literal coordinate of a record that
+        // has not arrived yet...
+        var forged = identity.resolve(null, record("t", 0, 5, "kafka:TOPICID:0:7"));
+        // ...and the genuine, header-less record later lands at that offset.
+        var genuine = identity.resolve(null, record("t", 0, 7, null));
+        assertEquals("kafka:TOPICID:0:7", genuine);
+        org.junit.jupiter.api.Assertions.assertNotEquals(forged, genuine,
+                "the forged header must not suppress the genuine signal");
+
+        assertEquals("hdr:a:same", identity.resolve(null, record("a", 0, 1, "same")));
+        assertEquals("hdr:b:same", identity.resolve(null, record("b", 0, 1, "same")),
+                "one topic's header ids cannot suppress another topic's signals");
+        org.junit.jupiter.api.Assertions.assertNotEquals(identity.resolve("x", record("t", 0, 1, null)),
+                identity.resolve(null, record("t", 0, 1, "x")), "envelope and header ids live apart");
+    }
+
+    @Test
+    @DisplayName("poison header values are no identity: NUL, other control characters, more than 512 bytes")
+    void poisonHeadersAreIgnored() {
+        var withNul = new RecordHeaders();
+        withNul.add(MaestroSignalHeaders.MESSAGE_ID, "a\u0000b".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertNull(MaestroSignalHeaders.messageId(withNul));
+
+        for (var bad : List.of("tab\there", "line\nbreak", "esc\u001b", "del\u007f")) {
+            var headers = new RecordHeaders();
+            headers.add(MaestroSignalHeaders.MESSAGE_ID, bad.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            assertNull(MaestroSignalHeaders.messageId(headers), bad);
+        }
+
+        var overLong = new RecordHeaders();
+        overLong.add(MaestroSignalHeaders.MESSAGE_ID, "é".repeat(257).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertNull(MaestroSignalHeaders.messageId(overLong), "514 UTF-8 bytes exceeds the 512-byte limit");
+        var atLimit = new RecordHeaders();
+        atLimit.add(MaestroSignalHeaders.MESSAGE_ID, "é".repeat(256).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertEquals("é".repeat(256), MaestroSignalHeaders.messageId(atLimit));
+
+        var identity = new KafkaSignalIdentity(topic -> "TOPICID", System::nanoTime);
+        var record = record("t", 3, 9, null);
+        record.headers().add(MaestroSignalHeaders.MESSAGE_ID, "x\u0000".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertEquals("kafka:TOPICID:3:9", identity.resolve(null, record),
+                "an invalid header falls back to the coordinate, never fails the record");
     }
 
     @Test

@@ -97,7 +97,10 @@ public final class WorkflowHandle<R> {
      * signal that a later await of the same name would consume. Two distinct
      * signals must carry distinct ids. Typically the id is a client-supplied
      * {@code Idempotency-Key} header, or a business key such as
-     * {@code "<orderId>:payment-confirmed"}.
+     * {@code "<orderId>:payment-confirmed"}. It is stored as
+     * {@code "client:<id>"}, a namespace no transport uses, and like every id
+     * the stored form is capped at 512 characters and must contain no control
+     * character (otherwise it is treated as {@code null}).
      *
      * @param signalName the signal name
      * @param payload    the signal payload, or {@code null}
@@ -108,8 +111,14 @@ public final class WorkflowHandle<R> {
      *         signal with the same name and id was already stored
      */
     public boolean signal(String signalName, @Nullable Object payload, @Nullable String messageId) {
-        return executor.deliverSignal(workflowId, signalName, payload, messageId);
+        // Namespaced like every other identity source (Kafka: env:/hdr:/kafka:),
+        // so a client id can never collide with — or suppress — a transport's.
+        return executor.deliverSignal(workflowId, signalName, payload,
+                messageId == null ? null : CLIENT_ID_PREFIX + messageId);
     }
+
+    /** Namespace of ids passed to {@link #signal(String, Object, String)}; stored as {@code "client:<id>"}. */
+    public static final String CLIENT_ID_PREFIX = "client:";
 
     /**
      * Queries the running workflow by name (no argument).

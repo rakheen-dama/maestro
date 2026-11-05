@@ -841,8 +841,14 @@ public final class WorkflowExecutor {
      * not — writes nothing and returns {@code false}. Every retry or republish
      * of one logical signal must carry the same id; two distinct signals must
      * carry distinct ids, or the second is lost as a "duplicate". A
-     * {@code null} id (or one longer than 512 characters) means no identity:
-     * the signal is always persisted, exactly as the three-argument form.
+     * {@code null} id (or one longer than 512 characters, or containing a
+     * control character) means no identity: the signal is always persisted,
+     * exactly as the three-argument form. The id is stored verbatim; a caller
+     * that accepts ids from more than one source must namespace them so one
+     * source cannot suppress another's signals — the Kafka transport stores
+     * {@code env:<id>}, {@code hdr:<topic>:<id>} and
+     * {@code kafka:<topicId>:<partition>:<offset>}, the starter's
+     * {@code WorkflowHandle} {@code client:<id>}.
      *
      * <p>A transport consumer acknowledges its record either way — a
      * duplicate is a signal that is already durable.

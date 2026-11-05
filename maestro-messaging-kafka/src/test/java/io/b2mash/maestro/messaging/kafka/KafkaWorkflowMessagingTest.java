@@ -131,8 +131,8 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
             await().atMost(15, SECONDS).untilAsserted(() -> assertEquals(3, received.size()));
             var byWorkflow = new java.util.HashMap<String, SignalMessage>();
             received.forEach(m -> byWorkflow.put(m.workflowId(), m));
-            assertEquals("env-1", byWorkflow.get("wf-1").messageId());
-            assertEquals("hdr-2", byWorkflow.get("wf-2").messageId());
+            assertEquals("env:env-1", byWorkflow.get("wf-1").messageId());
+            assertEquals("hdr:" + topic + ":hdr-2", byWorkflow.get("wf-2").messageId());
             var coordinate = byWorkflow.get("wf-3").messageId();
             assertNotNull(coordinate, "a broker with topic ids gives an id-less record its coordinate");
             assertTrue(coordinate.matches("kafka:[A-Za-z0-9_-]{22}:\\d+:\\d+"), coordinate);

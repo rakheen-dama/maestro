@@ -13,7 +13,14 @@ import org.jspecify.annotations.NullMarked;
  * the send and the activity's memoized result (the replay reaches the same
  * sequence). So every publish attempt of one logical signal carries the same
  * id, and the receiving service — which persists at most one signal per
- * {@code (workflowId, signalName, messageId)} — keeps exactly one.
+ * {@code (workflowId, signalName, messageId)} — keeps exactly one. Sent in the
+ * {@value MaestroSignalHeaders#MESSAGE_ID} header, the id is stored at the
+ * receiver namespaced by the topic it arrived on, as
+ * {@code "hdr:<topic>:<workflowId>:<seq>"} ({@link KafkaSignalIdentity}), so
+ * it cannot collide with ids from other topics or other sources. Keep the
+ * header within {@value MaestroSignalHeaders#MAX_MESSAGE_ID_BYTES} UTF-8 bytes
+ * (and the namespaced form within 512 characters), free of control
+ * characters, or it is ignored.
  *
  * <p><b>One activity, several signals:</b> an activity that publishes more
  * than one signal of the same name to the same target workflow must give each
