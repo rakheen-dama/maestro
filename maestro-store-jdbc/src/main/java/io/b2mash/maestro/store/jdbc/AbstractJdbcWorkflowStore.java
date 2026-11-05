@@ -77,6 +77,12 @@ import java.util.stream.Collectors;
  * {@code AND EXISTS (SELECT 1 FROM maestro_workflow_instance WHERE id = ? AND
  * lease_epoch = ?)} and report a fence as {@code false}.
  *
+ * <h2>Signal identity and atomic consumption</h2>
+ * <p>{@link #saveSignalIfAbsent} relies on the partial unique index
+ * {@code idx_wf_signal_message_id} (migration V9) and
+ * {@link #appendEventAndConsumeSignal} writes the fenced {@code SIGNAL_RECEIVED}
+ * memo and the consumed flip in one transaction — see each method.
+ *
  * <h2>Thread Safety</h2>
  * <p>This class is thread-safe. All state is immutable after construction.
  * Connections are obtained per-operation from the injected {@link DataSource}.
@@ -90,6 +96,12 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
     /** SQL state for unique constraint violation (standard across Postgres, H2, etc.). */
     private static final String UNIQUE_VIOLATION = "23505";
+
+    /** SQL state for a serialization failure (SQL standard). */
+    private static final String SERIALIZATION_FAILURE = "40001";
+
+    /** SQL state Postgres raises for a detected deadlock. */
+    private static final String DEADLOCK_DETECTED = "40P01";
 
     /**
      * Largest {@code batchSize} {@link #purgeTerminalInstancesBefore} accepts.
@@ -968,26 +980,84 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * {@code DEFAULT now()} (migration V5) assigns it from the database clock;
      * the caller's {@link WorkflowSignal#receivedAt()} is ignored. A database
      * whose schema is managed by hand ({@code maestro.store.schema.mode: none})
-     * must have V5 applied, or the {@code NOT NULL} column rejects the insert.
+     * must have V5 applied, or the {@code NOT NULL} column rejects the insert,
+     * and V9, because the insert names {@code message_id}.
      */
     @Override
     public void saveSignal(WorkflowSignal signal) {
         Objects.requireNonNull(signal, "signal");
 
-        String sql = "INSERT INTO " + tableName("workflow_signal")
-                + " (id, workflow_instance_id, workflow_id, signal_name, payload,"
-                + " consumed, trace_context) VALUES (?, ?, ?, ?, ?, ?, ?)";
+        try (var conn = dataSource.getConnection()) {
+            insertSignal(conn, signal);
+        } catch (SQLException e) {
+            throw new UncheckedSqlException("Update failed: " + INSERT_SIGNAL_SQL, e);
+        }
+    }
 
-        update(sql, ps -> {
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One {@code INSERT}; the partial unique index
+     * {@code idx_wf_signal_message_id} on {@code (workflow_id, signal_name,
+     * message_id) WHERE message_id IS NOT NULL} (migration V9) arbitrates
+     * concurrent deliveries of one identity. A unique violation is resolved by
+     * probing for the identity — on a fresh connection, after the failed one
+     * is released — because the primary key raises the same SQL state: a hit
+     * is the duplicate ({@code false}), a miss is a genuine id collision and
+     * is rethrown. Requires V9 (the {@code INSERT} names {@code message_id}),
+     * including under {@code maestro.store.schema.mode: none}.
+     */
+    @Override
+    public boolean saveSignalIfAbsent(WorkflowSignal signal) {
+        Objects.requireNonNull(signal, "signal");
+
+        try (var conn = dataSource.getConnection()) {
+            insertSignal(conn, signal);
+            return true;
+        } catch (SQLException e) {
+            if (UNIQUE_VIOLATION.equals(e.getSQLState()) && signal.messageId() != null
+                    && signalIdentityExists(signal)) {
+                log.debug("Signal '{}' for workflow '{}' with message id '{}' is already stored — duplicate "
+                        + "delivery suppressed", signal.signalName(), signal.workflowId(), signal.messageId());
+                return false;
+            }
+            throw new UncheckedSqlException("Update failed: " + INSERT_SIGNAL_SQL, e);
+        }
+    }
+
+    /**
+     * The signal {@code INSERT}. It omits {@code received_at}, so the column's
+     * {@code DEFAULT now()} (migration V5) assigns it from the database clock.
+     * {@code trace_context} (V4) and {@code message_id} (V9) are written
+     * verbatim, never parsed.
+     */
+    private static final String INSERT_SIGNAL_SQL = "INSERT INTO " + JdbcStoreConfiguration.TABLE_PREFIX
+            + "workflow_signal"
+            + " (id, workflow_instance_id, workflow_id, signal_name, payload,"
+            + " consumed, trace_context, message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+
+    private void insertSignal(Connection conn, WorkflowSignal signal) throws SQLException {
+        executeUpdate(conn, INSERT_SIGNAL_SQL, ps -> {
             ps.setObject(1, signal.id());
             setNullableUuid(ps, 2, signal.workflowInstanceId());
             ps.setString(3, signal.workflowId());
             ps.setString(4, signal.signalName());
             setJsonParameter(ps, 5, signal.payload());
             ps.setBoolean(6, signal.consumed());
-            // Opaque metadata (migration V4): written verbatim, never parsed.
-            ps.setString(7, signal.traceContext());
+            setNullableString(ps, 7, signal.traceContext());
+            setNullableString(ps, 8, signal.messageId());
         });
+    }
+
+    /** Whether a row with {@code signal}'s non-null identity is stored. */
+    private boolean signalIdentityExists(WorkflowSignal signal) {
+        String sql = "SELECT 1 FROM " + tableName("workflow_signal")
+                + " WHERE workflow_id = ? AND signal_name = ? AND message_id = ?";
+        return querySingle(sql, ps -> {
+            ps.setString(1, signal.workflowId());
+            ps.setString(2, signal.signalName());
+            ps.setString(3, signal.messageId());
+        }, rs -> Boolean.TRUE).isPresent();
     }
 
     @Override
@@ -995,10 +1065,15 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         Objects.requireNonNull(workflowId, "workflowId");
         Objects.requireNonNull(signalName, "signalName");
 
+        // id is a stable tiebreaker: two rows the database clock stamped with
+        // the same received_at must come back in the same order to every
+        // reader, so concurrent consumers contend for the same first row and
+        // the loser moves on (rather than each taking a different "first").
         String sql = "SELECT id, workflow_instance_id, workflow_id, signal_name, "
-                + "payload, consumed, received_at, trace_context FROM " + tableName("workflow_signal")
+                + "payload, consumed, received_at, trace_context, message_id FROM "
+                + tableName("workflow_signal")
                 + " WHERE workflow_id = ? AND signal_name = ? AND consumed = false"
-                + " ORDER BY received_at ASC";
+                + " ORDER BY received_at ASC, id ASC";
 
         return queryList(sql, ps -> {
             ps.setString(1, workflowId);
@@ -1029,6 +1104,78 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             ps.setObject(2, lease.instanceId());
             ps.setLong(3, lease.epoch());
         }) > 0;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One transaction: the fenced memo {@code INSERT ... SELECT ... FROM
+     * maestro_workflow_instance WHERE id = ? AND lease_epoch = ?} (+
+     * {@link #fenceRowLockClause()}), then {@code UPDATE maestro_workflow_signal
+     * SET consumed = true WHERE id = ? AND consumed = false}. Zero rows from
+     * the insert rolls back and throws {@link FencedWriteException}; zero rows
+     * from the flip — another consumer committed first — rolls back and
+     * returns {@code false}, so a lost race leaves no memo behind. A unique
+     * violation on the memo rolls back and throws
+     * {@link DuplicateEventException}; a serialization failure or deadlock
+     * ({@code 40001}/{@code 40P01}) rolls back and returns {@code false} — in
+     * every non-{@code true} outcome nothing was written.
+     *
+     * <p>Locks are taken instance row (share) then signal row, the order of
+     * every other multi-statement transaction in this store ({@code
+     * createInstance}'s adoption, the retention purge); a concurrent consumer
+     * of the same row waits on the flip and then finds it consumed.
+     */
+    @Override
+    public boolean appendEventAndConsumeSignal(WorkflowEvent memo, RunLease lease, UUID signalId) {
+        Objects.requireNonNull(memo, "memo");
+        Objects.requireNonNull(lease, "lease");
+        Objects.requireNonNull(signalId, "signalId");
+        requireNotUnknown(memo);
+
+        String flipSql = "UPDATE " + tableName("workflow_signal")
+                + " SET consumed = true WHERE id = ? AND consumed = false";
+        int inserted;
+        int flipped = 0;
+        try (var conn = dataSource.getConnection()) {
+            conn.setAutoCommit(false);
+            boolean settled = false; // committed or rolled back — see endTransaction
+            try {
+                inserted = insertEvent(conn, memo, lease);
+                if (inserted > 0) {
+                    flipped = executeUpdate(conn, flipSql, ps -> ps.setObject(1, signalId));
+                }
+                if (inserted > 0 && flipped > 0) {
+                    conn.commit();
+                } else {
+                    conn.rollback();
+                }
+                settled = true;
+            } catch (SQLException | RuntimeException e) {
+                settled = rollbackAfter(conn, e);
+                throw e;
+            } finally {
+                endTransaction(conn, settled);
+            }
+        } catch (SQLException e) {
+            if (UNIQUE_VIOLATION.equals(e.getSQLState())) {
+                var ex = new DuplicateEventException(memo.workflowInstanceId(), memo.sequenceNumber());
+                ex.initCause(e);
+                throw ex;
+            }
+            if (SERIALIZATION_FAILURE.equals(e.getSQLState()) || DEADLOCK_DETECTED.equals(e.getSQLState())) {
+                log.debug("Consume of signal {} at (instance={}, seq={}) lost a serialization conflict — "
+                                + "rolled back, nothing written: {}",
+                        signalId, memo.workflowInstanceId(), memo.sequenceNumber(), e.getMessage());
+                return false;
+            }
+            throw new UncheckedSqlException("Failed to consume signal " + signalId + " at seq "
+                    + memo.sequenceNumber(), e);
+        }
+        if (inserted == 0) {
+            throw new FencedWriteException(lease.instanceId(), lease.epoch(), "appendEventAndConsumeSignal");
+        }
+        return flipped > 0;
     }
 
     /**
@@ -1397,7 +1544,9 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                 rs.getBoolean("consumed"),
                 rs.getTimestamp("received_at").toInstant(),
                 // Opaque metadata (migration V4): returned verbatim, never parsed.
-                rs.getString("trace_context")
+                rs.getString("trace_context"),
+                // Identity metadata (migration V9): returned verbatim, never parsed.
+                rs.getString("message_id")
         );
     }
 
