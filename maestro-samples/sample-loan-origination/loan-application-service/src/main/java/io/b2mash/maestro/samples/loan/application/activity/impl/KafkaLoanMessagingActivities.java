@@ -1,6 +1,9 @@
 package io.b2mash.maestro.samples.loan.application.activity.impl;
 
+import io.b2mash.maestro.messaging.kafka.MaestroSignalHeaders;
+import io.b2mash.maestro.messaging.kafka.SignalMessageIds;
 import io.b2mash.maestro.samples.loan.application.activity.LoanMessagingActivities;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import io.b2mash.maestro.samples.loan.application.domain.LoanApplication;
 import io.b2mash.maestro.samples.loan.application.domain.UnderwritingRequested;
 import io.b2mash.maestro.samples.loan.application.domain.VerificationRequested;
@@ -43,7 +46,9 @@ public class KafkaLoanMessagingActivities implements LoanMessagingActivities {
         for (var type : VERIFICATION_TYPES) {
             var event = new VerificationRequested(
                     application.applicationId(), type, application.amount());
-            send(VERIFICATION_REQUESTS_TOPIC, application.applicationId(), event);
+            // One activity, several events: each needs its own stable suffix.
+            send(VERIFICATION_REQUESTS_TOPIC, application.applicationId(), event,
+                    SignalMessageIds.forCurrentActivity(String.valueOf(type)));
         }
         logger.info("Requested {} verifications for loan {}",
                 VERIFICATION_TYPES.size(), application.applicationId());
@@ -58,16 +63,24 @@ public class KafkaLoanMessagingActivities implements LoanMessagingActivities {
                 application.income(),
                 application.propertyValue(),
                 true);
-        send(UNDERWRITING_REQUESTS_TOPIC, application.applicationId(), event);
+        send(UNDERWRITING_REQUESTS_TOPIC, application.applicationId(), event,
+                SignalMessageIds.forCurrentActivity());
         logger.info("Requested underwriting round {} for loan {}", round, application.applicationId());
     }
 
-    private void send(String topic, String key, Object event) {
+    /**
+     * Sends one event with a {@code maestro-message-id} header: the same id on
+     * every retry of the activity, so a receiving {@code @MaestroSignalListener}
+     * keeps one signal however often the send is repeated.
+     */
+    private void send(String topic, String key, Object event, String messageId) {
         try {
             var bytes = objectMapper.writeValueAsBytes(event);
+            var record = new ProducerRecord<String, byte[]>(topic, key, bytes);
+            MaestroSignalHeaders.setMessageId(record.headers(), messageId);
             // Bounded wait: an unresponsive broker must fail the activity (and
             // enter the durable retry policy) instead of pinning the thread.
-            kafkaTemplate.send(topic, key, bytes).get(SEND_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
+            kafkaTemplate.send(record).get(SEND_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new RuntimeException("Interrupted while publishing to " + topic, e);
