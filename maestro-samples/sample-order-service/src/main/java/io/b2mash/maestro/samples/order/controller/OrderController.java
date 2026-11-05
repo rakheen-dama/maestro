@@ -1,8 +1,11 @@
 package io.b2mash.maestro.samples.order.controller;
 
+import io.b2mash.maestro.core.exception.WorkflowNotQueryableException;
+import io.b2mash.maestro.core.model.WorkflowFailureDetail;
 import io.b2mash.maestro.samples.order.domain.OrderInput;
 import io.b2mash.maestro.samples.order.domain.OrderResponse;
 import io.b2mash.maestro.samples.order.domain.OrderStatus;
+import io.b2mash.maestro.samples.order.domain.OrderStatusResponse;
 import io.b2mash.maestro.samples.order.domain.PlaceOrderRequest;
 import io.b2mash.maestro.samples.order.workflow.OrderFulfilmentWorkflow;
 import io.b2mash.maestro.spring.client.MaestroClient;
@@ -46,9 +49,23 @@ public class OrderController {
         return ResponseEntity.accepted().body(new OrderResponse(orderId));
     }
 
+    /**
+     * Reports an order's progress. The durable status and failure come from the
+     * store, so any node can answer; the fine-grained step comes from the
+     * workflow's {@code @QueryMethod}, which only the node running the workflow
+     * can answer — elsewhere, or once the order has ended, it is {@code null}.
+     */
     @GetMapping("/orders/{orderId}/status")
-    public OrderStatus getStatus(@PathVariable String orderId) {
-        return maestro.getWorkflow("order-" + orderId)
-            .query("getStatus", OrderStatus.class);
+    public OrderStatusResponse getStatus(@PathVariable String orderId) {
+        var handle = maestro.getWorkflow("order-" + orderId);
+        var status = handle.status();
+        String step;
+        try {
+            step = handle.query("getStatus", OrderStatus.class).currentStep();
+        } catch (WorkflowNotQueryableException notOnThisNode) {
+            step = null;
+        }
+        var failureReason = handle.failure().map(WorkflowFailureDetail::message).orElse(null);
+        return new OrderStatusResponse(orderId, status, step, failureReason);
     }
 }

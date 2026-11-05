@@ -23,7 +23,15 @@ import io.b2mash.maestro.samples.payment.exception.PaymentDeclinedException;
  * workflow code wrapped in {@link ActivityExecutionException}, so the decline
  * is caught as that wrapper and recognised with
  * {@code e.causedBy(PaymentDeclinedException.class)}; it is then published as a
- * failed result.</p>
+ * failed result. {@code causedBy} also matches on replay, where the recorded
+ * failure is reconstructed from its class name and message.</p>
+ *
+ * <p>A decline is <em>returned</em>, not thrown, and that is deliberate here:
+ * this workflow has no {@code @Saga} and nothing to undo — a declined charge
+ * took no money — so a decline is a business outcome and the workflow ends
+ * {@code COMPLETED}. Contrast the order service's {@code OrderFulfilmentWorkflow},
+ * which holds a reservation that must be released: it throws on a decline,
+ * because Maestro compensates only when the workflow method throws.</p>
  */
 @DurableWorkflow(name = "payment-processing", taskQueue = "payments")
 public class PaymentProcessingWorkflow {

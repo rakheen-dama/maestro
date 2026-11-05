@@ -98,7 +98,21 @@ Response (HTTP 202):
 curl -s http://localhost:8081/orders/{orderId}/status | jq .
 ```
 
-Watch the status progress: `CREATED` → `RESERVING_INVENTORY` → `REQUESTING_PAYMENT` → `AWAITING_PAYMENT` → `ARRANGING_SHIPMENT` → `COMPLETED`
+```json
+{
+  "orderId": "a1b2c3d4-...",
+  "status": "WAITING_SIGNAL",
+  "step": "AWAITING_PAYMENT",
+  "failureReason": null
+}
+```
+
+`status` is the workflow's durable status, read from Postgres, so any instance of
+the service can answer it. `step` comes from the workflow's `@QueryMethod`, which
+only the instance running the workflow can answer. It is `null` on other
+instances and after the order has ended. Watch `step` progress: `RESERVING_INVENTORY`
+→ `REQUESTING_PAYMENT` → `AWAITING_PAYMENT` → `ARRANGING_SHIPMENT` →
+`NOTIFYING_CUSTOMER`. Once the order ships, `status` becomes `COMPLETED`.
 
 ## Simulate Payment Failure (Saga Compensation)
 
@@ -118,9 +132,31 @@ curl -s -X POST http://localhost:8081/orders \
 Watch the logs — you'll see:
 1. Inventory reserved
 2. Payment request sent to Kafka
-3. Payment gateway immediately declines (`PaymentDeclinedException` is declared non-retryable on the provider stub, so no retry happens; the workflow catches it as `ActivityExecutionException` and checks `causedBy`)
-4. Order workflow receives failure signal
-5. **Saga compensation**: inventory reservation is automatically released
+3. Payment gateway immediately declines. `PaymentDeclinedException` is declared non-retryable on the provider stub, so no retry happens. The payment workflow catches it as `ActivityExecutionException`, checks `causedBy`, publishes the decline and ends `COMPLETED`. A decline is a business outcome there, and that workflow holds nothing to undo.
+4. Order workflow receives the failure signal, notifies the customer, and **throws** `OrderFailedException("Payment failed: Card permanently declined")`
+5. **Saga compensation**: because the `@Saga` workflow method threw, Maestro runs `releaseReservation` with the reservation `reserve` returned
+6. The order ends `FAILED`:
+
+```bash
+curl -s http://localhost:8081/orders/{orderId}/status | jq .
+```
+```json
+{
+  "orderId": "...",
+  "status": "FAILED",
+  "step": null,
+  "failureReason": "Payment failed: Card permanently declined"
+}
+```
+
+A payment result that never arrives takes the same path one hour later: the
+await times out, the order throws `OrderFailedException("Payment timed out")`,
+and the reservation is released.
+
+Compensation runs only when the workflow method **throws**. A workflow that
+*returns* a "failed" value is `COMPLETED` and compensates nothing. See
+[docs/pitfalls.md](../docs/pitfalls.md). `OrderFulfilmentWorkflowTest` covers
+the decline, the timeout and crash recovery with the in-memory test kit.
 
 ## Simulate Crash Recovery
 
@@ -179,7 +215,8 @@ kafka-topics.sh --bootstrap-server localhost:9092 --create --topic payments.resu
 | **Durable workflows** | Both services — workflows survive JVM restarts |
 | **Activity memoization** | Replay after crash skips completed steps |
 | **Cross-service signals** | Payment result flows Order → Kafka → Payment → Kafka → Order |
-| **Saga compensation** | `DECLINE_ME` triggers automatic inventory release |
+| **Saga compensation** | `DECLINE_ME` (or an hour without a payment result) makes the order workflow throw `OrderFailedException`; the `@Saga` releases the reservation and the order ends `FAILED` |
 | **Retry policies** | Payment gateway retries a provider outage up to 30x with exponential backoff (attempt counter in memory — a crash restarts the schedule; a completed charge is never re-executed); a declined card is non-retryable |
 | **Signal self-recovery** | Signals persist to Postgres, delivered when workflow is ready |
-| **Workflow queries** | `GET /orders/{id}/status` reads live workflow state |
+| **Workflow queries** | `GET /orders/{id}/status` combines the durable status and failure (any instance) with the live step from the `@QueryMethod` (owning instance only) |
+| **Crash-recovery tests** | `OrderFulfilmentWorkflowTest` and `PaymentProcessingWorkflowTest` crash the in-memory node mid-run and recover it (`env.crashAfter`, `crashNow`, `crashBeforePersisting`) |

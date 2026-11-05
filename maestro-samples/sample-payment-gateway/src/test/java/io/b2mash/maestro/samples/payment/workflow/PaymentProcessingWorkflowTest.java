@@ -1,5 +1,6 @@
 package io.b2mash.maestro.samples.payment.workflow;
 
+import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.samples.payment.activity.PaymentMessagingActivities;
 import io.b2mash.maestro.samples.payment.activity.PaymentProviderActivities;
@@ -122,6 +123,38 @@ class PaymentProcessingWorkflowTest {
         assertEquals(PaymentProcessingResult.success("txn-card-B"), resultB);
         assertEquals(Set.of("A", "B"), Set.copyOf(messaging.publishedOrderIds));
         assertEquals(2, messaging.publishedOrderIds.size(), "one result published per order");
+    }
+
+    @Test
+    void crashAfterTheCharge_recoveryReplaysItAndChargesOnce() throws TimeoutException {
+        var crash = env.crashAfter(1);
+        var request = new PaymentRequest("order-4", "VISA-OK", new BigDecimal("12.00"));
+        var handle = env.startWorkflow("payment-order-4", PaymentProcessingWorkflow.class, request);
+
+        crash.recover();
+
+        assertEquals(PaymentProcessingResult.success("txn-1"),
+                handle.getResult(PaymentProcessingResult.class, Duration.ofSeconds(5)));
+        assertEquals(1, provider.calls.get(), "the recorded charge replays — the card is charged once");
+        assertEquals(1, handle.replays("PaymentProviderActivities.charge"));
+        assertEquals(List.of(PaymentResult.success("txn-1")), messaging.published);
+    }
+
+    @Test
+    void crashAfterTheDeclineIsRecorded_theReplayedFailureIsStillRecognisedAsADecline() throws TimeoutException {
+        var crash = env.crashAfterPersisting(e -> e.eventType() == EventType.ACTIVITY_FAILED);
+        var request = new PaymentRequest("order-5", "DECLINE_ME", new BigDecimal("3.00"));
+        var handle = env.startWorkflow("payment-order-5", PaymentProcessingWorkflow.class, request);
+
+        crash.recover();
+
+        var result = handle.getResult(PaymentProcessingResult.class, Duration.ofSeconds(5));
+        assertEquals(PaymentProcessingResult.declined("Card permanently declined"), result,
+                "causedBy(PaymentDeclinedException.class) matches the reconstructed failure on replay");
+        assertEquals(1, provider.calls.get(), "the decline replays — no second provider call");
+        assertEquals(1, handle.replays("PaymentProviderActivities.charge"));
+        assertEquals(List.of(PaymentResult.failed("Card permanently declined")), messaging.published);
+        assertEquals(WorkflowStatus.COMPLETED, handle.getStatus());
     }
 
     // ── Fixtures ─────────────────────────────────────────────────────────
