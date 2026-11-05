@@ -1,6 +1,7 @@
 package io.b2mash.maestro.test;
 
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.FencedWriteException;
 import io.b2mash.maestro.core.model.EventType;
@@ -12,17 +13,26 @@ import io.b2mash.maestro.core.spi.RunLease;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -156,6 +166,134 @@ class NodeStoreViewTest {
         // The test thread never triggers a crash.
         NodeStoreView.over(delegate, policy).store().appendEvent(event(instance, 2));
         assertEquals(2, delegate.getEvents(instance.id()).size());
+    }
+
+    @Test
+    void theCrashIsAnnouncedOnlyOnceEveryInFlightWriteHasLanded_andNothingLandsAfter() throws Exception {
+        // A delegate whose append at seq 5 blocks until released: a second
+        // workflow's write caught mid-flight when the crash fires.
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var slow = (WorkflowStore) Proxy.newProxyInstance(WorkflowStore.class.getClassLoader(),
+                new Class<?>[]{WorkflowStore.class}, (proxy, method, args) -> {
+                    if (method.getName().equals("appendEvent") && args[0] instanceof WorkflowEvent e
+                            && e.sequenceNumber() == 5) {
+                        entered.countDown();
+                        assertTrue(release.await(10, TimeUnit.SECONDS));
+                    }
+                    try {
+                        return method.invoke(delegate, args);
+                    } catch (InvocationTargetException ite) {
+                        throw ite.getCause();
+                    }
+                });
+        var announced = new CountDownLatch(1);
+        var policy = new NodeStoreView.CrashPolicy() {
+            @Override
+            public String before(WorkflowEvent event) {
+                return event.sequenceNumber() == 1 ? "before seq 1" : null;
+            }
+
+            @Override
+            public String after(WorkflowEvent event) {
+                return null;
+            }
+
+            @Override
+            public void crashed(String reason) {
+                announced.countDown();
+            }
+        };
+        var view = NodeStoreView.over(slow, policy);
+        var store = view.store();
+        var instance = store.createInstance(instance("wf-gate"));
+
+        var inFlight = CompletableFuture.runAsync(() -> {
+            try {
+                onWorkflowThread(instance, () -> {
+                    store.appendEvent(event(instance, 5), lease(instance));
+                    return null;
+                });
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        }, Executors.newVirtualThreadPerTaskExecutor());
+        assertTrue(entered.await(10, TimeUnit.SECONDS));
+
+        var crashing = CompletableFuture.supplyAsync(() -> {
+            try {
+                onWorkflowThread(instance, () -> {
+                    store.appendEvent(event(instance, 1), lease(instance));
+                    return null;
+                });
+                return null;
+            } catch (Throwable t) {
+                return t;
+            }
+        }, Executors.newVirtualThreadPerTaskExecutor());
+
+        assertFalse(announced.await(300, TimeUnit.MILLISECONDS),
+                "the crash must not be announced while another write is still in flight");
+        assertFalse(crashing.isDone(), "the crashing write waits for the in-flight one");
+
+        release.countDown();
+        assertTrue(announced.await(10, TimeUnit.SECONDS));
+        inFlight.get(10, TimeUnit.SECONDS);
+        assertInstanceOf(ExecutorShutdownException.class, crashing.get(10, TimeUnit.SECONDS));
+        assertTrue(view.isDead());
+
+        // The in-flight write landed (before the crash); the crashing one did not; nothing lands after.
+        assertEquals(List.of(5), delegate.getEvents(instance.id()).stream().map(WorkflowEvent::sequenceNumber).toList());
+        assertThrows(ExecutorShutdownException.class, () -> onWorkflowThread(instance, () -> {
+            store.appendEvent(event(instance, 6), lease(instance));
+            return null;
+        }));
+        assertEquals(1, delegate.getEvents(instance.id()).size());
+    }
+
+    @Test
+    void aConsumeThatWritesNothing_isNotOfferedAsPersisted() throws Exception {
+        var befores = new AtomicInteger();
+        var afters = new AtomicInteger();
+        var policy = new NodeStoreView.CrashPolicy() {
+            @Override
+            public String before(WorkflowEvent event) {
+                befores.incrementAndGet();
+                return null;
+            }
+
+            @Override
+            public String after(WorkflowEvent event) {
+                afters.incrementAndGet();
+                return null;
+            }
+        };
+        var store = NodeStoreView.over(delegate, policy).store();
+        var instance = store.createInstance(instance("wf-consume"));
+        var memo = new WorkflowEvent(UUID.randomUUID(), instance.id(), 1, EventType.SIGNAL_RECEIVED,
+                "go", null, Instant.now());
+
+        // No such signal row: the atomic consume writes nothing and answers false.
+        boolean consumed = onWorkflowThread(instance,
+                () -> store.appendEventAndConsumeSignal(memo, lease(instance), UUID.randomUUID()));
+
+        assertFalse(consumed);
+        assertEquals(1, befores.get());
+        assertEquals(0, afters.get(), "nothing was persisted, so there is no 'after'");
+        assertTrue(delegate.getEvents(instance.id()).isEmpty());
+    }
+
+    @Test
+    void aDuplicateEventExceptionSurvivesTheProxyUnwrapped() throws Exception {
+        var store = NodeStoreView.over(delegate, NodeStoreView.CrashPolicy.NONE).store();
+        var instance = store.createInstance(instance("wf-dup"));
+        store.appendEvent(event(instance, 1));
+
+        assertThrows(DuplicateEventException.class, () -> store.appendEvent(event(instance, 1)));
+        assertThrows(DuplicateEventException.class, () -> onWorkflowThread(instance, () -> {
+            store.appendEvent(event(instance, 1), lease(instance));
+            return null;
+        }), "the engine's stale-run routing needs the original type, not an UndeclaredThrowableException");
     }
 
     @Test

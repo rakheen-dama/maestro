@@ -104,6 +104,61 @@ class CrashRecoveryTest {
     }
 
     @Test
+    void crashBeforeTheTerminalWrite_recoveryReplaysEverythingAndCompletes() throws Exception {
+        var crash = env.crashBeforePersisting(e -> e.eventType() == EventType.WORKFLOW_COMPLETED);
+        var handle = env.startWorkflow(ThreeSteps.class, "in");
+        crash.awaitCrash(Duration.ofSeconds(10));
+
+        assertEquals(WorkflowStatus.RUNNING, handle.getStatus(), "the atomic terminal write never happened");
+        assertTrue(handle.getEvents().stream().noneMatch(e -> e.eventType() == EventType.WORKFLOW_COMPLETED));
+
+        crash.recover();
+
+        assertEquals("in>1>2>3", handle.getResult(String.class, Duration.ofSeconds(10)));
+        assertEquals(List.of("Steps.step1", "Steps.step2", "Steps.step3"), handle.replayedSteps());
+        assertEquals(1, steps.calls("step1"));
+        assertEquals(1, steps.calls("step2"));
+        assertEquals(1, steps.calls("step3"));
+    }
+
+    @Test
+    void crashAfterTheTerminalWrite_theWorkflowStaysCompletedAndNothingIsRecovered() throws Exception {
+        var crash = env.crashAfterPersisting(e -> e.eventType() == EventType.WORKFLOW_COMPLETED);
+        var handle = env.startWorkflow(ThreeSteps.class, "in");
+        crash.awaitCrash(Duration.ofSeconds(10));
+
+        assertEquals("in>1>2>3", handle.getResult(String.class, Duration.ofSeconds(10)));
+        assertEquals(0, crash.recover(), "a completed workflow is not recoverable");
+        assertEquals(0, handle.recoveries());
+    }
+
+    @Test
+    void withTwoWorkflowsRunning_nothingLandsOnceTheCrashHasFired() throws Exception {
+        for (var round = 0; round < 5; round++) {
+            var crash = env.crashAfter(40);
+            var a = env.startWorkflow("loop-a-" + round, Looping.class, 60);
+            var b = env.startWorkflow("loop-b-" + round, Looping.class, 60);
+
+            var deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+            while (!crash.hasCrashed()) {
+                assertTrue(System.nanoTime() < deadline, "the crash never fired");
+                Thread.onSpinWait();
+            }
+            var atCrash = a.getEvents().size() + b.getEvents().size();
+
+            crash.awaitCrash(Duration.ofSeconds(10));
+            org.awaitility.Awaitility.await().during(Duration.ofMillis(200)).atMost(Duration.ofSeconds(2))
+                    .until(() -> a.getEvents().size() + b.getEvents().size() == atCrash);
+            assertTrue(a.getStatus().isActive() && b.getStatus().isActive(),
+                    "neither workflow could finish on the dead node");
+
+            crash.recover();
+            assertEquals(60, a.getResult(Integer.class, Duration.ofSeconds(10)));
+            assertEquals(60, b.getResult(Integer.class, Duration.ofSeconds(10)));
+        }
+    }
+
+    @Test
     void afterRecovery_startQueryAndSignalReachTheNewNode() throws Exception {
         var parked = env.startWorkflow(Gate.class, null);
         parked.awaitStatus(WorkflowStatus.WAITING_SIGNAL, Duration.ofSeconds(5));
@@ -251,6 +306,21 @@ class CrashRecoveryTest {
             var a = steps.step1(in);
             var b = steps.step2(a);
             return steps.step3(b);
+        }
+    }
+
+    /** Runs {@code n} activities in a row, so two of them keep a node busy writing. */
+    @DurableWorkflow(name = "looping")
+    public static class Looping {
+        @ActivityStub(startToCloseTimeout = "PT10S")
+        private Steps steps;
+
+        @WorkflowMethod
+        public int run(int n) {
+            for (var i = 0; i < n; i++) {
+                steps.step1("x" + i);
+            }
+            return n;
         }
     }
 

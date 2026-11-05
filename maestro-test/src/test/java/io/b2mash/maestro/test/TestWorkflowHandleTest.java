@@ -1,8 +1,10 @@
 package io.b2mash.maestro.test;
 
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
+import io.b2mash.maestro.core.annotation.QueryMethod;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.exception.WorkflowNotQueryableException;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -101,6 +103,47 @@ class TestWorkflowHandleTest {
         assertTrue(handle.liveSteps().isEmpty());
         assertTrue(handle.replayedSteps().isEmpty());
         assertEquals(0, handle.recoveries());
+    }
+
+    @Test
+    void aQueryRightAfterAwaitTerminalIsNotAnsweredByTheFinishedRun() throws Exception {
+        for (var i = 0; i < 20; i++) {
+            var handle = env.startWorkflow("quick-" + i, Quick.class, null);
+
+            assertEquals(WorkflowStatus.COMPLETED, handle.awaitTerminal(Duration.ofSeconds(10)));
+
+            assertThrows(WorkflowNotQueryableException.class,
+                    () -> handle.query("phase", null, String.class),
+                    "run " + i + ": the finished run must already have left its node");
+        }
+    }
+
+    @Test
+    void aQueryRightAfterGetResultIsNotAnsweredByTheFinishedRun() throws Exception {
+        for (var i = 0; i < 20; i++) {
+            var handle = env.startWorkflow("quick-result-" + i, Quick.class, null);
+
+            assertEquals("done", handle.getResult(String.class, Duration.ofSeconds(10)));
+
+            assertThrows(WorkflowNotQueryableException.class, () -> handle.query("phase", null, String.class));
+        }
+    }
+
+    /** Completes at once; its query would answer "done" if the run were still registered. */
+    @DurableWorkflow(name = "handle-quick")
+    public static class Quick {
+        private volatile String phase = "starting";
+
+        @WorkflowMethod
+        public String run() {
+            phase = "done";
+            return phase;
+        }
+
+        @QueryMethod
+        public String phase() {
+            return phase;
+        }
     }
 
     @DurableWorkflow(name = "handle-parked")

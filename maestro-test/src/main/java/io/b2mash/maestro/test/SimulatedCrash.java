@@ -163,6 +163,11 @@ public final class SimulatedCrash {
         return workflowId;
     }
 
+    /** @return what the crash was armed for, e.g. {@code "after 2 completed activities"} */
+    String description() {
+        return description;
+    }
+
     @Override
     public String toString() {
         return "SimulatedCrash[" + description + (hasCrashed() ? ", crashed" : ", armed") + "]";

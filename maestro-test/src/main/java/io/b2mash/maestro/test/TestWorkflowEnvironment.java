@@ -400,13 +400,17 @@ public final class TestWorkflowEnvironment {
     public int recover(Class<?>... workflowClasses) {
         Node node;
         Map<String, WorkflowRegistration> registrations;
+        // Validate every replacement before changing anything, so a bad class
+        // leaves the environment exactly as it was.
+        var replacements = new LinkedHashMap<String, Class<?>>();
+        for (var workflowClass : workflowClasses) {
+            var annotation = requireDurableWorkflowAnnotation(workflowClass);
+            findWorkflowMethod(workflowClass);
+            validateWiring(workflowClass);
+            replacements.put(resolveWorkflowType(annotation, workflowClass), workflowClass);
+        }
         synchronized (nodeLock) {
-            for (var workflowClass : workflowClasses) {
-                var annotation = requireDurableWorkflowAnnotation(workflowClass);
-                findWorkflowMethod(workflowClass);
-                validateWiring(workflowClass);
-                this.workflowClasses.put(resolveWorkflowType(annotation, workflowClass), workflowClass);
-            }
+            this.workflowClasses.putAll(replacements);
             var retiring = current;
             retiring.view.kill("recover()");
             retiring.executor.shutdown();
@@ -580,9 +584,14 @@ public final class TestWorkflowEnvironment {
                     observer, Map.of(), clock);
         }
 
+        // The crash this node's view is about to announce: set by fire() on the
+        // crashing thread, run by crashed() once the node is dead and drained.
+        private final AtomicReference<@Nullable Runnable> pendingTrigger = new AtomicReference<>();
+
         void registerQueries(String workflowType, Class<?> workflowClass) {
-            if (queryTypes.add(workflowType)) {
-                executor.registerQueries(workflowType, workflowClass);
+            if (!queryTypes.contains(workflowType)) {
+                executor.registerQueries(workflowType, workflowClass);   // may throw: record only on success
+                queryTypes.add(workflowType);
             }
         }
 
@@ -594,6 +603,14 @@ public final class TestWorkflowEnvironment {
         @Override
         public @Nullable String after(WorkflowEvent event) {
             return fire(this, event, true);
+        }
+
+        @Override
+        public void crashed(String reason) {
+            var trigger = pendingTrigger.getAndSet(null);
+            if (trigger != null) {
+                trigger.run();
+            }
         }
     }
 
@@ -627,7 +644,12 @@ public final class TestWorkflowEnvironment {
     }
 
     /**
-     * Runs on a workflow thread of {@code node} for each event it writes.
+     * Runs on a workflow thread of {@code node} for each event it writes, inside
+     * the view's write gate. Claims the armed crash but does not announce it:
+     * the view first kills the node (draining every in-flight write), then calls
+     * {@link Node#crashed}, which triggers the {@link SimulatedCrash}. So by the
+     * time {@link SimulatedCrash#hasCrashed()} is {@code true}, nothing more from
+     * that node can land in the store — whichever thread won or lost the claim.
      *
      * @return the crash reason if the armed crash fires now, else {@code null}
      */
@@ -642,8 +664,8 @@ public final class TestWorkflowEnvironment {
         var workflowId = WorkflowContext.scopedValue().isBound()
                 ? WorkflowContext.scopedValue().get().workflowId()
                 : null;
-        plan.crash().trigger(event, workflowId, node.executor);
-        return "%s — %s %s seq %d (%s) of workflow '%s'".formatted(plan.crash(),
+        node.pendingTrigger.set(() -> plan.crash().trigger(event, workflowId, node.executor));
+        return "crash %s — %s %s seq %d (%s) of workflow '%s'".formatted(plan.crash().description(),
                 persisted ? "after persisting" : "before persisting",
                 event.eventType(), event.sequenceNumber(), event.stepName(), workflowId);
     }

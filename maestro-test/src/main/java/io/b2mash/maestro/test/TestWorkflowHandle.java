@@ -395,6 +395,14 @@ public final class TestWorkflowHandle {
      *
      * <p>{@link WorkflowStatus#TERMINATED} is exempt: terminating a workflow
      * appends no event to the log, so there is nothing there to wait for.
+     *
+     * <p>It also waits for the run to have <em>left</em> its node. The engine
+     * writes the terminal row, then emits observer callbacks and the lifecycle
+     * event, and only then deregisters the run — until it does, the run still
+     * answers {@code query()}. Returning on the row alone would let a test that
+     * queries right after {@code awaitTerminal} be answered by the finished run
+     * instead of getting {@code WorkflowNotQueryableException}, as production
+     * callers on any other node would.
      */
     private WorkflowInstance awaitTerminalInstance(Duration timeout) throws TimeoutException {
         var deadline = Instant.now().plus(timeout);
@@ -402,7 +410,7 @@ public final class TestWorkflowHandle {
         while (Instant.now().isBefore(deadline)) {
             var instance = instance();
 
-            if (instance.status().isTerminal() && terminalEventLanded(instance.status())) {
+            if (instance.status().isTerminal() && terminalEventLanded(instance.status()) && noNodeRunsIt()) {
                 return instance;
             }
 
@@ -415,6 +423,11 @@ public final class TestWorkflowHandle {
         throw new TimeoutException(
                 "Workflow '%s' did not complete within %s (current status: %s)"
                         .formatted(workflowId, timeout, currentStatus));
+    }
+
+    /** @return whether no node of the environment still holds this workflow's run */
+    private boolean noNodeRunsIt() {
+        return env.nodeExecutors().stream().noneMatch(executor -> executor.isRunning(workflowId));
     }
 
     /**

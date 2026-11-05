@@ -10,6 +10,7 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * One simulated node's view of the shared {@link InMemoryWorkflowStore}: the
@@ -46,8 +47,12 @@ import java.lang.reflect.Proxy;
  * down". Reads always pass: a dead node's parked threads may still look, they
  * just cannot record anything.
  *
- * <p><b>Thread safety:</b> thread-safe. The dead flag is volatile and is only
- * ever set; the policy is consulted on the calling thread.
+ * <p><b>Thread safety:</b> thread-safe. A workflow thread's write holds the
+ * read side of a read/write gate across its dead check, the policy and the
+ * delegate call; {@link #kill} takes the write side. So when a crash fires,
+ * every write already in flight on the node finishes first, and
+ * {@link CrashPolicy#crashed} — where the crash is announced — runs only once
+ * no further write can land.
  */
 final class NodeStoreView implements InvocationHandler {
 
@@ -84,12 +89,28 @@ final class NodeStoreView implements InvocationHandler {
          *         {@code null} to carry on
          */
         @Nullable String after(WorkflowEvent event);
+
+        /**
+         * Called once the node is dead because {@link #before} or {@link #after}
+         * answered with {@code reason} — on the crashing thread, after every
+         * write that was in flight on this node has finished, so nothing this
+         * node writes can land after this call. The place to announce the crash.
+         *
+         * @param reason the reason the policy gave
+         */
+        default void crashed(String reason) {
+        }
     }
 
     private final WorkflowStore delegate;
     private final CrashPolicy policy;
     private final WorkflowStore proxy;
     private volatile @Nullable String deathReason;
+
+    // Workflow-thread writes hold the read side across their dead check and the
+    // delegate call; kill() takes the write side. So once kill() returns, no
+    // write this node started can still land — "dead" is a clean cut.
+    private final ReentrantReadWriteLock gate = new ReentrantReadWriteLock();
 
     private NodeStoreView(WorkflowStore delegate, CrashPolicy policy) {
         this.delegate = delegate;
@@ -113,14 +134,21 @@ final class NodeStoreView implements InvocationHandler {
     }
 
     /**
-     * Kills the node: from now on its workflow threads cannot write. Idempotent;
-     * the first reason is kept.
+     * Kills the node: from now on its workflow threads cannot write. Waits for
+     * the writes already in flight on this node to finish first, so none lands
+     * after this returns. Idempotent; the first reason is kept. Must not be
+     * called from inside a write through this view.
      *
      * @param reason why, for the error the next blocked write throws
      */
     void kill(String reason) {
-        if (deathReason == null) {
-            deathReason = reason;
+        gate.writeLock().lock();
+        try {
+            if (deathReason == null) {
+                deathReason = reason;
+            }
+        } finally {
+            gate.writeLock().unlock();
         }
     }
 
@@ -146,27 +174,33 @@ final class NodeStoreView implements InvocationHandler {
         if (method.getDeclaringClass() == Object.class) {
             return objectMethod(self, method, args);
         }
-        var workflowThread = WorkflowContext.scopedValue().isBound();
-        if (workflowThread && isWrite(method) && isDead()) {
-            throw crash("node is down (" + deathReason + ") — " + method.getName() + " refused");
+        if (!WorkflowContext.scopedValue().isBound() || !isWrite(method)) {
+            // Reads, and the test thread's writes ("a signal lands while the
+            // service is down"), always reach the store.
+            return dispatch(method, args);
         }
-        var event = workflowThread ? persistedEvent(method, args) : null;
-        if (event != null) {
-            var reason = policy.before(event);
-            if (reason != null) {
-                kill(reason);
-                throw crash(reason);
+        String reason;
+        gate.readLock().lock();
+        try {
+            if (isDead()) {
+                throw crash("node is down (" + deathReason + ") — " + method.getName() + " refused");
             }
-        }
-        var result = dispatch(method, args);
-        if (event != null && !Boolean.FALSE.equals(result)) {
-            var reason = policy.after(event);
-            if (reason != null) {
-                kill(reason);
-                throw crash(reason);
+            var event = persistedEvent(method, args);
+            reason = event == null ? null : policy.before(event);
+            if (reason == null) {
+                var result = dispatch(method, args);
+                reason = event == null || Boolean.FALSE.equals(result) ? null : policy.after(event);
+                if (reason == null) {
+                    return result;
+                }
             }
+        } finally {
+            gate.readLock().unlock();
         }
-        return result;
+        // Outside the read side: kill() waits for every other in-flight write.
+        kill(reason);
+        policy.crashed(reason);
+        throw crash(reason);
     }
 
     /**
