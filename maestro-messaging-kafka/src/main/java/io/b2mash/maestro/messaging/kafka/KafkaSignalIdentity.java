@@ -113,7 +113,8 @@ public final class KafkaSignalIdentity {
      */
     public @Nullable String resolve(@Nullable String envelopeId, ConsumerRecord<?, ?> record) {
         var headerId = MaestroSignalHeaders.messageId(record.headers());
-        if (envelopeId != null && !envelopeId.isBlank() && MaestroSignalHeaders.isStorable(envelopeId)) {
+        if (envelopeId != null && !envelopeId.isBlank() && MaestroSignalHeaders.isStorable(envelopeId)
+                && fits(ENVELOPE_PREFIX + envelopeId)) {
             if (headerId != null && !headerId.equals(envelopeId) && mismatchWarned.compareAndSet(false, true)) {
                 logger.warn("Signal record on {}-{}@{} carries message id '{}' in its envelope but '{}' in its {} "
                                 + "header — using the envelope's (logged once; later mismatches are not logged)",
@@ -122,12 +123,23 @@ public final class KafkaSignalIdentity {
             }
             return ENVELOPE_PREFIX + envelopeId;
         }
-        if (headerId != null) {
+        if (headerId != null && fits(HEADER_PREFIX + record.topic() + ":" + headerId)) {
             return HEADER_PREFIX + record.topic() + ":" + headerId;
         }
         var topicId = topicId(record.topic());
         return topicId == null ? null
                 : COORDINATE_PREFIX + topicId + ":" + record.partition() + ":" + record.offset();
+    }
+
+    /**
+     * Longest namespaced id the engine stores (its {@code MAX_MESSAGE_ID_LENGTH});
+     * a longer one would be discarded there, so it must not displace the next
+     * source here.
+     */
+    static final int MAX_NAMESPACED_ID_LENGTH = 512;
+
+    private static boolean fits(String namespacedId) {
+        return namespacedId.length() <= MAX_NAMESPACED_ID_LENGTH;
     }
 
     /** Namespace of an id taken from the {@code SignalMessage} envelope. */

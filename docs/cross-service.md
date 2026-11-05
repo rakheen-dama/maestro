@@ -209,8 +209,10 @@ that disagree log one `WARN` and the envelope wins. The header carries the
 source topic in its key, so one topic's ids cannot suppress another's; a
 republish lands on the same topic and is still suppressed. A header longer than
 512 UTF-8 bytes, or containing a control character, is ignored (the record
-falls back to its coordinate) rather than allowed to fail the insert; likewise
-the engine treats any stored id over 512 characters as absent.
+falls back to its coordinate) rather than allowed to fail the insert, and an
+envelope or header id whose namespaced form would exceed 512 characters falls
+through to the next source the same way; the engine treats any stored id over
+512 characters as absent.
 
 **Rules for producers.**
 

@@ -106,6 +106,20 @@ class KafkaSignalIdentityTest {
     }
 
     @Test
+    @DisplayName("an id that is within the header limit but too long once namespaced falls through to the next source")
+    void overLongNamespacedIdFallsThrough() {
+        var identity = new KafkaSignalIdentity(topic -> "TOPICID", System::nanoTime);
+        var longTopic = "t".repeat(100);
+        var nearLimit = "h".repeat(500); // 500 bytes passes the header check; "hdr:<100>:" + 500 > 512
+        assertEquals("kafka:TOPICID:0:4", identity.resolve(null, record(longTopic, 0, 4, nearLimit)),
+                "an identity the engine would discard must not displace the coordinate");
+        assertEquals("kafka:TOPICID:0:4", identity.resolve("e".repeat(510), record(longTopic, 0, 4, null)),
+                "same for an envelope id");
+        assertEquals("hdr:" + longTopic + ":ok", identity.resolve("e".repeat(510), record(longTopic, 0, 4, "ok")),
+                "an over-long envelope id falls through to a valid header");
+    }
+
+    @Test
     @DisplayName("an unresolvable topic id means no identity, retried at most once per interval")
     void unresolvedTopicIdIsNoIdentityAndRetriedLater() {
         var now = new AtomicLong(0);
