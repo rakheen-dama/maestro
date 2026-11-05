@@ -158,6 +158,7 @@ class CompositeEngineObserverTest {
             assertEquals(1, recorder.activityFailed().size(), "activityFailed");
             assertEquals(1, recorder.signalPersisted().size(), "signalPersisted");
             assertEquals(1, recorder.signalConsumed().size(), "signalConsumed");
+            assertEquals(1, recorder.signalDuplicates().size(), "signalDuplicateSuppressed");
             assertEquals(1, recorder.timerScheduled().size(), "timerScheduled");
             assertEquals(1, recorder.timerFired().size(), "timerFired");
             assertEquals(1, recorder.timerCancelled().size(), "timerCancelled");
@@ -276,6 +277,7 @@ class CompositeEngineObserverTest {
         o.activityFailed(ACT, Duration.ofMillis(3), "java.lang.RuntimeException", false);
         o.signalPersisted(SIG);
         o.signalConsumed(SIG, false);
+        o.signalDuplicateSuppressed(SIG);
         o.timerScheduled(TIMER, false);
         o.timerFired(TIMER, false);
         o.timerCancelled(TIMER, false);

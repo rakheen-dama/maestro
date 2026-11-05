@@ -379,6 +379,21 @@ class VersionedInMemoryStore implements WorkflowStore {
                 .toList();
     }
 
+    /** One row per non-null {@code (workflowId, signalName, messageId)}, like the shipped stores. */
+    @Override
+    public boolean saveSignalIfAbsent(WorkflowSignal signal) {
+        synchronized (signals) {
+            if (signal.messageId() != null && signals.stream().anyMatch(s ->
+                    s.workflowId().equals(signal.workflowId())
+                            && s.signalName().equals(signal.signalName())
+                            && signal.messageId().equals(s.messageId()))) {
+                return false;
+            }
+            saveSignal(signal);
+            return true;
+        }
+    }
+
     @Override
     public boolean markSignalConsumed(UUID signalId) {
         synchronized (signals) {
@@ -386,11 +401,35 @@ class VersionedInMemoryStore implements WorkflowStore {
                 var s = signals.get(i);
                 if (s.id().equals(signalId) && !s.consumed()) {
                     signals.set(i, new WorkflowSignal(s.id(), s.workflowInstanceId(), s.workflowId(),
-                            s.signalName(), s.payload(), true, s.receivedAt()));
+                            s.signalName(), s.payload(), true, s.receivedAt(), s.traceContext(), s.messageId()));
                     return true;
                 }
             }
             return false;
+        }
+    }
+
+    /**
+     * Atomic with respect to every other consumer: the row check, the memo
+     * (through the hooked unfenced {@link #appendEvent}, so collision
+     * injection still fires) and the flip all run under the signal lock. A
+     * duplicate memo throws before the flip; a row no longer unconsumed is
+     * {@code false} with nothing written. The lease check precedes the lock
+     * (best-effort, like this fixture's other fenced overloads).
+     */
+    @Override
+    public boolean appendEventAndConsumeSignal(WorkflowEvent memo, RunLease lease, UUID signalId) {
+        if (!leaseIsCurrent(lease)) {
+            throw new FencedWriteException(lease.instanceId(), lease.epoch(), "appendEventAndConsumeSignal");
+        }
+        synchronized (signals) {
+            var unconsumed = signals.stream().anyMatch(s -> s.id().equals(signalId) && !s.consumed());
+            if (!unconsumed) {
+                return false;
+            }
+            appendEvent(memo);
+            markSignalConsumed(signalId);
+            return true;
         }
     }
 
@@ -401,7 +440,8 @@ class VersionedInMemoryStore implements WorkflowStore {
                 var s = signals.get(i);
                 if (s.workflowId().equals(workflowId) && s.workflowInstanceId() == null) {
                     signals.set(i, new WorkflowSignal(s.id(), instanceId, s.workflowId(),
-                            s.signalName(), s.payload(), s.consumed(), s.receivedAt()));
+                            s.signalName(), s.payload(), s.consumed(), s.receivedAt(),
+                            s.traceContext(), s.messageId()));
                 }
             }
         }

@@ -1137,17 +1137,19 @@ class WorkflowExecutorTest {
     }
 
     @Test
-    @DisplayName("Once the SIGNAL_RECEIVED memo is durable, the signal row is consumed even if an adopter bumps the epoch in between")
+    @DisplayName("The SIGNAL_RECEIVED memo and the row flip land together — an adopter bump right after leaves the row consumed")
     void consumedSignalRowFollowsTheMemo_evenAcrossAnAdoptionBump() throws Exception {
         var observer = new io.b2mash.maestro.core.observe.RecordingEngineObserver();
         var bumping = new VersionedInMemoryStore() {
             @Override
-            public void appendEvent(WorkflowEvent event, io.b2mash.maestro.core.spi.RunLease lease) {
-                super.appendEvent(event, lease);
-                if (event.eventType() == EventType.SIGNAL_RECEIVED) {
-                    // An adopter lands between the memo and the row flip.
-                    forceLeaseEpoch("consume-bump-1", lease.epoch() + 1);
-                }
+            public boolean appendEventAndConsumeSignal(WorkflowEvent memo, io.b2mash.maestro.core.spi.RunLease lease,
+                                                       UUID signalId) {
+                var consumed = super.appendEventAndConsumeSignal(memo, lease, signalId);
+                // An adopter lands the instant the consume commits. Before the
+                // atomic consume this was the gap between the memo and the
+                // flip; now there is no gap for it to land in.
+                forceLeaseEpoch("consume-bump-1", lease.epoch() + 1);
+                return consumed;
             }
         };
         var fencedExecutor = new WorkflowExecutor(bumping, null, messaging, null, serializer, "test-service",

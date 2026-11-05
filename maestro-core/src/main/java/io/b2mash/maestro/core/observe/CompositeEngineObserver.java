@@ -171,6 +171,11 @@ public final class CompositeEngineObserver implements EngineObserver {
     }
 
     @Override
+    public void signalDuplicateSuppressed(SignalInfo s) {
+        fanOut("signalDuplicateSuppressed", d -> d.signalDuplicateSuppressed(s));
+    }
+
+    @Override
     public void timerScheduled(TimerInfo t, boolean replayed) {
         fanOut("timerScheduled", d -> d.timerScheduled(t, replayed));
     }

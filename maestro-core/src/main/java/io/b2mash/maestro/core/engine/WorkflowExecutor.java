@@ -827,7 +827,37 @@ public final class WorkflowExecutor {
      * @param payload    the signal payload, or {@code null}
      */
     public void deliverSignal(String workflowId, String signalName, @Nullable Object payload) {
-        signalManager.deliverSignal(workflowId, signalName, payload);
+        signalManager.deliverSignal(workflowId, signalName, payload, null);
+    }
+
+    /**
+     * Delivers a signal that carries the producer's identity for it, so a
+     * redelivery of the same logical signal is suppressed instead of becoming
+     * a second signal.
+     *
+     * <p>As {@link #deliverSignal(String, String, Object)}, except that at most
+     * one signal is ever persisted per {@code (workflowId, signalName,
+     * messageId)}: a delivery whose identity is already stored — consumed or
+     * not — writes nothing and returns {@code false}. Every retry or republish
+     * of one logical signal must carry the same id; two distinct signals must
+     * carry distinct ids, or the second is lost as a "duplicate". A
+     * {@code null} id (or one longer than 512 characters) means no identity:
+     * the signal is always persisted, exactly as the three-argument form.
+     *
+     * <p>A transport consumer acknowledges its record either way — a
+     * duplicate is a signal that is already durable.
+     *
+     * @param workflowId the target workflow's business ID
+     * @param signalName the signal name
+     * @param payload    the signal payload, or {@code null}
+     * @param messageId  the producer's identity for this logical signal, or
+     *                   {@code null} for none
+     * @return {@code true} if the signal was persisted; {@code false} if it
+     *         was a duplicate of one already stored
+     */
+    public boolean deliverSignal(String workflowId, String signalName, @Nullable Object payload,
+                                 @Nullable String messageId) {
+        return signalManager.deliverSignal(workflowId, signalName, payload, messageId);
     }
 
     // ── Timer fire ─────────────────────────────────────────────────────
