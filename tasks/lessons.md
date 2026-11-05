@@ -117,3 +117,17 @@ shell call chains each step with `&&` so a failed edit halts the rest;
 or assert on a single unique line, never on a multi-line literal that spans a
 separator the script itself emitted; (3) read the diff (`git diff --stat` or
 a grep for the new text) before `gh pr create`, not after.
+
+## 2026-11-05 — two git-mutating commands in parallel, and the heredoc chain again
+Closing out PR #43 I issued, in ONE response, a `git worktree remove` and a
+separate `git checkout -b … && git add … && git commit` on the same repo. The
+second hit `.git/index.lock` from the first; and because the commit was a
+top-level heredoc (`git commit -F - <<'EOF'`), the `git push`/`gh pr create`
+on the following lines ran anyway — pushing an EMPTY branch and failing PR
+creation with "No commits between main and …". Same shape as the 2026-11-04
+lesson, one layer up. Rules: (1) git commands that mutate the same
+repository are never issued in parallel tool calls — one chain, one call;
+(2) a heredoc that must be followed by dependent steps goes inside
+`$(cat <<'EOF' … EOF)` as an argument (`git commit -m "$MSG"`), never as a
+top-level command, so the `&&` chain survives; (3) after any git chain, read
+`git status`/`git log -1 origin/<branch>` before calling `gh pr create`.

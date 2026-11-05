@@ -1,3 +1,51 @@
+# Milestone: Signal idempotency and atomic consumption (2026-11-05)
+
+Plan: `~/.claude/plans/velvet-snacking-petal.md` (signal idempotency section).
+Driver: the two holes left after the four-hardenings cycle — twin
+`maestro_workflow_signal` rows from at-least-once Kafka delivery (corrupting
+workflows that await the same name repeatedly), and the non-atomic
+memo-append + consumed-flip (crash window; parallel branches double-consuming).
+
+- [x] Built by one Opus engineer in an isolated worktree, TDD, 14 commits on
+      `feat/signal-idempotency` (head 7f44d62); PR #43 merged e91bd9d
+- [x] Design: `SignalMessage.messageId` + Kafka header `maestro-message-id`;
+      resolution envelope → header → `kafka:<topicId>:<partition>:<offset>`;
+      ids namespaced by source (`env:`, `hdr:<topic>:`, `kafka:`, `client:`);
+      >512 chars or control chars → no identity, never a failed insert; V9
+      `message_id` + partial unique index on `(workflow_id, signal_name,
+      message_id)`; `saveSignalIfAbsent`; `appendEventAndConsumeSignal` one
+      transaction in JDBC; bounded consume loop falling through to park;
+      `maestro.signal.duplicates` meter; loan REST `Idempotency-Key`; chaos I4
+      twin finding promoted to hard
+- [x] Gates: full build green (7f44d62); E2E 1–10 incl. scenario 3; chaos
+      PR-gate ×3; 2 h soak (run 42022954519: 2,467 workflows, 0 duplicate side
+      effects, 0 I4 violations); independent review: no defects, 2 nits fixed;
+      automated security review: 3 findings fixed (meter cardinality, dedup-key
+      spoofing via headers, poison header values)
+- [x] Known remaining non-idempotent path: the verification gateway's webhook
+      publishes outside a workflow and sends no id (documented)
+
+## Review (2026-11-05)
+
+- The explorer found a second defect while mapping the first: two parallel
+  branches awaiting one signal name both consumed the same row; fixed by the
+  same atomic store method and pinned by `ParallelBranchSameSignalTest`,
+  which fails against the old code path.
+- Design corrections made during planning (worth remembering): never dedup
+  on bare `topic:partition:offset` (offsets restart on topic recreation —
+  use the KIP-516 topic id); envelope beats header (headers get stripped by
+  tooling); the SPI default must not return the CAS result or the loop would
+  append a second memo at the same seq; the memo payload must stay the raw
+  signal payload so old nodes mid-deploy keep replaying.
+- `KafkaDuplicateDeliveryIT` was inverted from "pins the twin" to six cases
+  incl. a negative control (no id → still two rows) and a quorum case proving
+  payload-hash dedup is not used.
+- Not built: dedup for signals published outside a workflow without a key;
+  `consumed_at_sequence` forensics column; a `MaestroClient`-level signal API
+  (signals go through `getWorkflow(id).signal(...)`).
+
+---
+
 # Milestone: Four reliability hardenings (2026-11-04)
 
 Plan: `~/.claude/plans/velvet-snacking-petal.md`. Driver: the 2026-11-04
