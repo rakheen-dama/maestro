@@ -128,6 +128,22 @@ class MicrometerEngineObserverTest {
     }
 
     @Test
+    @DisplayName("maestro.signal.duplicates — Counter, tags workflow/signal; a null workflowType reads as unknown")
+    void signalDuplicateSuppressed() {
+        observer.signalDuplicateSuppressed(new SignalInfo("wf-1", "OrderWorkflow", "payment-approved", null));
+        observer.signalDuplicateSuppressed(new SignalInfo("wf-1", "OrderWorkflow", "payment-approved", null));
+        observer.signalDuplicateSuppressed(new SignalInfo("wf-2", null, "payment-approved", null));
+
+        assertThat(registry.get("maestro.signal.duplicates")
+                .tag("workflow", "OrderWorkflow")
+                .tag("signal", "payment-approved")
+                .counter().count()).isEqualTo(2.0);
+        assertThat(registry.get("maestro.signal.duplicates")
+                .tag("signal", "payment-approved")
+                .counters()).hasSize(2);
+    }
+
+    @Test
     @DisplayName("maestro.timer.fired — Counter, tag workflow, live only")
     void timerFired() {
         var timer = new TimerInfo("wf-1", "OrderWorkflow", "sleep-1");

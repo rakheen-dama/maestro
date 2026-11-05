@@ -86,6 +86,32 @@ public final class WorkflowHandle<R> {
     }
 
     /**
+     * Delivers a signal that carries the caller's identity for it — the form
+     * to use from any path that may retry (an HTTP endpoint whose client
+     * retries on a timeout, a job that re-runs).
+     *
+     * <p>At most one signal is persisted per
+     * {@code (workflowId, signalName, messageId)}: a retry with the same id
+     * after the first call succeeded — even one whose response was lost — is
+     * suppressed and returns {@code false}, instead of becoming a second
+     * signal that a later await of the same name would consume. Two distinct
+     * signals must carry distinct ids. Typically the id is a client-supplied
+     * {@code Idempotency-Key} header, or a business key such as
+     * {@code "<orderId>:payment-confirmed"}.
+     *
+     * @param signalName the signal name
+     * @param payload    the signal payload, or {@code null}
+     * @param messageId  the caller's identity for this logical signal, or
+     *                   {@code null} for none (never deduplicated); ids longer
+     *                   than 512 characters are treated as {@code null}
+     * @return {@code true} if the signal was persisted; {@code false} if a
+     *         signal with the same name and id was already stored
+     */
+    public boolean signal(String signalName, @Nullable Object payload, @Nullable String messageId) {
+        return executor.deliverSignal(workflowId, signalName, payload, messageId);
+    }
+
+    /**
      * Queries the running workflow by name (no argument).
      *
      * <p>Answered by the live workflow object, so it works only on the node

@@ -207,6 +207,24 @@ class MaestroClientTest {
         }
 
         @Test
+        @DisplayName("signal(name, payload, messageId) twice with one id — one signal row, the retry returns false")
+        void signalWithMessageIdIsIdempotent() {
+            runner.run(context -> {
+                var client = context.getBean(MaestroClient.class);
+                var store = context.getBean(WorkflowStore.class);
+
+                // No workflow yet: the signals are pre-delivered (orphans), the
+                // path a retried HTTP request most often races.
+                var handle = client.getWorkflow("idem-1");
+                assertTrue(handle.signal(ParkingWorkflow.SIGNAL, "go", "req-1"));
+                assertEquals(false, handle.signal(ParkingWorkflow.SIGNAL, "go", "req-1"),
+                        "the retry of req-1 is a duplicate");
+                assertTrue(handle.signal(ParkingWorkflow.SIGNAL, "go", "req-2"));
+                assertEquals(2, store.getUnconsumedSignals("idem-1", ParkingWorkflow.SIGNAL).size());
+            });
+        }
+
+        @Test
         @DisplayName("query reads state from a running workflow")
         void queryReadsRunningState() {
             runner.run(context -> {

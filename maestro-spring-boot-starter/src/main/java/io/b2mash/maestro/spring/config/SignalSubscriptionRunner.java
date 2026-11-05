@@ -27,10 +27,17 @@ import org.springframework.core.Ordered;
  * {@link AdminCommandDispatcher} before {@code deliverSignal} is ever called
  * — see that class's Javadoc for why.
  *
- * <p><b>Idempotency:</b> transports are at-least-once, so a redelivered
- * message persists a second signal row. Duplicate unconsumed rows are
- * tolerated by design — each await consumes exactly one row (guarded by the
- * store's consumed-flag CAS), and extras simply remain unconsumed.
+ * <p><b>Idempotency:</b> transports are at-least-once, so a message may be
+ * handed to this runner more than once. Each message carries an identity —
+ * {@link SignalMessage#messageId()}, which the transport resolves (the Kafka
+ * transport: envelope field, else the {@code maestro-message-id} header, else
+ * the record's topic-id/partition/offset coordinate) — and is delivered
+ * through {@link WorkflowExecutor#deliverSignal(String, String, Object, String)},
+ * which persists at most one signal per {@code (workflowId, signalName,
+ * messageId)}: a redelivery is suppressed and acknowledged like any other
+ * success. A message with no identity (no envelope id, no header, no
+ * resolvable coordinate) is not deduplicated — a redelivery of it becomes a
+ * second signal, which a later await of the same name would consume.
  *
  * <p>Ordered {@code HIGHEST_PRECEDENCE + 20}: right after
  * {@link StartupRecoveryRunner} (+10), so recovery replay completes before
@@ -102,7 +109,8 @@ public class SignalSubscriptionRunner implements ApplicationRunner, Ordered {
             return;
         }
         try {
-            executor.deliverSignal(message.workflowId(), message.signalName(), message.payload());
+            executor.deliverSignal(message.workflowId(), message.signalName(), message.payload(),
+                    message.messageId());
         } catch (RuntimeException e) {
             // Rethrow so the transport does NOT ack: deliverSignal persists
             // before any in-memory delivery, so a failure here means the

@@ -28,9 +28,11 @@ import io.b2mash.maestro.spring.config.WorkflowRegistrar;
  *             .startAsync(input);
  *     }
  *
- *     public void confirmPayment(String orderId, PaymentResult result) {
+ *     // idempotencyKey: the caller's id for this logical signal (e.g. an
+ *     // Idempotency-Key request header) — a retried request is suppressed
+ *     public void confirmPayment(String orderId, PaymentResult result, String idempotencyKey) {
  *         maestro.getWorkflow("order-" + orderId)
- *             .signal("payment.result", result);
+ *             .signal("payment.result", result, idempotencyKey);
  *     }
  *
  *     public String getOrderStep(String orderId) {

@@ -34,6 +34,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <tr><td>{@code maestro.workflow.terminated}</td><td>Counter</td><td>workflow</td><td>{@link #workflowTerminated}</td></tr>
  *   <tr><td>{@code maestro.activity.duration}</td><td>Timer</td><td>workflow, activity, outcome</td><td>{@link #activityCompleted}/{@link #activityFailed} (live only)</td></tr>
  *   <tr><td>{@code maestro.signal.consumed}</td><td>Counter</td><td>workflow, signal</td><td>{@link #signalConsumed} (live only)</td></tr>
+ *   <tr><td>{@code maestro.signal.duplicates}</td><td>Counter</td><td>workflow, signal</td><td>{@link #signalDuplicateSuppressed}</td></tr>
  *   <tr><td>{@code maestro.timer.fired}</td><td>Counter</td><td>workflow</td><td>{@link #timerFired} (live only)</td></tr>
  *   <tr><td>{@code maestro.recovery.scanned}</td><td>Counter</td><td>—</td><td>{@link #recoveryPass}</td></tr>
  *   <tr><td>{@code maestro.recovery.adopted}</td><td>Counter</td><td>—</td><td>{@link #recoveryPass}</td></tr>
@@ -150,6 +151,13 @@ public final class MicrometerEngineObserver implements EngineObserver {
         }
         var workflowType = s.workflowType() != null ? s.workflowType() : UNKNOWN_WORKFLOW_TYPE;
         increment("maestro.signal.consumed", TAG_WORKFLOW, workflowType, TAG_SIGNAL, s.signalName());
+    }
+
+    @Override
+    public void signalDuplicateSuppressed(SignalInfo s) {
+        // Delivery side: a pre-delivered duplicate has no workflow type yet.
+        var workflowType = s.workflowType() != null ? s.workflowType() : UNKNOWN_WORKFLOW_TYPE;
+        increment("maestro.signal.duplicates", TAG_WORKFLOW, workflowType, TAG_SIGNAL, s.signalName());
     }
 
     @Override

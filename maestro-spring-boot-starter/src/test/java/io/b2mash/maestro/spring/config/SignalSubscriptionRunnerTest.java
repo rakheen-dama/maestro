@@ -75,6 +75,26 @@ class SignalSubscriptionRunnerTest {
     }
 
     @Test
+    @DisplayName("a redelivered message with the same messageId is suppressed — one row; without an id, two")
+    void redeliveryWithMessageIdIsSuppressed() {
+        var runner = new SignalSubscriptionRunner(executor, commandDispatcher, messaging, properties);
+        runner.run(null);
+
+        var message = new SignalMessage("order-1", "payment.result", null, "kafka:topic-id:0:42");
+        messaging.handler.accept(message);
+        assertDoesNotThrow(() -> messaging.handler.accept(message),
+                "a duplicate is a success — the transport must ack it");
+        assertEquals(1, store.getUnconsumedSignals("order-1", "payment.result").size());
+        assertEquals("kafka:topic-id:0:42",
+                store.getUnconsumedSignals("order-1", "payment.result").getFirst().messageId());
+
+        messaging.handler.accept(new SignalMessage("order-2", "payment.result", null));
+        messaging.handler.accept(new SignalMessage("order-2", "payment.result", null));
+        assertEquals(2, store.getUnconsumedSignals("order-2", "payment.result").size(),
+                "no identity, no deduplication");
+    }
+
+    @Test
     @DisplayName("no WorkflowMessaging configured — runner is a no-op")
     void nullMessagingIsNoOp() {
         var runner = new SignalSubscriptionRunner(executor, commandDispatcher, null, properties);
