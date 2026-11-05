@@ -3,6 +3,7 @@ package io.b2mash.maestro.admin.service;
 import io.b2mash.maestro.admin.config.AdminProperties;
 import io.b2mash.maestro.admin.repository.WorkflowRepository;
 import io.b2mash.maestro.core.spi.SignalMessage;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,12 +12,19 @@ import org.springframework.stereotype.Service;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
+import java.nio.charset.StandardCharsets;
+import java.util.UUID;
+
 /**
  * Sends admin commands (retry, terminate, signal) back to workflow services via Kafka.
  *
  * <p>Each command is serialized as a {@link SignalMessage} and published to the
  * per-service signal topic derived from the workflow's service name and the
  * configured {@link AdminProperties#getSignalTopicPrefix() signal topic prefix}.
+ * Every command carries a fresh message id ({@code "admin:<uuid>"}) in both the
+ * envelope and the {@code maestro-message-id} header, so a transport
+ * redelivery of one dashboard action is a single signal at the workflow
+ * service.
  *
  * <p>Internal command signals use the {@code $maestro:} prefix to distinguish
  * them from application-level signals:
@@ -36,6 +44,12 @@ public class AdminCommandService {
 
     private static final String RETRY_SIGNAL = "$maestro:retry";
     private static final String TERMINATE_SIGNAL = "$maestro:terminate";
+
+    /**
+     * {@code MaestroSignalHeaders.MESSAGE_ID} — spelled out because the
+     * dashboard does not depend on the Kafka transport module.
+     */
+    static final String MESSAGE_ID_HEADER = "maestro-message-id";
 
     private final KafkaTemplate<String, byte[]> kafkaTemplate;
     private final ObjectMapper objectMapper;
@@ -113,11 +127,17 @@ public class AdminCommandService {
                         "Workflow not found in admin database: " + workflowId));
 
         var topic = adminProperties.getSignalTopicPrefix() + workflow.serviceName();
-        var message = new SignalMessage(workflowId, signalName, payload);
+        // One fresh id per dashboard request: a Kafka redelivery of this record
+        // is then suppressed by the workflow service, while a second click is
+        // (deliberately) a second signal.
+        var messageId = "admin:" + UUID.randomUUID();
+        var message = new SignalMessage(workflowId, signalName, payload, messageId);
 
         try {
             var bytes = objectMapper.writeValueAsBytes(message);
-            kafkaTemplate.send(topic, workflowId, bytes);
+            var record = new ProducerRecord<String, byte[]>(topic, workflowId, bytes);
+            record.headers().add(MESSAGE_ID_HEADER, messageId.getBytes(StandardCharsets.UTF_8));
+            kafkaTemplate.send(record);
             logger.info("Sent signal '{}' to workflow '{}' on topic '{}'",
                     signalName, workflowId, topic);
         } catch (Exception e) {
