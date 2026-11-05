@@ -188,6 +188,7 @@ class MaestroSignalListenerContainerConfigTest {
                     record.headers().add("traceparent",
                             "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
                                     .getBytes(StandardCharsets.UTF_8));
+                    io.b2mash.maestro.messaging.kafka.MaestroSignalHeaders.setMessageId(record.headers(), "evt-1");
 
                     listener.onMessage(record);
 
@@ -195,7 +196,8 @@ class MaestroSignalListenerContainerConfigTest {
                     // Confirms the runnable passed to runWithExtractedContext actually ran —
                     // not just that runWithExtractedContext was called.
                     var executor = ctx.getBean(WorkflowExecutor.class);
-                    verify(executor).deliverSignal(eq("wf-hello"), eq("test.signal"), any());
+                    // ...and delivered with the record's maestro-message-id header as its identity.
+                    verify(executor).deliverSignal(eq("wf-hello"), eq("test.signal"), any(), eq("evt-1"));
                 });
     }
 

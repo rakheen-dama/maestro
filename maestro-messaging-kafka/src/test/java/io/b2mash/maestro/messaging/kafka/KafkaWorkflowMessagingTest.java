@@ -98,6 +98,52 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
         }
 
         @Test
+        @DisplayName("message identity: envelope id round-trips and is mirrored in the header; header-only and "
+                + "id-less records resolve to the header and to the topic-id coordinate")
+        void messageIdentityResolution() throws Exception {
+            var serviceName = "identity-" + testSuffix;
+            var topic = "maestro.signals." + serviceName;
+            createTopics(topic);
+
+            var headers = new CopyOnWriteArrayList<String>();
+            var tapProps = new org.springframework.kafka.listener.ContainerProperties(topic);
+            tapProps.setGroupId("identity-tap-" + testSuffix);
+            tapProps.setMessageListener((org.springframework.kafka.listener.MessageListener<String, byte[]>)
+                    record -> headers.add(String.valueOf(MaestroSignalHeaders.messageId(record.headers()))));
+            var tap = new ConcurrentMessageListenerContainer<>(consumerFactory, tapProps);
+            tap.start();
+
+            var received = new CopyOnWriteArrayList<SignalMessage>();
+            messaging.subscribeSignals(serviceName, received::add);
+            Thread.sleep(500);
+
+            // 1. Envelope id: carried in the envelope AND the header.
+            messaging.publishSignal(serviceName, new SignalMessage("wf-1", "approval", null, "env-1"));
+            // 2. Header only (a producer that sets the header on an id-less envelope).
+            var headerOnly = new org.apache.kafka.clients.producer.ProducerRecord<String, byte[]>(topic, "wf-2",
+                    objectMapper.writeValueAsBytes(new SignalMessage("wf-2", "approval", null)));
+            MaestroSignalHeaders.setMessageId(headerOnly.headers(), "hdr-2");
+            kafkaTemplate.send(headerOnly).get(10, SECONDS);
+            // 3. Neither: the record's coordinate.
+            kafkaTemplate.send(topic, "wf-3", objectMapper.writeValueAsBytes(
+                    new SignalMessage("wf-3", "approval", null))).get(10, SECONDS);
+
+            await().atMost(15, SECONDS).untilAsserted(() -> assertEquals(3, received.size()));
+            var byWorkflow = new java.util.HashMap<String, SignalMessage>();
+            received.forEach(m -> byWorkflow.put(m.workflowId(), m));
+            assertEquals("env-1", byWorkflow.get("wf-1").messageId());
+            assertEquals("hdr-2", byWorkflow.get("wf-2").messageId());
+            var coordinate = byWorkflow.get("wf-3").messageId();
+            assertNotNull(coordinate, "a broker with topic ids gives an id-less record its coordinate");
+            assertTrue(coordinate.matches("kafka:[A-Za-z0-9_-]{22}:\\d+:\\d+"), coordinate);
+
+            await().atMost(10, SECONDS).untilAsserted(() -> assertTrue(headers.contains("env-1"),
+                    "publishSignal mirrors the envelope id into the maestro-message-id header: " + headers));
+            tap.stop();
+            messaging.destroy();
+        }
+
+        @Test
         @DisplayName("publishSignal uses workflowId as partition key")
         void publishSignalUsesWorkflowIdAsKey() throws Exception {
             var serviceName = "keyed-" + testSuffix;
