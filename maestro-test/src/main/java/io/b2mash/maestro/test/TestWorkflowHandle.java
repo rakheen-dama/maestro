@@ -64,6 +64,22 @@ public final class TestWorkflowHandle {
         executor.deliverSignal(workflowId, signalName, payload);
     }
 
+    /**
+     * Delivers a signal carrying a message id, as a production producer that
+     * names its signals would — a second delivery with the same id is
+     * suppressed, so a test can pin a workflow's behaviour under redelivery.
+     *
+     * @param signalName the signal name
+     * @param payload    the signal payload, or {@code null}
+     * @param messageId  the producer's identity for this logical signal, or
+     *                   {@code null} for none (never deduplicated)
+     * @return {@code true} if the signal was persisted; {@code false} if a
+     *         signal with the same name and id was already stored
+     */
+    public boolean signal(String signalName, @Nullable Object payload, @Nullable String messageId) {
+        return executor.deliverSignal(workflowId, signalName, payload, messageId);
+    }
+
     // ── Result retrieval ─────────────────────────────────────────────────
 
     /**

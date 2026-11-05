@@ -133,12 +133,22 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
         });
     }
 
+    // Lock order. Every multi-lock path takes the DATA lock (signalLock,
+    // timerLock) before the per-workflow instance lock — the order the purge
+    // uses (signalLock → timerLock → instanceLock). The fenced data writes
+    // below therefore enter their data lock OUTSIDE underCurrentLease; the
+    // inner unfenced call re-takes it reentrantly. Taking the instance lock
+    // first would let a purge concurrent with a fenced timer or signal write
+    // deadlock both.
+
     @Override
     public void saveTimer(WorkflowTimer timer, RunLease lease) {
-        requireCurrentLease(lease, "saveTimer", () -> {
-            saveTimer(timer);
-            return Boolean.TRUE;
-        });
+        synchronized (timerLock) {
+            requireCurrentLease(lease, "saveTimer", () -> {
+                saveTimer(timer);
+                return Boolean.TRUE;
+            });
+        }
     }
 
     @Override
@@ -164,17 +174,47 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
 
     @Override
     public boolean markSignalConsumed(UUID signalId, RunLease lease) {
-        return Boolean.TRUE.equals(underCurrentLease(lease, () -> markSignalConsumed(signalId)));
+        synchronized (signalLock) {
+            return Boolean.TRUE.equals(underCurrentLease(lease, () -> markSignalConsumed(signalId)));
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Atomic: under the signal lock and then the lease's instance lock (the
+     * purge's order), the row is checked, the memo inserted (a duplicate
+     * sequence throws before anything is written) and the row flipped — one
+     * critical section with respect to every other consumer, delivery and
+     * adoption bump.
+     */
+    @Override
+    public boolean appendEventAndConsumeSignal(WorkflowEvent memo, RunLease lease, UUID signalId) {
+        synchronized (signalLock) {
+            return requireCurrentLease(lease, "appendEventAndConsumeSignal", () -> {
+                var unconsumed = signals.stream().anyMatch(s -> s.id().equals(signalId) && !s.consumed());
+                if (!unconsumed) {
+                    return Boolean.FALSE;
+                }
+                appendEvent(memo); // throws DuplicateEventException before the flip
+                markSignalConsumed(signalId);
+                return Boolean.TRUE;
+            });
+        }
     }
 
     @Override
     public boolean markTimerFired(UUID timerId, RunLease lease) {
-        return Boolean.TRUE.equals(underCurrentLease(lease, () -> markTimerFired(timerId)));
+        synchronized (timerLock) {
+            return Boolean.TRUE.equals(underCurrentLease(lease, () -> markTimerFired(timerId)));
+        }
     }
 
     @Override
     public boolean markTimerCancelled(UUID timerId, RunLease lease) {
-        return Boolean.TRUE.equals(underCurrentLease(lease, () -> markTimerCancelled(timerId)));
+        synchronized (timerLock) {
+            return Boolean.TRUE.equals(underCurrentLease(lease, () -> markTimerCancelled(timerId)));
+        }
     }
 
     @Override
@@ -393,6 +433,28 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The identity check and the insert are one critical section under the
+     * signal lock — the in-memory counterpart of the JDBC store's partial
+     * unique index on {@code (workflow_id, signal_name, message_id)}.
+     */
+    @Override
+    public boolean saveSignalIfAbsent(WorkflowSignal signal) {
+        synchronized (signalLock) {
+            var messageId = signal.messageId();
+            if (messageId != null && signals.stream().anyMatch(s ->
+                    signal.workflowId().equals(s.workflowId())
+                            && signal.signalName().equals(s.signalName())
+                            && messageId.equals(s.messageId()))) {
+                return false;
+            }
+            signals.add(signal);
+            return true;
+        }
+    }
+
     @Override
     public List<WorkflowSignal> getUnconsumedSignals(String workflowId, String signalName) {
         synchronized (signalLock) {
@@ -419,8 +481,9 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
                             signal.payload(),
                             true,
                             signal.receivedAt(),
-                            // Opaque metadata: a status transition never drops it.
-                            signal.traceContext()
+                            // Metadata: a status transition never drops it.
+                            signal.traceContext(),
+                            signal.messageId()
                     ));
                     return true;
                 }
@@ -443,8 +506,9 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
                             signal.payload(),
                             signal.consumed(),
                             signal.receivedAt(),
-                            // Opaque metadata: adoption never drops it.
-                            signal.traceContext()
+                            // Metadata: adoption never drops it.
+                            signal.traceContext(),
+                            signal.messageId()
                     ));
                 }
             }
