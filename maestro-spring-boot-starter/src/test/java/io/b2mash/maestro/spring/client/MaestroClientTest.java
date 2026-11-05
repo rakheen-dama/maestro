@@ -311,6 +311,55 @@ class MaestroClientTest {
         }
 
         @Test
+        @DisplayName("failure is empty while the workflow runs and after it completes")
+        void failureIsEmptyWhileRunningAndAfterCompletion() {
+            runner.run(context -> {
+                var client = context.getBean(MaestroClient.class);
+                var executor = context.getBean(WorkflowExecutor.class);
+
+                client.newWorkflow(ParkingWorkflow.class, options("fail-detail-1")).startAsync(null);
+                awaitParked(executor, 1);
+                var handle = client.getWorkflow("fail-detail-1");
+
+                assertTrue(handle.failure().isEmpty(), "a parked workflow has not failed");
+
+                handle.signal(ParkingWorkflow.SIGNAL, "go");
+                await().atMost(Duration.ofSeconds(10))
+                        .until(() -> handle.status() == WorkflowStatus.COMPLETED);
+
+                assertTrue(handle.failure().isEmpty(), "a completed workflow has no failure");
+            });
+        }
+
+        @Test
+        @DisplayName("failure carries the exception type and message of a FAILED workflow")
+        void failureCarriesTheRecordedDetail() {
+            runner.run(context -> {
+                var client = context.getBean(MaestroClient.class);
+
+                client.newWorkflow(FailingWorkflow.class, options("fail-detail-2")).startAsync("x");
+                var handle = client.getWorkflow("fail-detail-2");
+                await().atMost(Duration.ofSeconds(10))
+                        .until(() -> handle.status() == WorkflowStatus.FAILED);
+
+                var failure = handle.failure().orElseThrow();
+                assertEquals(IllegalStateException.class.getName(), failure.exceptionType());
+                assertEquals("boom", failure.message());
+                assertTrue(handle.result().isEmpty(), "a failed workflow has no result");
+            });
+        }
+
+        @Test
+        @DisplayName("failure on an unknown workflow id throws WorkflowNotFoundException")
+        void failureOnUnknownIdThrows() {
+            runner.run(context -> {
+                var client = context.getBean(MaestroClient.class);
+
+                assertThrows(WorkflowNotFoundException.class, () -> client.getWorkflow("nope").failure());
+            });
+        }
+
+        @Test
         @DisplayName("terminate moves the workflow to TERMINATED")
         void terminateMovesTheWorkflowToTerminated() {
             runner.run(context -> {
