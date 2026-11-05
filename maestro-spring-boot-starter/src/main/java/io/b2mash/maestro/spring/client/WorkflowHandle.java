@@ -98,15 +98,20 @@ public final class WorkflowHandle<R> {
      * signals must carry distinct ids. Typically the id is a client-supplied
      * {@code Idempotency-Key} header, or a business key such as
      * {@code "<orderId>:payment-confirmed"}. It is stored as
-     * {@code "client:<id>"}, a namespace no transport uses, and like every id
-     * the stored form is capped at 512 characters and must contain no control
-     * character (otherwise it is treated as {@code null}).
+     * {@code "client:<id>"}, a namespace no transport uses. The engine caps
+     * the <em>stored</em> form at 512 characters ({@link String#length()},
+     * UTF-16 code units — not bytes), so after the 7-character
+     * {@code client:} prefix a caller's id may be at most <b>505
+     * characters</b>; a longer id, or one containing a control character
+     * ({@code < U+0020} or {@code U+007F}), is treated as {@code null} — the
+     * signal is still delivered, just not deduplicated.
      *
      * @param signalName the signal name
      * @param payload    the signal payload, or {@code null}
      * @param messageId  the caller's identity for this logical signal, or
-     *                   {@code null} for none (never deduplicated); ids longer
-     *                   than 512 characters are treated as {@code null}
+     *                   {@code null} for none (never deduplicated); at most 505
+     *                   characters (512 including the {@code client:} prefix),
+     *                   otherwise treated as {@code null}
      * @return {@code true} if the signal was persisted; {@code false} if a
      *         signal with the same name and id was already stored
      */

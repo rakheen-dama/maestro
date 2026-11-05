@@ -1181,6 +1181,22 @@ class InMemoryWorkflowStoreTest {
         }
 
         @Test
+        void occupiedSlotIsDuplicateEvenWhenTheRowIsAlreadyConsumed() {
+            // The JDBC store inserts the memo first, so an occupied slot is a
+            // DuplicateEventException whatever the row's state; this store must agree.
+            var s = signal("go", null);
+            store.saveSignal(s);
+            assertTrue(store.markSignalConsumed(s.id()));
+            store.appendEvent(event(instance.id(), 1, EventType.ACTIVITY_COMPLETED));
+            assertThrows(DuplicateEventException.class,
+                    () -> store.appendEventAndConsumeSignal(memo(1), lease, s.id()));
+            assertEquals(EventType.ACTIVITY_COMPLETED,
+                    store.getEventBySequence(instance.id(), 1).orElseThrow().eventType(),
+                    "nothing written: the occupying event is untouched");
+            assertEquals(1, store.getAllSignals().size());
+        }
+
+        @Test
         void twoConcurrentConsumersOfOneRowExactlyOneWins() throws Exception {
             for (int round = 0; round < 200; round++) {
                 var s = signal("go-" + round, null);

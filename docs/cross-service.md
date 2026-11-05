@@ -212,7 +212,12 @@ republish lands on the same topic and is still suppressed. A header longer than
 falls back to its coordinate) rather than allowed to fail the insert, and an
 envelope or header id whose namespaced form would exceed 512 characters falls
 through to the next source the same way; the engine treats any stored id over
-512 characters as absent.
+512 characters (`String.length()`, UTF-16 code units — not bytes) as absent.
+For `WorkflowHandle.signal(name, payload, messageId)` that means a caller's id
+may be at most **505 characters**: the stored form is `client:<id>`, and the
+7-character prefix counts against the 512. A longer id, or one containing a
+control character, is treated as no id — the signal is delivered but not
+deduplicated.
 
 **Rules for producers.**
 

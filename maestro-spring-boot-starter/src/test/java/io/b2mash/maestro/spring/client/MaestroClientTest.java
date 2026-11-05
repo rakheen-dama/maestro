@@ -225,6 +225,26 @@ class MaestroClientTest {
         }
 
         @Test
+        @DisplayName("signal ids: 505 characters deduplicate; 506 (513 with the client: prefix) are no identity")
+        void signalIdLimitIsAfterTheClientPrefix() {
+            runner.run(context -> {
+                var store = context.getBean(WorkflowStore.class);
+                var handle = context.getBean(MaestroClient.class).getWorkflow("idem-limit");
+
+                var atLimit = "a".repeat(505);
+                assertTrue(handle.signal(ParkingWorkflow.SIGNAL, "x", atLimit));
+                assertEquals(false, handle.signal(ParkingWorkflow.SIGNAL, "x", atLimit),
+                        "505 characters + 'client:' = 512: kept, so the retry is a duplicate");
+
+                var overLimit = "b".repeat(506);
+                assertTrue(handle.signal(ParkingWorkflow.SIGNAL, "y", overLimit));
+                assertTrue(handle.signal(ParkingWorkflow.SIGNAL, "y", overLimit),
+                        "506 characters exceed the stored limit: no identity, delivered, not deduplicated");
+                assertEquals(3, store.getUnconsumedSignals("idem-limit", ParkingWorkflow.SIGNAL).size());
+            });
+        }
+
+        @Test
         @DisplayName("query reads state from a running workflow")
         void queryReadsRunningState() {
             runner.run(context -> {

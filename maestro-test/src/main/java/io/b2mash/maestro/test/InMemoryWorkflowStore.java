@@ -183,8 +183,11 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
      * {@inheritDoc}
      *
      * <p>Atomic: under the signal lock and then the lease's instance lock (the
-     * purge's order), the row is checked, the memo inserted (a duplicate
-     * sequence throws before anything is written) and the row flipped — one
+     * purge's order), the memo's slot is checked (occupied →
+     * {@link DuplicateEventException}, whatever the row's state, exactly as
+     * the JDBC store), then the row (no longer unconsumed → {@code false}),
+     * then the memo is inserted and the row flipped — nothing is written
+     * unless both land; one
      * critical section with respect to every other consumer, delivery and
      * adoption bump.
      */
@@ -192,11 +195,19 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
     public boolean appendEventAndConsumeSignal(WorkflowEvent memo, RunLease lease, UUID signalId) {
         synchronized (signalLock) {
             return requireCurrentLease(lease, "appendEventAndConsumeSignal", () -> {
+                // Slot first, like the JDBC store (which inserts the memo before
+                // the flip): an occupied sequence is a DuplicateEventException
+                // whatever the row's state. Checked before any mutation; an
+                // unlocked append racing into the slot still makes appendEvent
+                // below throw before the flip, so nothing is written either way.
+                if (getEventBySequence(memo.workflowInstanceId(), memo.sequenceNumber()).isPresent()) {
+                    throw new DuplicateEventException(memo.workflowInstanceId(), memo.sequenceNumber());
+                }
                 var unconsumed = signals.stream().anyMatch(s -> s.id().equals(signalId) && !s.consumed());
                 if (!unconsumed) {
                     return Boolean.FALSE;
                 }
-                appendEvent(memo); // throws DuplicateEventException before the flip
+                appendEvent(memo);
                 markSignalConsumed(signalId);
                 return Boolean.TRUE;
             });
