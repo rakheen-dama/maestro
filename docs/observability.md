@@ -67,7 +67,7 @@ site.
 
 ## Meter catalog
 
-Sixteen meters: **13 counters and 1 timer**, registered by
+Seventeen meters: **14 counters and 1 timer**, registered by
 `MicrometerEngineObserver`, plus **2 gauges**, registered by
 `MaestroEngineGauges` — both in the `io.b2mash.maestro.spring.observe` package
 of `maestro-spring-boot-starter`.
@@ -75,7 +75,15 @@ of `maestro-spring-boot-starter`.
 **Cardinality rule:** no meter is ever tagged with `workflowId`, `runId`, or a
 timer ID. `workflowFailed`'s exception type is deliberately *not* a tag either
 — it is open-ended cardinality; it appears as a span attribute instead
-(`maestro.error.type`).
+(`maestro.error.type`). A `signal` tag carries a signal name only where that
+name is bounded by code: `maestro.signal.consumed` is emitted on the workflow
+thread, and its name is the literal an `awaitSignal` call names.
+`maestro.signal.duplicates` is emitted on the *delivery* side, where the name
+comes off the wire; for a pre-delivered (orphan) duplicate — no instance yet,
+so no workflow type — nothing bounds it, and an external producer could mint
+one tag value per name it sends. Such a duplicate is therefore counted with
+`workflow=unknown, signal=unknown`; the name is tagged only once the workflow
+type is known (the instance exists).
 
 ### Counters
 
@@ -87,6 +95,7 @@ timer ID. `workflowFailed`'s exception type is deliberately *not* a tag either
 | `maestro.workflow.compensated` | `workflow` | workflow type | The saga compensation phase starts (callback is `workflowCompensating`) |
 | `maestro.workflow.terminated` | `workflow` | workflow type | An operator terminated the workflow |
 | `maestro.signal.consumed` | `workflow`, `signal` | workflow type (or the literal `unknown` when the workflow type is not yet known), signal name | A signal is consumed live |
+| `maestro.signal.duplicates` | `workflow`, `signal` | workflow type and signal name — both the literal `unknown` for a pre-delivered (orphan) duplicate, see the cardinality rule | A delivery carried a message id already stored for that workflow and signal name, so no row was written (a transport redelivery, a producer republish, a client retry) — see [Cross-service §Signal identity](cross-service.md#signal-identity) |
 | `maestro.timer.fired` | `workflow` | workflow type | A durable timer fires live |
 | `maestro.recovery.scanned` | *(none)* | — | Incremented by the number of instances a recovery pass scanned |
 | `maestro.recovery.adopted` | *(none)* | — | Incremented by the number of instances that pass adopted |
