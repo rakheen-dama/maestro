@@ -207,7 +207,7 @@ class MaestroMigrationsCoexistIT {
      * harmless (optionally {@code DROP TABLE maestro_signal_queue}).
      */
     @Test
-    @DisplayName("upgrade procedure, keep the data: mode none + V4–V8 by hand + scoped DELETE")
+    @DisplayName("upgrade procedure, keep the data: mode none + V4–V9 by hand + scoped DELETE")
     void upgradeProcedureKeepingTheData(@TempDir Path released, @TempDir Path hostMigrations,
                                         @TempDir Path noMigrations) throws Exception {
         simulateReleased040Database(released, hostMigrations);
@@ -229,6 +229,7 @@ class MaestroMigrationsCoexistIT {
                 ALTER TABLE maestro_workflow_signal ALTER COLUMN received_at SET DEFAULT now();         -- V5
                 ALTER TABLE maestro_workflow_instance ADD COLUMN IF NOT EXISTS lease_epoch BIGINT NOT NULL DEFAULT 0; -- V6
                 ALTER TABLE maestro_workflow_event ADD COLUMN IF NOT EXISTS args_hash VARCHAR(64);       -- V7
+                ALTER TABLE maestro_workflow_signal ADD COLUMN IF NOT EXISTS message_id TEXT;            -- V9
                 """);
         // The block's two V8 lines, one statement each: CREATE INDEX CONCURRENTLY
         // cannot run inside a transaction block, and a multi-statement string is
@@ -242,10 +243,15 @@ class MaestroMigrationsCoexistIT {
                     ON maestro_workflow_signal (workflow_instance_id);
                 """);
         execute("""
+                CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_wf_signal_message_id                 -- V9
+                    ON maestro_workflow_signal (workflow_id, signal_name, message_id) WHERE message_id IS NOT NULL;
+                """);
+        execute("""
                 DROP TABLE IF EXISTS maestro_signal_queue, maestro_task_queue, maestro_lifecycle_event_queue; -- optional cleanup
                 """);
-        assertTrue(indexes().containsAll(List.of("idx_wf_instance_terminal", "idx_wf_signal_instance")),
-                "the hand-applied V8 indexes exist: " + indexes());
+        assertTrue(indexes().containsAll(List.of("idx_wf_instance_terminal", "idx_wf_signal_instance",
+                        "idx_wf_signal_message_id")),
+                "the hand-applied V8 and V9 indexes exist: " + indexes());
         // Step 3.
         assertEquals(4, execute(DELETE_MAESTRO_HISTORY_ROWS),
                 "every store/lock row a 0.4.0 build wrote is matched (V200/V201 are not replayed here)");
@@ -270,6 +276,16 @@ class MaestroMigrationsCoexistIT {
         var recorded = store.getEventBySequence(instance.id(), 1).orElseThrow();
         assertEquals(argsHash, recorded.argsHash(), "the hand-applied V7 column round-trips the fingerprint");
         assertEquals(EventType.ACTIVITY_COMPLETED, recorded.eventType());
+        // This build names message_id in every signal insert and read — the
+        // hand-applied V9 column and index make a duplicate delivery a no-op.
+        var identified = new WorkflowSignal(UUID.randomUUID(), null, "wf-upgrade-dup", "go", null, false,
+                Instant.now(), null, "env:upgrade-1");
+        assertTrue(store.saveSignalIfAbsent(identified));
+        assertFalse(store.saveSignalIfAbsent(new WorkflowSignal(UUID.randomUUID(), null, "wf-upgrade-dup", "go",
+                        null, false, Instant.now(), null, "env:upgrade-1")),
+                "the hand-applied V9 unique index suppresses a duplicate identity under mode none");
+        assertEquals(1, store.getUnconsumedSignals("wf-upgrade-dup", "go").size());
+        assertEquals("env:upgrade-1", store.getUnconsumedSignals("wf-upgrade-dup", "go").getFirst().messageId());
         assertFalse(tables().contains(MaestroSchemaInitializer.HISTORY_TABLE), "mode none writes no history");
     }
 
@@ -330,6 +346,7 @@ class MaestroMigrationsCoexistIT {
                 ('6',   'V6__instance_lease_epoch.sql'),
                 ('7',   'V7__workflow_event_args_hash.sql'),
                 ('8',   'V8__retention_indexes.sql'),
+                ('9',   'V9__signal_message_id.sql'),
                 ('100', 'V100__maestro_lock_postgres.sql'),
                 ('200', 'V200__maestro_messaging_postgres.sql'),
                 ('201', 'V201__redelivery_dead_letter.sql'));
