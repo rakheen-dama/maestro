@@ -527,10 +527,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
-import java.time.Instant;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class WelcomeWorkflowTest {
 
@@ -555,11 +554,7 @@ class WelcomeWorkflowTest {
         // own thread and only then arms the sleep. Wait until it is parked on
         // the timer -- advancing earlier would move the clock past nothing,
         // and the sleep would then arm from the already-advanced clock.
-        var deadline = Instant.now().plusSeconds(5);
-        while (handle.getStatus() != WorkflowStatus.WAITING_TIMER) {
-            assertTrue(Instant.now().isBefore(deadline), "workflow never parked on its sleep");
-            Thread.sleep(10);
-        }
+        handle.awaitStatus(WorkflowStatus.WAITING_TIMER, Duration.ofSeconds(5));
 
         // Advance by the 5-second durable sleep: its fireAt was armed from
         // the test clock (now + 5 s), so the exact duration fires it
@@ -568,8 +563,24 @@ class WelcomeWorkflowTest {
         String result = handle.getResult(String.class, Duration.ofSeconds(5));
         assertEquals("Hello, Alice! Welcome aboard.", result);
     }
+
+    @Test
+    void survivesACrashDuringTheSleep() throws Exception {
+        var handle = env.startWorkflow(WelcomeWorkflow.class, "Alice");
+        handle.awaitStatus(WorkflowStatus.WAITING_TIMER, Duration.ofSeconds(5));
+
+        // Kill the node mid-sleep and start a fresh one over the same store:
+        // it replays the recorded greeting and re-parks on the durable timer.
+        env.crashNow().recover();
+        env.advanceTime(Duration.ofSeconds(5));
+
+        assertEquals("Hello, Alice! Welcome aboard.", handle.getResult(String.class, Duration.ofSeconds(5)));
+        assertEquals(List.of("GreetingActivities.generateGreeting"), handle.replayedSteps());
+    }
 }
 ```
+
+The second test is the one that matters for a durable workflow. A test that runs straight through never reads the workflow's history back, and recovery always does. `crashNow().recover()` makes the test exercise the same replay a production restart performs. See [Crash-Recovery Testing](testing.md#crash-recovery-testing).
 
 Key testing features:
 
@@ -582,6 +593,10 @@ Key testing features:
 | `handle.getResult(type, timeout)` | Blocks until the workflow completes, returns the result |
 | `handle.signal(name, payload)` | Delivers a signal to the workflow under test |
 | `handle.getStatus()` | Returns the current workflow status |
+| `handle.awaitStatus(status, timeout)` | Waits for a non-terminal status, e.g. parked on a timer before `advanceTime` |
+| `handle.awaitTerminal(timeout)` / `handle.getFailure()` | Waits for the end without throwing on `FAILED`, then reads the recorded exception |
+| `env.crashNow()` / `env.crashAfter(n)` + `recover()` | Kills the node (now, or once `n` activity results are persisted) and recovers onto a fresh one that replays the history |
+| `handle.replayedSteps()` / `handle.liveSteps()` | Which activity steps replayed from history and which executed live |
 
 Here is a test for the signal-based approval workflow:
 
@@ -621,5 +636,6 @@ You now have a working durable workflow with activities, signals, queries, and t
 - [Configuration Reference](configuration.md) -- All `maestro.*` properties explained
 - [Self-Recovery](self-recovery.md) -- How workflows survive crashes and how signals are never lost
 - [Cross-Service Patterns](cross-service.md) -- Multi-service coordination with Kafka events and `@MaestroSignalListener`
-- [Testing Guide](testing.md) -- Advanced testing: mocking activities, pre-delivering signals, asserting event logs
+- [Testing Guide](testing.md) -- Advanced testing: crash-recovery tests, mocking activities, pre-delivering signals, asserting event logs
+- [Pitfalls](pitfalls.md) -- Ten rules whose violations pass every straight-through test and fail in production
 - [Sample Applications](../maestro-samples/README.md) -- Full e-commerce order fulfilment demo with payment gateway integration
