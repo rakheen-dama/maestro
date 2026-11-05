@@ -17,6 +17,13 @@ import java.util.concurrent.ConcurrentHashMap;
  * holder's lock becoming re-acquirable) can be simulated. Fencing tokens
  * are generated for correctness of the activity proxy's token validation.
  *
+ * <p>Expiry is measured on the <em>wall</em> clock ({@link Instant#now()}),
+ * not on {@link TestWorkflowEnvironment}'s {@link ControllableClock}, on
+ * purpose: on the test clock, {@code advanceTime(Duration.ofDays(1))} would
+ * expire every live run's instance lock at once and let a recovery adopt
+ * workflows that are still running. A run stopped by a simulated crash
+ * releases its lock as it unwinds, so recovery never waits for a TTL.
+ *
  * <p><b>Thread safety:</b> All operations are thread-safe via
  * {@link ConcurrentHashMap} atomic operations.
  */

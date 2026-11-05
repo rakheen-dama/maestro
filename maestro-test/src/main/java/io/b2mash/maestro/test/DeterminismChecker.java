@@ -1,10 +1,14 @@
 package io.b2mash.maestro.test;
 
+import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
+import io.b2mash.maestro.core.model.WorkflowStatus;
 import org.jspecify.annotations.Nullable;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeoutException;
 
@@ -39,7 +43,9 @@ import java.util.concurrent.TimeoutException;
  * not catch nondeterminism that is stable within a JVM but differs after a
  * restart or a code change — for example branching on a value that happens to
  * be constant for the lifetime of the process. Treat a pass as evidence, not
- * proof.
+ * proof. {@link #assertRecoverable} covers the other half: it crashes runs and
+ * recovers them, so the history is actually read back — catching result types
+ * that cannot be deserialised and inputs that differ between workflow objects.
  *
  * <h2>Usage</h2>
  * <pre>{@code
@@ -105,6 +111,150 @@ public final class DeterminismChecker {
                                         baseline, run + 1, candidate));
             }
         }
+    }
+
+    /**
+     * Crashes the workflow after each of its activity completions in turn and
+     * asserts that every recovery finishes exactly as an uninterrupted run does.
+     *
+     * <p>Where {@link #assertDeterministic} compares fresh runs, this exercises
+     * the path production takes after a restart: the history is read back. Run
+     * once uninterrupted as the baseline (it must end {@code COMPLETED} or
+     * {@code FAILED} without external input); then, for every {@code k} from 1
+     * to the baseline's number of {@code ACTIVITY_COMPLETED} events, start a
+     * fresh run, crash the node once {@code k} activity results are persisted
+     * ({@link TestWorkflowEnvironment#crashAfter(int)}), {@link TestWorkflowEnvironment#recover()},
+     * and require that the recovered run
+     * <ul>
+     *   <li>does not stand down — an unreadable payload
+     *       ({@code UNKNOWN_EVENT_PAYLOAD}), an activity asked a different
+     *       question than the one recorded or a step that moved
+     *       ({@code NONDETERMINISTIC_HISTORY});</li>
+     *   <li>replays at least one step and executes, across the crash, exactly the
+     *       steps the baseline executed — nothing already recorded runs again;</li>
+     *   <li>ends in the baseline's status with the baseline's decision sequence
+     *       ({@code seq:type:step:argsHash}).</li>
+     * </ul>
+     *
+     * <p>Like {@link #assertDeterministic}, every run gets its own workflow ID, so
+     * a workflow that passes its own ID into an activity argument cannot pass.
+     *
+     * <h2>Usage</h2>
+     * <pre>{@code
+     * var env = TestWorkflowEnvironment.create();
+     * env.registerActivities(OrderActivities.class, new FakeOrderActivities());
+     * DeterminismChecker.assertRecoverable(env, OrderWorkflow.class, input);
+     * }</pre>
+     *
+     * @param env           the environment to run in; its node is recovered once per crash point
+     * @param workflowClass the workflow under test
+     * @param input         the input, identical for every run
+     * @throws AssertionError if any crash point cannot be recovered from
+     */
+    public static void assertRecoverable(
+            TestWorkflowEnvironment env, Class<?> workflowClass, @Nullable Object input) {
+        assertRecoverable(env, workflowClass, input, DEFAULT_TIMEOUT);
+    }
+
+    /**
+     * {@link #assertRecoverable(TestWorkflowEnvironment, Class, Object)} with an
+     * explicit per-run timeout.
+     *
+     * @param env           the environment to run in
+     * @param workflowClass the workflow under test
+     * @param input         the input, identical for every run
+     * @param timeout       how long each run — and each recovery — may take
+     * @throws AssertionError if any crash point cannot be recovered from
+     */
+    public static void assertRecoverable(
+            TestWorkflowEnvironment env, Class<?> workflowClass, @Nullable Object input, Duration timeout) {
+
+        var name = workflowClass.getSimpleName();
+        var baseline = env.startWorkflow("recoverable-%s-baseline".formatted(name), workflowClass, input);
+        WorkflowStatus baselineStatus;
+        try {
+            baselineStatus = baseline.awaitTerminal(timeout);
+        } catch (TimeoutException e) {
+            throw new AssertionError(("The uninterrupted run of %s did not finish within %s — a recovery "
+                    + "check needs workflows that finish without external input").formatted(name, timeout), e);
+        }
+        var baselineDecisions = decisions(baseline.getEvents());
+        var baselineLive = sorted(baseline.liveSteps());
+        var completions = (int) baseline.getEvents().stream()
+                .filter(e -> e.eventType() == EventType.ACTIVITY_COMPLETED)
+                .count();
+
+        for (var k = 1; k <= completions; k++) {
+            var where = "after %d completed activit%s".formatted(k, k == 1 ? "y" : "ies");
+            var crash = env.crashAfter(k);
+            var handle = env.startWorkflow("recoverable-%s-%d".formatted(name, k), workflowClass, input);
+            try {
+                crash.awaitCrash(timeout);
+            } catch (AssertionError e) {
+                throw new AssertionError(("%s never reached a crash %s although the uninterrupted run "
+                        + "completed %d — its path is not reproducible").formatted(name, where, completions), e);
+            }
+            env.recover();
+
+            var status = awaitTerminalOrStandDown(handle, timeout, name, where);
+            var standDowns = handle.standDowns();
+            if (!standDowns.isEmpty()) {
+                var standDown = standDowns.getFirst();
+                throw new AssertionError(("%s cannot recover from a crash %s: the recovered run stood down "
+                        + "with %s (%s). Production would re-adopt and stand it down on every recovery pass "
+                        + "— see docs/pitfalls.md.").formatted(name, where, standDown.reason(),
+                        standDown.detail() == null ? "no detail" : standDown.detail()));
+            }
+            var candidate = decisions(handle.getEvents());
+            var divergence = firstDivergence(baselineDecisions, candidate);
+            if (divergence != null || status != baselineStatus) {
+                throw new AssertionError(("%s recovered from a crash %s along a different path than the "
+                        + "uninterrupted run (%s, then %s).%n%s%n%nUninterrupted: %s%nRecovered:     %s")
+                        .formatted(name, where, baselineStatus, status,
+                                divergence == null ? "" : divergence, baselineDecisions, candidate));
+            }
+            if (handle.replayedSteps().isEmpty()) {
+                throw new AssertionError("%s replayed nothing after a crash %s — the recovery re-ran its history"
+                        .formatted(name, where));
+            }
+            var live = sorted(handle.liveSteps());
+            if (!live.equals(baselineLive)) {
+                throw new AssertionError(("%s executed different steps across a crash %s than the "
+                        + "uninterrupted run — a recorded step ran again, or a step was skipped.%n"
+                        + "Uninterrupted: %s%nAcross crash:  %s").formatted(name, where, baselineLive, live));
+            }
+        }
+    }
+
+    private static WorkflowStatus awaitTerminalOrStandDown(
+            TestWorkflowHandle handle, Duration timeout, String name, String where) {
+        var deadline = Instant.now().plus(timeout);
+        while (Instant.now().isBefore(deadline)) {
+            if (!handle.standDowns().isEmpty()) {
+                return handle.getStatus();
+            }
+            if (handle.getStatus().isTerminal()) {
+                try {
+                    return handle.awaitTerminal(Duration.between(Instant.now(), deadline));
+                } catch (TimeoutException e) {
+                    break;
+                }
+            }
+            try {
+                Thread.sleep(10);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Interrupted while waiting for a recovered run", e);
+            }
+        }
+        throw new AssertionError("%s did not finish within %s of recovering from a crash %s (status: %s)"
+                .formatted(name, timeout, where, handle.getStatus()));
+    }
+
+    private static List<String> sorted(List<String> steps) {
+        var copy = new ArrayList<>(steps);
+        Collections.sort(copy);
+        return copy;
     }
 
     /**
