@@ -338,13 +338,14 @@ class LoanApplicationWorkflowV2Test {
      * reason the same-signal-name rule is not merely about the parking key: when
      * the signal has <b>already arrived</b>, no branch parks at all, so
      * {@link ParkingLot}'s one-waiter-per-key guard never fires. Every branch
-     * instead takes {@code getUnconsumedSignals(...).getFirst()} — the
-     * <em>same row</em> — and {@code SignalManager.consumeSignal} deliberately
-     * <em>proceeds</em> when its {@code markSignalConsumed} CAS loses, because
-     * the {@code SIGNAL_RECEIVED} event it already appended is the durable
-     * memoized truth for that sequence. Both branches therefore return the same
-     * verification result, and a workflow that believed it had collected two
-     * distinct verifications has collected one twice.
+     * reads the <em>same row</em> first. Before V9 {@code consumeSignal}
+     * appended its memo and then proceeded even when its consumed-flag CAS
+     * lost, so both branches returned that one row's payload — one
+     * verification collected twice. Now the memo and the flip are one atomic
+     * {@code appendEventAndConsumeSignal}: exactly one branch consumes the
+     * row, and the other finds nothing left, parks, and (no second signal ever
+     * comes) times out. Either way one branch per verification type does not
+     * work — this pins that one row is consumed exactly once.
      *
      * <p><b>Why the store is proxied.</b> Left to chance this is a race: if
      * branch B happens to query after branch A's CAS, it finds nothing pending
@@ -356,8 +357,8 @@ class LoanApplicationWorkflowV2Test {
      * happen relative to each other.
      */
     @Test
-    @DisplayName("with the signal already pending, both same-name branches consume the SAME row")
-    void concurrentBranchesOnOneSignalNameConsumeTheSameSignalRow() {
+    @DisplayName("with the signal already pending, one same-name branch consumes the row; the other times out")
+    void concurrentBranchesOnOneSignalNameConsumeOneRowOnce() {
         // Released once both branches have read the pending-signal list, so
         // neither can CAS before the other has seen the row.
         var bothRead = new CountDownLatch(2);
@@ -387,15 +388,16 @@ class LoanApplicationWorkflowV2Test {
         System.out.println("SIGNAL_RECEIVED events: " + sequences(signalEvents));
 
         assertAll(
-                () -> assertEquals(2, signalEvents.size(),
-                        "one delivered signal, but each branch appends its own SIGNAL_RECEIVED "
-                                + "at its own branch sequence — the row is consumed twice"),
+                () -> assertEquals(1, signalEvents.size(),
+                        "one delivered signal is memoized exactly once — the losing branch writes "
+                                + "nothing for it"),
                 () -> assertTrue(outcomes.contains("received:only-one")
                                 && outcomes.lastIndexOf("received:only-one")
-                                   != outcomes.indexOf("received:only-one"),
-                        "both branches must return the SAME payload — one signal row satisfying "
-                                + "two concurrent awaits is exactly why one branch per "
-                                + "verification type cannot work. Actual outcomes: " + outcomes));
+                                   == outcomes.indexOf("received:only-one"),
+                        "exactly one branch receives the payload. Actual outcomes: " + outcomes),
+                () -> assertTrue(outcomes.contains("SignalTimeoutException"),
+                        "the other branch found nothing left, parked and timed out. Actual outcomes: "
+                                + outcomes));
     }
 
     /**
@@ -429,7 +431,7 @@ class LoanApplicationWorkflowV2Test {
 
     /**
      * Fixture for {@link #concurrentBranchesOnOneSignalNameAreUnsupported()} and
-     * {@link #concurrentBranchesOnOneSignalNameConsumeTheSameSignalRow()}:
+     * {@link #concurrentBranchesOnOneSignalNameConsumeOneRowOnce()}:
      * two branches awaiting one signal name. Each branch reports its own
      * outcome instead of throwing, because {@code parallel()} rethrows only the
      * <em>first</em> branch error and which branch loses the park race varies.

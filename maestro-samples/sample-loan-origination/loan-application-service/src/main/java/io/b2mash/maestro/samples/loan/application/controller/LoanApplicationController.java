@@ -14,11 +14,13 @@ import io.b2mash.maestro.samples.loan.application.domain.Withdrawal;
 import io.b2mash.maestro.samples.loan.application.workflow.LoanApplicationWorkflow;
 import io.b2mash.maestro.spring.client.MaestroClient;
 import io.b2mash.maestro.spring.client.WorkflowOptions;
+import org.jspecify.annotations.Nullable;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -65,29 +67,54 @@ public class LoanApplicationController {
         return ResponseEntity.accepted().body(new CreateApplicationResponse(applicationId));
     }
 
+    /*
+     * The signal endpoints accept an optional Idempotency-Key header. A client
+     * that retries a request (a timeout whose first attempt actually landed)
+     * sends the same key, and the retry is suppressed instead of becoming a
+     * second signal — which matters here because document.uploaded is
+     * collected repeatedly (collectSignals), so a twin would count as a
+     * second document. Without the header every request is a new signal.
+     */
+
     @PostMapping("/{applicationId}/documents")
     public ResponseEntity<Void> uploadDocument(@PathVariable String applicationId,
-                                               @RequestBody UploadDocumentRequest request) {
+                                               @RequestBody UploadDocumentRequest request,
+                                               @RequestHeader(name = IDEMPOTENCY_KEY, required = false)
+                                               @Nullable String idempotencyKey) {
         maestro.getWorkflow(workflowId(applicationId))
                 .signal("document.uploaded",
-                        new DocumentUploaded(applicationId, request.docType(), request.uploadedBy()));
+                        new DocumentUploaded(applicationId, request.docType(), request.uploadedBy()),
+                        blankToNull(idempotencyKey));
         return ResponseEntity.accepted().build();
     }
 
     @PostMapping("/{applicationId}/sign")
     public ResponseEntity<Void> sign(@PathVariable String applicationId,
-                                     @RequestBody SignRequest request) {
+                                     @RequestBody SignRequest request,
+                                     @RequestHeader(name = IDEMPOTENCY_KEY, required = false)
+                                     @Nullable String idempotencyKey) {
         maestro.getWorkflow(workflowId(applicationId))
-                .signal("package.signed", new Signature(applicationId, request.signerId()));
+                .signal("package.signed", new Signature(applicationId, request.signerId()),
+                        blankToNull(idempotencyKey));
         return ResponseEntity.accepted().build();
     }
 
     @PostMapping("/{applicationId}/withdraw")
     public ResponseEntity<Void> withdraw(@PathVariable String applicationId,
-                                         @RequestBody WithdrawRequest request) {
+                                         @RequestBody WithdrawRequest request,
+                                         @RequestHeader(name = IDEMPOTENCY_KEY, required = false)
+                                         @Nullable String idempotencyKey) {
         maestro.getWorkflow(workflowId(applicationId))
-                .signal("application.withdrawn", new Withdrawal(applicationId, request.reason()));
+                .signal("application.withdrawn", new Withdrawal(applicationId, request.reason()),
+                        blankToNull(idempotencyKey));
         return ResponseEntity.accepted().build();
+    }
+
+    /** Request header carrying the client's identity for one logical signal. */
+    static final String IDEMPOTENCY_KEY = "Idempotency-Key";
+
+    private static @Nullable String blankToNull(@Nullable String value) {
+        return value == null || value.isBlank() ? null : value;
     }
 
     /** Reads instance status + output straight from the workflow store. */

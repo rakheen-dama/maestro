@@ -51,14 +51,17 @@ import java.util.concurrent.Callable;
  *       {@code workflowId + ":signal:" + signalName} and throws
  *       {@code IllegalStateException("Parking key … already occupied")} on the
  *       second park, because one key holds one waiter.</li>
- *   <li><b>Signal already pending:</b> every branch takes
- *       {@code getUnconsumedSignals(…).getFirst()} — the <em>same row</em> —
- *       and {@code SignalManager.consumeSignal} deliberately proceeds when its
- *       CAS loses, so all three branches return the same verification result.</li>
+ *   <li><b>Signal already pending:</b> every branch reads the same first row,
+ *       but the consume is atomic (memo and flip in one transaction), so one
+ *       branch takes it and the others find nothing left and fall into the
+ *       park path — where the parking-key rule above applies, or they wait
+ *       for signals that the one-result-per-type producer will never send
+ *       again. (Before the atomic consume every branch returned the same
+ *       row's payload.)</li>
  * </ul>
  * Both are pinned by {@code LoanApplicationWorkflowV2Test}: the first by
  * {@code concurrentBranchesOnOneSignalNameAreUnsupported}, the second by
- * {@code concurrentBranchesOnOneSignalNameConsumeTheSameSignalRow}, which
+ * {@code concurrentBranchesOnOneSignalNameConsumeOneRowOnce}, which
  * proxies the store to hold both branches at their pending-signal read until
  * each has the row — left to chance the two modes are a race, and the same
  * fixture can land on either. Concurrent branches

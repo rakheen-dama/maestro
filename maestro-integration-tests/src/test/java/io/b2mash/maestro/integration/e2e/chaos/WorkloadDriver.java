@@ -417,7 +417,8 @@ public final class WorkloadDriver {
                     if (signalCountWithPayload(Service.LOAN_APPLICATION, workflowId,
                             "document.uploaded", "\"" + docType + "\"") == 0) {
                         post(Service.LOAN_APPLICATION,
-                                "/applications/" + applicationId + "/documents", body);
+                                "/applications/" + applicationId + "/documents", body,
+                                workflowId + ":doc:" + docType);
                     }
                 },
                 () -> signalCountWithPayload(Service.LOAN_APPLICATION, workflowId,
@@ -488,7 +489,8 @@ public final class WorkloadDriver {
                                 "package.signed", "\"" + signer + "\"") == 0) {
                             post(Service.LOAN_APPLICATION,
                                     "/applications/" + applicationId + "/sign",
-                                    "{\"signerId\":\"" + signer + "\"}");
+                                    "{\"signerId\":\"" + signer + "\"}",
+                                    workflowId + ":sign:" + signer);
                         }
                     },
                     () -> signalCountWithPayload(Service.LOAN_APPLICATION, workflowId,
@@ -506,7 +508,8 @@ public final class WorkloadDriver {
                     if (signalCount(Service.LOAN_APPLICATION, workflowId, "application.withdrawn") == 0) {
                         post(Service.LOAN_APPLICATION,
                                 "/applications/" + applicationId + "/withdraw",
-                                "{\"reason\":\"chaos-saga-withdrawal\"}");
+                                "{\"reason\":\"chaos-saga-withdrawal\"}",
+                                workflowId + ":withdraw");
                     }
                 },
                 () -> signalCount(Service.LOAN_APPLICATION, workflowId, "application.withdrawn") >= 1,
@@ -700,6 +703,18 @@ public final class WorkloadDriver {
      * at its source.
      */
     private void post(Service svc, String path, String body) {
+        post(svc, path, body, null);
+    }
+
+    /**
+     * {@link #post(Service, String, String)} carrying an {@code Idempotency-Key}
+     * header — one key per <em>logical</em> event, reused by every retry and
+     * re-post of it, so a request that landed although its response was lost
+     * (a paused node's socket backlog replaying later, a timeout) is suppressed
+     * by the service instead of becoming a twin signal row. This is what lets
+     * I4 treat any twin on the loan REST path as a hard violation.
+     */
+    private void post(Service svc, String path, String body, String idempotencyKey) {
         long end = System.nanoTime() + Duration.ofSeconds(30).toNanos();
         int attempt = 0;
         while (System.nanoTime() < end) {
@@ -713,10 +728,14 @@ public final class WorkloadDriver {
                     continue;
                 }
                 try {
-                    HttpResponse<String> r = http.send(HttpRequest.newBuilder(URI.create(base + path))
-                                    .timeout(Duration.ofSeconds(3))
-                                    .header("Content-Type", "application/json")
-                                    .POST(HttpRequest.BodyPublishers.ofString(body)).build(),
+                    var request = HttpRequest.newBuilder(URI.create(base + path))
+                            .timeout(Duration.ofSeconds(3))
+                            .header("Content-Type", "application/json");
+                    if (idempotencyKey != null) {
+                        request.header("Idempotency-Key", idempotencyKey);
+                    }
+                    HttpResponse<String> r = http.send(
+                            request.POST(HttpRequest.BodyPublishers.ofString(body)).build(),
                             HttpResponse.BodyHandlers.ofString());
                     if (r.statusCode() < 300) {
                         return;

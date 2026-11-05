@@ -390,10 +390,16 @@ public final class InvariantChecker {
      *       for the same workflow and signal name: a genuinely missed/lost
      *       signal. <b>Hard violation.</b></li>
      *   <li>{@code consumedTwin=true} — a byte-identical consumed twin exists:
-     *       a Kafka at-least-once redelivery of a message the workflow
-     *       demonstrably received, persisted per "never discard a signal" and
-     *       correctly never consumed by the completed workflow. Reported as a
-     *       mandatory finding, never a failure.</li>
+     *       a redelivery of a signal the workflow demonstrably received.
+     *       <b>Hard violation</b> since signal idempotency (V9): every signal
+     *       on the loan path now carries an identity — Kafka-delivered ones a
+     *       {@code maestro-message-id} header from the publishing activity
+     *       (or their record coordinate), REST ones the
+     *       {@code Idempotency-Key} the {@link WorkloadDriver} sends per
+     *       logical event and reuses on every retry — so a redelivery is
+     *       suppressed at ingestion and a twin row means the suppression
+     *       failed. Before V9 this was a mandatory finding (Ruling 3); it is
+     *       still listed separately in the run summary.</li>
      * </ul>
      *
      * <p>Caveat (recorded in the design changelog): byte-identity implies
@@ -431,10 +437,17 @@ public final class InvariantChecker {
             throw new QueryFailedException(Service.LOAN_APPLICATION,
                     "I4 unconsumed-signal split: " + sql, e);
         }
-        var violations = missed.isEmpty() ? List.<Violation>of()
-                : List.of(new Violation("I4", "unconsumed application signal with NO consumed "
-                + "twin for COMPLETED workflow (loan DB) — genuinely missed signal", missed));
-        return new I4Result(violations, redelivered);
+        var violations = new ArrayList<Violation>();
+        if (!missed.isEmpty()) {
+            violations.add(new Violation("I4", "unconsumed application signal with NO consumed "
+                    + "twin for COMPLETED workflow (loan DB) — genuinely missed signal", missed));
+        }
+        if (!redelivered.isEmpty()) {
+            violations.add(new Violation("I4", "unconsumed application signal WITH a consumed "
+                    + "twin for COMPLETED workflow (loan DB) — a redelivery the message-id "
+                    + "deduplication should have suppressed", redelivered));
+        }
+        return new I4Result(List.copyOf(violations), redelivered);
     }
 
     private record I4Result(List<Violation> violations, List<String> redeliveredUnconsumedSignals) {
