@@ -3,6 +3,7 @@ package io.b2mash.maestro.spring.client;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.exception.WorkflowNotFoundException;
+import io.b2mash.maestro.core.model.WorkflowFailureDetail;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.spi.WorkflowStore;
@@ -28,13 +29,15 @@ import java.util.Optional;
  * // Durable status and result (any node)
  * WorkflowStatus status = maestro.getWorkflow("order-abc").status();
  * Optional<OrderResult> result = maestro.getWorkflow("order-abc", OrderResult.class).result();
+ * Optional<WorkflowFailureDetail> why = maestro.getWorkflow("order-abc").failure();
  *
  * // Stop it
  * maestro.getWorkflow("order-abc").terminate("customer cancelled");
  * }</pre>
  *
  * <h2>Store reads versus queries</h2>
- * <p>{@link #status()}, {@link #result()} and {@link #terminate(String)} read
+ * <p>{@link #status()}, {@link #result()}, {@link #failure()} and
+ * {@link #terminate(String)} read
  * and write the {@link WorkflowStore}, so they work from <b>any</b> node of the
  * service. {@link #query(String, Class)} invokes a {@code @QueryMethod} on the
  * live workflow object, which exists only on the node currently running the
@@ -187,6 +190,33 @@ public final class WorkflowHandle<R> {
             return Optional.empty();
         }
         return Optional.ofNullable(serializer.deserialize(instance.output(), resultType));
+    }
+
+    /**
+     * Returns why the workflow failed, if it has.
+     *
+     * <p>A workflow fails when its {@code @WorkflowMethod} ends with an
+     * unhandled exception — after its saga compensations, if any, have run.
+     * The engine records the exception's class name and message as the
+     * instance output; this reads them back. Returning a "failed" value from
+     * the workflow method is not a failure: that workflow is
+     * {@code COMPLETED}, compensates nothing, and has no failure here.
+     *
+     * <p>Reads the store, so it works from any node — unlike
+     * {@link #query(String, Class)}, which needs the node running the workflow.
+     *
+     * @return the recorded failure when the workflow is
+     *         {@link WorkflowStatus#FAILED FAILED} with a recorded detail;
+     *         empty while it is still active, when it {@code COMPLETED} or was
+     *         {@code TERMINATED}
+     * @throws WorkflowNotFoundException if no workflow with this ID exists
+     */
+    public Optional<WorkflowFailureDetail> failure() {
+        var instance = instance();
+        if (instance.status() != WorkflowStatus.FAILED || instance.output() == null) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(serializer.deserialize(instance.output(), WorkflowFailureDetail.class));
     }
 
     /**

@@ -13,6 +13,7 @@ Read these before making architectural decisions:
 - `docs/maestro-architecture.md` — System architecture, diagrams, failure modes
 - `docs/observability.md` — Meter catalog, span topology, Kafka trace-propagation contract
 - `docs/operations.md` — Multi-instance behaviour; versioning + mixed-version deploy playbook
+- `docs/pitfalls.md` — The ten workflow-author rules (saga throws, `causedBy`, idempotency, determinism, owning-node queries, sequence budget, versioning, per-run fields, signal ids, control-flow `Error`s)
 
 ## Core Design: Hybrid Memoization
 
@@ -66,7 +67,7 @@ maestro/
 ├── maestro-messaging-kafka         ← Spring Kafka 4.x WorkflowMessaging SPI (the only transport).
 ├── maestro-admin-client            ← Lightweight lifecycle event publisher.
 ├── maestro-admin                   ← Standalone dashboard (Thymeleaf + HTMX, own Postgres).
-├── maestro-test                    ← In-memory SPIs, controllable clock, TestWorkflowEnvironment.
+├── maestro-test                    ← In-memory SPIs, controllable clock, TestWorkflowEnvironment (crash/recover a node to exercise replay).
 ├── maestro-samples/
 │   ├── sample-order-service        ← Order fulfilment workflow (e-commerce demo)
 │   ├── sample-payment-gateway      ← Payment processing with durable retries & saga
@@ -251,7 +252,7 @@ any other value fails startup. Removed (setting either fails startup):
 
 - **Java 25 features:** Records, sealed interfaces, virtual threads, `var` for obvious types.
 - **JSpecify null safety:** `@Nullable` from `org.jspecify.annotations`. All public APIs annotated.
-- **Jackson 3:** Use `tools.jackson` packages everywhere. Never `com.fasterxml.jackson`.
+- **Jackson 3:** Use `tools.jackson` packages everywhere. Never `com.fasterxml.jackson` — except `com.fasterxml.jackson.annotation`, which Jackson 3 keeps (see "What NOT To Do").
 - **Immutability:** Records for DTOs. Final fields + builders for mutable domain objects.
 - **Exceptions:** All extend `MaestroException`. Specific subtypes for each failure mode.
   **Three deliberate exceptions — the engine's control-flow signals:**
@@ -306,5 +307,5 @@ any other value fails startup. Removed (setting either fails startup):
 - **Never break `(workflow_instance_id, sequence_number)` uniqueness.**
 - **Never auto-create Kafka topics** — pre-created, declared in config, and enforced at startup: `KafkaTopicVerifier` fails the context on a confirmed-missing topic (`maestro.messaging.topics.verify-on-startup=fail`, the default), the engine consumer defaults `allow.auto.create.topics=false`, and under `fail` — once the probe has confirmed every required topic present (`KafkaTopicVerifier.fatalOnMissing`; never after an inconclusive probe, which must not turn into a restart loop) — every Maestro container is `missingTopicsFatal`. Every suite that touches a broker pre-creates its topics — `.DLT` companions included — against a broker with `KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`.
 - **Never publish a lifecycle event on the workflow thread** — go through `LifecycleEventSink` (`WorkflowExecutor.lifecycleEventSink()`), never `WorkflowMessaging.publishLifecycleEvent` directly; a Kafka producer blocks up to `max.block.ms` on a missing topic.
-- **Never use `com.fasterxml.jackson`** — Jackson 3 uses `tools.jackson`.
+- **Never use `com.fasterxml.jackson`** — Jackson 3 uses `tools.jackson`. The one exception is the annotations package: Jackson 3 keeps `com.fasterxml.jackson.annotation` (`@JsonTypeInfo`, `@JsonSubTypes`, `@JsonProperty`, …), so those imports are correct and required.
 - **Never use a Jakarta EE `javax.*` namespace** (`javax.servlet`, `javax.persistence`, `javax.annotation`, etc.) — Spring Boot 4 is Jakarta EE 11, so these are `jakarta.*` now. This does **not** cover Java SE's own `javax.*` packages, which never moved and have no `jakarta.*` equivalent — `javax.sql.DataSource`, `javax.crypto.*`, and similar are correct and required as-is.

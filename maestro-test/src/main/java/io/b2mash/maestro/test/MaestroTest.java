@@ -22,14 +22,27 @@ import java.lang.annotation.Target;
  * class OrderWorkflowTest {
  *
  *     @Test
- *     void testHappyPath(TestWorkflowEnvironment env) {
+ *     void testHappyPath(TestWorkflowEnvironment env) throws Exception {
  *         env.registerActivities(OrderActivities.class, new MockOrderActivities());
  *         var handle = env.startWorkflow(OrderWorkflow.class, new OrderInput("item-1"));
  *         var result = handle.getResult(OrderResult.class, Duration.ofSeconds(5));
- *         assertEquals("COMPLETED", result.status());
+ *         assertEquals("item-1", result.orderId());
+ *     }
+ *
+ *     @Test
+ *     void survivesACrash(TestWorkflowEnvironment env) throws Exception {
+ *         env.registerActivities(OrderActivities.class, new MockOrderActivities());
+ *         var crash = env.crashAfter(1);
+ *         var handle = env.startWorkflow(OrderWorkflow.class, new OrderInput("item-1"));
+ *         crash.recover();
+ *         handle.getResult(OrderResult.class, Duration.ofSeconds(5));
+ *         assertEquals(1, handle.replayedSteps().size());
  *     }
  * }
  * }</pre>
+ *
+ * <p>The extension shuts the environment down after each test, including every
+ * node retired by {@link TestWorkflowEnvironment#recover()}.
  *
  * @see TestWorkflowEnvironment
  * @see MaestroTestExtension

@@ -274,17 +274,17 @@ The `maestro-test` module provides `TestWorkflowEnvironment` with built-in suppo
 
 ```java
 @Test
-void shouldHandleSelfRecovery_signalBeforeWorkflow() {
+void shouldHandleSelfRecovery_signalBeforeWorkflow() throws Exception {
     // Signal arrives before workflow starts
     testEnv.preDeliverSignal("order-abc", "payment.result",
-        new PaymentResult(true, "txn-123"));
+        PaymentResult.success("txn-123"));
 
     // Workflow starts — picks up pre-delivered signal immediately
     var handle = testEnv.startWorkflow("order-abc",
         OrderFulfilmentWorkflow.class, orderInput);
 
     var result = handle.getResult(OrderResult.class, Duration.ofSeconds(5));
-    assertThat(result.status()).isEqualTo(Status.SUCCESS);
+    assertThat(result.orderId()).isEqualTo(orderInput.orderId());
 }
 ```
 
@@ -294,17 +294,37 @@ The `preDeliverSignal()` method stores a signal with a `null` `workflowInstanceI
 
 ```java
 @Test
-void shouldHandleSelfRecovery_signalBeforeAwait() {
+void shouldHandleSelfRecovery_signalBeforeAwait() throws Exception {
     var handle = testEnv.startWorkflow("order-abc",
         OrderFulfilmentWorkflow.class, orderInput);
 
     // Signal arrives while workflow is still executing earlier activities
-    handle.signal("payment.result", new PaymentResult(true, "txn-456"));
+    handle.signal("payment.result", PaymentResult.success("txn-456"));
 
     var result = handle.getResult(OrderResult.class, Duration.ofSeconds(5));
-    assertThat(result.status()).isEqualTo(Status.SUCCESS);
+    assertThat(result.orderId()).isEqualTo(orderInput.orderId());
 }
 ```
+
+### Signal while the service is down
+
+```java
+@Test
+void shouldHandleSelfRecovery_signalWhileDown() throws Exception {
+    var handle = testEnv.startWorkflow("order-abc",
+        OrderFulfilmentWorkflow.class, orderInput);
+    handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, Duration.ofSeconds(5));
+
+    var crash = testEnv.crashNow();                 // the node dies with the workflow parked
+    handle.signal("payment.result", PaymentResult.success("txn-789"));   // persisted while down
+    crash.recover();                                // a fresh node replays and consumes it
+
+    var result = handle.getResult(OrderResult.class, Duration.ofSeconds(5));
+    assertThat(result.orderId()).isEqualTo(orderInput.orderId());
+}
+```
+
+See [Crash-Recovery Testing](testing.md#crash-recovery-testing) for the full crash API.
 
 For a comprehensive guide to testing workflows, including time control, activity mocking, and parallel branch testing, see the [Testing Guide](testing.md).
 

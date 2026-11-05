@@ -17,9 +17,25 @@ import io.b2mash.maestro.samples.order.domain.OrderResult;
 import io.b2mash.maestro.samples.order.domain.OrderStatus;
 import io.b2mash.maestro.samples.order.domain.PaymentRequest;
 import io.b2mash.maestro.samples.order.domain.PaymentResult;
+import io.b2mash.maestro.samples.order.exception.OrderFailedException;
 
 import java.time.Duration;
 
+/**
+ * Fulfils an order: reserve inventory, request payment from the payment
+ * gateway, wait for its answer, ship, notify.
+ *
+ * <h2>The saga</h2>
+ * <p>{@code inventory.reserve} is {@code @Compensate("releaseReservation")}, and
+ * the workflow method is a {@code @Saga}. When the payment is declined or never
+ * arrives, the workflow notifies the customer and then <em>throws</em>
+ * {@link OrderFailedException}. The throw is what triggers compensation: Maestro
+ * releases the reservation (with the reservation the {@code reserve} step
+ * returned) and records the order {@code FAILED}, with the exception's class and
+ * message readable through {@code WorkflowHandle.failure()}. Returning a
+ * "failed" result instead would complete the workflow — {@code COMPLETED}, no
+ * compensation, the stock held forever.
+ */
 @DurableWorkflow(name = "order-fulfilment", taskQueue = "orders")
 public class OrderFulfilmentWorkflow {
 
@@ -64,15 +80,14 @@ public class OrderFulfilmentWorkflow {
         } catch (SignalTimeoutException e) {
             currentStep = "PAYMENT_TIMED_OUT";
             notifications.notifyCustomer(input.customerId(), "Payment timed out");
-            return OrderResult.failed("Payment timed out");
-            // @Saga compensation: inventory.releaseReservation() runs automatically
+            throw new OrderFailedException("Payment timed out");
         }
 
         if (!paymentResult.success()) {
             currentStep = "PAYMENT_FAILED";
-            notifications.notifyCustomer(input.customerId(),
-                "Payment failed: " + paymentResult.reason());
-            return OrderResult.failed(paymentResult.reason());
+            var reason = "Payment failed: " + paymentResult.reason();
+            notifications.notifyCustomer(input.customerId(), reason);
+            throw new OrderFailedException(reason);
         }
 
         // Step 4: Arrange shipment

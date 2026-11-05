@@ -252,7 +252,7 @@ try {
 } catch (SignalTimeoutException e) {
     // No signal received within 1 hour
     notifications.notifyCustomer(customerId, "Payment timed out");
-    return OrderResult.failed("Payment timed out");
+    throw new OrderFailedException("Payment timed out");   // throw, so a @Saga compensates
 }
 ```
 
@@ -388,6 +388,17 @@ int progress = maestro.getWorkflow("order-abc")
 ## Saga Compensation
 
 Sagas provide automatic rollback when a workflow fails partway through. Annotate the `@WorkflowMethod` with `@Saga` and declare compensation methods on your activity interfaces with `@Compensate`.
+
+**Compensation runs when the workflow method throws, and only then.** The engine compensates from the failure path: an exception escapes the `@WorkflowMethod`, the registered compensations unwind, and the instance ends `FAILED`, with the exception's class and message readable through `WorkflowHandle.failure()`. A workflow that catches a failure and *returns* a value describing it has completed. It ends `COMPLETED`, no compensation runs, and the admin **Retry** action does not apply (it retries `FAILED` workflows). To undo work on a business failure, such as a declined payment or a timed-out approval, do what you must first (notify the customer), then throw:
+
+```java
+} catch (SignalTimeoutException e) {
+    notifications.notifyCustomer(input.customerId(), "Payment timed out");
+    throw new OrderFailedException("Payment timed out");   // the saga releases the reservation
+}
+```
+
+Returning a business outcome is right only when there is nothing to undo, like the payment gateway's declined charge. See [Pitfalls §1](pitfalls.md#1-compensation-runs-when-the-workflow-throws-not-when-it-returns-a-failure).
 
 ### Declarative compensation
 
@@ -646,17 +657,25 @@ DetailedStatus detail = maestro.getWorkflow("order-abc")
     .query("getDetail", "verbose", DetailedStatus.class);
 ```
 
-### Status, result and termination
+### Status, result, failure and termination
 
 ```java
 WorkflowStatus status = maestro.getWorkflow("order-abc").status();
 Optional<OrderResult> result = maestro.getWorkflow("order-abc", OrderResult.class).result();
+Optional<WorkflowFailureDetail> failure = maestro.getWorkflow("order-abc").failure();
 maestro.getWorkflow("order-abc").terminate("reason");
 ```
 
 These read and write the store, so they work from any node; only `query` requires the owning node.
 
-`status()` throws `WorkflowNotFoundException` for an unknown workflow ID. `result()` is present only once the workflow is `COMPLETED` with a non-null output, deserialised to the type passed to `getWorkflow(id, type)`; it is empty while the workflow is active, and when it failed or was terminated. `terminate(reason)` marks the workflow `TERMINATED` and stops it without running compensations, returning a `TerminateOutcome` (`TERMINATED`, `ALREADY_TERMINAL` or `NOT_FOUND`).
+| Method | Returns |
+|---|---|
+| `status()` | the durable `WorkflowStatus` |
+| `result()` | the output, once `COMPLETED` with a non-null output; otherwise empty |
+| `failure()` | `WorkflowFailureDetail(exceptionType, message)` once `FAILED`; otherwise empty |
+| `terminate(reason)` | a `TerminateOutcome` |
+
+`status()`, `result()` and `failure()` throw `WorkflowNotFoundException` for an unknown workflow ID. `result()` is present only once the workflow is `COMPLETED` with a non-null output, deserialised to the type passed to `getWorkflow(id, type)`; it is empty while the workflow is active, and when it failed or was terminated. `failure()` is present only once the workflow is `FAILED`: the fully-qualified class name and message of the exception the workflow method threw. `terminate(reason)` marks the workflow `TERMINATED` and stops it without running compensations, returning a `TerminateOutcome` (`TERMINATED`, `ALREADY_TERMINAL` or `NOT_FOUND`).
 
 ---
 
@@ -721,5 +740,6 @@ stateDiagram-v2
 - [Configuration](configuration.md) -- All `maestro.*` properties
 - [Self-Recovery](self-recovery.md) -- How signals survive crashes
 - [Cross-Service Patterns](cross-service.md) -- Multi-service coordination
-- [Testing](testing.md) -- Using `maestro-test`
+- [Testing](testing.md) -- Using `maestro-test`, including crash-recovery tests
+- [Pitfalls](pitfalls.md) -- Ten rules whose violations pass every straight-through test and fail in production
 - [Admin Dashboard](admin.md) -- Monitoring and management
