@@ -1084,7 +1084,7 @@ the chaos harness samples the backends directly rather than instrumenting
 
 | Metric | Source |
 |---|---|
-| Recovery-query rate | `pg_stat_statements` delta for the `getRecoverableInstances` statement (queryid pinned at runtime per run — fails loudly if the store's SQL changes rather than silently reporting zero) |
+| Recovery-query rate | `pg_stat_statements` delta for the `getRecoverableInstances` statements, pinned by normalised text (the sampler WARNs at the end of a run if they never matched; `MetricsSamplerStatementMatchTest` pins the patterns against the real statements). Since the paged scan (migration V10) this sums the paged, service-scoped scan — one call per page of ≤ 200 of a service's active instances — and the legacy unbounded scan an older node still sends |
 | Lock probes / renewals (Valkey) | `Valkey INFO commandstats` deltas for the exact commands `maestro-lock-valkey` issues |
 | Lock probes / renewals (Postgres lock) | `pg_stat_statements` deltas for the `maestro_lock`-table statements |
 | Wake-subscription churn | Valkey `subscribe`/`unsubscribe` command deltas + the `pubsub_channels` gauge |
@@ -1100,6 +1100,15 @@ A sampler thread snapshots all of the above every 15s into `metrics.csv`
 (`windowStartUtc,windowSecs,liveNodes,running,waitingSignal,waitingTimer,
 compensating,recoveryCalls,recoveryRatePerSec,lockProbeCalls,lockRenewCalls,
 subscribeCalls,unsubscribeCalls,pubsubChannels,chaosActive`).
+
+*Note 2026-11-11:* the current header is `windowStartUtc,windowSecs,liveNodes,
+running,waitingSignal,waitingTimer,compensating,recoveryCalls,recoveryRatePerSec,
+lockProbeCalls,lockRenewCalls,lockHeldKeysCalls,leaderElectionCalls,listenCalls,
+notifyCalls,chaosActive`. `lockHeldKeysCalls` counts the recovery pass's one
+advisory `heldKeys` read per page (`SELECT lock_key ... WHERE lock_key = ANY(...)`);
+an instance it reports held elsewhere costs no acquire probe, so from that
+change on, a fall in `lockProbeCalls` comes with a matching `lockHeldKeysCalls`
+count. Runs recorded before it are not comparable column-for-column.
 `pg_stat_statements` cannot attribute calls per node (it aggregates per
 queryid across all nodes sharing a DB user), so **per-node rates are only
 valid in calm windows** (`chaosActive=false`, all 6 nodes healthy) —
