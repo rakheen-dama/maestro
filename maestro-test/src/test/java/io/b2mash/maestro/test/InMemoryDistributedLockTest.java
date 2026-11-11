@@ -6,7 +6,10 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
+import java.util.Set;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -68,5 +71,20 @@ class InMemoryDistributedLockTest {
 
         assertFalse(lock.renew(handle, Duration.ofSeconds(30)),
                 "renew of a released lock must report the lock as lost");
+    }
+
+    @Test
+    void renewAllReportsOnlyLostHandlesThroughTheSpiDefault() throws InterruptedException {
+        var held = lock.tryAcquire("held", Duration.ofSeconds(30)).orElseThrow();
+        var expired = lock.tryAcquire("expired", Duration.ofMillis(20)).orElseThrow();
+        lock.tryAcquire("foreign", Duration.ofSeconds(30));
+        var foreign = new LockHandle("foreign", "foreign-token", Instant.now().plusSeconds(30));
+        Thread.sleep(50);
+
+        var lost = lock.renewAll(List.of(held, expired, foreign), Duration.ofSeconds(30));
+
+        assertEquals(Set.of(expired, foreign), lost,
+                "only the expired and the foreign-token handles are lost; the held one is renewed");
+        assertTrue(lock.tryAcquire("held", Duration.ofSeconds(30)).isEmpty(), "the held lock must stay held");
     }
 }
