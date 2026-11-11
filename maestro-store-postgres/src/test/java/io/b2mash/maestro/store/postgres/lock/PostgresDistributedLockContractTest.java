@@ -349,6 +349,36 @@ class PostgresDistributedLockContractTest extends PostgresLockTestSupport {
     }
 
     @Nested
+    @DisplayName("heldKeys")
+    class HeldKeysTests {
+
+        @Test
+        @DisplayName("reports exactly the live locks among the keys, in one SELECT")
+        void heldKeysReturnsLiveLocksOnly() throws SQLException {
+            var counting = new StatementCountingDataSource(dataSource);
+            var countedLock = new PostgresDistributedLock(counting);
+            assertTrue(lock.tryAcquire("key-live-1", TTL).isPresent());
+            assertTrue(lock.tryAcquire("key-live-2", TTL).isPresent());
+            assertTrue(lock.tryAcquire("key-expired", TTL).isPresent());
+            expireLock("key-expired");
+            counting.reset();
+
+            var held = countedLock.heldKeys(List.of("key-live-1", "key-live-2", "key-expired", "key-never"));
+
+            assertEquals(Set.of("key-live-1", "key-live-2"), held);
+            assertEquals(1, counting.executedStartingWith("SELECT"), "one read for the whole set");
+        }
+
+        @Test
+        @DisplayName("no keys is no work and nothing held")
+        void heldKeysOfNothing() {
+            var counting = new StatementCountingDataSource(dataSource);
+            assertEquals(Set.of(), new PostgresDistributedLock(counting).heldKeys(List.of()));
+            assertEquals(0, counting.executedStartingWith("SELECT"));
+        }
+    }
+
+    @Nested
     @DisplayName("leader election")
     class LeaderElectionTests {
 

@@ -12,6 +12,7 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.spi.RecoveryCursor;
 import io.b2mash.maestro.core.spi.RunLease;
 import io.b2mash.maestro.core.spi.PurgeResult;
 import tools.jackson.databind.JsonNode;
@@ -25,7 +26,10 @@ import java.sql.Connection;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -302,6 +306,104 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
     }
 
     // ── completeInstance (Issue 26) ───────────────────────────────────────
+
+    @Nested
+    @DisplayName("Paged, service-scoped recovery scan")
+    class RecoveryScanTests {
+
+        private WorkflowInstance instance(String workflowId, String serviceName, WorkflowStatus status,
+                                          Instant startedAt) {
+            return newInstance(workflowId, status).toBuilder()
+                    .serviceName(serviceName).startedAt(startedAt).updatedAt(startedAt).build();
+        }
+
+        private List<String> ids(List<WorkflowInstance> page) {
+            return page.stream().map(WorkflowInstance::workflowId).toList();
+        }
+
+        @Test
+        @DisplayName("returns only this service's active rows, ascending by startedAt")
+        void recoveryScanReturnsOnlyThisServicesActiveRows() {
+            var t0 = Instant.now().truncatedTo(ChronoUnit.MILLIS);
+            store.createInstance(instance("a-3", "svc-a", WorkflowStatus.RUNNING, t0.plusSeconds(3)));
+            store.createInstance(instance("a-1", "svc-a", WorkflowStatus.WAITING_SIGNAL, t0.plusSeconds(1)));
+            store.createInstance(instance("a-2", "svc-a", WorkflowStatus.RUNNING, t0.plusSeconds(2)));
+            store.createInstance(instance("a-done", "svc-a", WorkflowStatus.COMPLETED, t0));
+            store.createInstance(instance("b-1", "svc-b", WorkflowStatus.RUNNING, t0));
+            store.createInstance(instance("b-2", "svc-b", WorkflowStatus.RUNNING, t0.plusSeconds(4)));
+
+            var page = store.getRecoverableInstances("svc-a", null, 10);
+
+            assertEquals(List.of("a-1", "a-2", "a-3"), ids(page));
+        }
+
+        @Test
+        @DisplayName("pages over rows sharing one startedAt without skipping or repeating any")
+        void recoveryScanPagesWithoutSkippingOrRepeatingOnEqualStartedAt() {
+            var startedAt = Instant.now().truncatedTo(ChronoUnit.MILLIS);
+            var inserted = new HashSet<String>();
+            for (int i = 0; i < 5; i++) {
+                store.createInstance(instance("same-" + i, "svc-a", WorkflowStatus.RUNNING, startedAt));
+                inserted.add("same-" + i);
+            }
+
+            var page1 = store.getRecoverableInstances("svc-a", null, 2);
+            assertEquals(2, page1.size());
+            var page2 = store.getRecoverableInstances("svc-a", RecoveryCursor.of(page1.getLast()), 2);
+            assertEquals(2, page2.size());
+            var page3 = store.getRecoverableInstances("svc-a", RecoveryCursor.of(page2.getLast()), 2);
+            assertEquals(1, page3.size());
+            var page4 = store.getRecoverableInstances("svc-a", RecoveryCursor.of(page3.getLast()), 2);
+
+            var all = new ArrayList<String>();
+            all.addAll(ids(page1));
+            all.addAll(ids(page2));
+            all.addAll(ids(page3));
+            assertAll(
+                    () -> assertEquals(List.of(), page4),
+                    () -> assertEquals(5, all.size(), "no row repeated: " + all),
+                    () -> assertEquals(inserted, Set.copyOf(all), "no row skipped"));
+        }
+
+        /**
+         * {@code started_at} is a microsecond {@code TIMESTAMPTZ}; an
+         * {@link Instant} carries nanoseconds. The rows below are written at
+         * sub-microsecond offsets, so several collapse onto one stored
+         * microsecond and the 2-row pages cut through those ties: a cursor
+         * that did not carry exactly the stored value back (truncated to
+         * millis, say, or compared at a different precision) would repeat or
+         * skip rows here.
+         */
+        @Test
+        @DisplayName("a cursor read from nanosecond-precision startedAt rows pages without skipping or repeating")
+        void recoveryScanCursorRoundTripsSubMicrosecondStartedAt() {
+            var base = Instant.parse("2026-03-01T10:00:00.123456789Z");
+            var inserted = new HashSet<String>();
+            for (int i = 0; i < 7; i++) {
+                store.createInstance(instance("nano-" + i, "svc-a", WorkflowStatus.RUNNING,
+                        base.plusNanos(250L * i)));
+                inserted.add("nano-" + i);
+            }
+
+            var all = new ArrayList<String>();
+            var pageSizes = new ArrayList<Integer>();
+            RecoveryCursor cursor = null;
+            while (pageSizes.size() < 10) {
+                var page = store.getRecoverableInstances("svc-a", cursor, 2);
+                pageSizes.add(page.size());
+                all.addAll(ids(page));
+                if (page.size() < 2) {
+                    break;
+                }
+                cursor = RecoveryCursor.of(page.getLast());
+            }
+
+            assertAll(
+                    () -> assertEquals(List.of(2, 2, 2, 1), pageSizes),
+                    () -> assertEquals(7, all.size(), "no row repeated: " + all),
+                    () -> assertEquals(inserted, Set.copyOf(all), "no row skipped"));
+        }
+    }
 
     @Nested
     @DisplayName("completeInstance: terminal status and terminal event in one transaction (Issue 26)")
@@ -1842,7 +1944,7 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
         @Test
         @DisplayName("getUnconsumedSignals breaks a received_at tie by id")
         void orderByTiebreak() throws Exception {
-            var ids = new java.util.ArrayList<UUID>();
+            var ids = new ArrayList<UUID>();
             for (int i = 0; i < 5; i++) {
                 var s = signal("tie", null);
                 store.saveSignal(s);

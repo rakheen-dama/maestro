@@ -49,6 +49,12 @@ import java.util.UUID;
  * A node renewing thousands of parked workflows' locks thus pays one round
  * trip per chunk instead of one per lock.
  *
+ * <h2>Held keys</h2>
+ * <p>{@link #heldKeys} answers with one
+ * {@code SELECT lock_key ... WHERE lock_key = ANY(keys) AND expires_at > now()}
+ * — the keys are one array parameter, so the statement has no bind-count
+ * limit. It is advisory: a backend failure answers "unknown" (empty).
+ *
  * <h2>Thread Safety</h2>
  * <p>This class is thread-safe. Each operation obtains its own JDBC
  * connection from the {@link DataSource} connection pool.
@@ -96,6 +102,12 @@ public final class PostgresDistributedLock implements DistributedLock {
 
     /** Handles renewed per {@link #RENEW_ALL_SQL} statement. */
     static final int RENEW_ALL_CHUNK = 500;
+
+    // language=SQL
+    private static final String HELD_KEYS_SQL = """
+            SELECT lock_key FROM maestro_distributed_lock
+            WHERE lock_key = ANY(?) AND expires_at > now()
+            """;
 
     // language=SQL
     private static final String LEADER_ELECTION_SQL = """
@@ -260,6 +272,40 @@ public final class PostgresDistributedLock implements DistributedLock {
         }
         logger.debug("Renewed {} of {} lock(s) for {}ms", all.size() - lost.size(), all.size(), ttl.toMillis());
         return lost;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One {@code SELECT} for the whole collection, on the database clock
+     * ({@code expires_at > now()}) — the same clock acquire and renew judge
+     * expiry by. A {@link SQLException} is logged and answered with an empty
+     * set: the caller then simply tries every key, as it did before this
+     * method existed.
+     */
+    @Override
+    public Set<String> heldKeys(Collection<String> keys) {
+        if (keys.isEmpty()) {
+            return Set.of();
+        }
+        try (var conn = dataSource.getConnection();
+             var stmt = conn.prepareStatement(HELD_KEYS_SQL)) {
+
+            conn.setAutoCommit(true);
+            stmt.setArray(1, conn.createArrayOf("text", keys.toArray(String[]::new)));
+
+            var held = new HashSet<String>();
+            try (var rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    held.add(rs.getString(1));
+                }
+            }
+            return held;
+        } catch (SQLException e) {
+            logger.warn("Could not read which of {} lock(s) are held — treating all as unknown: {}",
+                    keys.size(), e.getMessage());
+            return Set.of();
+        }
     }
 
     @Override

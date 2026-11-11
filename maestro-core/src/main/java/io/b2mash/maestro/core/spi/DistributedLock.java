@@ -142,6 +142,32 @@ public interface DistributedLock {
     }
 
     /**
+     * Reports which of {@code keys} are currently held — by any holder,
+     * this caller included — and not yet expired. <b>Advisory.</b>
+     *
+     * <p>The engine's recovery pass asks this once per page of recoverable
+     * instances, so it can skip the instances whose lock another node plainly
+     * holds without spending one {@link #tryAcquire} statement on each. The
+     * answer may be stale the moment it is returned: a key reported held may
+     * expire, and a key not reported may be taken, before the caller acts.
+     * Callers therefore use it only to <em>skip</em> work; {@link #tryAcquire}
+     * stays the only authority on who owns a lock.
+     *
+     * <p>The default returns an empty set, meaning "unknown — try them all",
+     * which costs exactly what the caller paid before this method existed. A
+     * backend that can answer in one round trip should override it. An
+     * implementation that cannot ask its backend should return an empty set
+     * rather than throw; a caller treats a throw the same way.
+     *
+     * @param keys the lock keys to look up; may be empty
+     * @return the subset of {@code keys} currently held; empty if none is
+     *         held or the answer is unknown
+     */
+    default Set<String> heldKeys(Collection<String> keys) {
+        return Set.of();
+    }
+
+    /**
      * Attempts to become the leader for the given election key.
      *
      * <p>Uses a compare-and-set operation: if no leader exists (or the

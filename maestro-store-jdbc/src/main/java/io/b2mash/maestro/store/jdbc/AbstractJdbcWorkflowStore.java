@@ -16,6 +16,7 @@ import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.spi.RunLease;
 import io.b2mash.maestro.core.spi.PurgeResult;
+import io.b2mash.maestro.core.spi.RecoveryCursor;
 import io.b2mash.maestro.core.spi.TerminalWrites;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
@@ -315,6 +316,47 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                 + " ORDER BY started_at ASC";
 
         return queryList(sql, ps -> {}, this::mapInstance);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One keyset query: {@code service_name = ?}, the active statuses,
+     * {@code (started_at, id) > (?, ?)} (omitted for the first page),
+     * {@code ORDER BY started_at, id LIMIT ?}. Migration V10's partial index
+     * {@code idx_wf_instance_recovery} serves it; without the index the query
+     * is still correct, only slower.
+     *
+     * <p>The cursor is bound back exactly as it was read: {@code started_at}
+     * is a microsecond {@code TIMESTAMPTZ}, and a cursor built from a returned
+     * row carries that stored value, so a row tied with the cursor on
+     * {@code started_at} is ordered by {@code id} and neither skipped nor
+     * repeated. The status filter is this build's active set, so the mapper
+     * never skips a selected row — a short page really is the last one.
+     */
+    @Override
+    public List<WorkflowInstance> getRecoverableInstances(
+            String serviceName, @Nullable RecoveryCursor after, int limit) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        if (limit <= 0) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+        String sql = "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, "
+                + "input, output, service_name, event_sequence, started_at, completed_at, "
+                + "updated_at, version, lease_epoch FROM " + tableName("workflow_instance")
+                + " WHERE service_name = ? AND status IN (" + ACTIVE_STATUS_SQL + ")"
+                + (after == null ? "" : " AND (started_at, id) > (?, ?)")
+                + " ORDER BY started_at, id LIMIT ?";
+
+        return queryList(sql, ps -> {
+            int index = 1;
+            ps.setString(index++, serviceName);
+            if (after != null) {
+                ps.setTimestamp(index++, Timestamp.from(after.startedAt()));
+                ps.setObject(index++, after.id());
+            }
+            ps.setInt(index, limit);
+        }, this::mapInstance);
     }
 
     @Override

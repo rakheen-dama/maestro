@@ -14,6 +14,7 @@ import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.spi.RunLease;
 import io.b2mash.maestro.core.spi.PurgeResult;
+import io.b2mash.maestro.core.spi.RecoveryCursor;
 import io.b2mash.maestro.core.spi.TerminalWrites;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
@@ -23,6 +24,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -238,6 +240,29 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
         return instances.values().stream()
                 .filter(i -> i.status().isActive())
                 .sorted(Comparator.comparing(WorkflowInstance::startedAt))
+                .toList();
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Reads the instances map directly — one service's active instances in
+     * {@link RecoveryCursor#ORDER}, strictly after {@code after}, at most
+     * {@code limit} — rather than going through the unbounded scan.
+     */
+    @Override
+    public List<WorkflowInstance> getRecoverableInstances(
+            String serviceName, @Nullable RecoveryCursor after, int limit) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        if (limit <= 0) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+        return instances.values().stream()
+                .filter(i -> i.status().isActive())
+                .filter(i -> serviceName.equals(i.serviceName()))
+                .filter(i -> after == null || after.precedes(i))
+                .sorted(RecoveryCursor.ORDER)
+                .limit(limit)
                 .toList();
     }
 

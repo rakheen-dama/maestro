@@ -14,14 +14,23 @@ import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.spi.RunLease;
 import io.b2mash.maestro.core.spi.PurgeResult;
+import io.b2mash.maestro.core.spi.RecoveryCursor;
+import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -112,6 +121,60 @@ class InMemoryWorkflowStoreTest {
         assertEquals(2, recoverable.size());
         assertTrue(recoverable.stream().anyMatch(i -> i.workflowId().equals("wf-running")));
         assertTrue(recoverable.stream().anyMatch(i -> i.workflowId().equals("wf-waiting")));
+    }
+
+    /**
+     * The paged recovery scan, against the store's own override and against the
+     * {@link WorkflowStore} default it replaces (the override hidden behind a
+     * proxy that runs the SPI's default body) — both must agree.
+     */
+    @Test
+    void pagedRecoveryScan_scopesToServiceAndPagesWithoutSkipsOrRepeats() {
+        var t0 = Instant.parse("2026-01-01T00:00:00Z");
+        var tied = new HashSet<String>();
+        for (int i = 0; i < 5; i++) {
+            store.createInstance(buildInstance("a-tied-" + i, "svc-a", WorkflowStatus.RUNNING, t0.plusSeconds(1)));
+            tied.add("a-tied-" + i);
+        }
+        store.createInstance(buildInstance("a-first", "svc-a", WorkflowStatus.WAITING_TIMER, t0));
+        store.createInstance(buildInstance("a-last", "svc-a", WorkflowStatus.COMPENSATING, t0.plusSeconds(2)));
+        store.createInstance(buildInstance("a-done", "svc-a", WorkflowStatus.COMPLETED, t0));
+        store.createInstance(buildInstance("b-1", "svc-b", WorkflowStatus.RUNNING, t0));
+
+        for (var scanned : List.of(store, withDefaultPagedScan(store))) {
+            var pages = new ArrayList<List<String>>();
+            RecoveryCursor cursor = null;
+            while (pages.size() < 10) {
+                var page = scanned.getRecoverableInstances("svc-a", cursor, 2);
+                pages.add(page.stream().map(WorkflowInstance::workflowId).toList());
+                if (page.size() < 2) {
+                    break;
+                }
+                cursor = RecoveryCursor.of(page.getLast());
+            }
+            var all = pages.stream().flatMap(List::stream).toList();
+            assertEquals(List.of(2, 2, 2, 1), pages.stream().map(List::size).toList(), "pages: " + pages);
+            assertEquals("a-first", all.getFirst(), "ascending by startedAt");
+            assertEquals("a-last", all.getLast(), "ascending by startedAt");
+            assertEquals(tied, Set.copyOf(all.subList(1, 6)),
+                    "the five tied rows, each exactly once: " + all);
+        }
+        assertThrows(IllegalArgumentException.class, () -> store.getRecoverableInstances("svc-a", null, 0));
+    }
+
+    /** {@code delegate}, except that the paged recovery scan runs the SPI default body. */
+    private static WorkflowStore withDefaultPagedScan(WorkflowStore delegate) {
+        return (WorkflowStore) Proxy.newProxyInstance(WorkflowStore.class.getClassLoader(),
+                new Class<?>[]{WorkflowStore.class}, (proxy, method, args) -> {
+                    if (method.getName().equals("getRecoverableInstances") && method.getParameterCount() == 3) {
+                        return InvocationHandler.invokeDefault(proxy, method, args);
+                    }
+                    try {
+                        return method.invoke(delegate, args);
+                    } catch (InvocationTargetException e) {
+                        throw e.getCause();
+                    }
+                });
     }
 
     // ── completeInstance (Issue 26: atomic terminal status + terminal event) ──
@@ -907,6 +970,12 @@ class InMemoryWorkflowStoreTest {
 
     private static WorkflowInstance buildInstance(String workflowId) {
         return buildInstance(workflowId, WorkflowStatus.RUNNING);
+    }
+
+    private static WorkflowInstance buildInstance(String workflowId, String serviceName, WorkflowStatus status,
+                                                  Instant startedAt) {
+        return buildInstance(workflowId, status).toBuilder()
+                .serviceName(serviceName).startedAt(startedAt).updatedAt(startedAt).build();
     }
 
     private static WorkflowInstance buildInstance(String workflowId, WorkflowStatus status) {
