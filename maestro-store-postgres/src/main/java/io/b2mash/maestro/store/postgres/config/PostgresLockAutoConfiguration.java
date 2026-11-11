@@ -3,9 +3,11 @@ package io.b2mash.maestro.store.postgres.config;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.spring.config.MaestroAutoConfiguration;
 import io.b2mash.maestro.spring.config.MaestroProperties;
+import io.b2mash.maestro.store.postgres.MaestroDataSource;
 import io.b2mash.maestro.store.postgres.lock.PostgresDistributedLock;
 import io.b2mash.maestro.store.postgres.lock.PostgresLockCleaner;
 import io.b2mash.maestro.store.postgres.lock.PostgresLockCleanerScheduler;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -45,6 +47,10 @@ import java.time.Duration;
  * DistributedLock} parameter still receives the lock because bean
  * <em>definitions</em> are resolved before any bean is instantiated.
  *
+ * <p>The lock and the cleaner use the same {@code DataSource} as the store:
+ * the {@link MaestroDataSource @MaestroDataSource}-qualified one if declared,
+ * otherwise the application's single (or {@code @Primary}) one.
+ *
  * <p>All beans are guarded with {@link ConditionalOnMissingBean} to allow
  * user overrides.
  *
@@ -66,14 +72,16 @@ public class PostgresLockAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean(DistributedLock.class)
-    public PostgresDistributedLock postgresDistributedLock(DataSource dataSource) {
-        return new PostgresDistributedLock(dataSource);
+    public PostgresDistributedLock postgresDistributedLock(
+            @MaestroDataSource ObjectProvider<DataSource> maestroDataSource, ObjectProvider<DataSource> dataSource) {
+        return new PostgresDistributedLock(MaestroDataSources.resolve(maestroDataSource, dataSource));
     }
 
     @Bean
     @ConditionalOnMissingBean(PostgresLockCleaner.class)
-    public PostgresLockCleaner postgresLockCleaner(DataSource dataSource) {
-        return new PostgresLockCleaner(dataSource);
+    public PostgresLockCleaner postgresLockCleaner(
+            @MaestroDataSource ObjectProvider<DataSource> maestroDataSource, ObjectProvider<DataSource> dataSource) {
+        return new PostgresLockCleaner(MaestroDataSources.resolve(maestroDataSource, dataSource));
     }
 
     /**
