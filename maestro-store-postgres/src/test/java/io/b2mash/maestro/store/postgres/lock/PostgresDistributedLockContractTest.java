@@ -253,8 +253,16 @@ class PostgresDistributedLockContractTest extends PostgresLockTestSupport {
     @DisplayName("renewAll")
     class RenewAllTests {
 
-        /** Acquired shorter than the renewal TTL, so a renewed row's expiry strictly advances. */
-        private static final Duration ACQUIRE_TTL = Duration.ofSeconds(10);
+        /**
+         * Acquired shorter than {@link #RENEW_TTL}, so a renewed row's expiry
+         * strictly advances, and long enough that the first of 1,200 locks
+         * acquired one statement at a time is still live when the batch is
+         * renewed on a loaded build machine (at 10 s it was not: the
+         * acquisition took 10.05 s under a parallel full build).
+         */
+        private static final Duration ACQUIRE_TTL = Duration.ofMinutes(1);
+
+        private static final Duration RENEW_TTL = Duration.ofMinutes(2);
 
         private List<LockHandle> acquire(PostgresDistributedLock on, String prefix, int count) {
             var handles = new ArrayList<LockHandle>(count);
@@ -297,7 +305,7 @@ class PostgresDistributedLockContractTest extends PostgresLockTestSupport {
             var before = expiries();
             counting.reset();
 
-            var lost = countedLock.renewAll(handles, TTL);
+            var lost = countedLock.renewAll(handles, RENEW_TTL);
 
             assertEquals(Set.of(), lost, "every lock is held, so none may be reported lost");
             assertEquals(3, counting.executedStartingWith("UPDATE"),
@@ -318,7 +326,7 @@ class PostgresDistributedLockContractTest extends PostgresLockTestSupport {
             }
             var before = expiries();
 
-            var lost = lock.renewAll(handles, TTL);
+            var lost = lock.renewAll(handles, RENEW_TTL);
 
             assertEquals(Set.of(stolen), lost);
             var after = expiries();
@@ -334,7 +342,7 @@ class PostgresDistributedLockContractTest extends PostgresLockTestSupport {
             var expired = handles.get(1);
             expireLock(expired.key());
 
-            var lost = lock.renewAll(handles, TTL);
+            var lost = lock.renewAll(handles, RENEW_TTL);
 
             assertEquals(Set.of(expired), lost);
             assertTrue(lock.tryAcquire(expired.key(), TTL).isPresent(),
