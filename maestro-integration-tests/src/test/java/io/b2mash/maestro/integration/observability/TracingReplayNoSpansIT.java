@@ -35,6 +35,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("A recovered workflow's replayed activity produces no spans on the recovering node")
 class TracingReplayNoSpansIT extends PostgresIntegrationSupport {
 
+    /**
+     * The one service every node in this suite belongs to. Nodes of a service
+     * share its name — recovery adopts only its own service's instances (D1),
+     * and timer/retention leadership, the signal-wake channel and the Kafka
+     * subscription are all keyed by it. Node identity is the harness itself
+     * (its own lock client, lock tokens and timer-leader candidate id).
+     */
+    private static final String SERVICE = "tracing-replay";
+
     private static final Duration BOUND = Duration.ofSeconds(30);
     private static final Duration LOCK_TTL = Duration.ofSeconds(60);
 
@@ -52,7 +61,7 @@ class TracingReplayNoSpansIT extends PostgresIntegrationSupport {
              var otelB = new OtelTracingFixture("node-b")) {
 
             var nodeA = MaestroEngineHarness.builder(store, objectMapper)
-                    .serviceName("node-a")
+                    .serviceName(SERVICE)
                     .lock(newLock())
                     .instanceLockTtl(LOCK_TTL)
                     .observer(new TracingEngineObserver(otelA.tracer(), otelA.propagator()))
@@ -73,7 +82,7 @@ class TracingReplayNoSpansIT extends PostgresIntegrationSupport {
             nodeA.close();
 
             var nodeB = MaestroEngineHarness.builder(store, objectMapper)
-                    .serviceName("node-b")
+                    .serviceName(SERVICE)
                     .lock(newLock())
                     .instanceLockTtl(LOCK_TTL)
                     .observer(new TracingEngineObserver(otelB.tracer(), otelB.propagator()))

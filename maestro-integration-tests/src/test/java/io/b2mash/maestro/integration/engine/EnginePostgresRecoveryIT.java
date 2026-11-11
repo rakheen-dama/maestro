@@ -50,6 +50,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("A second engine process recovers a workflow abandoned mid-flight")
 class EnginePostgresRecoveryIT extends PostgresIntegrationSupport {
 
+    /**
+     * The one service every node in this suite belongs to. Nodes of a service
+     * share its name — recovery adopts only its own service's instances (D1),
+     * and timer/retention leadership, the signal-wake channel and the Kafka
+     * subscription are all keyed by it. Node identity is the harness itself
+     * (its own lock client, lock tokens and timer-leader candidate id).
+     */
+    private static final String SERVICE = "engine-recovery";
+
     private final CountDownLatch wedge = new CountDownLatch(1);
     private final CountDownLatch reachedStepTwo = new CountDownLatch(1);
     private final CountingActivities.Recorder crashedRecorder = new CountingActivities.Recorder();
@@ -76,7 +85,7 @@ class EnginePostgresRecoveryIT extends PostgresIntegrationSupport {
         var workflowId = crashMidFlight();
 
         var recoveredRecorder = new CountingActivities.Recorder();
-        recoveringNode = node("node-b", new CountingActivities.RecordingChainActivities(recoveredRecorder),
+        recoveringNode = node(new CountingActivities.RecordingChainActivities(recoveredRecorder),
                 true);
 
         assertEquals(1, recoveringNode.recover(), "the abandoned workflow must be recoverable");
@@ -106,9 +115,9 @@ class EnginePostgresRecoveryIT extends PostgresIntegrationSupport {
         assertEquals(3, instance.eventSequence());
         // service_name records the owning *service*, not the owning node, and
         // recovery never rewrites it: every node of a service shares one
-        // maestro.service-name, so adoption does not change ownership. Pinning
-        // the observed behaviour — an assertion of "node-b" fails here.
-        assertEquals("node-a", instance.serviceName(),
+        // maestro.service-name, so adoption does not change ownership — and a
+        // node of another service never adopts the instance at all (D1).
+        assertEquals(SERVICE, instance.serviceName(),
                 "adoption by another node must not rewrite the owning service");
     }
 
@@ -118,7 +127,7 @@ class EnginePostgresRecoveryIT extends PostgresIntegrationSupport {
         var workflowId = crashMidFlight();
 
         var recoveredRecorder = new CountingActivities.Recorder();
-        recoveringNode = node("node-b", new CountingActivities.RecordingChainActivities(recoveredRecorder),
+        recoveringNode = node(new CountingActivities.RecordingChainActivities(recoveredRecorder),
                 true);
         recoveringNode.startRecoveryPoller(Duration.ofMillis(200));
 
@@ -163,7 +172,7 @@ class EnginePostgresRecoveryIT extends PostgresIntegrationSupport {
     @DisplayName("recovery is a no-op when no workflow was left in an active state")
     void recover_withNothingAbandoned_recoversNothing() {
         var recorder = new CountingActivities.Recorder();
-        recoveringNode = node("node-b", new CountingActivities.RecordingChainActivities(recorder),
+        recoveringNode = node(new CountingActivities.RecordingChainActivities(recorder),
                 true);
 
         var handle = recoveringNode.start(MaestroEngineHarness.uniqueWorkflowId("recover-noop"),
@@ -185,7 +194,7 @@ class EnginePostgresRecoveryIT extends PostgresIntegrationSupport {
      * @throws InterruptedException if the test thread is interrupted while waiting
      */
     private String crashMidFlight() throws InterruptedException {
-        crashedNode = node("node-a", new WedgingChainActivities(), false);
+        crashedNode = node(new WedgingChainActivities(), false);
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("crash");
         var handle = crashedNode.start(workflowId, TestWorkflows.ChainWorkflow.class, "seed");
@@ -241,16 +250,14 @@ class EnginePostgresRecoveryIT extends PostgresIntegrationSupport {
     /**
      * Builds one node.
      *
-     * @param serviceName the node's service name — distinct per node
      * @param activities  the chain activity implementation for this node
      * @param withLock    whether this node gets a Postgres lock backend
      * @return a harness with the chain workflow registered
      */
-    private MaestroEngineHarness node(String serviceName,
-                                      CountingActivities.ChainActivities activities,
+    private MaestroEngineHarness node(CountingActivities.ChainActivities activities,
                                       boolean withLock) {
         var built = MaestroEngineHarness.builder(store, objectMapper)
-                .serviceName(serviceName)
+                .serviceName(SERVICE)
                 .lock(withLock ? newLock() : null)
                 .instanceLockTtl(Duration.ofSeconds(2))
                 .build();

@@ -50,6 +50,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("Durable awaitSignal deadlines against a real Postgres store")
 class EnginePostgresSignalTimeoutIT extends PostgresIntegrationSupport {
 
+    /**
+     * The one service every node in this suite belongs to. Nodes of a service
+     * share its name — recovery adopts only its own service's instances (D1),
+     * and timer/retention leadership, the signal-wake channel and the Kafka
+     * subscription are all keyed by it. Node identity is the harness itself
+     * (its own lock client, lock tokens and timer-leader candidate id).
+     */
+    private static final String SERVICE = "await-signal-timeout";
+
     private static final Duration BOUND = Duration.ofSeconds(15);
     private static final String TIMER_ID = "await-signal-1";
 
@@ -129,7 +138,7 @@ class EnginePostgresSignalTimeoutIT extends PostgresIntegrationSupport {
      */
     private MaestroEngineHarness newHarness(WorkflowStore backingStore) {
         var harness = MaestroEngineHarness.builder(backingStore, objectMapper)
-                .serviceName("await-node-" + (harnesses.size() + 1))
+                .serviceName(SERVICE)
                 .lock(newLock())
                 .build();
         harnesses.add(harness);

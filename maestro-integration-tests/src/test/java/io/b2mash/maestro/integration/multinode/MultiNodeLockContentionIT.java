@@ -53,6 +53,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("The per-instance lock stops a second node from running a workflow that is already live")
 class MultiNodeLockContentionIT extends PostgresIntegrationSupport {
 
+    /**
+     * The one service every node in this suite belongs to. Nodes of a service
+     * share its name — recovery adopts only its own service's instances (D1),
+     * and timer/retention leadership, the signal-wake channel and the Kafka
+     * subscription are all keyed by it. Node identity is the harness itself
+     * (its own lock client, lock tokens and timer-leader candidate id).
+     */
+    private static final String SERVICE = "multinode-lock-contention";
+
     private static final Duration LOCK_TTL = Duration.ofSeconds(5);
     private static final String LOCK_KEY_PREFIX = "maestro:lock:workflow:";
 
@@ -80,8 +89,8 @@ class MultiNodeLockContentionIT extends PostgresIntegrationSupport {
     @Test
     @DisplayName("a second node's recovery pass does not launch a workflow the first node is running")
     void secondNodeRecovery_whileFirstNodeIsRunning_launchesNothing() throws Exception {
-        nodeA = node("node-a", new GatedChainActivities(recorderA));
-        nodeB = node("node-b", new CountingActivities.RecordingChainActivities(recorderB));
+        nodeA = node(new GatedChainActivities(recorderA));
+        nodeB = node(new CountingActivities.RecordingChainActivities(recorderB));
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("contention");
         var handle = nodeA.start(workflowId, TestWorkflows.ChainWorkflow.class, "seed");
@@ -119,7 +128,7 @@ class MultiNodeLockContentionIT extends PostgresIntegrationSupport {
     @Test
     @DisplayName("the instance lock is held for the whole run and released when the workflow completes")
     void instanceLock_isHeldForTheWholeRun_andReleasedOnCompletion() throws Exception {
-        nodeA = node("node-a", new GatedChainActivities(recorderA));
+        nodeA = node(new GatedChainActivities(recorderA));
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("lock-lifetime");
         var handle = nodeA.start(workflowId, TestWorkflows.ChainWorkflow.class, "seed");
@@ -154,8 +163,8 @@ class MultiNodeLockContentionIT extends PostgresIntegrationSupport {
     @Test
     @DisplayName("a second node starting the same workflow ID is rejected by the store, not silently duplicated")
     void secondNodeStart_withTheSameWorkflowId_isRejected() throws Exception {
-        nodeA = node("node-a", new GatedChainActivities(recorderA));
-        nodeB = node("node-b", new CountingActivities.RecordingChainActivities(recorderB));
+        nodeA = node(new GatedChainActivities(recorderA));
+        nodeB = node(new CountingActivities.RecordingChainActivities(recorderB));
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("dup-start");
         var handle = nodeA.start(workflowId, TestWorkflows.ChainWorkflow.class, "seed");
@@ -175,8 +184,8 @@ class MultiNodeLockContentionIT extends PostgresIntegrationSupport {
     @Test
     @DisplayName("when both nodes recover an ownerless workflow at once, exactly one of them adopts it")
     void concurrentRecoveryOnBothNodes_adoptsTheWorkflowExactlyOnce() throws Exception {
-        nodeA = node("node-a", new CountingActivities.RecordingChainActivities(recorderA));
-        nodeB = node("node-b", new CountingActivities.RecordingChainActivities(recorderB));
+        nodeA = node(new CountingActivities.RecordingChainActivities(recorderA));
+        nodeB = node(new CountingActivities.RecordingChainActivities(recorderB));
 
         // An instance whose owner died before doing any work: RUNNING, no
         // events, no lock row. Both nodes see it as adoptable in the same
@@ -211,14 +220,12 @@ class MultiNodeLockContentionIT extends PostgresIntegrationSupport {
      * Builds one node: its own service name, its own Postgres lock client on its
      * own DataSource, over the shared store.
      *
-     * @param serviceName the node's service name
      * @param activities  this node's activity implementation
      * @return a harness with the chain workflow registered
      */
-    private MaestroEngineHarness node(String serviceName,
-                                      CountingActivities.ChainActivities activities) {
+    private MaestroEngineHarness node(CountingActivities.ChainActivities activities) {
         var harness = MaestroEngineHarness.builder(store, objectMapper)
-                .serviceName(serviceName)
+                .serviceName(SERVICE)
                 .lock(new PostgresDistributedLock(newDataSource()))
                 .instanceLockTtl(LOCK_TTL)
                 .build();
@@ -244,7 +251,7 @@ class MultiNodeLockContentionIT extends PostgresIntegrationSupport {
                 .taskQueue("default")
                 .status(WorkflowStatus.RUNNING)
                 .input(serializer.serialize("seed"))
-                .serviceName("node-gone")
+                .serviceName(SERVICE)
                 .eventSequence(0)
                 .startedAt(now)
                 .updatedAt(now)

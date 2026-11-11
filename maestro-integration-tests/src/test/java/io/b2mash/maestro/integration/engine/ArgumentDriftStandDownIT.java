@@ -56,6 +56,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("An activity argument that drifts between runs stands down instead of replaying a stale result")
 class ArgumentDriftStandDownIT extends PostgresIntegrationSupport {
 
+    /**
+     * The one service every node in this suite belongs to. Nodes of a service
+     * share its name — recovery adopts only its own service's instances (D1),
+     * and timer/retention leadership, the signal-wake channel and the Kafka
+     * subscription are all keyed by it. Node identity is the harness itself
+     * (its own lock client, lock tokens and timer-leader candidate id).
+     */
+    private static final String SERVICE = "argument-drift";
+
     private static final Duration BOUND = Duration.ofSeconds(30);
     private static final Duration LOCK_TTL = Duration.ofSeconds(10);
 
@@ -74,7 +83,7 @@ class ArgumentDriftStandDownIT extends PostgresIntegrationSupport {
         // ── Node A: runs stepOne("region,tier:seed") live, parks on the signal.
         var parkedA = new CountDownLatch(1);
         WorkflowHandle handle;
-        try (var nodeA = node("args-a", recorder, CONFIG_A, parkedA, null)) {
+        try (var nodeA = node(recorder, CONFIG_A, parkedA, null)) {
             handle = nodeA.start(workflowId, ConfigDrivenWorkflow.class, "seed");
             assertTrue(parkedA.await(30, TimeUnit.SECONDS));
             handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
@@ -96,7 +105,7 @@ class ArgumentDriftStandDownIT extends PostgresIntegrationSupport {
 
         // ── Node B: iterates the "same" config in the other order → asks a different question at seq 1.
         var observer = new RecordingObserver();
-        try (var nodeB = node("args-b", recorder, CONFIG_B, new CountDownLatch(1), observer)) {
+        try (var nodeB = node(recorder, CONFIG_B, new CountDownLatch(1), observer)) {
             assertEquals(1, nodeB.recover());
             await().atMost(BOUND).until(() -> !observer.standDowns().isEmpty());
             await().atMost(BOUND).until(() -> !nodeB.executor().isRunning(workflowId));
@@ -117,7 +126,7 @@ class ArgumentDriftStandDownIT extends PostgresIntegrationSupport {
 
         // ── Node C: the recorded input order again → replays seq 1, parks, completes on the signal.
         var parkedC = new CountDownLatch(1);
-        try (var nodeC = node("args-c", recorder, CONFIG_A, parkedC, null)) {
+        try (var nodeC = node(recorder, CONFIG_A, parkedC, null)) {
             assertEquals(1, nodeC.recover());
             assertTrue(parkedC.await(30, TimeUnit.SECONDS), "the recovered run must reach its await point");
             handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
@@ -136,7 +145,7 @@ class ArgumentDriftStandDownIT extends PostgresIntegrationSupport {
 
         var parkedA = new CountDownLatch(1);
         WorkflowHandle handle;
-        try (var nodeA = node("args-null-a", recorder, CONFIG_A, parkedA, null)) {
+        try (var nodeA = node(recorder, CONFIG_A, parkedA, null)) {
             handle = nodeA.start(workflowId, ConfigDrivenWorkflow.class, "seed");
             assertTrue(parkedA.await(30, TimeUnit.SECONDS));
             handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
@@ -146,7 +155,7 @@ class ArgumentDriftStandDownIT extends PostgresIntegrationSupport {
 
         var observer = new RecordingObserver();
         var parkedB = new CountDownLatch(1);
-        try (var nodeB = node("args-null-b", recorder, CONFIG_B, parkedB, observer)) {
+        try (var nodeB = node(recorder, CONFIG_B, parkedB, observer)) {
             assertEquals(1, nodeB.recover());
             assertTrue(parkedB.await(30, TimeUnit.SECONDS), "an unverified slot replays and the run parks again");
             handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
@@ -205,11 +214,11 @@ class ArgumentDriftStandDownIT extends PostgresIntegrationSupport {
         }
     }
 
-    private MaestroEngineHarness node(String serviceName, CountingActivities.Recorder recorder,
+    private MaestroEngineHarness node(CountingActivities.Recorder recorder,
                                       Map<String, String> config, CountDownLatch parked,
                                       @Nullable RecordingObserver observer) {
         var builder = MaestroEngineHarness.builder(store, objectMapper)
-                .serviceName(serviceName)
+                .serviceName(SERVICE)
                 .lock(newLock())
                 .instanceLockTtl(LOCK_TTL);
         if (observer != null) {

@@ -73,6 +73,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("With no lock backend two nodes both run the workflow, and the lease fence keeps the store single-valued")
 class MultiNodeNoLockBackendIT extends PostgresIntegrationSupport {
 
+    /**
+     * The one service every node in this suite belongs to. Nodes of a service
+     * share its name — recovery adopts only its own service's instances (D1),
+     * and timer/retention leadership, the signal-wake channel and the Kafka
+     * subscription are all keyed by it. Node identity is the harness itself
+     * (its own lock client, lock tokens and timer-leader candidate id).
+     */
+    private static final String SERVICE = "multinode-no-lock-backend";
+
     private final CountDownLatch wedge = new CountDownLatch(1);
     private final CountDownLatch reachedStepTwo = new CountDownLatch(1);
     private final CountingActivities.Recorder recorderA = new CountingActivities.Recorder();
@@ -100,8 +109,8 @@ class MultiNodeNoLockBackendIT extends PostgresIntegrationSupport {
             throws Exception {
         // Each node stamps its results, so the event log itself says which node
         // won every sequence — a plain fixture could not tell them apart.
-        nodeA = node("node-a", new SuffixedChainActivities(recorderA, "A", wedge), observerA);
-        nodeB = node("node-b", new SuffixedChainActivities(recorderB, "B", null), observerB);
+        nodeA = node(new SuffixedChainActivities(recorderA, "A", wedge), observerA);
+        nodeB = node(new SuffixedChainActivities(recorderB, "B", null), observerB);
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("nolock");
         var handle = nodeA.start(workflowId, TestWorkflows.ChainWorkflow.class, "seed");
@@ -163,8 +172,8 @@ class MultiNodeNoLockBackendIT extends PostgresIntegrationSupport {
     @Test
     @DisplayName("both nodes adopt the same ownerless workflow; the adoption CAS or the fence yields one event per sequence and one output")
     void concurrentRecoveryWithNoLock_bothNodesAdopt_butTheStoreStaysSingleValued() throws Exception {
-        nodeA = node("node-a", new SuffixedChainActivities(recorderA, "A", null), observerA);
-        nodeB = node("node-b", new SuffixedChainActivities(recorderB, "B", null), observerB);
+        nodeA = node(new SuffixedChainActivities(recorderA, "A", null), observerA);
+        nodeB = node(new SuffixedChainActivities(recorderB, "B", null), observerB);
 
         var workflowId = seedOwnerlessRunningInstance();
 
@@ -223,16 +232,14 @@ class MultiNodeNoLockBackendIT extends PostgresIntegrationSupport {
      * Builds one node with <b>no</b> lock backend — the configuration under
      * characterisation.
      *
-     * @param serviceName the node's service name
      * @param activities  this node's activity implementation
      * @param observer    this node's own stand-down recorder
      * @return a harness with the chain workflow registered
      */
-    private MaestroEngineHarness node(String serviceName,
-                                      CountingActivities.ChainActivities activities,
+    private MaestroEngineHarness node(CountingActivities.ChainActivities activities,
                                       RecordingObserver observer) {
         var harness = MaestroEngineHarness.builder(store, objectMapper)
-                .serviceName(serviceName)
+                .serviceName(SERVICE)
                 .lock(null)
                 .observer(observer)
                 .build();
@@ -258,7 +265,7 @@ class MultiNodeNoLockBackendIT extends PostgresIntegrationSupport {
                 .taskQueue("default")
                 .status(WorkflowStatus.RUNNING)
                 .input(serializer.serialize("seed"))
-                .serviceName("node-gone")
+                .serviceName(SERVICE)
                 .eventSequence(0)
                 .startedAt(now)
                 .updatedAt(now)

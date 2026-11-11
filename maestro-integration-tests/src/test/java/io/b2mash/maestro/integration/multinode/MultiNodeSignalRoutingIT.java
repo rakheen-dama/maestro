@@ -53,6 +53,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("A signal ingested on one node reaches a workflow parked on another")
 class MultiNodeSignalRoutingIT extends PostgresIntegrationSupport {
 
+    /**
+     * The one service every node in this suite belongs to. Nodes of a service
+     * share its name — recovery adopts only its own service's instances (D1),
+     * and timer/retention leadership, the signal-wake channel and the Kafka
+     * subscription are all keyed by it. Node identity is the harness itself
+     * (its own lock client, lock tokens and timer-leader candidate id).
+     */
+    private static final String SERVICE = "signal-routing-service";
+
     /** Below SignalManager's 30s re-check, so only the notifier can satisfy it. */
     private static final Duration NOTIFIER_BOUND = Duration.ofSeconds(15);
 
@@ -82,8 +91,8 @@ class MultiNodeSignalRoutingIT extends PostgresIntegrationSupport {
     @DisplayName("a signal delivered on node B wakes the workflow parked on node A, which resumes it")
     void signalDeliveredOnNodeB_wakesTheWorkflowParkedOnNodeA() throws Exception {
         var workflowA = new TestWorkflows.SignalWorkflow(parkedOnNodeA);
-        nodeA = node("node-a", recorderA, workflowA);
-        nodeB = node("node-b", recorderB, new TestWorkflows.SignalWorkflow(new CountDownLatch(1)));
+        nodeA = node(recorderA, workflowA);
+        nodeB = node(recorderB, new TestWorkflows.SignalWorkflow(new CountDownLatch(1)));
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("signal-routing");
         var handle = nodeA.start(workflowId, TestWorkflows.SignalWorkflow.class, "seed");
@@ -123,8 +132,8 @@ class MultiNodeSignalRoutingIT extends PostgresIntegrationSupport {
     @DisplayName("a signal delivered on node B before the workflow exists is adopted when node A starts it")
     void signalDeliveredOnNodeB_beforeNodeAStartsTheWorkflow_isAdoptedAndConsumed() throws Exception {
         var workflowA = new TestWorkflows.SignalWorkflow(parkedOnNodeA);
-        nodeA = node("node-a", recorderA, workflowA);
-        nodeB = node("node-b", recorderB, new TestWorkflows.SignalWorkflow(new CountDownLatch(1)));
+        nodeA = node(recorderA, workflowA);
+        nodeB = node(recorderB, new TestWorkflows.SignalWorkflow(new CountDownLatch(1)));
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("pre-delivery");
         nodeB.deliverSignal(workflowId, TestWorkflows.SignalWorkflow.SIGNAL, "EARLY");
@@ -150,8 +159,8 @@ class MultiNodeSignalRoutingIT extends PostgresIntegrationSupport {
     @DisplayName("a run of signals delivered on node B is collected on node A in receipt order")
     void signalsDeliveredOnNodeB_areCollectedOnNodeAInOrder() throws Exception {
         var workflowA = new TestWorkflows.CollectingWorkflow(3, parkedOnNodeA);
-        nodeA = node("node-a", recorderA, workflowA);
-        nodeB = node("node-b", recorderB, new TestWorkflows.CollectingWorkflow(3, new CountDownLatch(1)));
+        nodeA = node(recorderA, workflowA);
+        nodeB = node(recorderB, new TestWorkflows.CollectingWorkflow(3, new CountDownLatch(1)));
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("collect-routing");
         var handle = nodeA.start(workflowId, TestWorkflows.CollectingWorkflow.class, "seed");
@@ -208,19 +217,18 @@ class MultiNodeSignalRoutingIT extends PostgresIntegrationSupport {
      * Builds one node with its own lock client and its own LISTEN/NOTIFY
      * notifier over an independent connection.
      *
-     * @param serviceName  the node's service name
      * @param recorder     this node's activity recorder
      * @param workflowImpl this node's workflow instance
      * @return the started harness
      */
-    private MaestroEngineHarness node(String serviceName, CountingActivities.Recorder recorder,
+    private MaestroEngineHarness node(CountingActivities.Recorder recorder,
                                       Object workflowImpl) {
         var listener = new PostgresWakeListener(newDataSource(), WAKE_CHANNEL);
         listener.start();
         listeners.add(listener);
 
         var harness = MaestroEngineHarness.builder(store, objectMapper)
-                .serviceName(serviceName)
+                .serviceName(SERVICE)
                 .lock(new PostgresDistributedLock(newDataSource()))
                 .signalNotifier(new PostgresSignalNotifier(newDataSource(), listener, WAKE_CHANNEL))
                 .instanceLockTtl(Duration.ofSeconds(10))

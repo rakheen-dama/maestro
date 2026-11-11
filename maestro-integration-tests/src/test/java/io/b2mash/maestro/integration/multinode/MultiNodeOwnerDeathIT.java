@@ -56,6 +56,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("A node that dies holding the instance lock hands its workflow over when the TTL expires")
 class MultiNodeOwnerDeathIT extends PostgresIntegrationSupport {
 
+    /**
+     * The one service every node in this suite belongs to. Nodes of a service
+     * share its name — recovery adopts only its own service's instances (D1),
+     * and timer/retention leadership, the signal-wake channel and the Kafka
+     * subscription are all keyed by it. Node identity is the harness itself
+     * (its own lock client, lock tokens and timer-leader candidate id).
+     */
+    private static final String SERVICE = "multinode-owner-death";
+
     private static final String LOCK_KEY_PREFIX = "maestro:lock:workflow:";
     /** Short enough that expiry is fast, long enough to survive a slow CI renewal. */
     private static final Duration SHORT_TTL = Duration.ofSeconds(2);
@@ -89,7 +98,7 @@ class MultiNodeOwnerDeathIT extends PostgresIntegrationSupport {
     void ownerDies_afterTtlExpiry_nodeBAdoptsAndResumesWithoutReExecuting() throws Exception {
         var workflowId = startAndAbandonOnNodeA(SHORT_TTL);
 
-        nodeB = node("node-b", new CountingActivities.RecordingChainActivities(recorderB),
+        nodeB = node(new CountingActivities.RecordingChainActivities(recorderB),
                 new PostgresDistributedLock(newDataSource()), SHORT_TTL);
         nodeB.startRecoveryPoller(Duration.ofMillis(200));
 
@@ -122,7 +131,7 @@ class MultiNodeOwnerDeathIT extends PostgresIntegrationSupport {
         // could let node B in is a missing lock check, not the clock.
         var workflowId = startAndAbandonOnNodeA(LONG_TTL);
 
-        nodeB = node("node-b", new CountingActivities.RecordingChainActivities(recorderB),
+        nodeB = node(new CountingActivities.RecordingChainActivities(recorderB),
                 new PostgresDistributedLock(newDataSource()), SHORT_TTL);
         assertEquals(0, nodeB.recover(),
                 "the dead owner's lock is still live — node B must see HELD_ELSEWHERE");
@@ -173,7 +182,7 @@ class MultiNodeOwnerDeathIT extends PostgresIntegrationSupport {
      */
     private String startAndAbandonOnNodeA(Duration ttl) throws InterruptedException, SQLException {
         nodeALock = new DyingLock(new PostgresDistributedLock(newDataSource()));
-        nodeA = node("node-a", new WedgingChainActivities(), nodeALock, ttl);
+        nodeA = node(new WedgingChainActivities(), nodeALock, ttl);
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("owner-death");
         var handle = nodeA.start(workflowId, TestWorkflows.ChainWorkflow.class, "seed");
@@ -198,12 +207,11 @@ class MultiNodeOwnerDeathIT extends PostgresIntegrationSupport {
 
     // ── fixtures ──────────────────────────────────────────────────────────
 
-    private MaestroEngineHarness node(String serviceName,
-                                      CountingActivities.ChainActivities activities,
+    private MaestroEngineHarness node(CountingActivities.ChainActivities activities,
                                       DistributedLock lock,
                                       Duration ttl) {
         var harness = MaestroEngineHarness.builder(store, objectMapper)
-                .serviceName(serviceName)
+                .serviceName(SERVICE)
                 .lock(lock)
                 .instanceLockTtl(ttl)
                 .build();

@@ -42,6 +42,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("After a re-adoption, queries answer from the adopting node's per-run object")
 class MultiNodePerRunQueryIT extends PostgresIntegrationSupport {
 
+    /**
+     * The one service every node in this suite belongs to. Nodes of a service
+     * share its name — recovery adopts only its own service's instances (D1),
+     * and timer/retention leadership, the signal-wake channel and the Kafka
+     * subscription are all keyed by it. Node identity is the harness itself
+     * (its own lock client, lock tokens and timer-leader candidate id).
+     */
+    private static final String SERVICE = "multinode-per-run-query";
+
     private static final String WORKFLOW_TYPE = "TaggedChainWorkflow";
     /** Short enough that expiry is fast, long enough to survive a slow CI renewal. */
     private static final Duration SHORT_TTL = Duration.ofSeconds(2);
@@ -74,7 +83,7 @@ class MultiNodePerRunQueryIT extends PostgresIntegrationSupport {
         var workflowId = startAndAbandonOnNodeA();
         assertEquals("node-a", nodeA.executor().queryWorkflow(workflowId, "tag", null, String.class));
 
-        nodeB = node("node-b", new GatedChainActivities(), new PostgresDistributedLock(newDataSource()),
+        nodeB = node(new GatedChainActivities(), new PostgresDistributedLock(newDataSource()),
                 () -> new TaggedChainWorkflow("node-b"));
         nodeB.startRecoveryPoller(Duration.ofMillis(200));
         await().atMost(Duration.ofSeconds(30)).until(() -> nodeB.executor().isRunning(workflowId));
@@ -109,7 +118,7 @@ class MultiNodePerRunQueryIT extends PostgresIntegrationSupport {
      */
     private String startAndAbandonOnNodeA() throws InterruptedException {
         var nodeALock = new DyingLock(new PostgresDistributedLock(newDataSource()));
-        nodeA = node("node-a", new WedgingChainActivities(), nodeALock,
+        nodeA = node(new WedgingChainActivities(), nodeALock,
                 () -> new TaggedChainWorkflow("node-a"));
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("per-run-query");
@@ -127,12 +136,11 @@ class MultiNodePerRunQueryIT extends PostgresIntegrationSupport {
 
     // ── fixtures ──────────────────────────────────────────────────────────
 
-    private MaestroEngineHarness node(String serviceName,
-                                      CountingActivities.ChainActivities activities,
+    private MaestroEngineHarness node(CountingActivities.ChainActivities activities,
                                       DistributedLock lock,
                                       Supplier<TaggedChainWorkflow> factory) {
         var harness = MaestroEngineHarness.builder(store, objectMapper)
-                .serviceName(serviceName)
+                .serviceName(SERVICE)
                 .lock(lock)
                 .instanceLockTtl(SHORT_TTL)
                 .build();

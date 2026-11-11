@@ -32,6 +32,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 @DisplayName("A recorded version survives a redeploy that raises maxSupported")
 class WorkflowVersionRecoveryTest {
 
+    /**
+     * The one service every executor in this test is a node of. Nodes of one
+     * service share its name; recovery adopts only its own service's
+     * instances, so a "second node" must not get a name of its own.
+     */
+    private static final String SERVICE = "node-svc";
+
     private VersionedInMemoryStore store;
     private PayloadSerializer serializer;
     private WorkflowExecutor nodeA;
@@ -41,7 +48,7 @@ class WorkflowVersionRecoveryTest {
     void setUp() {
         store = new VersionedInMemoryStore();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
-        nodeA = new WorkflowExecutor(store, null, null, null, serializer, "node-a");
+        nodeA = new WorkflowExecutor(store, null, null, null, serializer, SERVICE);
     }
 
     @AfterEach
@@ -67,7 +74,7 @@ class WorkflowVersionRecoveryTest {
         // Node stops mid-park; a replacement running NEW code adopts the instance.
         nodeA.shutdown();
         nodeA = null;
-        nodeB = new WorkflowExecutor(store, null, null, null, serializer, "node-b");
+        nodeB = new WorkflowExecutor(store, null, null, null, serializer, SERVICE);
         nodeB.recoverWorkflows(Map.of("VersionedWorkflow",
                 new WorkflowRegistration("VersionedWorkflow", "default",
                         () -> new VersionedWorkflow(3), method)));
