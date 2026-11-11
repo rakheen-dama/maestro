@@ -8,7 +8,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
@@ -292,42 +294,77 @@ final class WorkflowInstanceLockManager {
             if (closed.get()) {
                 return;
             }
-            for (var entry : heldLocks.entrySet()) {
-                renewOne(entry.getKey(), entry.getValue());
+            renewPass();
+        }
+    }
+
+    /**
+     * Renews every held lock with one {@link DistributedLock#renewAll} call on
+     * a snapshot of {@code heldLocks}. A backend failure keeps every handle
+     * for the next pass (the TTL tolerates roughly two missed passes); a
+     * handle reported lost takes {@link #lockLost}. A pass slower than the
+     * renew interval logs one WARN — it is eating into the TTL margin.
+     */
+    @SuppressWarnings("DataFlowIssue") // renewer only runs when distributedLock != null
+    private void renewPass() {
+        if (heldLocks.isEmpty()) {
+            return;
+        }
+        var snapshot = new HashMap<LockHandle, String>();
+        heldLocks.forEach((workflowId, handle) -> snapshot.put(handle, workflowId));
+        var started = System.nanoTime();
+        try {
+            Set<LockHandle> lost;
+            try {
+                lost = distributedLock.renewAll(snapshot.keySet(), ttl);
+            } catch (Exception e) {
+                // Backend failure — nothing is known, so nothing is lost: keep
+                // every handle and retry next pass.
+                logger.warn("Failed to renew {} instance lock(s) — will retry: {}",
+                        snapshot.size(), e.getMessage());
+                snapshot.forEach((_, workflowId) -> emit("instanceLockRenewFailed", workflowId,
+                        () -> observer.instanceLockRenewFailed(workflowId)));
+                return;
+            }
+            for (var handle : lost) {
+                var workflowId = snapshot.get(handle);
+                if (workflowId != null) {
+                    lockLost(workflowId, handle);
+                }
+            }
+        } finally {
+            var elapsed = Duration.ofNanos(System.nanoTime() - started);
+            if (elapsed.compareTo(renewInterval) > 0) {
+                logger.warn("Instance lock renewal pass over {} lock(s) took {} ms, longer than the {} ms "
+                                + "renew interval — held locks are closer to their {} ms TTL than intended",
+                        snapshot.size(), elapsed.toMillis(), renewInterval.toMillis(), ttl.toMillis());
             }
         }
     }
 
-    @SuppressWarnings("DataFlowIssue") // renewer only runs when distributedLock != null
-    private void renewOne(String workflowId, LockHandle handle) {
-        var lost = false;
-        try {
-            if (!distributedLock.renew(handle, ttl)) {
-                logger.error("Instance lock for workflow '{}' was lost — another node may now be "
-                                + "executing this workflow; this run is being stood down and the "
-                                + "store's lease fence rejects any write it still attempts",
-                        workflowId);
-                heldLocks.remove(workflowId, handle);
-                lost = true;
-            }
-        } catch (Exception e) {
-            // Transient backend error — keep the handle, retry next cycle
-            // (TTL tolerates roughly two missed cycles)
-            logger.warn("Failed to renew instance lock for workflow '{}' — will retry: {}",
-                    workflowId, e.getMessage());
-            emit("instanceLockRenewFailed", workflowId, () -> observer.instanceLockRenewFailed(workflowId));
+    /**
+     * The lost-lock path: drops the handle, logs an ERROR and tells the
+     * observer and the executor. Skipped when the handle is no longer the one
+     * held for the workflow — it was released (and perhaps re-acquired by a
+     * new run) after the pass took its snapshot, so the stale handle's
+     * "loss" says nothing about the current run.
+     */
+    private void lockLost(String workflowId, LockHandle handle) {
+        if (!heldLocks.remove(workflowId, handle)) {
             return;
         }
-        // Same reasoning as tryAcquire: emitted outside the backend try so a
-        // throwing observer is not reported as a transient renew failure, and
-        // contained so it cannot escape renewLoop() and kill the single
-        // renewer thread — that would silently stop renewing EVERY held lock.
-        if (lost) {
-            emit("instanceLockLost", workflowId, () -> observer.instanceLockLost(workflowId));
-            // Proactive stand-down: tell the executor now, so the run stops at
-            // its next stop point rather than after a write the store fences.
-            emit("onLockLost", workflowId, () -> lockLostCallback.accept(workflowId));
-        }
+        logger.error("Instance lock for workflow '{}' was lost — another node may now be "
+                        + "executing this workflow; this run is being stood down and the "
+                        + "store's lease fence rejects any write it still attempts",
+                workflowId);
+        // Emitted outside the backend call so a throwing observer is not
+        // reported as a transient renew failure, and contained so it cannot
+        // escape renewLoop() and kill the single renewer thread — that would
+        // silently stop renewing EVERY held lock.
+        emit("instanceLockLost", workflowId, () -> observer.instanceLockLost(workflowId));
+        // Proactive stand-down: tell the executor now, so the run stops at
+        // its next stop point rather than after a write the store fences.
+        emit("onLockLost", workflowId, () -> lockLostCallback.accept(workflowId));
     }
 
     /**
