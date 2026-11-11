@@ -155,9 +155,11 @@ public interface WorkflowStore {
      *
      * <p>The default filters, sorts ({@link RecoveryCursor#ORDER}) and slices
      * the result of {@link #getRecoverableInstances()} — correct for any store,
-     * but it still reads every active row on every page. A store that can page
-     * in its query should override it; the shipped JDBC store and the
-     * in-memory test store do.
+     * but it runs that unbounded scan of every active row of every service
+     * <em>once per page</em>: a pass over A active instances of the service,
+     * in the engine's pages of 200, costs ⌊A / 200⌋ + 1 full scans where the
+     * engine used to make one. Third-party stores should override it with a
+     * keyset query; the shipped JDBC store and the in-memory test store do.
      *
      * @param serviceName the service whose instances to return
      * @param after       the last instance of the previous page, or

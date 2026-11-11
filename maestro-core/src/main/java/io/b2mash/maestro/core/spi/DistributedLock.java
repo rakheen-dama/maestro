@@ -90,8 +90,8 @@ public interface DistributedLock {
      * in one round trip should override it — the default issues one
      * {@link #renew} per handle. The default attempts <em>every</em> handle
      * even after a {@code renew} throws, so one failing key cannot stop the
-     * others being renewed; it then rethrows the first exception (later ones
-     * attached as suppressed).
+     * others being renewed; it then rethrows the first exception (later,
+     * distinct ones attached as suppressed).
      *
      * <p>The two outcomes stay as distinct as they are for {@code renew}:
      * <ul>
@@ -130,7 +130,9 @@ public interface DistributedLock {
                 // unrenewed. Errors are not caught — they always propagate.
                 if (failure == null) {
                     failure = e;
-                } else {
+                } else if (e != failure) {
+                    // A backend may rethrow one shared instance; suppressing
+                    // an exception into itself throws IllegalArgumentException.
                     failure.addSuppressed(e);
                 }
             }

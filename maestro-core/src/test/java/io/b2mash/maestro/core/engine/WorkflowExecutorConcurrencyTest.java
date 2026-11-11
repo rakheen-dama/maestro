@@ -33,6 +33,7 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * F8 / Issue 25: {@code maestro.worker.task-queues[].concurrency} and
@@ -259,12 +260,14 @@ class WorkflowExecutorConcurrencyTest {
      * A {@code parallel()} with more branches than the queue has activity
      * slots must not deadlock on itself: the branches queue for the slots and
      * run at most {@code activityConcurrency} at a time, while the run holds
-     * its one workflow slot throughout.
+     * its one workflow slot throughout. The first two branches admitted hold
+     * their slots until the test releases them, so "two at once" is observed,
+     * not inferred from a sleep.
      */
     @Test
     void parallelBranchesBeyondTheDefaultActivityBoundQueueAndComplete() throws Exception {
         newExecutor(Map.of(), new TaskQueueLimits(1, 2));
-        var tracking = new TrackingActivitiesImpl();
+        var tracking = new TrackingActivitiesImpl(2);
         var activities = new ActivityProxyFactory().createProxy(
                 TrackingActivities.class, tracking, store, null, null,
                 RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor(),
@@ -273,9 +276,16 @@ class WorkflowExecutorConcurrencyTest {
 
         start("wf-fan-out", "fan-out", new ParallelActivitiesWorkflow(activities, 5));
 
+        assertTrue(tracking.held.await(5, SECONDS), "two branches were admitted and are executing together");
+        await().during(DURING).atMost(5, SECONDS).untilAsserted(() ->
+                assertEquals(2, tracking.calls.get(), "the other three branches wait for an activity slot"));
+        assertEquals(OptionalInt.of(0), executor.taskQueueGovernor().availableActivitySlots("fan-out"));
+
+        tracking.release.countDown();
         awaitStatus("wf-fan-out", WorkflowStatus.COMPLETED);
         assertEquals(5, tracking.calls.get());
-        assertEquals(2, tracking.maxConcurrent.get(), "at most the default activity bound executes at once");
+        assertTrue(tracking.maxConcurrent.get() <= 2,
+                "at most the default activity bound executes at once, saw " + tracking.maxConcurrent.get());
         assertEquals(OptionalInt.of(2), executor.taskQueueGovernor().availableActivitySlots("fan-out"));
         assertEquals(OptionalInt.of(1), executor.taskQueueGovernor().availableWorkflowSlots("fan-out"));
     }
@@ -395,17 +405,35 @@ class WorkflowExecutorConcurrencyTest {
         int track(int branch);
     }
 
+    /**
+     * Records how many executions overlap. The first {@code held} entries
+     * count down {@link #held} and then block on {@link #release}; every later
+     * entry returns at once.
+     */
     private static final class TrackingActivitiesImpl implements TrackingActivities {
         final AtomicInteger calls = new AtomicInteger();
         final AtomicInteger concurrent = new AtomicInteger();
         final AtomicInteger maxConcurrent = new AtomicInteger();
+        final CountDownLatch held;
+        final CountDownLatch release = new CountDownLatch(1);
+        private final int holding;
+
+        TrackingActivitiesImpl(int holding) {
+            this.holding = holding;
+            this.held = new CountDownLatch(holding);
+        }
 
         @Override
         public int track(int branch) {
-            calls.incrementAndGet();
+            var entry = calls.incrementAndGet();
             maxConcurrent.accumulateAndGet(concurrent.incrementAndGet(), Math::max);
             try {
-                Thread.sleep(200); // long enough for every branch admitted to overlap
+                if (entry <= holding) {
+                    held.countDown();
+                    if (!release.await(5, SECONDS)) {
+                        throw new IllegalStateException("the test never released branch " + branch);
+                    }
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new IllegalStateException(e);

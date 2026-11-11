@@ -16,6 +16,7 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -107,6 +108,70 @@ class InMemoryDistributedLockTest {
         assertEquals("b", thrown.key());
         assertEquals(List.of("a", "b", "c", "d"), List.copyOf(backend.renewCalls),
                 "one failing key must not stop the default from renewing every other handle");
+    }
+
+    /**
+     * A backend may rethrow one shared exception instance (a cached
+     * "backend down" exception, say). {@code failure.addSuppressed(failure)}
+     * throws {@code IllegalArgumentException}, which would escape the loop and
+     * leave every later handle unrenewed.
+     */
+    @Test
+    void renewAllDefaultAttemptsEveryHandleWhenRenewRethrowsOneSharedException() {
+        var shared = new LockBackendException("backend down", "b", new RuntimeException());
+        var backend = new SharedExceptionLock(Set.of("b", "c"), shared);
+        var handles = new ArrayList<LockHandle>();
+        for (var key : List.of("a", "b", "c", "d")) {
+            handles.add(new LockHandle(key, "t-" + key, Instant.now().plusSeconds(30)));
+        }
+
+        RuntimeException thrown = null;
+        try {
+            backend.renewAll(handles, Duration.ofSeconds(30));
+        } catch (RuntimeException e) {
+            thrown = e;
+        }
+
+        assertEquals(List.of("a", "b", "c", "d"), List.copyOf(backend.renewCalls),
+                "a shared exception instance must not stop the default from renewing every other handle");
+        assertSame(shared, thrown, "the backend's own exception is rethrown");
+        assertEquals(0, shared.getSuppressed().length, "an exception is never suppressed into itself");
+    }
+
+    /** Uses the SPI default {@code renewAll}; {@code renew} throws the same instance for every failing key. */
+    private static final class SharedExceptionLock implements DistributedLock {
+
+        private final Set<String> failingKeys;
+        private final RuntimeException shared;
+        final List<String> renewCalls = new ArrayList<>();
+
+        SharedExceptionLock(Set<String> failingKeys, RuntimeException shared) {
+            this.failingKeys = failingKeys;
+            this.shared = shared;
+        }
+
+        @Override
+        public Optional<LockHandle> tryAcquire(String key, Duration ttl) {
+            return Optional.empty();
+        }
+
+        @Override
+        public void release(LockHandle handle) {
+        }
+
+        @Override
+        public boolean renew(LockHandle handle, Duration ttl) {
+            renewCalls.add(handle.key());
+            if (failingKeys.contains(handle.key())) {
+                throw shared;
+            }
+            return true;
+        }
+
+        @Override
+        public boolean trySetLeader(String electionKey, String candidateId, Duration ttl) {
+            return false;
+        }
     }
 
     /** Uses the SPI default {@code renewAll}; {@code renew} throws for one key and renews the rest. */

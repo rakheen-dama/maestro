@@ -219,8 +219,9 @@ class MultiNodeLockContentionIT extends PostgresIntegrationSupport {
     // ── fixtures ──────────────────────────────────────────────────────────
 
     /**
-     * Builds one node: its own service name, its own Postgres lock client on its
-     * own DataSource, over the shared store.
+     * Builds one node of the one service ({@code SERVICE}, shared by every
+     * node, as recovery requires): its own Postgres lock client on its own
+     * DataSource, over the shared store.
      *
      * @param activities  this node's activity implementation
      * @return a harness with the chain workflow registered
