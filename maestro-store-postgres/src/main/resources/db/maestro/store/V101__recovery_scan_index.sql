@@ -1,7 +1,12 @@
 -- Index for the paged, service-scoped recovery scan
 -- (WorkflowStore.getRecoverableInstances(serviceName, after, limit)).
--- Band 1-99 belongs to maestro-store-postgres (see V1). This migration names
--- only V1 objects, so it applies in any order relative to V6-V9.
+-- Numbered V101, not V10: every new Maestro migration, store or lock, takes the
+-- next version above the highest shipped, within 101-199 (V1-V9 and V100 are
+-- history; 200-299 is retired). Every build since the lock band joined this
+-- module resolves V100, so to an older build an applied V101 is a "future"
+-- migration, which Flyway ignores by default, where an applied V10 would be a
+-- "missing" one that fails its startup. This directory still says the
+-- migration belongs to the store. It names only V1 objects.
 --
 -- The statement uses IF NOT EXISTS on purpose. Flyway runs this file in one
 -- transaction, so CREATE INDEX CONCURRENTLY cannot be used here, and a plain

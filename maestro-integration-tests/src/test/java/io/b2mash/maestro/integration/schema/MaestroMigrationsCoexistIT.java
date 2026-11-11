@@ -103,7 +103,7 @@ class MaestroMigrationsCoexistIT {
 
         new MaestroSchemaInitializer(ds, SchemaMode.FLYWAY, getClass().getClassLoader()).initialize();
 
-        assertEquals(List.of("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "100"),
+        assertEquals(List.of("1", "2", "3", "4", "5", "6", "7", "8", "9", "100", "101"),
                 versions(MaestroSchemaInitializer.HISTORY_TABLE));
         assertEquals(List.of("1"), versions("flyway_schema_history"),
                 "Maestro wrote nothing into the host's history");
@@ -207,7 +207,7 @@ class MaestroMigrationsCoexistIT {
      * harmless (optionally {@code DROP TABLE maestro_signal_queue}).
      */
     @Test
-    @DisplayName("upgrade procedure, keep the data: mode none + V4–V10 by hand + scoped DELETE")
+    @DisplayName("upgrade procedure, keep the data: mode none + V4–V9 and V101 by hand + scoped DELETE")
     void upgradeProcedureKeepingTheData(@TempDir Path released, @TempDir Path hostMigrations,
                                         @TempDir Path noMigrations) throws Exception {
         simulateReleased040Database(released, hostMigrations);
@@ -231,7 +231,7 @@ class MaestroMigrationsCoexistIT {
                 ALTER TABLE maestro_workflow_event ADD COLUMN IF NOT EXISTS args_hash VARCHAR(64);       -- V7
                 ALTER TABLE maestro_workflow_signal ADD COLUMN IF NOT EXISTS message_id TEXT;            -- V9
                 """);
-        // The block's CONCURRENTLY lines (V8 ×2, V9, V10), one statement each: CREATE INDEX CONCURRENTLY
+        // The block's CONCURRENTLY lines (V8 ×2, V9, V101), one statement each: CREATE INDEX CONCURRENTLY
         // cannot run inside a transaction block, and a multi-statement string is
         // one implicit transaction — an operator pastes them one at a time too.
         execute("""
@@ -247,7 +247,7 @@ class MaestroMigrationsCoexistIT {
                     ON maestro_workflow_signal (workflow_id, signal_name, message_id) WHERE message_id IS NOT NULL;
                 """);
         execute("""
-                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_wf_instance_recovery                        -- V10
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_wf_instance_recovery                        -- V101
                     ON maestro_workflow_instance (service_name, started_at, id)
                     WHERE status IN ('RUNNING', 'WAITING_SIGNAL', 'WAITING_TIMER', 'COMPENSATING');
                 """);
@@ -256,7 +256,7 @@ class MaestroMigrationsCoexistIT {
                 """);
         assertTrue(indexes().containsAll(List.of("idx_wf_instance_terminal", "idx_wf_signal_instance",
                         "idx_wf_signal_message_id", "idx_wf_instance_recovery")),
-                "the hand-applied V8, V9 and V10 indexes exist: " + indexes());
+                "the hand-applied V8, V9 and V101 indexes exist: " + indexes());
         // Step 3.
         assertEquals(4, execute(DELETE_MAESTRO_HISTORY_ROWS),
                 "every store/lock row a 0.4.0 build wrote is matched (V200/V201 are not replayed here)");
@@ -334,7 +334,7 @@ class MaestroMigrationsCoexistIT {
         // Step 4.
         Flyway.configure().dataSource(ds).locations("filesystem:" + hostMigrations).load().migrate();
         new MaestroSchemaInitializer(ds, SchemaMode.FLYWAY, getClass().getClassLoader()).initialize();
-        assertEquals(List.of("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "100"),
+        assertEquals(List.of("1", "2", "3", "4", "5", "6", "7", "8", "9", "100", "101"),
                 versions(MaestroSchemaInitializer.HISTORY_TABLE));
         new PostgresWorkflowStore(ds, JsonMapper.builder().build()).saveSignal(preDeliverySignal());
     }

@@ -22,11 +22,13 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -35,6 +37,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -319,6 +323,38 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
 
         private List<String> ids(List<WorkflowInstance> page) {
             return page.stream().map(WorkflowInstance::workflowId).toList();
+        }
+
+        /**
+         * The index's predicate is a hand-written status list; the query's is
+         * generated from {@link WorkflowStatus#isActive()}. Postgres uses a
+         * partial index only when the query's predicate implies the index's,
+         * so a status added to the active set but not to the migration would
+         * silently take the paged scan off the index (and a status removed
+         * from the active set would leave the index carrying rows the scan
+         * never reads). This pins the two lists equal.
+         */
+        @Test
+        @DisplayName("the recovery index's status predicate is exactly WorkflowStatus's active set")
+        void recoveryIndexPredicateMatchesTheActiveStatuses() throws Exception {
+            var resource = "db/maestro/store/V101__recovery_scan_index.sql";
+            String sql;
+            try (var in = getClass().getClassLoader().getResourceAsStream(resource)) {
+                assertNotNull(in, resource);
+                sql = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            }
+            var statement = sql.lines().filter(line -> !line.strip().startsWith("--"))
+                    .collect(Collectors.joining("\n"));
+            var predicate = Pattern.compile("WHERE\\s+status\\s+IN\\s*\\(([^)]*)\\)", Pattern.CASE_INSENSITIVE)
+                    .matcher(statement);
+            assertTrue(predicate.find(), "no WHERE status IN (...) in " + resource);
+            var indexed = Pattern.compile("'([A-Z_]+)'").matcher(predicate.group(1)).results()
+                    .map(match -> match.group(1)).collect(Collectors.toSet());
+            var active = Arrays.stream(WorkflowStatus.values()).filter(WorkflowStatus::isActive)
+                    .map(Enum::name).collect(Collectors.toSet());
+
+            assertEquals(active, indexed,
+                    "idx_wf_instance_recovery's predicate must list exactly the statuses the recovery query reads");
         }
 
         @Test

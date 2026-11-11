@@ -323,7 +323,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      *
      * <p>One keyset query: {@code service_name = ?}, the active statuses,
      * {@code (started_at, id) > (?, ?)} (omitted for the first page),
-     * {@code ORDER BY started_at, id LIMIT ?}. Migration V10's partial index
+     * {@code ORDER BY started_at, id LIMIT ?}. Migration V101's partial index
      * {@code idx_wf_instance_recovery} serves it; without the index the query
      * is still correct, only slower.
      *
