@@ -2458,14 +2458,31 @@ public final class WorkflowExecutor {
      * recovery needs to find.
      */
     private void handleShutdownSuspension(WorkflowContext ctx) {
-        var status = store.getInstance(ctx.workflowId())
-                .map(WorkflowInstance::status)
-                .orElse(null);
+        var status = statusForLog(ctx.workflowId());
         logger.info("Workflow '{}' suspended by shutdown while {} — left recoverable",
                 ctx.workflowId(), status);
         // RULING 5: the only callback a stateful observer gets on this thread
         // for this path. workflowTerminated/Completed/Failed never fire here.
         emitRunAbandoned(ctx, AbandonReason.SHUTDOWN);
+    }
+
+    /**
+     * The instance's status, for a stand-down or abandon log line only — never
+     * for a decision. Best-effort: an advisory read (neither retried nor
+     * latched by {@link StoreFaultGuard}), and {@code "unknown"} if the store
+     * does not answer. These handlers run while a run unwinds — often because
+     * the store is down — and a read that threw out of them would skip the
+     * observer callback that follows it.
+     */
+    private String statusForLog(String workflowId) {
+        try {
+            return String.valueOf(StoreFaultGuard.advisory(() -> store.getInstance(workflowId))
+                    .map(WorkflowInstance::status)
+                    .orElse(null));
+        } catch (RuntimeException e) {
+            logger.debug("Could not read workflow '{}' status for its log line", workflowId, e);
+            return "unknown (store read failed: " + e + ")";
+        }
     }
 
     // ── Internal: termination ──────────────────────────────────────────
@@ -2528,11 +2545,15 @@ public final class WorkflowExecutor {
      *              or whatever workflow code turned the latched one into
      */
     private void handleStoreUnavailable(WorkflowContext ctx, @Nullable Throwable cause) {
+        // The latched detail already carries the SQLSTATE (StoreFaultGuard);
+        // an unlatched fault gets the same diagnosis here.
         var detail = ctx.cancellation().reason();
         logger.warn("Workflow '{}' abandoned its local run — the store is unavailable ({}); NOT recorded as a "
                         + "workflow failure, no compensation run; the instance stays recoverable and "
                         + "recovery resumes it once the store answers",
-                ctx.workflowId(), detail != null ? detail : String.valueOf(cause));
+                ctx.workflowId(), detail != null ? detail
+                        : cause != null ? cause + " — " + StoreFaultGuard.diagnosis(cause) : "no cause");
+        logger.debug("Store-unavailable abandon of workflow '{}'", ctx.workflowId(), cause);
         emitRunAbandoned(ctx, AbandonReason.STORE_UNAVAILABLE);
     }
 
@@ -2582,9 +2603,7 @@ public final class WorkflowExecutor {
             default -> throw new IllegalArgumentException(
                     "not a stale-run signal: " + e.getClass().getName(), e);
         };
-        var status = store.getInstance(ctx.workflowId())
-                .map(WorkflowInstance::status)
-                .orElse(null);
+        var status = statusForLog(ctx.workflowId());
         logger.warn("Workflow '{}' stood down ({}): another runner owns its progress ({}; instance status "
                         + "now {}) — no failure recorded, no compensation run; the concurrent runner's "
                         + "durable state governs",
@@ -2637,9 +2656,7 @@ public final class WorkflowExecutor {
      */
     private void handleUnknownHistoryStandDown(WorkflowContext ctx,
                                                UnknownWorkflowHistoryException e) {
-        var status = store.getInstance(ctx.workflowId())
-                .map(WorkflowInstance::status)
-                .orElse(null);
+        var status = statusForLog(ctx.workflowId());
         logger.warn("Workflow '{}' stood down at sequence {}: {} (instance status still {}) — no "
                         + "failure recorded, no compensation run; {}",
                 ctx.workflowId(), e.sequenceNumber(), e.getMessage(), status, standDownRemedy(e.kind()));

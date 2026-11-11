@@ -114,7 +114,10 @@ import java.util.concurrent.TimeoutException;
  * stand-down and propagates — never recorded as the activity's failure, never
  * a reason to retry the activity itself. Like the stale case it is sticky: the
  * run's next live activity throws it again before executing anything, and
- * {@code WorkflowExecutor} abandons the run for recovery to resume.
+ * {@code WorkflowExecutor} abandons the run for recovery to resume. The
+ * activity body itself runs in the guard's pass-through scope: a store call it
+ * makes on its own account (a {@code MaestroClient} call for another workflow)
+ * is the activity's own failure, retried under its {@code RetryPolicy}.
  *
  * <h2>Lock Strategy</h2>
  * <p>The distributed lock is an optimization to prevent duplicate execution, not
@@ -765,8 +768,14 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         // The workflow thread is blocked in get() meanwhile, so the context is
         // never used from two live threads — except by an attempt that ignores
         // the timeout's interrupt, whose result is discarded regardless.
+        // The body itself runs in StoreFaultGuard's pass-through scope, bound
+        // here on the attempt thread: a store call it makes on its own account
+        // (a MaestroClient start or signal of another workflow) must fail this
+        // attempt under the retry policy, not latch the calling run. The
+        // handler's own memo lookup, outcome append and lock calls run outside
+        // this scope, on the workflow thread, and stay guarded.
         Callable<@Nullable Object> body = () -> ScopedValue.where(WorkflowContext.scopedValue(), ctx)
-                .call(() -> invokeActivity(method, args));
+                .call(() -> StoreFaultGuard.passThrough(() -> invokeActivity(method, args)));
         var wrapped = observer.wrapActivityAttempt(info, body);
         var callerMdc = MDC.getCopyOfContextMap();
         var attempt = new FutureTask<@Nullable Object>(() -> {

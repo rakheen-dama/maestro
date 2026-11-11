@@ -24,7 +24,7 @@ import java.util.function.Supplier;
  * delegates to its unfenced form here, so one key covers both. Supported
  * methods: {@code getInstance}, {@code updateInstance}, {@code completeInstance},
  * {@code appendEvent}, {@code getEventBySequence}, {@code getEvents},
- * {@code getUnconsumedSignals}, {@code markSignalConsumed},
+ * {@code saveSignalIfAbsent}, {@code getUnconsumedSignals}, {@code markSignalConsumed},
  * {@code appendEventAndConsumeSignal}, {@code saveTimer}, {@code findTimer},
  * {@code markTimerFired}, {@code markTimerCancelled}. The composite writes
  * of the base fixture call its component methods, so {@code completeInstance}
@@ -182,6 +182,14 @@ final class FaultyStore extends VersionedInMemoryStore {
     }
 
     // ── Signals ─────────────────────────────────────────────────────────
+
+    @Override
+    public boolean saveSignalIfAbsent(WorkflowSignal signal) {
+        before("saveSignalIfAbsent", signal);
+        var result = super.saveSignalIfAbsent(signal);
+        after("saveSignalIfAbsent");
+        return result;
+    }
 
     @Override
     public List<WorkflowSignal> getUnconsumedSignals(String workflowId, String signalName) {

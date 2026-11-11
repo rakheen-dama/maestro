@@ -15,6 +15,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.sql.SQLException;
+import java.sql.SQLTransientConnectionException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -22,6 +24,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -58,6 +61,22 @@ class StoreFaultGuardTest {
     private WorkflowEvent event(int seq) {
         return new WorkflowEvent(UUID.randomUUID(), instanceId, seq, EventType.ACTIVITY_COMPLETED,
                 "step", null, Instant.now());
+    }
+
+    private WorkflowInstance instance() {
+        return WorkflowInstance.builder()
+                .id(instanceId)
+                .workflowId("wf-guard")
+                .runId(UUID.randomUUID())
+                .workflowType("T")
+                .taskQueue("default")
+                .status(WorkflowStatus.RUNNING)
+                .serviceName("svc")
+                .eventSequence(0)
+                .startedAt(Instant.now())
+                .updatedAt(Instant.now())
+                .version(1)
+                .build();
     }
 
     /** Runs {@code body} on this thread with {@link #ctx} bound, as a workflow thread would. */
@@ -102,6 +121,56 @@ class StoreFaultGuardTest {
     }
 
     @Test
+    @DisplayName("the latch detail carries the SQLSTATE and driver message of the underlying SQLException")
+    void latchDetailCarriesSqlStateAndDriverMessage() {
+        // As the JDBC store raises a schema error: a StoreUnavailableException
+        // whose message names only the statement, the SQLException as cause.
+        delegate.failNext("appendEvent", 3, () -> new StoreUnavailableException(
+                "Failed to append event: INSERT INTO maestro_workflow_event ...",
+                new SQLException("ERROR: column \"args_hash\" does not exist", "42703")));
+
+        assertThrows(StoreUnavailableException.class, () -> inRun(() -> guarded.appendEvent(event(1))));
+
+        var reason = ctx.cancellation().reason();
+        assertAll(
+                () -> assertTrue(reason.startsWith("appendEvent: "), reason),
+                () -> assertTrue(reason.contains("SQLSTATE=42703"), "the SQLSTATE must be in the detail: " + reason),
+                () -> assertTrue(reason.contains("column \"args_hash\" does not exist"),
+                        "the driver message must be in the detail: " + reason));
+    }
+
+    @Test
+    @DisplayName("a SQLException with no SQLSTATE, deeper in the chain, is reported as SQLSTATE=none")
+    void latchDetailReportsMissingSqlStateAsNone() {
+        // A pool acquisition timeout carries no SQLSTATE; a framework layer
+        // may sit between it and the store's exception.
+        delegate.failNext("updateInstance", 1, () -> new StoreUnavailableException(
+                "Update failed: UPDATE maestro_workflow_instance ...",
+                new IllegalStateException("wrapped", new SQLTransientConnectionException(
+                        "HikariPool-1 - Connection is not available, request timed out after 30000ms."))));
+
+        assertThrows(StoreUnavailableException.class, () -> inRun(() -> guarded.updateInstance(instance())));
+
+        var reason = ctx.cancellation().reason();
+        assertAll(
+                () -> assertTrue(reason.contains("SQLSTATE=none"), reason),
+                () -> assertTrue(reason.contains("Connection is not available, request timed out after 30000ms."),
+                        reason));
+    }
+
+    @Test
+    @DisplayName("with no SQLException in the chain, the latch detail names the root cause")
+    void latchDetailNamesRootCauseWithoutSqlException() {
+        delegate.failNext("appendEvent", 3);
+
+        assertThrows(StoreUnavailableException.class, () -> inRun(() -> guarded.appendEvent(event(1))));
+
+        var reason = ctx.cancellation().reason();
+        assertTrue(reason.contains("java.lang.RuntimeException: connection refused (injected)"),
+                "the root cause's class and message must be in the detail: " + reason);
+    }
+
+    @Test
     @DisplayName("a commit lost in flight surfaces on retry as a duplicate, not a latch")
     void ambiguousCommitSurfacesAsDuplicate() {
         delegate.commitThenFailNext("appendEvent", 1);
@@ -117,21 +186,8 @@ class StoreFaultGuardTest {
     @DisplayName("updateInstance is not retried, and a store fault on it latches")
     void updateInstanceIsNotRetried() {
         delegate.failNext("updateInstance", 1);
-        var instance = WorkflowInstance.builder()
-                .id(instanceId)
-                .workflowId("wf-guard")
-                .runId(UUID.randomUUID())
-                .workflowType("T")
-                .taskQueue("default")
-                .status(WorkflowStatus.RUNNING)
-                .serviceName("svc")
-                .eventSequence(0)
-                .startedAt(Instant.now())
-                .updatedAt(Instant.now())
-                .version(1)
-                .build();
 
-        assertThrows(StoreUnavailableException.class, () -> inRun(() -> guarded.updateInstance(instance)));
+        assertThrows(StoreUnavailableException.class, () -> inRun(() -> guarded.updateInstance(instance())));
 
         assertEquals(1, delegate.calls("updateInstance"));
         assertEquals(RunCancellation.Cause.STORE_UNAVAILABLE, ctx.cancellation().cause());

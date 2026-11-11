@@ -805,15 +805,21 @@ final class SignalManager {
      * {@code cancelTimer} and {@code advanceTime()} can drive it again.
      * Best-effort: if the save fails, the await still times out on the
      * memoized deadline, decided by the executor's instant source (the system
-     * clock in production).
+     * clock in production). Advisory to {@link StoreFaultGuard} for the same
+     * reason: a store fault here is tolerated below, so it must not latch the
+     * run's {@code STORE_UNAVAILABLE} stand-down either. A fence still
+     * propagates.
      *
      * @return the new row's id, or {@code null} if it could not be saved
      */
     private @Nullable UUID rearmDeadlineRow(WorkflowContext ctx, String timerId, Instant deadline) {
         var rowId = UUID.randomUUID();
         try {
-            saveDeadlineRow(ctx, new WorkflowTimer(rowId, ctx.workflowInstanceId(), ctx.workflowId(),
-                    timerId, deadline, TimerStatus.PENDING, Instant.now()));
+            StoreFaultGuard.advisory(() -> {
+                saveDeadlineRow(ctx, new WorkflowTimer(rowId, ctx.workflowInstanceId(), ctx.workflowId(),
+                        timerId, deadline, TimerStatus.PENDING, Instant.now()));
+                return null;
+            });
             logger.warn("Workflow '{}' await deadline row '{}' was missing on replay — re-armed it at the "
                     + "memoized deadline {}", ctx.workflowId(), timerId, deadline);
             return rowId;

@@ -12,9 +12,13 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.sql.SQLException;
 import java.time.Duration;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.function.Supplier;
 
 /**
@@ -43,16 +47,36 @@ import java.util.function.Supplier;
  * <p>When the retries are exhausted (or at once, for an operation that is not
  * retried), the guard requests {@code STORE_UNAVAILABLE} on the cancellation
  * of the {@link WorkflowContext} bound to the calling thread, with the detail
- * {@code "<method>: <exception>"}, and rethrows the last exception. Nothing is
- * latched when no context is bound (a background loop, an admin call) or when
- * the call runs inside {@link #advisory(Supplier)}: an advisory read — a park
- * loop's wake recheck, see {@link ParkProbe} — is skipped on failure, so it
- * must neither stop the run nor wait out retries.
+ * {@code "<method>: <exception> — <diagnosis>"}, logs it once at {@code WARN}
+ * (the full throwable at {@code DEBUG}), and rethrows the last exception. The
+ * diagnosis is what tells one fault from another — a pool timeout, a schema
+ * error, a deterministic rejection: {@code SQLSTATE=<state> <driver message>}
+ * of the first {@link SQLException} in the cause chain ({@code SQLSTATE=none}
+ * when the driver set none), or the root cause's class and message when the
+ * chain holds no {@code SQLException}.
+ *
+ * <p>Nothing is latched when no context is bound (a background loop, an admin
+ * call), when the call runs inside {@link #advisory(Supplier)} — an advisory
+ * read, such as a park loop's wake recheck (see {@link ParkProbe}), is skipped
+ * on failure, so it must neither stop the run nor wait out retries — or when
+ * it runs inside {@link #passThrough(Callable)}.
+ *
+ * <h2>Calls an activity body makes are not the run's</h2>
+ * <p>The activity proxy re-binds the run's {@code WorkflowContext} on the
+ * thread that runs an activity attempt, so the latch would otherwise reach a
+ * store call the activity body makes on its own account — a
+ * {@code MaestroClient} start or signal of <em>another</em> workflow, which
+ * reaches this executor's guarded store. That fault belongs to the activity:
+ * it must fail the attempt under the activity's own {@code RetryPolicy}, not
+ * abandon the calling run. The proxy therefore runs the activity body — and
+ * only the body: never its own memo lookup, outcome append or lock calls —
+ * inside {@link #passThrough(Callable)}, where the guard neither retries,
+ * latches nor refuses.
  *
  * <h2>A latched run cannot append</h2>
  * <p>Once the run bound to the calling thread is latched
- * {@code STORE_UNAVAILABLE}, every append it makes — any method whose name
- * starts with {@code appendEvent}: both {@code appendEvent} overloads and
+ * {@code STORE_UNAVAILABLE}, every append it <em>starts</em> — any method whose
+ * name starts with {@code appendEvent}: both {@code appendEvent} overloads and
  * {@code appendEventAndConsumeSignal} — is refused with a
  * {@link StoreUnavailableException} <em>without</em> reaching the store, even
  * if the store answers again; the refusal is neither retried nor re-latched.
@@ -63,9 +87,13 @@ import java.util.function.Supplier;
  * fail its replay check on every recovery. A <em>stale</em> run needs no such
  * rule: the lease fence and the {@code (workflow_instance_id, sequence_number)}
  * index already refuse its writes. A store-unavailable run owns its lease and
- * its slots, so nothing else stops its appends once the store heals. Reads and
- * non-append writes are not refused: the stop points raise the latch before
- * any side effect or status change, and a read records nothing.
+ * its slots, so nothing else stops its appends once the store heals. The
+ * check is made once, on entry: an append already in its retry loop when
+ * another thread of the same run (a parallel branch) latches the run is not
+ * stopped, so its next attempt can still land; the run then stops at its next
+ * stop point. Reads and non-append writes are not refused: the stop points
+ * raise the latch before any side effect or status change, and a read records
+ * nothing.
  *
  * <h2>Everything else passes through</h2>
  * <p>Any other throwable from the delegate is rethrown unwrapped from the
@@ -74,8 +102,10 @@ import java.util.function.Supplier;
  * intact and are never retried or latched.
  *
  * <p><b>Thread safety:</b> stateless; a wrapped store is exactly as
- * thread-safe as its delegate. The advisory flag is a {@link ScopedValue},
- * so it is confined to the thread (and scope) that set it.
+ * thread-safe as its delegate. The advisory and pass-through flags are
+ * {@link ScopedValue}s, so each is confined to the thread (and scope) that
+ * set it — the activity proxy binds the pass-through on the attempt thread
+ * itself.
  */
 final class StoreFaultGuard {
 
@@ -92,6 +122,9 @@ final class StoreFaultGuard {
 
     /** Set while an advisory read runs: the guard neither retries nor latches. */
     private static final ScopedValue<Boolean> ADVISORY = ScopedValue.newInstance();
+
+    /** Set while an activity body runs: the guard neither retries, latches nor refuses. */
+    private static final ScopedValue<Boolean> PASS_THROUGH = ScopedValue.newInstance();
 
     private StoreFaultGuard() {
     }
@@ -142,6 +175,47 @@ final class StoreFaultGuard {
         return ScopedValue.where(ADVISORY, Boolean.TRUE).call(read::get);
     }
 
+    /**
+     * Runs an activity body, on the thread that runs it, with the guard out of
+     * the way: a store call the body makes on its own account — through a
+     * {@code MaestroClient}, against the engine's guarded store — is neither
+     * retried, nor latched on the run bound to this thread, nor refused if
+     * that run is already latched (class Javadoc). Whatever {@code body}
+     * throws propagates as is: nothing is wrapped.
+     *
+     * @param body the activity body
+     * @param <T>  its result type
+     * @return the body's result
+     * @throws Exception whatever the body throws
+     */
+    static <T> T passThrough(Callable<T> body) throws Exception {
+        return ScopedValue.where(PASS_THROUGH, Boolean.TRUE).call(body::call);
+    }
+
+    /**
+     * What tells one store fault from another, for the latch detail and the
+     * logs: {@code SQLSTATE=<state> <driver message>} of the first
+     * {@link SQLException} in {@code fault}'s cause chain ({@code none} for a
+     * missing state, as a pool acquisition timeout has), or
+     * {@code root cause <class>: <message>} when the chain holds no
+     * {@code SQLException}.
+     *
+     * @param fault the store fault
+     * @return the diagnosis — never {@code null}
+     */
+    static String diagnosis(Throwable fault) {
+        var seen = Collections.newSetFromMap(new IdentityHashMap<Throwable, Boolean>());
+        var root = fault;
+        for (Throwable t = fault; t != null && seen.add(t); t = t.getCause()) {
+            if (t instanceof SQLException sql) {
+                var state = sql.getSQLState();
+                return "SQLSTATE=" + (state != null ? state : "none") + " " + sql.getMessage();
+            }
+            root = t;
+        }
+        return "root cause " + root;
+    }
+
     private record Handler(WorkflowStore delegate, List<Duration> backoff) implements InvocationHandler {
 
         @Override
@@ -149,6 +223,9 @@ final class StoreFaultGuard {
                 throws Throwable {
             if (method.getDeclaringClass() == Object.class) {
                 return objectMethod(proxy, method, args);
+            }
+            if (PASS_THROUGH.isBound()) {
+                return invokeDelegate(method, args);
             }
             var advisory = ADVISORY.isBound();
             if (!advisory && method.getName().startsWith("appendEvent")) {
@@ -217,10 +294,12 @@ final class StoreFaultGuard {
                 return;
             }
             var ctx = bound.get();
-            if (ctx.cancellation().requestStoreUnavailable(method.getName() + ": " + e)) {
+            var fault = e + " — " + diagnosis(e);
+            if (ctx.cancellation().requestStoreUnavailable(method.getName() + ": " + fault)) {
                 logger.warn("Store unavailable on {} — workflow '{}' stands down until the store "
-                        + "recovers: {}", method.getName(), ctx.workflowId(), e.toString());
+                        + "recovers: {}", method.getName(), ctx.workflowId(), fault);
             }
+            logger.debug("Store fault on {} for workflow '{}'", method.getName(), ctx.workflowId(), e);
         }
 
         private @Nullable Object objectMethod(Object proxy, Method method, @Nullable Object @Nullable [] args) {

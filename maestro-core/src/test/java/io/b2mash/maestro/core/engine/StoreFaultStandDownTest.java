@@ -140,8 +140,10 @@ class StoreFaultStandDownTest {
     @Test
     @DisplayName("a single blip on the outcome append is retried in place and absorbed")
     void singleBlipOnOutcomeAppendIsAbsorbed() throws Exception {
-        // The raw store, so this also proves the activity proxy guards its
-        // own store (one production retry wait of 200 ms).
+        // The raw store, to the executor AND to the proxy factory: only
+        // ActivityProxyFactory's own StoreFaultGuard.wrap can retry this
+        // outcome append, so this pins that wrap — without it the blip
+        // abandons the run (one production retry wait of 200 ms).
         executor.shutdown();
         executor = newExecutor(faulty);
         faulty.failNext("appendEvent", 1);
@@ -330,6 +332,83 @@ class StoreFaultStandDownTest {
                 () -> assertEquals(WorkflowStatus.RUNNING, status("sf-backoff")),
                 () -> assertTrue(observer.activityFailed().isEmpty(),
                         "the observer must not count an activity failure"));
+    }
+
+    @Test
+    @DisplayName("a graceful shutdown while store reads fault still reports the parked run abandoned as SHUTDOWN")
+    void shutdownWhileReadsFaultStillReportsShutdown() throws Exception {
+        executor.startWorkflow("sf-shutdown", "AwaitsSignal", "default", "in",
+                () -> new AwaitsSignal(false), AwaitsSignal.class.getMethod("run", String.class));
+        await().atMost(BOUND).until(() -> status("sf-shutdown") == WorkflowStatus.WAITING_SIGNAL);
+        // The shutdown handler's status read is for its log line only.
+        faulty.failAlways("getInstance");
+
+        executor.shutdown();
+        awaitRunEnded("sf-shutdown");
+
+        assertEquals(List.of(AbandonReason.SHUTDOWN), abandonReasons(),
+                "a failed log-only read must not swallow the runAbandoned callback");
+    }
+
+    // ── Store calls an activity body makes on its own account ────────
+
+    @Nested
+    @DisplayName("A store call an activity body makes for another workflow")
+    class ActivityBodyStoreCalls {
+
+        @Test
+        @DisplayName("faulting fails the activity under its retry policy — the calling run is not latched")
+        void faultOnAnotherWorkflowsSignalFailsTheActivityNotTheRun() throws Exception {
+            // The body signals another workflow through the executor's own
+            // guarded store, as a MaestroClient call from an activity does.
+            faulty.failAlways("saveSignalIfAbsent");
+            var impl = new SignalsAnotherWorkflow(() -> executor.deliverSignal("sf-other", "go", "x"));
+            var workflow = new CallsSignaller(proxy(SignallerActivities.class, impl, guarded, twoQuickAttempts()));
+
+            var instanceId = executor.startWorkflow("sf-client", "CallsSignaller", "default", "in",
+                    () -> workflow, CallsSignaller.class.getMethod("run", String.class));
+            awaitRunEnded("sf-client");
+
+            assertAll(
+                    () -> assertEquals(List.of(), abandonReasons(),
+                            "another workflow's store fault must not abandon the calling run"),
+                    () -> assertEquals(2, impl.attempts.get(),
+                            "the activity's own retry policy governs: both attempts run"),
+                    () -> assertEquals(1, count(instanceId, EventType.ACTIVITY_FAILED),
+                            "the fault is the activity's failure, recorded like any other"),
+                    () -> assertEquals(WorkflowStatus.FAILED, status("sf-client")));
+        }
+
+        @Test
+        @DisplayName("the handler's own outcome append for that activity is still guarded")
+        void outcomeAppendOfTheSameActivityIsStillGuarded() throws Exception {
+            var outcomeAppends = new AtomicInteger();
+            faulty.failWhen("appendEvent", args ->
+                    completedOutcomeOf("signalOther").test(args) && outcomeAppends.incrementAndGet() > 0);
+            var impl = new SignalsAnotherWorkflow(() -> executor.deliverSignal("sf-other", "go", "x"));
+            var workflow = new CallsSignaller(proxy(SignallerActivities.class, impl, guarded, twoQuickAttempts()));
+
+            var instanceId = executor.startWorkflow("sf-client-append", "CallsSignaller", "default", "in",
+                    () -> workflow, CallsSignaller.class.getMethod("run", String.class));
+            awaitRunEnded("sf-client-append");
+
+            assertAll(
+                    () -> assertEquals(List.of(AbandonReason.STORE_UNAVAILABLE), abandonReasons()),
+                    () -> assertEquals(StoreFaultGuard.MAX_ATTEMPTS, outcomeAppends.get(),
+                            "the outcome append is retried by the guard, outside the body's pass-through"),
+                    () -> assertEquals(1, impl.attempts.get(), "the body succeeded; only its outcome was lost"),
+                    () -> assertEquals(0, count(instanceId, EventType.ACTIVITY_FAILED)),
+                    () -> assertEquals(WorkflowStatus.RUNNING, status("sf-client-append")));
+        }
+
+        private static RetryPolicy twoQuickAttempts() {
+            return RetryPolicy.builder()
+                    .maxAttempts(2)
+                    .initialInterval(Duration.ofMillis(10))
+                    .maxInterval(Duration.ofMillis(10))
+                    .backoffMultiplier(1.0)
+                    .build();
+        }
     }
 
     // ── Compensation and parallel branches ───────────────────────────
@@ -551,6 +630,35 @@ class StoreFaultStandDownTest {
         }
 
         @Test
+        @DisplayName("on re-arming a missing deadline row during replay does not abandon the run")
+        void rearmFaultOnReplayDoesNotAbandon() throws Exception {
+            var method = AwaitsSignal.class.getMethod("run", String.class);
+            var instanceId = executor.startWorkflow("sf-deadline-rearm", "AwaitsSignal", "default", "in",
+                    () -> new AwaitsSignal(false), method);
+            await().atMost(BOUND).until(() -> status("sf-deadline-rearm") == WorkflowStatus.WAITING_SIGNAL);
+            executor.shutdown();
+            awaitRunEnded("sf-deadline-rearm");
+            // The deadline row is gone out of band, and re-arming it faults:
+            // best-effort — the memoized deadline still governs.
+            faulty.deleteTimersOf(instanceId);
+            faulty.failAlways("saveTimer");
+
+            executor = newExecutor(guarded, Duration.ofMillis(100));
+            assertEquals(1, executor.recoverWorkflows(Map.of("AwaitsSignal",
+                    new WorkflowRegistration("AwaitsSignal", "default", () -> new AwaitsSignal(false), method))));
+            await().atMost(BOUND).until(() -> faulty.calls("saveTimer") >= 1
+                    && status("sf-deadline-rearm") == WorkflowStatus.WAITING_SIGNAL);
+            executor.deliverSignal("sf-deadline-rearm", "go", "payload");
+            awaitRunEnded("sf-deadline-rearm");
+
+            assertAll(
+                    () -> assertEquals(List.of(AbandonReason.SHUTDOWN), abandonReasons(),
+                            "only the deliberate shutdown — a failed re-arm must not latch the run"),
+                    () -> assertEquals(1, count(instanceId, EventType.SIGNAL_RECEIVED)),
+                    () -> assertEquals(WorkflowStatus.COMPLETED, status("sf-deadline-rearm")));
+        }
+
+        @Test
         @DisplayName("on the deadline row's cancel after consuming a signal does not abandon the run")
         void cancelFaultAfterConsumingSignalDoesNotAbandon() throws Exception {
             faulty.failAlways("markTimerCancelled");
@@ -767,6 +875,39 @@ class StoreFaultStandDownTest {
 
         public String run(String in) {
             return activities.flaky(in);
+        }
+    }
+
+    public interface SignallerActivities {
+        String signalOther(String in);
+    }
+
+    /** Signals another workflow from inside its body, as a {@code MaestroClient} call would. */
+    public static final class SignalsAnotherWorkflow implements SignallerActivities {
+        final AtomicInteger attempts = new AtomicInteger();
+        private final Runnable signal;
+
+        public SignalsAnotherWorkflow(Runnable signal) {
+            this.signal = signal;
+        }
+
+        @Override
+        public String signalOther(String in) {
+            attempts.incrementAndGet();
+            signal.run();
+            return "signalled:" + in;
+        }
+    }
+
+    public static class CallsSignaller {
+        private final SignallerActivities activities;
+
+        public CallsSignaller(SignallerActivities activities) {
+            this.activities = activities;
+        }
+
+        public String run(String in) {
+            return activities.signalOther(in);
         }
     }
 
