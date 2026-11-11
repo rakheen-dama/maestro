@@ -62,13 +62,15 @@ Properties under `maestro.store.*` control the workflow persistence layer.
 
 Band 200–299 belonged to the Postgres messaging transport (`V200`–`V202`), removed in favour of Kafka as the only transport. A database that applied it keeps its rows in `maestro_schema_history` and an orphan `maestro_signal_queue` table (and, if it never reached `V202`, `maestro_task_queue` and `maestro_lifecycle_event_queue`). Flyway's default `ignoreMigrationPatterns=*:future` treats those history rows as future versions, so `flyway` and `validate` modes keep passing; `DROP TABLE IF EXISTS maestro_signal_queue, maestro_task_queue, maestro_lifecycle_event_queue;` is optional cleanup once no node on an earlier build remains.
 
+**The bands are independent, so migrations apply out of order across them.** Every band records into the one `maestro_schema_history`, but a store migration never depends on a lock migration or the reverse. The initializer therefore runs Flyway with `outOfOrder` enabled: a store migration shipped after V100 was recorded — V6 to V10, on a database an earlier build of this line migrated — is applied although it sorts below V100, and `validate` reports it as pending. Within a band, versions are only ever appended. The reverse is not tolerated, and an earlier build cannot be changed to tolerate it: a node on an earlier build fails startup in `flyway` and `validate` mode — `Detected applied migration not resolved locally: 10` — against a history that holds a store migration it does not ship, because that version sorts below its own newest (V100) and so is not a "future" migration to it. Nodes already running are unaffected (Flyway checks only at startup); a node on the earlier build that must start against the newer history — a pod restarted mid-deploy, or a rollback — starts only with `maestro.store.schema.mode: none`.
+
 The initializer runs after your application's own database initializers (its Flyway, Liquibase or `spring.sql.init` scripts) and before the store and engine beans are created. When it first meets a schema that already holds your tables, it writes a baseline marker row at version `0` into `maestro_schema_history` and then applies every Maestro migration — your tables are not touched. Several nodes starting at once are safe: Flyway serialises concurrent runs with a database lock. (If you add Flyway to your own application *later*, against a database that already holds Maestro's tables, your Flyway needs `spring.flyway.baseline-on-migrate: true` for its first run, as for any non-empty schema.)
 
 The ordering covers only database initializers that Spring Boot knows about (`spring.flyway.*`, `spring.liquibase.*`, `spring.sql.init.*`). If your application runs Flyway by hand — its own `Flyway.configure()...migrate()` in a bean or a runner — it is not ordered before Maestro's initializer: either migrate through `spring.flyway.*`, or set `maestro.store.schema.mode: none` and call `new MaestroSchemaInitializer(dataSource, SchemaMode.FLYWAY, classLoader).initialize()` yourself after your own migration.
 
 The initializer belongs to `maestro-store-postgres` and runs only when `maestro.store.type` is `postgres` (the only supported store). The lock tables are created by that same initializer, from the same module.
 
-**`validate` and `none`.** With `maestro.store.schema.mode: validate` Maestro applies nothing and fails startup — naming the pending versions — if any migration is pending, or if an applied one no longer matches the shipped SQL; it reads `maestro_schema_history`, so whoever applies the SQL out of band must record it there (e.g. the Flyway CLI with `-table=maestro_schema_history`, the locations above, and — on a schema that already holds your tables — `-baselineOnMigrate=true -baselineVersion=0`, exactly as Maestro's own run does). With `none` Maestro does nothing and reads no history: you apply the SQL under the locations above yourself, in version order, before deploying the build that ships it. A build at or past V5 omits `received_at` from signal inserts, so a self-managed database must have V5 applied (`ALTER TABLE maestro_workflow_signal ALTER COLUMN received_at SET DEFAULT now()`) before that build is deployed, or every signal insert fails. A build at or past V6 names `maestro_workflow_instance.lease_epoch` in every instance read and write (the lease-fencing token), so V6 (`ALTER TABLE maestro_workflow_instance ADD COLUMN IF NOT EXISTS lease_epoch BIGINT NOT NULL DEFAULT 0`) must likewise be applied first, or no workflow can be started, resumed or read. A build at or past V7 names `maestro_workflow_event.args_hash` in every event insert and read (the activity-argument fingerprint), so V7 (`ALTER TABLE maestro_workflow_event ADD COLUMN IF NOT EXISTS args_hash VARCHAR(64)`) must likewise be applied first, or no activity outcome can be recorded or replayed.
+**`validate` and `none`.** With `maestro.store.schema.mode: validate` Maestro applies nothing and fails startup — naming the pending versions — if any migration is pending, or if an applied one no longer matches the shipped SQL; it reads `maestro_schema_history`, so whoever applies the SQL out of band must record it there (e.g. the Flyway CLI with `-table=maestro_schema_history`, the locations above, `-outOfOrder=true`, and — on a schema that already holds your tables — `-baselineOnMigrate=true -baselineVersion=0`, exactly as Maestro's own run does). Do not insert a history row by hand: `validate` compares each applied migration's checksum with the shipped SQL, so a hand-written row fails it. The simplest correct route is one start of a node — or a one-off job calling `new MaestroSchemaInitializer(dataSource, SchemaMode.FLYWAY, classLoader).initialize()` — with `maestro.store.schema.mode: flyway`, then the rest under `validate`. With `none` Maestro does nothing and reads no history: you apply the SQL under the locations above yourself, in version order, before deploying the build that ships it. A build at or past V5 omits `received_at` from signal inserts, so a self-managed database must have V5 applied (`ALTER TABLE maestro_workflow_signal ALTER COLUMN received_at SET DEFAULT now()`) before that build is deployed, or every signal insert fails. A build at or past V6 names `maestro_workflow_instance.lease_epoch` in every instance read and write (the lease-fencing token), so V6 (`ALTER TABLE maestro_workflow_instance ADD COLUMN IF NOT EXISTS lease_epoch BIGINT NOT NULL DEFAULT 0`) must likewise be applied first, or no workflow can be started, resumed or read. A build at or past V7 names `maestro_workflow_event.args_hash` in every event insert and read (the activity-argument fingerprint), so V7 (`ALTER TABLE maestro_workflow_event ADD COLUMN IF NOT EXISTS args_hash VARCHAR(64)`) must likewise be applied first, or no activity outcome can be recorded or replayed.
 
 **Upgrading an existing database.** A database migrated by an earlier Maestro build, before Maestro owned its history (0.4.0 applied `V1`–`V3`, `V100`, `V200` and `V201`), has Maestro's rows in your `flyway_schema_history` and no `maestro_schema_history`, and the new build's first start fails either way:
 
@@ -107,7 +109,7 @@ Upgrade such a database once, with this procedure, in order (the same text is in
      DROP TABLE IF EXISTS maestro_signal_queue, maestro_task_queue, maestro_lifecycle_event_queue; -- optional cleanup
      ```
 
-     `V8` is index-only (the retention sweeper works without it, scanning the tables on every batch), so it is written here with `CONCURRENTLY`, which the Flyway-run original cannot use — see [Retention Configuration](#retention-configuration); so is V9's unique index (every existing row has `message_id` `NULL`, so the partial index starts empty), and so is V10 (index-only: the paged recovery scan is correct without it, only slower — see [Recovery Configuration](#recovery-configuration)). Paste the `CONCURRENTLY` lines one statement at a time — `CREATE INDEX CONCURRENTLY` cannot run inside a transaction block. **V9 is a hard prerequisite under `schema.mode: none`**: this build names `message_id` in every signal insert and read, so without the column every delivery fails inside the Kafka listener and is redelivered until dead-lettered, and without the index duplicates are not suppressed (see [Cross-service § Signal identity](cross-service.md#signal-identity)). Do not skip V4, V5, V6 or V7 either: this build names `trace_context` in every signal insert and leaves `received_at` to the column default, so without them every `saveSignal` fails — inside the Kafka listener, so each signal is redelivered until it is dead-lettered; it names `lease_epoch` in every instance read and write (it is the lease-fencing token — see [Operations §6](operations.md#6-split-brain-behaviour-issue-11--issue-18)), so without V6 no workflow can be started, resumed or read; and it names `args_hash` in every event insert and read (the activity-argument fingerprint — see [Operations §10.7](operations.md#107-replay-drift-nondeterministic_history)), so without V7 no activity outcome can be recorded or replayed. V6 and V7 are metadata-only on PostgreSQL 11+ (a constant `DEFAULT` on `ADD COLUMN`, or no default at all, rewrites no rows); every pre-existing row reads back as epoch `0` and as an unverified (`NULL`) fingerprint.
+     `V8` is index-only (the retention sweeper works without it, scanning the tables on every batch), so it is written here with `CONCURRENTLY`, which the Flyway-run original cannot use — see [Retention Configuration](#retention-configuration); so is V9's unique index (every existing row has `message_id` `NULL`, so the partial index starts empty), and so is V10 (index-only: under `none` nothing reads the history, and the paged recovery scan's query is correct without the index, only slower — see [Recovery Configuration](#recovery-configuration)). Paste the `CONCURRENTLY` lines one statement at a time — `CREATE INDEX CONCURRENTLY` cannot run inside a transaction block. **V9 is a hard prerequisite under `schema.mode: none`**: this build names `message_id` in every signal insert and read, so without the column every delivery fails inside the Kafka listener and is redelivered until dead-lettered, and without the index duplicates are not suppressed (see [Cross-service § Signal identity](cross-service.md#signal-identity)). Do not skip V4, V5, V6 or V7 either: this build names `trace_context` in every signal insert and leaves `received_at` to the column default, so without them every `saveSignal` fails — inside the Kafka listener, so each signal is redelivered until it is dead-lettered; it names `lease_epoch` in every instance read and write (it is the lease-fencing token — see [Operations §6](operations.md#6-split-brain-behaviour-issue-11--issue-18)), so without V6 no workflow can be started, resumed or read; and it names `args_hash` in every event insert and read (the activity-argument fingerprint — see [Operations §10.7](operations.md#107-replay-drift-nondeterministic_history)), so without V7 no activity outcome can be recorded or replayed. V6 and V7 are metadata-only on PostgreSQL 11+ (a constant `DEFAULT` on `ADD COLUMN`, or no default at all, rewrites no rows); every pre-existing row reads back as epoch `0` and as an unverified (`NULL`) fingerprint.
 3. **Delete Maestro's rows from your `flyway_schema_history`** (or the table `spring.flyway.table` names) — on either path; skip this step only if the table does not exist. The statement matches each row by version **and** script name, so none of your own migrations can match, and rows your database never had are simply not matched:
 
    ```sql
@@ -533,19 +535,42 @@ instances are never read or adopted, even when services share one table set:
 
 Migration `V10__recovery_scan_index.sql` adds the partial index the paged scan
 reads (`idx_wf_instance_recovery` on `(service_name, started_at, id)` over the
-four active statuses). The index is optional for correctness: a node runs the
-same query without it, only slower, so a database that does not have it yet
-(`maestro.store.schema.mode: none`, or mid rolling deploy) keeps working.
-Flyway applies V10 in a transaction, so it is a plain `CREATE INDEX IF NOT
-EXISTS`, which holds a `SHARE` lock on `maestro_workflow_instance` while it
-builds — writes wait, reads do not. On a large table, create it by hand first,
-under the same name, and the migration then finds it and does nothing:
+four active statuses). The **query** is correct without the index, only
+slower; the **migration record** is a different matter — under `flyway` and
+`validate` a node starts only once V10 is applied or recorded in
+`maestro_schema_history`. Flyway applies V10 in a transaction, so it is a
+plain `CREATE INDEX IF NOT EXISTS`, which holds a `SHARE` lock on
+`maestro_workflow_instance` while it builds — writes wait, reads do not. The
+index to pre-create, by hand, under exactly this name:
 
 ```sql
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_wf_instance_recovery
     ON maestro_workflow_instance (service_name, started_at, id)
     WHERE status IN ('RUNNING', 'WAITING_SIGNAL', 'WAITING_TIMER', 'COMPENSATING');
 ```
+
+By `maestro.store.schema.mode`:
+
+- **`flyway`** (default) — nothing to do; the first node of this build applies
+  and records V10. On a large table, run the line above first: V10 then finds
+  the index and takes no long `SHARE` lock.
+- **`none`** — run the line above yourself, before or after deploying; the
+  build works without the index, and nothing reads the history.
+- **`validate`** — V10 must be **recorded** in `maestro_schema_history` before
+  a node of this build starts, or it fails with `Maestro schema is behind:
+  pending migrations [10]`. Creating the index by hand does not record it, and
+  a hand-inserted history row fails `validate`'s checksum check. Run the line
+  above, then record V10 with one run in `flyway` mode — one node, or a one-off
+  job calling `new MaestroSchemaInitializer(dataSource, SchemaMode.FLYWAY,
+  classLoader).initialize()`, which finds the index and does nothing else —
+  and only then roll the rest of the fleet on `validate`.
+
+Once V10 is recorded (`flyway` or `validate`), a node on an earlier build
+cannot *start* against the database in `flyway` or `validate` mode
+(`Detected applied migration not resolved locally: 10`; see
+[Schema management](#schema-management)). Nodes already running carry on; an
+earlier-build node that must restart, or a rollback, needs
+`maestro.store.schema.mode: none`.
 
 ---
 

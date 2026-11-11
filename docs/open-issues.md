@@ -296,6 +296,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [32](#issue-32) | A Valkey outage stalls every signal send after the signal is durable, so caller retries persist duplicate signals | Library defect | Medium | **Resolved** |
 | [33](#issue-33) | Admin retry attributes the failure to the highest-sequenced `SIGNAL_TIMEOUT`, which can be a caught gate | Library defect — wrong failure attribution on retry | Medium | Open |
 | [34](#issue-34) | A store outage during a state write fails a healthy workflow and compensates work that succeeded | Library defect | High | **Resolved** |
+| [35](#issue-35) | A new store migration fails startup on a database that already has the lock band | Library defect — upgrade | High | **Resolved** |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -3155,6 +3156,69 @@ as they already must for an owner kill or a fenced run. See
 cross-node event skip a failed interval. Issue 34 covers every other store
 call a running workflow makes: none of them can turn an infrastructure fault
 into a workflow failure.
+
+---
+
+### Issue 35 — A new store migration fails startup on a database that already has the lock band {#issue-35}
+
+> **Resolved (2026-11-11, branch `feat/bounded-host-load`).** Found while
+> documenting V10 under `maestro.store.schema.mode: validate` (plan 02 Task 5,
+> fix round 1). `MaestroSchemaInitializer` runs Flyway with `outOfOrder(true)`.
+> Pinned by `MaestroSchemaInitializerTest`:
+> - `flywayModeAppliesANewStoreMigrationToADatabaseThatAlreadyHasTheLockBand`:
+>   history at V1–V9 + V100, then `flyway` mode records V10, creates the index,
+>   and `validate` passes.
+> - `everyStoreMigrationAppliesAfterTheLockBand`: the same for every shipped
+>   store version, so V11 and later are covered.
+> - `validateModeNeedsV10RecordedNotJustTheIndex`: a hand-made index leaves
+>   `validate` failing with `pending migrations [10]`; one `flyway` run records
+>   V10 over the same index (same oid); `validate` then passes.
+>
+> Each failed on the old configuration with Flyway's `Detected resolved
+> migration not applied to database: <n>`. The rest of this section is the
+> record of the defect.
+
+**Kind:** Library defect — upgrade. **Severity:** High (a routine deploy of a
+build that ships a store migration fails to start on every existing database
+in the default mode).
+
+**What was wrong.** Maestro's migrations live in independent version bands
+that share one history table, `maestro_schema_history`: the store band
+(`classpath:db/maestro/store`, 1–99) and the lock band
+(`classpath:db/maestro/lock`, 100–199). Since 762a5d6 (2026-10-28) every new
+database records V1–V5 and V100 together. A store migration shipped later
+(V6, V7, V8, V9, V10 — per `git log --diff-filter=A` on the migration files)
+sorts below the highest applied version, V100. With Flyway's default
+`outOfOrder=false`, `migrate()`'s validation refuses it: `Detected resolved
+migration not applied to database: <n>`. The node failed startup in the
+default `flyway` mode. In `validate` mode it failed inside `flyway.validate()`
+with the same error, not with Maestro's "pending migrations" message:
+`info().pending()` does not list an ignored migration. Every suite started from
+an empty database, where the store band runs before V100, so nothing caught it.
+
+**Fix.** `.outOfOrder(true)`. The bands are independent by design — a store
+migration never depends on a lock migration or the reverse — so applying out
+of order *across* bands is the intended semantics. Within a band, versions are
+still only ever appended. With the option set, an unapplied migration below the
+highest applied version is *pending*, so `validate` names it.
+
+**What it cannot fix.** A node on an *earlier* build (any build without the
+option, and with no newer migration on its classpath) still fails startup —
+`flyway` and `validate` — against a history that holds a store migration it
+does not ship. To it, that version is "missing" (applied, not resolved, below
+its newest), not "future", and Flyway's default `ignoreMigrationPatterns` is
+`*:future` only. Verified against a27a275's exact Flyway configuration and
+migration set: `Detected applied migration not resolved locally: 10`. Running
+nodes are unaffected. An earlier-build node that must start, whether a pod
+restarted mid-rollout or a rollback, needs `maestro.store.schema.mode: none`
+(`docs/release-notes.md`, "Host load" Upgrade item 4).
+
+**Open follow-up.** This build has the same weakness towards the next one: a
+store migration V11 recorded by a newer build is "missing", not "future", to
+this build. Adding `*:missing` to this build's `ignoreMigrationPatterns`
+(scoped to Maestro's history) would let a rollback to this build start. That
+needs a decision, because it also stops Flyway reporting a genuinely deleted
+migration.
 
 ---
 

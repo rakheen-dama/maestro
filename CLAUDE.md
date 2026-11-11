@@ -165,13 +165,13 @@ io.b2mash.maestro.samples.payment            — Sample payment gateway (e-comme
 
 ## Database Tables
 
-Prefix `maestro_` (fixed; `maestro.store.table-prefix` was removed). Migrations live in maestro-store-postgres under `db/maestro/store` (band 1–99, V1–V10) and `db/maestro/lock` (band 100–199, V100). Band 200–299 (the removed Postgres messaging transport) is retired and must never be reused (orphan-table upgrade note: `docs/configuration.md` § Schema management). They run through `MaestroSchemaInitializer` into Maestro's own history table `maestro_schema_history` (`maestro.store.schema.mode` = flyway | validate | none); the host's `flyway_schema_history` is untouched:
+Prefix `maestro_` (fixed; `maestro.store.table-prefix` was removed). Migrations live in maestro-store-postgres under `db/maestro/store` (band 1–99, V1–V10) and `db/maestro/lock` (band 100–199, V100). Band 200–299 (the removed Postgres messaging transport) is retired and must never be reused (orphan-table upgrade note: `docs/configuration.md` § Schema management). They run through `MaestroSchemaInitializer` into Maestro's own history table `maestro_schema_history` (`maestro.store.schema.mode` = flyway | validate | none); the host's `flyway_schema_history` is untouched. The bands are independent, so Flyway runs with `outOfOrder(true)`: a store migration added after V100 was recorded is still applied (Issue 35); an earlier build cannot start against a history holding a store migration it does not ship:
 
 - `maestro_workflow_instance`
 - `maestro_workflow_event` (unique on `workflow_instance_id, sequence_number`)
 - `maestro_workflow_timer`
 - `maestro_workflow_signal` (`workflow_instance_id` nullable for pre-delivery; unique on `workflow_id, signal_name, message_id` where `message_id` is not null, V9)
-- V10 adds `idx_wf_instance_recovery` (partial, active statuses) for the paged recovery scan — index-only, optional for correctness
+- V10 adds `idx_wf_instance_recovery` (partial, active statuses) for the paged recovery scan — index-only: the query works without it, but under `flyway`/`validate` the migration record is still required to start
 - `maestro_distributed_lock`, `maestro_leader_election` (lock band; no task, lifecycle or signal queue tables)
 
 ## State Machine

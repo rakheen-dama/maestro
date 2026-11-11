@@ -27,15 +27,34 @@ Pinned by `WorkflowInstanceLockManagerTest` (one `renewAll` per pass, a lost han
 
    One row per service you run is right. A name per replica, or a name no deployment uses any more, means those workflows need a node running under that name to finish them. Services that share one set of `maestro_*` tables no longer adopt each other's workflows.
 2. **Unlisted task queues were unbounded and are now 20/20 per node (decision D2).** A service that never configured `maestro.worker.task-queues` now runs at most 20 workflow runs and 20 live activities per task queue per node; a backlog after a deploy drains at that rate instead of all at once. To restore the old behaviour set both `maestro.worker.default-concurrency: 0` and `maestro.worker.default-activity-concurrency: 0`; to size them, raise both or list the queue. Queues already listed are unchanged. Because every queue is now bounded, [Issue 29](open-issues.md#issue-29) (a run queued for a slot at shutdown is not interrupted) and [Issue 30](open-issues.md#issue-30) (a node that adopts more than it can run holds the excess) are on the default path; neither writes or loses anything.
-3. **Migration `V10__recovery_scan_index.sql` is optional for correctness.** It adds the partial index `idx_wf_instance_recovery` on `maestro_workflow_instance (service_name, started_at, id)` over the active statuses; the paged scan runs without it, only slower. With `maestro.store.schema.mode: flyway` nothing to do, but Flyway builds it inside a transaction under a `SHARE` lock (writes wait). On a large table, pre-create it concurrently under the same name before deploying, and the migration then does nothing; under `validate`/`none`, apply the same line yourself:
+3. **Migration `V10__recovery_scan_index.sql`** adds the partial index `idx_wf_instance_recovery` on `maestro_workflow_instance (service_name, started_at, id)` over the active statuses. The paged scan's *query* is correct without the index, only slower; the *migration record* is still required for a node to start under `flyway` and `validate`. Flyway builds the index inside a transaction under a `SHARE` lock (writes wait). The index to pre-create by hand:
 
    ```sql
    CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_wf_instance_recovery
        ON maestro_workflow_instance (service_name, started_at, id)
        WHERE status IN ('RUNNING', 'WAITING_SIGNAL', 'WAITING_TIMER', 'COMPENSATING');
    ```
-4. **Rolling-deploy safe.** An older node keeps running its unscoped, unpaged scan and per-lock renewal against the same tables; the new node's scan, `heldKeys` read and batched renewal use the same rows and lock keys. No column changes.
+
+   - **`flyway`** (default): nothing to do. On a large table run the line above first; V10 then finds the index and takes no long lock.
+   - **`none`**: run the line above yourself, before or after deploying; the build works without the index.
+   - **`validate`**: V10 must be *recorded* in `maestro_schema_history` before a node of this build starts (otherwise: `Maestro schema is behind: pending migrations [10]`). Creating the index does not record it, and a hand-inserted history row fails `validate`'s checksum check. Run the line above, then start one node — or a one-off job calling `new MaestroSchemaInitializer(dataSource, SchemaMode.FLYWAY, classLoader).initialize()` — with `maestro.store.schema.mode: flyway`; it records V10 over the existing index. Then deploy the rest on `validate`.
+4. **Mixed fleet: running nodes yes, restarting older nodes no.** An older node that is already running keeps its unscoped, unpaged scan and per-lock renewal against the same tables; the new node's scan, `heldKeys` read and batched renewal use the same rows and lock keys, and no column changes. But once V10 is recorded, a node on an earlier build **cannot start** against the database in `flyway` or `validate` mode: its Flyway fails with `Detected applied migration not resolved locally: 10`, because V10 sorts below its own newest migration (V100) and so is not a "future" migration it ignores. An older pod that restarts during the rollout, or a rollback to the earlier build, needs `maestro.store.schema.mode: none` on those nodes. Roll forward, or plan the rollout so older nodes are not restarted.
 5. **Custom SPI implementations** keep compiling: `renewAll`, `heldKeys` and the paged `getRecoverableInstances` are `default` methods whose defaults are correct, only slower (the paged default still reads the whole unbounded scan). Override them for the cost bound. Hosts with more than one `DataSource` and no `@Primary`, which failed with Spring's `NoUniqueBeanDefinitionException`, now fail with Maestro's message naming `@MaestroDataSource`.
+
+### Fixed — a new store migration no longer fails startup on a database that has the lock band (Issue 35)
+
+Maestro's migrations live in two independent version bands that share one history table, `maestro_schema_history`: the store band (V1–V99) and the lock band (V100–V199). Once V100 was recorded, every store migration shipped afterwards sorted below the highest applied version, and Flyway's default refuses that. A node on the new build failed startup in the default `flyway` mode, and in `validate`, with `Detected resolved migration not applied to database: <n>`. Every store migration added after Maestro took its own history table (762a5d6, which shipped V1–V5 and V100 together) was affected the same way on any database migrated before it shipped: V6, V7, V8 and V9 (all unreleased), and V10 in this release.
+
+- `MaestroSchemaInitializer` now runs Flyway with `outOfOrder(true)`. Applying out of order *across* bands is the intended semantics, because a store migration never depends on a lock migration or the reverse. Within a band, versions are only ever appended.
+- Under `validate`, such a migration is now reported as pending (`Maestro schema is behind: pending migrations [10]`) instead of failing inside Flyway.
+- **Not fixable from this side:** a node on an *earlier* build still refuses a history that holds a store migration it does not ship (`Detected applied migration not resolved locally`). See the Upgrade notes of "Host load" above.
+
+Pinned by `MaestroSchemaInitializerTest`:
+- `flywayModeAppliesANewStoreMigrationToADatabaseThatAlreadyHasTheLockBand`;
+- `everyStoreMigrationAppliesAfterTheLockBand`, run once for every shipped store version, so a V11 cannot regress it;
+- `validateModeNeedsV10RecordedNotJustTheIndex`.
+
+Each failed on the old configuration with the Flyway error above.
 
 ### Store faults — a database outage abandons the run instead of failing the workflow (Issue 34)
 
