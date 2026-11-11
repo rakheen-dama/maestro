@@ -1075,7 +1075,9 @@ final class SignalManager {
             try {
                 // Fenced on the run's lease; a stale lease cannot reach here,
                 // because consumeSignal's fenced append has already rejected it.
-                store.markTimerCancelled(timerDbId, ctx.lease());
+                // Advisory: a store fault is tolerated below, so it must not latch
+                // the run's STORE_UNAVAILABLE stand-down either.
+                StoreFaultGuard.advisory(() -> store.markTimerCancelled(timerDbId, ctx.lease()));
             } catch (RuntimeException e) {
                 logger.debug("Could not cancel the deadline row of workflow '{}' signal '{}' after "
                         + "consuming it — the row fires later for nobody: {}",

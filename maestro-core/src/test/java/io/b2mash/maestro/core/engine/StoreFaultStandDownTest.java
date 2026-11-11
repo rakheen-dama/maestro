@@ -549,6 +549,24 @@ class StoreFaultStandDownTest {
                     () -> assertEquals(1, count(instanceId, EventType.SIGNAL_TIMEOUT)),
                     () -> assertEquals(WorkflowStatus.COMPLETED, status("sf-deadline-reread")));
         }
+
+        @Test
+        @DisplayName("on the deadline row's cancel after consuming a signal does not abandon the run")
+        void cancelFaultAfterConsumingSignalDoesNotAbandon() throws Exception {
+            faulty.failAlways("markTimerCancelled");
+
+            var instanceId = executor.startWorkflow("sf-deadline-cancel", "AwaitsSignal", "default", "in",
+                    () -> new AwaitsSignal(false), AwaitsSignal.class.getMethod("run", String.class));
+            await().atMost(BOUND).until(() -> status("sf-deadline-cancel") == WorkflowStatus.WAITING_SIGNAL);
+            executor.deliverSignal("sf-deadline-cancel", "go", "payload");
+            awaitRunEnded("sf-deadline-cancel");
+
+            assertAll(
+                    () -> assertTrue(faulty.calls("markTimerCancelled") >= 1, "the cancel must have been attempted"),
+                    () -> assertEquals(List.of(), abandonReasons()),
+                    () -> assertEquals(1, count(instanceId, EventType.SIGNAL_RECEIVED)),
+                    () -> assertEquals(WorkflowStatus.COMPLETED, status("sf-deadline-cancel")));
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────
