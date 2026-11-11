@@ -282,6 +282,11 @@ any other value fails startup. Removed (setting either fails startup):
   `instanceof MaestroControlFlowError` and rethrow before recording anything
   as a failure — the sealed base exists so that check is one line rather than
   an enumeration that drifts. See their Javadoc for the full rationale.
+  `StoreUnavailableException` (a `MaestroException`) is a store fault, never a
+  workflow failure: the JDBC store throws it for every SQLSTATE outside class
+  `22`/`23`, and `StoreFaultGuard` retries outcome appends then latches the run
+  `STORE_UNAVAILABLE` — a latched run appends nothing and is abandoned for
+  recovery, so any new `catch` that collects failures must rethrow it too.
 - **Logging:** SLF4J. MDC with `workflowId`, `runId`, `activityName`.
 - **No Lombok.** Records and IDE-generated code only.
 - **Javadoc:** All public APIs. SPIs especially.

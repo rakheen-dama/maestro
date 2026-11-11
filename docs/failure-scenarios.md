@@ -183,9 +183,15 @@ replace the Postgres it started with.
 - **Fault:** 200 workflows resume at once after a deploy; each activity takes
   a connection for its memo write, the recovery scan takes one, the lock
   renewer takes one every 10 s per workflow, the wake listener pins one.
-- **Expected:** `connectionTimeout` exceptions surface as `UncheckedSqlException`
-  inside fenced appends → stand-down churn, not FAILED. Measure whether a
-  renewer timeout is classified as *transient* (keep lease) or *lost* (drop
+- **Expected:** `connectionTimeout` exceptions (no SQLSTATE) surface as
+  `StoreUnavailableException`. An activity's outcome append is retried in
+  place (three attempts, 200 ms then 1 s); a timeout that outlasts that
+  abandons the run as `STORE_UNAVAILABLE` (`WARN`, nothing written, nothing
+  compensated, instance left active) and the next recovery pass resumes it →
+  abandon churn, not FAILED (Issue 34; pinned on real Postgres by
+  `StoreOutageMidStepIT`). The activity whose outcome was lost runs again on
+  recovery, so with idempotent activities the churn repeats work but loses
+  nothing. Measure whether a renewer timeout is classified as *transient* (keep lease) or *lost* (drop
   lease): the contract says throw on transient, return false only on lost;
   verify the JDBC lock's `UPDATE` timing out does the former.
 - **Pin:** `MultiNodeLockContentionIT` variant with `maximumPoolSize=3` and 50

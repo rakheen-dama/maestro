@@ -14,6 +14,9 @@ tests.
 `feat/lease-fencing` (store migration V6, `lease_epoch` validated on every
 run-scoped write); only Issue 12 remains open by design. Its section keeps the
 chaos evidence, which still measures the residual one-step side-effect window.
+**Updated:** 2026-11-11 — Issue 34 (a store outage during a state write fails
+a healthy workflow) filed and **resolved** on branch
+`fix/store-fault-stand-down`; it generalises Issue 20.
 
 This document is self-contained. You should not need to read the PR, the commit
 history, or `docs/test-plan.md` to act on anything here — though
@@ -238,6 +241,10 @@ section. Three more (25, 26, 27), found by the open-issues cycle's own
 inert-config audit (`tasks/audit-2026-08-05-inert-config.md`), by a deferred
 item from the demo cycle, and by an external review of PR #34 respectively,
 are filed **open** — see their sections. Issue 25 (`maestro.worker.*` inert) is **now resolved** — implemented, see its section.
+Issue 34, the generalisation of Issue 20 from a parked workflow's advisory
+reads to every store call a running workflow makes (a database outage during
+a state write failed the workflow and compensated work that had succeeded),
+was filed and **resolved** together — see its section.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -288,6 +295,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [31](#issue-31) | Services sharing one set of `maestro_*` tables fire each other's timers | Library gap — multi-service wake latency | Low | Open |
 | [32](#issue-32) | A Valkey outage stalls every signal send after the signal is durable, so caller retries persist duplicate signals | Library defect | Medium | **Resolved** |
 | [33](#issue-33) | Admin retry attributes the failure to the highest-sequenced `SIGNAL_TIMEOUT`, which can be a caught gate | Library defect — wrong failure attribution on retry | Medium | Open |
+| [34](#issue-34) | A store outage during a state write fails a healthy workflow and compensates work that succeeded | Library defect | High | **Resolved** |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -1751,6 +1759,10 @@ no saga leak, retry re-drive, caught-memo preservation.
 > first successful probe after recovery, having left the run parked and
 > untouched while blind). The rest of this section is the record of the
 > defect.
+>
+> **Generalised by [Issue 34](#issue-34).** "State writes ... keep failing
+> exactly as before" above was the remaining gap: a store fault on any of them
+> now abandons the run as `STORE_UNAVAILABLE` instead of failing the workflow.
 
 **What's wrong.** `SignalManager.standDownIfTerminated`'s `store.getInstance`
 call, the signal-poll `store.getUnconsumedSignals` call inside
@@ -1771,7 +1783,9 @@ condition misrecorded as a workflow failure) found this cycle, and the first
 triggered by store unavailability rather than shutdown, termination, or a
 duplicate append. Found by the chaos harness's PR-gate mode, seed `661901`: a
 39-second `PARTITION UW_A` exceeded HikariCP's 30s `connectionTimeout`,
-`standDownIfTerminated`'s `getInstance` threw `UncheckedSqlException`, and two
+`standDownIfTerminated`'s `getInstance` threw `UncheckedSqlException` (at the
+time the JDBC store's wrapper for every `SQLException`; since Issue 34 a pool
+timeout is a `StoreUnavailableException`), and two
 healthy `PARKED` workflows were durably `WORKFLOW_FAILED` mid-run. The
 in-memory diagnostic double built to reproduce it (`ParkedProbeStoreOutageTest`)
 shows the defect has two faces depending on timing: if the store recovers
@@ -2950,6 +2964,112 @@ add a second-retry core pin (retry, times out again, retry again).
 **Done when.** A workflow with a caught timed-out gate at a higher sequence than
 the propagated timeout is retried and only the propagated await's outcome, memo
 and timer row are cleared — pinned by a core test for each shape above.
+
+---
+
+### Issue 34 — A store outage during a state write fails a healthy workflow and compensates work that succeeded {#issue-34}
+
+> **Resolved.** Branch `fix/store-fault-stand-down`: `c1c2c75` (classify
+> infrastructure SQL faults as `StoreUnavailableException`), `b528fa8`
+> (`StoreFaultGuard` retries outcome appends and latches the run), `2ce2d32`
+> (a store fault abandons the run instead of failing the workflow), `9ed4d8d`
+> (a latched run cannot append history), `44bbbcb` (compensation and
+> `parallel()` branches), `69b28aa` (the consumed signal's deadline cancel is
+> advisory), plus the real-Postgres proof. Pinned by
+> `AbstractJdbcWorkflowStoreUnitTest` (SQLSTATE classification, including a
+> `getConnection()` timeout with no SQLSTATE), `StoreFaultGuardTest` (retry
+> budget and waits, latch, a commit lost in flight surfacing as a duplicate,
+> advisory reads, a latched run's appends refused), `RunCancellationTest`,
+> `StoreFaultStandDownTest` (outcome-append outage abandons and recovery
+> completes; a single blip is absorbed; a workflow that catches the fault can
+> neither run its fallback nor record a side effect; park-time status write;
+> retry backoff; compensation left `COMPENSATING`; a `parallel()` branch fault
+> outranking a sibling's plain failure; both terminal writes; the three
+> await-deadline advisory sites; a data error, not a store fault, still fails the
+> workflow) and `StoreOutageMidStepIT` (real Postgres, a pool whose
+> `getConnection()` fails from inside `charge()`'s body: a 3 s outage abandons
+> the run as `STORE_UNAVAILABLE` and the recovery poller completes it within
+> two poll intervals with no `WORKFLOW_FAILED` and no compensation; a single
+> failed connection is absorbed by the in-place retry and `charge` runs once).
+> The rest of this section is the record of the defect.
+
+**Kind:** Library defect. **Severity:** High (no fault injection beyond a
+routine pool timeout or a database restart; the result is a durable false
+`WORKFLOW_FAILED` with compensations run for work that had succeeded).
+
+**What was wrong.** Issue 20 made a parked workflow's wake-recheck probes
+advisory and said of everything else: "State writes (event appends, status
+CAS transitions, signal consumption) are unaffected and keep failing exactly
+as before." That was the gap. The JDBC store wrapped every `SQLException` in
+`UncheckedSqlException`, a plain `RuntimeException`, whatever its cause. A
+pool timeout on an activity's outcome append therefore reached the workflow
+method as that activity's exception, and `WorkflowExecutor.executeWorkflow`'s
+generic `catch (Exception)` recorded the workflow `FAILED` and ran its
+compensations. The same held for the memo lookup, status writes, timer arms,
+signal consumption and compensation memos. On the terminal write it was
+reported as `TERMINAL_WRITE_FAILED`, the "needs a human" `ERROR`, for an
+ordinary outage. Like Issue 20 it had two faces, depending on how long the
+store stayed away:
+
+- **A blip** — the store answered again before the failure path wrote. The
+  workflow ended `FAILED` and compensated a step whose side effect had in
+  fact happened. Reproduced against the unfixed engine by
+  `StoreOutageMidStepIT.poolBlipOnOutcomeAppendIsRetriedInPlace`: `FAILED`,
+  one `WORKFLOW_FAILED`, `releaseReservation` run once, `ship` never run.
+- **An outage** — the failure path's own writes failed too. Nothing durable
+  was written. The run had still been routed as a workflow failure (an
+  `ERROR` "Workflow ... failed" line) and its outcome depended on recovery
+  happening to re-adopt the untouched instance.
+
+**The fix.** Three layers.
+
+1. **Classification at the store.** `AbstractJdbcWorkflowStore.storeFault`
+   keeps SQLSTATE class `22`/`23` — errors the workflow's own values caused —
+   as `UncheckedSqlException`, which still fails the workflow. Everything
+   else — a pool timeout with no SQLSTATE, connection, resource,
+   operator-intervention and schema errors — becomes the new sealed
+   `StoreUnavailableException`. The existing domain mappings
+   (`DuplicateEventException`, `WorkflowAlreadyExistsException`, a
+   serialization conflict read as `false`) run first and are unchanged.
+2. **`StoreFaultGuard` at the engine's store boundary.** The executor and
+   every activity proxy reach the store through it. It retries the two
+   operations that are safe to repeat — `appendEvent` and
+   `getEventBySequence` — three attempts, 200 ms then 1 s apart; an append
+   whose commit was lost in flight surfaces on retry as a
+   `DuplicateEventException` through the unique index. Once a fault is final
+   it latches the run's `RunCancellation` as `STORE_UNAVAILABLE`, and from
+   then on refuses that run's appends even if the store answers again, so
+   workflow code that caught the fault cannot record a fallback path the
+   durable history never chose. Advisory reads and best-effort writes (the
+   Issue 20 park probes, an await deadline's self-fire, the post-deadline
+   signal re-read, the cancel of a consumed signal's deadline row) are run
+   under `StoreFaultGuard.advisory`: neither retried nor latched.
+3. **Routing in the executor.** A `StoreUnavailableException`, or any
+   failure of a latched run, ends the local run as the new
+   `AbandonReason.STORE_UNAVAILABLE`: one `WARN`, nothing written, no
+   compensation, the instance left in its active status, the lock released,
+   and ordinary recovery resumes it. Stop points sit beside every stale-run
+   check (live activity, `sleep()`, `awaitSignal()`, the terminal write,
+   failure handling), and the retry executor checks the latch around every
+   attempt, so a swallowed fault still stops the run. During compensation
+   the unwind stops and the instance stays `COMPENSATING` with no
+   `COMPENSATION_STEP_FAILED`. In `parallel()` and parallel compensation a
+   store fault ranks after control-flow signals, node errors and stale-run
+   signals, and ahead of a sibling's plain failure. A store fault on the
+   terminal write is `STORE_UNAVAILABLE`; `TERMINAL_WRITE_FAILED` remains for
+   any other terminal-write failure.
+
+**What it does not remove.** The activity in flight when the fault hit — its
+body ran, its outcome was never recorded — runs again on recovery. The
+in-place retry narrows that window to outages longer than about 1.2 s; it
+does not close it. Activities must stay idempotent, as they already must for
+an owner kill or a fenced run. See `docs/operations.md` §10.9 for what an
+operator sees and what to alert on.
+
+**Relation to Issue 20.** Issue 20 made the reads that only *notice* a
+cross-node event skip a failed interval. Issue 34 covers every other store
+call a running workflow makes: none of them can turn an infrastructure fault
+into a workflow failure.
 
 ---
 
