@@ -862,8 +862,10 @@ final class SignalManager {
      * clock in production). Store errors inside the timeout
      * decision never fail the run either (R39): the self-fire is best-effort,
      * and a failed post-deadline signal re-read parks one more re-check
-     * interval and decides again. Only the {@code SIGNAL_TIMEOUT} append keeps
-     * the semantics of every other memo append.
+     * interval and decides again. Both are advisory to {@link StoreFaultGuard},
+     * so neither latches the run's {@code STORE_UNAVAILABLE} stand-down. Only
+     * the {@code SIGNAL_TIMEOUT} append keeps the semantics of every other
+     * memo append.
      */
     private <T> T awaitOutcome(WorkflowContext ctx, int outcomeSeq, String stepName, String signalName,
                                Class<T> type, String timerId, @Nullable UUID timerDbId,
@@ -924,9 +926,13 @@ final class SignalManager {
                     // workflow failure — it must not escape into workflow code
                     // (FAILED + compensations). Park one more re-check interval
                     // and decide again; a signal arriving meanwhile wakes it.
+                    // Advisory, so a store fault here neither latches the run's
+                    // STORE_UNAVAILABLE stand-down nor waits out retries: the
+                    // failure is already tolerated, and latching would abandon
+                    // the run at its next stop point for nothing.
                     List<WorkflowSignal> late;
                     try {
-                        late = store.getUnconsumedSignals(workflowId, signalName);
+                        late = StoreFaultGuard.advisory(() -> store.getUnconsumedSignals(workflowId, signalName));
                     } catch (RuntimeException e) {
                         logger.warn("Workflow '{}' could not re-read signal '{}' at its deadline — parking "
                                         + "one more re-check interval ({}) before deciding the timeout: {}",
@@ -1041,7 +1047,9 @@ final class SignalManager {
             // Fenced on the run's lease: a stale run must not retire a deadline
             // the adopting node's run is still parked on. A fence reads as
             // false here — the SIGNAL_TIMEOUT append that follows is the loud one.
-            store.markTimerFired(timerDbId, ctx.lease());
+            // Advisory: a store fault is tolerated below, so it must not latch
+            // the run's STORE_UNAVAILABLE stand-down either.
+            StoreFaultGuard.advisory(() -> store.markTimerFired(timerDbId, ctx.lease()));
         } catch (RuntimeException e) {
             logger.warn("Could not self-fire the deadline row of workflow '{}' signal '{}' — the row "
                     + "fires later for nobody: {}", ctx.workflowId(), signalName, e.toString());

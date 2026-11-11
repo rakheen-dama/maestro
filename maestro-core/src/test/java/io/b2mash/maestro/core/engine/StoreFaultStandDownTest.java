@@ -4,6 +4,8 @@ import io.b2mash.maestro.core.annotation.Compensate;
 import io.b2mash.maestro.core.annotation.Saga;
 import io.b2mash.maestro.core.context.RunCancellation;
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.exception.SignalTimeoutException;
+import io.b2mash.maestro.core.exception.StoreUnavailableException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
@@ -16,6 +18,7 @@ import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -23,6 +26,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -79,10 +83,14 @@ class StoreFaultStandDownTest {
     }
 
     private WorkflowExecutor newExecutor(WorkflowStore store) {
+        return newExecutor(store, Duration.ofSeconds(30));
+    }
+
+    private WorkflowExecutor newExecutor(WorkflowStore store, Duration wakeRecheckInterval) {
         return new WorkflowExecutor(store, null, null, null, serializer, "test-service",
                 WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
                 WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
-                false, WorkflowExecutor.DEFAULT_SHUTDOWN_TIMEOUT, Duration.ofSeconds(30), observer);
+                false, WorkflowExecutor.DEFAULT_SHUTDOWN_TIMEOUT, wakeRecheckInterval, observer);
     }
 
     private <T> T proxy(Class<T> iface, T impl, WorkflowStore store, RetryPolicy policy) {
@@ -324,6 +332,225 @@ class StoreFaultStandDownTest {
                         "the observer must not count an activity failure"));
     }
 
+    // ── Compensation and parallel branches ───────────────────────────
+
+    @Nested
+    @DisplayName("Compensation and parallel branches")
+    class SagaAndParallel {
+
+        @Test
+        @DisplayName("a fault on a compensation's outcome append leaves the run COMPENSATING; recovery finishes the unwind")
+        void faultOnCompensationAppendLeavesCompensatingAndRecovers() throws Exception {
+            // LIFO unwind: refund (activity), notifyCustomer (manual Runnable), release (activity).
+            faulty.failWhen("appendEvent", args -> args[0] instanceof WorkflowEvent e
+                    && e.eventType() == EventType.COMPENSATION_STEP_COMPLETED
+                    && e.stepName() != null && e.stepName().endsWith(".refund"));
+            var impl = new CountingSagaSteps();
+            var notify = new AtomicInteger();
+            var workflow = new ThreeStepSaga(proxy(SagaSteps.class, impl, guarded, RetryPolicy.noRetry()), notify);
+            var method = ThreeStepSaga.class.getMethod("run", String.class);
+
+            var instanceId = executor.startWorkflow("sf-saga", "ThreeStepSaga", "default", "in",
+                    () -> workflow, method);
+            awaitRunEnded("sf-saga");
+
+            assertAll(
+                    () -> assertEquals(List.of(AbandonReason.STORE_UNAVAILABLE), abandonReasons()),
+                    () -> assertEquals(WorkflowStatus.COMPENSATING, status("sf-saga")),
+                    () -> assertEquals(0, count(instanceId, EventType.COMPENSATION_STEP_FAILED),
+                            "a store fault is not a failed reversal"),
+                    () -> assertEquals(0, count(instanceId, EventType.WORKFLOW_FAILED)),
+                    () -> assertEquals(1, impl.refund.get(), "the first compensation ran; only its outcome was lost"),
+                    () -> assertEquals(0, notify.get(),
+                            "no further compensation may run once the store fault is latched"),
+                    () -> assertEquals(0, impl.release.get(),
+                            "no further compensation may run once the store fault is latched"));
+
+            faulty.heal();
+            assertEquals(1, executor.recoverWorkflows(Map.of("ThreeStepSaga",
+                    new WorkflowRegistration("ThreeStepSaga", "default", () -> workflow, method))));
+            awaitRunEnded("sf-saga");
+
+            var completedSteps = faulty.getEvents(instanceId).stream()
+                    .filter(e -> e.eventType() == EventType.COMPENSATION_STEP_COMPLETED)
+                    .map(WorkflowEvent::stepName)
+                    .sorted()
+                    .toList();
+            assertAll(
+                    () -> assertEquals(WorkflowStatus.FAILED, status("sf-saga")),
+                    () -> assertEquals(3, completedSteps.size(), "one outcome per compensable step: " + completedSteps),
+                    () -> assertEquals(3, completedSteps.stream().distinct().count(), completedSteps::toString),
+                    () -> assertEquals(0, count(instanceId, EventType.COMPENSATION_STEP_FAILED)),
+                    () -> assertEquals(1, impl.refund.get(), "refund is replayed from its memo, not re-run"),
+                    () -> assertEquals(1, notify.get(), "notifyCustomer ran exactly once"),
+                    () -> assertEquals(1, impl.release.get(), "release ran exactly once"),
+                    () -> assertEquals(1, impl.ship.get(), "the failed step is replayed, not re-run"));
+        }
+
+        @Test
+        @DisplayName("a fault inside a parallel branch abandons the run, outranking a sibling's plain failure")
+        void faultInsideParallelBranchAbandonsTheRun() throws Exception {
+            // Branch 1 (step2) loses its outcome append; branch 0 fails with a
+            // plain business exception on the first run, so index order alone
+            // would surface the sibling's failure, not the store fault.
+            faulty.failWhen("appendEvent", completedOutcomeOf("step2"));
+            var impl = new CountingSteps();
+            var workflow = new ParallelSaga(proxy(StepActivities.class, impl, guarded, RetryPolicy.noRetry()));
+            var method = ParallelSaga.class.getMethod("run", String.class);
+
+            var instanceId = executor.startWorkflow("sf-parallel", "ParallelSaga", "default", "in",
+                    () -> workflow, method);
+            awaitRunEnded("sf-parallel");
+
+            assertAll(
+                    () -> assertTrue(workflow.parallelThrew.get()
+                                    instanceof StoreUnavailableException,
+                            "parallel() must surface the store fault, not the sibling's failure: "
+                                    + workflow.parallelThrew.get()),
+                    () -> assertEquals(List.of(AbandonReason.STORE_UNAVAILABLE), abandonReasons()),
+                    () -> assertEquals(WorkflowStatus.RUNNING, status("sf-parallel")),
+                    () -> assertEquals(0, count(instanceId, EventType.WORKFLOW_FAILED)),
+                    () -> assertEquals(0, countCompensationEvents(instanceId)),
+                    () -> assertEquals(0, impl.undoStep1.get(), "no compensation may run"),
+                    () -> assertTrue(observer.failed().isEmpty(), "workflowFailed must not fire"));
+
+            faulty.heal();
+            assertEquals(1, executor.recoverWorkflows(Map.of("ParallelSaga",
+                    new WorkflowRegistration("ParallelSaga", "default", () -> workflow, method))));
+            awaitRunEnded("sf-parallel");
+
+            assertAll(
+                    () -> assertEquals(WorkflowStatus.COMPLETED, status("sf-parallel")),
+                    () -> assertEquals(1, impl.step1.get(), "step 1 is replayed from its memo"),
+                    () -> assertEquals(2, impl.step2.get(),
+                            "branch 1's side effect happened but its outcome never landed, so it runs again"),
+                    () -> assertEquals(0, impl.undoStep1.get()));
+        }
+    }
+
+    // ── Terminal write ────────────────────────────────────────────────
+
+    @Nested
+    @DisplayName("A store fault on the terminal write")
+    class TerminalWrite {
+
+        @Test
+        @DisplayName("on the COMPLETED write abandons as STORE_UNAVAILABLE; recovery completes with every step replayed")
+        void completedWriteStoreFaultAbandonsAsStoreUnavailable() throws Exception {
+            faulty.failAlways("completeInstance");
+            var impl = new CountingSteps();
+            var workflow = new TwoStepSaga(proxy(StepActivities.class, impl, guarded, RetryPolicy.noRetry()));
+            var method = TwoStepSaga.class.getMethod("run", String.class);
+
+            var instanceId = executor.startWorkflow("sf-terminal", "TwoStepSaga", "default", "in",
+                    () -> workflow, method);
+            awaitRunEnded("sf-terminal");
+
+            assertAll(
+                    () -> assertEquals(List.of(AbandonReason.STORE_UNAVAILABLE), abandonReasons(),
+                            "a database outage on the terminal write is transient, not an operator problem"),
+                    () -> assertEquals(WorkflowStatus.RUNNING, status("sf-terminal")),
+                    () -> assertEquals(0, count(instanceId, EventType.WORKFLOW_COMPLETED)),
+                    () -> assertEquals(0, impl.undoStep1.get()));
+
+            faulty.heal();
+            assertEquals(1, executor.recoverWorkflows(Map.of("TwoStepSaga",
+                    new WorkflowRegistration("TwoStepSaga", "default", () -> workflow, method))));
+            awaitRunEnded("sf-terminal");
+
+            assertAll(
+                    () -> assertEquals(WorkflowStatus.COMPLETED, status("sf-terminal")),
+                    () -> assertEquals(1, impl.step1.get(), "replayed, not re-executed"),
+                    () -> assertEquals(1, impl.step2.get(), "replayed, not re-executed"),
+                    () -> assertEquals(0, impl.undoStep1.get()));
+        }
+
+        @Test
+        @DisplayName("on the FAILED write abandons as STORE_UNAVAILABLE; recovery records FAILED")
+        void failedWriteStoreFaultAbandonsAsStoreUnavailable() throws Exception {
+            faulty.failAlways("completeInstance");
+            var method = AlwaysFails.class.getMethod("run", String.class);
+
+            executor.startWorkflow("sf-terminal-failed", "AlwaysFails", "default", "in",
+                    AlwaysFails::new, method);
+            awaitRunEnded("sf-terminal-failed");
+
+            assertAll(
+                    () -> assertEquals(List.of(AbandonReason.STORE_UNAVAILABLE), abandonReasons()),
+                    () -> assertEquals(WorkflowStatus.RUNNING, status("sf-terminal-failed")));
+
+            faulty.heal();
+            assertEquals(1, executor.recoverWorkflows(Map.of("AlwaysFails",
+                    new WorkflowRegistration("AlwaysFails", "default", AlwaysFails::new, method))));
+            awaitRunEnded("sf-terminal-failed");
+
+            assertEquals(WorkflowStatus.FAILED, status("sf-terminal-failed"));
+        }
+
+        @Test
+        @DisplayName("any other failure of the FAILED write is still TERMINAL_WRITE_FAILED")
+        void nonStoreFailedWriteFailureStaysTerminalWriteFailed() throws Exception {
+            // A pin, not new behaviour: only a StoreUnavailableException is re-routed.
+            faulty.failNext("completeInstance", 1, () -> new RuntimeException("22001 (injected data error)"));
+
+            executor.startWorkflow("sf-terminal-other", "AlwaysFails", "default", "in",
+                    AlwaysFails::new, AlwaysFails.class.getMethod("run", String.class));
+            awaitRunEnded("sf-terminal-other");
+
+            assertAll(
+                    () -> assertEquals(List.of(AbandonReason.TERMINAL_WRITE_FAILED), abandonReasons()),
+                    () -> assertEquals(WorkflowStatus.RUNNING, status("sf-terminal-other")));
+        }
+    }
+
+    // ── Await deadline ────────────────────────────────────────────────
+
+    @Nested
+    @DisplayName("A store fault in the await-deadline decision")
+    class AwaitDeadline {
+
+        @BeforeEach
+        void shortRecheck() {
+            executor.shutdown();
+            executor = newExecutor(guarded, Duration.ofMillis(100));
+        }
+
+        @Test
+        @DisplayName("on the deadline row's self-fire does not abandon the run; the await times out as usual")
+        void selfFireFaultDoesNotAbandon() throws Exception {
+            faulty.failAlways("markTimerFired");
+
+            var instanceId = executor.startWorkflow("sf-deadline-fire", "TimesOut", "default", "in",
+                    TimesOut::new, TimesOut.class.getMethod("run", String.class));
+            awaitRunEnded("sf-deadline-fire");
+
+            assertAll(
+                    () -> assertTrue(faulty.calls("markTimerFired") >= 1, "the self-fire must have been attempted"),
+                    () -> assertEquals(List.of(), abandonReasons()),
+                    () -> assertEquals(1, count(instanceId, EventType.SIGNAL_TIMEOUT)),
+                    () -> assertEquals(WorkflowStatus.COMPLETED, status("sf-deadline-fire")));
+        }
+
+        @Test
+        @DisplayName("on the post-deadline signal re-read does not abandon the run; the await times out as usual")
+        void postDeadlineReReadFaultDoesNotAbandon() throws Exception {
+            // The first signal read after the self-fire is the post-deadline re-read.
+            var reReadFaults = new AtomicInteger();
+            faulty.failWhen("getUnconsumedSignals", args ->
+                    faulty.calls("markTimerFired") > 0 && reReadFaults.getAndIncrement() < 1);
+
+            var instanceId = executor.startWorkflow("sf-deadline-reread", "TimesOut", "default", "in",
+                    TimesOut::new, TimesOut.class.getMethod("run", String.class));
+            awaitRunEnded("sf-deadline-reread");
+
+            assertAll(
+                    () -> assertTrue(reReadFaults.get() >= 1, "the re-read must have faulted"),
+                    () -> assertEquals(List.of(), abandonReasons()),
+                    () -> assertEquals(1, count(instanceId, EventType.SIGNAL_TIMEOUT)),
+                    () -> assertEquals(WorkflowStatus.COMPLETED, status("sf-deadline-reread")));
+        }
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────
 
     private void awaitRunEnded(String workflowId) {
@@ -522,6 +749,126 @@ class StoreFaultStandDownTest {
 
         public String run(String in) {
             return activities.flaky(in);
+        }
+    }
+
+    public interface SagaSteps {
+        @Compensate("release")
+        String reserve(String in);
+
+        void release(String in);
+
+        @Compensate("refund")
+        String charge(String in);
+
+        void refund(String in);
+
+        String ship(String in);
+    }
+
+    /** {@code ship} always fails with a plain business exception. */
+    public static final class CountingSagaSteps implements SagaSteps {
+        final AtomicInteger reserve = new AtomicInteger();
+        final AtomicInteger release = new AtomicInteger();
+        final AtomicInteger charge = new AtomicInteger();
+        final AtomicInteger refund = new AtomicInteger();
+        final AtomicInteger ship = new AtomicInteger();
+
+        @Override
+        public String reserve(String in) {
+            reserve.incrementAndGet();
+            return "reserved:" + in;
+        }
+
+        @Override
+        public void release(String in) {
+            release.incrementAndGet();
+        }
+
+        @Override
+        public String charge(String in) {
+            charge.incrementAndGet();
+            return "charged:" + in;
+        }
+
+        @Override
+        public void refund(String in) {
+            refund.incrementAndGet();
+        }
+
+        @Override
+        public String ship(String in) {
+            ship.incrementAndGet();
+            throw new IllegalStateException("out of stock (injected business failure)");
+        }
+    }
+
+    /** Unwinds, LIFO: {@code refund}, then the manual {@code notifyCustomer}, then {@code release}. */
+    public static class ThreeStepSaga {
+        private final SagaSteps steps;
+        private final AtomicInteger notify;
+
+        public ThreeStepSaga(SagaSteps steps, AtomicInteger notify) {
+            this.steps = steps;
+            this.notify = notify;
+        }
+
+        @Saga
+        public String run(String in) {
+            steps.reserve(in);
+            WorkflowContext.current().addCompensation("notifyCustomer", notify::incrementAndGet);
+            steps.charge(in);
+            return steps.ship(in);
+        }
+    }
+
+    /**
+     * {@code step1}, then {@code parallel(sibling, step2)}: the sibling (branch
+     * 0) fails with a plain business exception on its first run only. Records
+     * what {@code parallel()} threw.
+     */
+    public static class ParallelSaga {
+        private final StepActivities steps;
+        private final AtomicBoolean siblingFailed = new AtomicBoolean();
+        final AtomicReference<Throwable> parallelThrew = new AtomicReference<>();
+
+        public ParallelSaga(StepActivities steps) {
+            this.steps = steps;
+        }
+
+        @Saga
+        public String run(String in) {
+            steps.step1(in);
+            try {
+                return String.join("|", WorkflowContext.current().parallel(List.<Callable<String>>of(
+                        () -> {
+                            if (siblingFailed.compareAndSet(false, true)) {
+                                throw new IllegalStateException("sibling business failure (injected)");
+                            }
+                            return "sibling";
+                        },
+                        () -> steps.step2(in))));
+            } catch (RuntimeException e) {
+                parallelThrew.set(e);
+                throw e;
+            }
+        }
+    }
+
+    public static class AlwaysFails {
+        public String run(String in) {
+            throw new IllegalStateException("business failure (injected)");
+        }
+    }
+
+    /** Awaits a signal that never comes and returns once the await times out. */
+    public static class TimesOut {
+        public String run(String in) {
+            try {
+                return WorkflowContext.current().awaitSignal("go", String.class, Duration.ofMillis(300));
+            } catch (SignalTimeoutException e) {
+                return "timed-out";
+            }
         }
     }
 }

@@ -2235,8 +2235,13 @@ public final class WorkflowExecutor {
             try {
                 completed = transitionToTerminal(ctx, instance, WorkflowStatus.COMPLETED,
                         EventType.WORKFLOW_COMPLETED, outputPayload);
-            } catch (DuplicateEventException | StaleRunException | FencedWriteException routed) {
-                throw routed; // keep their stale-run / lease-fenced stand-down arm below
+            } catch (DuplicateEventException | StaleRunException | FencedWriteException
+                     | StoreUnavailableException routed) {
+                // Keep their own arms below: the stale-run / lease-fenced
+                // stand-down, and the store-unavailable abandon — a database
+                // outage on the terminal write is transient (WARN,
+                // STORE_UNAVAILABLE), not an operator problem.
+                throw routed;
             } catch (RuntimeException terminalWriteFailed) {
                 // R31: any other store error here (a DB blip surfacing as an
                 // unchecked SQL exception, a failed re-read) is NOT a workflow
@@ -2829,14 +2834,18 @@ public final class WorkflowExecutor {
                 // COMPLETED case above.
                 emitRunAbandoned(ctx, AbandonReason.CONVERGED);
             }
-        } catch (FencedWriteException | StaleRunException | DuplicateEventException routed) {
-            // Not a persistence fault: another runner owns this workflow's
-            // progress (the lease fence refused the FAILED write, a fresh read
-            // found the row finalised, or the terminal slot is already taken).
-            // Rethrow so failAndCompensate's stand-down arm reports it as
-            // LEASE_FENCED / STALE_RUN — the generic arm below would log an
-            // ERROR and emit TERMINAL_WRITE_FAILED, misdescribing a routine
-            // hand-off as a store fault.
+        } catch (FencedWriteException | StaleRunException | DuplicateEventException
+                 | StoreUnavailableException routed) {
+            // None of these is a TERMINAL_WRITE_FAILED. The first three are not
+            // persistence faults: another runner owns this workflow's progress
+            // (the lease fence refused the FAILED write, a fresh read found the
+            // row finalised, or the terminal slot is already taken). Rethrow so
+            // failAndCompensate's stand-down arm reports it as LEASE_FENCED /
+            // STALE_RUN — the generic arm below would log an ERROR and emit
+            // TERMINAL_WRITE_FAILED, misdescribing a routine hand-off as a
+            // store fault. A StoreUnavailableException (the database is down)
+            // is transient, not an operator problem: it takes
+            // failAndCompensate's STORE_UNAVAILABLE abandon at WARN.
             throw routed;
         } catch (Exception updateError) {
             logger.error("Failed to update workflow '{}' status to FAILED",
@@ -2848,7 +2857,8 @@ public final class WorkflowExecutor {
             // NOTHING — the instance stays active and recoverable. The
             // stale-run signals (fence, finalised row, taken terminal slot)
             // are routed past this arm above, so what reaches here is a
-            // genuine store fault.
+            // genuine store fault other than an outage (which is routed to
+            // the STORE_UNAVAILABLE abandon above).
             emitRunAbandoned(ctx, AbandonReason.TERMINAL_WRITE_FAILED);
         }
     }

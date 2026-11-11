@@ -11,6 +11,7 @@ import io.b2mash.maestro.core.exception.NodeErrors;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException;
 import io.b2mash.maestro.core.exception.StaleRunException;
+import io.b2mash.maestro.core.exception.StoreUnavailableException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
@@ -182,7 +183,11 @@ public final class SagaManager {
      *
      * <p>If a compensation fails, it is logged and recorded as a
      * {@link EventType#COMPENSATION_STEP_FAILED} event, but remaining
-     * compensations continue.
+     * compensations continue. A store fault is not a compensation failure: a
+     * {@link StoreUnavailableException} (or any failure once the run's
+     * {@code STORE_UNAVAILABLE} stand-down is latched) records nothing, stops
+     * the unwind and propagates, leaving the instance {@code COMPENSATING} for
+     * recovery to finish.
      *
      * <p>Before anything durable changes — before the {@code COMPENSATING}
      * transition and before {@code COMPENSATION_STARTED} — the per-entry
@@ -465,7 +470,8 @@ public final class SagaManager {
                 appendEvent(ctx, stepBaseSeq, EventType.COMPENSATION_STEP_COMPLETED, entry.stepName(), null);
                 publishLifecycleEvent(ctx, entry.stepName(),
                         LifecycleEventType.COMPENSATION_STEP_COMPLETED);
-            } catch (DuplicateEventException | StaleRunException | FencedWriteException staleRun) {
+            } catch (DuplicateEventException | StaleRunException | FencedWriteException
+                     | StoreUnavailableException staleRun) {
                 // Issue 18: an append collision here means a concurrent runner
                 // owns this workflow's compensation progress (the replay-skip
                 // guard above read the store before the winner's event landed).
@@ -475,7 +481,7 @@ public final class SagaManager {
                 // (WorkflowExecutor leaves the instance COMPENSATING and
                 // recoverable; the winner's run finishes the job) — the exact
                 // treatment ExecutorShutdownException gets here, and ahead of
-                // catch (Exception e) because all three are MaestroExceptions.
+                // catch (Exception e) because all of these are MaestroExceptions.
                 // The collision may come from the action itself: since C5 a
                 // compensation activity that loses its append race propagates
                 // the duplicate instead of adopting the winner's result. A
@@ -486,9 +492,19 @@ public final class SagaManager {
                 // another node has adopted the workflow and owns the unwind.
                 // Recording it as a step failure would let this fenced run
                 // carry on to the next entry's ACTION, a side effect the
-                // adopting node also runs.
+                // adopting node also runs. A StoreUnavailableException (R1) —
+                // this entry's outcome append, or a store call inside its
+                // action, failed after the guard's retries and latched the run —
+                // is not a failed reversal either: the store is down. Recording
+                // it would be refused anyway, and carrying on would run the
+                // next entry's action for a run that is being abandoned; the
+                // instance stays COMPENSATING and recovery finishes the unwind.
                 throw staleRun;
             } catch (Exception e) {
+                // R2: the action caught the latched store fault and threw
+                // something else — a consequence of the outage, not a failed
+                // reversal. Abandon instead of recording it.
+                ctx.cancellation().throwIfStoreUnavailable(ctx.workflowId());
                 logger.error("Compensation {} '{}' failed for workflow '{}': {}",
                         i, entry.stepName(), ctx.workflowId(), e.getMessage(), e);
                 recordStepFailure(ctx, stepBaseSeq, entry.stepName(), e);
@@ -679,13 +695,13 @@ public final class SagaManager {
         // this call replay-skipped never ran, so they cannot be the source
         // of a shutdown here.)
         //
-        // Three full passes, ranked like parallel()'s pre-scan (R27, R33): a
+        // Full passes, ranked like parallel()'s pre-scan (R27, R33): a
         // control-flow signal in ANY branch first, then a node-level error
         // (rethrown raw, so the executor abandons the run as NODE_ERROR and no
         // COMPENSATION_STEP_FAILED is recorded for a reversal that never
         // failed), then a stale-run signal — so a shutdown is not reported as a
-        // stand-down because branch 0 happened to collide first (M2) — and all
-        // of them outrank a plain failure.
+        // stand-down because branch 0 happened to collide first (M2) — then a
+        // store fault (R1/R2), and all of them outrank a plain failure.
         for (var errorRef : errors) {
             // One check covers all three engine control-flow signals — a
             // shutdown, an operator terminate, or a stand-down because a branch
@@ -723,6 +739,21 @@ public final class SagaManager {
                     || error instanceof FencedWriteException) {
                 throw (RuntimeException) error;
             }
+        }
+        for (var errorRef : errors) {
+            // R1: a branch whose store call failed after the guard's retries
+            // latched the run's STORE_UNAVAILABLE stand-down. Not a failed
+            // reversal — the store is down — so nothing is recorded; the
+            // instance stays COMPENSATING and recovery finishes the unwind.
+            if (errorRef.get() instanceof StoreUnavailableException storeDown) {
+                throw storeDown;
+            }
+        }
+        if (errors.stream().anyMatch(errorRef -> errorRef.get() != null)) {
+            // R2: a branch that caught the latched store fault and threw
+            // something else failed because of the outage. The branches share
+            // ctx's cancellation, so the latch is visible here.
+            ctx.cancellation().throwIfStoreUnavailable(ctx.workflowId());
         }
 
         // Collect failures from branches that genuinely ran this call.
@@ -937,7 +968,7 @@ public final class SagaManager {
             ));
             appendEvent(ctx, seq, EventType.COMPENSATION_STEP_FAILED, stepName, errorPayload);
             publishLifecycleEvent(ctx, stepName, LifecycleEventType.COMPENSATION_STEP_FAILED);
-        } catch (DuplicateEventException | FencedWriteException staleRun) {
+        } catch (DuplicateEventException | FencedWriteException | StoreUnavailableException staleRun) {
             // Issue 18: the winner already recorded an outcome at this
             // sequence — this run's view of the step is stale. Stand down
             // rather than mislabelling the collision as a recorded failure.
@@ -946,7 +977,8 @@ public final class SagaManager {
             // ahead of catch (Exception) below, which would otherwise swallow
             // them and let the sequential loop — and executeParallel's failure
             // collection — carry on running compensation ACTIONS the adopting
-            // node also runs.
+            // node also runs. A StoreUnavailableException (R1) means the run is
+            // latched for a store outage: the same carry-on must not happen.
             throw staleRun;
         } catch (Exception e) {
             logger.warn("Failed to record compensation step failure for '{}' in workflow '{}'",
@@ -1008,6 +1040,16 @@ public final class SagaManager {
             // sticky (R33), so swallowing it cannot let the run carry on.
             ctx.cancellation().requestStale("append collision at sequence " + seq);
             throw staleRun;
+        } catch (StoreUnavailableException storeDown) {
+            // R1: the store could not take this append even after the guard's
+            // retries, and the guard latched the run's STORE_UNAVAILABLE
+            // stand-down (or refused the append of an already-latched run).
+            // Swallowing it here would let the unwind carry on to the next
+            // entry's ACTION and record outcomes out of order for a run that
+            // is being abandoned. Propagate: the executor abandons the run as
+            // STORE_UNAVAILABLE, the instance stays COMPENSATING, and recovery
+            // replays every recorded entry and finishes the unwind.
+            throw storeDown;
         } catch (Exception e) {
             logger.warn("Failed to append {} event for workflow '{}'", type, ctx.workflowId(), e);
         }
