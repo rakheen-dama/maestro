@@ -52,6 +52,13 @@ import java.util.TreeSet;
  *   <li>{@link SchemaMode#NONE} — do nothing.</li>
  * </ul>
  *
+ * <h2>Independent version bands</h2>
+ * <p>The bands share {@value #HISTORY_TABLE} but never depend on each other,
+ * so Flyway runs with {@code outOfOrder(true)}: a store migration shipped
+ * after the lock band's V100 was applied (V10, say) is applied, and reported
+ * pending by {@code VALIDATE}, even though it sorts below V100. Within a band
+ * versions are only ever appended.
+ *
  * <h2>Sharing a schema with the host</h2>
  * <p>The host's tables (and the host's {@code flyway_schema_history}) are
  * normally already present in the schema when Maestro first runs. Flyway
@@ -130,6 +137,17 @@ public final class MaestroSchemaInitializer {
                 .locations(locations.toArray(String[]::new))
                 .baselineOnMigrate(true)
                 .baselineVersion(BASELINE_VERSION)
+                // The bands share one history table but are independent: a
+                // store migration (1-99) never depends on a lock migration
+                // (100-199) or the reverse. Once V100 is applied, every later
+                // store migration sorts below the highest applied version, and
+                // Flyway's default refuses it ("Detected resolved migration not
+                // applied to database") — failing startup in flyway mode on
+                // every existing database. Out-of-order application ACROSS
+                // bands is the intended semantics; within a band versions are
+                // only ever appended. It also makes such a migration "pending"
+                // to info(), so VALIDATE names it below.
+                .outOfOrder(true)
                 .load();
 
         if (mode == SchemaMode.FLYWAY) {
