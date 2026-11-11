@@ -88,7 +88,10 @@ public interface DistributedLock {
      * holder. The engine's instance-lock renewer calls this once per pass
      * with every lock the node holds, so a backend that can renew many rows
      * in one round trip should override it — the default issues one
-     * {@link #renew} per handle.
+     * {@link #renew} per handle. The default attempts <em>every</em> handle
+     * even after a {@code renew} throws, so one failing key cannot stop the
+     * others being renewed; it then rethrows the first exception (later ones
+     * attached as suppressed).
      *
      * <p>The two outcomes stay as distinct as they are for {@code renew}:
      * <ul>
@@ -99,9 +102,12 @@ public interface DistributedLock {
      *       renewed. The returned handles are elements of {@code handles}.</li>
      *   <li><b>Thrown</b> — the backend could not be asked (implementations
      *       throw {@link io.b2mash.maestro.core.exception.LockBackendException};
-     *       the default propagates whatever {@code renew} throws). Nothing is
-     *       known about any handle and the caller must treat none as lost;
-     *       some may have been renewed before the failure.</li>
+     *       the default rethrows the first exception {@code renew} threw).
+     *       Some handles may have been renewed, but nothing is reported lost:
+     *       the caller must treat none as lost. A handle that was genuinely
+     *       lost in the same call is therefore only acted on by a later call
+     *       that does not throw — the store's lease fence keeps that window
+     *       safe.</li>
      * </ul>
      *
      * @param handles the lock handles to renew; may be empty
@@ -113,10 +119,24 @@ public interface DistributedLock {
      */
     default Set<LockHandle> renewAll(Collection<LockHandle> handles, Duration ttl) {
         var lost = new HashSet<LockHandle>();
+        RuntimeException failure = null;
         for (var handle : handles) {
-            if (!renew(handle, ttl)) {
-                lost.add(handle);
+            try {
+                if (!renew(handle, ttl)) {
+                    lost.add(handle);
+                }
+            } catch (RuntimeException e) {
+                // Keep going: this key's failure must not leave the others
+                // unrenewed. Errors are not caught — they always propagate.
+                if (failure == null) {
+                    failure = e;
+                } else {
+                    failure.addSuppressed(e);
+                }
             }
+        }
+        if (failure != null) {
+            throw failure;
         }
         return lost;
     }

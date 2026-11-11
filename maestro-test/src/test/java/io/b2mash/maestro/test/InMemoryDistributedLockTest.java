@@ -1,17 +1,22 @@
 package io.b2mash.maestro.test;
 
+import io.b2mash.maestro.core.exception.LockBackendException;
+import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class InMemoryDistributedLockTest {
@@ -86,5 +91,55 @@ class InMemoryDistributedLockTest {
         assertEquals(Set.of(expired, foreign), lost,
                 "only the expired and the foreign-token handles are lost; the held one is renewed");
         assertTrue(lock.tryAcquire("held", Duration.ofSeconds(30)).isEmpty(), "the held lock must stay held");
+    }
+
+    @Test
+    void renewAllDefaultAttemptsEveryHandleWhenOneRenewThrows() {
+        var backend = new OneKeyFailingLock("b");
+        var handles = new ArrayList<LockHandle>();
+        for (var key : List.of("a", "b", "c", "d")) {
+            handles.add(new LockHandle(key, "t-" + key, Instant.now().plusSeconds(30)));
+        }
+
+        var thrown = assertThrows(LockBackendException.class,
+                () -> backend.renewAll(handles, Duration.ofSeconds(30)));
+
+        assertEquals("b", thrown.key());
+        assertEquals(List.of("a", "b", "c", "d"), List.copyOf(backend.renewCalls),
+                "one failing key must not stop the default from renewing every other handle");
+    }
+
+    /** Uses the SPI default {@code renewAll}; {@code renew} throws for one key and renews the rest. */
+    private static final class OneKeyFailingLock implements DistributedLock {
+
+        private final String failingKey;
+        final List<String> renewCalls = new ArrayList<>();
+
+        OneKeyFailingLock(String failingKey) {
+            this.failingKey = failingKey;
+        }
+
+        @Override
+        public Optional<LockHandle> tryAcquire(String key, Duration ttl) {
+            return Optional.empty();
+        }
+
+        @Override
+        public void release(LockHandle handle) {
+        }
+
+        @Override
+        public boolean renew(LockHandle handle, Duration ttl) {
+            renewCalls.add(handle.key());
+            if (handle.key().equals(failingKey)) {
+                throw new LockBackendException("simulated failure", handle.key(), new RuntimeException());
+            }
+            return true;
+        }
+
+        @Override
+        public boolean trySetLeader(String electionKey, String candidateId, Duration ttl) {
+            return false;
+        }
     }
 }
