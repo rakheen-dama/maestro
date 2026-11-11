@@ -16,6 +16,7 @@ import io.b2mash.maestro.core.exception.NodeErrors;
 import io.b2mash.maestro.core.exception.QueryNotDefinedException;
 import io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException;
 import io.b2mash.maestro.core.exception.StaleRunException;
+import io.b2mash.maestro.core.exception.StoreUnavailableException;
 import io.b2mash.maestro.core.exception.UnknownWorkflowHistoryException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowExecutionException;
@@ -516,7 +517,14 @@ public final class WorkflowExecutor {
             throw new IllegalArgumentException(
                     "wakeRecheckInterval must be positive, got " + wakeRecheckInterval);
         }
-        this.store = store;
+        // Guarded once, here, before any component below is built from it, so
+        // every store call this executor and its components make on a run's
+        // behalf — memo lookups, outcome appends, status writes, signal and
+        // timer writes — gets the same store-fault treatment: the idempotent
+        // reads/appends are retried briefly, and a final StoreUnavailableException
+        // latches the run's STORE_UNAVAILABLE stand-down (see StoreFaultGuard).
+        // Idempotent: an already-guarded store is used as is.
+        this.store = StoreFaultGuard.wrap(store);
         this.distributedLock = distributedLock;
         this.observer = observer;
         // Wrapped once, here, and handed to every component this executor builds
@@ -542,9 +550,9 @@ public final class WorkflowExecutor {
         this.lifecycleEventPublisher = new LifecycleEventPublisher(serviceName);
         this.lifecycleEventSink = buildLifecycleEventSink(this.messaging, lifecycleEventsEnabled);
         this.signalManager = new SignalManager(
-                store, this.lifecycleEventSink, signalNotifier, serializer, parkingLot, wakeRecheckInterval,
+                this.store, this.lifecycleEventSink, signalNotifier, serializer, parkingLot, wakeRecheckInterval,
                 observer, taskQueueGovernor, instantSource);
-        this.sagaManager = new SagaManager(store, serializer, serviceName, observer, this.lifecycleEventSink);
+        this.sagaManager = new SagaManager(this.store, serializer, serviceName, observer, this.lifecycleEventSink);
         this.instanceLockManager = new WorkflowInstanceLockManager(
                 distributedLock, serviceName, lockKeyPrefix, instanceLockTtl,
                 instanceLockTtl.dividedBy(3), observer);
@@ -2006,11 +2014,11 @@ public final class WorkflowExecutor {
         WorkflowInstance instance;
         if (replaying) {
             // Both store calls below run while this node may already hold the
-            // lock. A store fault here (an UncheckedSqlException from a DB
-            // blip) must not leak the handle: left in heldLocks it would be
-            // renewed forever, every later tryAcquire would answer
-            // HELD_ELSEWHERE, and the workflow would be unrecoverable on this
-            // node until a JVM restart.
+            // lock. A store fault here (a StoreUnavailableException from a DB
+            // blip, or any other store error) must not leak the handle: left
+            // in heldLocks it would be renewed forever, every later tryAcquire
+            // would answer HELD_ELSEWHERE, and the workflow would be
+            // unrecoverable on this node until a JVM restart.
             try {
                 // Close the recovery-query→resume race: the previous owner may
                 // have finished the workflow after the recovery snapshot was
@@ -2217,8 +2225,12 @@ public final class WorkflowExecutor {
             // R33: a run already known to be stale (workflow code swallowed an
             // earlier collision or StaleRunException) must not reach its
             // terminal write at all — the StaleRunException this raises takes
-            // the same stand-down arm.
+            // the same stand-down arm. Likewise a run whose store fault was
+            // latched (R2: workflow code swallowed the StoreUnavailableException
+            // and returned) — its StoreUnavailableException takes the
+            // store-unavailable arm, so the run is abandoned, not COMPLETED.
             ctx.cancellation().throwIfStale(ctx.workflowId());
+            ctx.cancellation().throwIfStoreUnavailable(ctx.workflowId());
             boolean completed;
             try {
                 completed = transitionToTerminal(ctx, instance, WorkflowStatus.COMPLETED,
@@ -2327,6 +2339,16 @@ public final class WorkflowExecutor {
             // written by another runner. MUST stay ahead of catch (Exception e)
             // — all three are MaestroExceptions.
             handleStaleRunStandDown(ctx, staleRun);
+        } catch (StoreUnavailableException storeDown) {
+            // R1: the store could not be reached — raised by the store itself
+            // (after StoreFaultGuard's bounded retries of the idempotent calls)
+            // or by a stop point once the guard latched the run. Not a
+            // workflow failure: recording FAILED would compensate work that
+            // never failed. Write nothing, compensate nothing, leave the
+            // instance active; finally releases the lock and recovery resumes
+            // it once the store answers. MUST stay ahead of catch (Exception e)
+            // — it is a MaestroException.
+            handleStoreUnavailable(ctx, storeDown);
         } catch (Error e) {
             // Sits after the control-flow arms above and before catch (Exception e):
             // an Error that is NOT one of the three MaestroControlFlowError signals
@@ -2344,11 +2366,24 @@ public final class WorkflowExecutor {
                 // node heals it. Loud, but non-terminal: write nothing, leave the
                 // instance recoverable, release the lock in finally below.
                 handleNodeError(ctx, e);
+            } else if (storeUnavailableLatched(ctx)) {
+                // R2: the run's store fault was latched and workflow code
+                // turned it into something else — this throwable is a
+                // consequence of the outage, not the workflow's failure.
+                handleStoreUnavailable(ctx, e);
             } else {
                 failAndCompensate(ctx, instance, e, compensationStack, parallelCompensation);
             }
         } catch (Exception e) {
-            failAndCompensate(ctx, instance, e, compensationStack, parallelCompensation);
+            if (storeUnavailableLatched(ctx)) {
+                // R2: as above — workflow code caught the latched
+                // StoreUnavailableException and threw something else (or
+                // carried on into a failure the outage caused). Sticky: the
+                // run is abandoned, never failed or compensated.
+                handleStoreUnavailable(ctx, e);
+            } else {
+                failAndCompensate(ctx, instance, e, compensationStack, parallelCompensation);
+            }
         } finally {
             // F8: give the slot back first, so a run waiting on this queue can
             // start while the bookkeeping below completes. Idempotent — a park
@@ -2465,6 +2500,35 @@ public final class WorkflowExecutor {
                         + "or terminate the workflow if it cannot be healed",
                 ctx.workflowId(), e.getClass().getName(), e);
         emitRunAbandoned(ctx, AbandonReason.NODE_ERROR);
+    }
+
+    // ── Internal: store unavailable (R1/R2) ────────────────────────────
+
+    /** Whether this run's store fault has been latched by the store-fault guard. */
+    private static boolean storeUnavailableLatched(WorkflowContext ctx) {
+        return ctx.cancellation().cause() == RunCancellation.Cause.STORE_UNAVAILABLE;
+    }
+
+    /**
+     * Ends a local run because the store was unreachable, without recording
+     * an outcome: one {@code WARN} naming the workflow and the latched detail,
+     * and {@link EngineObserver#runAbandoned} with
+     * {@link AbandonReason#STORE_UNAVAILABLE}. Writes nothing — the store is
+     * the thing that is down — and runs no compensation; the instance keeps
+     * its active status and {@code executeWorkflow}'s {@code finally} releases
+     * the lock, so ordinary recovery resumes it once the store answers again.
+     *
+     * @param ctx   the abandoned run's context
+     * @param cause what unwound the run: the {@code StoreUnavailableException},
+     *              or whatever workflow code turned the latched one into
+     */
+    private void handleStoreUnavailable(WorkflowContext ctx, @Nullable Throwable cause) {
+        var detail = ctx.cancellation().reason();
+        logger.warn("Workflow '{}' abandoned its local run — the store is unavailable ({}); NOT recorded as a "
+                        + "workflow failure, no compensation run; the instance stays recoverable and "
+                        + "recovery resumes it once the store answers",
+                ctx.workflowId(), detail != null ? detail : String.valueOf(cause));
+        emitRunAbandoned(ctx, AbandonReason.STORE_UNAVAILABLE);
     }
 
     // ── Internal: stale-run stand-down (Issue 18) ──────────────────────
@@ -2663,6 +2727,14 @@ public final class WorkflowExecutor {
             // COMPENSATING transition or a compensation memo was refused
             // because the adopting node now holds the row's epoch.
             handleStaleRunStandDown(ctx, staleDuringCompensation);
+        } catch (StoreUnavailableException storeDownDuringCompensation) {
+            // The store failed while handling a genuine failure — the
+            // COMPENSATING transition, a compensation's memo, or a stop point
+            // (handleWorkflowFailure's checks below) after the guard latched
+            // the run. Not a failed reversal and not a FAILED outcome: nothing
+            // more is written, the instance stays active (COMPENSATING if the
+            // unwind had begun) and recovery finishes the job.
+            handleStoreUnavailable(ctx, storeDownDuringCompensation);
         } catch (Error nodeErrorDuringCompensation) {
             // R28: a node-level error from a compensation action — thrown by
             // the action itself, or by a compensation activity, which the
@@ -2692,7 +2764,10 @@ public final class WorkflowExecutor {
         // swallowed collision or StaleRunException into this "failure") must
         // neither compensate work the winner owns nor write FAILED over it.
         // The StaleRunException reaches failAndCompensate's stand-down arm.
+        // Likewise a run whose store fault was latched: its
+        // StoreUnavailableException reaches failAndCompensate's abandon arm.
         ctx.cancellation().throwIfStale(ctx.workflowId());
+        ctx.cancellation().throwIfStoreUnavailable(ctx.workflowId());
 
         // Logged after the stale check: a stand-down loser is not a failure worth
         // an ERROR line (its stand-down is logged by its own handler).
@@ -2727,8 +2802,10 @@ public final class WorkflowExecutor {
         // Re-checked after compensating (R33): an unwind can make the run
         // stale too, and a stale run must not reach its terminal write. Outside
         // the try below, whose catch (Exception) would misreport it as a
-        // failed terminal write.
+        // failed terminal write. The same holds for a store fault latched
+        // during the unwind: abandon, never write FAILED.
         ctx.cancellation().throwIfStale(ctx.workflowId());
+        ctx.cancellation().throwIfStoreUnavailable(ctx.workflowId());
 
         // Update instance to FAILED
         try {

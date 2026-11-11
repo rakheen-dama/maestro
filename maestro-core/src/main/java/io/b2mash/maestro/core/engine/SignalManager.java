@@ -616,8 +616,11 @@ final class SignalManager {
     <T> T awaitSignal(WorkflowContext ctx, String signalName, Class<T> type, Duration timeout) {
         // A run already known to be stale (R33) — workflow code swallowed an
         // earlier collision or StaleRunException — stands down before it can
-        // consume a signal that belongs to the winner's run.
+        // consume a signal that belongs to the winner's run. A run whose store
+        // fault was latched (R2) and swallowed is abandoned here too, before
+        // it consumes a signal it could not durably record.
         ctx.cancellation().throwIfStale(ctx.workflowId());
+        ctx.cancellation().throwIfStoreUnavailable(ctx.workflowId());
         var seq = WorkflowContextInternals.nextSequence(ctx);
         var stepName = STEP_PREFIX + signalName;
 

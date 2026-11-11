@@ -308,8 +308,10 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         // A run already known to be stale (R33) — one of its appends collided,
         // or a fresh read found the row finalised, and workflow code swallowed
         // the exception — stands down here, before it saves a timer row the
-        // winner never scheduled.
+        // winner never scheduled. So does a run whose store fault was latched
+        // (R2) and swallowed: it is abandoned here, before it arms a timer.
         ctx.cancellation().throwIfStale(ctx.workflowId());
+        ctx.cancellation().throwIfStoreUnavailable(ctx.workflowId());
         var seq = WorkflowContextInternals.nextSequence(ctx);
         var stepName = "$maestro:sleep";
 

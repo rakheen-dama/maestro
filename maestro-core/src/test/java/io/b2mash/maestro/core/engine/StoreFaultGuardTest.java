@@ -18,7 +18,9 @@ import org.junit.jupiter.api.function.Executable;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -146,6 +148,22 @@ class StoreFaultGuardTest {
 
         assertEquals(1, delegate.calls("getEventBySequence"));
         assertNull(ctx.cancellation().cause());
+    }
+
+    @Test
+    @DisplayName("a park probe through the guarded store falls back at once — no retry, no latch")
+    void parkProbeReadThroughGuardNeitherRetriesNorLatches() {
+        delegate.failNext("getEventBySequence", 3);
+        var fallback = Optional.of(event(99));
+        var result = new AtomicReference<Optional<WorkflowEvent>>();
+
+        inRun(() -> result.set(ParkProbe.read("test.probe", "wf-guard",
+                () -> guarded.getEventBySequence(instanceId, 1), fallback)));
+
+        assertSame(fallback, result.get(), "the probe must return its fallback");
+        assertEquals(1, delegate.calls("getEventBySequence"),
+                "an advisory read is attempted once, never retried");
+        assertNull(ctx.cancellation().cause(), "a failed probe must not latch the run (R4)");
     }
 
     @Test

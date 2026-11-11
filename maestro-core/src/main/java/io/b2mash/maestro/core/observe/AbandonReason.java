@@ -8,7 +8,8 @@ package io.b2mash.maestro.core.observe;
  * {@link StandDownReason}. A stand-down means "another runner's durable state
  * governs this workflow's progress"; these mean "this thread stopped running the
  * workflow, and the reason is not the workflow's" — routine for all but
- * {@link #NODE_ERROR}, which is a node problem. Keeping them apart is what stops a
+ * {@link #NODE_ERROR}, which is a node problem, and a persisting
+ * {@link #STORE_UNAVAILABLE}, which is a database outage. Keeping them apart is what stops a
  * routine deploy or an operator terminate from incrementing a failure-shaped
  * counter — the same reasoning that makes the engine's control-flow signals
  * {@code Error}s rather than exceptions.
@@ -52,5 +53,17 @@ public enum AbandonReason {
      * <p>Unlike the other constants this one is <em>not</em> routine — alert
      * on it.
      */
-    NODE_ERROR
+    NODE_ERROR,
+
+    /**
+     * The store was unreachable while this run was active; nothing recorded,
+     * the instance stays recoverable; expect it during a database outage,
+     * alert if it persists.
+     *
+     * <p>Emitted when a {@code StoreUnavailableException} — raised by the
+     * store, or by the run's own stop points once the store-fault guard has
+     * latched the run — ends the local run. Recovery resumes the instance once
+     * the store answers again.
+     */
+    STORE_UNAVAILABLE
 }
