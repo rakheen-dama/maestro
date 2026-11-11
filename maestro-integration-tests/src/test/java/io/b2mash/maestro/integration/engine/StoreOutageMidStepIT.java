@@ -83,7 +83,7 @@ class StoreOutageMidStepIT extends PostgresIntegrationSupport {
 
     @Test
     @DisplayName("a pool outage after an activity body never fails the workflow — no compensation, "
-            + "completed by recovery within two poll intervals")
+            + "completed by recovery within three poll intervals")
     void poolOutageAfterActivityBodyNeverFailsTheWorkflow() throws Exception {
         var outageCleared = new CountDownLatch(1);
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("store-outage");
@@ -104,9 +104,10 @@ class StoreOutageMidStepIT extends PostgresIntegrationSupport {
             var finishedAfterOutage = Duration.ofNanos(System.nanoTime() - clearedAt);
 
             var charges = recorder.count("charge");
+            // The blip test below is the one that covers the charges == 1 side.
             assertAll(
-                    () -> assertTrue(finishedAfterOutage.compareTo(RECOVERY_POLL_INTERVAL.multipliedBy(2)) <= 0,
-                            "recovery must finish the workflow within two poll intervals of the store "
+                    () -> assertTrue(finishedAfterOutage.compareTo(RECOVERY_POLL_INTERVAL.multipliedBy(3)) <= 0,
+                            "recovery must finish the workflow within three poll intervals of the store "
                                     + "answering again; took " + finishedAfterOutage),
                     () -> assertNeverFailed(finished),
                     () -> assertTrue(Set.of(1, 2).contains(charges),

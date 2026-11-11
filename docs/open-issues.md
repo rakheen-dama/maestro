@@ -2975,21 +2975,28 @@ and timer row are cleared — pinned by a core test for each shape above.
 > (a store fault abandons the run instead of failing the workflow), `9ed4d8d`
 > (a latched run cannot append history), `44bbbcb` (compensation and
 > `parallel()` branches), `69b28aa` (the consumed signal's deadline cancel is
-> advisory), plus the real-Postgres proof. Pinned by
+> advisory), the real-Postgres proof, and the final-review fix wave (the
+> latch `WARN` names the SQLSTATE; an activity body's own store calls fail the
+> activity, not the run; SQLSTATE class `54` is a data error; best-effort
+> status reads in the stand-down handlers; the deadline re-arm is advisory).
+> Pinned by
 > `AbstractJdbcWorkflowStoreUnitTest` (SQLSTATE classification, including a
-> `getConnection()` timeout with no SQLSTATE), `StoreFaultGuardTest` (retry
-> budget and waits, latch, a commit lost in flight surfacing as a duplicate,
-> advisory reads, a latched run's appends refused), `RunCancellationTest`,
+> `getConnection()` timeout with no SQLSTATE, class `54` as a data error),
+> `StoreFaultGuardTest` (retry budget and waits, latch, the SQLSTATE in the
+> latch detail, a commit lost in flight surfacing as a duplicate, advisory
+> reads, a latched run's appends refused), `RunCancellationTest`,
 > `StoreFaultStandDownTest` (outcome-append outage abandons and recovery
 > completes; a single blip is absorbed; a workflow that catches the fault can
 > neither run its fallback nor record a side effect; park-time status write;
 > retry backoff; compensation left `COMPENSATING`; a `parallel()` branch fault
-> outranking a sibling's plain failure; both terminal writes; the three
-> await-deadline advisory sites; a data error, not a store fault, still fails the
-> workflow) and `StoreOutageMidStepIT` (real Postgres, a pool whose
+> outranking a sibling's plain failure; both terminal writes; the four
+> await-deadline advisory sites; a store fault in an activity body's call for
+> another workflow failing the activity, not the run; a graceful shutdown
+> during an outage still reported; a data error, not a store fault, still fails
+> the workflow) and `StoreOutageMidStepIT` (real Postgres, a pool whose
 > `getConnection()` fails from inside `charge()`'s body: a 3 s outage abandons
 > the run as `STORE_UNAVAILABLE` and the recovery poller completes it within
-> two poll intervals with no `WORKFLOW_FAILED` and no compensation; a single
+> three poll intervals with no `WORKFLOW_FAILED` and no compensation; a single
 > failed connection is absorbed by the in-place retry and `charge` runs once).
 > The rest of this section is the record of the defect.
 
@@ -3024,11 +3031,13 @@ store stayed away:
 **The fix.** Three layers.
 
 1. **Classification at the store.** `AbstractJdbcWorkflowStore.storeFault`
-   keeps SQLSTATE class `22`/`23` — errors the workflow's own values caused —
-   as `UncheckedSqlException`, which still fails the workflow. Everything
-   else — a pool timeout with no SQLSTATE, connection, resource,
-   operator-intervention and schema errors — becomes the new sealed
-   `StoreUnavailableException`. The existing domain mappings
+   keeps SQLSTATE class `22`/`23`/`54` — errors the workflow's own values
+   caused, class `54` being a program limit such as an oversized payload — as
+   `UncheckedSqlException`, which still fails the workflow. Everything else —
+   a pool timeout with no SQLSTATE, connection, insufficient-resource,
+   operator-intervention and schema errors — becomes the new
+   `StoreUnavailableException` (a `final` class, a permitted subtype of the
+   sealed `MaestroException`). The existing domain mappings
    (`DuplicateEventException`, `WorkflowAlreadyExistsException`, a
    serialization conflict read as `false`) run first and are unchanged.
 2. **`StoreFaultGuard` at the engine's store boundary.** The executor and
@@ -3042,8 +3051,14 @@ store stayed away:
    workflow code that caught the fault cannot record a fallback path the
    durable history never chose. Advisory reads and best-effort writes (the
    Issue 20 park probes, an await deadline's self-fire, the post-deadline
-   signal re-read, the cancel of a consumed signal's deadline row) are run
-   under `StoreFaultGuard.advisory`: neither retried nor latched.
+   signal re-read, the cancel of a consumed signal's deadline row, the re-arm
+   of a missing deadline row on replay) are run under
+   `StoreFaultGuard.advisory`: neither retried nor latched. The activity body
+   itself runs under `StoreFaultGuard.passThrough`, so a store call it makes
+   for another workflow (a `MaestroClient` start or signal) fails the
+   activity under its `RetryPolicy` instead of latching the calling run. The
+   latch `WARN` carries the SQLSTATE and driver message of the underlying
+   `SQLException`.
 3. **Routing in the executor.** A `StoreUnavailableException`, or any
    failure of a latched run, ends the local run as the new
    `AbandonReason.STORE_UNAVAILABLE`: one `WARN`, nothing written, no
@@ -3062,9 +3077,10 @@ store stayed away:
 **What it does not remove.** The activity in flight when the fault hit — its
 body ran, its outcome was never recorded — runs again on recovery. The
 in-place retry narrows that window to outages longer than about 1.2 s; it
-does not close it. Activities must stay idempotent, as they already must for
-an owner kill or a fenced run. See `docs/operations.md` §10.9 for what an
-operator sees and what to alert on.
+does not close it; a fault that repeats (a schema error) re-runs it once per
+recovery pass until fixed. Activities and compensations must stay idempotent,
+as they already must for an owner kill or a fenced run. See
+`docs/operations.md` §10.9 for what an operator sees and what to alert on.
 
 **Relation to Issue 20.** Issue 20 made the reads that only *notice* a
 cross-node event skip a failed interval. Issue 34 covers every other store
