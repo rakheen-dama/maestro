@@ -62,7 +62,11 @@ import static org.awaitility.Awaitility.await;
  * {@code maestro.retry.default-*} for the default {@code @ActivityStub}
  * retry policy. {@code maestro.signal.janitor-interval} and
  * {@code maestro.signal.terminal-retention} (C14b) are pinned the same way,
- * through {@link StartupRecoveryRunner}.
+ * through {@link StartupRecoveryRunner}; so are {@code maestro.retention.*},
+ * {@code maestro.worker.*} (the listed task queues, the
+ * {@code default-concurrency}/{@code default-activity-concurrency} bound on
+ * every other queue, its startup validation and INFO line) and
+ * {@code maestro.replay.verify-arguments}.
  *
  * <p>Before this fix, all four had a hardcoded value baked into
  * {@link WorkflowExecutor} / {@code ActivityInvocationHandler} /
@@ -74,7 +78,7 @@ import static org.awaitility.Awaitility.await;
  * wiring from {@link MaestroProperties} into the engine is covered, not just
  * the property binding.
  */
-@DisplayName("shutdown timeout, wake-recheck-interval, activity lock prefix and default retry policy reach the engine")
+@DisplayName("maestro.* configuration seams (shutdown, signal, lock prefix, retry, retention, worker, replay) reach the engine")
 @ExtendWith(OutputCaptureExtension.class)
 class MaestroAutoConfigurationConfigSeamsTest {
 

@@ -27,6 +27,13 @@ import java.util.ArrayList;
  * resolution accepts. Searches the context and its ancestors, as
  * {@code @ConditionalOnBean} does by default.
  *
+ * <p>It sees the qualifier only as an annotation. A qualifier added
+ * programmatically — an {@code AutowireCandidateQualifier} on a hand-registered
+ * bean definition — is honoured by injection ({@code MaestroDataSources})
+ * but not here: such a bean counts only if it is also a default candidate, so
+ * as the lone {@code DataSource} with {@code defaultCandidate = false} it
+ * leaves this condition unmatched.
+ *
  * <p>Stateless; safe to call from any thread.
  */
 final class OnMaestroDataSourceCondition extends SpringBootCondition implements ConfigurationCondition {

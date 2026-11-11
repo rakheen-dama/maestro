@@ -43,12 +43,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * give the engine its own connection pool without the engine starving the
  * host's request threads.
  *
- * <p>Built from real auto-configurations, Boot's
- * {@link DataSourceAutoConfiguration} included, so the class-level
- * {@code @ConditionalOnBean(DataSource.class)} guards are evaluated in the
- * order an application would evaluate them; the host's own beans come in as
- * user configuration. The two databases are told apart by
- * {@code currentSchema}: the host's pool points at {@value #HOST_SCHEMA},
+ * <p>Built from real auto-configurations, so the class-level
+ * {@code @ConditionalOnMaestroDataSource} guards are evaluated in the order an
+ * application would evaluate them; the host's own beans come in as user
+ * configuration. Two runners: {@code runner} includes Boot's
+ * {@link DataSourceAutoConfiguration} (a host with a DataSource of its own, or
+ * one Boot would build from {@code spring.datasource.*});
+ * {@code runnerWithoutBootDataSource} leaves it out (a host whose only
+ * DataSource is Maestro's, or none at all). The two databases are told apart
+ * by {@code currentSchema}: the host's pool points at {@value #HOST_SCHEMA},
  * Maestro's at {@value #MAESTRO_SCHEMA}.
  */
 @DisplayName("@MaestroDataSource selection")

@@ -36,8 +36,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * single-node suite can exercise.
  *
  * <h2>What "two nodes" means here</h2>
- * <p>Two {@link MaestroEngineHarness} instances with distinct service names over
- * the <em>same</em> Postgres store, each with its own
+ * <p>Two {@link MaestroEngineHarness} instances of one service over the
+ * <em>same</em> Postgres store, each with its own
  * {@link PostgresDistributedLock} on its own {@code DataSource} — so the lock
  * tokens are genuinely different and contention is resolved in the database,
  * not by an in-JVM shortcut.
@@ -100,7 +100,8 @@ class MultiNodeLockContentionIT extends PostgresIntegrationSupport {
         assertEquals(WorkflowStatus.RUNNING, handle.status(),
                 "the workflow must still look adoptable to node B's recovery query");
         assertEquals(0, nodeB.recover(),
-                "node B must observe HELD_ELSEWHERE and skip the workflow");
+                "node B must find node A's lock held (its heldKeys read, or HELD_ELSEWHERE on tryAcquire) "
+                        + "and skip the workflow");
         assertFalse(nodeB.executor().isRunning(workflowId),
                 "node B must not have launched a second copy");
 
@@ -200,7 +201,8 @@ class MultiNodeLockContentionIT extends PostgresIntegrationSupport {
         raceB.join();
 
         assertEquals(1, launched.get(),
-                "exactly one node may launch the workflow — the other must see HELD_ELSEWHERE");
+                "exactly one node may launch the workflow — the other must find the lock held "
+                        + "(its heldKeys read, or HELD_ELSEWHERE on tryAcquire)");
 
         // The event count below includes WORKFLOW_COMPLETED, which lands one
         // write after the status turns COMPLETED — wait for the event, not the

@@ -46,8 +46,10 @@ import java.lang.annotation.Target;
  * <p>A {@code defaultCandidate = false} bean as the only {@code DataSource}
  * also works for Maestro, but Boot's {@code DataSource} auto-configuration
  * does not see it: unless that auto-configuration is excluded, Boot still
- * builds a host pool from {@code spring.datasource.*} and, with no URL, fails
- * startup ("Failed to determine a suitable driver class").
+ * builds a host pool from {@code spring.datasource.*}. With no URL and no
+ * embedded database (H2, HSQLDB, Derby) on the classpath that fails startup
+ * ("Failed to determine a suitable driver class"); with one on the classpath,
+ * Boot quietly starts an embedded host pool beside Maestro's.
  *
  * <p>Exactly one bean may carry this qualifier. The qualifier may sit on the
  * {@code @Bean} method or on the bean's class. Shaped like Spring Boot's
