@@ -11,6 +11,7 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -49,6 +50,19 @@ class PostgresDistributedLockTest {
 
         var ex = assertThrows(LockBackendException.class,
                 () -> lock.renew(handle, Duration.ofSeconds(30)));
+
+        assertEquals("maestro:lock:workflow:order-1", ex.key());
+        assertInstanceOf(SQLException.class, ex.getCause());
+    }
+
+    @Test
+    @DisplayName("renewAll wraps backend failures in LockBackendException — nothing is reported lost")
+    void renewAllWrapsBackendFailure() {
+        var handle = new LockHandle("maestro:lock:workflow:order-1", "token-1",
+                Instant.now().plusSeconds(30));
+
+        var ex = assertThrows(LockBackendException.class,
+                () -> lock.renewAll(List.of(handle), Duration.ofSeconds(30)));
 
         assertEquals("maestro:lock:workflow:order-1", ex.key());
         assertInstanceOf(SQLException.class, ex.getCause());

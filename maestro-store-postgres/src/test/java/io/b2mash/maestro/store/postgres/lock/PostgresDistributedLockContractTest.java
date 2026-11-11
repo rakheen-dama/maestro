@@ -8,6 +8,11 @@ import org.junit.jupiter.api.Test;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -241,6 +246,105 @@ class PostgresDistributedLockContractTest extends PostgresLockTestSupport {
             // Ageing by the ORIGINAL ttl would have expired it had renew not extended.
             assertTrue(lock.tryAcquire("key-renew-extend", TTL).isEmpty(),
                     "a renewed lock must remain held");
+        }
+    }
+
+    @Nested
+    @DisplayName("renewAll")
+    class RenewAllTests {
+
+        /** Acquired shorter than the renewal TTL, so a renewed row's expiry strictly advances. */
+        private static final Duration ACQUIRE_TTL = Duration.ofSeconds(10);
+
+        private List<LockHandle> acquire(PostgresDistributedLock on, String prefix, int count) {
+            var handles = new ArrayList<LockHandle>(count);
+            for (int i = 0; i < count; i++) {
+                handles.add(on.tryAcquire(prefix + i, ACQUIRE_TTL).orElseThrow());
+            }
+            return handles;
+        }
+
+        private Map<String, Instant> expiries() throws SQLException {
+            var expiries = new HashMap<String, Instant>();
+            try (var conn = dataSource.getConnection();
+                 var stmt = conn.createStatement();
+                 var rs = stmt.executeQuery("SELECT lock_key, expires_at FROM maestro_distributed_lock")) {
+                while (rs.next()) {
+                    expiries.put(rs.getString(1), rs.getTimestamp(2).toInstant());
+                }
+            }
+            return expiries;
+        }
+
+        private void assertAdvanced(Map<String, Instant> before, Map<String, Instant> after,
+                                    Set<String> exceptKeys) {
+            for (var entry : before.entrySet()) {
+                if (exceptKeys.contains(entry.getKey())) {
+                    continue;
+                }
+                var renewed = after.get(entry.getKey());
+                assertTrue(renewed.isAfter(entry.getValue()),
+                        () -> entry.getKey() + " expiry did not advance: " + entry.getValue() + " -> " + renewed);
+            }
+        }
+
+        @Test
+        @DisplayName("extends every held lock with one UPDATE per chunk of 500")
+        void renewAllExtendsEveryHeldLockInOneStatementPerChunk() throws SQLException {
+            var counting = new StatementCountingDataSource(dataSource);
+            var countedLock = new PostgresDistributedLock(counting);
+            var handles = acquire(countedLock, "key-batch-", 1_200);
+            var before = expiries();
+            counting.reset();
+
+            var lost = countedLock.renewAll(handles, TTL);
+
+            assertEquals(Set.of(), lost, "every lock is held, so none may be reported lost");
+            assertEquals(3, counting.executedStartingWith("UPDATE"),
+                    "1,200 handles must cost one statement per chunk of 500");
+            assertAdvanced(before, expiries(), Set.of());
+        }
+
+        @Test
+        @DisplayName("reports only the lock whose token was overwritten, renewing the rest")
+        void renewAllReportsOnlyTheStolenLock() throws SQLException {
+            var handles = acquire(lock, "key-steal-batch-", 500);
+            var stolen = handles.get(137);
+            try (var conn = dataSource.getConnection();
+                 var stmt = conn.prepareStatement(
+                         "UPDATE maestro_distributed_lock SET token = 'another-holder' WHERE lock_key = ?")) {
+                stmt.setString(1, stolen.key());
+                assertEquals(1, stmt.executeUpdate());
+            }
+            var before = expiries();
+
+            var lost = lock.renewAll(handles, TTL);
+
+            assertEquals(Set.of(stolen), lost);
+            var after = expiries();
+            assertAdvanced(before, after, Set.of(stolen.key()));
+            assertEquals(before.get(stolen.key()), after.get(stolen.key()),
+                    "the other holder's lock must not be extended by a stale token");
+        }
+
+        @Test
+        @DisplayName("reports an expired lock as lost instead of resurrecting it")
+        void renewAllReportsAnExpiredLockAsLost() throws SQLException {
+            var handles = acquire(lock, "key-exp-batch-", 3);
+            var expired = handles.get(1);
+            expireLock(expired.key());
+
+            var lost = lock.renewAll(handles, TTL);
+
+            assertEquals(Set.of(expired), lost);
+            assertTrue(lock.tryAcquire(expired.key(), TTL).isPresent(),
+                    "the expired lock must still be free — renewAll must not have revived it");
+        }
+
+        @Test
+        @DisplayName("no handles is no work and nothing lost")
+        void renewAllOfNothing() {
+            assertEquals(Set.of(), lock.renewAll(List.of(), TTL));
         }
     }
 

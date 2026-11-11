@@ -10,7 +10,11 @@ import javax.sql.DataSource;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -37,6 +41,13 @@ import java.util.UUID;
  * <p>{@code UPDATE SET expires_at WHERE lock_key = ? AND token = ?} — if
  * the lock was already lost (expired and re-acquired), zero rows are
  * affected and the renewal is silently ignored.
+ *
+ * <h2>Renew all</h2>
+ * <p>{@link #renewAll} renews handles in chunks of {@value #RENEW_ALL_CHUNK},
+ * one {@code UPDATE ... FROM unnest(keys, tokens) ... RETURNING lock_key} per
+ * chunk on a single connection; a handle whose key is not returned was lost.
+ * A node renewing thousands of parked workflows' locks thus pays one round
+ * trip per chunk instead of one per lock.
  *
  * <h2>Thread Safety</h2>
  * <p>This class is thread-safe. Each operation obtains its own JDBC
@@ -73,6 +84,18 @@ public final class PostgresDistributedLock implements DistributedLock {
             SET expires_at = now() + make_interval(secs => ?)
             WHERE lock_key = ? AND token = ? AND expires_at > now()
             """;
+
+    // language=SQL
+    private static final String RENEW_ALL_SQL = """
+            UPDATE maestro_distributed_lock l
+            SET expires_at = now() + make_interval(secs => ?)
+            FROM unnest(?::text[], ?::text[]) AS h(lock_key, token)
+            WHERE l.lock_key = h.lock_key AND l.token = h.token AND l.expires_at > now()
+            RETURNING l.lock_key
+            """;
+
+    /** Handles renewed per {@link #RENEW_ALL_SQL} statement. */
+    static final int RENEW_ALL_CHUNK = 500;
 
     // language=SQL
     private static final String LEADER_ELECTION_SQL = """
@@ -180,6 +203,63 @@ public final class PostgresDistributedLock implements DistributedLock {
             throw new LockBackendException(
                     "Failed to renew lock '" + handle.key() + "'", handle.key(), e);
         }
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One statement per chunk of {@value #RENEW_ALL_CHUNK} handles, all on
+     * one connection in autocommit mode — each chunk commits on its own, so a
+     * failure part-way leaves earlier chunks renewed. A {@link SQLException}
+     * is thrown as {@link LockBackendException} keyed by the first handle's
+     * key; nothing is reported lost.
+     */
+    @Override
+    public Set<LockHandle> renewAll(Collection<LockHandle> handles, Duration ttl) {
+        var lost = new HashSet<LockHandle>();
+        if (handles.isEmpty()) {
+            return lost;
+        }
+        var all = List.copyOf(handles);
+        var ttlSeconds = ttl.toMillis() / 1000.0;
+
+        try (var conn = dataSource.getConnection();
+             var stmt = conn.prepareStatement(RENEW_ALL_SQL)) {
+
+            conn.setAutoCommit(true);
+            for (int from = 0; from < all.size(); from += RENEW_ALL_CHUNK) {
+                var chunk = all.subList(from, Math.min(from + RENEW_ALL_CHUNK, all.size()));
+                var keys = new String[chunk.size()];
+                var tokens = new String[chunk.size()];
+                for (int i = 0; i < chunk.size(); i++) {
+                    keys[i] = chunk.get(i).key();
+                    tokens[i] = chunk.get(i).token();
+                }
+                stmt.setDouble(1, ttlSeconds);
+                stmt.setArray(2, conn.createArrayOf("text", keys));
+                stmt.setArray(3, conn.createArrayOf("text", tokens));
+
+                var renewedKeys = new HashSet<String>();
+                try (var rs = stmt.executeQuery()) {
+                    while (rs.next()) {
+                        renewedKeys.add(rs.getString(1));
+                    }
+                }
+                for (var handle : chunk) {
+                    if (!renewedKeys.contains(handle.key())) {
+                        lost.add(handle);
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            // Transient backend error — propagate so the caller keeps every
+            // handle rather than misreading the failure as lost ownership
+            var firstKey = all.getFirst().key();
+            throw new LockBackendException(
+                    "Failed to renew " + all.size() + " lock(s) (first '" + firstKey + "')", firstKey, e);
+        }
+        logger.debug("Renewed {} of {} lock(s) for {}ms", all.size() - lost.size(), all.size(), ttl.toMillis());
+        return lost;
     }
 
     @Override
