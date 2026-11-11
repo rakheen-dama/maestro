@@ -1,3 +1,16 @@
+# Milestone: Host-safety cycle (planned 2026-11-11)
+
+Plans: `docs/superpowers/plans/2026-11-11-host-safety-cycle/` (spec + two plans).
+Driver: the 2026-11-11 audit — a transient store error fails and compensates a
+workflow; engine load on the host's database and pool is unbounded by default.
+
+- [ ] PR #47 (Testcontainers 2.0.5) green and merged — prerequisite for CI gates
+- [ ] Plan review and decisions D1–D4 confirmed by the maintainer
+- [ ] Plan 01 — store-fault stand-down (5 tasks), branch `fix/store-fault-stand-down`
+- [ ] Plan 02 — bounded host load (5 tasks), branch `feat/bounded-host-load`
+- [ ] Gates per plan: `./gradlew build`, E2E 1–10, chaos PR-gate ×3, code review
+- [ ] Review section added here after merge
+
 # Milestone: DX front door + replay test kit (2026-11-05)
 
 Plan: `~/.claude/plans/velvet-snacking-petal.md` (dx-front-door section), planned
