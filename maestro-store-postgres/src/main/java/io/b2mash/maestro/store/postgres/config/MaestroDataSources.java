@@ -10,7 +10,9 @@ import javax.sql.DataSource;
  * Picks the {@link DataSource} every Maestro bean that talks to Postgres uses,
  * the way Spring Boot picks Flyway's: the {@link MaestroDataSource}-qualified
  * bean if there is one, otherwise the application's single (or
- * {@code @Primary}) {@code DataSource}.
+ * {@code @Primary}) {@code DataSource}. Among several qualified beans Spring's
+ * usual tie-breakers apply: a {@code @Primary} one, else one named like the
+ * injection point ({@code maestroDataSource}).
  *
  * <p>Stateless; safe to call from any thread.
  */
@@ -23,8 +25,10 @@ final class MaestroDataSources {
      * @param qualified the {@code @MaestroDataSource}-qualified provider
      * @param any       the unqualified provider (default candidates only)
      * @return the {@code DataSource} Maestro uses
-     * @throws IllegalStateException if more than one bean is qualified (and
-     *                               none of them is {@code @Primary}), or if
+     * @throws IllegalStateException if more than one bean is qualified and
+     *                               Spring cannot pick one (none is
+     *                               {@code @Primary}, none is named
+     *                               {@code maestroDataSource}), or if
      *                               there is no qualified bean and the
      *                               unqualified candidates have no single winner
      */
@@ -36,7 +40,8 @@ final class MaestroDataSources {
             // Not chained: the message carries everything Spring's does, and a
             // chained cause would become the root cause a user reads first.
             throw new IllegalStateException("Maestro found " + e.getNumberOfBeansFound()
-                    + " @MaestroDataSource beans; exactly one is allowed: " + e.getBeanNamesFound());
+                    + " @MaestroDataSource beans and none is @Primary: " + e.getBeanNamesFound()
+                    + ". Keep one, or mark the one Maestro should use @Primary.");
         }
         if (maestro != null) {
             return maestro;

@@ -51,8 +51,11 @@ import java.lang.annotation.Target;
  * ("Failed to determine a suitable driver class"); with one on the classpath,
  * Boot quietly starts an embedded host pool beside Maestro's.
  *
- * <p>Exactly one bean may carry this qualifier. The qualifier may sit on the
- * {@code @Bean} method or on the bean's class. Shaped like Spring Boot's
+ * <p>Put the qualifier on one bean, on the {@code @Bean} method or on the
+ * bean's class. If several carry it, Spring's usual tie-breakers pick
+ * Maestro's: the {@code @Primary} one, else the one named
+ * {@code maestroDataSource} (the name of Maestro's injection points); with
+ * neither, startup fails naming the beans. Shaped like Spring Boot's
  * {@code @FlywayDataSource}.
  */
 @Target({ElementType.FIELD, ElementType.METHOD, ElementType.PARAMETER, ElementType.TYPE, ElementType.ANNOTATION_TYPE})

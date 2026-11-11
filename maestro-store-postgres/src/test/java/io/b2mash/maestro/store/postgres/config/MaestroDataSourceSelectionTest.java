@@ -20,6 +20,7 @@ import org.springframework.boot.test.context.assertj.AssertableApplicationContex
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 import org.springframework.core.env.Environment;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -235,7 +236,7 @@ class MaestroDataSourceSelectionTest {
     }
 
     @Test
-    @DisplayName("two @MaestroDataSource beans fail startup: exactly one is allowed")
+    @DisplayName("two @MaestroDataSource beans, neither @Primary, fail startup")
     void twoQualifiedDataSourcesFail() throws SQLException {
         var database = freshDatabase();
         runner.withUserConfiguration(TwoQualifiedDataSources.class)
@@ -245,8 +246,36 @@ class MaestroDataSourceSelectionTest {
                     assertThat(ctx).hasFailed();
                     assertThat(ctx.getStartupFailure())
                             .rootCause()
-                            .hasMessageContaining("Maestro found 2 @MaestroDataSource beans; exactly one is allowed");
+                            .hasMessageContaining("Maestro found 2 @MaestroDataSource beans and none is @Primary: "
+                                    + "[firstMaestroDataSource, secondMaestroDataSource]. Keep one, or mark the one "
+                                    + "Maestro should use @Primary.");
                 });
+    }
+
+    @Test
+    @DisplayName("two @MaestroDataSource beans, one @Primary: the @Primary one is Maestro's")
+    void twoQualifiedDataSourcesOnePrimaryUsesThePrimary() throws SQLException {
+        var database = freshDatabase();
+        runner.withUserConfiguration(TwoQualifiedDataSourcesOnePrimary.class)
+                .withPropertyValues(hostDataSourceProperties(database))
+                .withPropertyValues(MAESTRO_URL_PROPERTY + "=" + url(database, MAESTRO_SCHEMA))
+                .run(ctx -> assertEngineRunsOn(ctx, "secondMaestroDataSource"));
+    }
+
+    /**
+     * Spring's last tie-breaker among several candidates is the injection
+     * point's name, and every Maestro bean method names its qualified
+     * parameter {@code maestroDataSource}: a qualified bean of that name wins
+     * over the others, as it would for any Spring injection point.
+     */
+    @Test
+    @DisplayName("two @MaestroDataSource beans, one named maestroDataSource: that one is Maestro's")
+    void twoQualifiedDataSourcesOneNamedMaestroDataSourceUsesThatOne() throws SQLException {
+        var database = freshDatabase();
+        runner.withUserConfiguration(TwoQualifiedOneNamedLikeTheParameter.class)
+                .withPropertyValues(hostDataSourceProperties(database))
+                .withPropertyValues(MAESTRO_URL_PROPERTY + "=" + url(database, MAESTRO_SCHEMA))
+                .run(ctx -> assertEngineRunsOn(ctx, "maestroDataSource"));
     }
 
     private static void assertEngineRunsOn(AssertableApplicationContext ctx, String dataSourceBean) {
@@ -314,6 +343,39 @@ class MaestroDataSourceSelectionTest {
         @Bean(defaultCandidate = false)
         @MaestroDataSource
         DataSource secondMaestroDataSource(Environment env) {
+            return dataSource(env.getRequiredProperty(MAESTRO_URL_PROPERTY));
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class TwoQualifiedDataSourcesOnePrimary {
+
+        @Bean(defaultCandidate = false)
+        @MaestroDataSource
+        DataSource firstMaestroDataSource(Environment env) {
+            return dataSource(env.getRequiredProperty(MAESTRO_URL_PROPERTY));
+        }
+
+        @Bean(defaultCandidate = false)
+        @MaestroDataSource
+        @Primary
+        DataSource secondMaestroDataSource(Environment env) {
+            return dataSource(env.getRequiredProperty(MAESTRO_URL_PROPERTY));
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class TwoQualifiedOneNamedLikeTheParameter {
+
+        @Bean(defaultCandidate = false)
+        @MaestroDataSource
+        DataSource firstMaestroDataSource(Environment env) {
+            return dataSource(env.getRequiredProperty(MAESTRO_URL_PROPERTY));
+        }
+
+        @Bean(defaultCandidate = false)
+        @MaestroDataSource
+        DataSource maestroDataSource(Environment env) {
             return dataSource(env.getRequiredProperty(MAESTRO_URL_PROPERTY));
         }
     }
