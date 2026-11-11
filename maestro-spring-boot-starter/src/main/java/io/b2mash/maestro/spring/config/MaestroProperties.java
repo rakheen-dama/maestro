@@ -428,18 +428,36 @@ public class MaestroProperties {
      * Worker concurrency configuration ({@code maestro.worker.*}).
      *
      * <p>Each entry bounds one task queue on this node, enforced by the
-     * executor's {@code TaskQueueGovernor}. Queues not listed are unbounded.
-     * Limits are per node — three nodes with {@code concurrency: 10} run up to
-     * 30 workflows of that queue at once. Naming a queue twice fails startup.
+     * executor's {@code TaskQueueGovernor}. A queue not listed gets its own
+     * pools sized from {@code default-concurrency} /
+     * {@code default-activity-concurrency} (20 / 20) — so recovery after a
+     * deploy cannot replay every active workflow at once through the host's
+     * connection pool. Setting both defaults to {@code 0} leaves unlisted
+     * queues unbounded; {@code 0} on exactly one, or a negative value, fails
+     * startup. Limits are per node — three nodes with {@code concurrency: 10}
+     * run up to 30 workflows of that queue at once. Naming a queue twice fails
+     * startup.
      *
-     * @param taskQueues per-queue concurrency settings
+     * @param taskQueues                 per-queue concurrency settings
+     * @param defaultConcurrency         max workflow runs executing at once on this
+     *                                   node in each task queue not listed in
+     *                                   {@code taskQueues} — {@code >= 1}, or {@code 0}
+     *                                   (with {@code defaultActivityConcurrency} also
+     *                                   {@code 0}) for unbounded
+     * @param defaultActivityConcurrency max live activity executions at once on this
+     *                                   node in each task queue not listed in
+     *                                   {@code taskQueues} — {@code >= 1}, or {@code 0}
+     *                                   (with {@code defaultConcurrency} also
+     *                                   {@code 0}) for unbounded
      */
     public record WorkerProperties(
-            @DefaultValue List<TaskQueueProperties> taskQueues
+            @DefaultValue List<TaskQueueProperties> taskQueues,
+            @DefaultValue("20") int defaultConcurrency,
+            @DefaultValue("20") int defaultActivityConcurrency
     ) {
         /** @return the defaults documented above */
         public static WorkerProperties defaults() {
-            return new WorkerProperties(List.of());
+            return new WorkerProperties(List.of(), 20, 20);
         }
     }
 

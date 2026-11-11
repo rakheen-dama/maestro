@@ -419,6 +419,64 @@ public final class WorkflowExecutor {
     }
 
     /**
+     * Creates a new workflow executor with every setting of the 13-argument
+     * constructor plus the limits of every task queue not listed in
+     * {@code taskQueueLimits}. Every other constructor passes {@code null} —
+     * unlisted queues unbounded; the Spring Boot starter passes
+     * {@code maestro.worker.default-concurrency} /
+     * {@code default-activity-concurrency}.
+     *
+     * @param store                  workflow store for persistence
+     * @param distributedLock        optional distributed lock backend
+     * @param messaging              optional messaging for lifecycle events
+     * @param signalNotifier         optional cross-instance signal notification
+     * @param serializer             Jackson serializer for payloads
+     * @param serviceName            the name of the owning service
+     * @param lockKeyPrefix          prefix for distributed lock keys (e.g. {@code maestro:lock:})
+     * @param instanceLockTtl        TTL for the per-workflow instance lock — must be
+     *                               strictly positive
+     * @param lifecycleEventsEnabled whether {@code WORKFLOW_*} lifecycle events are
+     *                               published at all
+     * @param shutdownTimeout        how long {@link #shutdown()} waits for in-flight
+     *                               workflows to drain — must be strictly positive
+     * @param wakeRecheckInterval    how often a parked {@code awaitSignal()} or
+     *                               {@code sleep()} re-checks the store — must be
+     *                               strictly positive
+     * @param observer               engine observation seam; pass
+     *                               {@link EngineObserver#NOOP} (never {@code null})
+     * @param taskQueueLimits        per-node concurrency limits keyed by task-queue name
+     * @param defaultTaskQueueLimits per-node limits of each task queue not in
+     *                               {@code taskQueueLimits} — each such queue gets
+     *                               its own pools of this size (see
+     *                               {@link TaskQueueGovernor#TaskQueueGovernor(Map, TaskQueueLimits)});
+     *                               {@code null} leaves them unbounded
+     * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
+     *                                  or {@code wakeRecheckInterval} is {@code null}, zero,
+     *                                  or negative
+     */
+    public WorkflowExecutor(
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            @Nullable WorkflowMessaging messaging,
+            @Nullable SignalNotifier signalNotifier,
+            PayloadSerializer serializer,
+            String serviceName,
+            String lockKeyPrefix,
+            Duration instanceLockTtl,
+            boolean lifecycleEventsEnabled,
+            Duration shutdownTimeout,
+            Duration wakeRecheckInterval,
+            EngineObserver observer,
+            Map<String, TaskQueueLimits> taskQueueLimits,
+            @Nullable TaskQueueLimits defaultTaskQueueLimits
+    ) {
+        this(store, distributedLock, messaging, signalNotifier, serializer, serviceName,
+                lockKeyPrefix, instanceLockTtl, lifecycleEventsEnabled,
+                shutdownTimeout, wakeRecheckInterval, observer, taskQueueLimits, defaultTaskQueueLimits,
+                InstantSource.system());
+    }
+
+    /**
      * Creates a workflow executor with the defaults of the six-argument
      * constructor but an explicit {@link InstantSource} for arming durable
      * deadlines — the seam {@code TestWorkflowEnvironment} uses to put
@@ -507,6 +565,59 @@ public final class WorkflowExecutor {
             Map<String, TaskQueueLimits> taskQueueLimits,
             InstantSource instantSource
     ) {
+        this(store, distributedLock, messaging, signalNotifier, serializer, serviceName,
+                lockKeyPrefix, instanceLockTtl, lifecycleEventsEnabled,
+                shutdownTimeout, wakeRecheckInterval, observer, taskQueueLimits, null, instantSource);
+    }
+
+    /**
+     * The constructor every other one delegates to: every setting of the
+     * 14-argument {@link InstantSource} constructor plus the limits of every
+     * task queue not listed in {@code taskQueueLimits}.
+     *
+     * @param store                  workflow store for persistence
+     * @param distributedLock        optional distributed lock backend
+     * @param messaging              optional messaging for lifecycle events
+     * @param signalNotifier         optional cross-instance signal notification
+     * @param serializer             Jackson serializer for payloads
+     * @param serviceName            the name of the owning service
+     * @param lockKeyPrefix          prefix for distributed lock keys
+     * @param instanceLockTtl        TTL for the per-workflow instance lock — must be
+     *                               strictly positive
+     * @param lifecycleEventsEnabled whether {@code WORKFLOW_*} lifecycle events are
+     *                               published at all
+     * @param shutdownTimeout        how long {@link #shutdown()} waits for in-flight
+     *                               workflows to drain — must be strictly positive
+     * @param wakeRecheckInterval    how often a parked run re-checks the store —
+     *                               must be strictly positive
+     * @param observer               engine observation seam; never {@code null}
+     * @param taskQueueLimits        per-node concurrency limits keyed by task-queue name
+     * @param defaultTaskQueueLimits per-node limits of each task queue not in
+     *                               {@code taskQueueLimits}; {@code null} leaves
+     *                               them unbounded
+     * @param instantSource          the clock durable deadlines are armed on — pass
+     *                               {@link InstantSource#system()} in production
+     * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
+     *                                  or {@code wakeRecheckInterval} is {@code null}, zero,
+     *                                  or negative
+     */
+    public WorkflowExecutor(
+            WorkflowStore store,
+            @Nullable DistributedLock distributedLock,
+            @Nullable WorkflowMessaging messaging,
+            @Nullable SignalNotifier signalNotifier,
+            PayloadSerializer serializer,
+            String serviceName,
+            String lockKeyPrefix,
+            Duration instanceLockTtl,
+            boolean lifecycleEventsEnabled,
+            Duration shutdownTimeout,
+            Duration wakeRecheckInterval,
+            EngineObserver observer,
+            Map<String, TaskQueueLimits> taskQueueLimits,
+            @Nullable TaskQueueLimits defaultTaskQueueLimits,
+            InstantSource instantSource
+    ) {
         if (instanceLockTtl == null || instanceLockTtl.isNegative() || instanceLockTtl.isZero()) {
             throw new IllegalArgumentException(
                     "instanceLockTtl must be positive, got " + instanceLockTtl);
@@ -540,9 +651,9 @@ public final class WorkflowExecutor {
         this.serializer = serializer;
         this.serviceName = serviceName;
         this.parkingLot = new ParkingLot();
-        this.taskQueueGovernor = taskQueueLimits.isEmpty()
+        this.taskQueueGovernor = taskQueueLimits.isEmpty() && defaultTaskQueueLimits == null
                 ? TaskQueueGovernor.UNBOUNDED
-                : new TaskQueueGovernor(taskQueueLimits);
+                : new TaskQueueGovernor(taskQueueLimits, defaultTaskQueueLimits);
         this.instantSource = Objects.requireNonNull(instantSource, "instantSource");
         this.lifecycleEventsEnabled = lifecycleEventsEnabled;
         // Built before the components below so they can share the one off-thread
@@ -1881,7 +1992,7 @@ public final class WorkflowExecutor {
      * and diagnostics.
      *
      * @return the governor; {@link TaskQueueGovernor#UNBOUNDED} when no limits
-     *         were configured
+     *         and no default limits were configured
      */
     public TaskQueueGovernor taskQueueGovernor() {
         return taskQueueGovernor;

@@ -44,6 +44,11 @@ class TestWorkflowEnvironmentTest {
 
         assertEquals("Hello, World!", result);
         assertEquals(WorkflowStatus.COMPLETED, handle.getStatus());
+        // The kit builds its executor directly, not through the starter, so the
+        // starter's default bound (maestro.worker.default-*) never applies here.
+        var governor = env.currentExecutor().taskQueueGovernor();
+        assertTrue(governor.availableWorkflowSlots("default").isEmpty(), "the test kit stays unbounded");
+        assertTrue(governor.availableActivitySlots("default").isEmpty(), "the test kit stays unbounded");
     }
 
     @Test

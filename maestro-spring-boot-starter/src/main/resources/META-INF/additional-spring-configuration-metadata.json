@@ -1,0 +1,50 @@
+{
+  "properties": [
+    {
+      "name": "maestro.store.table-prefix",
+      "type": "java.lang.String",
+      "description": "Removed: Maestro tables are always named maestro_*. Setting it fails startup.",
+      "deprecation": {
+        "level": "error",
+        "reason": "Maestro tables are always named maestro_*; the prefix is no longer configurable and setting it fails startup."
+      }
+    },
+    {
+      "name": "maestro.messaging.topics.tasks",
+      "type": "java.lang.String",
+      "description": "Removed: Maestro no longer dispatches work over a task topic. Setting it fails startup.",
+      "deprecation": {
+        "level": "error",
+        "reason": "Workflows start in-process; there is no task topic. Delete the property and the maestro.tasks.* topics. Setting it fails startup."
+      }
+    }
+  ],
+  "hints": [
+    {
+      "name": "maestro.worker.default-concurrency",
+      "values": [
+        {
+          "value": 20,
+          "description": "Default: up to 20 workflow runs of each task queue not listed in maestro.worker.task-queues execute at once on this node."
+        },
+        {
+          "value": 0,
+          "description": "Unbounded. Only valid together with maestro.worker.default-activity-concurrency=0; 0 on one alone fails startup."
+        }
+      ]
+    },
+    {
+      "name": "maestro.worker.default-activity-concurrency",
+      "values": [
+        {
+          "value": 20,
+          "description": "Default: up to 20 live activity executions of each task queue not listed in maestro.worker.task-queues run at once on this node."
+        },
+        {
+          "value": 0,
+          "description": "Unbounded. Only valid together with maestro.worker.default-concurrency=0; 0 on one alone fails startup."
+        }
+      ]
+    }
+  ]
+}

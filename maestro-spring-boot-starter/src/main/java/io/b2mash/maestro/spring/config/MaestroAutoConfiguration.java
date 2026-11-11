@@ -28,6 +28,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Auto-configuration for the Maestro durable workflow engine.
@@ -125,12 +126,55 @@ public class MaestroAutoConfiguration {
         // even a single delegate, so a throwing adapter can never corrupt
         // engine control flow (coordinator Ruling 4).
         var observer = CompositeEngineObserver.of(observers.orderedStream().toList());
+        var worker = properties.getWorker();
+        var queueLimits = taskQueueLimits(worker);
+        var defaultLimits = defaultTaskQueueLimits(worker);
+        log.info("Maestro worker limits: {}", describeWorkerLimits(queueLimits, defaultLimits));
         return new WorkflowExecutor(
                 store, distributedLock, messaging, signalNotifier, serializer, serviceName,
                 lock.keyPrefix(), lock.ttl(), lifecycleEventsEnabled,
                 shutdownTimeout, wakeRecheckInterval, observer,
-                taskQueueLimits(properties.getWorker())
+                queueLimits, defaultLimits
         );
+    }
+
+    /**
+     * Builds the limits of every task queue not listed in
+     * {@code maestro.worker.task-queues} from {@code maestro.worker.default-concurrency}
+     * and {@code maestro.worker.default-activity-concurrency}. {@code 0} on both
+     * means unlisted queues are unbounded ({@code null}). Fails startup when
+     * exactly one is {@code 0} or either is negative — half a bound, or a
+     * negative one, is not a configuration that means anything.
+     */
+    static @Nullable TaskQueueLimits defaultTaskQueueLimits(MaestroProperties.WorkerProperties worker) {
+        var workflows = worker.defaultConcurrency();
+        var activities = worker.defaultActivityConcurrency();
+        if (workflows == 0 && activities == 0) {
+            return null;
+        }
+        if (workflows < 1 || activities < 1) {
+            throw new IllegalStateException(("maestro.worker.default-concurrency=%d and "
+                    + "maestro.worker.default-activity-concurrency=%d: both must be >= 1, or both 0 to leave "
+                    + "task queues not listed in maestro.worker.task-queues unbounded")
+                    .formatted(workflows, activities));
+        }
+        return new TaskQueueLimits(workflows, activities);
+    }
+
+    /** The effective worker limits, as the startup INFO line states them. */
+    static String describeWorkerLimits(Map<String, TaskQueueLimits> queueLimits,
+                                       @Nullable TaskQueueLimits defaultLimits) {
+        var text = defaultLimits == null
+                ? "unbounded (maestro.worker.default-concurrency=0)"
+                : "default %d/%d per task queue (workflows/activities)".formatted(
+                        defaultLimits.workflowConcurrency(), defaultLimits.activityConcurrency());
+        if (queueLimits.isEmpty()) {
+            return text;
+        }
+        return text + "; configured: " + queueLimits.entrySet().stream()
+                .map(e -> e.getKey() + "=" + e.getValue().workflowConcurrency()
+                        + "/" + e.getValue().activityConcurrency())
+                .collect(Collectors.joining(", "));
     }
 
     /**
