@@ -10,6 +10,7 @@ import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.FencedWriteException;
 import io.b2mash.maestro.core.exception.SerializationException;
+import io.b2mash.maestro.core.exception.StoreUnavailableException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.observe.ActivityInfo;
@@ -105,6 +106,18 @@ import java.util.concurrent.TimeoutException;
  * loser surfaced would contradict a completion the winner recorded. Nothing the
  * loser does after the collision is needed; standing down is the only move that
  * cannot double a side effect (C5).
+ *
+ * <p><b>Store faults.</b> The store this handler is given is wrapped in
+ * {@code StoreFaultGuard} by {@link ActivityProxyFactory}: the memo lookup and
+ * the outcome append are retried briefly, and a final
+ * {@code StoreUnavailableException} latches the run's {@code STORE_UNAVAILABLE}
+ * stand-down and propagates — never recorded as the activity's failure, never
+ * a reason to retry the activity itself. Like the stale case it is sticky: the
+ * run's next live activity throws it again before executing anything, and
+ * {@code WorkflowExecutor} abandons the run for recovery to resume. The
+ * activity body itself runs in the guard's pass-through scope: a store call it
+ * makes on its own account (a {@code MaestroClient} call for another workflow)
+ * is the activity's own failure, retried under its {@code RetryPolicy}.
  *
  * <h2>Lock Strategy</h2>
  * <p>The distributed lock is an optimization to prevent duplicate execution, not
@@ -631,11 +644,16 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         // So does a run already known to be stale (R29): one of its appends
         // collided with another runner's event, and the author caught and
         // carried on past the DuplicateEventException — this activity is a
-        // side effect the winner also runs. RetryExecutor repeats both checks
-        // before every attempt; this only moves the first ahead of the side
-        // effects.
+        // side effect the winner also runs. So does a run whose store fault
+        // was latched (R2): the author caught the StoreUnavailableException of
+        // an earlier call — this one's memo lookup, even — and carried on, so
+        // this activity would be a side effect taken down a path the durable
+        // history never chose (a fallback for a primary that may have run).
+        // RetryExecutor repeats these checks before every attempt; this only
+        // moves the first ahead of the side effects.
         ctx.cancellation().throwIfTerminated(ctx.workflowId());
         ctx.cancellation().throwIfStale(ctx.workflowId());
+        ctx.cancellation().throwIfStoreUnavailable(ctx.workflowId());
 
         LockHandle lockHandle = null;
         var info = new ActivityInfo(ctx.workflowId(), ctx.workflowType(), stepName, seq);
@@ -665,16 +683,18 @@ public final class ActivityInvocationHandler implements InvocationHandler {
                 // Retries exhausted — persist the failure.
                 try {
                     persistFailure(ctx, seq, stepName, argsHash, e);
-                } catch (DuplicateEventException staleRun) {
+                } catch (DuplicateEventException | StoreUnavailableException notRecorded) {
                     // A concurrent runner already recorded an outcome at this
-                    // sequence (Review Focus 4). The duplicate propagates
-                    // INSTEAD of e: this run neither publishes ACTIVITY_FAILED
-                    // nor surfaces a failure that contradicts the winner's
-                    // record — it stands down. The observer still sees the
-                    // failure this node genuinely executed: it measures this
-                    // node's executions, not the durable record.
+                    // sequence (Review Focus 4), or the store could not take
+                    // the failure memo (the guard has latched the run). Either
+                    // propagates INSTEAD of e: this run neither publishes
+                    // ACTIVITY_FAILED nor surfaces a failure that is not
+                    // durably recorded — it stands down / is abandoned. The
+                    // observer still sees the failure this node genuinely
+                    // executed: it measures this node's executions, not the
+                    // durable record.
                     observer.activityFailed(info, elapsed, failureExceptionType(e), false);
-                    throw staleRun;
+                    throw notRecorded;
                 }
                 publishLifecycleEvent(ctx, stepName, LifecycleEventType.ACTIVITY_FAILED);
                 // (An Error — e.g. a shutdown signal — never reaches this catch
@@ -688,13 +708,16 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             try {
                 appendEventSafe(ctx, seq, EventType.ACTIVITY_COMPLETED, stepName,
                         serializer.serialize(result), argsHash);
-            } catch (DuplicateEventException staleRun) {
+            } catch (DuplicateEventException | StoreUnavailableException notRecorded) {
                 // The winner is alive and ahead: stand down rather than adopt
-                // its value (class Javadoc, "Idempotency"). No ACTIVITY_COMPLETED
-                // lifecycle event — this run did not persist one — but the
-                // observer sees the attempt this node genuinely executed.
+                // its value (class Javadoc, "Idempotency"). Or the store could
+                // not take the outcome even after the guard's retries (R3): the
+                // run is latched and is abandoned, and recovery re-runs this
+                // step. No ACTIVITY_COMPLETED lifecycle event — this run did not
+                // persist one — but the observer sees the attempt this node
+                // genuinely executed (and a tracing adapter closes its span).
                 observer.activityCompleted(info, elapsed, false);
-                throw staleRun;
+                throw notRecorded;
             }
 
             publishLifecycleEvent(ctx, stepName, LifecycleEventType.ACTIVITY_COMPLETED);
@@ -745,8 +768,14 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         // The workflow thread is blocked in get() meanwhile, so the context is
         // never used from two live threads — except by an attempt that ignores
         // the timeout's interrupt, whose result is discarded regardless.
+        // The body itself runs in StoreFaultGuard's pass-through scope, bound
+        // here on the attempt thread: a store call it makes on its own account
+        // (a MaestroClient start or signal of another workflow) must fail this
+        // attempt under the retry policy, not latch the calling run. The
+        // handler's own memo lookup, outcome append and lock calls run outside
+        // this scope, on the workflow thread, and stay guarded.
         Callable<@Nullable Object> body = () -> ScopedValue.where(WorkflowContext.scopedValue(), ctx)
-                .call(() -> invokeActivity(method, args));
+                .call(() -> StoreFaultGuard.passThrough(() -> invokeActivity(method, args)));
         var wrapped = observer.wrapActivityAttempt(info, body);
         var callerMdc = MDC.getCopyOfContextMap();
         var attempt = new FutureTask<@Nullable Object>(() -> {

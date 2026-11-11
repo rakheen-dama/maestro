@@ -616,8 +616,11 @@ final class SignalManager {
     <T> T awaitSignal(WorkflowContext ctx, String signalName, Class<T> type, Duration timeout) {
         // A run already known to be stale (R33) — workflow code swallowed an
         // earlier collision or StaleRunException — stands down before it can
-        // consume a signal that belongs to the winner's run.
+        // consume a signal that belongs to the winner's run. A run whose store
+        // fault was latched (R2) and swallowed is abandoned here too, before
+        // it consumes a signal it could not durably record.
         ctx.cancellation().throwIfStale(ctx.workflowId());
+        ctx.cancellation().throwIfStoreUnavailable(ctx.workflowId());
         var seq = WorkflowContextInternals.nextSequence(ctx);
         var stepName = STEP_PREFIX + signalName;
 
@@ -802,15 +805,21 @@ final class SignalManager {
      * {@code cancelTimer} and {@code advanceTime()} can drive it again.
      * Best-effort: if the save fails, the await still times out on the
      * memoized deadline, decided by the executor's instant source (the system
-     * clock in production).
+     * clock in production). Advisory to {@link StoreFaultGuard} for the same
+     * reason: a store fault here is tolerated below, so it must not latch the
+     * run's {@code STORE_UNAVAILABLE} stand-down either. A fence still
+     * propagates.
      *
      * @return the new row's id, or {@code null} if it could not be saved
      */
     private @Nullable UUID rearmDeadlineRow(WorkflowContext ctx, String timerId, Instant deadline) {
         var rowId = UUID.randomUUID();
         try {
-            saveDeadlineRow(ctx, new WorkflowTimer(rowId, ctx.workflowInstanceId(), ctx.workflowId(),
-                    timerId, deadline, TimerStatus.PENDING, Instant.now()));
+            StoreFaultGuard.advisory(() -> {
+                saveDeadlineRow(ctx, new WorkflowTimer(rowId, ctx.workflowInstanceId(), ctx.workflowId(),
+                        timerId, deadline, TimerStatus.PENDING, Instant.now()));
+                return null;
+            });
             logger.warn("Workflow '{}' await deadline row '{}' was missing on replay — re-armed it at the "
                     + "memoized deadline {}", ctx.workflowId(), timerId, deadline);
             return rowId;
@@ -859,8 +868,10 @@ final class SignalManager {
      * clock in production). Store errors inside the timeout
      * decision never fail the run either (R39): the self-fire is best-effort,
      * and a failed post-deadline signal re-read parks one more re-check
-     * interval and decides again. Only the {@code SIGNAL_TIMEOUT} append keeps
-     * the semantics of every other memo append.
+     * interval and decides again. Both are advisory to {@link StoreFaultGuard},
+     * so neither latches the run's {@code STORE_UNAVAILABLE} stand-down. Only
+     * the {@code SIGNAL_TIMEOUT} append keeps the semantics of every other
+     * memo append.
      */
     private <T> T awaitOutcome(WorkflowContext ctx, int outcomeSeq, String stepName, String signalName,
                                Class<T> type, String timerId, @Nullable UUID timerDbId,
@@ -921,9 +932,13 @@ final class SignalManager {
                     // workflow failure — it must not escape into workflow code
                     // (FAILED + compensations). Park one more re-check interval
                     // and decide again; a signal arriving meanwhile wakes it.
+                    // Advisory, so a store fault here neither latches the run's
+                    // STORE_UNAVAILABLE stand-down nor waits out retries: the
+                    // failure is already tolerated, and latching would abandon
+                    // the run at its next stop point for nothing.
                     List<WorkflowSignal> late;
                     try {
-                        late = store.getUnconsumedSignals(workflowId, signalName);
+                        late = StoreFaultGuard.advisory(() -> store.getUnconsumedSignals(workflowId, signalName));
                     } catch (RuntimeException e) {
                         logger.warn("Workflow '{}' could not re-read signal '{}' at its deadline — parking "
                                         + "one more re-check interval ({}) before deciding the timeout: {}",
@@ -1038,7 +1053,9 @@ final class SignalManager {
             // Fenced on the run's lease: a stale run must not retire a deadline
             // the adopting node's run is still parked on. A fence reads as
             // false here — the SIGNAL_TIMEOUT append that follows is the loud one.
-            store.markTimerFired(timerDbId, ctx.lease());
+            // Advisory: a store fault is tolerated below, so it must not latch
+            // the run's STORE_UNAVAILABLE stand-down either.
+            StoreFaultGuard.advisory(() -> store.markTimerFired(timerDbId, ctx.lease()));
         } catch (RuntimeException e) {
             logger.warn("Could not self-fire the deadline row of workflow '{}' signal '{}' — the row "
                     + "fires later for nobody: {}", ctx.workflowId(), signalName, e.toString());
@@ -1064,7 +1081,9 @@ final class SignalManager {
             try {
                 // Fenced on the run's lease; a stale lease cannot reach here,
                 // because consumeSignal's fenced append has already rejected it.
-                store.markTimerCancelled(timerDbId, ctx.lease());
+                // Advisory: a store fault is tolerated below, so it must not latch
+                // the run's STORE_UNAVAILABLE stand-down either.
+                StoreFaultGuard.advisory(() -> store.markTimerCancelled(timerDbId, ctx.lease()));
             } catch (RuntimeException e) {
                 logger.debug("Could not cancel the deadline row of workflow '{}' signal '{}' after "
                         + "consuming it — the row fires later for nobody: {}",

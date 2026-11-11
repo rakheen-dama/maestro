@@ -179,7 +179,8 @@ It deliberately does **not** implement:
   needs no thread-local context on the attempt thread.
 - **`runAbandoned`** — this fires when a run stops because the node is shutting
   down, an operator terminated the workflow, another writer finalised the row
-  first, the terminal status write failed, or a node-level `Error` escaped the
+  first, the terminal status write failed, the store was unavailable
+  (`STORE_UNAVAILABLE`), or a node-level `Error` escaped the
   workflow method, an activity or a compensation action (`NODE_ERROR`). Counting it would double-count:
   `workflowTerminated` already fires exactly once per terminate. It exists for
   the tracing adapter, which needs a callback on the workflow's own thread to
@@ -192,7 +193,13 @@ It deliberately does **not** implement:
   activity failure — an activity that throws one is not retried. It is visible as the segment attribute
   `maestro.abandon.reason=NODE_ERROR` and as an `ERROR` log line under the
   workflow MDC (`... abandoned its local run on a node-level error (<class>)
-  ...`); alert on either.
+  ...`); alert on either. `STORE_UNAVAILABLE` is routine during a database
+  outage and a problem only when it persists after the database is back: the
+  store kept failing after the in-place retries, nothing was recorded, and
+  recovery resumes the instance once the store answers. It is visible as
+  `maestro.abandon.reason=STORE_UNAVAILABLE` and as a `WARN` (`... abandoned
+  its local run — the store is unavailable ...`); see
+  [Operations §10.9](operations.md#109-store-outages-store_unavailable-abandons).
 
 Every `EngineObserver` method is a `default` no-op, so a custom observer
 implements only what it cares about.
@@ -232,7 +239,7 @@ orderings both work (`SignalManager` emits `signalConsumed` *before*
 **Segments close** on `workflowParked`, `workflowCompleted`, `workflowFailed`,
 `workflowTerminated`, `standDown`, and `runAbandoned`. `runAbandoned` is what
 keeps a segment from leaking when a run unwinds through a shutdown, a terminate,
-or a lost terminal transition rather than through an ordinary park.
+a lost terminal transition or a store outage rather than through an ordinary park.
 
 **Activity spans** are children of the open segment. Inside a `parallel()`
 branch, where no segment exists (see [Known limitations](#known-limitations)),
@@ -271,7 +278,7 @@ activity spans nested underneath.
 | `maestro.timer.id` | segment | See [span events](#span-events-and-their-attributes-ruling-8) below |
 | `maestro.error.type` | activity, segment | Exception type on `activityFailed` / `workflowFailed` |
 | `maestro.standdown.reason` | segment | The `StandDownReason` constant name |
-| `maestro.abandon.reason` | segment | The `AbandonReason` constant name (`SHUTDOWN`, `TERMINATED`, `CONVERGED`, `TERMINAL_WRITE_FAILED`, `NODE_ERROR`) |
+| `maestro.abandon.reason` | segment | The `AbandonReason` constant name (`SHUTDOWN`, `TERMINATED`, `CONVERGED`, `TERMINAL_WRITE_FAILED`, `NODE_ERROR`, `STORE_UNAVAILABLE`) |
 
 The three MDC keys Maestro logs with (`workflowId`, `runId`, `activityName`)
 appear here as `maestro.workflow.id`, `maestro.run.id`, and
@@ -575,7 +582,7 @@ The callback surface, grouped:
 | Recovery | `recoveryPass(scanned, adopted)` |
 | Retention | `retentionPass(PurgeResult)` — once per sweep this node ran as the elected leader; non-leaders emit nothing |
 | Stand-down | `standDown(StandDownReason, workflowId, detail)` |
-| Run abandonment | `runAbandoned(w, AbandonReason)` — `SHUTDOWN`, `TERMINATED`, `CONVERGED`, `TERMINAL_WRITE_FAILED`, `NODE_ERROR` |
+| Run abandonment | `runAbandoned(w, AbandonReason)` — `SHUTDOWN`, `TERMINATED`, `CONVERGED`, `TERMINAL_WRITE_FAILED`, `NODE_ERROR`, `STORE_UNAVAILABLE` |
 
 Rules for implementers:
 

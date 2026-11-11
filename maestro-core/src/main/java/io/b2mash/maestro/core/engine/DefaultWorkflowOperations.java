@@ -10,6 +10,7 @@ import io.b2mash.maestro.core.exception.NodeErrors;
 import io.b2mash.maestro.core.exception.RetryExhaustedException;
 import io.b2mash.maestro.core.exception.SignalTimeoutException;
 import io.b2mash.maestro.core.exception.StaleRunException;
+import io.b2mash.maestro.core.exception.StoreUnavailableException;
 import io.b2mash.maestro.core.exception.TimerCancelledException;
 import io.b2mash.maestro.core.exception.UnsupportedWorkflowVersionException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
@@ -308,8 +309,10 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         // A run already known to be stale (R33) — one of its appends collided,
         // or a fresh read found the row finalised, and workflow code swallowed
         // the exception — stands down here, before it saves a timer row the
-        // winner never scheduled.
+        // winner never scheduled. So does a run whose store fault was latched
+        // (R2) and swallowed: it is abandoned here, before it arms a timer.
         ctx.cancellation().throwIfStale(ctx.workflowId());
+        ctx.cancellation().throwIfStoreUnavailable(ctx.workflowId());
         var seq = WorkflowContextInternals.nextSequence(ctx);
         var stepName = "$maestro:sleep";
 
@@ -863,6 +866,23 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                         || error instanceof FencedWriteException) {
                     throw (RuntimeException) error;
                 }
+            }
+
+            // Store faults next (R1/R2): a StoreUnavailableException in ANY
+            // branch means the run's store fault is latched and the run must be
+            // abandoned — not have a sibling's plain failure, earlier in index
+            // order, surface to workflow code as if it were the outcome. So
+            // does any branch error once the latch is set (a branch that caught
+            // the store fault and threw something else): its failure is a
+            // consequence of the outage. The cancellation is shared with every
+            // branch, so a latch raised on a branch thread is visible here.
+            for (int i = 0; i < branchCount; i++) {
+                if (errors.get(i).get() instanceof StoreUnavailableException storeDown) {
+                    throw storeDown;
+                }
+            }
+            if (errors.stream().anyMatch(error -> error.get() != null)) {
+                ctx.cancellation().throwIfStoreUnavailable(ctx.workflowId());
             }
 
             // Otherwise fail fast with the first error, in branch-index order.

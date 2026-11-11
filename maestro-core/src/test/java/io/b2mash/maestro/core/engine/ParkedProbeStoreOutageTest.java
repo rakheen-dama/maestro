@@ -1,11 +1,14 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.exception.StoreUnavailableException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.observe.AbandonReason;
+import io.b2mash.maestro.core.observe.RecordingEngineObserver;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -48,6 +51,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * consumption) keep their existing semantics, and terminate is still honoured
  * on the first successful probe after the store recovers (fail open on
  * "can't prove terminated" — an unreachable store means keep parking).
+ *
+ * <p>The outage is raised as {@link StoreUnavailableException}, the type the
+ * JDBC store now classifies a connection fault as, and the executor guards its
+ * store with {@code StoreFaultGuard}: the probes run as advisory reads, so the
+ * guard neither retries them nor latches the run's {@code STORE_UNAVAILABLE}
+ * stand-down — no run is abandoned for a failed probe (spec R4).
  */
 @DisplayName("Parked workflows ride out transient store outages during wake-recheck probes (Issue 20)")
 class ParkedProbeStoreOutageTest {
@@ -57,16 +66,18 @@ class ParkedProbeStoreOutageTest {
 
     private OutageStore store;
     private PayloadSerializer serializer;
+    private RecordingEngineObserver observer;
     private WorkflowExecutor executor;
 
     @BeforeEach
     void setUp() {
         store = new OutageStore();
         serializer = new PayloadSerializer(new ObjectMapper());
+        observer = new RecordingEngineObserver();
         executor = new WorkflowExecutor(store, null, null, null, serializer, "test-service",
                 WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
                 WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
-                true, WorkflowExecutor.DEFAULT_SHUTDOWN_TIMEOUT, SHORT_RECHECK);
+                true, WorkflowExecutor.DEFAULT_SHUTDOWN_TIMEOUT, SHORT_RECHECK, observer);
     }
 
     @AfterEach
@@ -108,6 +119,8 @@ class ParkedProbeStoreOutageTest {
                 "no WORKFLOW_FAILED may be recorded for an infra blip while parked");
         assertTrue(executor.isRunning("probe-await-1"),
                 "the parked run must still be alive on this node");
+        assertEquals(List.of(), observer.abandonReasons(),
+                "a failed advisory probe must not abandon the run (R4)");
 
         // The store heals and the signal arrives — the await must complete
         // normally, exactly as if the outage had never happened.
@@ -121,6 +134,8 @@ class ParkedProbeStoreOutageTest {
         assertEquals(1, store.getEvents(instanceId).stream()
                         .filter(e -> e.eventType() == EventType.SIGNAL_RECEIVED).count(),
                 "the post-heal consumption must memoize SIGNAL_RECEIVED exactly once");
+        assertEquals(List.of(), observer.abandonReasons(),
+                "the healed run completes; nothing latched it during the outage (R4)");
     }
 
     @Test
@@ -153,6 +168,8 @@ class ParkedProbeStoreOutageTest {
                         .filter(e -> e.eventType() == EventType.WORKFLOW_FAILED).count(),
                 "no WORKFLOW_FAILED may be recorded for an infra blip while sleeping");
         assertTrue(executor.isRunning("probe-sleep-1"));
+        assertEquals(List.of(), observer.abandonReasons(),
+                "a failed advisory probe must not abandon the run (R4)");
 
         // Cross-node fire after heal (row-only CAS, no local unpark): the
         // recheck must observe it within one interval and complete the run.
@@ -163,6 +180,8 @@ class ParkedProbeStoreOutageTest {
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
                 assertEquals(WorkflowStatus.COMPLETED,
                         store.getInstance("probe-sleep-1").orElseThrow().status()));
+        assertEquals(List.of(), observer.abandonReasons(),
+                "the healed run completes; nothing latched it during the outage (R4)");
     }
 
     @Test
@@ -201,6 +220,8 @@ class ParkedProbeStoreOutageTest {
         assertFalse(completed.await(200, TimeUnit.MILLISECONDS));
         assertTrue(executor.isRunning("probe-term-1"),
                 "an unreachable store means keep parking — never guess terminated, never fail");
+        assertEquals(List.of(), observer.abandonReasons(),
+                "a failed advisory probe must not abandon the run (R4)");
 
         // Heal: the first successful probe must observe TERMINATED and stand
         // the run down without writing anything.
@@ -215,6 +236,8 @@ class ParkedProbeStoreOutageTest {
                 "a terminated stand-down writes nothing");
         assertFalse(completed.await(100, TimeUnit.MILLISECONDS),
                 "the workflow body must not run past the await after a terminate");
+        assertEquals(List.of(AbandonReason.TERMINATED), observer.abandonReasons(),
+                "the run ends for the terminate, never for the outage (R4)");
     }
 
     // ── store double ───────────────────────────────────────────────────
@@ -224,8 +247,8 @@ class ParkedProbeStoreOutageTest {
      * {@code getInstance}, {@code getUnconsumedSignals}, {@code findTimer} —
      * throw while {@link #readsUnavailable} is set, modelling a node-side
      * partition exceeding the connection pool's acquisition timeout
-     * (the store threw {@code UncheckedSqlException} in the chaos run; any
-     * store-raised {@code RuntimeException} must get the same treatment).
+     * (the store threw {@code UncheckedSqlException} in the chaos run; the
+     * JDBC store now classifies that as {@link StoreUnavailableException}).
      * Writes are unaffected: the outage models THIS node's view; other nodes
      * (and the store itself) stay healthy.
      */
@@ -254,7 +277,8 @@ class ParkedProbeStoreOutageTest {
         private void failIfUnavailable() {
             if (readsUnavailable) {
                 failedReads.incrementAndGet();
-                throw new RuntimeException("Query failed: store unreachable (injected outage)");
+                throw new StoreUnavailableException("Query failed: store unreachable (injected outage)",
+                        new RuntimeException("connection refused (injected)"));
             }
         }
     }

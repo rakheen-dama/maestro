@@ -829,20 +829,106 @@ classpath, raise the heap — or terminate the workflow if it cannot be healed.
 `StackOverflowError`, `AssertionError` and every other `Error` remain workflow
 failures (`FAILED` + compensation): they recur identically on every node.
 
-### 10.9 Store-side faults that need a human: `TERMINAL_WRITE_FAILED`
+### 10.9 Store outages: `STORE_UNAVAILABLE` abandons
+
+**A database outage is not a workflow failure (Issue 34).** The JDBC store
+classifies every `SQLException` it raises. SQLSTATE class `22` (data
+exception), `23` (integrity constraint) and `54` (program limit exceeded: a
+`jsonb` payload over the size limit, an index row too large) are caused by
+the workflow's own values and stay ordinary errors — the workflow fails as
+before. Everything else — a pool acquisition timeout (no SQLSTATE), a refused
+or dropped connection (class `08`), a restarting server (`57P01`),
+insufficient resources (class `53`), a schema mismatch (class `42`) — is
+thrown as `StoreUnavailableException`.
+
+What a running workflow does with one:
+
+- **Event appends and the memo lookup are retried in place**
+  (`appendEvent`, `getEventBySequence` — an activity's outcome, a
+  compensation memo, a timer memo): three attempts, 200 ms then 1 s apart. A
+  blip shorter than that is absorbed and nothing else happens. An append
+  whose commit was lost in flight is caught on retry by the
+  `(workflow_instance_id, sequence_number)` index. Every other store call —
+  status writes, timer rows, signal consumption, the terminal write — is
+  attempted once.
+- **A store call an activity body makes is the activity's own.** A
+  `MaestroClient` start or signal of another workflow from inside an activity
+  body neither latches nor abandons the calling run: a store fault there fails
+  that activity attempt under its `RetryPolicy`, like any other exception. Only
+  the engine's own calls for the run — its memo lookup, outcome append, status
+  and timer writes — latch it.
+- **When the fault is final, the run is latched and abandoned.** The engine
+  logs two `WARN`s under the workflow's MDC — `Store unavailable on <method> —
+  workflow '<id>' stands down until the store recovers: <exception> —
+  SQLSTATE=<state> <driver message>` and `Workflow '<id>' abandoned its local
+  run — the store is unavailable (<method>: <same detail>); NOT recorded as a
+  workflow failure, no compensation run; ...` — and fires
+  `runAbandoned(..., STORE_UNAVAILABLE)` (span attribute
+  `maestro.abandon.reason=STORE_UNAVAILABLE`). Nothing is written and nothing
+  is compensated. The instance keeps its status (`RUNNING`, `WAITING_*`, or
+  `COMPENSATING` if the fault hit mid-unwind) and stays recoverable. A
+  latched run cannot append any more history, even if the store answers
+  again before the run has unwound. Workflow code that catches the exception
+  cannot run a fallback or complete: the run stops at its next activity,
+  `sleep()`, `awaitSignal()` or terminal write. A fault inside a `parallel()`
+  branch, or during compensation, abandons the whole run the same way.
+- **Recovery resumes it.** The recovery poller's own pass fails while the
+  store is down (`Recovery polling error — will retry next cycle` at `ERROR`).
+  The first pass after the store answers adopts the instance, so expect it
+  back within one `maestro.recovery.poll-interval` (default 60s). If the
+  instance-lock release could not reach the database either, the lock row
+  holds the instance until its TTL (30s) lapses. The recovering run replays
+  every recorded step and carries on from the first unrecorded one.
+- **The activity in flight runs again.** If the fault hit after an
+  activity's body ran but before its outcome was recorded, recovery runs that
+  activity again. For a transient fault the in-place retry narrows this
+  window; it does not close it. For a fault that repeats — a schema error
+  (class `42`, such as V7's `args_hash` column missing under
+  `maestro.store.schema.mode=none`) — the in-flight activity runs once per
+  recovery pass until the cause is fixed. In parallel compensation, a sibling
+  compensation whose outcome append is refused after the run is latched runs
+  again on recovery, so compensations must be idempotent too. Activities must
+  be idempotent — the same at-least-once rule as an owner kill (§1) or a
+  fenced run (§6).
+- **Advisory reads never abandon.** The parked wake-recheck probes (Issue 20),
+  an await deadline's self-fire, the post-deadline signal re-read, the
+  cancel of a consumed signal's deadline row and the re-arm of a missing
+  deadline row on replay skip a failed read or write and try again later.
+
+**Alert on a sustained rate, not on single events.** An outage produces a
+burst: roughly one `STORE_UNAVAILABLE` abandon per workflow that was running
+(not parked — parked workflows only make advisory reads) when the database
+went away, on every node. Recovery passes fail until the database answers,
+so nothing is re-adopted into the outage. Alert when the abandon rate stays
+up after the database is healthy again. Count the `WARN` lines or the segment
+spans tagged `maestro.abandon.reason=STORE_UNAVAILABLE`: `runAbandoned` has no
+meter (see `docs/observability.md`). **The same run id abandoning
+`STORE_UNAVAILABLE` on every recovery pass while other workflows progress is
+not an outage.** It is a deterministic fault the classifier cannot tell from
+one, most often a schema mismatch (class `42`). The `WARN` carries the
+SQLSTATE and the driver's message — `SQLSTATE=42703 ERROR: column "args_hash"
+does not exist` for a schema error, `SQLSTATE=none` for a pool acquisition
+timeout — which tells them apart; the full exception is logged at `DEBUG`
+under `io.b2mash.maestro.core.engine.StoreFaultGuard`. Every such pass also
+re-runs the in-flight activity (above). Fix the cause or terminate the
+workflow. A program-limit error (class `54`, such as an oversized payload) is
+a data error and fails the workflow instead of looping.
+
+### 10.10 Store-side faults that need a human: `TERMINAL_WRITE_FAILED`
 
 One store-side outcome is deliberately *not* a workflow failure, and it is
-logged at `ERROR` — alert on it as "the store is refusing or losing writes":
+logged at `ERROR` — alert on it as "the store is refusing writes":
 
 - **`TERMINAL_WRITE_FAILED`** — `runAbandoned(..., TERMINAL_WRITE_FAILED)`
   (span attribute `maestro.abandon.reason=TERMINAL_WRITE_FAILED`), with the
   `ERROR` line `Could not persist the COMPLETED outcome of workflow '<id>' ...`
   (success path) or `Failed to update workflow '<id>' status to FAILED`
-  (failure path). The atomic terminal write (Issue 26) failed with a store
-  error, so the instance normally stays active and the next recovery pass
-  finalises it. **Repeated for one run id** means the rejection is
-  deterministic, not a blip — an oversized output/error payload, a constraint
-  or type error (SQLSTATE class `22`), a program-limit error (`54000`): every
+  (failure path). The atomic terminal write (Issue 26) failed with an error
+  that is not a store outage — a store outage on the terminal write is a
+  `STORE_UNAVAILABLE` abandon (§10.9) and no longer reaches this path. The
+  instance stays active and the next recovery pass re-runs it. **Repeated for
+  one run id** means the rejection is deterministic — a constraint or type
+  error in the output or error payload (SQLSTATE class `22`/`23`): every
   recovery pass re-runs the workflow, re-abandons with the same `ERROR`, and
   the workflow never ends. Fix the cause (shrink the result, widen the
   column) or terminate the workflow.

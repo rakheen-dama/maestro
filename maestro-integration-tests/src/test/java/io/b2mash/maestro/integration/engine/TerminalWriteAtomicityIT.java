@@ -29,9 +29,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code completeInstance}'s transaction, <em>after</em> the status
  * {@code UPDATE} has executed on the same connection, so the run's
  * {@code COMPLETED} write fails mid-transaction. Exactly one terminal write is
- * attempted: a store error on the {@code COMPLETED} write abandons the run as
- * {@code TERMINAL_WRITE_FAILED} (R31) — it is never routed into failure
- * handling, so no compensation runs and no {@code FAILED} write is tried. The
+ * attempted: a store error on the {@code COMPLETED} write abandons the run —
+ * as {@code STORE_UNAVAILABLE} since Issue 34, the injected failure having no
+ * SQLSTATE — and is never routed into failure handling (R31), so no
+ * compensation runs and no {@code FAILED} write is tried. The
  * pin is that the instance stays non-terminal and recoverable with no terminal
  * event, and that once the fault clears, ordinary recovery replays the memoized
  * steps and finalises the workflow exactly once.

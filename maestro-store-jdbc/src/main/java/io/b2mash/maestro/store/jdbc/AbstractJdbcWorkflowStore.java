@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.FencedWriteException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.SerializationException;
+import io.b2mash.maestro.core.exception.StoreUnavailableException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowNotFoundException;
 import io.b2mash.maestro.core.model.EventType;
@@ -288,7 +289,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                 ex.initCause(e);
                 throw ex;
             }
-            throw new UncheckedSqlException("Failed to create workflow instance: "
+            throw storeFault("Failed to create workflow instance: "
                     + instance.workflowId(), e);
         }
     }
@@ -342,7 +343,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         try (var conn = dataSource.getConnection()) {
             updated = updateInstanceRow(conn, instance, lease);
         } catch (SQLException e) {
-            throw new UncheckedSqlException("Update failed: " + updateInstanceSql(lease != null), e);
+            throw storeFault("Update failed: " + updateInstanceSql(lease != null), e);
         }
 
         if (updated == 0) {
@@ -363,8 +364,9 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * row exists ({@link WorkflowNotFoundException}) or merely moved on
      * ({@code false}); a unique violation on the {@code INSERT} rolls the
      * {@code UPDATE} back and surfaces as {@link DuplicateEventException};
-     * any other {@link SQLException} rolls back and surfaces as
-     * {@link UncheckedSqlException}.
+     * any other {@link SQLException} rolls back and surfaces as a
+     * {@link StoreUnavailableException} (or, for a data error the terminal
+     * values caused — SQLSTATE class 22/23/54 — as {@link UncheckedSqlException}).
      */
     @Override
     public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
@@ -420,7 +422,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                 ex.initCause(e);
                 throw ex;
             }
-            throw new UncheckedSqlException("Failed to complete workflow instance: "
+            throw storeFault("Failed to complete workflow instance: "
                     + terminal.workflowId(), e);
         }
 
@@ -563,7 +565,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                 ex.initCause(e);
                 throw ex;
             }
-            throw new UncheckedSqlException("Update failed: " + insertEventSql(false), e);
+            throw storeFault("Update failed: " + insertEventSql(false), e);
         }
     }
 
@@ -591,7 +593,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                 ex.initCause(e);
                 throw ex;
             }
-            throw new UncheckedSqlException("Update failed: " + insertEventSql(true), e);
+            throw storeFault("Update failed: " + insertEventSql(true), e);
         }
         if (inserted == 0) {
             throw new FencedWriteException(lease.instanceId(), lease.epoch(), "appendEvent");
@@ -711,7 +713,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                 endTransaction(conn, settled);
             }
         } catch (SQLException e) {
-            throw new UncheckedSqlException("Failed to delete failure events of workflow instance "
+            throw storeFault("Failed to delete failure events of workflow instance "
                     + instanceId, e);
         }
 
@@ -796,7 +798,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                 endTransaction(conn, settled);
             }
         } catch (SQLException e) {
-            throw new UncheckedSqlException("Failed to purge " + status + " workflow instances finished before "
+            throw storeFault("Failed to purge " + status + " workflow instances finished before "
                     + cutoff, e);
         }
     }
@@ -990,7 +992,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         try (var conn = dataSource.getConnection()) {
             insertSignal(conn, signal);
         } catch (SQLException e) {
-            throw new UncheckedSqlException("Update failed: " + INSERT_SIGNAL_SQL, e);
+            throw storeFault("Update failed: " + INSERT_SIGNAL_SQL, e);
         }
     }
 
@@ -1021,7 +1023,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                         + "delivery suppressed", signal.signalName(), signal.workflowId(), signal.messageId());
                 return false;
             }
-            throw new UncheckedSqlException("Update failed: " + INSERT_SIGNAL_SQL, e);
+            throw storeFault("Update failed: " + INSERT_SIGNAL_SQL, e);
         }
     }
 
@@ -1169,7 +1171,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                         signalId, memo.workflowInstanceId(), memo.sequenceNumber(), e.getMessage());
                 return false;
             }
-            throw new UncheckedSqlException("Failed to consume signal " + signalId + " at seq "
+            throw storeFault("Failed to consume signal " + signalId + " at seq "
                     + memo.sequenceNumber(), e);
         }
         if (inserted == 0) {
@@ -1195,7 +1197,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         try (var conn = dataSource.getConnection()) {
             doAdoptOrphanedSignals(conn, workflowId, instanceId);
         } catch (SQLException e) {
-            throw new UncheckedSqlException("Failed to adopt orphaned signals for workflow: "
+            throw storeFault("Failed to adopt orphaned signals for workflow: "
                     + workflowId, e);
         }
     }
@@ -1578,7 +1580,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                 return Optional.empty();
             }
         } catch (SQLException e) {
-            throw new UncheckedSqlException("Query failed: " + sql, e);
+            throw storeFault("Query failed: " + sql, e);
         }
     }
 
@@ -1600,7 +1602,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                 return results;
             }
         } catch (SQLException e) {
-            throw new UncheckedSqlException("Query failed: " + sql, e);
+            throw storeFault("Query failed: " + sql, e);
         }
     }
 
@@ -1618,7 +1620,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             setter.set(ps);
             return ps.executeUpdate();
         } catch (SQLException e) {
-            throw new UncheckedSqlException("Update failed: " + sql, e);
+            throw storeFault("Update failed: " + sql, e);
         }
     }
 
@@ -1699,12 +1701,46 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         @Nullable T map(ResultSet rs) throws SQLException;
     }
 
-    // ── Exception wrapper ─────────────────────────────────────────────────
+    // ── Exception classification ──────────────────────────────────────────
 
     /**
-     * Unchecked wrapper for {@link SQLException} thrown by infrastructure
-     * operations. This is NOT a {@link io.b2mash.maestro.core.exception.MaestroException}
-     * because SQL failures are infrastructure errors, not domain errors.
+     * Classifies a {@link SQLException} that no call site mapped to a domain
+     * exception ({@link DuplicateEventException},
+     * {@link WorkflowAlreadyExistsException}, ...) into the unchecked
+     * exception the store throws.
+     *
+     * <p>SQLSTATE class {@code 22} (data exception), class {@code 23}
+     * (integrity-constraint violation) and class {@code 54} (program limit
+     * exceeded — a {@code jsonb} value over its size limit, an index row too
+     * large) mean the workflow's own values were rejected, so retrying cannot
+     * help: those stay an {@link UncheckedSqlException}, and the workflow
+     * fails rather than being abandoned and re-adopted forever. Everything
+     * else — connection loss ({@code 08}), server shutdown ({@code 57}),
+     * serialization failure or deadlock ({@code 40}), insufficient resources
+     * ({@code 53}), a schema mismatch ({@code 42}), and a {@code null}
+     * SQLSTATE such as a pool's {@code getConnection()} timeout — is a fault
+     * of the store, not of the workflow, and becomes a
+     * {@link StoreUnavailableException}.
+     *
+     * @param message descriptive error message naming the failed operation
+     * @param e       the SQL failure to classify; becomes the cause
+     * @return the exception to throw — never {@code null}
+     */
+    static RuntimeException storeFault(String message, SQLException e) {
+        String sqlState = e.getSQLState();
+        if (sqlState != null && (sqlState.startsWith("22") || sqlState.startsWith("23")
+                || sqlState.startsWith("54"))) {
+            return new UncheckedSqlException(message, e);
+        }
+        return new StoreUnavailableException(message, e);
+    }
+
+    /**
+     * Unchecked wrapper for a {@link SQLException} caused by the data a
+     * workflow supplied (SQLSTATE class {@code 22}, {@code 23} or {@code 54}; see
+     * {@link #storeFault}). This is NOT a
+     * {@link io.b2mash.maestro.core.exception.MaestroException}: it is a
+     * genuine operation failure, not an engine signal.
      */
     static final class UncheckedSqlException extends RuntimeException {
         UncheckedSqlException(String message, SQLException cause) {

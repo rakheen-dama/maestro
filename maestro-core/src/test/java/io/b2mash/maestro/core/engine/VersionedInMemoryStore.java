@@ -477,6 +477,11 @@ class VersionedInMemoryStore implements WorkflowStore {
                 .toList();
     }
 
+    /** Deletes every timer row of {@code instanceId} — a row removed out of band (test setup). */
+    void deleteTimersOf(UUID instanceId) {
+        timers.removeIf(t -> t.workflowInstanceId().equals(instanceId));
+    }
+
     /** @return a snapshot of every stored timer row, in insertion order (test inspection) */
     List<WorkflowTimer> allTimers() {
         return List.copyOf(timers);

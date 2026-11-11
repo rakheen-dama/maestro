@@ -6,6 +6,7 @@ import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.MaestroControlFlowError;
 import io.b2mash.maestro.core.exception.NodeErrors;
 import io.b2mash.maestro.core.exception.StaleRunException;
+import io.b2mash.maestro.core.exception.StoreUnavailableException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,13 +22,14 @@ import java.util.concurrent.Callable;
  * backoff wait yields the carrier thread — no platform thread is blocked.
  *
  * <p><b>Cancellation.</b> The run's {@link RunCancellation} is honoured at
- * three points. A termination, then a stale-run stand-down, is checked before
- * <em>every</em> attempt (including the first) — terminate means stop now, and
- * a run another runner owns must not execute the next side effect — and again
- * as soon as an attempt fails, so a failed attempt after either request is
- * neither retried nor surfaced as an {@link ActivityExecutionException} (which
- * the proxy would persist as {@code ACTIVITY_FAILED}). The backoff wait returns
- * as soon as any cause is requested, raising the matching signal. A shutdown is
+ * three points. A termination, then a stale-run or store-unavailable
+ * stand-down, is checked before <em>every</em> attempt (including the first) —
+ * terminate means stop now, and a run another runner owns, or whose store is
+ * down, must not execute the next side effect — and again as soon as an
+ * attempt fails, so a failed attempt after any of these requests is neither
+ * retried nor surfaced as an {@link ActivityExecutionException} (which the
+ * proxy would persist as {@code ACTIVITY_FAILED}). The backoff wait returns as
+ * soon as any cause is requested, raising the matching signal. A shutdown is
  * deliberately not checked before an attempt, so in-flight work drains. The
  * attempt that is already executing is never interrupted by cancellation;
  * {@code startToCloseTimeout} (enforced inside the task by the activity proxy,
@@ -94,6 +96,9 @@ public final class RetryExecutor {
      *                                     ran, or during a backoff wait
      * @throws StaleRunException           if the run was asked to stand down as
      *                                     stale, at the same points
+     * @throws StoreUnavailableException   if the run's store fault was latched
+     *                                     ({@code STORE_UNAVAILABLE}), at the same
+     *                                     points
      * @throws ExecutorShutdownException   if this node began shutting down during a
      *                                     backoff wait
      */
@@ -180,12 +185,14 @@ public final class RetryExecutor {
 
     /**
      * Throws if the run was terminated, then if it was asked to stand down as
-     * stale — terminate first, as the stronger request. A shutdown is not
-     * checked.
+     * stale or because its store is unavailable — terminate first, as the
+     * stronger request (stale and store-unavailable share a rank, so at most
+     * one of them is ever set). A shutdown is not checked.
      */
     private static void throwIfStopRequested(RunCancellation cancellation, String workflowId) {
         cancellation.throwIfTerminated(workflowId);
         cancellation.throwIfStale(workflowId);
+        cancellation.throwIfStoreUnavailable(workflowId);
     }
 
     /**
@@ -245,9 +252,14 @@ public final class RetryExecutor {
 
     /**
      * Waits out a retry backoff, returning early — by throwing the matching
-     * signal — as soon as a termination, a stale stand-down or a shutdown is
-     * requested on the run. On virtual threads the wait yields the carrier
-     * thread rather than blocking it.
+     * signal — as soon as a termination, a stale stand-down, a store-unavailable
+     * stand-down or a shutdown is requested on the run: a
+     * {@link WorkflowTerminatedException}, {@link StaleRunException},
+     * {@link StoreUnavailableException} or {@link ExecutorShutdownException}.
+     * None of them is wrapped into an {@link ActivityExecutionException}, so
+     * none is recorded as {@code ACTIVITY_FAILED}: each unwinds to
+     * {@code WorkflowExecutor}'s matching stand-down or abandon arm. On virtual
+     * threads the wait yields the carrier thread rather than blocking it.
      *
      * <p>The engine never interrupts a workflow thread, so an
      * {@link InterruptedException} here means a foreign interrupter: the flag is

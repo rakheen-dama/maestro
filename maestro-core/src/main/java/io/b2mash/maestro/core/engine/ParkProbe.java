@@ -28,6 +28,11 @@ import java.util.function.Supplier;
  * that was never unhealthy in the first place (a routine infra blip
  * recorded as workflow failure, the Issue 4/5/18 family).
  *
+ * <p>The read runs under {@link StoreFaultGuard#advisory(Supplier)}, so a
+ * store fault it raises is neither retried nor latched as the run's
+ * {@code STORE_UNAVAILABLE} stand-down: a skipped probe is harmless, and a
+ * parked run must keep parking through the outage.
+ *
  * <p>This is deliberately narrow: it only ever wraps a probe <em>read</em>.
  * State writes (event appends, status CAS transitions, signal consumption)
  * are unaffected and keep failing exactly as before. {@code Error}s
@@ -86,7 +91,7 @@ final class ParkProbe {
      */
     static <T> T read(String probeName, String workflowId, Supplier<T> read, T fallback) {
         try {
-            var result = read.get();
+            var result = StoreFaultGuard.advisory(read);
             failureStreak.set(0);
             return result;
         } catch (RuntimeException e) {

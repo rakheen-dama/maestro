@@ -1,6 +1,7 @@
 package io.b2mash.maestro.store.jdbc;
 
 import io.b2mash.maestro.core.exception.SerializationException;
+import io.b2mash.maestro.core.exception.StoreUnavailableException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
@@ -8,6 +9,9 @@ import io.b2mash.maestro.core.model.WorkflowStatus;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.JsonNodeFactory;
@@ -18,6 +22,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
+import java.sql.SQLTransientConnectionException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -26,6 +31,7 @@ import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -125,6 +131,44 @@ class AbstractJdbcWorkflowStoreUnitTest {
         assertEquals("forced serialization failure", ex.getCause().getMessage());
     }
 
+    // ── Fault classification: infrastructure vs. data ─────────────────────
+
+    /**
+     * {@link AbstractJdbcWorkflowStore#storeFault} decides whether a
+     * {@link SQLException} is a store fault (the database, the pool or the
+     * schema failed — {@link StoreUnavailableException}) or a data error the
+     * workflow's own values caused (SQLSTATE class 22 data exception, class
+     * 23 integrity-constraint violation or class 54 program limit exceeded —
+     * still {@link AbstractJdbcWorkflowStore.UncheckedSqlException}).
+     */
+    @Nested
+    @DisplayName("SQL fault classification: infrastructure faults are StoreUnavailableException")
+    class FaultClassification {
+
+        @ParameterizedTest(name = "SQLSTATE {0} is a store fault")
+        @CsvSource(value = {"08006", "57P01", "40001", "40P01", "53300", "42703", "NULL"}, nullValues = "NULL")
+        void infrastructureFaultsAreStoreUnavailable(String sqlState) {
+            var ex = AbstractJdbcWorkflowStore.storeFault("q", new SQLException("boom", sqlState));
+            assertInstanceOf(StoreUnavailableException.class, ex);
+            assertEquals(sqlState, ((SQLException) ex.getCause()).getSQLState());
+        }
+
+        @ParameterizedTest(name = "SQLSTATE {0} stays a workflow failure")
+        @ValueSource(strings = {"22001", "22P02", "23502", "54000", "54001"})
+        void dataErrorsStayWorkflowFailures(String sqlState) {
+            var ex = AbstractJdbcWorkflowStore.storeFault("q", new SQLException("boom", sqlState));
+            assertInstanceOf(AbstractJdbcWorkflowStore.UncheckedSqlException.class, ex);
+        }
+
+        @Test
+        @DisplayName("a pool timeout from getConnection() (no SQLSTATE) is StoreUnavailableException")
+        void poolTimeoutFromGetConnectionIsStoreUnavailable() {
+            var store = new TestStore(new PoolTimeoutDataSource(), JdbcStoreConfiguration.withDefaults(mapper));
+
+            assertThrows(StoreUnavailableException.class, () -> store.getInstance("wf-1"));
+        }
+    }
+
     // ── R34: a failed rollback must never be followed by setAutoCommit(true) ──
 
     /**
@@ -146,7 +190,7 @@ class AbstractJdbcWorkflowStoreUnitTest {
             var store = new TestStore(new SingleConnectionDataSource(conn.proxy()),
                     JdbcStoreConfiguration.withDefaults(mapper));
 
-            var ex = assertThrows(AbstractJdbcWorkflowStore.UncheckedSqlException.class, () -> store.createInstance(instance()));
+            var ex = assertThrows(StoreUnavailableException.class, () -> store.createInstance(instance()));
 
             assertEquals("statement failed", ex.getCause().getMessage());
             assertEquals("rollback failed", ex.getCause().getSuppressed()[0].getMessage(),
@@ -167,7 +211,7 @@ class AbstractJdbcWorkflowStoreUnitTest {
             var event = new WorkflowEvent(UUID.randomUUID(), terminal.id(), 1, EventType.WORKFLOW_COMPLETED,
                     null, null, Instant.now());
 
-            assertThrows(AbstractJdbcWorkflowStore.UncheckedSqlException.class, () -> store.completeInstance(terminal, event));
+            assertThrows(StoreUnavailableException.class, () -> store.completeInstance(terminal, event));
 
             assertFalse(conn.calls.contains("setAutoCommit(true)"),
                     "setAutoCommit(true) after a failed rollback would COMMIT the open transaction; calls were "
@@ -182,7 +226,7 @@ class AbstractJdbcWorkflowStoreUnitTest {
             var store = new TestStore(new SingleConnectionDataSource(conn.proxy()),
                     JdbcStoreConfiguration.withDefaults(mapper));
 
-            assertThrows(AbstractJdbcWorkflowStore.UncheckedSqlException.class, () -> store.createInstance(instance()));
+            assertThrows(StoreUnavailableException.class, () -> store.createInstance(instance()));
 
             assertTrue(conn.calls.contains("setAutoCommit(true)"), "calls were " + conn.calls);
             assertFalse(conn.calls.contains("abort"), "calls were " + conn.calls);
@@ -195,7 +239,7 @@ class AbstractJdbcWorkflowStoreUnitTest {
             var store = new TestStore(new SingleConnectionDataSource(conn.proxy()),
                     JdbcStoreConfiguration.withDefaults(mapper));
 
-            assertThrows(AbstractJdbcWorkflowStore.UncheckedSqlException.class, () ->
+            assertThrows(StoreUnavailableException.class, () ->
                     store.appendEventAndConsumeSignal(memo(), new io.b2mash.maestro.core.spi.RunLease(
                             UUID.randomUUID(), 0), UUID.randomUUID()));
 
@@ -312,6 +356,29 @@ class AbstractJdbcWorkflowStoreUnitTest {
 
         @Override public Connection getConnection() { return connection; }
         @Override public Connection getConnection(String username, String password) { return connection; }
+        @Override public java.io.PrintWriter getLogWriter() { throw new UnsupportedOperationException(); }
+        @Override public void setLogWriter(java.io.PrintWriter out) { throw new UnsupportedOperationException(); }
+        @Override public void setLoginTimeout(int seconds) { throw new UnsupportedOperationException(); }
+        @Override public int getLoginTimeout() { throw new UnsupportedOperationException(); }
+        @Override public Logger getParentLogger() throws SQLFeatureNotSupportedException {
+            throw new SQLFeatureNotSupportedException();
+        }
+        @Override public <T> T unwrap(Class<T> iface) throws SQLException { throw new SQLException("unwrap"); }
+        @Override public boolean isWrapperFor(Class<?> iface) { return false; }
+    }
+
+    /**
+     * A {@link DataSource} whose pool is exhausted: {@code getConnection()}
+     * times out the way HikariCP's does, with a
+     * {@link SQLTransientConnectionException} that carries no SQLSTATE.
+     */
+    private static final class PoolTimeoutDataSource implements DataSource {
+        @Override public Connection getConnection() throws SQLException {
+            throw new SQLTransientConnectionException("Connection is not available, request timed out after 30000ms");
+        }
+        @Override public Connection getConnection(String username, String password) throws SQLException {
+            return getConnection();
+        }
         @Override public java.io.PrintWriter getLogWriter() { throw new UnsupportedOperationException(); }
         @Override public void setLogWriter(java.io.PrintWriter out) { throw new UnsupportedOperationException(); }
         @Override public void setLoginTimeout(int seconds) { throw new UnsupportedOperationException(); }

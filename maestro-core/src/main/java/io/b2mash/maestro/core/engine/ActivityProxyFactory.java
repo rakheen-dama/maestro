@@ -313,7 +313,12 @@ public final class ActivityProxyFactory {
         var handler = new ActivityInvocationHandler(
                 activityImpl,
                 activityName,
-                store,
+                // The memo lookups and outcome appends get the same store-fault
+                // treatment as the executor's own calls (retry briefly, then
+                // latch the run's STORE_UNAVAILABLE stand-down) whoever builds
+                // the proxy — the Spring starter and the test kit pass their
+                // plain store. Idempotent: a guarded store is used as is.
+                StoreFaultGuard.wrap(store),
                 distributedLock,
                 retryPolicy,
                 startToCloseTimeout,

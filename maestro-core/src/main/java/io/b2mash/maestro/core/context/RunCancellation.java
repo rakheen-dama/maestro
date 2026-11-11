@@ -2,6 +2,7 @@ package io.b2mash.maestro.core.context;
 
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.StaleRunException;
+import io.b2mash.maestro.core.exception.StoreUnavailableException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import org.jspecify.annotations.Nullable;
@@ -23,7 +24,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * {@link WorkflowContext#bounded(WorkflowContext, int, int, int, io.b2mash.maestro.core.engine.WorkflowOperations)}),
  * so a single request reaches every thread of the run.
  *
- * <p>Three causes can be requested:
+ * <p>Four causes can be requested:
  * <ul>
  *   <li>{@link Cause#TERMINATED} — set by {@code WorkflowExecutor.terminateWorkflow}
  *       when the terminating node is the run's owner. The activity retry loop
@@ -45,6 +46,14 @@ import java.util.concurrent.atomic.AtomicReference;
  *       {@code DuplicateEventException} or {@code StaleRunException} still
  *       cannot execute its next side effect, consume a signal, schedule a
  *       timer or record an outcome the winner owns.</li>
+ *   <li>{@link Cause#STORE_UNAVAILABLE} — the store failed (a
+ *       {@link StoreUnavailableException}) on a call this run cannot do
+ *       without, after the store-fault guard's bounded retries of the
+ *       idempotent calls. Set by the guard at the store boundary, so the
+ *       stand-down is sticky whatever workflow code does with the exception:
+ *       the run must stop and leave its durable state for recovery once the
+ *       store is back. Like {@code STALE} it is a stand-down, not a failure —
+ *       nothing is recorded against the workflow.</li>
  *   <li>{@link Cause#SHUTDOWN} — set by {@code WorkflowExecutor.shutdown()}.
  *       It is deliberately <em>not</em> checked before an attempt (shutdown
  *       lets in-flight work drain), but the retry backoff wait honours it, so a
@@ -53,15 +62,22 @@ import java.util.concurrent.atomic.AtomicReference;
  * </ul>
  *
  * <h2>Precedence</h2>
- * <p>The causes are ranked {@code TERMINATED} &gt; {@code STALE} &gt;
- * {@code SHUTDOWN}, and a request replaces the current cause only if it ranks
- * strictly higher:
+ * <p>The causes are ranked {@code TERMINATED} &gt; {@code STALE} = {@code STORE_UNAVAILABLE}
+ * &gt; {@code SHUTDOWN}, and a request replaces the current cause only if it
+ * ranks strictly higher:
  * <ul>
- *   <li>{@code TERMINATED} is final: it replaces a prior {@code STALE} or
- *       {@code SHUTDOWN} request, and nothing replaces it.</li>
- *   <li>{@code STALE} replaces a prior {@code SHUTDOWN} — shutdown lets the
- *       next attempt run so in-flight work drains, but a run that is known to
- *       be stale must not execute another side effect, drain or not.</li>
+ *   <li>{@code TERMINATED} is final: it replaces a prior {@code STALE},
+ *       {@code STORE_UNAVAILABLE} or {@code SHUTDOWN} request, and nothing
+ *       replaces it.</li>
+ *   <li>{@code STALE} and {@code STORE_UNAVAILABLE} share a rank, so the first
+ *       of the two to be requested wins and keeps its detail: both mean "this
+ *       run stands down and writes nothing more", and the first one names what
+ *       actually stopped it.</li>
+ *   <li>{@code STALE} and {@code STORE_UNAVAILABLE} each replace a prior
+ *       {@code SHUTDOWN} — shutdown lets the next attempt run so in-flight
+ *       work drains, but a run that is known to be stale, or whose store is
+ *       known to be down, must not execute another side effect, drain or
+ *       not.</li>
  *   <li>{@code SHUTDOWN} never replaces anything.</li>
  * </ul>
  * A repeated request of the current cause is a no-op that keeps the first
@@ -80,12 +96,13 @@ import java.util.concurrent.atomic.AtomicReference;
  * timed wait on this latch, which returns early when any cause is requested;
  * the caller then raises the matching signal via
  * {@link #throwIfRequested(String)}. The raised types are the existing
- * {@link WorkflowTerminatedException}, {@link StaleRunException} and
- * {@link ExecutorShutdownException} — no new exception type is introduced.
+ * {@link WorkflowTerminatedException}, {@link StaleRunException},
+ * {@link StoreUnavailableException} and {@link ExecutorShutdownException} — no
+ * latch-specific exception type is introduced.
  *
  * <p>The latch is in-memory only and never persisted: the durable record of a
  * terminate is the instance row, the durable record of a stale run is the
- * winner's event, and a shutdown writes nothing.
+ * winner's event, and a shutdown or a store fault writes nothing.
  *
  * <p><b>Thread safety:</b> thread-safe. Any thread may request a cause or read
  * the state concurrently with the run's own threads; every transition is one
@@ -105,7 +122,13 @@ public final class RunCancellation {
          * appends collided with its event, or a fresh read found the row
          * finalised by it. The run must stand down.
          */
-        STALE(2);
+        STALE(2),
+        /**
+         * The store failed on a call this run cannot do without — after the
+         * bounded retries of the idempotent calls. The run must stand down and
+         * leave its durable state for recovery; ranks with {@link #STALE}.
+         */
+        STORE_UNAVAILABLE(2);
 
         /** Precedence: a request replaces the current cause only if its rank is strictly higher. */
         private final int rank;
@@ -128,8 +151,8 @@ public final class RunCancellation {
     /**
      * Requests that the run stop because the workflow was terminated.
      *
-     * <p>Replaces a prior {@link Cause#SHUTDOWN} or {@link Cause#STALE}
-     * request; a prior {@link Cause#TERMINATED} request is kept, reason and all.
+     * <p>Replaces a prior {@link Cause#SHUTDOWN}, {@link Cause#STALE} or
+     * {@link Cause#STORE_UNAVAILABLE} request; a prior {@link Cause#TERMINATED} request is kept, reason and all.
      *
      * @param reason the operator-supplied termination reason, or {@code null}
      * @return {@code true} iff this call set the cause or replaced a weaker one;
@@ -163,10 +186,30 @@ public final class RunCancellation {
      *
      * @param detail what made the run stale, e.g. {@code "append collision at sequence 4"}
      * @return {@code true} iff this call set the cause or replaced a shutdown
-     *         request; {@code false} if the run was already stale or terminated
+     *         request; {@code false} if the run was already stale, store-unavailable
+     *         or terminated
      */
     public boolean requestStale(String detail) {
         return requestIfStronger(new Request(Cause.STALE, detail));
+    }
+
+    /**
+     * Requests that the run stand down because the store failed on a call
+     * the run cannot do without — called by the store-fault guard once a
+     * {@link StoreUnavailableException} is final (after its bounded retries of
+     * the idempotent calls).
+     *
+     * <p>Ranks with {@link Cause#STALE}: whichever of the two is requested
+     * first wins and keeps its detail. Replaces a prior {@link Cause#SHUTDOWN}
+     * request; a later {@link #requestTermination} replaces it.
+     *
+     * @param detail what failed, e.g. {@code "appendEvent: <exception>"}
+     * @return {@code true} iff this call set the cause or replaced a shutdown
+     *         request; {@code false} if the run was already stale, store-unavailable
+     *         or terminated
+     */
+    public boolean requestStoreUnavailable(String detail) {
+        return requestIfStronger(new Request(Cause.STORE_UNAVAILABLE, detail));
     }
 
     private boolean requestIfStronger(Request requested) {
@@ -189,8 +232,8 @@ public final class RunCancellation {
     /**
      * Returns whether any cause has been requested.
      *
-     * @return {@code true} once a termination, a stale stand-down or a shutdown
-     *         was requested
+     * @return {@code true} once a termination, a stale or store-unavailable
+     *         stand-down, or a shutdown was requested
      */
     public boolean isRequested() {
         return request.get() != null;
@@ -211,7 +254,7 @@ public final class RunCancellation {
      *
      * @return the operator-supplied reason of a {@link Cause#TERMINATED}
      *         request (or {@code null} if none was given), the detail of a
-     *         {@link Cause#STALE} request, or {@code null} for
+     *         {@link Cause#STALE} or {@link Cause#STORE_UNAVAILABLE} request, or {@code null} for
      *         {@link Cause#SHUTDOWN} or when nothing was requested
      */
     public @Nullable String reason() {
@@ -252,11 +295,26 @@ public final class RunCancellation {
     }
 
     /**
+     * Throws if — and only if — the run was asked to stand down because the
+     * store is unavailable. Any other cause is ignored here.
+     *
+     * @param workflowId the workflow ID, for the exception
+     * @throws StoreUnavailableException if the cause is {@link Cause#STORE_UNAVAILABLE}
+     */
+    public void throwIfStoreUnavailable(String workflowId) {
+        var current = request.get();
+        if (current != null && current.cause() == Cause.STORE_UNAVAILABLE) {
+            throw storeUnavailable(workflowId, current);
+        }
+    }
+
+    /**
      * Throws the signal matching the requested cause, if any.
      *
      * @param workflowId the workflow ID, for the exception
      * @throws WorkflowTerminatedException if the cause is {@link Cause#TERMINATED}
      * @throws StaleRunException           if the cause is {@link Cause#STALE}
+     * @throws StoreUnavailableException   if the cause is {@link Cause#STORE_UNAVAILABLE}
      * @throws ExecutorShutdownException   if the cause is {@link Cause#SHUTDOWN}
      */
     public void throwIfRequested(String workflowId) {
@@ -267,6 +325,7 @@ public final class RunCancellation {
         switch (current.cause()) {
             case TERMINATED -> throw new WorkflowTerminatedException(workflowId, current.reason());
             case STALE -> throw stale(workflowId, current);
+            case STORE_UNAVAILABLE -> throw storeUnavailable(workflowId, current);
             case SHUTDOWN -> throw new ExecutorShutdownException(
                     "Executor is shutting down — abandoning the retry backoff of workflow '%s'; the workflow "
                             .formatted(workflowId)
@@ -277,6 +336,15 @@ public final class RunCancellation {
     private static StaleRunException stale(String workflowId, Request current) {
         var detail = current.reason() != null ? current.reason() : "append collision";
         return new StaleRunException(workflowId, WorkflowStatus.RUNNING, detail);
+    }
+
+    private static StoreUnavailableException storeUnavailable(String workflowId, Request current) {
+        // The latch keeps only the detail string, not the original exception,
+        // so the cause is a carrier of that detail.
+        var detail = current.reason() != null ? current.reason() : "store unavailable";
+        return new StoreUnavailableException(
+                "Store unavailable — workflow '%s' stands down: %s".formatted(workflowId, detail),
+                new IllegalStateException(detail));
     }
 
     /**
