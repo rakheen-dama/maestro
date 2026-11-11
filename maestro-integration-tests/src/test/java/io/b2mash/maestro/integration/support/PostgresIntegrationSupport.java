@@ -34,8 +34,8 @@ import java.time.Duration;
  *
  * <p>Migrations are applied by {@link MaestroSchemaInitializer}, exactly as the
  * store's auto-configuration applies them in an application: every Maestro
- * module on the test classpath advertises its location, so the store (version
- * band 1–99) and the lock (100–199) are both applied, into
+ * module on the test classpath advertises its location, so the store
+ * (V1–V9, V101) and the lock (V100) are both applied, into
  * {@code maestro_schema_history}. That composition is
  * itself pinned by
  * {@code io.b2mash.maestro.integration.schema.MaestroMigrationsCoexistIT}.

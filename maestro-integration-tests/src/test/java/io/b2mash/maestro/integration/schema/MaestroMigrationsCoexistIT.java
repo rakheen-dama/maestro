@@ -52,8 +52,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * histories never meet.
  *
  * <p>{@code maestro-store-postgres} ships two migration locations — the store
- * (band 1–99) and the lock (band 100–199); their versions share Maestro's one
- * history and must not collide either. Band 200–299 belonged to the removed
+ * (V1–V9, V101) and the lock (V100); their versions share Maestro's one
+ * history and must not collide either. Every new migration, in either
+ * location, takes the next version above the highest shipped, within 101–199
+ * ({@code MaestroSchemaInitializerTest.migrationVersionsFollowTheNumberingRule}). Band 200–299 belonged to the removed
  * Postgres messaging transport and is retired, never to be reused: databases
  * that applied V200–V202 keep those history rows and an orphan
  * {@code maestro_signal_queue}, which Flyway ignores.

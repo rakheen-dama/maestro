@@ -41,7 +41,7 @@ public final class MetricsSampler {
             + "notifyCalls,chaosActive";
 
     // The normalised recovery-poll statements (AbstractJdbcWorkflowStore), summed:
-    //  - paged, service-scoped scan (the engine's since V10), two shapes — first
+    //  - paged, service-scoped scan (the engine's since migration V101), two shapes — first
     //    page and cursor page — each normalised as "... FROM maestro_workflow_instance
     //    WHERE service_name = $1 AND status IN ($n, ...) [AND (started_at, id) > ($2, $3)]
     //    ORDER BY started_at, id LIMIT $n". One call per PAGE: a pass over <= 200
