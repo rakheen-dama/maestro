@@ -33,6 +33,9 @@ import java.util.Objects;
  * <ul>
  *   <li>pgjdbc is on the classpath ({@code org.postgresql.PGConnection})</li>
  *   <li>The engine is active (a {@link WorkflowExecutor} bean exists)</li>
+ *   <li>A {@link DataSource} bean exists, or a
+ *       {@link MaestroDataSource @MaestroDataSource} bean — even one declared
+ *       {@code @Bean(defaultCandidate = false)}</li>
  *   <li>{@code maestro.enabled} is {@code true} (default)</li>
  *   <li>{@code maestro.signal.wake-notify.enabled} is {@code true} (default).
  *       Set it to {@code false} behind a connection pooler in transaction
@@ -62,7 +65,8 @@ import java.util.Objects;
  */
 @AutoConfiguration(after = MaestroAutoConfiguration.class)
 @ConditionalOnClass(name = "org.postgresql.PGConnection")
-@ConditionalOnBean({WorkflowExecutor.class, DataSource.class})
+@ConditionalOnBean(WorkflowExecutor.class)
+@ConditionalOnMaestroDataSource
 @ConditionalOnProperty(prefix = "maestro", name = "enabled", havingValue = "true", matchIfMissing = true)
 @ConditionalOnProperty(prefix = "maestro.signal.wake-notify", name = "enabled", havingValue = "true",
         matchIfMissing = true)

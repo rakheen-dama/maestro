@@ -1,6 +1,7 @@
 package io.b2mash.maestro.store.postgres.config;
 
 import io.b2mash.maestro.store.postgres.MaestroDataSource;
+import org.springframework.beans.factory.NoUniqueBeanDefinitionException;
 import org.springframework.beans.factory.ObjectProvider;
 
 import javax.sql.DataSource;
@@ -22,11 +23,21 @@ final class MaestroDataSources {
      * @param qualified the {@code @MaestroDataSource}-qualified provider
      * @param any       the unqualified provider (default candidates only)
      * @return the {@code DataSource} Maestro uses
-     * @throws IllegalStateException if there is no qualified bean and the
+     * @throws IllegalStateException if more than one bean is qualified (and
+     *                               none of them is {@code @Primary}), or if
+     *                               there is no qualified bean and the
      *                               unqualified candidates have no single winner
      */
     static DataSource resolve(ObjectProvider<DataSource> qualified, ObjectProvider<DataSource> any) {
-        var maestro = qualified.getIfAvailable();
+        DataSource maestro;
+        try {
+            maestro = qualified.getIfAvailable();
+        } catch (NoUniqueBeanDefinitionException e) {
+            // Not chained: the message carries everything Spring's does, and a
+            // chained cause would become the root cause a user reads first.
+            throw new IllegalStateException("Maestro found " + e.getNumberOfBeansFound()
+                    + " @MaestroDataSource beans; exactly one is allowed: " + e.getBeanNamesFound());
+        }
         if (maestro != null) {
             return maestro;
         }

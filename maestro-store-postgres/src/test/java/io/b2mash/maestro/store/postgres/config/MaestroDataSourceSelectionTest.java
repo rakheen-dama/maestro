@@ -1,5 +1,8 @@
 package io.b2mash.maestro.store.postgres.config;
 
+import io.b2mash.maestro.core.engine.WorkflowExecutor;
+import io.b2mash.maestro.core.spi.DistributedLock;
+import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.spring.config.MaestroAutoConfiguration;
 import io.b2mash.maestro.store.postgres.MaestroDataSource;
 import io.b2mash.maestro.store.postgres.PostgresWorkflowStore;
@@ -74,6 +77,16 @@ class MaestroDataSourceSelectionTest {
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(
                     DataSourceAutoConfiguration.class,
+                    PostgresStoreAutoConfiguration.class,
+                    MaestroAutoConfiguration.class,
+                    PostgresLockAutoConfiguration.class,
+                    PostgresSignalWakeAutoConfiguration.class))
+            .withBean(ObjectMapper.class, ObjectMapper::new)
+            .withPropertyValues("maestro.service-name=" + SERVICE);
+
+    /** The same, for a host that has no DataSource of its own: Boot's DataSource auto-configuration is absent. */
+    private final ApplicationContextRunner runnerWithoutBootDataSource = new ApplicationContextRunner()
+            .withConfiguration(AutoConfigurations.of(
                     PostgresStoreAutoConfiguration.class,
                     MaestroAutoConfiguration.class,
                     PostgresLockAutoConfiguration.class,
@@ -156,6 +169,96 @@ class MaestroDataSourceSelectionTest {
         assertThat(maestroTables(database, MAESTRO_SCHEMA)).contains("maestro_workflow_instance");
     }
 
+    /**
+     * A host with no DataSource of its own that gives Maestro one declared
+     * {@code defaultCandidate = false}: Boot's own bean conditions ignore such
+     * a bean, so the engine's auto-configurations must look for the qualifier
+     * themselves — or the engine silently does not exist.
+     */
+    @Test
+    @DisplayName("only a @MaestroDataSource @Bean(defaultCandidate = false) and no Boot DataSource: the engine starts on it")
+    void onlyNonDefaultCandidateQualifiedDataSourceStartsTheEngine() throws SQLException {
+        var database = freshDatabase();
+        runnerWithoutBootDataSource.withUserConfiguration(QualifiedNonDefaultCandidateDataSource.class)
+                .withPropertyValues(MAESTRO_URL_PROPERTY + "=" + url(database, MAESTRO_SCHEMA))
+                .run(ctx -> assertEngineRunsOn(ctx, "maestroDataSource"));
+        assertThat(maestroTables(database, MAESTRO_SCHEMA)).contains("maestro_workflow_instance");
+    }
+
+    @Test
+    @DisplayName("a @MaestroDataSource on the bean's class (not the @Bean method) is seen too")
+    void qualifierOnTheBeanClassIsSeen() throws SQLException {
+        var database = freshDatabase();
+        runnerWithoutBootDataSource.withUserConfiguration(ClassQualifiedNonDefaultCandidateDataSource.class)
+                .withPropertyValues(MAESTRO_URL_PROPERTY + "=" + url(database, MAESTRO_SCHEMA))
+                .run(ctx -> assertEngineRunsOn(ctx, "classQualifiedDataSource"));
+        assertThat(maestroTables(database, MAESTRO_SCHEMA)).contains("maestro_workflow_instance");
+    }
+
+    /**
+     * Boot's DataSource auto-configuration does not see a non-default-candidate
+     * bean either, so with no {@code spring.datasource.url} it still tries to
+     * build the host's pool and fails — Boot's behaviour, not Maestro's. The
+     * documentation tells such a host to exclude Boot's DataSource
+     * auto-configuration or declare a plain {@code @MaestroDataSource @Bean}.
+     */
+    @Test
+    @DisplayName("only a @MaestroDataSource @Bean(defaultCandidate = false) beside Boot's DataSource auto-config, no url: Boot fails")
+    void onlyNonDefaultCandidateQualifiedDataSourceBesideBootWithoutUrlFailsInBoot() throws SQLException {
+        var database = freshDatabase();
+        runner.withUserConfiguration(QualifiedNonDefaultCandidateDataSource.class)
+                .withPropertyValues(MAESTRO_URL_PROPERTY + "=" + url(database, MAESTRO_SCHEMA))
+                .run(ctx -> {
+                    assertThat(ctx).hasFailed();
+                    assertThat(ctx.getStartupFailure())
+                            .rootCause()
+                            .hasMessageContaining("Failed to determine a suitable driver class");
+                });
+    }
+
+    @Test
+    @DisplayName("no DataSource at all: every Postgres auto-configuration backs off, and the context starts")
+    void noDataSourceBacksOff() {
+        runnerWithoutBootDataSource.run(ctx -> {
+            assertThat(ctx).hasNotFailed();
+            assertThat(ctx).doesNotHaveBean(DataSource.class);
+            assertThat(ctx).doesNotHaveBean(MaestroSchemaInitializer.class);
+            assertThat(ctx).doesNotHaveBean(WorkflowStore.class);
+            assertThat(ctx).doesNotHaveBean(DistributedLock.class);
+            assertThat(ctx).doesNotHaveBean(PostgresLockCleaner.class);
+            assertThat(ctx).doesNotHaveBean(PostgresWakeListener.class);
+            assertThat(ctx).doesNotHaveBean(WorkflowExecutor.class);
+        });
+    }
+
+    @Test
+    @DisplayName("two @MaestroDataSource beans fail startup: exactly one is allowed")
+    void twoQualifiedDataSourcesFail() throws SQLException {
+        var database = freshDatabase();
+        runner.withUserConfiguration(TwoQualifiedDataSources.class)
+                .withPropertyValues(hostDataSourceProperties(database))
+                .withPropertyValues(MAESTRO_URL_PROPERTY + "=" + url(database, MAESTRO_SCHEMA))
+                .run(ctx -> {
+                    assertThat(ctx).hasFailed();
+                    assertThat(ctx.getStartupFailure())
+                            .rootCause()
+                            .hasMessageContaining("Maestro found 2 @MaestroDataSource beans; exactly one is allowed");
+                });
+    }
+
+    private static void assertEngineRunsOn(AssertableApplicationContext ctx, String dataSourceBean) {
+        assertThat(ctx).hasNotFailed();
+        assertThat(ctx).hasSingleBean(WorkflowStore.class);
+        assertThat(ctx).hasSingleBean(DistributedLock.class);
+        assertThat(ctx).hasSingleBean(PostgresWakeListener.class);
+        assertThat(ctx).hasSingleBean(MaestroSchemaInitializer.class);
+        assertThat(ctx).hasSingleBean(WorkflowExecutor.class);
+        var qualified = ctx.getBean(dataSourceBean, DataSource.class);
+        assertThat(maestroDataSources(ctx))
+                .hasSize(6)
+                .allSatisfy((bean, dataSource) -> assertThat(dataSource).as(bean).isSameAs(qualified));
+    }
+
     // ── host configurations ─────────────────────────────────────────
 
     @Configuration(proxyBeanMethods = false)
@@ -174,6 +277,40 @@ class MaestroDataSourceSelectionTest {
         @Bean
         @MaestroDataSource
         DataSource maestroDataSource(Environment env) {
+            return dataSource(env.getRequiredProperty(MAESTRO_URL_PROPERTY));
+        }
+    }
+
+    /** The qualifier sits on the bean's class; the {@code @Bean} method carries none. */
+    @MaestroDataSource
+    static class ClassQualifiedDataSource extends PGSimpleDataSource {
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class ClassQualifiedNonDefaultCandidateDataSource {
+
+        @Bean(defaultCandidate = false)
+        ClassQualifiedDataSource classQualifiedDataSource(Environment env) {
+            var ds = new ClassQualifiedDataSource();
+            ds.setUrl(env.getRequiredProperty(MAESTRO_URL_PROPERTY));
+            ds.setUser(postgres.getUsername());
+            ds.setPassword(postgres.getPassword());
+            return ds;
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class TwoQualifiedDataSources {
+
+        @Bean(defaultCandidate = false)
+        @MaestroDataSource
+        DataSource firstMaestroDataSource(Environment env) {
+            return dataSource(env.getRequiredProperty(MAESTRO_URL_PROPERTY));
+        }
+
+        @Bean(defaultCandidate = false)
+        @MaestroDataSource
+        DataSource secondMaestroDataSource(Environment env) {
             return dataSource(env.getRequiredProperty(MAESTRO_URL_PROPERTY));
         }
     }

@@ -9,7 +9,6 @@ import io.b2mash.maestro.store.postgres.lock.PostgresLockCleaner;
 import io.b2mash.maestro.store.postgres.lock.PostgresLockCleanerScheduler;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -30,7 +29,9 @@ import java.time.Duration;
  *   <li>{@code maestro.enabled} is {@code true} (default)</li>
  *   <li>{@code maestro.lock.type} is {@code "postgres"} (default); any other
  *       value fails startup in {@link MaestroAutoConfiguration}</li>
- *   <li>A {@link DataSource} bean exists</li>
+ *   <li>A {@link DataSource} bean exists, or a
+ *       {@link MaestroDataSource @MaestroDataSource} bean — even one declared
+ *       {@code @Bean(defaultCandidate = false)}</li>
  * </ul>
  *
  * <p>Creates the following beans:
@@ -59,7 +60,7 @@ import java.time.Duration;
  */
 @AutoConfiguration(after = MaestroAutoConfiguration.class)
 @ConditionalOnClass(name = "org.postgresql.Driver")
-@ConditionalOnBean(DataSource.class)
+@ConditionalOnMaestroDataSource
 // Audit F8: maestro.enabled=false is documented as the master kill-switch
 // (see MaestroAutoConfiguration). See PostgresLockAutoConfigurationMaestroDisabledTest.
 @ConditionalOnProperty(prefix = "maestro", name = "enabled", havingValue = "true", matchIfMissing = true)

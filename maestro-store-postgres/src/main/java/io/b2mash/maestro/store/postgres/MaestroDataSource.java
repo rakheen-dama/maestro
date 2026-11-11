@@ -15,12 +15,17 @@ import java.lang.annotation.Target;
  *
  * <p>Without it, Maestro uses the application's single (or {@code @Primary})
  * {@code DataSource}, sharing its connection pool: a busy engine can then hold
- * connections the host's request threads are waiting for. Annotating a second
- * {@code DataSource} bean gives the engine a pool of its own. Declare it with
- * {@code @Bean(defaultCandidate = false)} so it stays out of the host's way:
- * Spring Boot's own {@code DataSource} auto-configuration does not back off
- * because of it, and the host's unqualified injection points (JPA,
- * {@code JdbcTemplate}, its Flyway) never receive it.
+ * connections the host's request threads are waiting for. Annotating a
+ * {@code DataSource} bean gives the engine a pool of its own. The wake
+ * listener holds one connection from that pool for the application's
+ * lifetime, and every other Maestro component borrows from it.
+ *
+ * <p><b>The application also has its own {@code DataSource}</b> (Spring Boot's
+ * auto-configured one, or its own {@code @Primary}): declare Maestro's with
+ * {@code defaultCandidate = false}. That keeps it out of the host's way —
+ * Boot's {@code DataSource} auto-configuration does not back off because of
+ * it, and the host's unqualified injection points (JPA, {@code JdbcTemplate},
+ * its Flyway) never receive it:
  *
  * <pre>{@code
  * @Bean(defaultCandidate = false)
@@ -28,12 +33,25 @@ import java.lang.annotation.Target;
  * DataSource maestroDataSource() { ... }
  * }</pre>
  *
- * <p>Without {@code defaultCandidate = false}, the annotated bean is an
- * ordinary {@code DataSource} too: Boot's auto-configured one backs off and
- * every unqualified consumer gets Maestro's pool. Its {@code LISTEN} session
- * holds one connection from this pool for the application's lifetime.
+ * <p><b>Maestro's pool is the only one</b>: a plain bean is simplest. Boot's
+ * {@code DataSource} auto-configuration backs off, and any unqualified
+ * consumer gets this pool too:
  *
- * <p>Shaped like Spring Boot's {@code @FlywayDataSource}.
+ * <pre>{@code
+ * @Bean
+ * @MaestroDataSource
+ * DataSource maestroDataSource() { ... }
+ * }</pre>
+ *
+ * <p>A {@code defaultCandidate = false} bean as the only {@code DataSource}
+ * also works for Maestro, but Boot's {@code DataSource} auto-configuration
+ * does not see it: unless that auto-configuration is excluded, Boot still
+ * builds a host pool from {@code spring.datasource.*} and, with no URL, fails
+ * startup ("Failed to determine a suitable driver class").
+ *
+ * <p>Exactly one bean may carry this qualifier. The qualifier may sit on the
+ * {@code @Bean} method or on the bean's class. Shaped like Spring Boot's
+ * {@code @FlywayDataSource}.
  */
 @Target({ElementType.FIELD, ElementType.METHOD, ElementType.PARAMETER, ElementType.TYPE, ElementType.ANNOTATION_TYPE})
 @Retention(RetentionPolicy.RUNTIME)

@@ -9,7 +9,6 @@ import io.b2mash.maestro.store.postgres.schema.MaestroSchemaInitializer;
 import io.b2mash.maestro.store.postgres.schema.SchemaMode;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -27,7 +26,9 @@ import javax.sql.DataSource;
  * <ul>
  *   <li>The PostgreSQL JDBC driver is on the classpath</li>
  *   <li>A {@link DataSource} bean exists (e.g., via Spring Boot's
- *       DataSource auto-configuration from {@code spring-boot-starter-jdbc})</li>
+ *       DataSource auto-configuration from {@code spring-boot-starter-jdbc}),
+ *       or a {@link MaestroDataSource @MaestroDataSource} bean — even one
+ *       declared {@code @Bean(defaultCandidate = false)}</li>
  *   <li>{@code maestro.store.type} is {@code "postgres"} (default)</li>
  * </ul>
  *
@@ -77,7 +78,7 @@ import javax.sql.DataSource;
                 "org.springframework.boot.jdbc.autoconfigure.XADataSourceAutoConfiguration"
         })
 @ConditionalOnClass(name = "org.postgresql.Driver")
-@ConditionalOnBean(DataSource.class)
+@ConditionalOnMaestroDataSource
 // Audit F8: maestro.enabled=false is documented as the master kill-switch
 // (see MaestroAutoConfiguration), but this class previously had no direct
 // gate on it — it kept registering a real WorkflowStore whenever a
