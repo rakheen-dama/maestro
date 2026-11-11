@@ -167,6 +167,29 @@ class StoreFaultGuardTest {
     }
 
     @Test
+    @DisplayName("a run latched STORE_UNAVAILABLE cannot append, even once the store answers")
+    void latchedRunCannotAppend() {
+        ctx.cancellation().requestStoreUnavailable("getEventBySequence: earlier fault");
+
+        assertThrows(StoreUnavailableException.class, () -> inRun(() -> guarded.appendEvent(event(1))));
+
+        assertEquals(0, delegate.calls("appendEvent"), "the append must be refused before the store");
+        assertEquals(0, delegate.getEvents(instanceId).size());
+        assertEquals("getEventBySequence: earlier fault", ctx.cancellation().reason(),
+                "a refused append does not re-latch");
+    }
+
+    @Test
+    @DisplayName("a run latched STORE_UNAVAILABLE can still read")
+    void latchedRunCanStillRead() {
+        ctx.cancellation().requestStoreUnavailable("getEventBySequence: earlier fault");
+
+        inRun(() -> guarded.getEventBySequence(instanceId, 1));
+
+        assertEquals(1, delegate.calls("getEventBySequence"));
+    }
+
+    @Test
     @DisplayName("off a workflow thread the fault is rethrown with no latch and no NPE")
     void noBoundContextMeansNoLatchAndNoNpe() {
         delegate.failNext("getInstance", 1);

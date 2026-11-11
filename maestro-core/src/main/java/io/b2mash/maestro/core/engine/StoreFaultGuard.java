@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.context.RunCancellation;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.StoreUnavailableException;
 import io.b2mash.maestro.core.spi.WorkflowStore;
@@ -47,6 +48,24 @@ import java.util.function.Supplier;
  * the call runs inside {@link #advisory(Supplier)}: an advisory read — a park
  * loop's wake recheck, see {@link ParkProbe} — is skipped on failure, so it
  * must neither stop the run nor wait out retries.
+ *
+ * <h2>A latched run cannot append</h2>
+ * <p>Once the run bound to the calling thread is latched
+ * {@code STORE_UNAVAILABLE}, every append it makes — any method whose name
+ * starts with {@code appendEvent}: both {@code appendEvent} overloads and
+ * {@code appendEventAndConsumeSignal} — is refused with a
+ * {@link StoreUnavailableException} <em>without</em> reaching the store, even
+ * if the store answers again; the refusal is neither retried nor re-latched.
+ * Workflow code may have caught the original exception and carried on down a
+ * path the durable history never chose (a fallback, a {@code randomUUID()} for
+ * it); an event it appended there would sit in a sequence slot that recovery
+ * — re-running the primary — later fills differently, and the workflow would
+ * fail its replay check on every recovery. A <em>stale</em> run needs no such
+ * rule: the lease fence and the {@code (workflow_instance_id, sequence_number)}
+ * index already refuse its writes. A store-unavailable run owns its lease and
+ * its slots, so nothing else stops its appends once the store heals. Reads and
+ * non-append writes are not refused: the stop points raise the latch before
+ * any side effect or status change, and a read records nothing.
  *
  * <h2>Everything else passes through</h2>
  * <p>Any other throwable from the delegate is rethrown unwrapped from the
@@ -132,6 +151,9 @@ final class StoreFaultGuard {
                 return objectMethod(proxy, method, args);
             }
             var advisory = ADVISORY.isBound();
+            if (!advisory && method.getName().startsWith("appendEvent")) {
+                refuseIfLatched(method);
+            }
             var attempts = !advisory && RETRIED.contains(method.getName()) ? MAX_ATTEMPTS : 1;
             for (int attempt = 1; ; attempt++) {
                 try {
@@ -174,6 +196,18 @@ final class StoreFaultGuard {
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
                 return false;
+            }
+        }
+
+        /** Refuses an append of a run already latched {@code STORE_UNAVAILABLE} (class Javadoc). */
+        private static void refuseIfLatched(Method method) {
+            var bound = WorkflowContext.scopedValue();
+            if (bound.isBound()
+                    && bound.get().cancellation().cause() == RunCancellation.Cause.STORE_UNAVAILABLE) {
+                throw new StoreUnavailableException(
+                        "Workflow '%s' is standing down after a store fault — append refused: %s"
+                                .formatted(bound.get().workflowId(), method.getName()),
+                        new IllegalStateException(String.valueOf(bound.get().cancellation().reason())));
             }
         }
 

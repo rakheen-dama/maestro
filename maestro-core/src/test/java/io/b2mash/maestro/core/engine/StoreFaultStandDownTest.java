@@ -181,6 +181,41 @@ class StoreFaultStandDownTest {
     }
 
     @Test
+    @DisplayName("a workflow that catches the memo-lookup fault cannot record a side effect once the store heals")
+    void swallowedFaultCannotRecordASideEffect() throws Exception {
+        // Exactly the guard's three attempts fail at seq 1, then the store is healthy.
+        var lookupsAtSeq1 = new AtomicInteger();
+        faulty.failWhen("getEventBySequence", args ->
+                (Integer) args[1] == 1 && lookupsAtSeq1.incrementAndGet() <= 3);
+        var impl = new CountingSteps();
+        var workflow = new PrimaryThenSideEffectFallback(
+                proxy(StepActivities.class, impl, guarded, RetryPolicy.noRetry()));
+        var method = PrimaryThenSideEffectFallback.class.getMethod("run", String.class);
+
+        var instanceId = executor.startWorkflow("sf-side-effect", "PrimaryThenSideEffectFallback", "default",
+                "in", () -> workflow, method);
+        awaitRunEnded("sf-side-effect");
+
+        assertAll(
+                () -> assertEquals(3, lookupsAtSeq1.get(), "the fault must have exhausted the retries"),
+                () -> assertEquals(0, count(instanceId, EventType.SIDE_EFFECT),
+                        "a latched run must not record history down the path it swallowed into"),
+                () -> assertEquals(0, impl.step2.get(), "the fallback must not run"),
+                () -> assertEquals(List.of(AbandonReason.STORE_UNAVAILABLE), abandonReasons()),
+                () -> assertEquals(WorkflowStatus.RUNNING, status("sf-side-effect")));
+
+        faulty.heal();
+        assertEquals(1, executor.recoverWorkflows(Map.of("PrimaryThenSideEffectFallback",
+                new WorkflowRegistration("PrimaryThenSideEffectFallback", "default", () -> workflow, method))));
+        awaitRunEnded("sf-side-effect");
+
+        assertAll(
+                () -> assertEquals(WorkflowStatus.COMPLETED, status("sf-side-effect")),
+                () -> assertEquals(1, impl.step1.get(), "primary"),
+                () -> assertEquals(0, impl.step2.get(), "fallback"));
+    }
+
+    @Test
     @DisplayName("a store fault on the WAITING_SIGNAL status write abandons the run")
     void statusWriteFaultWhileParkingAbandons() throws Exception {
         // Raw store: updateInstance is never retried, so no wait is incurred.
@@ -398,6 +433,24 @@ class StoreFaultStandDownTest {
                 return steps.step1(in);
             } catch (Exception e) {
                 return steps.step2(in);
+            }
+        }
+    }
+
+    /** {@code step1} is the primary; the fallback records a side effect, then calls {@code step2}. */
+    public static class PrimaryThenSideEffectFallback {
+        private final StepActivities steps;
+
+        public PrimaryThenSideEffectFallback(StepActivities steps) {
+            this.steps = steps;
+        }
+
+        public String run(String in) {
+            try {
+                return steps.step1(in);
+            } catch (Exception e) {
+                var id = WorkflowContext.current().randomUUID();
+                return steps.step2(in + ":" + id);
             }
         }
     }
