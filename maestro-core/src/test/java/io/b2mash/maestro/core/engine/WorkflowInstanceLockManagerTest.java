@@ -23,6 +23,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -371,6 +372,54 @@ class WorkflowInstanceLockManagerTest {
         assertEquals(0, lock.renewCalls.get());
     }
 
+    // ── heldElsewhere ──────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("heldElsewhere asks heldKeys with the acquire key format and maps held keys back to workflow ids")
+    void heldElsewhereMapsHeldKeysBackToWorkflowIds() {
+        var lock = new RecordingLock();
+        lock.heldKeysAnswer = keys -> Set.of("acme:locks:workflow:wf-b");
+        manager = new WorkflowInstanceLockManager(lock, "svc", "acme:locks:", SHORT_TTL, SHORT_RENEW);
+
+        var held = manager.heldElsewhere(List.of("wf-a", "wf-b"));
+
+        assertEquals(Set.of("wf-b"), held);
+        assertEquals(List.of(Set.of("acme:locks:workflow:wf-a", "acme:locks:workflow:wf-b")),
+                lock.heldKeysAsked, "one heldKeys call, keyed exactly as tryAcquire keys the lock");
+        // The same derivation tryAcquire uses — not a re-derived format.
+        manager.tryAcquire("wf-a");
+        assertEquals("acme:locks:workflow:wf-a", lock.acquiredKeys.getFirst());
+    }
+
+    @Test
+    @DisplayName("heldElsewhere never reports a lock this node holds")
+    void heldElsewhereExcludesLocksThisNodeHolds() {
+        var lock = new RecordingLock();
+        lock.heldKeysAnswer = keys -> Set.copyOf(keys); // the backend sees every key as held
+        manager = new WorkflowInstanceLockManager(lock, "svc", SHORT_TTL, SHORT_RENEW);
+        assertEquals(Acquisition.ACQUIRED, manager.tryAcquire("own-1"));
+
+        var held = manager.heldElsewhere(List.of("own-1", "other-1"));
+
+        assertEquals(Set.of("other-1"), held, "own-1 is held HERE, not elsewhere");
+    }
+
+    @Test
+    @DisplayName("heldElsewhere is empty — 'unknown, try them all' — when the backend throws or is absent")
+    void heldElsewhereIsEmptyWhenTheBackendThrowsOrIsAbsent() {
+        var lock = new RecordingLock();
+        lock.heldKeysAnswer = keys -> {
+            throw new LockBackendException("Simulated backend failure", "batch", new RuntimeException());
+        };
+        manager = new WorkflowInstanceLockManager(lock, "svc", SHORT_TTL, SHORT_RENEW);
+        assertEquals(Set.of(), manager.heldElsewhere(List.of("wf-a")));
+        assertEquals(1, lock.heldKeysAsked.size(), "the backend was asked, and its failure contained");
+
+        var unlocked = new WorkflowInstanceLockManager(null, "svc", SHORT_TTL, SHORT_RENEW);
+        assertEquals(Set.of(), unlocked.heldElsewhere(List.of("wf-a")));
+        unlocked.close();
+    }
+
     // ── Recording DistributedLock ──────────────────────────────────────
 
     private static class RecordingLock implements DistributedLock {
@@ -383,6 +432,14 @@ class WorkflowInstanceLockManagerTest {
         final AtomicBoolean grantRenew = new AtomicBoolean(true);
         final AtomicBoolean throwOnAcquire = new AtomicBoolean(false);
         final AtomicBoolean throwOnRenew = new AtomicBoolean(false);
+        final CopyOnWriteArrayList<Set<String>> heldKeysAsked = new CopyOnWriteArrayList<>();
+        volatile Function<Collection<String>, Set<String>> heldKeysAnswer = _ -> Set.of();
+
+        @Override
+        public Set<String> heldKeys(Collection<String> keys) {
+            heldKeysAsked.add(Set.copyOf(keys));
+            return heldKeysAnswer.apply(keys);
+        }
 
         @Override
         public Optional<LockHandle> tryAcquire(String key, Duration ttl) {

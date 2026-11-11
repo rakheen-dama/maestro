@@ -8,7 +8,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
+import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -186,7 +188,7 @@ final class WorkflowInstanceLockManager {
             return Acquisition.HELD_ELSEWHERE;
         }
         try {
-            var handle = distributedLock.tryAcquire(keyPrefix + WORKFLOW_KEY_SEGMENT + workflowId, ttl);
+            var handle = distributedLock.tryAcquire(lockKey(workflowId), ttl);
             if (handle.isEmpty()) {
                 return Acquisition.HELD_ELSEWHERE;
             }
@@ -234,6 +236,59 @@ final class WorkflowInstanceLockManager {
             logger.warn("Failed to release instance lock for workflow '{}' — TTL will expire it: {}",
                     workflowId, e.getMessage());
         }
+    }
+
+    /**
+     * Which of {@code workflowIds} have an instance lock currently held by
+     * another node — one {@link DistributedLock#heldKeys} read for the whole
+     * collection, keyed exactly as {@link #tryAcquire} keys the lock.
+     *
+     * <p><b>Advisory.</b> The recovery pass uses it only to skip instances
+     * without spending a {@code tryAcquire} on each; an id not reported here
+     * still goes through {@code tryAcquire}, which remains the authority. Locks
+     * this node holds are never reported (they are held here, not elsewhere).
+     * With no backend, after {@link #close}, or when the backend throws, the
+     * answer is empty — "unknown, try them all" — never an exception.
+     * {@code Error}s propagate.
+     *
+     * @param workflowIds the workflow IDs to look up
+     * @return the subset whose lock another node holds; may be empty
+     */
+    Set<String> heldElsewhere(Collection<String> workflowIds) {
+        if (distributedLock == null || closed.get() || workflowIds.isEmpty()) {
+            return Set.of();
+        }
+        var idByKey = new HashMap<String, String>();
+        for (var workflowId : workflowIds) {
+            if (!heldLocks.containsKey(workflowId)) {
+                idByKey.put(lockKey(workflowId), workflowId);
+            }
+        }
+        if (idByKey.isEmpty()) {
+            return Set.of();
+        }
+        Set<String> heldKeys;
+        try {
+            heldKeys = distributedLock.heldKeys(idByKey.keySet());
+        } catch (RuntimeException e) {
+            logger.warn("Could not read which of {} instance lock(s) are held elsewhere — every one will "
+                    + "be tried: {}", idByKey.size(), e.getMessage());
+            return Set.of();
+        }
+        var held = new HashSet<String>();
+        for (var key : heldKeys) {
+            var workflowId = idByKey.get(key);
+            // Re-checked: this node may have acquired it while the read ran.
+            if (workflowId != null && !heldLocks.containsKey(workflowId)) {
+                held.add(workflowId);
+            }
+        }
+        return held;
+    }
+
+    /** The instance lock key for a workflow — the one derivation of the key format. */
+    private String lockKey(String workflowId) {
+        return keyPrefix + WORKFLOW_KEY_SEGMENT + workflowId;
     }
 
     /** Returns whether this manager currently holds the lock for a workflow. */

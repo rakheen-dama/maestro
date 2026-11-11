@@ -38,6 +38,7 @@ import io.b2mash.maestro.core.saga.CompensationStack;
 import io.b2mash.maestro.core.saga.SagaManager;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LifecycleEventType;
+import io.b2mash.maestro.core.spi.RecoveryCursor;
 import io.b2mash.maestro.core.spi.SignalNotifier;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
@@ -54,6 +55,7 @@ import java.time.Instant;
 import java.time.InstantSource;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -725,8 +727,14 @@ public final class WorkflowExecutor {
     /**
      * Recovers all workflows that were active when the service last stopped.
      *
-     * <p>Queries the store for recoverable instances (status IN RUNNING,
-     * WAITING_SIGNAL, WAITING_TIMER) and re-invokes each in replay mode.
+     * <p>Reads this service's recoverable instances (status IN RUNNING,
+     * WAITING_SIGNAL, WAITING_TIMER, COMPENSATING) page by page — at most
+     * {@value #RECOVERY_PAGE_SIZE} per store read, through
+     * {@link WorkflowStore#getRecoverableInstances(String, RecoveryCursor, int)}
+     * — and re-invokes each in replay mode. Instances of other services are
+     * never read. Per page, an instance already running here is dropped, then
+     * one {@link DistributedLock#heldKeys} read drops the instances whose lock
+     * another node holds, so only the rest cost a lock acquisition.
      *
      * <p>An instance whose registration's factory throws
      * ({@link WorkflowInstantiationException}) is skipped, leaving it active
@@ -745,10 +753,13 @@ public final class WorkflowExecutor {
         return recoveryPass(registrations).adopted();
     }
 
+    /** The most recoverable instances one recovery-pass store read returns. */
+    static final int RECOVERY_PAGE_SIZE = 200;
+
     /**
      * What one recovery pass did.
      *
-     * @param scanned       recoverable instances the store returned
+     * @param scanned       recoverable instances the store returned, over all pages
      * @param adopted       instances launched on this node
      * @param skippedByType instances skipped because their factory threw,
      *                      counted per workflow type (in first-skip order)
@@ -765,11 +776,67 @@ public final class WorkflowExecutor {
      * only the adopted count.
      */
     RecoveryPass recoveryPass(Map<String, WorkflowRegistration> registrations) {
-        var recoverable = store.getRecoverableInstances();
+        var scanned = 0;
         var count = 0;
         var skippedByType = new LinkedHashMap<String, Integer>();
 
-        for (var instance : recoverable) {
+        // Keyset paging: each page is read strictly after the last row of the
+        // previous one, and a short page is the last. A store fault ends the
+        // pass mid-way (the poller retries next cycle), exactly as one fault in
+        // the old single read did.
+        RecoveryCursor after = null;
+        while (!shuttingDown.get()) {
+            var page = store.getRecoverableInstances(serviceName, after, RECOVERY_PAGE_SIZE);
+            scanned += page.size();
+            if (page.isEmpty()) {
+                break;
+            }
+            after = RecoveryCursor.of(page.getLast());
+            count += recoverPage(page, registrations, skippedByType);
+            if (page.size() < RECOVERY_PAGE_SIZE) {
+                break;
+            }
+        }
+
+        var pass = new RecoveryPass(scanned, count, Collections.unmodifiableMap(skippedByType));
+        if (pass.skipped() > 0) {
+            logger.warn("Recovery pass skipped {} instance(s) of {} workflow type(s) whose factory threw: {}",
+                    pass.skipped(), skippedByType.size(), skippedByType);
+        }
+        if (count > 0) {
+            logger.info("Recovered {} workflow(s) from {} recoverable instance(s)", count, scanned);
+        } else {
+            logger.debug("Recovered 0 workflow(s) from {} recoverable instance(s)", scanned);
+        }
+        emit("recoveryPass", null, () -> observer.recoveryPass(pass.scanned(), pass.adopted()));
+        return pass;
+    }
+
+    /**
+     * Adopts what it can of one recovery page: drops the instances already
+     * running here, then — with one advisory {@code heldKeys} read — those
+     * whose instance lock another node holds, and resumes the rest. An
+     * instance not reported held still goes through {@link #resumeWorkflow}
+     * and its {@code tryAcquire}, which stays the authority on ownership.
+     *
+     * @return the number of instances launched
+     */
+    private int recoverPage(List<WorkflowInstance> page,
+                            Map<String, WorkflowRegistration> registrations,
+                            Map<String, Integer> skippedByType) {
+        var candidates = page.stream()
+                .filter(i -> !runningWorkflows.containsKey(i.workflowId()))
+                .toList();
+        var heldElsewhere = instanceLockManager.heldElsewhere(
+                candidates.stream().map(WorkflowInstance::workflowId).toList());
+        var count = 0;
+
+        for (var instance : candidates) {
+            if (heldElsewhere.contains(instance.workflowId())) {
+                logger.debug("Workflow '{}' is locked by another node — skipping recovery this pass",
+                        instance.workflowId());
+                continue;
+            }
             var reg = registrations.get(instance.workflowType());
             if (reg == null) {
                 logger.warn("No registration for workflow type '{}', skipping recovery of '{}'",
@@ -803,21 +870,7 @@ public final class WorkflowExecutor {
                 }
             }
         }
-
-        var pass = new RecoveryPass(recoverable.size(), count, Collections.unmodifiableMap(skippedByType));
-        if (pass.skipped() > 0) {
-            logger.warn("Recovery pass skipped {} instance(s) of {} workflow type(s) whose factory threw: {}",
-                    pass.skipped(), skippedByType.size(), skippedByType);
-        }
-        if (count > 0) {
-            logger.info("Recovered {} workflow(s) from {} recoverable instance(s)",
-                    count, recoverable.size());
-        } else {
-            logger.debug("Recovered 0 workflow(s) from {} recoverable instance(s)",
-                    recoverable.size());
-        }
-        emit("recoveryPass", null, () -> observer.recoveryPass(pass.scanned(), pass.adopted()));
-        return pass;
+        return count;
     }
 
     // ── Signal delivery ────────────────────────────────────────────────

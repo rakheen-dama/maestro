@@ -7,8 +7,13 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.exception.LockBackendException;
+import io.b2mash.maestro.core.spi.DistributedLock;
+import io.b2mash.maestro.core.spi.LockHandle;
 import io.b2mash.maestro.core.spi.PurgeResult;
+import io.b2mash.maestro.core.spi.RecoveryCursor;
 import io.b2mash.maestro.core.spi.WorkflowStore;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -19,14 +24,20 @@ import tools.jackson.databind.json.JsonMapper;
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertAll;
@@ -60,23 +71,44 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code PostgresUnknownStatusMappingTest}. What this test owns is the
  * consequence: that "skip" is a survivable answer for the recovery loop and
  * "throw" is not.
+ *
+ * <p>The pass's bounds are pinned here too: it reads this service's instances
+ * page by page through the paged scan (never the unbounded one), and it spends
+ * no {@code tryAcquire} on an instance whose lock {@code heldKeys} reports
+ * held elsewhere.
  */
 @DisplayName("One unreadable instance must not end the recovery pass for every workflow behind it")
 class RecoveryPassIsolationTest {
 
+    private static final Instant T0 = Instant.parse("2026-01-01T00:00:00Z");
+
     private PoisonableStore store;
     private WorkflowExecutor executor;
+    private int seeded;
 
     @BeforeEach
     void setUp() {
         store = new PoisonableStore();
-        var serializer = new PayloadSerializer(JsonMapper.builder().build());
-        executor = new WorkflowExecutor(store, null, null, null, serializer, "old-node");
+        executor = executor(null, "old-node");
     }
 
     @AfterEach
     void tearDown() {
         executor.shutdown();
+    }
+
+    /** Replaces the default executor with one on {@code lock} for {@code serviceName}. */
+    private WorkflowExecutor useExecutor(@Nullable DistributedLock lock, String serviceName) {
+        executor.shutdown();
+        executor = executor(lock, serviceName);
+        return executor;
+    }
+
+    private WorkflowExecutor executor(@Nullable DistributedLock lock, String serviceName) {
+        // The raw store: the executor wraps it in StoreFaultGuard's proxy itself,
+        // so every count below is what reached the store THROUGH that proxy.
+        var serializer = new PayloadSerializer(JsonMapper.builder().build());
+        return new WorkflowExecutor(store, lock, null, null, serializer, serviceName);
     }
 
     @Test
@@ -133,7 +165,137 @@ class RecoveryPassIsolationTest {
                         + "changed or the node restarted");
     }
 
+    // ── bounded scan ──────────────────────────────────────────────────────
+
+    @Test
+    @Timeout(30)
+    @DisplayName("the pass reads through the paged scan, never the unbounded one — through the guard proxy")
+    void passNeverCallsTheUnboundedScan() {
+        seedRecoverable("wf-1");
+        seedRecoverable("wf-2");
+
+        var pass = executor.recoveryPass(registrations(new AtomicInteger()));
+
+        assertAll(
+                () -> assertEquals(0, store.unboundedScans.get(),
+                        "the no-arg scan reads every active row of every service"),
+                // The executor's store is StoreFaultGuard's reflective proxy over
+                // this raw store. A paged call recorded HERE proves the proxy
+                // dispatched the SPI default method to the store's override; had
+                // it run the default on the proxy, that default would have called
+                // the no-arg scan instead.
+                () -> assertEquals(List.of(2), store.pageSizes,
+                        "one short page ends the pass"),
+                () -> assertEquals(2, pass.adopted()));
+    }
+
+    @Test
+    @Timeout(60)
+    @DisplayName("450 recoverable instances are read as pages of 200, 200 and 50 — and all adopted")
+    void passReadsEveryPage() {
+        IntStream.range(0, 450).forEach(i -> seedRecoverable("wf-%03d".formatted(i)));
+
+        var pass = executor.recoveryPass(registrations(new AtomicInteger()));
+
+        assertAll(
+                () -> assertEquals(List.of(200, 200, 50), store.pageSizes,
+                        "a page shorter than the page size ends the pass: 3 calls, not 4"),
+                () -> assertEquals(450, pass.scanned(), "scanned counts rows read"),
+                () -> assertEquals(450, pass.adopted()));
+    }
+
+    @Test
+    @Timeout(30)
+    @DisplayName("instances whose lock heldKeys reports held elsewhere cost no tryAcquire")
+    void instancesHeldElsewhereCostNoAcquire() {
+        var lock = new RecordingLock();
+        var ids = IntStream.range(0, 150).mapToObj("wf-%03d"::formatted).toList();
+        lock.heldElsewhere = Set.copyOf(ids.subList(0, 100));
+        useExecutor(lock, "old-node");
+        ids.forEach(this::seedRecoverable);
+
+        var pass = executor.recoveryPass(registrations(new AtomicInteger()));
+
+        assertAll(
+                () -> assertEquals(50, lock.acquiredKeys.size(),
+                        "only the 50 instances not reported held may cost a tryAcquire"),
+                () -> assertTrue(lock.acquiredKeys.stream().noneMatch(k -> lock.heldElsewhere.contains(idOf(k))),
+                        "no reported-held instance was attempted: " + lock.acquiredKeys),
+                () -> assertEquals(1, lock.heldKeysCalls.get(), "one heldKeys read per page"),
+                () -> assertEquals(50, pass.adopted()),
+                () -> assertEquals(150, pass.scanned()));
+    }
+
+    @Test
+    @Timeout(30)
+    @DisplayName("a throwing heldKeys skips nothing: every instance still goes through tryAcquire")
+    void throwingHeldKeysStillAttemptsEveryInstance() {
+        var lock = new RecordingLock();
+        lock.throwOnHeldKeys = true;
+        useExecutor(lock, "old-node");
+        IntStream.range(0, 5).forEach(i -> seedRecoverable("wf-" + i));
+
+        var pass = executor.recoveryPass(registrations(new AtomicInteger()));
+
+        assertEquals(5, lock.acquiredKeys.size(), "heldKeys is advisory — tryAcquire stays the authority");
+        assertEquals(5, pass.adopted());
+    }
+
+    @Test
+    @Timeout(30)
+    @DisplayName("another service's active instances are neither read nor adopted")
+    void otherServicesInstancesAreNotAdopted() {
+        var lock = new RecordingLock();
+        useExecutor(lock, "svc-a");
+        var mine = List.of("a-1", "a-2", "a-3");
+        mine.forEach(id -> seed(id, "svc-a"));
+        seed("b-1", "svc-b");
+        seed("b-2", "svc-b");
+
+        var pass = executor.recoveryPass(registrations(new AtomicInteger()));
+
+        assertAll(
+                () -> assertEquals(Set.copyOf(mine),
+                        lock.acquiredKeys.stream().map(RecoveryPassIsolationTest::idOf).collect(Collectors.toSet()),
+                        "only svc-a's instances may be attempted"),
+                () -> assertEquals(3, pass.adopted()),
+                () -> assertEquals(3, pass.scanned(), "svc-b's rows are not even read"));
+    }
+
+    /**
+     * D1, pinned positively: the service filter is unconditional. Nodes of one
+     * service share its name; an instance of another service sharing the
+     * tables is never this node's to adopt — not on the first pass, not on
+     * any later one — while this service's own instance is.
+     */
+    @Test
+    @Timeout(30)
+    @DisplayName("D1: a svc-b instance is never adopted by a svc-a executor, pass after pass; the svc-a one is")
+    void anotherServicesInstanceIsNeverAdoptedPassAfterPass() {
+        var lock = new RecordingLock();
+        useExecutor(lock, "svc-a");
+        seed("a-1", "svc-a");
+        seed("b-1", "svc-b");
+
+        var adopted = new ArrayList<Integer>();
+        for (int pass = 0; pass < 3; pass++) {
+            adopted.add(executor.recoveryPass(registrations(new AtomicInteger())).adopted());
+        }
+
+        assertAll(
+                () -> assertEquals(List.of(1, 0, 0), adopted, "a-1 on the first pass, nothing after"),
+                () -> assertEquals(List.of("a-1"), lock.acquiredKeys.stream().map(RecoveryPassIsolationTest::idOf).toList(),
+                        "b-1 never costs even a lock attempt"),
+                () -> assertEquals(WorkflowStatus.RUNNING, store.getInstance("b-1").orElseThrow().status(),
+                        "b-1 is left exactly as svc-b's own nodes will find it"));
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────
+
+    /** The workflow id at the end of an instance lock key. */
+    private static String idOf(String lockKey) {
+        return lockKey.substring(lockKey.lastIndexOf(':') + 1);
+    }
 
     private Map<String, WorkflowRegistration> registrations(AtomicInteger runs) {
         return Map.of("RecoverableWorkflow", new WorkflowRegistration(
@@ -141,7 +303,12 @@ class RecoveryPassIsolationTest {
     }
 
     private void seedRecoverable(String workflowId) {
-        var now = Instant.now();
+        seed(workflowId, "old-node");
+    }
+
+    /** Seeds a RUNNING instance; each one starts after the previous, so seed order is scan order. */
+    private void seed(String workflowId, String serviceName) {
+        var startedAt = T0.plusSeconds(seeded++);
         store.createInstance(WorkflowInstance.builder()
                 .id(UUID.randomUUID())
                 .workflowId(workflowId)
@@ -149,10 +316,10 @@ class RecoveryPassIsolationTest {
                 .workflowType("RecoverableWorkflow")
                 .taskQueue("default")
                 .status(WorkflowStatus.RUNNING)
-                .serviceName("old-node")
+                .serviceName(serviceName)
                 .eventSequence(0)
-                .startedAt(now)
-                .updatedAt(now)
+                .startedAt(startedAt)
+                .updatedAt(startedAt)
                 .version(0)
                 .build());
     }
@@ -197,6 +364,10 @@ class RecoveryPassIsolationTest {
         private volatile java.util.function.Supplier<Optional<WorkflowInstance>> poisonAnswer =
                 Optional::empty;
         private volatile Predicate<String> poisoned = id -> false;
+        /** Calls of the unbounded no-arg scan. */
+        final AtomicInteger unboundedScans = new AtomicInteger();
+        /** The size of every page the paged scan returned, in call order. */
+        final List<Integer> pageSizes = new CopyOnWriteArrayList<>();
 
         void invisibleTo(java.util.function.Supplier<Optional<WorkflowInstance>> answer,
                          Predicate<String> which) {
@@ -220,6 +391,7 @@ class RecoveryPassIsolationTest {
 
         @Override
         public List<WorkflowInstance> getRecoverableInstances() {
+            unboundedScans.incrementAndGet();
             // Poisoned instances first — ordered by the poison predicate, not by
             // name — so the poisoned one is adopted FIRST and the healthy one
             // behind it is what the abort costs.
@@ -227,6 +399,22 @@ class RecoveryPassIsolationTest {
                     .sorted(Comparator.comparing((WorkflowInstance i) -> poisoned.test(i.workflowId()) ? 0 : 1)
                             .thenComparing(WorkflowInstance::workflowId))
                     .toList();
+        }
+
+        @Override
+        public List<WorkflowInstance> getRecoverableInstances(
+                String serviceName, @Nullable RecoveryCursor after, int limit) {
+            // Scan order is seed order (seed() spaces startedAt), so a test that
+            // seeds the poisoned instance first still has it adopted first.
+            var page = byWorkflowId.values().stream()
+                    .filter(i -> i.status().isActive())
+                    .filter(i -> i.serviceName().equals(serviceName))
+                    .filter(i -> after == null || after.precedes(i))
+                    .sorted(RecoveryCursor.ORDER)
+                    .limit(limit)
+                    .toList();
+            pageSizes.add(page.size());
+            return page;
         }
 
         @Override
@@ -315,6 +503,52 @@ class RecoveryPassIsolationTest {
 
         @Override
         public boolean markTimerCancelled(UUID timerId) {
+            return false;
+        }
+    }
+
+    /**
+     * Records every {@code tryAcquire} key and grants it; {@code heldKeys}
+     * reports the keys of {@link #heldElsewhere} workflow ids as held, or
+     * throws while {@link #throwOnHeldKeys} is set.
+     *
+     * <h2>Thread Safety</h2>
+     * <p>Safe for the executor's threads and the test thread.
+     */
+    private static final class RecordingLock implements DistributedLock {
+
+        final List<String> acquiredKeys = new CopyOnWriteArrayList<>();
+        final AtomicInteger heldKeysCalls = new AtomicInteger();
+        volatile Set<String> heldElsewhere = Set.of();
+        volatile boolean throwOnHeldKeys;
+
+        @Override
+        public Optional<LockHandle> tryAcquire(String key, Duration ttl) {
+            acquiredKeys.add(key);
+            return Optional.of(new LockHandle(key, UUID.randomUUID().toString(), Instant.now().plus(ttl)));
+        }
+
+        @Override
+        public void release(LockHandle handle) {
+            // nothing to free
+        }
+
+        @Override
+        public boolean renew(LockHandle handle, Duration ttl) {
+            return true;
+        }
+
+        @Override
+        public Set<String> heldKeys(Collection<String> keys) {
+            heldKeysCalls.incrementAndGet();
+            if (throwOnHeldKeys) {
+                throw new LockBackendException("Simulated backend failure", "batch", new RuntimeException());
+            }
+            return keys.stream().filter(k -> heldElsewhere.contains(idOf(k))).collect(Collectors.toSet());
+        }
+
+        @Override
+        public boolean trySetLeader(String electionKey, String candidateId, Duration ttl) {
             return false;
         }
     }
