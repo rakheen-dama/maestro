@@ -83,7 +83,8 @@ maestro/
 public interface WorkflowStore {
     WorkflowInstance createInstance(WorkflowInstance instance);
     Optional<WorkflowInstance> getInstance(String workflowId);
-    List<WorkflowInstance> getRecoverableInstances();
+    List<WorkflowInstance> getRecoverableInstances();     // unbounded, all services; the engine no longer calls it
+    default List<WorkflowInstance> getRecoverableInstances(String serviceName, @Nullable RecoveryCursor after, int limit); // keyset page on (started_at, id), this service only (V10 index)
     void updateInstance(WorkflowInstance instance);       // optimistic locking
     boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent); // atomic terminal write (CAS + event in one transaction)
 
@@ -115,6 +116,8 @@ public interface DistributedLock {
     Optional<LockHandle> tryAcquire(String key, Duration ttl);
     void release(LockHandle handle);
     void renew(LockHandle handle, Duration ttl);
+    default Set<LockHandle> renewAll(Collection<LockHandle> handles, Duration ttl); // returns lost; throw = nothing lost (Postgres: 1 UPDATE per 500)
+    default Set<String> heldKeys(Collection<String> keys);  // advisory; empty = unknown, try them all
     boolean trySetLeader(String electionKey, String candidateId, Duration ttl);
 }
 ```
@@ -162,12 +165,13 @@ io.b2mash.maestro.samples.payment            — Sample payment gateway (e-comme
 
 ## Database Tables
 
-Prefix `maestro_` (fixed; `maestro.store.table-prefix` was removed). Migrations live in maestro-store-postgres under `db/maestro/store` (band 1–99, V1–V9) and `db/maestro/lock` (band 100–199, V100). Band 200–299 (the removed Postgres messaging transport) is retired and must never be reused (orphan-table upgrade note: `docs/configuration.md` § Schema management). They run through `MaestroSchemaInitializer` into Maestro's own history table `maestro_schema_history` (`maestro.store.schema.mode` = flyway | validate | none); the host's `flyway_schema_history` is untouched:
+Prefix `maestro_` (fixed; `maestro.store.table-prefix` was removed). Migrations live in maestro-store-postgres under `db/maestro/store` (band 1–99, V1–V10) and `db/maestro/lock` (band 100–199, V100). Band 200–299 (the removed Postgres messaging transport) is retired and must never be reused (orphan-table upgrade note: `docs/configuration.md` § Schema management). They run through `MaestroSchemaInitializer` into Maestro's own history table `maestro_schema_history` (`maestro.store.schema.mode` = flyway | validate | none); the host's `flyway_schema_history` is untouched:
 
 - `maestro_workflow_instance`
 - `maestro_workflow_event` (unique on `workflow_instance_id, sequence_number`)
 - `maestro_workflow_timer`
 - `maestro_workflow_signal` (`workflow_instance_id` nullable for pre-delivery; unique on `workflow_id, signal_name, message_id` where `message_id` is not null, V9)
+- V10 adds `idx_wf_instance_recovery` (partial, active statuses) for the paged recovery scan — index-only, optional for correctness
 - `maestro_distributed_lock`, `maestro_leader_election` (lock band; no task, lifecycle or signal queue tables)
 
 ## State Machine
@@ -205,7 +209,9 @@ maestro:leader:timer-poller:{service}         — Timer leader in maestro_leader
 maestro:leader:retention:{service}            — Retention sweeper leader in maestro_leader_election (15s TTL, re-elected per batch)
 ```
 
-Cross-node signal wake is Postgres `LISTEN/NOTIFY` on ONE channel per service, `maestro_signal_wake_<service ≤32 chars>_<8-hex sha256>` (always ≤63 bytes); the payload carries workflowId + signalName and `PostgresWakeListener` dispatches in memory to the parked waiter. `NOTIFY` runs on a virtual thread after the signal row commits and never blocks `deliverSignal`. The listener holds one `DataSource` connection for the app lifetime; `maestro.signal.wake-recheck-interval` (30s) is the correctness fallback. A lock cleaner deletes rows expired for more than a minute every `maestro.lock.cleanup-interval` (10m).
+Cross-node signal wake is Postgres `LISTEN/NOTIFY` on ONE channel per service, `maestro_signal_wake_<service ≤32 chars>_<8-hex sha256>` (always ≤63 bytes); the payload carries workflowId + signalName and `PostgresWakeListener` dispatches in memory to the parked waiter. `NOTIFY` runs on a virtual thread after the signal row commits and never blocks `deliverSignal`. The listener holds one `DataSource` connection for the app lifetime; `maestro.signal.wake-recheck-interval` (30s) is the correctness fallback. Maestro's Postgres beans use the `DataSource` qualified `@MaestroDataSource` (`io.b2mash.maestro.store.postgres`) if one exists, else the host's single/`@Primary` one; declare it `@Bean(defaultCandidate = false)` when the host keeps its own `DataSource` (`docs/configuration.md` § A dedicated connection pool).
+
+Recovery reads only this node's service (`service_name = maestro.service-name`, pages of 200) and skips instances locked elsewhere via one `heldKeys` read per page: every node of a service must share one service name, or its workflows are stranded. Instance-lock renewal is one `renewAll` per pass (every TTL/3). A lock cleaner deletes rows expired for more than a minute every `maestro.lock.cleanup-interval` (10m).
 
 There are no `maestro.tasks.*` topics: `maestro.messaging.topics.tasks` fails startup. `taskQueue` on `@DurableWorkflow` is a per-node concurrency bucket (`maestro.worker.task-queues[]`), not a route.
 
@@ -240,7 +246,10 @@ replay whose arguments fingerprint differently stands down as
 `nondeterministic_history` instead of returning the recorded result; `NULL` on
 either side is unverified, never a mismatch; `false` skips the comparison but
 still writes the hash), `maestro.worker.task-queues[].concurrency` /
-`activity-concurrency` (bound per node), `maestro.store.schema.mode`
+`activity-concurrency` (bound per node), `maestro.worker.default-concurrency` /
+`default-activity-concurrency` (default 20/20 for every unlisted queue, per
+queue per node; `0` on both = unbounded, `0` on one or negative fails
+startup), `maestro.store.schema.mode`
 (flyway | validate | none), `maestro.signal.wake-notify.enabled` (default `true`;
 set `false` behind PgBouncer transaction pooling — wake then falls back to the
 recheck interval), `maestro.lock.cleanup-interval` (default 10m). `maestro.lock.type`

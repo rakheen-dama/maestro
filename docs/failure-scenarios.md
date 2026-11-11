@@ -196,8 +196,38 @@ replace the Postgres it started with.
   verify the JDBC lock's `UPDATE` timing out does the former.
 - **Pin:** `MultiNodeLockContentionIT` variant with `maximumPoolSize=3` and 50
   concurrent resumes: no `LEASE_FENCED` caused by pool timeouts alone, and the
-  task-queue limits (`maestro.worker.task-queues[].concurrency`) are shown to
-  be the right knob.
+  task-queue limits (`maestro.worker.task-queues[].concurrency`, or
+  `maestro.worker.default-concurrency` for unlisted queues) are shown to be the
+  right knob.
+- **Architecture note (2026-11-11, bounded host load).** Since this scenario
+  was written, the engine's side of it is bounded by default; the scenario
+  still needs running, but against these mechanics:
+  - *The 200 resumes no longer run at once.* Recovery adopts all 200 but each
+    task queue not listed in `maestro.worker.task-queues` runs at most 20
+    workflow runs and 20 live activities per node
+    (`maestro.worker.default-concurrency` / `default-activity-concurrency`);
+    the rest queue on their own threads, holding their instance locks
+    (`docs/open-issues.md` Issue 30). Both defaults `0` restores the
+    unbounded behaviour this scenario describes.
+  - *The renewer is one statement per 500 held locks every 10 s*, not one per
+    workflow, on one connection.
+  - *The recovery scan reads this service's active instances only, in pages of
+    200*, with one advisory lock read per page instead of one acquisition per
+    instance held elsewhere.
+  - *The renewer-timeout question is answered:* the Postgres `renewAll` wraps
+    any `SQLException` — a pool `connectionTimeout` included — as
+    `LockBackendException`, and the renewer then keeps every handle for the
+    next pass (transient, not lost). Pinned by
+    `PostgresDistributedLockTest.renewAllWrapsBackendFailure` and
+    `WorkflowInstanceLockManagerTest.backendFailureLosesNothing`.
+  - *The engine can have its own pool.* A `DataSource` qualified
+    `@MaestroDataSource` takes all of Maestro's traffic — the wake listener's
+    pinned connection included — off the web layer's pool
+    (`docs/configuration.md` § A dedicated connection pool; size it ≥
+    `default-activity-concurrency` + 5). Starvation is then confined to one
+    side: the scenario should be run both shared and split.
+  - Per-node statement counts are in `docs/operations.md` §13 (arithmetic, not
+    measurement).
 
 ---
 

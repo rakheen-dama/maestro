@@ -273,7 +273,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [9](#issue-9) | Activity lock prefix ignores `maestro.lock.key-prefix` | Library defect | Low | **Resolved** |
 | [10](#issue-10) | Four modules have no tests at all | Testing gap | Medium | **Resolved** |
 | [11](#issue-11) | Lost locks don't stop the workflow (no fencing) | Library gap | Medium | **Fixed** — lease epoch fences every run-scoped write (V6) |
-| [12](#issue-12) | Recovery polling doesn't scale | Library gap — **known limitation** | Low now | Open, by design |
+| [12](#issue-12) | Recovery polling doesn't scale | Library gap — **known limitation** | Low now | Open, by design — partly addressed 2026-11-11 (batched renewal, paged service-scoped scan) |
 | [13](#issue-13) | `CANCELLED` timers can strand a replaying workflow | Library defect | Medium | **Resolved** |
 | [14](#issue-14) | `SagaManager` re-appends `COMPENSATION_STARTED` on replay | Library gap | Low | **Resolved** |
 | [15](#issue-15) | Admin dashboard retry/terminate signals are unconsumed | Library gap | Medium | **Resolved** |
@@ -290,8 +290,8 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [26](#issue-26) | Terminal instance write and terminal event append are two non-transactional writes | Library gap — durability contract | Medium | **Resolved** |
 | [27](#issue-27) | A redelivery status-write failure can let a disabled-redelivery row be reclaimed and reprocessed | Library gap — durability contract | Medium | **Resolved** |
 | [28](#issue-28) | ×1000 sequence partitioning bounds sequential/nested `parallel()` and compensation depth | Structural limitation | Medium | **Open by design** |
-| [29](#issue-29) | Shutdown never interrupts threads blocked waiting for a task-queue slot | Library gap — shutdown latency | Low | Open |
-| [30](#issue-30) | Recovery admission is not gated by task-queue capacity | Library gap — load distribution | Medium | Open |
+| [29](#issue-29) | Shutdown never interrupts threads blocked waiting for a task-queue slot | Library gap — shutdown latency | Low | Open — on the default path since 2026-11-11 |
+| [30](#issue-30) | Recovery admission is not gated by task-queue capacity | Library gap — load distribution | Medium | Open — on the default path since 2026-11-11; recommended next |
 | [31](#issue-31) | Services sharing one set of `maestro_*` tables fire each other's timers | Library gap — multi-service wake latency | Low | Open |
 | [32](#issue-32) | A Valkey outage stalls every signal send after the signal is durable, so caller retries persist duplicate signals | Library defect | Medium | **Resolved** |
 | [33](#issue-33) | Admin retry attributes the failure to the highest-sequenced `SIGNAL_TIMEOUT`, which can be a caught gate | Library defect — wrong failure attribution on retry | Medium | Open |
@@ -1057,6 +1057,37 @@ anyone re-reading the raw console, `evidence/task7/soak-console.log`):
 
 ### Issue 12 — Recovery polling doesn't scale {#issue-12}
 
+> **Partly addressed (2026-11-11, plan 02 "bounded host load").** Two of the
+> three costs below are now bounded; the text that follows is kept as it was
+> filed, and the benchmark further down predates the change and has not been
+> re-run.
+>
+> - **Renewal is per batch.** The renewer makes one
+>   `DistributedLock.renewAll` call per pass; `PostgresDistributedLock`
+>   renews in one `UPDATE ... FROM unnest(keys, tokens)` per 500 handles on
+>   one connection. A node holding H instance locks issues ⌈H / 500⌉
+>   statements every `maestro.lock.ttl` / 3 (10 s) — 4 for 2,000 parked
+>   workflows, where it used to issue 2,000. A pass longer than the interval
+>   logs a `WARN`; a backend failure keeps every handle.
+> - **The recovery scan is service-scoped and paged.**
+>   `WorkflowStore.getRecoverableInstances(serviceName, after, limit)` reads
+>   this service's active instances in keyset pages of 200 on
+>   `(started_at, id)`, served by migration V10's partial index. Per page the
+>   pass skips instances running locally, then makes one advisory
+>   `DistributedLock.heldKeys` read and skips instances locked by another
+>   node, so only orphans cost a `tryAcquire`. Per node and poll that is
+>   ⌊A / 200⌋ + 1 page reads plus at most ⌈A / 200⌉ lock reads, for A active
+>   instances of the service (`docs/operations.md` §13, arithmetic, not
+>   measurement). Another service's rows are never read (decision D1: every
+>   node of a service must share one `maestro.service-name`).
+> - **Still open:** every node still reads every active row of its service on
+>   every poll (A rows per node per 60 s, payload columns included — paging
+>   bounds the statement, not the pass), and there is no staleness filter.
+>   Wake-subscription churn went away earlier with `LISTEN/NOTIFY`; the
+>   parked-workflow wake re-check (2–3 reads per parked workflow per
+>   `maestro.signal.wake-recheck-interval`) is unchanged and is now the
+>   dominant per-node term at large parked counts.
+
 **What's wrong.** `getRecoverableInstances()` has no service or staleness
 filter, so every node re-reads the entire active workflow set on every poll and
 probes the lock for each instance owned by someone else. Related: lock renewal
@@ -1107,8 +1138,8 @@ lockProbeCalls,lockRenewCalls,lockHeldKeysCalls,leaderElectionCalls,listenCalls,
 notifyCalls,chaosActive`. `lockHeldKeysCalls` counts the recovery pass's one
 advisory `heldKeys` read per page (`SELECT lock_key ... WHERE lock_key = ANY(...)`);
 an instance it reports held elsewhere costs no acquire probe, so from that
-change on, a fall in `lockProbeCalls` comes with a matching `lockHeldKeysCalls`
-count. Runs recorded before it are not comparable column-for-column.
+change on, a fall in `lockProbeCalls` comes with an accompanying
+`lockHeldKeysCalls` count (one read per page, not one per instance skipped). Runs recorded before it are not comparable column-for-column.
 `pg_stat_statements` cannot attribute calls per node (it aggregates per
 queryid across all nodes sharing a DB user), so **per-node rates are only
 valid in calm windows** (`chaosActive=false`, all 6 nodes healthy) —
@@ -1179,6 +1210,9 @@ Read of the numbers:
   rose 5.7 → 8.1 (the 3-node phase inherits the 6-node phase's in-flight
   workflows on fewer nodes). Renewal round-trips are per held lock, not per
   node — the serial-renewal concern above is a backlog-scaling cost.
+  (Measured on the serial renewer; renewal has since been batched to
+  ⌈held locks / 500⌉ statements per pass — see the status note at the top of
+  this issue.)
 - The absolute numbers are modest: at this workload (6/min, ≤~10 parked)
   nothing here is a bottleneck. The issue is about the trend, and the trend
   is now measured, not hypothesised.
@@ -2756,6 +2790,17 @@ recoverable stand-down.
 within the drain even when no slot ever frees, pinned on the in-memory
 executor.
 
+**Now on the default path (2026-11-11).** When this was filed, only a queue
+listed in `maestro.worker.task-queues` had a semaphore to wait on, so the gap
+needed an opt-in. Every unlisted queue is now bounded too —
+`maestro.worker.default-concurrency` / `default-activity-concurrency`, 20/20
+per queue per node — so any deployment that has more runs or activities in
+flight on a queue than the bound can meet it at shutdown. The post-acquire
+checks already cover default-bounded queues, so the outcome is unchanged:
+nothing is written or lost, the run stands down recoverable once it gets a
+slot, or the drain times out around it. Setting both defaults to `0` restores
+the old (unbounded, so never-waiting) behaviour.
+
 ---
 
 ### Issue 30 — Recovery admission is not gated by task-queue capacity {#issue-30}
@@ -2783,6 +2828,21 @@ slot before taking the instance lock.
 **Done when.** With two nodes sharing a store and `concurrency: 1`, a
 recovery backlog of N runs is executed by both nodes rather than queued on the
 first one to poll.
+
+**Now on the default path, and the recommended next piece of work
+(2026-11-11).** Every task queue not listed in `maestro.worker.task-queues` is
+now bounded at 20 workflow runs per node by default
+(`maestro.worker.default-concurrency`), so this happens without any opt-in:
+after a deploy, the first node to finish startup recovery adopts every
+recoverable instance of its service it can lock, runs 20 per queue, and holds
+the instance locks of the rest while they queue — renewing them, so the other
+nodes' recovery passes skip them as held elsewhere (now through one
+`heldKeys` read per page). Recovery itself never blocks on a slot
+(`WorkflowExecutorConcurrencyTest.recoveryOfMoreRunsThanTheDefaultBoundReturnsWithoutWaitingForSlots`),
+so startup is not delayed; only the spread is lost. Gating adoption on free
+slots (and moving startup recovery off the `ApplicationRunner` thread) is the
+fix; it was named out of scope for the bounded-host-load cycle and is the next
+piece of work recommended for this area.
 
 
 ---
@@ -3150,6 +3210,13 @@ appended to their sections (see "Known limitations" below).
 path, the same shape as Issue 3, and the only one observed failing a workflow
 (chaos soak 40674015602) — was fixed in that cycle after all (plan 04 Task 8,
 R56). Issues 29–31 are latency/load gaps with no correctness impact.
+
+**After the 2026-11-11 bounded-host-load cycle:** task queues are bounded by
+default (20/20 per queue per node), which puts Issues 29 and 30 on the default
+path rather than behind an opt-in. **Issue 30 is the recommended next piece of
+work**: without capacity-gated adoption, a post-deploy backlog sits on the
+first node to recover it. Issue 12 is partly addressed by the same cycle
+(batched renewal, paged service-scoped recovery scan).
 
 ---
 
