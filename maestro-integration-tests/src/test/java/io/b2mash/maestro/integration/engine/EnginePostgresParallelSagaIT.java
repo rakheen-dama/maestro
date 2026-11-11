@@ -48,6 +48,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("Saga compensation after a failed parallel() fork, against a real Postgres store")
 class EnginePostgresParallelSagaIT extends PostgresIntegrationSupport {
 
+    /**
+     * The one service every node in this suite belongs to. Nodes of a service
+     * share its name — recovery adopts only its own service's instances (D1),
+     * and timer/retention leadership, the signal-wake channel and the Kafka
+     * subscription are all keyed by it. Node identity is the harness itself
+     * (its own lock client, lock tokens and timer-leader candidate id).
+     */
+    private static final String SERVICE = "parallel-saga";
+
     private final CountDownLatch reachedRefund = new CountDownLatch(1);
     private final CountDownLatch wedge = new CountDownLatch(1);
 
@@ -265,8 +274,7 @@ class EnginePostgresParallelSagaIT extends PostgresIntegrationSupport {
     @DisplayName("reserve ∥ charge, charge fails: releaseReservation runs once and lands past the branch space")
     void failedBranch_compensatesInItsOwnBlock() {
         var recorder = new CountingActivities.Recorder();
-        harness = nodeFor(ParallelSagaWorkflow.class, "parallel-saga",
-                new CountingActivities.RecordingSagaActivities(recorder, "charge"), true, null);
+        harness = nodeFor(ParallelSagaWorkflow.class, new CountingActivities.RecordingSagaActivities(recorder, "charge"), true, null);
         var handle = harness.start(MaestroEngineHarness.uniqueWorkflowId("parallel-saga"),
                 ParallelSagaWorkflow.class, "widget");
 
@@ -293,8 +301,7 @@ class EnginePostgresParallelSagaIT extends PostgresIntegrationSupport {
     @DisplayName("a node that dies mid-parallel-compensation is finished by a recovering node — no stand-down, no stuck COMPENSATING")
     void crashMidParallelCompensation_recoversToFailed() throws Exception {
         var recorderA = new CountingActivities.Recorder();
-        harness = nodeFor(ParallelCompensationSagaWorkflow.class, "node-a",
-                new WedgingRefund(new CountingActivities.RecordingSagaActivities(recorderA, "ship")), false, null);
+        harness = nodeFor(ParallelCompensationSagaWorkflow.class, new WedgingRefund(new CountingActivities.RecordingSagaActivities(recorderA, "ship")), false, null);
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("parallel-comp-crash");
         var handle = harness.start(workflowId, ParallelCompensationSagaWorkflow.class, "widget");
 
@@ -307,8 +314,7 @@ class EnginePostgresParallelSagaIT extends PostgresIntegrationSupport {
 
         var recorderB = new CountingActivities.Recorder();
         var observerB = new RecordingObserver();
-        recoveringNode = nodeFor(ParallelCompensationSagaWorkflow.class, "node-b",
-                new CountingActivities.RecordingSagaActivities(recorderB, "ship"), true, observerB);
+        recoveringNode = nodeFor(ParallelCompensationSagaWorkflow.class, new CountingActivities.RecordingSagaActivities(recorderB, "ship"), true, observerB);
         assertEquals(1, recoveringNode.recover());
 
         var instance = awaitTerminal(workflowId, Duration.ofSeconds(15));
@@ -450,10 +456,10 @@ class EnginePostgresParallelSagaIT extends PostgresIntegrationSupport {
 
     // ── helpers ───────────────────────────────────────────────────────────
 
-    private MaestroEngineHarness nodeFor(Class<?> workflowClass, String serviceName, SagaActivities activities,
+    private MaestroEngineHarness nodeFor(Class<?> workflowClass, SagaActivities activities,
                                          boolean withLock, @Nullable RecordingObserver observer) {
         var builder = MaestroEngineHarness.builder(store, objectMapper)
-                .serviceName(serviceName)
+                .serviceName(SERVICE)
                 .lock(withLock ? newLock() : null)
                 .instanceLockTtl(Duration.ofSeconds(2));
         if (observer != null) {

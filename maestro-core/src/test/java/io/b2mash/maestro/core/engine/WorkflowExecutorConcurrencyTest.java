@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.retry.RetryExecutor;
@@ -17,17 +18,22 @@ import tools.jackson.databind.json.JsonMapper;
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalInt;
+import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * F8 / Issue 25: {@code maestro.worker.task-queues[].concurrency} and
@@ -228,7 +234,120 @@ class WorkflowExecutorConcurrencyTest {
                 "the slot it took is given back");
     }
 
+    // ── default bound for unconfigured queues (maestro.worker.default-*) ──
+
+    @Test
+    void anUnconfiguredQueueIsBoundedByTheDefaultLimits() throws Exception {
+        newExecutor(Map.of(), new TaskQueueLimits(2, 10));
+        var activities = proxy();
+        for (var i = 0; i < 3; i++) {
+            start("wf-" + i, "other", new WorkWorkflow(activities));
+        }
+
+        await().atMost(5, SECONDS).until(() -> started.get() >= 2);
+        assertEquals(OptionalInt.of(0), executor.taskQueueGovernor().availableWorkflowSlots("other"));
+        await().during(DURING).atMost(5, SECONDS).until(() -> started.get() == 2); // the third waits for a slot
+
+        latch.countDown();
+        for (var i = 0; i < 3; i++) {
+            awaitStatus("wf-" + i, WorkflowStatus.COMPLETED);
+        }
+        assertEquals(3, started.get());
+        assertEquals(OptionalInt.of(2), executor.taskQueueGovernor().availableWorkflowSlots("other"));
+    }
+
+    /**
+     * A {@code parallel()} with more branches than the queue has activity
+     * slots must not deadlock on itself: the branches queue for the slots and
+     * run at most {@code activityConcurrency} at a time, while the run holds
+     * its one workflow slot throughout. The first two branches admitted hold
+     * their slots until the test releases them, so "two at once" is observed,
+     * not inferred from a sleep.
+     */
+    @Test
+    void parallelBranchesBeyondTheDefaultActivityBoundQueueAndComplete() throws Exception {
+        newExecutor(Map.of(), new TaskQueueLimits(1, 2));
+        var tracking = new TrackingActivitiesImpl(2);
+        var activities = new ActivityProxyFactory().createProxy(
+                TrackingActivities.class, tracking, store, null, null,
+                RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor(),
+                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, EngineObserver.NOOP,
+                executor.taskQueueGovernor());
+
+        start("wf-fan-out", "fan-out", new ParallelActivitiesWorkflow(activities, 5));
+
+        assertTrue(tracking.held.await(5, SECONDS), "two branches were admitted and are executing together");
+        await().during(DURING).atMost(5, SECONDS).untilAsserted(() ->
+                assertEquals(2, tracking.calls.get(), "the other three branches wait for an activity slot"));
+        assertEquals(OptionalInt.of(0), executor.taskQueueGovernor().availableActivitySlots("fan-out"));
+
+        tracking.release.countDown();
+        awaitStatus("wf-fan-out", WorkflowStatus.COMPLETED);
+        assertEquals(5, tracking.calls.get());
+        assertTrue(tracking.maxConcurrent.get() <= 2,
+                "at most the default activity bound executes at once, saw " + tracking.maxConcurrent.get());
+        assertEquals(OptionalInt.of(2), executor.taskQueueGovernor().availableActivitySlots("fan-out"));
+        assertEquals(OptionalInt.of(1), executor.taskQueueGovernor().availableWorkflowSlots("fan-out"));
+    }
+
+    /**
+     * Recovery launches every adopted run on its own virtual thread and the
+     * run takes its slot there, so a recovery backlog larger than the default
+     * bound never blocks the recovering thread (at startup: the
+     * {@code ApplicationRunner}) — the runs beyond the bound queue on their
+     * own threads instead (Issue 30 is that they still hold their instance
+     * lock while they queue).
+     */
+    @Test
+    void recoveryOfMoreRunsThanTheDefaultBoundReturnsWithoutWaitingForSlots() throws Exception {
+        newExecutor(Map.of(), new TaskQueueLimits(1, 1));
+        var activities = proxy();
+        for (var i = 0; i < 5; i++) {
+            seedRecoverable("wf-" + i, "orders");
+        }
+        var registrations = Map.of("WorkWorkflow", new WorkflowRegistration(
+                "WorkWorkflow", "orders", () -> new WorkWorkflow(activities),
+                WorkWorkflow.class.getMethod("run")));
+
+        var recovered = CompletableFuture.supplyAsync(() -> executor.recoverWorkflows(registrations),
+                Executors.newVirtualThreadPerTaskExecutor());
+
+        assertEquals(5, recovered.get(5, SECONDS), "every run was adopted without waiting for a slot");
+        await().atMost(5, SECONDS).until(() -> started.get() >= 1);
+        assertEquals(OptionalInt.of(0), executor.taskQueueGovernor().availableWorkflowSlots("orders"));
+        await().during(DURING).atMost(5, SECONDS).until(() -> started.get() == 1); // the other four queue
+
+        latch.countDown();
+        for (var i = 0; i < 5; i++) {
+            awaitStatus("wf-" + i, WorkflowStatus.COMPLETED);
+        }
+        assertEquals(5, started.get());
+    }
+
     // ── helpers ────────────────────────────────────────────────────────
+
+    private void newExecutor(Map<String, TaskQueueLimits> limits, TaskQueueLimits defaults) {
+        executor = new WorkflowExecutor(store, null, null, null, serializer, "node-a",
+                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
+                false, Duration.ofSeconds(5), Duration.ofMillis(200), EngineObserver.NOOP, limits, defaults);
+    }
+
+    private void seedRecoverable(String workflowId, String taskQueue) {
+        var now = Instant.now();
+        store.createInstance(WorkflowInstance.builder()
+                .id(UUID.randomUUID())
+                .workflowId(workflowId)
+                .runId(UUID.randomUUID())
+                .workflowType("WorkWorkflow")
+                .taskQueue(taskQueue)
+                .status(WorkflowStatus.RUNNING)
+                .serviceName("node-a")
+                .eventSequence(0)
+                .startedAt(now)
+                .updatedAt(now)
+                .version(0)
+                .build());
+    }
 
     private void newExecutor(Map<String, TaskQueueLimits> limits) {
         executor = new WorkflowExecutor(store, null, null, null, serializer, "node-a",
@@ -276,6 +395,75 @@ class WorkflowExecutorConcurrencyTest {
                 throw new IllegalStateException(e);
             }
             return "done";
+        }
+    }
+
+    /** Records how many executions overlap. */
+    @Activity(name = "tracking")
+    public interface TrackingActivities {
+        /** @param branch the calling branch's index @return the index */
+        int track(int branch);
+    }
+
+    /**
+     * Records how many executions overlap. The first {@code held} entries
+     * count down {@link #held} and then block on {@link #release}; every later
+     * entry returns at once.
+     */
+    private static final class TrackingActivitiesImpl implements TrackingActivities {
+        final AtomicInteger calls = new AtomicInteger();
+        final AtomicInteger concurrent = new AtomicInteger();
+        final AtomicInteger maxConcurrent = new AtomicInteger();
+        final CountDownLatch held;
+        final CountDownLatch release = new CountDownLatch(1);
+        private final int holding;
+
+        TrackingActivitiesImpl(int holding) {
+            this.holding = holding;
+            this.held = new CountDownLatch(holding);
+        }
+
+        @Override
+        public int track(int branch) {
+            var entry = calls.incrementAndGet();
+            maxConcurrent.accumulateAndGet(concurrent.incrementAndGet(), Math::max);
+            try {
+                if (entry <= holding) {
+                    held.countDown();
+                    if (!release.await(5, SECONDS)) {
+                        throw new IllegalStateException("the test never released branch " + branch);
+                    }
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(e);
+            } finally {
+                concurrent.decrementAndGet();
+            }
+            return branch;
+        }
+    }
+
+    /** A {@code parallel()} of {@code branches} branches, each one activity call. */
+    @DurableWorkflow(name = "ParallelActivitiesWorkflow")
+    public static final class ParallelActivitiesWorkflow {
+        private final TrackingActivities activities;
+        private final int branches;
+
+        ParallelActivitiesWorkflow(TrackingActivities activities, int branches) {
+            this.activities = activities;
+            this.branches = branches;
+        }
+
+        /** @return the branch results, joined */
+        @WorkflowMethod
+        public String run() {
+            var calls = new ArrayList<Callable<Integer>>();
+            for (var i = 0; i < branches; i++) {
+                var branch = i;
+                calls.add(() -> activities.track(branch));
+            }
+            return WorkflowContext.current().parallel(calls).toString();
         }
     }
 

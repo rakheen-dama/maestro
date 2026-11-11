@@ -64,6 +64,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("A node that lost its instance lock is fenced: its writes are rejected and the adopter's results stand")
 class MultiNodeFencingIT extends PostgresIntegrationSupport {
 
+    /**
+     * The one service every node in this suite belongs to. Nodes of a service
+     * share its name — recovery adopts only its own service's instances (D1),
+     * and timer/retention leadership, the signal-wake channel and the Kafka
+     * subscription are all keyed by it. Node identity is the harness itself
+     * (its own lock client, lock tokens and timer-leader candidate id).
+     */
+    private static final String SERVICE = "multinode-fencing";
+
     /** Short enough that expiry is fast, long enough to survive a slow CI renewal. */
     private static final Duration SHORT_TTL = Duration.ofSeconds(2);
     private static final Duration BOUND = Duration.ofSeconds(30);
@@ -96,8 +105,8 @@ class MultiNodeFencingIT extends PostgresIntegrationSupport {
     @DisplayName("the stale node's in-flight result is fenced (LEASE_FENCED, nothing written) and the adopter completes the workflow alone")
     void staleNodeIsFenced_adopterCompletes() throws Exception {
         var nodeALock = new DyingLock(new PostgresDistributedLock(newDataSource()));
-        nodeA = node("node-a", new WedgingChainActivities(recorderA, "A", reachedStepTwoA, wedgeA), nodeALock, observerA);
-        nodeB = node("node-b", new WedgingChainActivities(recorderB, "B", reachedStepTwoB, wedgeB),
+        nodeA = node(new WedgingChainActivities(recorderA, "A", reachedStepTwoA, wedgeA), nodeALock, observerA);
+        nodeB = node(new WedgingChainActivities(recorderB, "B", reachedStepTwoB, wedgeB),
                 new PostgresDistributedLock(newDataSource()), observerB);
 
         // 1. Node A runs step one durably and wedges inside step two; then its lock client dies.
@@ -159,10 +168,10 @@ class MultiNodeFencingIT extends PostgresIntegrationSupport {
 
     // ── fixtures ──────────────────────────────────────────────────────────
 
-    private MaestroEngineHarness node(String serviceName, CountingActivities.ChainActivities activities,
+    private MaestroEngineHarness node(CountingActivities.ChainActivities activities,
                                       DistributedLock lock, RecordingObserver observer) {
         var harness = MaestroEngineHarness.builder(store, objectMapper)
-                .serviceName(serviceName)
+                .serviceName(SERVICE)
                 .lock(lock)
                 .instanceLockTtl(SHORT_TTL)
                 .observer(observer)

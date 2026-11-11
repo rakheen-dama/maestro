@@ -55,6 +55,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("A recovered workflow's replayed activity does not double-count maestro.activity.duration")
 class ObserverReplayNoDoubleCountIT extends PostgresIntegrationSupport {
 
+    /**
+     * The one service every node in this suite belongs to. Nodes of a service
+     * share its name — recovery adopts only its own service's instances (D1),
+     * and timer/retention leadership, the signal-wake channel and the Kafka
+     * subscription are all keyed by it. Node identity is the harness itself
+     * (its own lock client, lock tokens and timer-leader candidate id).
+     */
+    private static final String SERVICE = "observer-replay";
+
     private static final Duration BOUND = Duration.ofSeconds(30);
     private static final Duration LOCK_TTL = Duration.ofSeconds(60);
 
@@ -69,7 +78,7 @@ class ObserverReplayNoDoubleCountIT extends PostgresIntegrationSupport {
 
         var parked = new CountDownLatch(1);
         MaestroEngineHarness nodeA = MaestroEngineHarness.builder(store, objectMapper)
-                .serviceName("node-a")
+                .serviceName(SERVICE)
                 .lock(newLock())
                 .instanceLockTtl(LOCK_TTL)
                 .observer(observer)
@@ -95,7 +104,7 @@ class ObserverReplayNoDoubleCountIT extends PostgresIntegrationSupport {
 
         // ── Recovery on a second node over the same store ──
         MaestroEngineHarness nodeB = MaestroEngineHarness.builder(store, objectMapper)
-                .serviceName("node-b")
+                .serviceName(SERVICE)
                 .lock(newLock())
                 .instanceLockTtl(LOCK_TTL)
                 .observer(observer)

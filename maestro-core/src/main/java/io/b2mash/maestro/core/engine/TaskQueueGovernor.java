@@ -23,10 +23,17 @@ import java.util.concurrent.locks.ReentrantLock;
  * workflow runs ({@link TaskQueueLimits#workflowConcurrency()}), one for live
  * activity executions ({@link TaskQueueLimits#activityConcurrency()}). A task
  * queue is the bucket a workflow names in {@code @DurableWorkflow(taskQueue = ...)};
- * every activity a run calls is counted against its run's queue. Queues that
- * were not configured are <b>unbounded</b>: every method is a no-op for them,
- * and {@link #UNBOUNDED} — the governor with no configured queues — never
- * blocks anything.
+ * every activity a run calls is counted against its run's queue.
+ *
+ * <p>A queue that was not configured is bounded by the governor's
+ * <em>default</em> limits when it has them
+ * ({@link #TaskQueueGovernor(Map, TaskQueueLimits)}): the first call naming the
+ * queue creates its own two pools, sized from the defaults, and from then on it
+ * behaves exactly like a configured queue — every unconfigured queue gets
+ * separate pools, never one shared pool. Without default limits an
+ * unconfigured queue is <b>unbounded</b>: every method is a no-op for it, and
+ * {@link #UNBOUNDED} — the governor with no configured queues and no defaults
+ * — never blocks anything.
  *
  * <h2>Workflow slots</h2>
  * <ul>
@@ -79,10 +86,10 @@ import java.util.concurrent.locks.ReentrantLock;
  */
 public final class TaskQueueGovernor {
 
-    /** A governor with no configured queues: nothing is ever bounded. */
+    /** A governor with no configured queues and no default limits: nothing is ever bounded. */
     public static final TaskQueueGovernor UNBOUNDED = new TaskQueueGovernor(Map.of());
 
-    /** One configured queue's two slot pools. */
+    /** One bounded queue's two slot pools. */
     private record Bucket(String name, Semaphore workflowSlots, Semaphore activitySlots) {}
 
     /** One run's claim on its queue's workflow pool. */
@@ -105,24 +112,47 @@ public final class TaskQueueGovernor {
         }
     }
 
+    /** The configured queues' pools; immutable. */
     private final Map<String, Bucket> buckets;
 
-    /** Runs on a configured queue that have started on this node, keyed by {@code workflowId}. */
+    /** The limits every unconfigured queue's pools are sized from; {@code null} leaves those queues unbounded. */
+    private final @Nullable TaskQueueLimits defaults;
+
+    /** Pools of the unconfigured queues seen so far, created on first use from {@link #defaults}. */
+    private final ConcurrentHashMap<String, Bucket> defaultBuckets = new ConcurrentHashMap<>();
+
+    /** Runs on a bounded queue that have started on this node, keyed by {@code workflowId}. */
     private final ConcurrentHashMap<String, RunSlot> runs = new ConcurrentHashMap<>();
 
     /**
-     * Creates a governor for the given per-queue limits.
+     * Creates a governor for the given per-queue limits, with no default:
+     * queues not present in {@code limits} are unbounded. Same as
+     * {@code new TaskQueueGovernor(limits, null)}.
      *
-     * @param limits limits keyed by task-queue name; queues not present are
-     *               unbounded. Copied — later changes to the map have no effect.
+     * @param limits limits keyed by task-queue name. Copied — later changes to
+     *               the map have no effect.
      */
     public TaskQueueGovernor(Map<String, TaskQueueLimits> limits) {
+        this(limits, null);
+    }
+
+    /**
+     * Creates a governor for the given per-queue limits and a default for
+     * every other queue.
+     *
+     * @param limits   limits keyed by task-queue name. Copied — later changes to
+     *                 the map have no effect.
+     * @param defaults the limits of each queue not present in {@code limits}:
+     *                 such a queue gets its own pools of this size, created the
+     *                 first time a call names it. {@code null} leaves those
+     *                 queues unbounded.
+     */
+    public TaskQueueGovernor(Map<String, TaskQueueLimits> limits, @Nullable TaskQueueLimits defaults) {
         Objects.requireNonNull(limits, "limits must not be null");
         var configured = new HashMap<String, Bucket>();
-        limits.forEach((queue, limit) -> configured.put(queue, new Bucket(queue,
-                new Semaphore(limit.workflowConcurrency(), true),
-                new Semaphore(limit.activityConcurrency(), true))));
+        limits.forEach((queue, limit) -> configured.put(queue, newBucket(queue, limit)));
         this.buckets = Map.copyOf(configured);
+        this.defaults = defaults;
     }
 
     /**
@@ -139,7 +169,7 @@ public final class TaskQueueGovernor {
      *         interrupt status is restored)
      */
     public void acquireWorkflowSlot(String taskQueue, String workflowId) {
-        var bucket = buckets.get(taskQueue);
+        var bucket = bucket(taskQueue);
         if (bucket == null) {
             return;
         }
@@ -218,7 +248,7 @@ public final class TaskQueueGovernor {
      *         (the thread's interrupt status is restored)
      */
     public boolean acquireActivitySlot(String taskQueue) {
-        var bucket = buckets.get(taskQueue);
+        var bucket = bucket(taskQueue);
         if (bucket == null) {
             return false;
         }
@@ -243,7 +273,7 @@ public final class TaskQueueGovernor {
      * @param taskQueue the calling run's task queue
      */
     public void releaseActivitySlot(String taskQueue) {
-        var bucket = buckets.get(taskQueue);
+        var bucket = bucket(taskQueue);
         if (bucket != null) {
             bucket.activitySlots().release();
         }
@@ -256,7 +286,7 @@ public final class TaskQueueGovernor {
      * @return the free slot count, or empty if the queue is unbounded
      */
     public OptionalInt availableWorkflowSlots(String taskQueue) {
-        var bucket = buckets.get(taskQueue);
+        var bucket = bucket(taskQueue);
         return bucket == null ? OptionalInt.empty() : OptionalInt.of(bucket.workflowSlots().availablePermits());
     }
 
@@ -267,11 +297,31 @@ public final class TaskQueueGovernor {
      * @return the free slot count, or empty if the queue is unbounded
      */
     public OptionalInt availableActivitySlots(String taskQueue) {
-        var bucket = buckets.get(taskQueue);
+        var bucket = bucket(taskQueue);
         return bucket == null ? OptionalInt.empty() : OptionalInt.of(bucket.activitySlots().availablePermits());
     }
 
     // ── internals ──────────────────────────────────────────────────────
+
+    /**
+     * The pools of {@code taskQueue}: its configured ones, else — when there
+     * are default limits — its own default-sized ones, created atomically on
+     * first use; else {@code null} (unbounded).
+     */
+    private @Nullable Bucket bucket(String taskQueue) {
+        var configured = buckets.get(taskQueue);
+        if (configured != null || defaults == null) {
+            return configured;
+        }
+        var limits = defaults;
+        return defaultBuckets.computeIfAbsent(taskQueue, queue -> newBucket(queue, limits));
+    }
+
+    private static Bucket newBucket(String queue, TaskQueueLimits limit) {
+        return new Bucket(queue,
+                new Semaphore(limit.workflowConcurrency(), true),
+                new Semaphore(limit.activityConcurrency(), true));
+    }
 
     /**
      * Takes a permit for {@code run} unless it already holds one or has ended.

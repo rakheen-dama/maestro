@@ -45,6 +45,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("startToCloseTimeout bounds each activity attempt against a real Postgres store")
 class EnginePostgresActivityTimeoutIT extends PostgresIntegrationSupport {
 
+    /**
+     * The one service every node in this suite belongs to. Nodes of a service
+     * share its name — recovery adopts only its own service's instances (D1),
+     * and timer/retention leadership, the signal-wake channel and the Kafka
+     * subscription are all keyed by it. Node identity is the harness itself
+     * (its own lock client, lock tokens and timer-leader candidate id).
+     */
+    private static final String SERVICE = "activity-timeout";
+
     private @Nullable MaestroEngineHarness harness;
     private CountingActivities.Recorder recorder;
 
@@ -106,14 +115,14 @@ class EnginePostgresActivityTimeoutIT extends PostgresIntegrationSupport {
 
         var parkedA = new CountDownLatch(1);
         WorkflowHandle handle;
-        try (var nodeA = branchingNode("timeout-branch-a", live, parkedA)) {
+        try (var nodeA = branchingNode(live, parkedA)) {
             handle = nodeA.start(workflowId, TestWorkflows.TimeoutBranchWorkflow.class, "x");
             assertTrue(parkedA.await(30, TimeUnit.SECONDS));
             handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, Duration.ofSeconds(30));
         }
 
         var parkedB = new CountDownLatch(1);
-        try (var nodeB = branchingNode("timeout-branch-b", replay, parkedB)) {
+        try (var nodeB = branchingNode(replay, parkedB)) {
             assertEquals(1, nodeB.recover());
             assertTrue(parkedB.await(30, TimeUnit.SECONDS));
             handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, Duration.ofSeconds(30));
@@ -133,9 +142,9 @@ class EnginePostgresActivityTimeoutIT extends PostgresIntegrationSupport {
     }
 
     /** @return a node running {@link TestWorkflows.TimeoutBranchWorkflow} over the slow-first-attempt fixture */
-    private MaestroEngineHarness branchingNode(String serviceName, List<String> observations, CountDownLatch parked) {
+    private MaestroEngineHarness branchingNode(List<String> observations, CountDownLatch parked) {
         var node = MaestroEngineHarness.builder(store, objectMapper)
-                .serviceName(serviceName)
+                .serviceName(SERVICE)
                 .lock(newLock())
                 .instanceLockTtl(Duration.ofSeconds(10))
                 .build();

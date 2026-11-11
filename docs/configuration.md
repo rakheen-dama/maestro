@@ -23,7 +23,7 @@ sensible defaults and can be left unset for local development.
 | Property                    | Type       | Default | Description                                                                                                  |
 |-----------------------------|------------|---------|--------------------------------------------------------------------------------------------------------------|
 | `maestro.enabled`           | `boolean`  | `true`  | Master switch for Maestro auto-configuration. Set to `false` to disable the engine entirely.                 |
-| `maestro.service-name`      | `String`   | --      | **Required.** Logical name of the owning service. Used for Kafka consumer groups, lock key prefixes, and lifecycle event attribution. Auto-configuration will fail if not set. |
+| `maestro.service-name`      | `String`   | --      | **Required.** Logical name of the owning service. Used for Kafka consumer groups, lock key prefixes, and lifecycle event attribution. Auto-configuration will fail if not set. **Every node of a service must use the same name**: recovery adopts only active instances whose `service_name` equals it (see [Recovery Configuration](#recovery-configuration)), so a replica with a name of its own — or a rename while workflows are active — leaves those workflows unadopted until the name is restored. |
 | `maestro.workflow-packages` | `String[]` | --      | Comma-separated base packages to scan for `@DurableWorkflow` classes. Optional in a `@SpringBootApplication` context, where the application's own auto-configuration package is scanned automatically; set this explicitly in tests or other non-Boot-application contexts. Consumed by `DurableWorkflowBeanRegistrar`. |
 
 **`maestro.enabled=false` disables every Maestro auto-configuration in the
@@ -46,21 +46,25 @@ Properties under `maestro.store.*` control the workflow persistence layer.
 | `maestro.store.type`       | `String` | `"postgres"`| Store implementation type. Currently only `postgres` is supported.                                       |
 | `maestro.store.schema.mode`| `String` | `"flyway"`  | `flyway` applies pending Maestro migrations; `validate` fails startup if any are pending; `none` skips — you own the DDL. Case-insensitive. See [Schema management](#schema-management). |
 
-**Isolating services that share a database.** Maestro's tables are always named `maestro_*`. Two services must never share a `maestro_workflow_instance` table, so give each service its own Postgres schema and point its datasource at it — `jdbc:postgresql://host/db?currentSchema=order_service` or `spring.datasource.hikari.schema: order_service`. Maestro's migrations (see [Schema management](#schema-management)) run in the connection's current schema, so no further configuration is needed. `maestro.store.table-prefix` was removed; setting it fails startup.
+**Isolating services that share a database.** Maestro's tables are always named `maestro_*`. Two services must never share a `maestro_workflow_instance` table, so give each service its own Postgres schema and point its datasource at it — `jdbc:postgresql://host/db?currentSchema=order_service` or `spring.datasource.hikari.schema: order_service`. Maestro's migrations (see [Schema management](#schema-management)) run in the connection's current schema, so no further configuration is needed. `maestro.store.table-prefix` was removed; setting it fails startup. To give the engine a connection pool of its own rather than the application's, see [A dedicated connection pool](#a-dedicated-connection-pool).
 
 ### Schema management
 
 `maestro-store-postgres` creates and upgrades Maestro's `maestro_*` tables at startup with an embedded Flyway run that Maestro owns: it records what it applied in its **own history table, `maestro_schema_history`**, and never reads or writes your application's `flyway_schema_history`. Your `spring.flyway.*` settings (location, table, baseline, `enabled`) apply only to your own Flyway and are unaffected — a `V1__init.sql` of yours in `classpath:db/migration` does not collide with Maestro's `V1`. Your application does not need `spring-boot-starter-flyway` for Maestro; Flyway is already a runtime dependency of `maestro-store-postgres`. You do need `spring-boot-starter-jdbc` (for the `DataSource`).
 
-`maestro-store-postgres` ships its SQL under two classpath locations, each in its own version band, and advertises them in a `META-INF/maestro/schema-locations` resource; the initializer applies every location it finds on the classpath:
+`maestro-store-postgres` ships its SQL under two classpath locations and advertises them in a `META-INF/maestro/schema-locations` resource; the initializer applies every location it finds on the classpath:
 
-| Concern                      | Location                         | Versions  |
+| Concern                      | Location                         | Versions shipped |
 |------------------------------|----------------------------------|-----------|
-| Workflow store               | `classpath:db/maestro/store`     | 1–99      |
-| Distributed lock + leader election | `classpath:db/maestro/lock` | 100–199   |
+| Workflow store               | `classpath:db/maestro/store`     | V1–V9, V101 |
+| Distributed lock + leader election | `classpath:db/maestro/lock` | V100      |
 | *(retired)* Postgres messaging transport | *(no longer shipped)*  | 200–299 — never reused |
 
+**Numbering rule.** Every new Maestro migration, store or lock, takes the next version above the highest shipped, within 101–199. Versions 1–9 and 100 are history: nothing is ever added below V100 again. Band 200–299 stays retired and must never be reused. The directory says which component a migration belongs to; the version number no longer does. The reason is older builds. Every build since the lock band joined `maestro-store-postgres` resolves V100. To such a build, an applied migration it does not ship is a "future" migration if it sorts above V100, and Flyway's default `ignoreMigrationPatterns=*:future` ignores it, so the older node starts normally. Below V100 the same migration is "missing", and the older node fails startup in `flyway` and `validate` mode with `Detected applied migration not resolved locally: <n>`. Numbered this way, a migration never stops a node on an earlier build from restarting, or a rollback from starting. `MaestroSchemaInitializerTest` pins the rule and runs main @ a27a275's exact Flyway configuration against a database this build migrated.
+
 Band 200–299 belonged to the Postgres messaging transport (`V200`–`V202`), removed in favour of Kafka as the only transport. A database that applied it keeps its rows in `maestro_schema_history` and an orphan `maestro_signal_queue` table (and, if it never reached `V202`, `maestro_task_queue` and `maestro_lifecycle_event_queue`). Flyway's default `ignoreMigrationPatterns=*:future` treats those history rows as future versions, so `flyway` and `validate` modes keep passing; `DROP TABLE IF EXISTS maestro_signal_queue, maestro_task_queue, maestro_lifecycle_event_queue;` is optional cleanup once no node on an earlier build remains.
+
+**Out-of-order application, for V6–V9.** V6–V9 shipped before the numbering rule, below V100. A database first migrated before they shipped recorded V100 before them, so they sort below its highest applied version. The store and lock migrations never depend on each other, so the initializer runs Flyway with `outOfOrder` enabled: such a migration is applied although it sorts below V100, and `validate` reports it as pending ([Issue 35](open-issues.md#issue-35)). The same history has a limit that this build cannot remove, because it lies in the older build's own Flyway check. A node on an earlier, unreleased build that lacks one of V6–V9 cannot start in `flyway` or `validate` mode against a database that recorded it (`Detected applied migration not resolved locally: <n>`). Those are the main builds from c01d498 (PR #35) up to, but not including, e91bd9d (PR #43): from PR #36 every build resolves V100; before it, a build did only when the host had the optional `maestro-lock-postgres` module (or `maestro-messaging-postgres`, whose V200–V202 sort above every store version). Nodes already running are unaffected, because Flyway checks only at startup. Such a node can start against the newer history only with `maestro.store.schema.mode: none`. Every build from e91bd9d on, main @ a27a275 included, ships V1–V9 and V100, and V101 is a future migration to it. (A pre-PR #36 build with `maestro-messaging-postgres` sees V101 as missing too, but it already fails on V6–V9.)
 
 The initializer runs after your application's own database initializers (its Flyway, Liquibase or `spring.sql.init` scripts) and before the store and engine beans are created. When it first meets a schema that already holds your tables, it writes a baseline marker row at version `0` into `maestro_schema_history` and then applies every Maestro migration — your tables are not touched. Several nodes starting at once are safe: Flyway serialises concurrent runs with a database lock. (If you add Flyway to your own application *later*, against a database that already holds Maestro's tables, your Flyway needs `spring.flyway.baseline-on-migrate: true` for its first run, as for any non-empty schema.)
 
@@ -68,7 +72,7 @@ The ordering covers only database initializers that Spring Boot knows about (`sp
 
 The initializer belongs to `maestro-store-postgres` and runs only when `maestro.store.type` is `postgres` (the only supported store). The lock tables are created by that same initializer, from the same module.
 
-**`validate` and `none`.** With `maestro.store.schema.mode: validate` Maestro applies nothing and fails startup — naming the pending versions — if any migration is pending, or if an applied one no longer matches the shipped SQL; it reads `maestro_schema_history`, so whoever applies the SQL out of band must record it there (e.g. the Flyway CLI with `-table=maestro_schema_history`, the locations above, and — on a schema that already holds your tables — `-baselineOnMigrate=true -baselineVersion=0`, exactly as Maestro's own run does). With `none` Maestro does nothing and reads no history: you apply the SQL under the locations above yourself, in version order, before deploying the build that ships it. A build at or past V5 omits `received_at` from signal inserts, so a self-managed database must have V5 applied (`ALTER TABLE maestro_workflow_signal ALTER COLUMN received_at SET DEFAULT now()`) before that build is deployed, or every signal insert fails. A build at or past V6 names `maestro_workflow_instance.lease_epoch` in every instance read and write (the lease-fencing token), so V6 (`ALTER TABLE maestro_workflow_instance ADD COLUMN IF NOT EXISTS lease_epoch BIGINT NOT NULL DEFAULT 0`) must likewise be applied first, or no workflow can be started, resumed or read. A build at or past V7 names `maestro_workflow_event.args_hash` in every event insert and read (the activity-argument fingerprint), so V7 (`ALTER TABLE maestro_workflow_event ADD COLUMN IF NOT EXISTS args_hash VARCHAR(64)`) must likewise be applied first, or no activity outcome can be recorded or replayed.
+**`validate` and `none`.** With `maestro.store.schema.mode: validate` Maestro applies nothing and fails startup — naming the pending versions — if any migration is pending, or if an applied one no longer matches the shipped SQL; it reads `maestro_schema_history`, so whoever applies the SQL out of band must record it there (e.g. the Flyway CLI with `-table=maestro_schema_history`, the locations above, `-outOfOrder=true`, and — on a schema that already holds your tables — `-baselineOnMigrate=true -baselineVersion=0`, exactly as Maestro's own run does). Do not insert a history row by hand: `validate` compares each applied migration's checksum with the shipped SQL, so a hand-written row fails it. Whatever records a migration must connect as the role that owns the `maestro_*` tables. PostgreSQL checks table ownership before `IF NOT EXISTS`, so even a `CREATE INDEX IF NOT EXISTS` for an index that already exists fails for any other role with `must be owner of table maestro_workflow_instance` (verified on PostgreSQL 16). Under `validate`, the application's role often has no DDL rights, so the Flyway CLI run by the owning role is the usual route. If the application's role does own the tables, one start of a node, or a one-off job calling `new MaestroSchemaInitializer(dataSource, SchemaMode.FLYWAY, classLoader).initialize()`, with `maestro.store.schema.mode: flyway`, then the rest under `validate`, works too. With `none` Maestro does nothing and reads no history: you apply the SQL under the locations above yourself, in version order, before deploying the build that ships it. A build at or past V5 omits `received_at` from signal inserts, so a self-managed database must have V5 applied (`ALTER TABLE maestro_workflow_signal ALTER COLUMN received_at SET DEFAULT now()`) before that build is deployed, or every signal insert fails. A build at or past V6 names `maestro_workflow_instance.lease_epoch` in every instance read and write (the lease-fencing token), so V6 (`ALTER TABLE maestro_workflow_instance ADD COLUMN IF NOT EXISTS lease_epoch BIGINT NOT NULL DEFAULT 0`) must likewise be applied first, or no workflow can be started, resumed or read. A build at or past V7 names `maestro_workflow_event.args_hash` in every event insert and read (the activity-argument fingerprint), so V7 (`ALTER TABLE maestro_workflow_event ADD COLUMN IF NOT EXISTS args_hash VARCHAR(64)`) must likewise be applied first, or no activity outcome can be recorded or replayed.
 
 **Upgrading an existing database.** A database migrated by an earlier Maestro build, before Maestro owned its history (0.4.0 applied `V1`–`V3`, `V100`, `V200` and `V201`), has Maestro's rows in your `flyway_schema_history` and no `maestro_schema_history`, and the new build's first start fails either way:
 
@@ -87,7 +91,7 @@ Upgrade such a database once, with this procedure, in order (the same text is in
          maestro_signal_queue, maestro_task_queue, maestro_lifecycle_event_queue;
      ```
 
-   - **Keep the data.** Set `maestro.store.schema.mode: none` on every node — you own Maestro's DDL from then on, applying each later migration by hand before deploying the build that ships it — and apply by hand the five migrations a 0.4.0 database lacks that this build cannot run without: `V4__signal_trace_context.sql`, `V5__signal_received_at_default.sql`, `V6__instance_lease_epoch.sql`, `V7__workflow_event_args_hash.sql` and `V9__signal_message_id.sql` (`maestro-store-postgres`, `classpath:db/maestro/store`), plus the index-only V8. As written here they are safe to re-run, including on a database a pre-release build already took to V4, V5, V6, V7 or V9; the retired messaging transport's queue tables may be dropped at the same time (optional — nothing on this build reads them):
+   - **Keep the data.** Set `maestro.store.schema.mode: none` on every node — you own Maestro's DDL from then on, applying each later migration by hand before deploying the build that ships it — and apply by hand the five migrations a 0.4.0 database lacks that this build cannot run without: `V4__signal_trace_context.sql`, `V5__signal_received_at_default.sql`, `V6__instance_lease_epoch.sql`, `V7__workflow_event_args_hash.sql` and `V9__signal_message_id.sql` (`maestro-store-postgres`, `classpath:db/maestro/store`), plus the index-only V8 and V101. As written here they are safe to re-run, including on a database a pre-release build already took to V4, V5, V6, V7 or V9; the retired messaging transport's queue tables may be dropped at the same time (optional — nothing on this build reads them):
 
      ```sql
      ALTER TABLE maestro_workflow_signal ADD COLUMN IF NOT EXISTS trace_context VARCHAR(128);  -- V4
@@ -101,10 +105,13 @@ Upgrade such a database once, with this procedure, in order (the same text is in
      ALTER TABLE maestro_workflow_signal ADD COLUMN IF NOT EXISTS message_id TEXT;            -- V9
      CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_wf_signal_message_id                 -- V9
          ON maestro_workflow_signal (workflow_id, signal_name, message_id) WHERE message_id IS NOT NULL;
+     CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_wf_instance_recovery                        -- V101
+         ON maestro_workflow_instance (service_name, started_at, id)
+         WHERE status IN ('RUNNING', 'WAITING_SIGNAL', 'WAITING_TIMER', 'COMPENSATING');
      DROP TABLE IF EXISTS maestro_signal_queue, maestro_task_queue, maestro_lifecycle_event_queue; -- optional cleanup
      ```
 
-     `V8` is index-only (the retention sweeper works without it, scanning the tables on every batch), so it is written here with `CONCURRENTLY`, which the Flyway-run original cannot use — see [Retention Configuration](#retention-configuration); so is V9's unique index (every existing row has `message_id` `NULL`, so the partial index starts empty). Paste the `CONCURRENTLY` lines one statement at a time — `CREATE INDEX CONCURRENTLY` cannot run inside a transaction block. **V9 is a hard prerequisite under `schema.mode: none`**: this build names `message_id` in every signal insert and read, so without the column every delivery fails inside the Kafka listener and is redelivered until dead-lettered, and without the index duplicates are not suppressed (see [Cross-service § Signal identity](cross-service.md#signal-identity)). Do not skip V4, V5, V6 or V7 either: this build names `trace_context` in every signal insert and leaves `received_at` to the column default, so without them every `saveSignal` fails — inside the Kafka listener, so each signal is redelivered until it is dead-lettered; it names `lease_epoch` in every instance read and write (it is the lease-fencing token — see [Operations §6](operations.md#6-split-brain-behaviour-issue-11--issue-18)), so without V6 no workflow can be started, resumed or read; and it names `args_hash` in every event insert and read (the activity-argument fingerprint — see [Operations §10.7](operations.md#107-replay-drift-nondeterministic_history)), so without V7 no activity outcome can be recorded or replayed. V6 and V7 are metadata-only on PostgreSQL 11+ (a constant `DEFAULT` on `ADD COLUMN`, or no default at all, rewrites no rows); every pre-existing row reads back as epoch `0` and as an unverified (`NULL`) fingerprint.
+     `V8` is index-only (the retention sweeper works without it, scanning the tables on every batch), so it is written here with `CONCURRENTLY`, which the Flyway-run original cannot use — see [Retention Configuration](#retention-configuration); so is V9's unique index (every existing row has `message_id` `NULL`, so the partial index starts empty), and so is V101 (index-only: under `none` nothing reads the history, and the paged recovery scan's query is correct without the index, only slower — see [Recovery Configuration](#recovery-configuration)). Paste the `CONCURRENTLY` lines one statement at a time — `CREATE INDEX CONCURRENTLY` cannot run inside a transaction block. **V9 is a hard prerequisite under `schema.mode: none`**: this build names `message_id` in every signal insert and read, so without the column every delivery fails inside the Kafka listener and is redelivered until dead-lettered, and without the index duplicates are not suppressed (see [Cross-service § Signal identity](cross-service.md#signal-identity)). Do not skip V4, V5, V6 or V7 either: this build names `trace_context` in every signal insert and leaves `received_at` to the column default, so without them every `saveSignal` fails — inside the Kafka listener, so each signal is redelivered until it is dead-lettered; it names `lease_epoch` in every instance read and write (it is the lease-fencing token — see [Operations §6](operations.md#6-split-brain-behaviour-issue-11--issue-18)), so without V6 no workflow can be started, resumed or read; and it names `args_hash` in every event insert and read (the activity-argument fingerprint — see [Operations §10.7](operations.md#107-replay-drift-nondeterministic_history)), so without V7 no activity outcome can be recorded or replayed. V6 and V7 are metadata-only on PostgreSQL 11+ (a constant `DEFAULT` on `ADD COLUMN`, or no default at all, rewrites no rows); every pre-existing row reads back as epoch `0` and as an unverified (`NULL`) fingerprint.
 3. **Delete Maestro's rows from your `flyway_schema_history`** (or the table `spring.flyway.table` names) — on either path; skip this step only if the table does not exist. The statement matches each row by version **and** script name, so none of your own migrations can match, and rows your database never had are simply not matched:
 
    ```sql
@@ -126,6 +133,87 @@ Upgrade such a database once, with this procedure, in order (the same text is in
 
    Without this, an application whose own Flyway has migrations fails startup with `Detected applied migration not resolved locally` — and one whose Flyway has none yet fails the day it adds its first.
 4. **Start the new build** on every node.
+
+### A dedicated connection pool
+
+By default every Maestro component that talks to Postgres — the schema
+initializer, the store, the distributed lock, the lock cleaner, the
+`LISTEN/NOTIFY` wake listener and the signal notifier — uses the application's
+single (or `@Primary`) `DataSource`, so a busy engine borrows from the same
+pool as the application's request threads. To give the engine a pool of its
+own, qualify one `DataSource` bean with
+`@io.b2mash.maestro.store.postgres.MaestroDataSource`; all six components then
+use it, and Maestro's tables are created in (and migrated through) that pool's
+database and schema. The declaration depends on whether the application keeps
+a `DataSource` of its own.
+
+**The application also has its own `DataSource`** (Spring Boot's
+auto-configured one from `spring.datasource.*`, or its own `@Primary`) —
+declare Maestro's with `defaultCandidate = false`:
+
+```java
+@Bean(defaultCandidate = false)
+@MaestroDataSource
+DataSource maestroDataSource() {
+    var pool = new HikariDataSource();
+    pool.setJdbcUrl("jdbc:postgresql://db:5432/app?currentSchema=maestro");
+    pool.setMaximumPoolSize(25);   // >= default-activity-concurrency + 5, see below
+    return pool;
+}
+```
+
+`defaultCandidate = false` keeps the pool out of the application's way:
+Boot's `DataSource` auto-configuration does not back off because of it, and
+the application's unqualified injection points (JPA, `JdbcTemplate`, its own
+Flyway) never receive it. **Without `defaultCandidate = false`** the qualified
+bean is an ordinary `DataSource` candidate: where the application relied on
+Boot's auto-configured pool, that auto-configuration backs off, the
+application's own pool is never created, and every unqualified consumer gets
+Maestro's pool instead.
+
+**Maestro's pool is the only one** — a plain bean is simplest; Boot's
+auto-configuration backs off and nothing else competes for the type:
+
+```java
+@Bean
+@MaestroDataSource
+DataSource maestroDataSource() { ... }
+```
+
+A `defaultCandidate = false` bean as the *only* `DataSource` also starts the
+engine, but Boot's `DataSource` auto-configuration does not see it and still
+tries to build a host pool from `spring.datasource.*`: with no URL and no
+embedded database on the classpath, startup fails with `Failed to determine a
+suitable driver class`. Exclude `DataSourceAutoConfiguration`, or use the plain
+form above.
+
+Put the qualifier on one bean, on the `@Bean` method or on the bean's class.
+If several carry it, Spring's usual tie-breakers pick Maestro's: the `@Primary`
+one, else the one named `maestroDataSource` (the name of Maestro's injection
+points). With neither, startup fails with `Maestro found 2 @MaestroDataSource
+beans and none is @Primary: [...]. Keep one, or mark the one Maestro should use
+@Primary.` With no qualified bean and two or more
+unqualified `DataSource`s, none `@Primary`, startup fails with `Maestro found
+<n> DataSource beans and none is @Primary or @MaestroDataSource. Annotate the
+one Maestro should use with @MaestroDataSource.`
+
+**Sizing the pool.** With a qualified pool, all of Maestro's database traffic
+comes out of it: the wake listener's one long-lived connection, a short
+borrow for every `NOTIFY`, the lock renewer, the pollers, and the store calls
+of every workflow run and activity. A workflow slot's holder borrows
+connections as well as an activity slot's: a run replaying its history, or a
+parked run's wake re-check, holds a workflow slot without running an
+activity. Size the pool at **at least `max(maestro.worker.default-concurrency,
+maestro.worker.default-activity-concurrency) + 5`** (25 at the defaults); if
+several task queues are busy at once, add the same `max(...)` for each. As arithmetic, wake re-checks keep on average
+P × d / `wake-recheck-interval` workflow slots busy, where P is the number of
+parked workflows and d one re-check's duration (2–3 reads). For example,
+assuming 5 ms per re-check, 2,000 parked workflows × 5 ms / 30 s ≈ 0.3 slots. A
+pool that is too small surfaces as connection timeouts, which the engine
+treats as store outages (`STORE_UNAVAILABLE` abandons, see
+[Operations §10.9](operations.md#109-store-outages-store_unavailable-abandons)),
+not as workflow failures. The same arithmetic is in
+[Operations § Capacity](operations.md#13-capacity).
 
 ---
 
@@ -326,7 +414,7 @@ for most workloads.
 
 `PostgresDistributedLock` (`io.b2mash.maestro.store.postgres.lock`) keeps locks
 in two tables, created by Maestro's schema initializer from
-`classpath:db/maestro/lock` (band 100–199; see [Schema management](#schema-management)):
+`classpath:db/maestro/lock` (V100; see [Schema management](#schema-management)):
 
 - `maestro_distributed_lock` — one row per held key. `tryAcquire` is a single
   `INSERT ... ON CONFLICT (lock_key) DO UPDATE` whose update predicate requires
@@ -338,9 +426,16 @@ in two tables, created by Maestro's schema initializer from
 - `maestro_leader_election` — one row per election key (`trySetLeader`), same
   expiry-predicate CAS, used by the timer poller.
 
-The lock shares the application `DataSource` with the store: an acquire, renew
-(every 10 s per running workflow) or release is one short statement on the
-pool. Timestamps come from the database clock, so node clock skew does not
+The lock uses the same `DataSource` as the store (the application's, or the
+one qualified `@MaestroDataSource` — see
+[A dedicated connection pool](#a-dedicated-connection-pool)): an acquire or
+release is one short statement on the pool. Renewal is batched: every
+`maestro.lock.ttl` / 3 (10 s at the default TTL) each node renews **all** the
+instance locks it holds with one `UPDATE ... FROM unnest(...)` statement per
+500 locks, on one connection. A renewal pass that takes longer than that
+interval logs a `WARN` naming the lock count, the duration and the TTL. A
+database error during a pass loses nothing: every handle is kept and retried
+on the next pass (the TTL covers about two missed passes). Timestamps come from the database clock, so node clock skew does not
 affect expiry. No extra dependency is needed beyond `maestro-store-postgres`.
 
 ---
@@ -359,30 +454,62 @@ calls counts against its run's queue.
 | `maestro.worker.task-queues[].name`                 | `String`                   | --      | **Required.** Name of the task queue.                                |
 | `maestro.worker.task-queues[].concurrency`          | `int`                      | `10`    | Maximum number of concurrent workflow executions for this queue.     |
 | `maestro.worker.task-queues[].activity-concurrency` | `int`                      | `20`    | Maximum number of concurrent activity executions for this queue.     |
+| `maestro.worker.default-concurrency`                | `int`                      | `20`    | Workflow-run limit of every task queue **not** listed in `task-queues`, per queue, per node. `0` (together with `default-activity-concurrency: 0`) leaves unlisted queues unbounded. |
+| `maestro.worker.default-activity-concurrency`       | `int`                      | `20`    | Live-activity limit of every task queue not listed in `task-queues`, per queue, per node. `0` only together with `default-concurrency: 0`. |
 
-`concurrency` caps how many workflow runs on this queue execute at once on this node; a run holds its slot from start until it parks on `sleep()`/`awaitSignal()` or reaches a terminal status, and reacquires one before resuming. `activity-concurrency` caps live activity executions per queue on this node; replayed (memoized) steps never take a slot. Queues not listed here are unbounded. Limits are per node — three nodes with `concurrency: 10` run up to 30 at once.
+`concurrency` caps how many workflow runs on this queue execute at once on this node; a run holds its slot from start until it parks on `sleep()`/`awaitSignal()` or reaches a terminal status, and reacquires one before resuming. `activity-concurrency` caps live activity executions per queue on this node; replayed (memoized) steps never take a slot. A queue not listed here gets its own pools sized by `default-concurrency` / `default-activity-concurrency` — **20 runs and 20 live activities per queue per node by default** — so a deploy cannot replay every active workflow at once through the database pool. Each unlisted queue has separate pools; they are not shared between queues. Set both defaults to `0` to leave unlisted queues unbounded (the behaviour before this default existed); `0` on only one of them, or a negative value, fails startup with a message naming both properties. Limits are per node — three nodes with `concurrency: 10` run up to 30 at once. At startup the engine logs the effective limits at `INFO`, for example `Maestro worker limits: default 20/20 per task queue (workflows/activities); configured: orders=10/20`, or `Maestro worker limits: unbounded (maestro.worker.default-concurrency=0)`.
 
 A run waiting for a slot holds its instance lock (so no other node adopts it)
 but has executed nothing; if the node begins shutting down before a slot frees,
 it stands down and stays recoverable. The same goes for a run waiting for an
 activity slot: the activity does not run. An activity slot is held from the
 activity's dedup lock through every retry attempt and backoff to its persisted
-outcome. Every limit must be `>= 1`, and naming a queue twice fails startup.
+outcome. Every listed limit must be `>= 1`, and naming a queue twice fails startup.
+
+Recovery does not wait for slots: it adopts every instance it can lock, and
+each adopted run then queues for its slot on its own thread, so startup is
+never held up by a backlog. Because every queue is now bounded by default,
+two consequences of that are on the default path (`docs/open-issues.md`
+Issues 29 and 30): a node that adopts more runs than its slots holds their
+instance locks while they queue, so other nodes cannot take that backlog over;
+and a run still queued for a slot when shutdown begins is not interrupted — it
+stands down, recoverable, once it gets a slot, or the shutdown drain times out
+around it. Nothing is written or lost either way.
 
 On a saturated queue, a parked run's periodic re-check (which picks up a
 terminate issued on another node and is the fallback for a missed wake) waits
 for a free slot too, so convergence is bounded by slot availability rather than
-by `maestro.signal.wake-recheck-interval`. An activity that calls
-`startAndWait` on a workflow of its **own** queue can deadlock at
-`concurrency: 1` until the wait times out — the waiting run holds the only
-slot the started workflow needs — so start such workflows asynchronously or
-give them another queue.
+by `maestro.signal.wake-recheck-interval`.
+
+**Waiting on a workflow of the same queue can deadlock.** A run keeps its
+workflow slot while one of its activities runs, and the activity keeps an
+activity slot. Suppose an activity starts another workflow on this node and
+waits for it, through `startAndWait` or by polling its status. If that
+workflow has the same task queue, it needs a slot from the same pools. Once
+`concurrency` runs of one queue each wait on another run of that queue, no
+child can get a workflow slot, and every parent blocks until its wait times
+out. The same happens once `activity-concurrency` such activities are
+waiting, because the children's activities cannot get a slot either. For
+unlisted queues both limits are 20 by default. Every `@DurableWorkflow` that
+names no `taskQueue` is on `default`, so a parent and a child of different
+types share these pools unless one of them names its own queue. The test kit
+(`TestWorkflowEnvironment`) is unbounded and will not show this. Remedies:
+
+- Put the child workflow type on a task queue of its own
+  (`@DurableWorkflow(taskQueue = ...)`). It then gets its own pools.
+- Or start the child without waiting for it in the activity, have the child
+  signal the parent when it finishes, and have the parent `awaitSignal` that
+  signal. A parked run gives its slot back.
+- Or raise the limits for that queue, or set both defaults to `0` to leave
+  unlisted queues unbounded.
 
 **Example:**
 
 ```yaml
 maestro:
   worker:
+    default-concurrency: 20          # every queue not listed below (the default)
+    default-activity-concurrency: 20
     task-queues:
       - name: orders
         concurrency: 10
@@ -418,10 +545,67 @@ interval so that workflows owned by a node that has since died (its instance
 lock expired) or shut down are adopted without a restart. All nodes poll — the
 per-instance distributed lock guarantees only one of them wins each workflow.
 
+A recovery pass reads only the active instances (`RUNNING`, `WAITING_SIGNAL`,
+`WAITING_TIMER`, `COMPENSATING`) whose `service_name` is this node's
+`maestro.service-name`, in pages of 200 ordered by `(started_at, id)`; a page
+shorter than 200 ends the pass. Per page it skips instances already running on
+this node, then makes one read of `maestro_distributed_lock` and skips the
+instances whose lock another node holds; only the rest cost a lock
+acquisition. That read is advisory — the acquisition stays the authority — so
+if it fails, every remaining instance is tried as before. Another service's
+instances are never read or adopted, even when services share one table set:
+**every node of a service must share one `maestro.service-name`** (see
+[Root Properties](#root-properties)).
+
 | Property                         | Type       | Default | Description                                                                 |
 |----------------------------------|------------|---------|-----------------------------------------------------------------------------|
 | `maestro.recovery.enabled`       | `boolean`  | `true`  | Whether the periodic recovery poller runs.                                   |
 | `maestro.recovery.poll-interval` | `Duration` | `60s`   | Interval between recovery cycles. Together with the 30s instance-lock TTL, this bounds how long an orphaned workflow waits before another node adopts it. |
+
+Migration `V101__recovery_scan_index.sql` adds the partial index the paged scan
+reads (`idx_wf_instance_recovery` on `(service_name, started_at, id)` over the
+four active statuses). It takes V101, above V100, under the
+[numbering rule](#schema-management). The **query** is correct without the
+index, only slower. The **migration record** is a different matter: under
+`validate` a node starts only once V101 is recorded in
+`maestro_schema_history`. Flyway applies V101 in a transaction, so it is a
+plain `CREATE INDEX IF NOT EXISTS`, which holds a `SHARE` lock on
+`maestro_workflow_instance` while it builds. Writes wait; reads do not. The
+index to pre-create by hand, under exactly this name:
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_wf_instance_recovery
+    ON maestro_workflow_instance (service_name, started_at, id)
+    WHERE status IN ('RUNNING', 'WAITING_SIGNAL', 'WAITING_TIMER', 'COMPENSATING');
+```
+
+By `maestro.store.schema.mode`:
+
+- **`flyway`** (default): nothing to do. The first node of this build applies
+  and records V101. On a large table you can run the line above first, and
+  V101 then finds the index and takes no long `SHARE` lock.
+- **`none`**: run the line above yourself, before or after deploying. The
+  build works without the index, and nothing reads the history.
+- **`validate`**: V101 must be **recorded** in `maestro_schema_history` before
+  a node of this build starts, or the node fails with `Maestro schema is
+  behind: pending migrations [101]`. Creating the index by hand does not
+  record it, and a hand-inserted history row fails `validate`'s checksum
+  check. Run the line above if the table is large, then record V101 through
+  the Flyway CLI route in [Schema management](#schema-management), as the
+  role that owns the tables. If the application's role owns them, one start
+  in `flyway` mode records it too: one node, or a one-off job calling `new
+  MaestroSchemaInitializer(dataSource, SchemaMode.FLYWAY,
+  classLoader).initialize()`, which finds the index and does nothing else.
+  Only then roll the rest of the fleet on `validate`.
+
+**Rolling deploy and rollback.** V101 sorts above V100, so every build whose
+newest migration is V100 (every build since PR #36) treats it as a future
+migration and ignores it: V101 never stops such a node from starting. A node
+on main @ a27a275, or on any build since e91bd9d (PR #43), therefore starts in
+`flyway` and `validate` mode against a database that recorded V101, so a pod
+restarted mid-rollout and a rollback both work. An unreleased build older
+than e91bd9d can still fail, on whichever of V6–V9 it lacks, not on V101 (see
+[Schema management](#schema-management)).
 
 ---
 
@@ -467,8 +651,10 @@ how long or punctuated workflow IDs are. The payload carries the workflow ID and
 signal name; the listener dispatches it in memory to the parked waiter. The
 sender's `NOTIFY` runs on a virtual thread after the signal row has committed
 and never blocks `deliverSignal`. The listener holds **one connection borrowed
-from the application `DataSource` for the application's lifetime** — budget for
-it (effective pool capacity is one less; a configured Hikari
+from Maestro's `DataSource` for the application's lifetime** (the application's
+own, or the `@MaestroDataSource` one — see
+[A dedicated connection pool](#a-dedicated-connection-pool)), and each `NOTIFY`
+borrows another briefly — budget for it (effective pool capacity is one less; a configured Hikari
 `leakDetectionThreshold` logs one false positive for this connection) — and
 reconnects with 1 s → 30 s backoff if it drops.
 
@@ -653,6 +839,8 @@ maestro:
     wake-notify:
       enabled: true
   worker:
+    default-concurrency: 20
+    default-activity-concurrency: 20
     task-queues:
       - name: orders
         concurrency: 10
@@ -701,7 +889,9 @@ maestro:
 
 Everything else uses the defaults documented above. You still need to configure
 `spring.datasource` and `spring.kafka` for the underlying infrastructure
-connections; the lock and the signal wake use the same `DataSource`.
+connections; the lock and the signal wake use the same `DataSource` as the
+store — the application's, unless you give Maestro its own
+([A dedicated connection pool](#a-dedicated-connection-pool)).
 
 ---
 

@@ -236,6 +236,34 @@ class MaestroPropertiesBindingTest {
                 });
     }
 
+    @Test
+    @DisplayName("maestro.worker.default-concurrency and default-activity-concurrency default to 20 and 20")
+    void defaultsBindTo20And20() {
+        // No maestro.worker.* at all: the field initialiser (WorkerProperties.defaults()) is what is used.
+        runner.withPropertyValues("maestro.service-name=binding-test")
+                .run(context -> {
+                    var worker = context.getBean(MaestroProperties.class).getWorker();
+                    assertThat(worker.defaultConcurrency()).isEqualTo(20);
+                    assertThat(worker.defaultActivityConcurrency()).isEqualTo(20);
+                });
+        // Some maestro.worker.* set: the record is bound and its @DefaultValues apply.
+        runner.withPropertyValues("maestro.service-name=binding-test",
+                        "maestro.worker.task-queues[0].name=orders")
+                .run(context -> {
+                    var worker = context.getBean(MaestroProperties.class).getWorker();
+                    assertThat(worker.defaultConcurrency()).isEqualTo(20);
+                    assertThat(worker.defaultActivityConcurrency()).isEqualTo(20);
+                });
+        runner.withPropertyValues("maestro.service-name=binding-test",
+                        "maestro.worker.default-concurrency=4",
+                        "maestro.worker.default-activity-concurrency=6")
+                .run(context -> {
+                    var worker = context.getBean(MaestroProperties.class).getWorker();
+                    assertThat(worker.defaultConcurrency()).isEqualTo(4);
+                    assertThat(worker.defaultActivityConcurrency()).isEqualTo(6);
+                });
+    }
+
     /** Enables the properties without dragging in the rest of the engine. */
     @Configuration(proxyBeanMethods = false)
     @EnableConfigurationProperties(MaestroProperties.class)

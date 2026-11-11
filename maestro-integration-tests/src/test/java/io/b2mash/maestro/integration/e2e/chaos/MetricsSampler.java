@@ -14,7 +14,7 @@ import java.util.Map;
 
 /**
  * Issue 12 metrics capture (chaos-harness-design.md §6): a sampler thread that
- * snapshots recovery-query rate, lock probe/renew/leader-election churn and
+ * snapshots recovery-query rate, lock probe/renew/held-keys/leader-election churn and
  * {@code LISTEN}/{@code NOTIFY} wake traffic (all from {@code pg_stat_statements}
  * — Postgres carries store, lock and signal wake, so one cluster-wide view
  * covers every backend-side rate) plus parked/running counts every window,
@@ -37,16 +37,27 @@ public final class MetricsSampler {
 
     private static final String HEADER = "windowStartUtc,windowSecs,liveNodes,running,"
             + "waitingSignal,waitingTimer,compensating,recoveryCalls,recoveryRatePerSec,"
-            + "lockProbeCalls,lockRenewCalls,leaderElectionCalls,listenCalls,notifyCalls,chaosActive";
+            + "lockProbeCalls,lockRenewCalls,lockHeldKeysCalls,leaderElectionCalls,listenCalls,"
+            + "notifyCalls,chaosActive";
 
-    // The normalised recovery-poll statement (AbstractJdbcWorkflowStore
-    // .getRecoverableInstances): FROM maestro_workflow_instance WHERE status IN
-    // (...) ORDER BY started_at ASC. Pinned by text; the sampler warns loudly if
-    // it never matches (Risk 3 — the store SQL changed).
-    private static final String RECOVERY_CALLS_SQL =
-            "SELECT COALESCE(SUM(calls),0) FROM pg_stat_statements "
-            + "WHERE query LIKE '%maestro_workflow_instance WHERE status IN%' "
-            + "AND query LIKE '%ORDER BY started_at ASC%'";
+    // The normalised recovery-poll statements (AbstractJdbcWorkflowStore), summed:
+    //  - paged, service-scoped scan (the engine's since migration V101), two shapes — first
+    //    page and cursor page — each normalised as "... FROM maestro_workflow_instance
+    //    WHERE service_name = $1 AND status IN ($n, ...) [AND (started_at, id) > ($2, $3)]
+    //    ORDER BY started_at, id LIMIT $n". One call per PAGE: a pass over <= 200
+    //    of a service's active instances is one call, as the old scan was.
+    //  - legacy unbounded scan, "... FROM maestro_workflow_instance WHERE status IN
+    //    ($1, ...) ORDER BY started_at ASC", still sent by a pre-change node, so a
+    //    mixed-version or older run reads correctly.
+    // The two never match the same statement (WHERE service_name vs WHERE status).
+    // Pinned by text against the real statements in MetricsSamplerStatementMatchTest;
+    // the sampler still warns loudly if neither ever matches (Risk 3).
+    static final String RECOVERY_CALLS_SQL =
+            "SELECT COALESCE(SUM(calls),0) FROM pg_stat_statements WHERE "
+            + "(query LIKE '%FROM maestro_workflow_instance WHERE service_name = %' "
+            + "AND query LIKE '%ORDER BY started_at, id LIMIT %') "
+            + "OR (query LIKE '%maestro_workflow_instance WHERE status IN%' "
+            + "AND query LIKE '%ORDER BY started_at ASC%')";
 
     // Postgres-lock and LISTEN/NOTIFY statement shapes (PostgresDistributedLock,
     // PostgresSignalNotifier in maestro-store-postgres), pinned by text like the
@@ -54,16 +65,23 @@ public final class MetricsSampler {
     // any loan database sees every node's statements; its own literals are
     // normalised to $n so it never matches itself. LISTEN/NOTIFY are utility
     // statements, counted because the cluster starts Postgres with
-    // pg_stat_statements.track_utility=on.
-    private static final String LOCK_CALLS_SQL =
+    // pg_stat_statements.track_utility=on. "heldKeys" is the recovery pass's
+    // one advisory read per page (PostgresDistributedLock.heldKeys, normalised
+    // "SELECT lock_key FROM maestro_distributed_lock WHERE lock_key = ANY($1) AND
+    // expires_at > now()"); it replaces the per-instance acquire probes for
+    // instances another node holds, so a drop in lockProbeCalls shows up next to
+    // it in lockHeldKeysCalls rather than unexplained.
+    static final String LOCK_CALLS_SQL =
             "SELECT "
             + "COALESCE(SUM(calls) FILTER (WHERE query LIKE '%INSERT INTO maestro_distributed_lock%'), 0), "
             + "COALESCE(SUM(calls) FILTER (WHERE query LIKE '%UPDATE maestro_distributed_lock%'), 0), "
+            + "COALESCE(SUM(calls) FILTER (WHERE query LIKE '%FROM maestro_distributed_lock%'"
+            + " AND query LIKE '%lock_key = ANY(%'), 0), "
             + "COALESCE(SUM(calls) FILTER (WHERE query LIKE '%maestro_leader_election%'), 0), "
             + "COALESCE(SUM(calls) FILTER (WHERE query LIKE 'LISTEN %'), 0), "
             + "COALESCE(SUM(calls) FILTER (WHERE query LIKE 'NOTIFY %'), 0) "
             + "FROM pg_stat_statements";
-    private static final String[] LOCK_CALL_KEYS = {"acquire", "renew", "leader", "listen", "notify"};
+    static final String[] LOCK_CALL_KEYS = {"acquire", "renew", "heldKeys", "leader", "listen", "notify"};
 
     private final ChaosCluster cluster;
     private final ChaosConfig config;
@@ -162,6 +180,7 @@ public final class MetricsSampler {
         Map<String, Long> cmd = lockStatementCalls();
         long lockProbe = delta(cmd, "acquire");
         long lockRenew = delta(cmd, "renew");
+        long lockHeldKeys = delta(cmd, "heldKeys");
         long leaderElection = delta(cmd, "leader");
         long listen = delta(cmd, "listen");
         long notify = delta(cmd, "notify");
@@ -174,7 +193,7 @@ public final class MetricsSampler {
                 str(statusCounts.getOrDefault("WAITING_TIMER", 0L)),
                 str(statusCounts.getOrDefault("COMPENSATING", 0L)),
                 str(recoveryDelta), String.format("%.3f", recoveryRate),
-                str(lockProbe), str(lockRenew), str(leaderElection), str(listen),
+                str(lockProbe), str(lockRenew), str(lockHeldKeys), str(leaderElection), str(listen),
                 str(notify), Boolean.toString(chaosActive));
         csv.append(row);
     }

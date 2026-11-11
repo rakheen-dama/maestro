@@ -9,9 +9,11 @@ import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import org.jspecify.annotations.Nullable;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -119,16 +121,67 @@ public interface WorkflowStore {
     Optional<WorkflowInstance> getInstance(String workflowId);
 
     /**
-     * Returns all workflow instances in a recoverable (active) state.
+     * Returns all workflow instances in a recoverable (active) state, of every
+     * service.
      *
      * <p>Recoverable instances are those with a status where
      * {@link io.b2mash.maestro.core.model.WorkflowStatus#isActive()} returns
-     * {@code true}. This is used during startup recovery to resume
-     * interrupted workflows.
+     * {@code true}.
+     *
+     * <p><b>Unbounded; the engine no longer calls it.</b> It reads every
+     * active row in the store, payloads included, in one result. The engine's
+     * recovery pass uses the paged, service-scoped
+     * {@link #getRecoverableInstances(String, RecoveryCursor, int)} instead,
+     * whose default is built on this method — so every store must still
+     * implement it.
      *
      * @return list of recoverable instances, ordered by {@code startedAt} ascending
      */
     List<WorkflowInstance> getRecoverableInstances();
+
+    /**
+     * Returns one page of one service's recoverable (active) instances: those
+     * whose {@link WorkflowInstance#serviceName()} equals {@code serviceName},
+     * ordered by {@code (startedAt, id)} ascending, strictly after
+     * {@code after}, at most {@code limit} of them.
+     *
+     * <p>The engine's recovery pass reads with this, page by page, passing
+     * {@link RecoveryCursor#of} the last instance of each page as the next
+     * page's {@code after}. A page shorter than {@code limit} means no further
+     * instance follows the cursor — the pass stops there — so an
+     * implementation must not drop a qualifying row from a page it fills short.
+     * Rows inserted or reactivated behind the cursor during a pass are picked
+     * up by the next pass.
+     *
+     * <p>The default filters, sorts ({@link RecoveryCursor#ORDER}) and slices
+     * the result of {@link #getRecoverableInstances()} — correct for any store,
+     * but it runs that unbounded scan of every active row of every service
+     * <em>once per page</em>: a pass over A active instances of the service,
+     * in the engine's pages of 200, costs ⌊A / 200⌋ + 1 full scans where the
+     * engine used to make one. Third-party stores should override it with a
+     * keyset query; the shipped JDBC store and the in-memory test store do.
+     *
+     * @param serviceName the service whose instances to return
+     * @param after       the last instance of the previous page, or
+     *                    {@code null} for the first page
+     * @param limit       the most instances to return; positive
+     * @return the page — never {@code null}, empty past the last instance
+     * @throws IllegalArgumentException if {@code limit} is not positive
+     */
+    default List<WorkflowInstance> getRecoverableInstances(
+            String serviceName, @Nullable RecoveryCursor after, int limit) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        if (limit <= 0) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+        return getRecoverableInstances().stream()
+                .filter(i -> i.status().isActive())
+                .filter(i -> serviceName.equals(i.serviceName()))
+                .filter(i -> after == null || after.precedes(i))
+                .sorted(RecoveryCursor.ORDER)
+                .limit(limit)
+                .toList();
+    }
 
     /**
      * Updates an existing workflow instance with optimistic locking.

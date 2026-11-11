@@ -61,6 +61,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("A node that cannot read a workflow's history stands down and leaves it adoptable")
 class UnknownEventStandDownIT extends PostgresIntegrationSupport {
 
+    /**
+     * The one service every node in this suite belongs to. Nodes of a service
+     * share its name — recovery adopts only its own service's instances (D1),
+     * and timer/retention leadership, the signal-wake channel and the Kafka
+     * subscription are all keyed by it. Node identity is the harness itself
+     * (its own lock client, lock tokens and timer-leader candidate id).
+     */
+    private static final String SERVICE = "unknown-event";
+
     /** A type string no build of this repository will ever define (RULING 1). */
     private static final String FUTURE_TYPE = "EVT_FROM_A_NEWER_MAESTRO";
 
@@ -87,7 +96,7 @@ class UnknownEventStandDownIT extends PostgresIntegrationSupport {
         var parked = new CountDownLatch(1);
         WorkflowHandle handle = null;
         try (var nodeA = MaestroEngineHarness.builder(store, objectMapper)
-                .serviceName("node-a")
+                .serviceName(SERVICE)
                 .lock(newLock())
                 .instanceLockTtl(LOCK_TTL)
                 .build()) {
@@ -112,7 +121,7 @@ class UnknownEventStandDownIT extends PostgresIntegrationSupport {
         // ── Node B (this build): adopts it, cannot read it, stands down ────
         var observer = new RecordingObserver();
         try (var nodeB = MaestroEngineHarness.builder(store, objectMapper)
-                .serviceName("node-b")
+                .serviceName(SERVICE)
                 .lock(newLock())
                 .instanceLockTtl(LOCK_TTL)
                 .observer(observer)
@@ -172,7 +181,7 @@ class UnknownEventStandDownIT extends PostgresIntegrationSupport {
 
         var completionParked = new CountDownLatch(1);
         try (var nodeC = MaestroEngineHarness.builder(store, objectMapper)
-                .serviceName("node-c")
+                .serviceName(SERVICE)
                 .lock(newLock())
                 .instanceLockTtl(LOCK_TTL)
                 .build()) {
@@ -204,7 +213,7 @@ class UnknownEventStandDownIT extends PostgresIntegrationSupport {
         var parked = new CountDownLatch(1);
         WorkflowHandle handle = null;
         try (var nodeA = MaestroEngineHarness.builder(store, objectMapper)
-                .serviceName("churn-a")
+                .serviceName(SERVICE)
                 .lock(newLock())
                 .instanceLockTtl(LOCK_TTL)
                 .build()) {
@@ -219,7 +228,7 @@ class UnknownEventStandDownIT extends PostgresIntegrationSupport {
 
         var observer = new RecordingObserver();
         try (var nodeB = MaestroEngineHarness.builder(store, objectMapper)
-                .serviceName("churn-b")
+                .serviceName(SERVICE)
                 .lock(newLock())
                 .instanceLockTtl(LOCK_TTL)
                 .observer(observer)

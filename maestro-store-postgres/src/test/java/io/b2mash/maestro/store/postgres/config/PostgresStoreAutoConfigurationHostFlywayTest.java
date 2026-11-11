@@ -69,7 +69,7 @@ class PostgresStoreAutoConfigurationHostFlywayTest {
         assertThat(tables(ds)).contains("host_customer", "maestro_workflow_instance");
         assertThat(versions(ds, "flyway_schema_history")).containsExactly("1");
         assertThat(versions(ds, MaestroSchemaInitializer.HISTORY_TABLE))
-                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "100");
+                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "100", "101");
     }
 
     // ── helpers ─────────────────────────────────────────────────────

@@ -441,7 +441,11 @@ measured:
   ≈0.0167 calls/s per node at 6 and at 3 nodes), while lock probe/renew
   traffic tracks the parked-workflow backlog rather than node count. One
   workload, modest absolute load (6/min tail rate) — the *trend* is the
-  result, not an SLA. See Issue 12's section for the table.
+  result, not an SLA. See Issue 12's section for the table. That benchmark
+  predates the 2026-11-11 changes (batched renewal, the paged service-scoped
+  recovery scan): it measured one unscoped recovery read per node per poll and
+  one renewal statement per held lock, and has not been re-run since. §13 gives
+  the current per-node cost as arithmetic.
 
 ---
 
@@ -660,7 +664,7 @@ recovery pass it feeds, still completes
 
 Maestro's migrations always target `maestro_*` tables and are applied by Maestro itself at startup in the connection's current schema, so under the default `maestro.store.schema.mode: flyway` an upgrade between builds that both keep `maestro_schema_history` needs no manual SQL (the one-time move to that history table does — last paragraph below). The former custom-prefix mode (`maestro.store.table-prefix`) is gone; to isolate services sharing a database, give each its own Postgres schema (see `docs/configuration.md` § Store Configuration).
 
-Maestro records what it applied in its **own Flyway history table, `maestro_schema_history`** — never your application's `flyway_schema_history`, whose `spring.flyway.*` settings it ignores. `maestro-store-postgres` ships its SQL under two locations with their own version bands (`classpath:db/maestro/store` 1–99, `classpath:db/maestro/lock` 100–199; band 200–299 belonged to the removed Postgres messaging transport and is never reused), and every location on the classpath is applied. The first node of the new build applies the new migrations before its engine starts, and Flyway's database lock makes concurrent starts safe. **Do not assume older nodes keep working against the newer schema**: most of Maestro's migrations add a column, index or default, but not all. Before a deploy that ships a migration, read its release-notes entry; a migration that drops or renames anything means stopping every older node first, on top of the deploy rule in §10.1. `maestro.store.schema.mode: validate` makes a node fail startup instead when migrations are pending; `none` hands the DDL to you entirely. A database migrated by a build from before Maestro owned its history (0.4.0 and earlier) needs a one-time procedure — stop every node; then either drop the `maestro_*` tables, or keep them under `maestro.store.schema.mode: none` with `V4`–`V9` applied by hand (`V9`, the signal `message_id` column and its unique index, is a hard prerequisite: this build names the column in every signal insert); delete Maestro's rows from `flyway_schema_history`; start the new build. A database that once ran the Postgres messaging transport keeps an orphan `maestro_signal_queue` table (Flyway's default `ignoreMigrationPatterns=*:future` tolerates its history rows); dropping it is optional. The SQL for each step is in `docs/configuration.md` § Schema management → "Upgrading an existing database".
+Maestro records what it applied in its **own Flyway history table, `maestro_schema_history`** — never your application's `flyway_schema_history`, whose `spring.flyway.*` settings it ignores. `maestro-store-postgres` ships its SQL under two locations (`classpath:db/maestro/store`: V1–V9 and V101; `classpath:db/maestro/lock`: V100; band 200–299 belonged to the removed Postgres messaging transport and is never reused), and every location on the classpath is applied. **Every new Maestro migration, store or lock, takes the next version above the highest shipped, within 101–199; versions 1–9 and 100 are history.** To a build that does not ship it, a migration above V100 is a "future" migration that Flyway ignores, so a node on an earlier build restarts, and a rollback starts, against a database a newer build migrated (`docs/configuration.md` § Schema management). The first node of the new build applies the new migrations before its engine starts, and Flyway's database lock makes concurrent starts safe. **Do not assume older nodes keep working against the newer schema**: most of Maestro's migrations add a column, index or default, but not all. Before a deploy that ships a migration, read its release-notes entry; a migration that drops or renames anything means stopping every older node first, on top of the deploy rule in §10.1. `maestro.store.schema.mode: validate` makes a node fail startup instead when migrations are pending; `none` hands the DDL to you entirely. V6–V9 predate that rule and sort below V100. A database that recorded V100 before them gets them out of order: this build applies them, and reports them pending under `validate` (`docs/open-issues.md` Issue 35). They also leave one limit, confined to unreleased builds: a node on a main build from c01d498 (PR #35) up to, but not including, e91bd9d (PR #43) that lacks one of V6–V9 (and, before PR #36, resolves V100 or V200–V202 because the optional lock or Postgres-transport module was on its classpath) **cannot start** in `flyway` or `validate` mode against a database that recorded it (`Detected applied migration not resolved locally: <n>`). Nodes already running carry on, and such a node starts only with `maestro.store.schema.mode: none`. Every build from e91bd9d on, main @ a27a275 included, restarts normally against this release's schema. Under `validate`, record a new migration before rolling the fleet, through the Flyway CLI as the role that owns the tables, or with one `flyway`-mode start if the application's role owns them. A hand-inserted history row fails the checksum check, and a role that does not own the tables cannot run even `CREATE INDEX IF NOT EXISTS`. The per-mode V101 steps are in `docs/configuration.md` § Recovery Configuration. A database migrated by a build from before Maestro owned its history (0.4.0 and earlier) needs a one-time procedure — stop every node; then either drop the `maestro_*` tables, or keep them under `maestro.store.schema.mode: none` with `V4`–`V9` and `V101` applied by hand (`V9`, the signal `message_id` column and its unique index, is a hard prerequisite: this build names the column in every signal insert; `V8` and `V101` are index-only — their queries are correct without the indexes, and under `none` nothing reads the history); delete Maestro's rows from `flyway_schema_history`; start the new build. A database that once ran the Postgres messaging transport keeps an orphan `maestro_signal_queue` table (Flyway's default `ignoreMigrationPatterns=*:future` tolerates its history rows); dropping it is optional. The SQL for each step is in `docs/configuration.md` § Schema management → "Upgrading an existing database".
 
 ### 10.7 Replay drift: `nondeterministic_history`
 
@@ -726,6 +730,14 @@ data). The instance keeps its status (`RUNNING`, `WAITING_*` or
 
 1. **Redeploy the previous build**, so the recorded path is runnable again.
    The next recovery pass adopts the instance and it finishes normally.
+   Schema caveat: this release's only migration, V101, does not stop a
+   rollback to any build since PR #36, main @ a27a275 included, because it
+   sorts above that build's newest migration, V100, and so is a future
+   migration to it. A build older than e91bd9d (PR #43, all unreleased) that
+   lacks one of V6–V9 this database recorded fails startup in `flyway` and
+   `validate` mode (`Detected applied migration not resolved locally: <n>`).
+   Roll back no further than e91bd9d, or start the older build with
+   `maestro.store.schema.mode: none` (§10.6).
 2. **Gate the change behind `workflow.version()`** (§10.2) — the old path for
    histories that predate it, the new one for new instances — and redeploy.
 
@@ -1129,6 +1141,73 @@ before deploying (both compose stacks in this repository do), or deploy with
 
 ---
 
+## 13. Capacity
+
+*Arithmetic, not measurement.* Unlike §§1–8, nothing in this section comes
+from a timing run: every figure is derived from the intervals, page sizes and
+batch sizes in the code of this build, at the default configuration. Use it to
+estimate the load Maestro puts on your database and pool; measure your own
+workload before relying on it.
+
+**Per node, per interval** (H = instance locks this node holds, i.e. workflows
+it is running or holding parked; A = active instances — `RUNNING`,
+`WAITING_SIGNAL`, `WAITING_TIMER`, `COMPENSATING` — of this node's service;
+P = workflows parked on this node):
+
+| Work | Statements | Every |
+|---|---|---|
+| Instance-lock renewal | ⌈H / 500⌉ `UPDATE ... FROM unnest(...)`, on one connection; none when H = 0 | `maestro.lock.ttl` / 3 = **10 s** |
+| Recovery pass — instance reads | ⌊A / 200⌋ + 1 page reads, i.e. ⌈A / 200⌉ plus one empty page when A is a multiple of 200 (A = 0 costs one read) | `maestro.recovery.poll-interval` = **60 s** |
+| Recovery pass — lock reads | at most 1 `heldKeys` read of `maestro_distributed_lock` per non-empty page, ≤ ⌈A / 200⌉ | same pass |
+| Recovery pass — lock acquisitions | 1 `tryAcquire` per instance that is neither running on this node nor reported held by another (normally only orphans: a parked workflow's run keeps its lock) | same pass |
+| Parked-workflow wake re-check | 2 reads per parked `sleep()` (instance status, timer row), 3 per parked `awaitSignal()` (status, signals, deadline row): 2P–3P reads | `maestro.signal.wake-recheck-interval` = **30 s** (unchanged by this cycle) |
+
+Worked example (arithmetic): a node holding 2,000 parked workflows of a
+service with 10,000 active instances spread over five nodes renews them with
+⌈2,000 / 500⌉ = 4 statements every 10 s (one per lock before this release:
+2,000); its recovery pass is ⌊10,000 / 200⌋ + 1 = 51 page reads plus at most 50
+lock reads every 60 s, about 1.7 statements/s, with no acquisitions while the
+other nodes are healthy; and its 2,000 parked workflows cost 4,000–6,000 reads
+every 30 s, about 133–200 reads/s — at this scale the wake re-check, not
+renewal or recovery, is the dominant term, and lengthening
+`maestro.signal.wake-recheck-interval` is the knob (it also bounds cross-node
+timer wake and terminate convergence, §5).
+
+What paging does **not** change: a pass still reads every active row of its
+service (A rows, payload columns included), only in bounded statements of at
+most 200 rows that the V101 index serves without a sort. A renewal pass slower
+than the 10 s interval logs a `WARN` naming the lock count, the duration and
+the TTL; a pass that fails on the database keeps every lock and retries next
+pass.
+
+**Execution bounds.** Every task queue not listed in
+`maestro.worker.task-queues` runs at most **20 workflow runs and 20 live
+activities per node** (`maestro.worker.default-concurrency` /
+`default-activity-concurrency`; each unlisted queue has its own pools, so Q
+unlisted queues allow up to 20·Q of each). Recovery adopts without waiting for
+slots and the excess queues on its own threads, holding its instance locks
+(`docs/open-issues.md` Issue 30) — so after a deploy the backlog drains at the
+queue bound, not all at once. Both defaults `0` restores unbounded queues.
+
+**Pool sizing.** If Maestro shares the application's pool, its traffic above
+competes with the application's own. If Maestro has its own pool
+(`@MaestroDataSource`, `docs/configuration.md` § A dedicated connection pool),
+size it at **≥ max(`default-concurrency`, `default-activity-concurrency`) + 5**
+(25 at the defaults; add the same `max(...)` for every further queue that is
+busy at the same time). Both kinds of slot holder borrow connections: an
+activity slot's holder for the activity's dedup lock and outcome write, and a
+workflow slot's holder that runs no activity, such as a run replaying its
+history or a parked run's wake re-check. The headroom covers the wake listener's one connection held for the
+application's lifetime, the short borrow of every `NOTIFY`, the lock renewer
+and the pollers. *Arithmetic:* wake re-checks keep on average
+P × d / `maestro.signal.wake-recheck-interval` workflow slots busy, where d is
+one re-check's duration (its 2–3 reads). In the worked example above, and
+assuming 5 ms per re-check, 2,000 × 5 ms / 30 s ≈ 0.3 slots, so re-checks rarely crowd out runs; with
+slow reads or a short interval, check the product. A pool that runs dry shows up as `STORE_UNAVAILABLE` abandons
+(§10.9), not as workflow failures.
+
+---
+
 ## See also
 
 - `docs/observability.md` — the full meter catalog (including
@@ -1141,6 +1220,8 @@ before deploying (both compose stacks in this repository do), or deploy with
   guarantee table this document adds measured numbers to.
 - `docs/configuration.md` — `maestro.recovery.poll-interval`,
   `maestro.lock.ttl`, `maestro.signal.wake-recheck-interval`,
+  `maestro.worker.default-concurrency` / `default-activity-concurrency`,
+  `@MaestroDataSource`,
   `maestro.lock.type`, `maestro.retention.*`, and every other property named
   above.
 - `.superpowers/sdd/multi-instance/chaos-harness-design.md` — the chaos/soak

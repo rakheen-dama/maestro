@@ -39,8 +39,15 @@ import java.util.function.Supplier;
  *
  * <h2>Modelling a node</h2>
  * <p>One harness is one node. To exercise multi-node topologies, build a second
- * harness with a different {@code serviceName} over the <em>same</em> store and
- * lock backend. Never share a harness between simulated nodes.
+ * harness over the <em>same</em> store and lock backend with the <em>same</em>
+ * {@code serviceName}: nodes of one service share its name, exactly as deployed
+ * nodes share one {@code maestro.service-name}. Recovery adopts only instances
+ * of its own service, and timer/retention leadership, the signal-wake channel
+ * and the Kafka subscription are keyed by it — so a "second node" with a name of
+ * its own is a second <em>service</em>, which never adopts the first one's
+ * workflows. Node identity is the harness itself: its own lock client (whose
+ * lock tokens are per acquisition) and its own timer-leader candidate id. Never
+ * share a harness between simulated nodes.
  *
  * <h2>Thread Safety</h2>
  * <p>Registration methods are intended to be called from the test thread during
@@ -409,7 +416,11 @@ public final class MaestroEngineHarness implements AutoCloseable {
             return this;
         }
 
-        /** @param serviceName this node's service name — distinct per simulated node */
+        /**
+         * @param serviceName this node's service name — the <em>same</em> for
+         *                    every simulated node of one service (see the
+         *                    class Javadoc, "Modelling a node")
+         */
         public Builder serviceName(String serviceName) {
             this.serviceName = serviceName;
             return this;

@@ -11,6 +11,8 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
+import java.util.Set;
 import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -55,6 +57,19 @@ class PostgresDistributedLockTest {
     }
 
     @Test
+    @DisplayName("renewAll wraps backend failures in LockBackendException — nothing is reported lost")
+    void renewAllWrapsBackendFailure() {
+        var handle = new LockHandle("maestro:lock:workflow:order-1", "token-1",
+                Instant.now().plusSeconds(30));
+
+        var ex = assertThrows(LockBackendException.class,
+                () -> lock.renewAll(List.of(handle), Duration.ofSeconds(30)));
+
+        assertEquals("maestro:lock:workflow:order-1", ex.key());
+        assertInstanceOf(SQLException.class, ex.getCause());
+    }
+
+    @Test
     @DisplayName("release tolerates backend failures (TTL cleans up)")
     void releaseToleratesBackendFailure() {
         var handle = new LockHandle("maestro:lock:workflow:order-1", "token-1",
@@ -69,6 +84,12 @@ class PostgresDistributedLockTest {
     void trySetLeaderToleratesBackendFailure() {
         assertFalse(lock.trySetLeader("maestro:leader:timer-poller:svc", "node-1",
                 Duration.ofSeconds(15)));
+    }
+
+    @Test
+    @DisplayName("heldKeys answers 'unknown' (empty) on a backend failure instead of throwing")
+    void heldKeysReturnsEmptyOnBackendFailure() {
+        assertEquals(Set.of(), lock.heldKeys(List.of("maestro:lock:workflow:order-1")));
     }
 
     /** DataSource whose every connection attempt fails with a SQLException. */

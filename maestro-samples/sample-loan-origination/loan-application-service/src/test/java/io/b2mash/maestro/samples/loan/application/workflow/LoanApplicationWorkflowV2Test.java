@@ -96,6 +96,14 @@ class LoanApplicationWorkflowV2Test {
     private static final String WORKFLOW_TYPE = "loan-application";
     private static final String TASK_QUEUE = "loan-application";
 
+    /**
+     * The one service every node in this class belongs to. Nodes of a service
+     * share its name: recovery adopts only its own service's instances (D1),
+     * so a "replacement node" with a name of its own would be another service
+     * and would never adopt the in-flight loan. Node identity is the executor.
+     */
+    private static final String SERVICE = "loan-application-service";
+
     /** {@code DefaultWorkflowOperations.BRANCH_MULTIPLIER} — branch sequence partition size. */
     private static final int BRANCH_MULTIPLIER = 1000;
 
@@ -175,7 +183,7 @@ class LoanApplicationWorkflowV2Test {
         // that depends on thread timing, not on the code version (R59).
         //
         // Reference: a whole loan run start-to-finish on v1 code only.
-        var nodeV1 = node("node-v1");
+        var nodeV1 = node();
         var reference = startLoan(nodeV1, "loan-reference", LoanApplicationWorkflow.class);
         for (var type : List.of("credit", "employment", "appraisal")) {
             deliverWhenParked(nodeV1, reference, "verification.result", approved(reference.applicationId, type));
@@ -194,7 +202,7 @@ class LoanApplicationWorkflowV2Test {
         nodes.remove(nodeV1);
         await().atMost(SETTLE).until(() -> store.getRecoverableInstances().stream()
                 .anyMatch(i -> i.workflowId().equals(migrated.workflowId)));
-        var nodeV2 = node("node-v2");
+        var nodeV2 = node();
         assertEquals(1, nodeV2.recoverWorkflows(Map.of(WORKFLOW_TYPE, registration(v2WorkflowClass))),
                 "the replacement node must adopt the in-flight loan");
 
@@ -314,7 +322,7 @@ class LoanApplicationWorkflowV2Test {
     @Test
     @DisplayName("two branches awaiting the SAME signal name collide on the parking key")
     void concurrentBranchesOnOneSignalNameAreUnsupported() {
-        var node = node("node-same-name");
+        var node = node();
         var workflowId = "same-name-1";
         node.startWorkflow(workflowId, "same-name-branches", "test", null,
                 () -> workflowImpl(SameSignalNameBranchesWorkflow.class),
@@ -461,7 +469,7 @@ class LoanApplicationWorkflowV2Test {
     // ── Shared script ──────────────────────────────────────────────────────
 
     private Run runFreshLoanOnV2() {
-        var nodeV2 = node("node-v2");
+        var nodeV2 = node();
         var run = startLoan(nodeV2, "loan-fresh-v2", v2WorkflowClass);
 
         // Nothing delivered yet: both branches park concurrently on different
@@ -558,8 +566,8 @@ class LoanApplicationWorkflowV2Test {
 
     private record Run(String applicationId, String workflowId, UUID instanceId) {}
 
-    private WorkflowExecutor node(String name) {
-        var executor = new WorkflowExecutor(store, lock, messaging, notifier, serializer, name);
+    private WorkflowExecutor node() {
+        var executor = new WorkflowExecutor(store, lock, messaging, notifier, serializer, SERVICE);
         nodes.add(executor);
         return executor;
     }

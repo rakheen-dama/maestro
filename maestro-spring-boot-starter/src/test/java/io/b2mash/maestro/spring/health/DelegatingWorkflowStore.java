@@ -6,8 +6,10 @@ import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.spi.PurgeResult;
+import io.b2mash.maestro.core.spi.RecoveryCursor;
 import io.b2mash.maestro.core.spi.RunLease;
 import io.b2mash.maestro.core.spi.WorkflowStore;
+import org.jspecify.annotations.Nullable;
 import io.b2mash.maestro.test.InMemoryWorkflowStore;
 
 import java.time.Instant;
@@ -37,6 +39,12 @@ abstract class DelegatingWorkflowStore implements WorkflowStore {
     @Override
     public List<WorkflowInstance> getRecoverableInstances() {
         return delegate.getRecoverableInstances();
+    }
+
+    @Override
+    public List<WorkflowInstance> getRecoverableInstances(
+            String serviceName, @Nullable RecoveryCursor after, int limit) {
+        return delegate.getRecoverableInstances(serviceName, after, limit);
     }
 
     @Override

@@ -40,6 +40,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("An unreadable stored payload stands down naming its cause, and recovers once restored")
 class UnreadablePayloadStandDownIT extends PostgresIntegrationSupport {
 
+    /**
+     * The one service every node in this suite belongs to. Nodes of a service
+     * share its name — recovery adopts only its own service's instances (D1),
+     * and timer/retention leadership, the signal-wake channel and the Kafka
+     * subscription are all keyed by it. Node identity is the harness itself
+     * (its own lock client, lock tokens and timer-leader candidate id).
+     */
+    private static final String SERVICE = "unreadable-payload";
+
     private static final Duration BOUND = Duration.ofSeconds(30);
     private static final Duration LOCK_TTL = Duration.ofSeconds(10);
 
@@ -52,7 +61,7 @@ class UnreadablePayloadStandDownIT extends PostgresIntegrationSupport {
 
         var parked = new CountDownLatch(1);
         WorkflowHandle handle;
-        try (var nodeA = signalNode("payload-a", recorder, parked, null)) {
+        try (var nodeA = signalNode(recorder, parked, null)) {
             handle = nodeA.start(workflowId, TestWorkflows.SignalWorkflow.class, "seed");
             assertTrue(parked.await(30, TimeUnit.SECONDS));
             handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
@@ -64,7 +73,7 @@ class UnreadablePayloadStandDownIT extends PostgresIntegrationSupport {
         setPayload(instanceId, 1, "{\"reshaped\":true}");
 
         var observer = new RecordingObserver();
-        try (var nodeB = signalNode("payload-b", recorder, new CountDownLatch(1), observer)) {
+        try (var nodeB = signalNode(recorder, new CountDownLatch(1), observer)) {
             assertEquals(1, nodeB.recover());
             await().atMost(BOUND).until(() -> !observer.standDowns().isEmpty());
             await().atMost(BOUND).until(() -> !nodeB.executor().isRunning(workflowId));
@@ -89,7 +98,7 @@ class UnreadablePayloadStandDownIT extends PostgresIntegrationSupport {
         setPayload(instanceId, 1, original);
 
         var completionParked = new CountDownLatch(1);
-        try (var nodeC = signalNode("payload-c", recorder, completionParked, null)) {
+        try (var nodeC = signalNode(recorder, completionParked, null)) {
             assertEquals(1, nodeC.recover());
             assertTrue(completionParked.await(30, TimeUnit.SECONDS));
             handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
@@ -101,10 +110,10 @@ class UnreadablePayloadStandDownIT extends PostgresIntegrationSupport {
 
     // signalNode / setPayload / lockRowHeld are copied from ReplayDriftStandDownIT: a handful
     // of lines, not worth a shared support class.
-    private MaestroEngineHarness signalNode(String serviceName, CountingActivities.Recorder recorder,
+    private MaestroEngineHarness signalNode(CountingActivities.Recorder recorder,
                                             CountDownLatch parked, @Nullable RecordingObserver observer) {
         var builder = MaestroEngineHarness.builder(store, objectMapper)
-                .serviceName(serviceName)
+                .serviceName(SERVICE)
                 .lock(newLock())
                 .instanceLockTtl(LOCK_TTL);
         if (observer != null) {

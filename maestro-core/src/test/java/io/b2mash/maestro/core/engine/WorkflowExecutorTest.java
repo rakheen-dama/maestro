@@ -303,7 +303,8 @@ class WorkflowExecutorTest {
         var nodeBWorkflow = new SleepingWorkflow(Duration.ofMinutes(10), completed);
         var registration = new WorkflowRegistration(
                 "SleepingWorkflow", "default", () -> nodeBWorkflow, method);
-        var nodeB = new WorkflowExecutor(store, null, messaging, null, serializer, "node-b");
+        // A second node of the SAME service: recovery adopts only its own service's instances.
+        var nodeB = new WorkflowExecutor(store, null, messaging, null, serializer, "test-service");
         try {
             assertEquals(1, nodeB.recoverWorkflows(Map.of("SleepingWorkflow", registration)));
 
@@ -342,7 +343,8 @@ class WorkflowExecutorTest {
         var nodeBWorkflow = new SleepingWorkflow(Duration.ofMinutes(10), completed);
         var registration = new WorkflowRegistration(
                 "SleepingWorkflow", "default", () -> nodeBWorkflow, method);
-        var nodeB = new WorkflowExecutor(store, null, messaging, null, serializer, "node-b");
+        // A second node of the SAME service: recovery adopts only its own service's instances.
+        var nodeB = new WorkflowExecutor(store, null, messaging, null, serializer, "test-service");
         try {
             assertEquals(1, nodeB.recoverWorkflows(Map.of("SleepingWorkflow", registration)));
 
@@ -485,7 +487,8 @@ class WorkflowExecutorTest {
         var nodeBWorkflow = new CancellableSleepWorkflow(Duration.ofMinutes(10), completed);
         var registration = new WorkflowRegistration(
                 "CancellableSleepWorkflow", "default", () -> nodeBWorkflow, method);
-        var nodeB = new WorkflowExecutor(store, null, messaging, null, serializer, "node-b");
+        // A second node of the SAME service: recovery adopts only its own service's instances.
+        var nodeB = new WorkflowExecutor(store, null, messaging, null, serializer, "test-service");
         try {
             assertEquals(1, nodeB.recoverWorkflows(Map.of("CancellableSleepWorkflow", registration)));
 

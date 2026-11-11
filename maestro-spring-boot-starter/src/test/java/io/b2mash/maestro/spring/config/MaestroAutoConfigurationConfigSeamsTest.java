@@ -20,11 +20,14 @@ import io.b2mash.maestro.test.InMemoryWorkflowStore;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.config.BeanDefinitionCustomizer;
 import org.springframework.boot.DefaultApplicationArguments;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Scope;
@@ -59,7 +62,11 @@ import static org.awaitility.Awaitility.await;
  * {@code maestro.retry.default-*} for the default {@code @ActivityStub}
  * retry policy. {@code maestro.signal.janitor-interval} and
  * {@code maestro.signal.terminal-retention} (C14b) are pinned the same way,
- * through {@link StartupRecoveryRunner}.
+ * through {@link StartupRecoveryRunner}; so are {@code maestro.retention.*},
+ * {@code maestro.worker.*} (the listed task queues, the
+ * {@code default-concurrency}/{@code default-activity-concurrency} bound on
+ * every other queue, its startup validation and INFO line) and
+ * {@code maestro.replay.verify-arguments}.
  *
  * <p>Before this fix, all four had a hardcoded value baked into
  * {@link WorkflowExecutor} / {@code ActivityInvocationHandler} /
@@ -71,7 +78,8 @@ import static org.awaitility.Awaitility.await;
  * wiring from {@link MaestroProperties} into the engine is covered, not just
  * the property binding.
  */
-@DisplayName("shutdown timeout, wake-recheck-interval, activity lock prefix and default retry policy reach the engine")
+@DisplayName("maestro.* configuration seams (shutdown, signal, lock prefix, retry, retention, worker, replay) reach the engine")
+@ExtendWith(OutputCaptureExtension.class)
 class MaestroAutoConfigurationConfigSeamsTest {
 
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
@@ -311,8 +319,86 @@ class MaestroAutoConfigurationConfigSeamsTest {
                     var governor = context.getBean(WorkflowExecutor.class).taskQueueGovernor();
                     assertThat(governor.availableWorkflowSlots("orders")).isEqualTo(OptionalInt.of(2));
                     assertThat(governor.availableActivitySlots("orders")).isEqualTo(OptionalInt.of(3));
-                    assertThat(governor.availableWorkflowSlots("unconfigured")).isEmpty();
+                    assertThat(governor.availableWorkflowSlots("unconfigured"))
+                            .as("a queue not listed gets the default bound")
+                            .isEqualTo(OptionalInt.of(20));
                 });
+    }
+
+    @Test
+    @DisplayName("a task queue not listed is bounded by maestro.worker.default-* (20/20 unless set)")
+    void unlistedQueueGetsTheDefaultBound() {
+        runner.run(context -> {
+            assertThat(context).hasNotFailed();
+            var governor = context.getBean(WorkflowExecutor.class).taskQueueGovernor();
+            assertThat(governor.availableWorkflowSlots("any")).isEqualTo(OptionalInt.of(20));
+            assertThat(governor.availableActivitySlots("any")).isEqualTo(OptionalInt.of(20));
+        });
+        runner.withPropertyValues("maestro.worker.default-concurrency=3",
+                        "maestro.worker.default-activity-concurrency=4")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    var governor = context.getBean(WorkflowExecutor.class).taskQueueGovernor();
+                    assertThat(governor.availableWorkflowSlots("any")).isEqualTo(OptionalInt.of(3));
+                    assertThat(governor.availableActivitySlots("any")).isEqualTo(OptionalInt.of(4));
+                });
+    }
+
+    @Test
+    @DisplayName("maestro.worker.default-concurrency=0 and default-activity-concurrency=0 leave unlisted queues unbounded")
+    void zeroOnBothMeansUnbounded() {
+        runner.withPropertyValues("maestro.worker.default-concurrency=0",
+                        "maestro.worker.default-activity-concurrency=0",
+                        "maestro.worker.task-queues[0].name=orders",
+                        "maestro.worker.task-queues[0].concurrency=2")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    var governor = context.getBean(WorkflowExecutor.class).taskQueueGovernor();
+                    assertThat(governor.availableWorkflowSlots("any")).isEmpty();
+                    assertThat(governor.availableActivitySlots("any")).isEmpty();
+                    assertThat(governor.availableWorkflowSlots("orders"))
+                            .as("a listed queue keeps its own bound")
+                            .isEqualTo(OptionalInt.of(2));
+                });
+    }
+
+    @Test
+    @DisplayName("0 on exactly one maestro.worker.default-* property, or a negative one, fails startup naming both")
+    void zeroOnOneFailsStartup() {
+        for (var invalid : List.of(
+                List.of("maestro.worker.default-concurrency=0"),
+                List.of("maestro.worker.default-activity-concurrency=0"),
+                List.of("maestro.worker.default-concurrency=-1", "maestro.worker.default-activity-concurrency=-1"),
+                List.of("maestro.worker.default-activity-concurrency=-5"))) {
+            runner.withPropertyValues(invalid.toArray(String[]::new))
+                    .run(context -> {
+                        assertThat(context).as(invalid.toString()).hasFailed();
+                        assertThat(context.getStartupFailure())
+                                .as(invalid.toString())
+                                .rootCause()
+                                .isInstanceOf(IllegalStateException.class)
+                                .hasMessageContaining("maestro.worker.default-concurrency")
+                                .hasMessageContaining("maestro.worker.default-activity-concurrency");
+                    });
+        }
+    }
+
+    @Test
+    @DisplayName("startup logs the effective worker limits at INFO")
+    void startupLogStatesEffectiveLimits(CapturedOutput output) {
+        runner.withPropertyValues("maestro.worker.task-queues[0].name=orders",
+                        "maestro.worker.task-queues[0].concurrency=2",
+                        "maestro.worker.task-queues[0].activity-concurrency=3")
+                .run(context -> assertThat(context).hasNotFailed());
+        assertThat(output.getOut()).contains(
+                "Maestro worker limits: default 20/20 per task queue (workflows/activities); "
+                        + "configured: orders=2/3");
+
+        runner.withPropertyValues("maestro.worker.default-concurrency=0",
+                        "maestro.worker.default-activity-concurrency=0")
+                .run(context -> assertThat(context).hasNotFailed());
+        assertThat(output.getOut()).contains(
+                "Maestro worker limits: unbounded (maestro.worker.default-concurrency=0)");
     }
 
     @Test

@@ -52,8 +52,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * histories never meet.
  *
  * <p>{@code maestro-store-postgres} ships two migration locations — the store
- * (band 1–99) and the lock (band 100–199); their versions share Maestro's one
- * history and must not collide either. Band 200–299 belonged to the removed
+ * (V1–V9, V101) and the lock (V100); their versions share Maestro's one
+ * history and must not collide either. Every new migration, in either
+ * location, takes the next version above the highest shipped, within 101–199
+ * ({@code MaestroSchemaInitializerTest.migrationVersionsFollowTheNumberingRule}). Band 200–299 belonged to the removed
  * Postgres messaging transport and is retired, never to be reused: databases
  * that applied V200–V202 keep those history rows and an orphan
  * {@code maestro_signal_queue}, which Flyway ignores.
@@ -103,7 +105,7 @@ class MaestroMigrationsCoexistIT {
 
         new MaestroSchemaInitializer(ds, SchemaMode.FLYWAY, getClass().getClassLoader()).initialize();
 
-        assertEquals(List.of("1", "2", "3", "4", "5", "6", "7", "8", "9", "100"),
+        assertEquals(List.of("1", "2", "3", "4", "5", "6", "7", "8", "9", "100", "101"),
                 versions(MaestroSchemaInitializer.HISTORY_TABLE));
         assertEquals(List.of("1"), versions("flyway_schema_history"),
                 "Maestro wrote nothing into the host's history");
@@ -207,7 +209,7 @@ class MaestroMigrationsCoexistIT {
      * harmless (optionally {@code DROP TABLE maestro_signal_queue}).
      */
     @Test
-    @DisplayName("upgrade procedure, keep the data: mode none + V4–V9 by hand + scoped DELETE")
+    @DisplayName("upgrade procedure, keep the data: mode none + V4–V9 and V101 by hand + scoped DELETE")
     void upgradeProcedureKeepingTheData(@TempDir Path released, @TempDir Path hostMigrations,
                                         @TempDir Path noMigrations) throws Exception {
         simulateReleased040Database(released, hostMigrations);
@@ -231,7 +233,7 @@ class MaestroMigrationsCoexistIT {
                 ALTER TABLE maestro_workflow_event ADD COLUMN IF NOT EXISTS args_hash VARCHAR(64);       -- V7
                 ALTER TABLE maestro_workflow_signal ADD COLUMN IF NOT EXISTS message_id TEXT;            -- V9
                 """);
-        // The block's two V8 lines, one statement each: CREATE INDEX CONCURRENTLY
+        // The block's CONCURRENTLY lines (V8 ×2, V9, V101), one statement each: CREATE INDEX CONCURRENTLY
         // cannot run inside a transaction block, and a multi-statement string is
         // one implicit transaction — an operator pastes them one at a time too.
         execute("""
@@ -247,11 +249,16 @@ class MaestroMigrationsCoexistIT {
                     ON maestro_workflow_signal (workflow_id, signal_name, message_id) WHERE message_id IS NOT NULL;
                 """);
         execute("""
+                CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_wf_instance_recovery                        -- V101
+                    ON maestro_workflow_instance (service_name, started_at, id)
+                    WHERE status IN ('RUNNING', 'WAITING_SIGNAL', 'WAITING_TIMER', 'COMPENSATING');
+                """);
+        execute("""
                 DROP TABLE IF EXISTS maestro_signal_queue, maestro_task_queue, maestro_lifecycle_event_queue; -- optional cleanup
                 """);
         assertTrue(indexes().containsAll(List.of("idx_wf_instance_terminal", "idx_wf_signal_instance",
-                        "idx_wf_signal_message_id")),
-                "the hand-applied V8 and V9 indexes exist: " + indexes());
+                        "idx_wf_signal_message_id", "idx_wf_instance_recovery")),
+                "the hand-applied V8, V9 and V101 indexes exist: " + indexes());
         // Step 3.
         assertEquals(4, execute(DELETE_MAESTRO_HISTORY_ROWS),
                 "every store/lock row a 0.4.0 build wrote is matched (V200/V201 are not replayed here)");
@@ -329,7 +336,7 @@ class MaestroMigrationsCoexistIT {
         // Step 4.
         Flyway.configure().dataSource(ds).locations("filesystem:" + hostMigrations).load().migrate();
         new MaestroSchemaInitializer(ds, SchemaMode.FLYWAY, getClass().getClassLoader()).initialize();
-        assertEquals(List.of("1", "2", "3", "4", "5", "6", "7", "8", "9", "100"),
+        assertEquals(List.of("1", "2", "3", "4", "5", "6", "7", "8", "9", "100", "101"),
                 versions(MaestroSchemaInitializer.HISTORY_TABLE));
         new PostgresWorkflowStore(ds, JsonMapper.builder().build()).saveSignal(preDeliverySignal());
     }

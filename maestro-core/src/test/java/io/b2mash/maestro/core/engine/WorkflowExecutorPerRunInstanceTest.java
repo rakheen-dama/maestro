@@ -46,6 +46,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("One workflow object per run")
 class WorkflowExecutorPerRunInstanceTest {
 
+    /**
+     * The one service every executor in this test is a node of. Nodes of one
+     * service share its name; recovery adopts only its own service's
+     * instances, so a "second node" must not get a name of its own.
+     */
+    private static final String SERVICE = "node-svc";
+
     private VersionedInMemoryStore store;
     private PayloadSerializer serializer;
     private WorkflowExecutor executor;
@@ -55,7 +62,7 @@ class WorkflowExecutorPerRunInstanceTest {
     void setUp() {
         store = new VersionedInMemoryStore();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
-        executor = new WorkflowExecutor(store, null, null, null, serializer, "node-a");
+        executor = new WorkflowExecutor(store, null, null, null, serializer, SERVICE);
     }
 
     @AfterEach
@@ -100,7 +107,7 @@ class WorkflowExecutorPerRunInstanceTest {
         assertEquals(WorkflowStatus.WAITING_SIGNAL,
                 store.getInstance("p-r").orElseThrow().status());
 
-        second = new WorkflowExecutor(store, null, null, null, serializer, "node-b");
+        second = new WorkflowExecutor(store, null, null, null, serializer, SERVICE);
         second.registerQueries("probe", ProbeWorkflow.class);
         assertTrue(second.resumeWorkflow(store.getInstance("p-r").orElseThrow(), factory, method));
         await().atMost(5, SECONDS).until(() -> second.parkedCount() == 1);
@@ -116,7 +123,7 @@ class WorkflowExecutorPerRunInstanceTest {
         var lock = new MapLock();
         var observer = new RecordingEngineObserver();
         executor.shutdown();
-        executor = new WorkflowExecutor(store, lock, null, null, serializer, "node-a",
+        executor = new WorkflowExecutor(store, lock, null, null, serializer, SERVICE,
                 WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
                 WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
                 false, WorkflowExecutor.DEFAULT_SHUTDOWN_TIMEOUT, Duration.ofMillis(200), observer);
@@ -153,7 +160,7 @@ class WorkflowExecutorPerRunInstanceTest {
             }
         };
         executor.shutdown();
-        executor = new WorkflowExecutor(store, null, null, null, serializer, "node-a");
+        executor = new WorkflowExecutor(store, null, null, null, serializer, SERVICE);
         var method = ProbeWorkflow.class.getMethod("run", String.class);
         executor.startWorkflow("a-broken", "broken", "default", "A", ProbeWorkflow::new, method);
         executor.startWorkflow("b-healthy", "probe", "default", "B", ProbeWorkflow::new, method);
@@ -161,7 +168,7 @@ class WorkflowExecutorPerRunInstanceTest {
         executor.shutdown();
         executor = null;
 
-        second = new WorkflowExecutor(store, null, null, null, serializer, "node-b");
+        second = new WorkflowExecutor(store, null, null, null, serializer, SERVICE);
         Supplier<Object> broken = () -> { throw new IllegalStateException("broken wiring"); };
         var recovered = second.recoverWorkflows(Map.of(
                 "broken", new WorkflowRegistration("broken", "default", broken, method),
@@ -194,7 +201,7 @@ class WorkflowExecutorPerRunInstanceTest {
         executor.shutdown();
         executor = null;
 
-        second = new WorkflowExecutor(store, null, null, null, serializer, "node-b");
+        second = new WorkflowExecutor(store, null, null, null, serializer, SERVICE);
         Supplier<Object> broken = () -> { throw new IllegalStateException("broken wiring"); };
         var pass = second.recoveryPass(Map.of(
                 "broken", new WorkflowRegistration("broken", "default", broken, method),

@@ -283,6 +283,102 @@ class TaskQueueGovernorTest {
         assertEquals(OptionalInt.of(0), g.availableWorkflowSlots("q"), "the waiter took nothing");
     }
 
+    // ── default bound for queues not configured (maestro.worker.default-*) ──
+
+    @Test
+    void unconfiguredQueueIsBoundedByDefaults() throws Exception {
+        var g = new TaskQueueGovernor(Map.of(), new TaskQueueLimits(2, 1));
+        g.acquireWorkflowSlot("q", "a");
+        g.acquireWorkflowSlot("q", "b");
+        assertEquals(OptionalInt.of(0), g.availableWorkflowSlots("q"));
+
+        var thirdAcquired = new CompletableFuture<Void>();
+        var third = Thread.ofVirtual().start(() -> {
+            g.acquireWorkflowSlot("q", "c");
+            thirdAcquired.complete(null);
+        });
+        await().atMost(5, SECONDS).until(() -> third.getState() == Thread.State.WAITING);
+        assertFalse(thirdAcquired.isDone(), "the third run waits while both default slots are held");
+
+        g.releaseWorkflowSlot("a");
+        thirdAcquired.get(5, SECONDS);
+        assertEquals(OptionalInt.of(0), g.availableWorkflowSlots("q"), "c took the slot a gave back");
+
+        assertFalse(g.acquireActivitySlot("q"));
+        assertEquals(OptionalInt.of(0), g.availableActivitySlots("q"), "the activity pool is sized from defaults too");
+        g.releaseActivitySlot("q");
+        assertEquals(OptionalInt.of(1), g.availableActivitySlots("q"));
+    }
+
+    @Test
+    void twoUnconfiguredQueuesHaveSeparatePools() {
+        var g = new TaskQueueGovernor(Map.of(), new TaskQueueLimits(2, 1));
+        g.acquireWorkflowSlot("q1", "a");
+        g.acquireWorkflowSlot("q1", "b");
+        g.acquireActivitySlot("q1");
+        assertEquals(OptionalInt.of(0), g.availableWorkflowSlots("q1"));
+        assertEquals(OptionalInt.of(2), g.availableWorkflowSlots("q2"));
+        assertEquals(OptionalInt.of(1), g.availableActivitySlots("q2"));
+    }
+
+    @Test
+    void configuredQueueIgnoresDefaults() {
+        var g = new TaskQueueGovernor(Map.of("q", new TaskQueueLimits(5, 5)), new TaskQueueLimits(2, 1));
+        assertEquals(OptionalInt.of(5), g.availableWorkflowSlots("q"));
+        assertEquals(OptionalInt.of(5), g.availableActivitySlots("q"));
+        assertEquals(OptionalInt.of(2), g.availableWorkflowSlots("other"));
+    }
+
+    @Test
+    void nullDefaultsStayUnbounded() {
+        var g = new TaskQueueGovernor(Map.of(), null);
+        assertTrue(g.availableWorkflowSlots("q").isEmpty());
+        assertTrue(g.availableActivitySlots("q").isEmpty());
+        assertTrue(new TaskQueueGovernor(Map.of()).availableWorkflowSlots("q").isEmpty(),
+                "the one-argument constructor keeps unconfigured queues unbounded");
+    }
+
+    @Test
+    void aDefaultBoundedRunGivesItsSlotBackWhileParked() throws Exception {
+        var g = new TaskQueueGovernor(Map.of(), new TaskQueueLimits(1, 1));
+        g.acquireWorkflowSlot("q", "a");
+        var bAcquired = new CompletableFuture<Void>();
+        Thread.ofVirtual().start(() -> {
+            g.acquireWorkflowSlot("q", "b");
+            bAcquired.complete(null);
+        });
+        var seenInside = g.parked("a", () -> {
+            bAcquired.get(5, SECONDS); // b runs on the slot a gave back
+            var free = g.availableWorkflowSlots("q");
+            g.releaseWorkflowSlot("b");
+            return free;
+        });
+        assertEquals(OptionalInt.of(0), seenInside, "b held the default queue's only slot while a was parked");
+        assertEquals(OptionalInt.of(0), g.availableWorkflowSlots("q"), "a holds its slot again");
+        g.releaseWorkflowSlot("a");
+        assertEquals(OptionalInt.of(1), g.availableWorkflowSlots("q"));
+    }
+
+    @Test
+    void anInterruptedWaitOnADefaultBoundedQueueBecomesAShutdownSignal() throws Exception {
+        var g = new TaskQueueGovernor(Map.of(), new TaskQueueLimits(1, 1));
+        g.acquireWorkflowSlot("q", "holder");
+        assertEquals(OptionalInt.of(0), g.availableWorkflowSlots("q"));
+        var thrown = new AtomicReference<Throwable>();
+        var waiter = Thread.ofVirtual().start(() -> {
+            try {
+                g.acquireWorkflowSlot("q", "waiter");
+            } catch (Throwable t) {
+                thrown.set(t);
+            }
+        });
+        await().atMost(5, SECONDS).until(() -> waiter.getState() == Thread.State.WAITING);
+        waiter.interrupt();
+        waiter.join(5_000);
+        assertInstanceOf(ExecutorShutdownException.class, thrown.get());
+        assertEquals(OptionalInt.of(0), g.availableWorkflowSlots("q"), "the waiter took nothing");
+    }
+
     @Test
     void limitsMustBePositive() {
         assertThrows(IllegalArgumentException.class, () -> new TaskQueueLimits(0, 1));

@@ -34,6 +34,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("A replayed activity failure is deterministic across nodes")
 class ActivityFailureReplayIT extends PostgresIntegrationSupport {
 
+    /**
+     * The one service every node in this suite belongs to. Nodes of a service
+     * share its name — recovery adopts only its own service's instances (D1),
+     * and timer/retention leadership, the signal-wake channel and the Kafka
+     * subscription are all keyed by it. Node identity is the harness itself
+     * (its own lock client, lock tokens and timer-leader candidate id).
+     */
+    private static final String SERVICE = "activity-failure-replay";
+
     private static final Duration BOUND = Duration.ofSeconds(30);
     private static final Duration LOCK_TTL = Duration.ofSeconds(10);
 
@@ -70,14 +79,14 @@ class ActivityFailureReplayIT extends PostgresIntegrationSupport {
 
         var parkedA = new CountDownLatch(1);
         WorkflowHandle handle;
-        try (var nodeA = node(prefix + "-a", thrown, liveObservations, parkedA)) {
+        try (var nodeA = node(thrown, liveObservations, parkedA)) {
             handle = nodeA.start(workflowId, TestWorkflows.FailureReplayWorkflow.class, "seed");
             assertTrue(parkedA.await(30, TimeUnit.SECONDS));
             handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
         }
 
         var parkedB = new CountDownLatch(1);
-        try (var nodeB = node(prefix + "-b", thrown, replayObservations, parkedB)) {
+        try (var nodeB = node(thrown, replayObservations, parkedB)) {
             assertEquals(1, nodeB.recover());
             assertTrue(parkedB.await(30, TimeUnit.SECONDS));
             handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
@@ -89,10 +98,10 @@ class ActivityFailureReplayIT extends PostgresIntegrationSupport {
         return new Run(liveObservations, replayObservations, handle.result(String.class), failed);
     }
 
-    private MaestroEngineHarness node(String serviceName, Supplier<RuntimeException> thrown,
+    private MaestroEngineHarness node(Supplier<RuntimeException> thrown,
                                       List<String> observations, CountDownLatch parked) {
         var node = MaestroEngineHarness.builder(store, objectMapper)
-                .serviceName(serviceName)
+                .serviceName(SERVICE)
                 .lock(newLock())
                 .instanceLockTtl(LOCK_TTL)
                 .build();

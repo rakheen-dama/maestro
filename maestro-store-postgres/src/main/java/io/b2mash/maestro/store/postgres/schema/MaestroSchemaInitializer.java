@@ -34,13 +34,21 @@ import java.util.TreeSet;
  * Flyway, its {@code spring.flyway.*} settings and its
  * {@code flyway_schema_history} are never read or written.
  *
- * <p>Version bands keep the locations apart inside that one history: the store
- * owns 1–99 ({@code classpath:db/maestro/store}) and the Postgres lock 100–199
- * ({@code classpath:db/maestro/lock}), both shipped by
- * {@code maestro-store-postgres}. Band 200–299 belonged to the removed
- * Postgres messaging transport and is retired — never reuse it: databases
- * that applied V200–V202 keep those history rows (Flyway ignores versions it
- * cannot resolve by default) and an orphan {@code maestro_signal_queue}.
+ * <p>Two locations share that one history, both shipped by
+ * {@code maestro-store-postgres}: the store ({@code classpath:db/maestro/store},
+ * V1–V9 and V101 onwards) and the Postgres lock
+ * ({@code classpath:db/maestro/lock}, V100). The directory says which
+ * component a migration belongs to; the version number does not. Every new
+ * Maestro migration, store or lock, takes the next version above the highest
+ * shipped, within 101–199; versions 1–9 and 100 are history. The reason is
+ * older builds: every build since the lock band was folded into this module
+ * resolves V100, and to such a build an applied migration it does not ship is
+ * "future" — ignored by Flyway's default {@code ignoreMigrationPatterns=*:future}
+ * — only if it sorts above V100. Below V100 it is "missing" and fails the older
+ * node's startup. Band 200–299 belonged to the removed Postgres messaging
+ * transport and is retired — never reuse it: databases that applied V200–V202
+ * keep those history rows (Flyway ignores them as future versions) and an
+ * orphan {@code maestro_signal_queue}.
  *
  * <h2>Modes</h2>
  * <ul>
@@ -51,6 +59,14 @@ import java.util.TreeSet;
  *       migration no longer matches the shipped SQL.</li>
  *   <li>{@link SchemaMode#NONE} — do nothing.</li>
  * </ul>
+ *
+ * <h2>Out-of-order application</h2>
+ * <p>A database first migrated before V6–V9 shipped recorded V100 before them
+ * (Issue 35). The store and lock migrations never depend on each other, so
+ * Flyway runs with {@code outOfOrder(true)}: such a migration is applied, and
+ * reported pending by {@code VALIDATE}, even though it sorts below the highest
+ * applied version. Under the numbering rule above no new migration sorts
+ * below an applied one, so the option matters only for that history.
  *
  * <h2>Sharing a schema with the host</h2>
  * <p>The host's tables (and the host's {@code flyway_schema_history}) are
@@ -130,6 +146,17 @@ public final class MaestroSchemaInitializer {
                 .locations(locations.toArray(String[]::new))
                 .baselineOnMigrate(true)
                 .baselineVersion(BASELINE_VERSION)
+                // Store and lock migrations share one history table but never
+                // depend on each other. A database first migrated before
+                // V6-V9 shipped recorded V100 before them, so they sort below
+                // the highest applied version, and Flyway's default refuses
+                // them ("Detected resolved migration not applied to
+                // database") — failing startup in flyway mode (Issue 35).
+                // Applying them out of order is the intended semantics. It
+                // also makes such a migration "pending" to info(), so
+                // VALIDATE names it below. New migrations take 101-199, above
+                // every applied version, and need no out-of-order help.
+                .outOfOrder(true)
                 .load();
 
         if (mode == SchemaMode.FLYWAY) {

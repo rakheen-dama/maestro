@@ -277,7 +277,7 @@ See the [Samples README](maestro-samples/README.md) for crash recovery simulatio
 | **[Self-Recovery](docs/self-recovery.md)** | How signals survive crashes -- Maestro's killer feature |
 | **[Cross-Service Patterns](docs/cross-service.md)** | Multi-service coordination via Kafka and signals |
 | **[Testing Guide](docs/testing.md)** | Using `maestro-test` for fast, deterministic tests, including crash-recovery tests that exercise replay |
-| **[Pitfalls](docs/pitfalls.md)** | Ten rules whose violations pass every straight-through test and fail in production |
+| **[Pitfalls](docs/pitfalls.md)** | Eleven rules whose violations pass every straight-through test and fail in production |
 | **[Observability](docs/observability.md)** | Meter catalog, span topology, and the Kafka trace-propagation contract |
 | **[Operations](docs/operations.md)** | Multi-instance behaviour, measured; versioning and mixed-version deploy playbook |
 | **[Admin Dashboard](docs/admin.md)** | Setup and feature guide for the monitoring UI |

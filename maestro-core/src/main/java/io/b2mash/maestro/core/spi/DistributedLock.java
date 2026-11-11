@@ -1,7 +1,10 @@
 package io.b2mash.maestro.core.spi;
 
 import java.time.Duration;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Distributed lock and leader election SPI.
@@ -76,6 +79,95 @@ public interface DistributedLock {
      *         ownership has been lost (token no longer matches)
      */
     boolean renew(LockHandle handle, Duration ttl);
+
+    /**
+     * Renews many locks' TTLs in one call and reports the ones that were lost.
+     *
+     * <p>Same per-handle rule as {@link #renew(LockHandle, Duration)}: a handle
+     * is renewed only if its token still matches the current, unexpired
+     * holder. The engine's instance-lock renewer calls this once per pass
+     * with every lock the node holds, so a backend that can renew many rows
+     * in one round trip should override it — the default issues one
+     * {@link #renew} per handle. The default attempts <em>every</em> handle
+     * even after a {@code renew} throws, so one failing key cannot stop the
+     * others being renewed; it then rethrows the first exception (later,
+     * distinct ones attached as suppressed).
+     *
+     * <p>The two outcomes stay as distinct as they are for {@code renew}:
+     * <ul>
+     *   <li><b>Returned</b> — the backend answered, and these handles were
+     *       <em>not</em> renewed because the lock is no longer held with that
+     *       token (expired, re-acquired by another holder, or released).
+     *       Ownership of each is lost. Every other handle passed in was
+     *       renewed. The returned handles are elements of {@code handles}.</li>
+     *   <li><b>Thrown</b> — the backend could not be asked (implementations
+     *       throw {@link io.b2mash.maestro.core.exception.LockBackendException};
+     *       the default rethrows the first exception {@code renew} threw).
+     *       Some handles may have been renewed, but nothing is reported lost:
+     *       the caller must treat none as lost. A handle that was genuinely
+     *       lost in the same call is therefore only acted on by a later call
+     *       that does not throw — the store's lease fence keeps that window
+     *       safe.</li>
+     * </ul>
+     *
+     * @param handles the lock handles to renew; may be empty
+     * @param ttl     new time-to-live from now, applied to every renewed lock
+     * @return the handles whose ownership has been lost; empty if every
+     *         handle was renewed
+     * @throws io.b2mash.maestro.core.exception.LockBackendException if the
+     *         backend could not be asked
+     */
+    default Set<LockHandle> renewAll(Collection<LockHandle> handles, Duration ttl) {
+        var lost = new HashSet<LockHandle>();
+        RuntimeException failure = null;
+        for (var handle : handles) {
+            try {
+                if (!renew(handle, ttl)) {
+                    lost.add(handle);
+                }
+            } catch (RuntimeException e) {
+                // Keep going: this key's failure must not leave the others
+                // unrenewed. Errors are not caught — they always propagate.
+                if (failure == null) {
+                    failure = e;
+                } else if (e != failure) {
+                    // A backend may rethrow one shared instance; suppressing
+                    // an exception into itself throws IllegalArgumentException.
+                    failure.addSuppressed(e);
+                }
+            }
+        }
+        if (failure != null) {
+            throw failure;
+        }
+        return lost;
+    }
+
+    /**
+     * Reports which of {@code keys} are currently held — by any holder,
+     * this caller included — and not yet expired. <b>Advisory.</b>
+     *
+     * <p>The engine's recovery pass asks this once per page of recoverable
+     * instances, so it can skip the instances whose lock another node plainly
+     * holds without spending one {@link #tryAcquire} statement on each. The
+     * answer may be stale the moment it is returned: a key reported held may
+     * expire, and a key not reported may be taken, before the caller acts.
+     * Callers therefore use it only to <em>skip</em> work; {@link #tryAcquire}
+     * stays the only authority on who owns a lock.
+     *
+     * <p>The default returns an empty set, meaning "unknown — try them all",
+     * which costs exactly what the caller paid before this method existed. A
+     * backend that can answer in one round trip should override it. An
+     * implementation that cannot ask its backend should return an empty set
+     * rather than throw; a caller treats a throw the same way.
+     *
+     * @param keys the lock keys to look up; may be empty
+     * @return the subset of {@code keys} currently held; empty if none is
+     *         held or the answer is unknown
+     */
+    default Set<String> heldKeys(Collection<String> keys) {
+        return Set.of();
+    }
 
     /**
      * Attempts to become the leader for the given election key.

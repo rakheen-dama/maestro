@@ -3,11 +3,12 @@ package io.b2mash.maestro.store.postgres.config;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.spring.config.MaestroAutoConfiguration;
 import io.b2mash.maestro.store.jdbc.JdbcStoreConfiguration;
+import io.b2mash.maestro.store.postgres.MaestroDataSource;
 import io.b2mash.maestro.store.postgres.PostgresWorkflowStore;
 import io.b2mash.maestro.store.postgres.schema.MaestroSchemaInitializer;
 import io.b2mash.maestro.store.postgres.schema.SchemaMode;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -25,7 +26,9 @@ import javax.sql.DataSource;
  * <ul>
  *   <li>The PostgreSQL JDBC driver is on the classpath</li>
  *   <li>A {@link DataSource} bean exists (e.g., via Spring Boot's
- *       DataSource auto-configuration from {@code spring-boot-starter-jdbc})</li>
+ *       DataSource auto-configuration from {@code spring-boot-starter-jdbc}),
+ *       or a {@link MaestroDataSource @MaestroDataSource} bean — even one
+ *       declared {@code @Bean(defaultCandidate = false)}</li>
  *   <li>{@code maestro.store.type} is {@code "postgres"} (default)</li>
  * </ul>
  *
@@ -49,7 +52,15 @@ import javax.sql.DataSource;
  * host's own database initializers (its Flyway, Liquibase or SQL scripts) via
  * {@link DependsOnDatabaseInitialization}: on a brand-new database the host's
  * Flyway must run first, because it refuses to migrate a schema that already
- * holds tables but no {@code flyway_schema_history}.
+ * holds tables but no {@code flyway_schema_history}. The ordering is kept when
+ * Maestro has its own {@code DataSource}: a dedicated pool often points at the
+ * host's database and schema, where the same hazard applies.
+ *
+ * <p><b>DataSource:</b> the store and the schema initializer use the
+ * {@link MaestroDataSource @MaestroDataSource}-qualified {@code DataSource}
+ * when the application declares one, otherwise its single (or
+ * {@code @Primary}) {@code DataSource}. Two or more unqualified candidates
+ * with no primary fail startup naming {@code @MaestroDataSource}.
  *
  * <p>Tables are always named {@code maestro_*}, matching the Flyway
  * migrations shipped in this module. The removed
@@ -67,7 +78,7 @@ import javax.sql.DataSource;
                 "org.springframework.boot.jdbc.autoconfigure.XADataSourceAutoConfiguration"
         })
 @ConditionalOnClass(name = "org.postgresql.Driver")
-@ConditionalOnBean(DataSource.class)
+@ConditionalOnMaestroDataSource
 // Audit F8: maestro.enabled=false is documented as the master kill-switch
 // (see MaestroAutoConfiguration), but this class previously had no direct
 // gate on it — it kept registering a real WorkflowStore whenever a
@@ -84,14 +95,17 @@ public class PostgresStoreAutoConfiguration {
     /**
      * Applies (or validates, or skips) Maestro's schema migrations at startup.
      *
-     * @param dataSource the application's data source
-     * @param env        the environment {@code maestro.store.schema.mode} is read from
+     * @param maestroDataSource the {@link MaestroDataSource @MaestroDataSource} bean, if any
+     * @param dataSource        the application's data source, used when there is none
+     * @param env               the environment {@code maestro.store.schema.mode} is read from
      * @return the initializer, already run
      */
     @Bean
     @ConditionalOnMissingBean(MaestroSchemaInitializer.class)
     @DependsOnDatabaseInitialization
-    public MaestroSchemaInitializer maestroSchemaInitializer(DataSource dataSource, Environment env) {
+    public MaestroSchemaInitializer maestroSchemaInitializer(
+            @MaestroDataSource ObjectProvider<DataSource> maestroDataSource,
+            ObjectProvider<DataSource> dataSource, Environment env) {
         // Environment (not MaestroProperties) on purpose: MaestroProperties is
         // registered by MaestroAutoConfiguration, which evaluates after this
         // auto-configuration and may back off entirely.
@@ -101,7 +115,8 @@ public class PostgresStoreAutoConfiguration {
         // was built, and "flyway" must work either way.
         var mode = SchemaMode.fromProperty(env.getProperty(SCHEMA_MODE_PROPERTY, "flyway"));
         var initializer = new MaestroSchemaInitializer(
-                dataSource, mode, PostgresStoreAutoConfiguration.class.getClassLoader());
+                MaestroDataSources.resolve(maestroDataSource, dataSource), mode,
+                PostgresStoreAutoConfiguration.class.getClassLoader());
         initializer.initialize();
         return initializer;
     }
@@ -109,7 +124,8 @@ public class PostgresStoreAutoConfiguration {
     /**
      * The Postgres {@link WorkflowStore}.
      *
-     * @param dataSource   the application's data source
+     * @param maestroDataSource the {@link MaestroDataSource @MaestroDataSource} bean, if any
+     * @param dataSource   the application's data source, used when there is none
      * @param objectMapper the mapper for payloads
      * @param env          the environment, checked for removed properties
      * @param initializer  the schema initializer — injected only so the schema
@@ -119,11 +135,13 @@ public class PostgresStoreAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(WorkflowStore.class)
     public PostgresWorkflowStore postgresWorkflowStore(
-            DataSource dataSource, ObjectMapper objectMapper, Environment env,
+            @MaestroDataSource ObjectProvider<DataSource> maestroDataSource,
+            ObjectProvider<DataSource> dataSource, ObjectMapper objectMapper, Environment env,
             MaestroSchemaInitializer initializer
     ) {
         rejectRemovedTablePrefix(env);
-        return new PostgresWorkflowStore(dataSource, new JdbcStoreConfiguration(objectMapper));
+        return new PostgresWorkflowStore(
+                MaestroDataSources.resolve(maestroDataSource, dataSource), new JdbcStoreConfiguration(objectMapper));
     }
 
     private static void rejectRemovedTablePrefix(Environment env) {

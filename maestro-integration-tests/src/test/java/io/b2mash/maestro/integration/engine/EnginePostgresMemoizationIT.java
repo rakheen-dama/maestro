@@ -43,6 +43,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("Memoization replays stored activity results from Postgres")
 class EnginePostgresMemoizationIT extends PostgresIntegrationSupport {
 
+    /**
+     * The one service every node in this suite belongs to. Nodes of a service
+     * share its name — recovery adopts only its own service's instances (D1),
+     * and timer/retention leadership, the signal-wake channel and the Kafka
+     * subscription are all keyed by it. Node identity is the harness itself
+     * (its own lock client, lock tokens and timer-leader candidate id).
+     */
+    private static final String SERVICE = "memoization";
+
     private MaestroEngineHarness harness;
 
     @AfterEach
@@ -163,7 +172,7 @@ class EnginePostgresMemoizationIT extends PostgresIntegrationSupport {
      */
     private MaestroEngineHarness chainHarness(CountingActivities.Recorder recorder) {
         var built = MaestroEngineHarness.builder(store, objectMapper)
-                .serviceName("memo-node")
+                .serviceName(SERVICE)
                 .lock(newLock())
                 .build();
         built.registerActivities(CountingActivities.ChainActivities.class,
@@ -190,7 +199,7 @@ class EnginePostgresMemoizationIT extends PostgresIntegrationSupport {
                 .taskQueue("default")
                 .status(WorkflowStatus.RUNNING)
                 .input(serializer.serialize(input))
-                .serviceName("crashed-node")
+                .serviceName(SERVICE)
                 .eventSequence(0)
                 .startedAt(now)
                 .updatedAt(now)

@@ -42,6 +42,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("Durable timers against a real Postgres store")
 class EnginePostgresTimerIT extends PostgresIntegrationSupport {
 
+    /**
+     * The one service every node in this suite belongs to. Nodes of a service
+     * share its name — recovery adopts only its own service's instances (D1),
+     * and timer/retention leadership, the signal-wake channel and the Kafka
+     * subscription are all keyed by it. Node identity is the harness itself
+     * (its own lock client, lock tokens and timer-leader candidate id).
+     */
+    private static final String SERVICE = "durable-timers";
+
     private static final Duration BOUND = Duration.ofSeconds(15);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(200);
     private static final Duration NAP = Duration.ofMillis(300);
@@ -70,7 +79,7 @@ class EnginePostgresTimerIT extends PostgresIntegrationSupport {
     @Test
     @DisplayName("sleep persists a pending timer row and parks the workflow in WAITING_TIMER")
     void sleep_persistsPendingTimerAndParksWorkflow() throws Exception {
-        harness = newHarness("timer-node", true);
+        harness = newHarness(true);
         registerSleeper(harness, NAP);
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("timer-persist");
@@ -105,7 +114,7 @@ class EnginePostgresTimerIT extends PostgresIntegrationSupport {
     @Test
     @DisplayName("the timer poller fires a due timer read from Postgres and resumes the workflow")
     void timerPoller_firesDueTimerFromPostgres() throws Exception {
-        harness = newHarness("timer-node", true);
+        harness = newHarness(true);
         registerSleeper(harness, NAP);
         harness.startTimerPoller(POLL_INTERVAL, 10);
 
@@ -125,7 +134,7 @@ class EnginePostgresTimerIT extends PostgresIntegrationSupport {
     @Test
     @DisplayName("markTimerFired is a compare-and-set: only the first caller wins")
     void markTimerFired_onlyTransitionsOnce() throws Exception {
-        harness = newHarness("timer-node", true);
+        harness = newHarness(true);
         registerSleeper(harness, NAP);
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("timer-cas");
@@ -155,7 +164,7 @@ class EnginePostgresTimerIT extends PostgresIntegrationSupport {
         // known shutdown defect tracked for P5), and an abandoned harness would
         // keep renewing the instance lock forever. A genuinely dead node stops
         // renewing and its lock expires by TTL — that path belongs to P2.
-        harness = newHarness("node-a", false);
+        harness = newHarness(false);
         registerSleeper(harness, NAP);
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("timer-restart");
@@ -164,7 +173,7 @@ class EnginePostgresTimerIT extends PostgresIntegrationSupport {
         assertEquals(1, recorder.count("stepOne"));
 
         // node-a is now gone. Everything the workflow needs is in Postgres.
-        secondHarness = newHarness("node-b", false);
+        secondHarness = newHarness(false);
         registerSleeper(secondHarness, NAP);
 
         assertEquals(1, secondHarness.recover(),
@@ -191,7 +200,7 @@ class EnginePostgresTimerIT extends PostgresIntegrationSupport {
         // says "fired" — and getDueTimers only returns PENDING rows, so no
         // poller will ever look at it again. Modelled without a lock backend so
         // node-b can adopt at once (see the restart test above).
-        harness = newHarness("node-a", false);
+        harness = newHarness(false);
         registerSleeper(harness, NAP);
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("timer-crash-window");
@@ -203,7 +212,7 @@ class EnginePostgresTimerIT extends PostgresIntegrationSupport {
                 "the crash window only opens once the row has transitioned");
         // node-a is now gone: nothing unparks its thread, nothing appends TIMER_FIRED.
 
-        secondHarness = newHarness("node-b", false);
+        secondHarness = newHarness(false);
         registerSleeper(secondHarness, NAP);
         // Running a poller proves the poller is no rescue: the row is no longer due.
         secondHarness.startTimerPoller(POLL_INTERVAL, 10);
@@ -230,7 +239,7 @@ class EnginePostgresTimerIT extends PostgresIntegrationSupport {
         // store-only cancel (TimerManager.cancelTimer) never unparks the
         // workflow — it hangs in WAITING_TIMER forever. This is the design's
         // live-cancel repro (§9.1).
-        harness = newHarness("timer-node", true);
+        harness = newHarness(true);
         registerSleeper(harness, Duration.ofMinutes(10)); // long nap; only cancel wakes it
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("timer-cancel-live");
@@ -260,7 +269,7 @@ class EnginePostgresTimerIT extends PostgresIntegrationSupport {
     @Test
     @DisplayName("a caught TimerCancelledException lets the workflow complete via a fallback branch (Issue 13)")
     void cancelTimer_caught_completesViaFallbackBranch() throws Exception {
-        harness = newHarness("timer-node", true);
+        harness = newHarness(true);
         harness.registerActivities(ChainActivities.class,
                 new CountingActivities.RecordingChainActivities(recorder));
         harness.registerWorkflow(TestWorkflows.CancellableSleepWorkflow.class, () -> new TestWorkflows.CancellableSleepWorkflow(Duration.ofMinutes(10)));
@@ -292,7 +301,7 @@ class EnginePostgresTimerIT extends PostgresIntegrationSupport {
         // forever, because getDueTimers only ever returns PENDING rows and
         // nothing else looks at this timer again. This is the design's
         // cancel+crash replay repro (§9.2).
-        harness = newHarness("node-a", false);
+        harness = newHarness(false);
         registerSleeper(harness, NAP);
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("timer-cancel-crash");
@@ -304,7 +313,7 @@ class EnginePostgresTimerIT extends PostgresIntegrationSupport {
                 "the crash window only opens once the row has transitioned");
         // node-a is now gone: nothing unparks its thread, nothing appends TIMER_CANCELLED.
 
-        secondHarness = newHarness("node-b", false);
+        secondHarness = newHarness(false);
         registerSleeper(secondHarness, NAP);
         // Running a poller proves the poller is no rescue: the row is no longer due.
         secondHarness.startTimerPoller(POLL_INTERVAL, 10);
@@ -326,7 +335,7 @@ class EnginePostgresTimerIT extends PostgresIntegrationSupport {
     @Test
     @DisplayName("cancelTimer on an already-fired timer is a false no-op (R1) and does not disturb completion")
     void cancelTimer_onFiredTimer_isANoOp() throws Exception {
-        harness = newHarness("timer-node", true);
+        harness = newHarness(true);
         registerSleeper(harness, NAP);
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("timer-cancel-fired");
@@ -350,13 +359,12 @@ class EnginePostgresTimerIT extends PostgresIntegrationSupport {
     /**
      * Builds a harness for one simulated node.
      *
-     * @param serviceName this node's service name
      * @param withLock    whether to give it a Postgres instance lock
      * @return the harness
      */
-    private MaestroEngineHarness newHarness(String serviceName, boolean withLock) {
+    private MaestroEngineHarness newHarness(boolean withLock) {
         return MaestroEngineHarness.builder(store, objectMapper)
-                .serviceName(serviceName)
+                .serviceName(SERVICE)
                 .lock(withLock ? newLock() : null)
                 .build();
     }

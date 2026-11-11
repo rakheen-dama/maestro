@@ -46,6 +46,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("A timed-out awaitSignal replays deterministically even when the signal arrived late")
 class SignalTimeoutReplayDeterminismTest {
 
+    /**
+     * The one service every executor in this test is a node of. Nodes of one
+     * service share its name; recovery adopts only its own service's
+     * instances, so a "second node" must not get a name of its own.
+     */
+    private static final String SERVICE = "node-svc";
+
     private VersionedInMemoryStore store;
     private PayloadSerializer serializer;
     private WorkflowExecutor nodeA;
@@ -55,7 +62,7 @@ class SignalTimeoutReplayDeterminismTest {
     void setUp() {
         store = new VersionedInMemoryStore();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
-        nodeA = new WorkflowExecutor(store, null, null, null, serializer, "node-a");
+        nodeA = new WorkflowExecutor(store, null, null, null, serializer, SERVICE);
     }
 
     @AfterEach
@@ -94,7 +101,7 @@ class SignalTimeoutReplayDeterminismTest {
         nodeA = null;
 
         // The gate signal arrives LATE, between the stop and the recovery.
-        nodeB = new WorkflowExecutor(store, null, null, null, serializer, "node-b");
+        nodeB = new WorkflowExecutor(store, null, null, null, serializer, SERVICE);
         nodeB.deliverSignal(workflowId, "gate", "late-arrival");
 
         // Recovery replay on the replacement node.
@@ -146,7 +153,7 @@ class SignalTimeoutReplayDeterminismTest {
         // Graceful stop; the withdrawal lands late, before the replacement recovers.
         nodeA.shutdown();
         nodeA = null;
-        nodeB = new WorkflowExecutor(store, null, null, null, serializer, "node-b");
+        nodeB = new WorkflowExecutor(store, null, null, null, serializer, SERVICE);
         nodeB.deliverSignal(workflowId, "withdraw", "late-withdrawal");
 
         var reg = new WorkflowRegistration("SagaGateWorkflow", "default",

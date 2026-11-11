@@ -58,6 +58,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("Parallel branches partition the sequence space in Postgres")
 class EnginePostgresParallelIT extends PostgresIntegrationSupport {
 
+    /**
+     * The one service every node in this suite belongs to. Nodes of a service
+     * share its name — recovery adopts only its own service's instances (D1),
+     * and timer/retention leadership, the signal-wake channel and the Kafka
+     * subscription are all keyed by it. Node identity is the harness itself
+     * (its own lock client, lock tokens and timer-leader candidate id).
+     */
+    private static final String SERVICE = "parallel";
+
     private final CountDownLatch wedge = new CountDownLatch(1);
     private final CountDownLatch reachedThirdBranch = new CountDownLatch(1);
 
@@ -79,7 +88,7 @@ class EnginePostgresParallelIT extends PostgresIntegrationSupport {
     @DisplayName("each branch persists its events in its own sequence block")
     void parallelBranches_persistDistinctSequenceBlocks() {
         var recorder = new CountingActivities.Recorder();
-        harness = node("parallel-node", new CountingActivities.RecordingChainActivities(recorder), true);
+        harness = node(new CountingActivities.RecordingChainActivities(recorder), true);
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("parallel");
         var handle = harness.start(workflowId, TestWorkflows.ParallelWorkflow.class, "seed");
@@ -113,7 +122,7 @@ class EnginePostgresParallelIT extends PostgresIntegrationSupport {
     @DisplayName("the fork point records how many branches were forked")
     void parallelFork_recordsBranchCount() {
         var recorder = new CountingActivities.Recorder();
-        harness = node("parallel-node", new CountingActivities.RecordingChainActivities(recorder), true);
+        harness = node(new CountingActivities.RecordingChainActivities(recorder), true);
 
         var handle = harness.start(MaestroEngineHarness.uniqueWorkflowId("parallel-fork"),
                 TestWorkflows.ParallelWorkflow.class, "seed");
@@ -128,7 +137,7 @@ class EnginePostgresParallelIT extends PostgresIntegrationSupport {
     @DisplayName("replay after a crash re-runs only the branch that never finished")
     void parallelReplay_resumesOnlyTheUnfinishedBranch() throws Exception {
         var crashedRecorder = new CountingActivities.Recorder();
-        harness = node("node-a", new WedgingThirdBranch(crashedRecorder), false);
+        harness = node(new WedgingThirdBranch(crashedRecorder), false);
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("parallel-crash");
         var handle = harness.start(workflowId, TestWorkflows.ParallelWorkflow.class, "seed");
@@ -143,7 +152,7 @@ class EnginePostgresParallelIT extends PostgresIntegrationSupport {
                 "the wedged branch must have produced nothing");
 
         var recoveredRecorder = new CountingActivities.Recorder();
-        recoveringNode = node("node-b", new CountingActivities.RecordingChainActivities(recoveredRecorder),
+        recoveringNode = node(new CountingActivities.RecordingChainActivities(recoveredRecorder),
                 true);
         assertEquals(1, recoveringNode.recover());
 
@@ -511,16 +520,14 @@ class EnginePostgresParallelIT extends PostgresIntegrationSupport {
     /**
      * Builds one node with the parallel workflow registered.
      *
-     * @param serviceName the node's service name
      * @param activities  the chain activity implementation for this node
      * @param withLock    whether this node gets a Postgres lock backend
      * @return the harness
      */
-    private MaestroEngineHarness node(String serviceName,
-                                      CountingActivities.ChainActivities activities,
+    private MaestroEngineHarness node(CountingActivities.ChainActivities activities,
                                       boolean withLock) {
         var built = MaestroEngineHarness.builder(store, objectMapper)
-                .serviceName(serviceName)
+                .serviceName(SERVICE)
                 .lock(withLock ? newLock() : null)
                 .instanceLockTtl(Duration.ofSeconds(2))
                 .build();

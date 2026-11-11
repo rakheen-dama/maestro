@@ -244,7 +244,14 @@ are filed **open** — see their sections. Issue 25 (`maestro.worker.*` inert) i
 Issue 34, the generalisation of Issue 20 from a parked workflow's advisory
 reads to every store call a running workflow makes (a database outage during
 a state write failed the workflow and compensated work that had succeeded),
-was filed and **resolved** together — see its section.
+was filed and **resolved** together — see its section. Issue 35, found while
+documenting the bounded-host-load cycle's index migration (a store migration
+shipped after V100 failed startup, and its first fix moved the failure to older
+nodes), is **resolved** by `outOfOrder` and a numbering rule that puts every
+new migration above V100. Four more (36–39), found by that cycle's final
+whole-branch review, are filed **open**: the test kit cannot apply the default
+concurrency limits, `WorkflowExecutor`'s constructors need a builder, the wake
+listener's shutdown WARN, and silent stranding under another `service_name`.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -273,7 +280,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [9](#issue-9) | Activity lock prefix ignores `maestro.lock.key-prefix` | Library defect | Low | **Resolved** |
 | [10](#issue-10) | Four modules have no tests at all | Testing gap | Medium | **Resolved** |
 | [11](#issue-11) | Lost locks don't stop the workflow (no fencing) | Library gap | Medium | **Fixed** — lease epoch fences every run-scoped write (V6) |
-| [12](#issue-12) | Recovery polling doesn't scale | Library gap — **known limitation** | Low now | Open, by design |
+| [12](#issue-12) | Recovery polling doesn't scale | Library gap — **known limitation** | Low now | Open, by design — partly addressed 2026-11-11 (batched renewal, paged service-scoped scan) |
 | [13](#issue-13) | `CANCELLED` timers can strand a replaying workflow | Library defect | Medium | **Resolved** |
 | [14](#issue-14) | `SagaManager` re-appends `COMPENSATION_STARTED` on replay | Library gap | Low | **Resolved** |
 | [15](#issue-15) | Admin dashboard retry/terminate signals are unconsumed | Library gap | Medium | **Resolved** |
@@ -290,12 +297,17 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [26](#issue-26) | Terminal instance write and terminal event append are two non-transactional writes | Library gap — durability contract | Medium | **Resolved** |
 | [27](#issue-27) | A redelivery status-write failure can let a disabled-redelivery row be reclaimed and reprocessed | Library gap — durability contract | Medium | **Resolved** |
 | [28](#issue-28) | ×1000 sequence partitioning bounds sequential/nested `parallel()` and compensation depth | Structural limitation | Medium | **Open by design** |
-| [29](#issue-29) | Shutdown never interrupts threads blocked waiting for a task-queue slot | Library gap — shutdown latency | Low | Open |
-| [30](#issue-30) | Recovery admission is not gated by task-queue capacity | Library gap — load distribution | Medium | Open |
+| [29](#issue-29) | Shutdown never interrupts threads blocked waiting for a task-queue slot | Library gap — shutdown latency | Low | Open — on the default path since 2026-11-11 |
+| [30](#issue-30) | Recovery admission is not gated by task-queue capacity | Library gap — load distribution | Medium | Open — on the default path since 2026-11-11; recommended next |
 | [31](#issue-31) | Services sharing one set of `maestro_*` tables fire each other's timers | Library gap — multi-service wake latency | Low | Open |
 | [32](#issue-32) | A Valkey outage stalls every signal send after the signal is durable, so caller retries persist duplicate signals | Library defect | Medium | **Resolved** |
 | [33](#issue-33) | Admin retry attributes the failure to the highest-sequenced `SIGNAL_TIMEOUT`, which can be a caught gate | Library defect — wrong failure attribution on retry | Medium | Open |
 | [34](#issue-34) | A store outage during a state write fails a healthy workflow and compensates work that succeeded | Library defect | High | **Resolved** |
+| [35](#issue-35) | A new store migration fails startup on a database that already has the lock band | Library defect — upgrade | High | **Resolved** — `outOfOrder`, and new migrations numbered from V101 |
+| [36](#issue-36) | The test kit cannot apply production's default concurrency limits | Library gap — test fidelity | Medium | Open |
+| [37](#issue-37) | `WorkflowExecutor` has ten public constructors | Library gap — API design | Low | Open — before a first Maven Central release |
+| [38](#issue-38) | `PostgresWakeListener.close()` logs a WARN with a stack trace at every shutdown with a pooled `DataSource` | Library defect — log noise | Low | Open |
+| [39](#issue-39) | Workflows recorded under another `service_name` are stranded silently | Library gap — operability | Medium | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -1057,6 +1069,37 @@ anyone re-reading the raw console, `evidence/task7/soak-console.log`):
 
 ### Issue 12 — Recovery polling doesn't scale {#issue-12}
 
+> **Partly addressed (2026-11-11, plan 02 "bounded host load").** Two of the
+> three costs below are now bounded; the text that follows is kept as it was
+> filed, and the benchmark further down predates the change and has not been
+> re-run.
+>
+> - **Renewal is per batch.** The renewer makes one
+>   `DistributedLock.renewAll` call per pass; `PostgresDistributedLock`
+>   renews in one `UPDATE ... FROM unnest(keys, tokens)` per 500 handles on
+>   one connection. A node holding H instance locks issues ⌈H / 500⌉
+>   statements every `maestro.lock.ttl` / 3 (10 s) — 4 for 2,000 parked
+>   workflows, where it used to issue 2,000. A pass longer than the interval
+>   logs a `WARN`; a backend failure keeps every handle.
+> - **The recovery scan is service-scoped and paged.**
+>   `WorkflowStore.getRecoverableInstances(serviceName, after, limit)` reads
+>   this service's active instances in keyset pages of 200 on
+>   `(started_at, id)`, served by migration V101's partial index. Per page the
+>   pass skips instances running locally, then makes one advisory
+>   `DistributedLock.heldKeys` read and skips instances locked by another
+>   node, so only orphans cost a `tryAcquire`. Per node and poll that is
+>   ⌊A / 200⌋ + 1 page reads plus at most ⌈A / 200⌉ lock reads, for A active
+>   instances of the service (`docs/operations.md` §13, arithmetic, not
+>   measurement). Another service's rows are never read (decision D1: every
+>   node of a service must share one `maestro.service-name`).
+> - **Still open:** every node still reads every active row of its service on
+>   every poll (A rows per node per 60 s, payload columns included — paging
+>   bounds the statement, not the pass), and there is no staleness filter.
+>   Wake-subscription churn went away earlier with `LISTEN/NOTIFY`; the
+>   parked-workflow wake re-check (2–3 reads per parked workflow per
+>   `maestro.signal.wake-recheck-interval`) is unchanged and is now the
+>   dominant per-node term at large parked counts.
+
 **What's wrong.** `getRecoverableInstances()` has no service or staleness
 filter, so every node re-reads the entire active workflow set on every poll and
 probes the lock for each instance owned by someone else. Related: lock renewal
@@ -1084,7 +1127,7 @@ the chaos harness samples the backends directly rather than instrumenting
 
 | Metric | Source |
 |---|---|
-| Recovery-query rate | `pg_stat_statements` delta for the `getRecoverableInstances` statement (queryid pinned at runtime per run — fails loudly if the store's SQL changes rather than silently reporting zero) |
+| Recovery-query rate | `pg_stat_statements` delta for the `getRecoverableInstances` statements, pinned by normalised text (the sampler WARNs at the end of a run if they never matched; `MetricsSamplerStatementMatchTest` pins the patterns against the real statements). Since the paged scan (migration V101) this sums the paged, service-scoped scan — one call per page of ≤ 200 of a service's active instances — and the legacy unbounded scan an older node still sends |
 | Lock probes / renewals (Valkey) | `Valkey INFO commandstats` deltas for the exact commands `maestro-lock-valkey` issues |
 | Lock probes / renewals (Postgres lock) | `pg_stat_statements` deltas for the `maestro_lock`-table statements |
 | Wake-subscription churn | Valkey `subscribe`/`unsubscribe` command deltas + the `pubsub_channels` gauge |
@@ -1100,6 +1143,15 @@ A sampler thread snapshots all of the above every 15s into `metrics.csv`
 (`windowStartUtc,windowSecs,liveNodes,running,waitingSignal,waitingTimer,
 compensating,recoveryCalls,recoveryRatePerSec,lockProbeCalls,lockRenewCalls,
 subscribeCalls,unsubscribeCalls,pubsubChannels,chaosActive`).
+
+*Note 2026-11-11:* the current header is `windowStartUtc,windowSecs,liveNodes,
+running,waitingSignal,waitingTimer,compensating,recoveryCalls,recoveryRatePerSec,
+lockProbeCalls,lockRenewCalls,lockHeldKeysCalls,leaderElectionCalls,listenCalls,
+notifyCalls,chaosActive`. `lockHeldKeysCalls` counts the recovery pass's one
+advisory `heldKeys` read per page (`SELECT lock_key ... WHERE lock_key = ANY(...)`);
+an instance it reports held elsewhere costs no acquire probe, so from that
+change on, a fall in `lockProbeCalls` comes with an accompanying
+`lockHeldKeysCalls` count (one read per page, not one per instance skipped). Runs recorded before it are not comparable column-for-column.
 `pg_stat_statements` cannot attribute calls per node (it aggregates per
 queryid across all nodes sharing a DB user), so **per-node rates are only
 valid in calm windows** (`chaosActive=false`, all 6 nodes healthy) —
@@ -1170,6 +1222,9 @@ Read of the numbers:
   rose 5.7 → 8.1 (the 3-node phase inherits the 6-node phase's in-flight
   workflows on fewer nodes). Renewal round-trips are per held lock, not per
   node — the serial-renewal concern above is a backlog-scaling cost.
+  (Measured on the serial renewer; renewal has since been batched to
+  ⌈held locks / 500⌉ statements per pass — see the status note at the top of
+  this issue.)
 - The absolute numbers are modest: at this workload (6/min, ≤~10 parked)
   nothing here is a bottleneck. The issue is about the trend, and the trend
   is now measured, not hypothesised.
@@ -2747,6 +2802,17 @@ recoverable stand-down.
 within the drain even when no slot ever frees, pinned on the in-memory
 executor.
 
+**Now on the default path (2026-11-11).** When this was filed, only a queue
+listed in `maestro.worker.task-queues` had a semaphore to wait on, so the gap
+needed an opt-in. Every unlisted queue is now bounded too —
+`maestro.worker.default-concurrency` / `default-activity-concurrency`, 20/20
+per queue per node — so any deployment that has more runs or activities in
+flight on a queue than the bound can meet it at shutdown. The post-acquire
+checks already cover default-bounded queues, so the outcome is unchanged:
+nothing is written or lost, the run stands down recoverable once it gets a
+slot, or the drain times out around it. Setting both defaults to `0` restores
+the old (unbounded, so never-waiting) behaviour.
+
 ---
 
 ### Issue 30 — Recovery admission is not gated by task-queue capacity {#issue-30}
@@ -2774,6 +2840,21 @@ slot before taking the instance lock.
 **Done when.** With two nodes sharing a store and `concurrency: 1`, a
 recovery backlog of N runs is executed by both nodes rather than queued on the
 first one to poll.
+
+**Now on the default path, and the recommended next piece of work
+(2026-11-11).** Every task queue not listed in `maestro.worker.task-queues` is
+now bounded at 20 workflow runs per node by default
+(`maestro.worker.default-concurrency`), so this happens without any opt-in:
+after a deploy, the first node to finish startup recovery adopts every
+recoverable instance of its service it can lock, runs 20 per queue, and holds
+the instance locks of the rest while they queue — renewing them, so the other
+nodes' recovery passes skip them as held elsewhere (now through one
+`heldKeys` read per page). Recovery itself never blocks on a slot
+(`WorkflowExecutorConcurrencyTest.recoveryOfMoreRunsThanTheDefaultBoundReturnsWithoutWaitingForSlots`),
+so startup is not delayed; only the spread is lost. Gating adoption on free
+slots (and moving startup recovery off the `ApplicationRunner` thread) is the
+fix; it was named out of scope for the bounded-host-load cycle and is the next
+piece of work recommended for this area.
 
 
 ---
@@ -3089,6 +3170,220 @@ into a workflow failure.
 
 ---
 
+### Issue 35 — A new store migration fails startup on a database that already has the lock band {#issue-35}
+
+> **Resolved (2026-11-11, branch `feat/bounded-host-load`).** Found while
+> documenting the recovery-index migration under `maestro.store.schema.mode:
+> validate` (plan 02 Task 5, fix round 1). Two changes:
+> `MaestroSchemaInitializer` runs Flyway with `outOfOrder(true)`, and every
+> new migration is numbered above V100 (the numbering rule below), so that
+> migration is V101. Pinned by `MaestroSchemaInitializerTest`:
+> - `flywayModeAppliesANewStoreMigrationToADatabaseThatAlreadyHasTheLockBand`:
+>   a history at V1–V5 + V100 takes V6–V9 out of order, then V101, and
+>   `validate` passes.
+> - `everyStoreMigrationAppliesAfterTheLockBand`: the same for every shipped
+>   store version below V100.
+> - `validateModeNeedsV101RecordedNotJustTheIndex`: a hand-made index leaves
+>   `validate` failing with `pending migrations [101]`; one `flyway` run
+>   records V101 over the same index (same oid); `validate` then passes.
+> - `anOlderBuildStartsAgainstADatabaseThatAlreadyRecordedV101`: main @
+>   a27a275's exact Flyway configuration (no `outOfOrder`) over exactly its
+>   migration set (V1–V9, V100) migrates 0, has nothing pending and
+>   validates against a database this build migrated.
+> - `migrationVersionsFollowTheNumberingRule`: no shipped version in 10–99
+>   or at or above 200; versions up to 100 are exactly V1–V9 and V100;
+>   versions above 100 run contiguously from 101.
+>
+> The first three failed on the old configuration with Flyway's `Detected
+> resolved migration not applied to database: <n>`. The last two failed while
+> the index migration still had a store-band number below V100, with
+> `Detected applied migration not resolved locally` and a shipped version in
+> 10–99. The rest of this section is the record of the defect.
+
+**Kind:** Library defect — upgrade. **Severity:** High (a routine deploy of a
+build that ships a store migration fails to start on every existing database
+in the default mode).
+
+**What was wrong.** Maestro's store and lock migrations share one history
+table, `maestro_schema_history`. Maestro took that history at 762a5d6
+(2026-10-28, merged to main as c01d498, PR #35). At that commit the store's
+V1–V5 lived in `maestro-store-postgres` and the lock's V100 in the optional
+`maestro-lock-postgres` module (`git ls-tree 762a5d6`). 2729a57 (PR #36)
+folded the lock into `maestro-store-postgres`. From then on every new
+database records V1–V5 and V100 together; before it, every database whose
+host had the lock module did. The store migrations shipped later, V6
+(7ad7182, PR #38), V8 (ee17041, PR #39), V7 (bf0aaeb, PR #41) and V9
+(e91bd9d, PR #43), per `git log --diff-filter=A` on the migration files, sort
+below the highest applied version, V100. With Flyway's default
+`outOfOrder=false`, `migrate()`'s validation refuses them: `Detected resolved
+migration not applied to database: <n>`. The node failed startup in the
+default `flyway` mode. In `validate` mode it failed inside `flyway.validate()`
+with the same error, not with Maestro's "pending migrations" message:
+`info().pending()` does not list an ignored migration. Every suite started from
+an empty database, where the store band runs before V100, so nothing caught it.
+
+**Fix, part 1: `.outOfOrder(true)`.** Store and lock migrations never depend
+on each other, so applying V6–V9 after V100 is the intended semantics. With the
+option set, an unapplied migration below the highest applied version is
+*pending*, so `validate` names it.
+
+**Fix, part 2: the numbering rule.** The first version of this fix kept the
+store band and numbered the new index migration V10. That moved the failure to
+the older node. To a build that does not ship it, an applied migration below
+that build's highest resolved version is "missing", and Flyway's default
+`ignoreMigrationPatterns=*:future` does not ignore it. Verified against
+a27a275's exact configuration: `Detected applied migration not resolved
+locally: 10`, so a node on main could neither restart nor be rolled back to.
+Above that version the migration is "future", and Flyway ignores it. So
+**every new Maestro migration, store or lock, takes the next version above the
+highest shipped, within 101–199**. Versions 1–9 and 100 are history, and band
+200–299 stays retired. The directory (`db/maestro/store`, `db/maestro/lock`)
+still says which component a migration belongs to. The index migration is
+V101, which every build whose newest migration is V100 (every build since
+PR #36) ignores. This also settles the follow-up recorded in the first version
+of this section, which was to add `*:missing` to `ignoreMigrationPatterns` so
+that a rollback to this build could start. Under the rule, every later
+migration is "future" to this build, so a rollback to it starts with Flyway's
+defaults, and no `ignoreMigrationPatterns` change is needed. Such a change
+would also have stopped Flyway reporting a genuinely deleted migration.
+
+**What remains, for unreleased builds only.** V6–V9 shipped before the rule,
+below V100, and that cannot be undone. A node on a main build that lacks one of
+them cannot start in `flyway` or `validate` mode against a database that
+recorded it (`Detected applied migration not resolved locally: <n>`). That
+covers every build from c01d498 up to, but not including, e91bd9d: from
+PR #36 they all resolve V100. Before PR #36, a build resolved V100 only with
+the optional lock module, and V200–V202 with the optional Postgres transport;
+with neither, its newest version was V5 and V6–V9 were "future" to it.
+Builds from e91bd9d on, main @ a27a275 included, ship V1–V9 and V100, and are
+not affected. Nothing here was released: the repository has no release tags,
+and the last release, 0.4.0, predates Maestro's own history. Running nodes are unaffected, because Flyway
+checks only at startup. An affected node that must start, whether a pod
+restarted mid-rollout or a rollback, needs `maestro.store.schema.mode: none`.
+
+**Development databases.** A database migrated by this branch before the
+renumbering recorded the index as V10. To this build that is a "missing"
+migration (V10 sorts below V101), so `flyway` and `validate` fail until the row
+is removed (`DELETE FROM maestro_schema_history WHERE version = '10'`). The
+index itself can stay, because V101 finds it.
+
+---
+
+### Issue 36 — The test kit cannot apply production's default concurrency limits {#issue-36}
+
+> **Open.** Filed by the final whole-branch review of the bounded-host-load
+> cycle (2026-11-11). Recorded, not fixed, in that cycle.
+
+**Kind:** Library gap — test fidelity. **Severity:** Medium (a deadlock that
+production reaches at its default limits passes every test).
+
+**What's wrong.** Since 2026-11-11 every task queue not listed in
+`maestro.worker.task-queues` is bounded at 20 workflow runs and 20 live
+activities per node (`maestro.worker.default-concurrency` /
+`default-activity-concurrency`). `TestWorkflowEnvironment` builds its
+executors with a constructor that passes no limits at all (`Map.of()` and no
+defaults), and offers no way to pass any. A user's test therefore never queues
+for a slot. Default-path behaviour that depends on slots is invisible in it:
+the same-queue wait deadlock ([Pitfalls rule 11](pitfalls.md#11-never-make-an-activity-wait-for-a-workflow-of-its-own-task-queue)),
+a parked run's re-check waiting for a slot, and Issues 29 and 30.
+
+**How to tackle it.** Add a `TestWorkflowEnvironment` option that takes the
+default and per-queue limits, and pass them to the executor constructor that
+takes default limits. `@MaestroTest` can bind it from `maestro.worker.*`.
+Decide whether the kit should default to production's 20/20: that makes tests
+behave like production, but could make existing user tests with more than 20
+concurrent runs on one queue slower.
+
+**Done when.** A test-kit test whose parent activity `startAndWait`s a
+same-queue child, with limits `(1, 1)`, times out as production does, and with
+limits unset (or both `0`) completes.
+
+---
+
+### Issue 37 — `WorkflowExecutor` has ten public constructors {#issue-37}
+
+> **Open.** Filed by the final whole-branch review of the bounded-host-load
+> cycle (2026-11-11). Recorded, not fixed, in that cycle.
+
+**Kind:** Library gap — API design. **Severity:** Low (no behaviour impact;
+a public-API cost that grows with every new engine setting).
+
+**What's wrong.** `WorkflowExecutor` has grown a telescoping set of public
+constructors: ten today, eight before this cycle added the two that take
+default task-queue limits. Each new engine setting has added one or two more,
+each keeping its predecessors for source compatibility. Callers pick a
+constructor by argument count. Several neighbouring parameters share a type
+(`Duration`, `boolean`, `String`), so swapped arguments compile. The test kit
+and the starter each choose a different one, which is how the test kit came to
+miss the default limits (Issue 36).
+
+**How to tackle it.** Introduce `WorkflowExecutor.builder(store, serializer,
+serviceName)` with named setters and the engine's defaults, move the starter
+and the test kit onto it, and deprecate the constructors. Do it before the
+first Maven Central release, while removing them is still free.
+
+**Done when.** The starter and the test kit build their executors through the
+builder, the constructors are deprecated (or removed, if no release has
+shipped them), and a builder test pins each default.
+
+---
+
+### Issue 38 — `PostgresWakeListener.close()` logs a WARN with a stack trace at every shutdown with a pooled `DataSource` {#issue-38}
+
+> **Open.** Filed by the final whole-branch review of the bounded-host-load
+> cycle (2026-11-11). Recorded, not fixed, in that cycle.
+
+**Kind:** Library defect — log noise. **Severity:** Low (nothing is lost; a
+WARN with a stack trace on every clean shutdown teaches operators to ignore
+WARNs).
+
+**What's wrong.** `close()` interrupts the poll thread, which is usually
+blocked in pgjdbc's `getNotifications(500 ms)`. The interrupt closes the
+connection under it. `close()` then runs `UNLISTEN *` on that connection
+before returning it to the pool. Maestro logs the failed `UNLISTEN` at
+`DEBUG`, but with a pooled `DataSource` the shutdown log carries a WARN with a
+stack trace for it, every time. The reviewer attributes it to the pool
+reporting the broken connection; confirm which logger emits it when fixing.
+
+**How to tackle it.** Stop interrupting the poll thread. With `running` set to
+`false`, it leaves its loop within one poll timeout (500 ms, inside the
+existing 2 s join), and the connection is still open for the `UNLISTEN`.
+Alternatively, skip the `UNLISTEN` when the connection is already closed, and
+evict it from the pool instead of returning it.
+
+**Done when.** A shutdown test with a HikariCP pool and a live listener logs
+no WARN, and the connection returned to the pool has no active `LISTEN`.
+
+---
+
+### Issue 39 — Workflows recorded under another `service_name` are stranded silently {#issue-39}
+
+> **Open.** Filed by the final whole-branch review of the bounded-host-load
+> cycle (2026-11-11). Recorded, not fixed, in that cycle.
+
+**Kind:** Library gap — operability. **Severity:** Medium (no data loss, but
+stranded workflows make no progress, and nothing says so).
+
+**What's wrong.** Decision D1 (2026-11-11) scopes recovery to this node's
+`maestro.service-name`. A deployment that gave each replica its own name, or
+that renamed the service while workflows were active, leaves active instances
+recorded under a name no node runs. No node adopts them after their owner
+stops. The release notes give a query to find them before upgrading, but the
+engine itself says nothing: such a workflow simply never resumes.
+
+**How to tackle it.** At startup, run one query: count active instances whose
+`workflow_type` is one this node registers but whose `service_name` differs
+from this node's, grouped by `service_name`. Log one WARN per name, with the
+count and the remedy (run a node under that name, or correct the rows). The
+query is advisory. Bound its cost with the recovery index or a `LIMIT`, and
+never fail startup on it.
+
+**Done when.** A node started beside a seeded active instance of one of its
+workflow types, recorded under another `service_name`, logs that WARN naming
+the name and the count, and a node with no such instance logs nothing.
+
+---
+
 ## 6. Suggested order
 
 **Historical note:** the order below was the plan followed by the
@@ -3141,6 +3436,13 @@ appended to their sections (see "Known limitations" below).
 path, the same shape as Issue 3, and the only one observed failing a workflow
 (chaos soak 40674015602) — was fixed in that cycle after all (plan 04 Task 8,
 R56). Issues 29–31 are latency/load gaps with no correctness impact.
+
+**After the 2026-11-11 bounded-host-load cycle:** task queues are bounded by
+default (20/20 per queue per node), which puts Issues 29 and 30 on the default
+path rather than behind an opt-in. **Issue 30 is the recommended next piece of
+work**: without capacity-gated adoption, a post-deploy backlog sits on the
+first node to recover it. Issue 12 is partly addressed by the same cycle
+(batched renewal, paged service-scoped recovery scan).
 
 ---
 

@@ -44,6 +44,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("A timer fired or cancelled on one node wakes a workflow sleeping on another")
 class MultiNodeTimerWakeIT extends PostgresIntegrationSupport {
 
+    /**
+     * The one service every node in this suite belongs to. Nodes of a service
+     * share its name — recovery adopts only its own service's instances (D1),
+     * and timer/retention leadership, the signal-wake channel and the Kafka
+     * subscription are all keyed by it. Node identity is the harness itself
+     * (its own lock client, lock tokens and timer-leader candidate id).
+     */
+    private static final String SERVICE = "multinode-timer-wake";
+
     /** Node A's recheck interval — the wake path under test. */
     private static final Duration RECHECK_INTERVAL = Duration.ofMillis(500);
 
@@ -69,8 +78,8 @@ class MultiNodeTimerWakeIT extends PostgresIntegrationSupport {
     @Test
     @DisplayName("a timer fired by node B's poller wakes the workflow sleeping on node A")
     void timerFiredByNodeBPoller_wakesWorkflowSleepingOnNodeA() {
-        nodeA = node("node-a", recorderA, new TestWorkflows.SleepingWorkflow(Duration.ofSeconds(1)));
-        nodeB = node("node-b", recorderB, new TestWorkflows.SleepingWorkflow(Duration.ofSeconds(1)));
+        nodeA = node(recorderA, new TestWorkflows.SleepingWorkflow(Duration.ofSeconds(1)));
+        nodeB = node(recorderB, new TestWorkflows.SleepingWorkflow(Duration.ofSeconds(1)));
         // Only node B polls timers — B is the leader, A owns the parked thread.
         nodeB.startTimerPoller(Duration.ofMillis(200), 10);
 
@@ -100,9 +109,9 @@ class MultiNodeTimerWakeIT extends PostgresIntegrationSupport {
     @Test
     @DisplayName("a timer cancelled on node B wakes the workflow sleeping on node A with the cancelled outcome")
     void timerCancelledOnNodeB_wakesWorkflowSleepingOnNodeA_withCancelledOutcome() {
-        nodeA = node("node-a", recorderA,
+        nodeA = node(recorderA,
                 new TestWorkflows.CancellableSleepWorkflow(Duration.ofMinutes(10)));
-        nodeB = node("node-b", recorderB,
+        nodeB = node(recorderB,
                 new TestWorkflows.CancellableSleepWorkflow(Duration.ofMinutes(10)));
 
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("xnode-timer-cancel");
@@ -141,15 +150,14 @@ class MultiNodeTimerWakeIT extends PostgresIntegrationSupport {
     /**
      * Builds one node over the shared store with its own Postgres lock client.
      *
-     * @param serviceName  the node's service name
      * @param recorder     this node's activity recorder
      * @param workflowImpl this node's workflow instance
      * @return the built harness
      */
-    private MaestroEngineHarness node(String serviceName, CountingActivities.Recorder recorder,
+    private MaestroEngineHarness node(CountingActivities.Recorder recorder,
                                       Object workflowImpl) {
         var harness = MaestroEngineHarness.builder(store, objectMapper)
-                .serviceName(serviceName)
+                .serviceName(SERVICE)
                 .lock(new PostgresDistributedLock(newDataSource()))
                 .instanceLockTtl(Duration.ofSeconds(10))
                 .wakeRecheckInterval(RECHECK_INTERVAL)

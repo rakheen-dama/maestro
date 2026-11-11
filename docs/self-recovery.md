@@ -164,7 +164,7 @@ sequenceDiagram
 
     Note over Recovery: Application restarts
 
-    Recovery->>Store: SELECT workflow_instance<br/>WHERE status IN (RUNNING, WAITING_SIGNAL, WAITING_TIMER)
+    Recovery->>Store: SELECT workflow_instance<br/>WHERE service_name = this service<br/>AND status IN (RUNNING, WAITING_SIGNAL,<br/>WAITING_TIMER, COMPENSATING)<br/>(pages of 200)
     Store-->>Recovery: [order-abc: OrderFulfilment, WAITING_SIGNAL]
 
     Recovery->>Engine: recoverWorkflow(order-abc)

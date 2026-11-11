@@ -56,7 +56,7 @@ public class OrderFulfilmentWorkflow {
 **Key points:**
 
 - `name` defaults to the class simple name if omitted. It correlates instances with their implementation during recovery.
-- `taskQueue` defaults to `"default"`. It names the concurrency bucket the workflow's runs and their live activities count against — the per-node limits configured under `maestro.worker.task-queues[]` (see [Worker Configuration](configuration.md#worker-configuration)); a queue not configured there is unbounded. It does not route: a workflow runs in-process on the node that starts it, or on the node that recovers it.
+- `taskQueue` defaults to `"default"`. It names the concurrency bucket the workflow's runs and their live activities count against — the per-node limits configured under `maestro.worker.task-queues[]` (see [Worker Configuration](configuration.md#worker-configuration)); a queue not configured there gets `maestro.worker.default-concurrency` / `default-activity-concurrency` (20 runs / 20 live activities per node unless set; both `0` = unbounded). It does not route: a workflow runs in-process on the node that starts it, or on the node that recovers it.
 - The `@WorkflowMethod` may accept zero or one parameter (the workflow input) and its return type is serialized as the workflow output.
 - **One `@WorkflowMethod` per class.** Multiple workflow types require separate classes.
 - **One object per run.** The engine instantiates the workflow class for every start, recovery and retry. Instance fields are per-run state; never put per-instance state in `static` fields.
@@ -741,5 +741,5 @@ stateDiagram-v2
 - [Self-Recovery](self-recovery.md) -- How signals survive crashes
 - [Cross-Service Patterns](cross-service.md) -- Multi-service coordination
 - [Testing](testing.md) -- Using `maestro-test`, including crash-recovery tests
-- [Pitfalls](pitfalls.md) -- Ten rules whose violations pass every straight-through test and fail in production
+- [Pitfalls](pitfalls.md) -- Eleven rules whose violations pass every straight-through test and fail in production
 - [Admin Dashboard](admin.md) -- Monitoring and management

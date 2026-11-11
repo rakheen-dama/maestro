@@ -471,9 +471,18 @@ recollection. "Unverified" below means no test asserts the behaviour either way.
 21. **`getRecoverableInstances()` has no service or staleness filter** — every
     node re-reads the whole active set on each poll and probes the lock for each
     foreign-owned instance. Needs a filter plus an index (an SPI change).
+    **Partly fixed 2026-11-11** — the engine now calls the paged, service-scoped
+    `getRecoverableInstances(serviceName, after, limit)` (pages of 200, V101
+    index) and skips instances held elsewhere with one `heldKeys` read per page
+    (`RecoveryPassIsolationTest`, `PostgresWorkflowStoreTest$RecoveryScanTests`).
+    Still no staleness filter: each node reads every active row of its service
+    per poll.
 
 22. **Lock renewal is serial** — one round-trip per held lock every TTL/3. Needs
     batching before a node holds thousands of parked workflows.
+    **Fixed 2026-11-11** — one `renewAll` call per pass; Postgres renews in one
+    statement per 500 locks (`WorkflowInstanceLockManagerTest`,
+    `PostgresDistributedLockContractTest`).
 
 23. **Wake subscriptions churn per await** rather than being scoped to the
     workflow's local lifetime.
