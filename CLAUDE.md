@@ -284,7 +284,7 @@ any other value fails startup. Removed (setting either fails startup):
   an enumeration that drifts. See their Javadoc for the full rationale.
   `StoreUnavailableException` (a `MaestroException`) is a store fault, never a
   workflow failure: the JDBC store throws it for every SQLSTATE outside class
-  `22`/`23`, and `StoreFaultGuard` retries outcome appends then latches the run
+  `22`/`23`/`54`, and `StoreFaultGuard` retries outcome appends then latches the run
   `STORE_UNAVAILABLE` — a latched run appends nothing and is abandoned for
   recovery, so any new `catch` that collects failures must rethrow it too.
 - **Logging:** SLF4J. MDC with `workflowId`, `runId`, `activityName`.

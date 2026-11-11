@@ -43,8 +43,9 @@ loses work". Two findings contradict it for a host that already runs Postgres:
 - **R3** A fault on an activity-outcome append is retried briefly in place
   before abandoning, because the side effect has already happened.
 - **R4** Parked probes keep failing open exactly as today (Issue 20 unchanged).
-- **R5** A store error caused by the workflow's data (SQLSTATE class 22 or 23)
-  still fails the workflow as today.
+- **R5** A store error caused by the workflow's data (SQLSTATE class 22, 23,
+  or 54 — program limit exceeded, such as an oversized `jsonb` payload or an
+  index row too large) still fails the workflow as today.
 - **R6** Lock renewal costs one statement per 500 held locks per pass.
 - **R7** A recovery pass reads only this service's active instances, in pages,
   and does not issue one lock statement per instance another node holds.

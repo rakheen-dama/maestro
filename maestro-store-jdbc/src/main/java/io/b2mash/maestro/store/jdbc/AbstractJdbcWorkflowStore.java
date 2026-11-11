@@ -366,7 +366,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * {@code UPDATE} back and surfaces as {@link DuplicateEventException};
      * any other {@link SQLException} rolls back and surfaces as a
      * {@link StoreUnavailableException} (or, for a data error the terminal
-     * values caused — SQLSTATE class 22/23 — as {@link UncheckedSqlException}).
+     * values caused — SQLSTATE class 22/23/54 — as {@link UncheckedSqlException}).
      */
     @Override
     public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
@@ -1709,15 +1709,18 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * {@link WorkflowAlreadyExistsException}, ...) into the unchecked
      * exception the store throws.
      *
-     * <p>SQLSTATE class {@code 22} (data exception) and class {@code 23}
-     * (integrity-constraint violation) mean the workflow's own values were
-     * rejected, so retrying cannot help: those stay an
-     * {@link UncheckedSqlException}. Everything else — connection loss
-     * ({@code 08}), server shutdown ({@code 57}), serialization failure or
-     * deadlock ({@code 40}), resource limits ({@code 53}), a schema mismatch
-     * ({@code 42}), and a {@code null} SQLSTATE such as a pool's
-     * {@code getConnection()} timeout — is a fault of the store, not of the
-     * workflow, and becomes a {@link StoreUnavailableException}.
+     * <p>SQLSTATE class {@code 22} (data exception), class {@code 23}
+     * (integrity-constraint violation) and class {@code 54} (program limit
+     * exceeded — a {@code jsonb} value over its size limit, an index row too
+     * large) mean the workflow's own values were rejected, so retrying cannot
+     * help: those stay an {@link UncheckedSqlException}, and the workflow
+     * fails rather than being abandoned and re-adopted forever. Everything
+     * else — connection loss ({@code 08}), server shutdown ({@code 57}),
+     * serialization failure or deadlock ({@code 40}), insufficient resources
+     * ({@code 53}), a schema mismatch ({@code 42}), and a {@code null}
+     * SQLSTATE such as a pool's {@code getConnection()} timeout — is a fault
+     * of the store, not of the workflow, and becomes a
+     * {@link StoreUnavailableException}.
      *
      * @param message descriptive error message naming the failed operation
      * @param e       the SQL failure to classify; becomes the cause
@@ -1725,7 +1728,8 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      */
     static RuntimeException storeFault(String message, SQLException e) {
         String sqlState = e.getSQLState();
-        if (sqlState != null && (sqlState.startsWith("22") || sqlState.startsWith("23"))) {
+        if (sqlState != null && (sqlState.startsWith("22") || sqlState.startsWith("23")
+                || sqlState.startsWith("54"))) {
             return new UncheckedSqlException(message, e);
         }
         return new StoreUnavailableException(message, e);
@@ -1733,7 +1737,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
     /**
      * Unchecked wrapper for a {@link SQLException} caused by the data a
-     * workflow supplied (SQLSTATE class {@code 22} or {@code 23}; see
+     * workflow supplied (SQLSTATE class {@code 22}, {@code 23} or {@code 54}; see
      * {@link #storeFault}). This is NOT a
      * {@link io.b2mash.maestro.core.exception.MaestroException}: it is a
      * genuine operation failure, not an engine signal.

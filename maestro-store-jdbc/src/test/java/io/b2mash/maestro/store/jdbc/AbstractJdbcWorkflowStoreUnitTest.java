@@ -137,9 +137,9 @@ class AbstractJdbcWorkflowStoreUnitTest {
      * {@link AbstractJdbcWorkflowStore#storeFault} decides whether a
      * {@link SQLException} is a store fault (the database, the pool or the
      * schema failed — {@link StoreUnavailableException}) or a data error the
-     * workflow's own values caused (SQLSTATE class 22 data exception or class
-     * 23 integrity-constraint violation — still
-     * {@link AbstractJdbcWorkflowStore.UncheckedSqlException}).
+     * workflow's own values caused (SQLSTATE class 22 data exception, class
+     * 23 integrity-constraint violation or class 54 program limit exceeded —
+     * still {@link AbstractJdbcWorkflowStore.UncheckedSqlException}).
      */
     @Nested
     @DisplayName("SQL fault classification: infrastructure faults are StoreUnavailableException")
@@ -154,7 +154,7 @@ class AbstractJdbcWorkflowStoreUnitTest {
         }
 
         @ParameterizedTest(name = "SQLSTATE {0} stays a workflow failure")
-        @ValueSource(strings = {"22001", "22P02", "23502"})
+        @ValueSource(strings = {"22001", "22P02", "23502", "54000", "54001"})
         void dataErrorsStayWorkflowFailures(String sqlState) {
             var ex = AbstractJdbcWorkflowStore.storeFault("q", new SQLException("boom", sqlState));
             assertInstanceOf(AbstractJdbcWorkflowStore.UncheckedSqlException.class, ex);
