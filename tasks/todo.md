@@ -9,7 +9,7 @@ workflow; engine load on the host's database and pool is unbounded by default.
 - [x] Plan 01 — store-fault stand-down (5 tasks + final-review fix wave), branch `fix/store-fault-stand-down`;
       `./gradlew build` green at 48e2eed (1616 tests); per-task and whole-branch reviews clean
 - [x] Plan 02 — bounded host load (5 tasks), branch `feat/bounded-host-load`;
-      batched renewal, paged service-scoped recovery (V10), 20/20 default worker limits, `@MaestroDataSource`, capacity docs; `./gradlew build` green (1666 tests)
+      batched renewal, paged service-scoped recovery (V101), 20/20 default worker limits, `@MaestroDataSource`, capacity docs; `./gradlew build` green (1666 tests)
 - [ ] Gates per plan: `./gradlew build`, E2E 1–10, chaos PR-gate ×3, code review
 - [ ] Review section added here after merge
 

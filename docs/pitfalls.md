@@ -1,6 +1,6 @@
 # Pitfalls
 
-Ten rules whose violations pass every test that runs a workflow straight through and fail in production, usually on the first restart or the first retry. Each rule shows the wrong code, the right code, what you see when you get it wrong, and how a test catches it.
+Eleven rules whose violations pass every test that runs a workflow straight through and fail in production, usually on the first restart, the first retry or the first traffic peak. Each rule shows the wrong code, the right code, what you see when you get it wrong, and how a test catches it.
 
 [← Back to README](../README.md)
 
@@ -319,6 +319,41 @@ If you must catch broadly, rethrow the control-flow signals first: `if (t instan
 **What you see:** wrapped as above, a routine deploy that shuts down a parked workflow is recorded as a workflow failure. The instance ends `FAILED` and compensations run for work that never failed. Swallowed ("log and continue"), the run carries on past an await it never completed, on a node that has abandoned it.
 
 **Test it:** a crash test does not show this one as an outcome. The kit's crash kills the node before it shuts down, so the failure your catch block raises cannot be written. The node logs `ERROR Workflow '…' failed` and writes nothing, and the recovering node carries the workflow on. Catch it in review instead: no `catch (Throwable` or `catch (Error` in workflow code, and no `catch (Exception` that wraps and rethrows around engine calls without first rethrowing `MaestroControlFlowError`.
+
+---
+
+## 11. Never make an activity wait for a workflow of its own task queue
+
+A run keeps its workflow slot while one of its activities runs, and the activity holds one of the queue's activity slots. Every task queue is bounded per node: the queues you list in `maestro.worker.task-queues`, and every other queue at `maestro.worker.default-concurrency` / `default-activity-concurrency` (20 / 20 by default). A workflow started from an activity runs on the same node. If it has the same task queue, it needs a slot from the same pools. Every `@DurableWorkflow` that names no `taskQueue` is on `default`, so this includes a parent and a child of different types.
+
+**Wrong**
+
+```java
+@DurableWorkflow(name = "order-fulfilment")                 // taskQueue "default"
+public class OrderFulfilmentWorkflow { ... shipping.ship(input) ... }
+
+@DurableWorkflow(name = "shipment")                          // also taskQueue "default"
+public class ShipmentWorkflow { ... }
+
+public ShipmentResult ship(OrderInput input) throws TimeoutException {   // an activity of OrderFulfilmentWorkflow
+    return maestro.newWorkflow(ShipmentWorkflow.class, WorkflowOptions.builder()
+                    .workflowId("shipment-" + input.orderId()).build())
+            .startAndWait(input, Duration.ofMinutes(10), ShipmentResult.class);
+}
+```
+
+**Right:** give the child its own pools, or stop waiting inside an activity.
+
+```java
+@DurableWorkflow(name = "shipment", taskQueue = "shipments")   // its own workflow and activity slots
+public class ShipmentWorkflow { ... }
+```
+
+Alternatively, start the child with `startAsync`, have it signal the parent when it finishes, and have the parent `awaitSignal` that signal. A parked run gives its slot back.
+
+**What you see:** under load, nothing finishes. Once `default-concurrency` order runs each wait in `ship()` (or `default-activity-concurrency` of them do), no shipment can get a slot to run, and every order blocks until `startAndWait` throws `TimeoutException`, which fails that activity attempt under its retry policy. Below that load it works, so it passes in staging and fails at the first traffic peak.
+
+**Test it:** a `TestWorkflowEnvironment` test does not show it, because the test kit applies no concurrency limits ([Issue 36](open-issues.md#issue-36)). Catch it in review: no `startAndWait`, and no status polling loop, inside an activity, unless the started workflow names a task queue of its own.
 
 ---
 

@@ -472,7 +472,7 @@ recollection. "Unverified" below means no test asserts the behaviour either way.
     node re-reads the whole active set on each poll and probes the lock for each
     foreign-owned instance. Needs a filter plus an index (an SPI change).
     **Partly fixed 2026-11-11** — the engine now calls the paged, service-scoped
-    `getRecoverableInstances(serviceName, after, limit)` (pages of 200, V10
+    `getRecoverableInstances(serviceName, after, limit)` (pages of 200, V101
     index) and skips instances held elsewhere with one `heldKeys` read per page
     (`RecoveryPassIsolationTest`, `PostgresWorkflowStoreTest$RecoveryScanTests`).
     Still no staleness filter: each node reads every active row of its service

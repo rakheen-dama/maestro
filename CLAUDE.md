@@ -13,7 +13,7 @@ Read these before making architectural decisions:
 - `docs/maestro-architecture.md` — System architecture, diagrams, failure modes
 - `docs/observability.md` — Meter catalog, span topology, Kafka trace-propagation contract
 - `docs/operations.md` — Multi-instance behaviour; versioning + mixed-version deploy playbook
-- `docs/pitfalls.md` — The ten workflow-author rules (saga throws, `causedBy`, idempotency, determinism, owning-node queries, sequence budget, versioning, per-run fields, signal ids, control-flow `Error`s)
+- `docs/pitfalls.md` — The eleven workflow-author rules (saga throws, `causedBy`, idempotency, determinism, owning-node queries, sequence budget, versioning, per-run fields, signal ids, control-flow `Error`s, no same-queue waits in activities)
 
 ## Core Design: Hybrid Memoization
 
@@ -84,7 +84,7 @@ public interface WorkflowStore {
     WorkflowInstance createInstance(WorkflowInstance instance);
     Optional<WorkflowInstance> getInstance(String workflowId);
     List<WorkflowInstance> getRecoverableInstances();     // unbounded, all services; the engine no longer calls it
-    default List<WorkflowInstance> getRecoverableInstances(String serviceName, @Nullable RecoveryCursor after, int limit); // keyset page on (started_at, id), this service only (V10 index)
+    default List<WorkflowInstance> getRecoverableInstances(String serviceName, @Nullable RecoveryCursor after, int limit); // keyset page on (started_at, id), this service only (V101 index)
     void updateInstance(WorkflowInstance instance);       // optimistic locking
     boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent); // atomic terminal write (CAS + event in one transaction)
 
@@ -115,7 +115,7 @@ public interface WorkflowMessaging {
 public interface DistributedLock {
     Optional<LockHandle> tryAcquire(String key, Duration ttl);
     void release(LockHandle handle);
-    void renew(LockHandle handle, Duration ttl);
+    boolean renew(LockHandle handle, Duration ttl);       // false: lost (expired, re-acquired or released)
     default Set<LockHandle> renewAll(Collection<LockHandle> handles, Duration ttl); // returns lost; throw = nothing lost (Postgres: 1 UPDATE per 500)
     default Set<String> heldKeys(Collection<String> keys);  // advisory; empty = unknown, try them all
     boolean trySetLeader(String electionKey, String candidateId, Duration ttl);
@@ -165,13 +165,13 @@ io.b2mash.maestro.samples.payment            — Sample payment gateway (e-comme
 
 ## Database Tables
 
-Prefix `maestro_` (fixed; `maestro.store.table-prefix` was removed). Migrations live in maestro-store-postgres under `db/maestro/store` (band 1–99, V1–V10) and `db/maestro/lock` (band 100–199, V100). Band 200–299 (the removed Postgres messaging transport) is retired and must never be reused (orphan-table upgrade note: `docs/configuration.md` § Schema management). They run through `MaestroSchemaInitializer` into Maestro's own history table `maestro_schema_history` (`maestro.store.schema.mode` = flyway | validate | none); the host's `flyway_schema_history` is untouched. The bands are independent, so Flyway runs with `outOfOrder(true)`: a store migration added after V100 was recorded is still applied (Issue 35); an earlier build cannot start against a history holding a store migration it does not ship:
+Prefix `maestro_` (fixed; `maestro.store.table-prefix` was removed). Migrations live in maestro-store-postgres under `db/maestro/store` (V1–V9, V101) and `db/maestro/lock` (V100). **Every new Maestro migration, store or lock, takes the next version above the highest shipped, within 101–199; versions 1–9 and 100 are history; band 200–299 (the removed Postgres messaging transport) stays retired and must never be reused** (orphan-table upgrade note: `docs/configuration.md` § Schema management). The directory says which component a migration belongs to; the version number does not. Why: every build since PR #36 resolves V100, and to it an applied migration it does not ship is "future" (ignored, the node starts) above V100 but "missing" (startup fails) below it; `MaestroSchemaInitializerTest.migrationVersionsFollowTheNumberingRule` guards the rule. They run through `MaestroSchemaInitializer` into Maestro's own history table `maestro_schema_history` (`maestro.store.schema.mode` = flyway | validate | none); the host's `flyway_schema_history` is untouched. Flyway runs with `outOfOrder(true)` for databases that recorded V100 before V6–V9 (Issue 35):
 
 - `maestro_workflow_instance`
 - `maestro_workflow_event` (unique on `workflow_instance_id, sequence_number`)
 - `maestro_workflow_timer`
 - `maestro_workflow_signal` (`workflow_instance_id` nullable for pre-delivery; unique on `workflow_id, signal_name, message_id` where `message_id` is not null, V9)
-- V10 adds `idx_wf_instance_recovery` (partial, active statuses) for the paged recovery scan — index-only: the query works without it, but under `flyway`/`validate` the migration record is still required to start
+- V101 adds `idx_wf_instance_recovery` (partial, active statuses) for the paged recovery scan — index-only: the query works without it; under `flyway` the first node records it, under `validate` it must be recorded before a node of this build starts
 - `maestro_distributed_lock`, `maestro_leader_election` (lock band; no task, lifecycle or signal queue tables)
 
 ## State Machine
