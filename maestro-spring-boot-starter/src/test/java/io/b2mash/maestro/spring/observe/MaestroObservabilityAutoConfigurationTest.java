@@ -181,6 +181,47 @@ class MaestroObservabilityAutoConfigurationTest {
                 });
     }
 
+    /**
+     * Final fix wave C1 through a real engine run: an activity declared to
+     * return a supertype returns a subtype, whose stored result reads back as
+     * the supertype. The run completes with the activity's own object (the
+     * type valve), and the same counter as an unreadable result,
+     * {@code maestro.activity.result.unreadable}, moves by exactly one.
+     */
+    @Test
+    @DisplayName("maestro.activity.result.unreadable also counts a live result that reads back as another class")
+    void aResultReadingBackAsAnotherClassIsCounted() {
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        MetricsAutoConfiguration.class,
+                        CompositeMeterRegistryAutoConfiguration.class,
+                        SimpleMetricsExportAutoConfiguration.class,
+                        MaestroAutoConfiguration.class,
+                        MaestroObservabilityAutoConfiguration.class))
+                .withUserConfiguration(SubtypeResultConfiguration.class)
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .withPropertyValues("maestro.service-name=observability-mismatch-test")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    var client = context.getBean(MaestroClient.class);
+                    var registry = context.getBean(MeterRegistry.class);
+
+                    var result = client.newWorkflow(SubtypeResultWorkflow.class, options("mismatch-1"))
+                            .startAndWait("bob", Duration.ofSeconds(10), String.class);
+
+                    assertThat(result).as("the activity's own subtype reached workflow code").isEqualTo("ExpressSlot");
+                    var counter = registry.get("maestro.activity.result.unreadable")
+                            .tag("workflow", "ObservabilitySubtypeResultWorkflow")
+                            .tag("activity", "ObservabilitySlots.reserve")
+                            .counter();
+                    assertThat(counter.count()).isEqualTo(1.0);
+                    assertThat(registry.get("maestro.workflow.completed")
+                            .tag("workflow", "ObservabilitySubtypeResultWorkflow")
+                            .counter().count()).isEqualTo(1.0);
+                });
+    }
+
     @Test
     @DisplayName("maestro.observability.metrics.enabled=false — no maestro.* meters registered at all")
     void disabledFlagRegistersNoMeters() {
@@ -613,6 +654,69 @@ class MaestroObservabilityAutoConfigurationTest {
         @WorkflowMethod
         public String run(String applicant) {
             return decider.decide(applicant).getClass().getSimpleName();
+        }
+    }
+
+    /** The workflow and activity beans of {@link #aResultReadingBackAsAnotherClassIsCounted}. */
+    @Configuration(proxyBeanMethods = false)
+    static class SubtypeResultConfiguration {
+
+        @Bean
+        @Scope(BeanDefinition.SCOPE_PROTOTYPE)
+        SubtypeResultWorkflow subtypeResultWorkflow() {
+            return new SubtypeResultWorkflow();
+        }
+
+        @Bean
+        Slots slots() {
+            return new ExpressSlots();
+        }
+    }
+
+    /** A slot; its stored form reads back as this class whatever subclass was written. */
+    public static class Slot {
+        /** The depot. */
+        public String depot = "d-1";
+    }
+
+    /** The subclass the activity returns. */
+    public static class ExpressSlot extends Slot {
+        /** The courier. */
+        public String courier = "c-1";
+    }
+
+    /** One activity declared to return the supertype. */
+    @Activity(name = "ObservabilitySlots")
+    public interface Slots {
+        /**
+         * @param who who reserves
+         * @return a slot (an {@link ExpressSlot})
+         */
+        Slot reserve(String who);
+    }
+
+    /** Always returns an {@link ExpressSlot}. */
+    public static class ExpressSlots implements Slots {
+        @Override
+        public Slot reserve(String who) {
+            return new ExpressSlot();
+        }
+    }
+
+    /** Calls the activity and returns the simple class name of what it received. */
+    @DurableWorkflow(name = "ObservabilitySubtypeResultWorkflow")
+    public static class SubtypeResultWorkflow {
+
+        @ActivityStub
+        private Slots slots;
+
+        /**
+         * @param who who reserves
+         * @return the simple class name of the slot workflow code received
+         */
+        @WorkflowMethod
+        public String run(String who) {
+            return slots.reserve(who).getClass().getSimpleName();
         }
     }
 }

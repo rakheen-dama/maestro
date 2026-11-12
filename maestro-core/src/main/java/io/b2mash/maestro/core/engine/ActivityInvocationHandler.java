@@ -35,12 +35,16 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Type;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collection;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -91,11 +95,30 @@ import java.util.concurrent.TimeoutException;
  * round-trip, to what a replay computes. A store fault, a fenced write or
  * a lost append race on the outcome append keeps its own handling and never
  * reaches the read-back, whose {@code try} holds no store call and catches
- * {@link SerializationException} only. A result that was written but cannot be
- * read back never fails the run: the observer's
- * {@link EngineObserver#activityResultUnreadable} fires, a WARN names the step
- * and the redacted cause, and the activity's own object is returned, while a
- * replay of that step will stand the run down as {@code UNKNOWN_EVENT_PAYLOAD}.
+ * {@link SerializationException} only.
+ *
+ * <p>Three cases return the activity's own object instead:
+ * <ul>
+ *   <li><b>Unreadable.</b> A result that was written but cannot be read back
+ *       never fails the run: the observer's
+ *       {@link EngineObserver#activityResultUnreadable} fires with the root
+ *       cause's class, a WARN names the step and the redacted cause, and a
+ *       replay of that step will stand the run down as
+ *       {@code UNKNOWN_EVENT_PAYLOAD}.</li>
+ *   <li><b>Another class (the type valve).</b> A read-back that is not an
+ *       instance of the returned object's class — unless both are a
+ *       {@code Collection} or both a {@code Map}
+ *       ({@link #readsBackAsAnotherClass}) — would hand workflow code a
+ *       {@code ClassCastException} on a run that never crashed. The live run
+ *       keeps the activity's object, as the released build did; the callback
+ *       fires with {@link EngineObserver#READ_BACK_TYPE_MISMATCH} and a WARN
+ *       names both classes. A replay still reads the other class: for this
+ *       shape live and replay still differ.</li>
+ *   <li><b>A future.</b> A method declared to return a {@code Future} or a
+ *       {@code CompletionStage} is not read back live (its payload is the
+ *       future's bean properties, never its value); no callback, no WARN.</li>
+ * </ul>
+ * The WARNs share one once-per-activity-method set per handler.
  *
  * <h2>Idempotency</h2>
  * <p>The Postgres unique constraint on {@code (workflow_instance_id, sequence_number)}
@@ -180,7 +203,8 @@ import java.util.concurrent.TimeoutException;
  * shared across workflow instances (the per-instance state comes from
  * {@link WorkflowContext} on the current thread). All per-run mutable state is
  * thread-local via the context; the only handler-level state, the set of
- * methods whose unreadable result has been WARNed, is a concurrent set.
+ * methods whose unreadable or other-class result has been WARNed, is a
+ * concurrent set.
  *
  * @see ActivityProxyFactory
  * @see WorkflowContext
@@ -202,7 +226,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     private final String lockKeyPrefix;
     private final EngineObserver observer;
     private final TaskQueueGovernor governor;
-    /** Activity methods whose unreadable result has already been WARNed by this handler. */
+    /** Activity methods whose unreadable or other-class result has already been WARNed by this handler. */
     private final Set<Method> warnedUnreadable = ConcurrentHashMap.newKeySet();
 
     /**
@@ -606,6 +630,12 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * own object is returned. The event stays durable as written; a replay of
      * the step stands the run down as {@code UNKNOWN_EVENT_PAYLOAD}.
      *
+     * <p>A read-back of another class ({@link #readsBackAsAnotherClass}) is
+     * reported the same way, with {@link EngineObserver#READ_BACK_TYPE_MISMATCH}
+     * and {@link #typeMismatchWarning}, and the activity's own object is
+     * returned. A method declared to return a {@code Future} or
+     * {@code CompletionStage} is not read back at all.
+     *
      * <p>The {@code try} holds no store call and catches
      * {@link SerializationException} only, so an {@link Error} (a control-flow
      * signal included) and a store fault are never swallowed here.
@@ -613,24 +643,84 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * @param stored   the payload as the outcome append returned it — what the
      *                 store will hand a replay of this step
      * @param raw      the object the activity returned
-     * @return the read-back value, or {@code raw} if it cannot be read back
+     * @return the read-back value, or {@code raw} if it cannot be read back,
+     *         reads back as another class, or is a future
      */
     private @Nullable Object readBack(@Nullable JsonNode stored, Method method, @Nullable Object raw,
                                       ActivityInfo info, WorkflowContext ctx, int seq, String stepName) {
+        if (returnsAFuture(method)) {
+            // An activity call is synchronous and what is recorded is JSON: a
+            // future's bean properties, never its value. Reading that back
+            // makes a new future nothing completes (join() would hang on the
+            // first run), or fails outright for Future/CompletionStage. Hand
+            // workflow code the activity's own future; a replay of this step
+            // still reads the payload (unsupported return type, Issue 49).
+            return raw;
+        }
+        Object value;
         try {
-            return deserializeResult(stored, method);
+            value = deserializeResult(stored, method);
         } catch (SerializationException unreadable) {
             var root = unreadable.getCause() != null ? unreadable.getCause() : unreadable;
             observer.activityResultUnreadable(info, root.getClass().getName());
-            var warning = unreadableResultWarning(ctx.workflowId(), stepName, seq,
-                    method.getGenericReturnType(), root);
-            if (warnedUnreadable.add(method)) {
-                logger.warn("{}", warning);
-            } else {
-                logger.debug("{}", warning);
-            }
+            warnOnce(method, unreadableResultWarning(ctx.workflowId(), stepName, seq,
+                    method.getGenericReturnType(), root));
             return raw;
         }
+        if (raw != null && value != null && readsBackAsAnotherClass(raw, value)) {
+            // The type valve: the read-back is not an instance of what the
+            // activity returned (a subtype under its declared supertype, a
+            // record under Object, a Long under Number). Workflow code that
+            // casts to the class it built must not meet a ClassCastException
+            // on a run that never crashed, so the live run keeps the
+            // activity's own object — as the released build did — and the
+            // run reports that its replay will read the other class.
+            observer.activityResultUnreadable(info, EngineObserver.READ_BACK_TYPE_MISMATCH);
+            warnOnce(method, typeMismatchWarning(ctx.workflowId(), stepName, seq,
+                    method.getGenericReturnType(), value.getClass(), raw.getClass()));
+            return raw;
+        }
+        return value;
+    }
+
+    /** {@code warning} at WARN the first time per activity method of this handler, at DEBUG after that. */
+    private void warnOnce(Method method, String warning) {
+        if (warnedUnreadable.add(method)) {
+            logger.warn("{}", warning);
+        } else {
+            logger.debug("{}", warning);
+        }
+    }
+
+    /**
+     * Whether the method's declared raw return type is a {@link Future} or a
+     * {@link CompletionStage} — a result the live run never reads back.
+     */
+    private static boolean returnsAFuture(Method method) {
+        var declared = method.getReturnType();
+        return Future.class.isAssignableFrom(declared) || CompletionStage.class.isAssignableFrom(declared);
+    }
+
+    /**
+     * The type valve's test: {@code readBack} is not an instance of
+     * {@code raw}'s class, and the two are not both a {@link Collection} nor
+     * both a {@link Map} — collections and maps legitimately read back as
+     * another implementation ({@code List.of(..)} as an {@code ArrayList}, a
+     * {@code TreeMap} declared as a {@code Map} as a {@code LinkedHashMap}).
+     * Only the top-level class is compared, never the elements. A
+     * {@code null} on either side is never a mismatch.
+     *
+     * @param raw      the object the activity returned
+     * @param readBack the stored result as read back into the declared type
+     * @return whether the live run must keep {@code raw}
+     */
+    static boolean readsBackAsAnotherClass(@Nullable Object raw, @Nullable Object readBack) {
+        if (raw == null || readBack == null || raw.getClass().isInstance(readBack)) {
+            return false;
+        }
+        var bothCollections = raw instanceof Collection<?> && readBack instanceof Collection<?>;
+        var bothMaps = raw instanceof Map<?, ?> && readBack instanceof Map<?, ?>;
+        return !bothCollections && !bothMaps;
     }
 
     /**
@@ -654,6 +744,29 @@ public final class ActivityInvocationHandler implements InvocationHandler {
                 + "(docs/pitfalls.md, rule 12)")
                 .formatted(workflowId, stepName, seq, declared.getTypeName(),
                         UnknownHistoryGuard.redactedCause(cause));
+    }
+
+    /**
+     * The fixed WARN copy for a live result that reads back as another class
+     * than the object the activity returned (the type valve). Class names
+     * only — never a payload value.
+     *
+     * @param workflowId the run's workflow id
+     * @param stepName   {@code <ActivityName>.<method>}
+     * @param seq        the step's sequence number
+     * @param declared   the method's generic return type
+     * @param readBack   the class the stored result reads back as
+     * @param returned   the class of the object the activity returned
+     * @return the log line
+     */
+    static String typeMismatchWarning(String workflowId, String stepName, int seq,
+                                      Type declared, Class<?> readBack, Class<?> returned) {
+        return ("Workflow '%s': the result of activity '%s' at sequence %d (declared %s) reads back from the store "
+                + "as %s rather than %s; this run continues with the object the activity returned, and a replay of "
+                + "this step after a recovery will hand workflow code a %s instead — declare the concrete type the "
+                + "activity returns, one that reads back as itself (docs/pitfalls.md, rule 12)")
+                .formatted(workflowId, stepName, seq, declared.getTypeName(), readBack.getName(),
+                        returned.getName(), readBack.getName());
     }
 
     /**

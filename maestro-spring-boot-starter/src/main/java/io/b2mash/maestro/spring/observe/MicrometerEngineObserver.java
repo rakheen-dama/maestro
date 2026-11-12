@@ -146,10 +146,14 @@ public final class MicrometerEngineObserver implements EngineObserver {
     }
 
     /**
-     * Counts a live activity result that was recorded but cannot be read back
-     * as its declared type (WP1 D9): the run continued with the activity's own
-     * object and will stand down as {@code unknown_event_payload} at its next
-     * recovery. The engine fires this live only, so there is no replay flag.
+     * Counts a live activity result that was recorded but either cannot be
+     * read back as its declared type (WP1 D9; a recovery of the run will stand
+     * it down as {@code unknown_event_payload}) or reads back as another class
+     * than the object the activity returned ({@code exceptionType} is
+     * {@link EngineObserver#READ_BACK_TYPE_MISMATCH}; a replay hands workflow
+     * code the read-back class). Either way the run continued with the
+     * activity's own object. One counter for both: the cause is not a tag. The
+     * engine fires this live only, so there is no replay flag.
      */
     @Override
     public void activityResultUnreadable(ActivityInfo a, String exceptionType) {

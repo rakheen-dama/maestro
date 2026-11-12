@@ -37,6 +37,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * straight through the kit (no crash) and asserts the value it saw, so each
  * would read differently if a live call returned the activity's own object.
  *
+ * <p>Two exceptions return the activity's own object on the first run: a
+ * read-back of another class than the object the activity returned (a
+ * subtype declared as its supertype, a record declared as {@code Object}; the
+ * type valve), and a method declared to return a {@code Future} or
+ * {@code CompletionStage}, which is never read back live. A replay of either
+ * still reads the stored payload as the declared type.
+ *
  * <p>The kit's default mapper is Jackson 3's default, as the starter's is.
  * Map key order on Postgres ({@code jsonb}: shorter keys first) is not
  * shown here: the kit stores trees, not {@code jsonb}
@@ -78,15 +85,17 @@ class ReadBackFormsTest {
                 env.startWorkflow(NumbersWorkflow.class, "x").getResult(String.class, BOUND));
     }
 
+    /** The type valve: the read-back is a {@code Base}, not a {@code Sub}, so the live run gets the {@code Sub}. */
     @Test
-    void aSubtypeDeclaredAsItsSupertypeArrivesAsTheSupertype_onTheFirstRun() throws Exception {
-        assertEquals("Base a=a instanceof Sub=false",
+    void aSubtypeDeclaredAsItsSupertypeArrivesAsTheSubtype_onTheFirstRun() throws Exception {
+        assertEquals("Sub a=a instanceof Sub=true",
                 env.startWorkflow(SubtypeWorkflow.class, "x").getResult(String.class, BOUND));
     }
 
+    /** The type valve: the read-back is a {@code LinkedHashMap}, so the live run gets the record. */
     @Test
-    void aResultDeclaredAsObjectArrivesAsAMap_onTheFirstRun() throws Exception {
-        assertEquals("LinkedHashMap {id=r-1, amount=10.5}",
+    void aResultDeclaredAsObjectArrivesAsTheActivitysObject_onTheFirstRun() throws Exception {
+        assertEquals("Receipt Receipt[id=r-1, amount=10.50]",
                 env.startWorkflow(ObjectWorkflow.class, "x").getResult(String.class, BOUND));
     }
 
@@ -104,12 +113,13 @@ class ReadBackFormsTest {
 
     /**
      * Jackson writes a {@code CompletableFuture}'s bean properties, never its
-     * value, and reads them back into a new future that nothing completes.
+     * value. A live call does not read that back: it returns the activity's
+     * own future, so {@code join()} completes on the first run.
      */
     @Test
-    void aCompletableFutureResultArrivesAsAFutureThatNeverCompletes() throws Exception {
+    void aCompletableFutureResultIsTheActivitysFuture_andJoinCompletesOnTheFirstRun() throws Exception {
         var handle = env.startWorkflow(CompletableFutureWorkflow.class, "x");
-        assertEquals("CompletableFuture done=false", handle.getResult(String.class, BOUND));
+        assertEquals("CompletableFuture done=true joined=v", handle.getResult(String.class, BOUND));
         assertEquals("{\"cancelled\":false,\"completedExceptionally\":false,\"done\":true,\"numberOfDependents\":0}",
                 String.valueOf(handle.getEvents().stream()
                         .filter(e -> "Forms.completableFuture".equals(e.stepName()))
@@ -117,8 +127,8 @@ class ReadBackFormsTest {
     }
 
     /**
-     * {@code Future} and {@code CompletionStage} cannot be read back at all:
-     * the live run carries on with the activity's own object (D9) ...
+     * {@code Future} and {@code CompletionStage} are never read back live (nor
+     * could they be): the live run carries on with the activity's own object ...
      */
     @Test
     void aFutureOrCompletionStageResult_runsLiveWithTheActivitysObject() throws Exception {
@@ -322,7 +332,7 @@ class ReadBackFormsTest {
         @WorkflowMethod
         public String run(String in) {
             var future = forms.completableFuture();
-            return future.getClass().getSimpleName() + " done=" + future.isDone();
+            return future.getClass().getSimpleName() + " done=" + future.isDone() + " joined=" + future.join();
         }
     }
 

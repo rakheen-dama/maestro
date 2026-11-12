@@ -205,13 +205,16 @@ class LiveResultReadBackTest {
                         OffsetDateTime.parse("2026-11-12T10:00:00+02:00"), false),
                 Arguments.of("TreeSet record", ProduceTags.class,
                         new Tags(new TreeSet<>(List.of("delta", "alpha", "charlie", "bravo", "echo"))), false),
-                Arguments.of("Sub declared as Base", ProduceBase.class, new Sub(), false));
+                // Reads back as another class (the type valve, final fix wave C1): the live run
+                // hands workflow code the activity's own Sub, so the downstream hash is the one
+                // cbf5a2a wrote — and a replay, which reads a Base, computes a different one.
+                Arguments.of("Sub declared as Base", ProduceBase.class, new Sub(), true));
     }
 
     @ParameterizedTest(name = "[{index}] {0}")
     @MethodSource("stableAndUnstableResults")
     void liveReadBackLeavesPayloadsAsBefore(String label, Class<? extends Produces> producer,
-                                            Object raw, boolean roundTripStable) throws Exception {
+                                            Object raw, boolean sinkGetsTheRawValue) throws Exception {
         // produce() returns raw; the workflow passes the value to sink(Object); both live
         var produce = producer.getMethod("produce");
         Type declared = produce.getGenericReturnType();
@@ -223,7 +226,7 @@ class LiveResultReadBackTest {
         assertEquals(WorkflowStatus.COMPLETED, awaitStatus(id), label);
 
         assertEquals(serializer.serialize(raw), payloadOf(id, "Acts.produce"), label);   // payload exactly as before
-        if (roundTripStable) {
+        if (sinkGetsTheRawValue) {
             assertEquals(ArgumentFingerprint.of(serializer, new Object[]{raw}),
                     argsHashOf(id, "Acts.sink"), label);                                  // what cbf5a2a wrote
         } else {

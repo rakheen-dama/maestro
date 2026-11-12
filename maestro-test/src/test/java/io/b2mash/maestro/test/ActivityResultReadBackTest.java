@@ -9,6 +9,7 @@ import io.b2mash.maestro.core.engine.ArgumentFingerprint;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.StandDownReason;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -47,10 +48,15 @@ import static org.junit.jupiter.api.Assertions.assertNotSame;
  * read-back of the stored payload, not the object the activity returned (WP1
  * D7, audit B 3.8). Before the fix, a result type that does not round-trip
  * identically through Jackson — an {@code OffsetDateTime} with a non-UTC
- * offset, an unordered {@code Set}, a subtype under a declared supertype —
- * made a later activity's argument fingerprint differ between the live run and
- * the replay, so an unchanged workflow stood down as
- * {@code nondeterministic_history} after any crash.
+ * offset, an unordered {@code Set} — made a later activity's argument
+ * fingerprint differ between the live run and the replay, so an unchanged
+ * workflow stood down as {@code nondeterministic_history} after any crash.
+ *
+ * <p>Not for a result that reads back as <em>another class</em> — a subtype
+ * under a declared supertype (the probe's {@code BASE_SUB}): the type valve
+ * hands the live run the activity's own object, as the released build did,
+ * and a replay reads the supertype, so that divergence remains. The
+ * {@code subtypeDeclaredAsItsSupertype_*} tests pin what happens.
  *
  * <p>Ports {@code AuditB38ReplayFingerprintTest} (the two end-to-end repros,
  * with a positive {@code COMPLETED} assertion in place of the repro's absence
@@ -122,7 +128,7 @@ class ActivityResultReadBackTest {
     // ── The probe (AuditB38FingerprintProbeTest), live versus replayed ──
 
     @ParameterizedTest
-    @EnumSource(ProbeCase.class)
+    @EnumSource(value = ProbeCase.class, mode = EnumSource.Mode.EXCLUDE, names = "BASE_SUB")
     void liveValueIsTheReplayedValue(ProbeCase c) throws Exception {
         var id = "probe-" + c.name();
         // Two completions: the probe's result and the sink that took it as
@@ -145,6 +151,52 @@ class ActivityResultReadBackTest {
                 seen.get(0) == null ? null : seen.get(0).getClass(), c.name());
         assertEquals(c.comparable(seen.get(1)), c.comparable(seen.get(0)), c.name());
         assertEquals("COMPLETED", status, c.name());
+    }
+
+    // ── A subtype under its declared supertype: live ≠ replay remains ────
+
+    /**
+     * The type valve: the live run gets the activity's {@code Sub}; after the
+     * crash the replay reads a {@code Base}. The value feeds the sink's
+     * recorded argument, so its fingerprint differs from the recorded one and
+     * the recovered run stands down — the released build's divergence, now
+     * reported on the first run (callback, meter, {@code WARN}:
+     * {@code ReadBackTypeValveTest} in {@code maestro-core}).
+     */
+    @Test
+    void subtypeDeclaredAsItsSupertype_liveSub_replayBase_standsDownWhenItFeedsARecordedStep() throws Exception {
+        var id = "base-sub-feeds";
+        var crash = env.crashAfter(2);   // baseSub and the sink completed; the node dies before the run ends
+        var handle = env.startWorkflow(id, ProbeWorkflow.class, ProbeCase.BASE_SUB.name());
+        crash.awaitCrash(Duration.ofSeconds(10));
+        crash.recover();
+        var status = settle(handle);
+
+        var seen = Seen.of(id).stream().map(ProbeCase::baseFields).toList();
+        assertEquals(List.of(List.of("Sub", "a", "b"), List.of("Base", "a")), seen, "[live, replayed]");
+        assertEquals(List.of(StandDownReason.NONDETERMINISTIC_HISTORY),
+                handle.standDowns().stream().map(StandDown::reason).toList(), status);
+        assertEquals(WorkflowStatus.RUNNING, handle.getStatus());
+    }
+
+    /**
+     * The same shape when no recorded step takes the value: the replay reads a
+     * {@code Base} and the recovered run completes with what it computes from
+     * it — a different result from the one the first run was computing.
+     */
+    @Test
+    void subtypeDeclaredAsItsSupertype_liveSub_replayBase_completesWhenNoRecordedStepTakesIt() throws Exception {
+        var id = "base-sub-free";
+        var crash = env.crashAfter(2);   // baseSub and the sink completed; the node dies before the run ends
+        var handle = env.startWorkflow(id, BaseSubWorkflow.class, "x");
+        crash.awaitCrash(Duration.ofSeconds(10));
+        crash.recover();
+        var status = settle(handle);
+
+        var seen = Seen.of(id).stream().map(ProbeCase::baseFields).toList();
+        assertEquals(List.of(List.of("Sub", "a", "b"), List.of("Base", "a")), seen, "[live, replayed]");
+        assertEquals("COMPLETED", status);
+        assertEquals("Base", handle.getResult(String.class, Duration.ofSeconds(5)));
     }
 
     // ── Optional.empty() and JsonNode results (Task 5) ───────────────────
@@ -434,7 +486,7 @@ class ActivityResultReadBackTest {
         }
 
         /** {@code Base} has no {@code equals}: its class and public fields, as {@code Sub} would add one. */
-        private static Object baseFields(Object value) {
+        static List<Object> baseFields(@Nullable Object value) {
             var fields = new ArrayList<Object>();
             fields.add(value.getClass().getSimpleName());
             fields.add(((Base) value).a);
@@ -470,6 +522,24 @@ class ActivityResultReadBackTest {
             var v = ProbeCase.valueOf(caseName).call(probes);
             Seen.record(WorkflowContext.current().workflowId(), v);
             return sink.take(v);
+        }
+    }
+
+    /** Calls {@code baseSub()}, passes only its {@code a} field on, and returns the class it got. */
+    @DurableWorkflow(name = "base-sub-workflow")
+    public static class BaseSubWorkflow {
+        @ActivityStub(startToCloseTimeout = "PT10S")
+        private Probes probes;
+
+        @ActivityStub(startToCloseTimeout = "PT10S")
+        private Sink sink;
+
+        @WorkflowMethod
+        public String run(String in) {
+            var base = probes.baseSub();
+            Seen.record(WorkflowContext.current().workflowId(), base);
+            sink.take(base.a);
+            return base.getClass().getSimpleName();
         }
     }
 
