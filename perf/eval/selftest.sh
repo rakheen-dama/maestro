@@ -265,6 +265,65 @@ expect "gate: tolerance 50, net 5.5 vs 20 (the reviewer's case)" INVALID "$(gate
 expect "gate: tolerance over the cap: verdict" INVALID "$(gate_verdict 20 5.01 20 0)"
 expect "gate: tolerance at the cap, net 25.01 (outside)" FAIL "$(gate_of 25.01 5 20)"
 
+# Verdict precedence end to end (the table in common.jq's and run.sh's
+# headers). A probe scenario evaluates the real run's common checks plus
+# injected scenario checks (.probeChecks) through the real lib/evaluate.sh, so
+# result.json and summary.md are written exactly as for a run. Each case
+# prints "<verdict> <exit code (verdict_rc)> <listed>", where listed = yes when
+# result.json holds every common check plus every injected one and summary.md
+# has a row for each of them with its status.
+probe_perf="${work}/probe-perf"
+mkdir -p "$probe_perf"
+cp -R "${PERF_DIR}/eval" "${PERF_DIR}/lib" "$probe_perf/"
+printf '%s\n' 'include "common"; $identity[0] as $id | $measurements[0] as $m | result($id; $m; $m.probeChecks)' \
+  >"${probe_perf}/eval/verdict-probe.jq"
+probe() { # <case> <checks: class:status,…> [<jq filter doctoring measurements>]
+  local dir="${work}/$1" checks="" spec cls st nprobe=0 v rc listed=yes n want id row
+  mkdir -p "$dir"
+  for spec in ${2//,/ }; do
+    cls=${spec%%:*} st=${spec#*:} nprobe=$((nprobe + 1))
+    checks+="${checks:+, }{id: \"${cls}.probe${nprobe}\", class: \"${cls}\", status: \"${st}\", value: null, limit: null, detail: \"probe\"}"
+  done
+  cp "${src}/identity.json" "$dir/"
+  jq "${3:-.} | .probeChecks = [${checks}]" "${src}/measurements.json" >"${dir}/measurements.json"
+  if ! bash "${probe_perf}/lib/evaluate.sh" "$dir" verdict-probe "" >/dev/null 2>"${dir}/stderr"; then
+    echo "CRASH - no"
+    return 0
+  fi
+  v=$(jq -r .verdict "${dir}/result.json")
+  rc=$( (source "${PERF_DIR}/lib/common.sh" && verdict_rc "$v") 2>/dev/null || echo '?')
+  n=$(jq '.checks | length' "${dir}/result.json")
+  want=$((common_checks + nprobe))
+  ((n == want)) || listed=no
+  while IFS=$'\t' read -r id cls st; do
+    row="| ${id} | ${cls} | **${st}** |"
+    grep -qF -- "$row" "${dir}/summary.md" || listed=no
+  done < <(jq -r '.checks[] | [.id, .class, .status] | @tsv' "${dir}/result.json")
+  for ((n = 1; n <= nprobe; n++)); do
+    jq -e --arg p "probe${n}" 'any(.checks[]; .id | endswith($p))' "${dir}/result.json" >/dev/null || listed=no
+  done
+  printf '%s %s %s' "$v" "$rc" "$listed"
+}
+common_checks=$(jq '.checks | length' "${work}/pass/result.json")
+common_checks=$((common_checks - $(jq '[.checks[] | select(.id | test("^(validity\\.(background|roleSplit)|correctness\\.|gate\\.|advisory\\.latency)"))] | length' "${work}/pass/result.json")))
+expect "precedence: no scenario check (f)" "PASS 0 yes" "$(probe p-none '')"
+expect "precedence: correctness FAIL + gate INVALID (c beats e)" "FAIL 1 yes" "$(probe p-cfail-ginv correctness:FAIL,gate:INVALID)"
+expect "precedence: gate INVALID alone (e)" "INVALID 2 yes" "$(probe p-ginv gate:INVALID)"
+expect "precedence: validity INVALID + correctness FAIL (b beats c)" "INVALID 2 yes" \
+  "$(probe p-vinv-cfail correctness:FAIL '.k6[-1].exitCode = 107')"
+expect "precedence: gate FAIL + gate INVALID (d beats e)" "FAIL 1 yes" "$(probe p-gfail-ginv gate:FAIL,gate:INVALID)"
+expect "precedence: gate WARN + gate INVALID (d beats e)" "FAIL 1 yes" "$(probe p-gwarn-ginv gate:WARN,gate:INVALID)"
+expect "precedence: correctness INVALID alone (c: counts as FAIL)" "FAIL 1 yes" "$(probe p-cinv correctness:INVALID)"
+expect "precedence: correctness INVALID + gate INVALID (c beats e)" "FAIL 1 yes" "$(probe p-cinv-ginv correctness:INVALID,gate:INVALID)"
+expect "precedence: correctness and gate NO_BASELINE (f)" "PASS 0 yes" "$(probe p-nobase correctness:NO_BASELINE,gate:NO_BASELINE)"
+expect "precedence: advisory WARN + gate INVALID (e)" "INVALID 2 yes" "$(probe p-awarn-ginv advisory:WARN,gate:INVALID)"
+expect "precedence: gate ERROR + correctness FAIL + validity INVALID (a)" "ERROR 3 yes" \
+  "$(probe p-err-gate gate:ERROR,correctness:FAIL '.k6[-1].exitCode = 107')"
+expect "precedence: correctness ERROR (a)" "ERROR 3 yes" "$(probe p-err-corr correctness:ERROR)"
+expect "precedence: advisory ERROR (a)" "ERROR 3 yes" "$(probe p-err-adv advisory:ERROR)"
+expect "precedence: validity ERROR + gate INVALID (a)" "ERROR 3 yes" "$(probe p-err-val validity:ERROR,gate:INVALID)"
+expect "precedence: unknown status PASSED on a correctness check (a)" "ERROR 3 yes" "$(probe p-unknown correctness:PASSED)"
+
 expect "unknown status PASSED" ERROR "$(verdict_of '.[0].status = "PASSED"')"
 expect "unknown class" ERROR "$(verdict_of '.[0].class = "validty"')"
 expect "validity check WARN" INVALID "$(verdict_of 'map(if .id == "validity.identity" then .status = "WARN" else . end)')"

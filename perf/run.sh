@@ -70,6 +70,17 @@
 #  3. The subtraction extrapolates the idle rate over the load window, so its
 #     error grows with loadWindowSecs / backgroundWindowSecs, while the
 #     tolerance is a fixed number of calls.
+#  4. validity.background's lower bound on leader-election upserts
+#     (>= replicas x (observedTicks - 1)) is loose in two ways. It allows one
+#     missed tick PER NODE (at 2 replicas and 12 ticks, 22 of 24 passes), so
+#     it proves only that each node's poller ran at least about
+#     observedTicks - 1 times, not every tick. And the retention sweeper's
+#     leader election issues the same upsert statement (once per retention
+#     batch, at node start and then every maestro.retention.interval, 1 h),
+#     so a window that contains a retention sweep has inflated upserts that
+#     can hide a missed tick. It still catches a node whose poller is fully
+#     dead: at 2 replicas and 12 ticks such a window records about 12
+#     upserts, far below the floor of 22.
 #  The rule: a scenario whose measured windows extend beyond ~8 minutes after
 #  the earliest node start (leaving margin before the first lock-cleaner pass)
 #  must extend the model (a longer idle window spanning a sweep, or explicit
@@ -85,8 +96,23 @@
 #  cannot parse). The smoke's windows close about 80 s after node start.
 #
 # Exit: 0 PASS, 1 FAIL, 2 INVALID, 3 harness error (including an evaluator
-# ERROR verdict: a check with status ERROR, i.e. misconfigured, or with an
-# unknown class or status).
+# ERROR verdict). The verdict (perf/eval/common.jq, verdict) takes the first
+# match of:
+#   a. any check has status ERROR, or an unknown class or status
+#      (evaluator defect, misconfigured check, invalid allowance)  -> ERROR    exit 3
+#   b. any VALIDITY check is not PASS
+#      (the measurement itself cannot be trusted)                  -> INVALID  exit 2
+#   c. any CORRECTNESS check is not PASS or NO_BASELINE: FAIL, and
+#      also INVALID or WARN (a correctness check that could not
+#      establish correctness counts as failed)                     -> FAIL     exit 1
+#   d. any GATE check is not PASS, NO_BASELINE or INVALID: FAIL,
+#      and also WARN                                               -> FAIL     exit 1
+#   e. any GATE check is INVALID (could not be judged, e.g. the
+#      statement gate's 25 % tolerance cap)                        -> INVALID  exit 2
+#   f. otherwise (NO_BASELINE gates count as pass)                 -> PASS     exit 0
+# So a GATE check that is INVALID makes the run INVALID only when no
+# correctness or gate check FAILed: only validity outranks FAIL. Advisory
+# checks never change the verdict.
 # The last stdout line is always: VERDICT <PASS|FAIL|INVALID|ERROR> <resultsDir>
 
 # SC2016: the single-quoted '$x' strings are jq filters, expanded by jq.
@@ -417,10 +443,9 @@ identity_set '.postgres = $p' --argjson p "$(jq -c . "${RESULTS}/pg-settings.jso
 BASELINE="${PERF_DIR}/baselines/${SCENARIO}.json"
 bash "${PERF_DIR}/lib/evaluate.sh" "$RESULTS" "$SCENARIO" "$BASELINE"
 VERDICT=$(jq -r .verdict "${RESULTS}/result.json")
+rc=$(verdict_rc "$VERDICT")
 case "$VERDICT" in
-  PASS) rc=0 ;;
-  FAIL) rc=1 ;;
-  INVALID) rc=2 ;;
+  PASS | FAIL | INVALID) ;;
   ERROR) die "the evaluator returned ERROR: a check is misconfigured (status ERROR) or has an unknown class or status (see result.json)" ;;
   *) die "result.json has no verdict" ;;
 esac

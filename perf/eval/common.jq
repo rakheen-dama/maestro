@@ -6,16 +6,25 @@
 #              status: PASS|FAIL|INVALID|NO_BASELINE|WARN|ERROR, value, limit, detail}],
 #    verdict: PASS|FAIL|INVALID|ERROR}
 #
-# The verdict is decided by allow-list, never by enumerating bad statuses:
-#   ERROR   any check has an unknown class or status (an evaluator bug), or
-#           status ERROR (a misconfigured check, e.g. a statement gate given
-#           an out-of-range allowance);
-#   INVALID unless every validity check is exactly PASS, and whenever a gate
-#           check is INVALID (it could not be judged: too few workflows);
-#   FAIL    unless every correctness and gate check is PASS or NO_BASELINE;
-#   PASS    otherwise. Advisory checks (PASS or WARN) never change it, and an
-#           advisory cannot raise ERROR: anything that goes wrong inside one is
-#           reported as that advisory's WARN with the reason (advisory_guarded).
+# The verdict is decided by allow-list, never by enumerating bad statuses.
+# Precedence (first match wins; exit code as perf/run.sh returns it):
+#   a. any check has status ERROR, or an unknown class or status
+#      (evaluator defect, misconfigured check, invalid allowance)  -> ERROR    exit 3
+#   b. any VALIDITY check is not PASS
+#      (the measurement itself cannot be trusted)                  -> INVALID  exit 2
+#   c. any CORRECTNESS check is not PASS or NO_BASELINE: FAIL, and
+#      also INVALID or WARN (a correctness check that could not
+#      establish correctness counts as failed)                     -> FAIL     exit 1
+#   d. any GATE check is not PASS, NO_BASELINE or INVALID: FAIL,
+#      and also WARN                                               -> FAIL     exit 1
+#   e. any GATE check is INVALID (could not be judged, e.g. the
+#      statement gate's 25 % tolerance cap)                        -> INVALID  exit 2
+#   f. otherwise (NO_BASELINE gates count as pass)                 -> PASS     exit 0
+# So only validity outranks FAIL: a correctness FAIL is never hidden behind
+# a gate that could not be judged. Advisory checks (PASS or WARN) never
+# change the verdict, and an advisory cannot raise ERROR: anything that goes
+# wrong inside one is reported as that advisory's WARN with the reason
+# (advisory_guarded).
 #
 # Statement counts. pg_stat_statements counts every call the engine's role
 # makes in a window, and an engine is never idle: its timer poller (each
@@ -53,14 +62,16 @@ def known_classes: ["validity", "correctness", "gate", "advisory"];
 def known_statuses: ["PASS", "FAIL", "INVALID", "NO_BASELINE", "WARN", "ERROR"];
 
 def verdict:
+  def has($cls; $statuses): any(.[]; .class == $cls and (.status as $s | $statuses | index([$s])));
+  def lacks($cls; $statuses): any(.[]; .class == $cls and (.status as $s | $statuses | index([$s]) | not));
   if any(.[]; (.class as $c | known_classes | index([$c]) | not)
               or (.status as $s | known_statuses | index([$s]) | not)
-              or .status == "ERROR") then "ERROR"
-  elif any(.[]; (.class == "validity" and .status != "PASS")
-                or (.class == "gate" and .status == "INVALID")) then "INVALID"
-  elif any(.[]; (.class == "correctness" or .class == "gate")
-                and .status != "PASS" and .status != "NO_BASELINE") then "FAIL"
-  else "PASS" end;
+              or .status == "ERROR") then "ERROR"                     # a
+  elif lacks("validity"; ["PASS"]) then "INVALID"                       # b
+  elif lacks("correctness"; ["PASS", "NO_BASELINE"]) then "FAIL"        # c
+  elif lacks("gate"; ["PASS", "NO_BASELINE", "INVALID"]) then "FAIL"    # d
+  elif has("gate"; ["INVALID"]) then "INVALID"                          # e
+  else "PASS" end;                                                      # f
 
 def round2: if . == null then null else (. * 100 | round) / 100 end;
 def round4: if . == null then null else (. * 10000 | round) / 10000 end;
@@ -97,7 +108,12 @@ def isnum: type == "number";
 # So observedTicks = the due-timer query's calls, at any replica count. The
 # leader-election upsert is shared with the retention sweeper's election, so
 # it is no tick counter; it only checks from below that every node's poller
-# ran: leaderElectionCalls >= replicas x (observedTicks - 1).
+# ran: leaderElectionCalls >= replicas x (observedTicks - 1). That bound is
+# loose (Known limit 4 in perf/run.sh): it allows one missed tick per node,
+# and a retention election in the window inflates the count; it proves each
+# node's poller ran at least about observedTicks - 1 times, and it does catch
+# a node whose poller is fully dead (2 replicas, 12 ticks: about 12 upserts
+# against a floor of 22).
 def tick_query_re: "FROM maestro_workflow_timer WHERE fire_at <= \\$[0-9]+ AND status = ";
 def leader_election_query_re: "^INSERT INTO maestro_leader_election ";
 

@@ -188,7 +188,8 @@ wait_terminal() {
 #  PERF_LOCK_TEST_PAUSE_BEFORE_PID (s, between acquiring the lock directory
 #  and writing the pid). They are INERT unless PERF_LOCK_SELFTEST=1 is also
 #  set (only the lock self-test sets it); with it, each value must be a
-#  non-negative number, checked before anything is touched (a bad one makes
+#  non-negative decimal number of seconds (5, 0.5, .5 and 1. are accepted;
+#  -1, ., abc and 1e3 are not), checked before anything is touched (a bad one makes
 #  take_lock refuse, nothing created), and an active hook logs one line.
 # take_lock <lock-dir> <owner>
 lock_is_young() { [[ -z "$(find "$1" -maxdepth 0 -mmin +1 2>/dev/null)" ]]; }
@@ -200,7 +201,7 @@ lock_test_pause() {
   [[ "${PERF_LOCK_SELFTEST:-}" == 1 ]] || return 0
   value=${!name:-}
   [[ -n "$value" ]] || return 0
-  [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]] \
+  [[ "$value" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]] \
     || die "lock test hook ${name}='${value}' is not a non-negative number of seconds; refusing to start, nothing touched"
   printf '%s' "$value"
 }
@@ -249,6 +250,17 @@ take_lock() {
   fi
   printf '%s\n' "$owner" >"${lock}/owner"
   [[ -z "$took_over" ]] || log "stale lock ${lock} (${took_over} not running): taken over"
+}
+
+# The driver's exit code for a verdict (the table in perf/run.sh's header):
+# PASS 0, FAIL 1, INVALID 2, ERROR or anything else 3.
+verdict_rc() {
+  case "$1" in
+    PASS) printf '0' ;;
+    FAIL) printf '1' ;;
+    INVALID) printf '2' ;;
+    *) printf '3' ;;
+  esac
 }
 
 # Seconds in an ISO-8601 duration as /perf/info reports it (Java

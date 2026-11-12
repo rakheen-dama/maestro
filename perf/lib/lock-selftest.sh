@@ -136,6 +136,10 @@ hook_case no-flag-5s-stale take stale-pid 2 \
 hook_case flag-nonnumeric-free refuse free 2 PERF_LOCK_SELFTEST=1 PERF_LOCK_TEST_PAUSE_BEFORE_PID=abc
 hook_case flag-nonnumeric-stale refuse stale-pid 2 PERF_LOCK_SELFTEST=1 PERF_LOCK_TEST_PAUSE_BEFORE_TAKEOVER=abc
 hook_case flag-negative-free refuse free 2 PERF_LOCK_SELFTEST=1 PERF_LOCK_TEST_PAUSE_BEFORE_PID=-1
+hook_case flag-leading-dot-free take free 2 PERF_LOCK_SELFTEST=1 PERF_LOCK_TEST_PAUSE_BEFORE_PID=.5
+hook_case flag-trailing-dot-free take free 3 PERF_LOCK_SELFTEST=1 PERF_LOCK_TEST_PAUSE_BEFORE_PID=1.
+hook_case flag-lone-dot-free refuse free 2 PERF_LOCK_SELFTEST=1 PERF_LOCK_TEST_PAUSE_BEFORE_PID=.
+hook_case flag-exponent-free refuse free 2 PERF_LOCK_SELFTEST=1 PERF_LOCK_TEST_PAUSE_BEFORE_PID=1e3
 hook_case flag-valid-free take free 3 PERF_LOCK_SELFTEST=1 PERF_LOCK_TEST_PAUSE_BEFORE_PID=0.5
 if grep -q 'lock test hooks active (PERF_LOCK_SELFTEST=1): pause before pid 0.5 s' "${work}/hook.err"; then
   printf 'ok    %-34s %s\n' flag-valid-logs-one-line "$(grep -c 'lock test hooks active' "${work}/hook.err") line"
