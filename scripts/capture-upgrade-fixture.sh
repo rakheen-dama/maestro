@@ -5,12 +5,23 @@
 #
 # Usage (from the repository root):
 #   scripts/capture-upgrade-fixture.sh migrations <ref> <name>
+#   scripts/capture-upgrade-fixture.sh history <ref> <name>
 #
 # migrations  Writes maestro-store-postgres/src/test/resources/upgrade/<name>/
 #             <component>/<file> for every
 #             */src/main/resources/db/maestro/(store|lock|messaging)/V<n>__*.sql
 #             at <ref>, byte for byte as git stores it, plus SOURCE (Java
 #             Properties: ref, capture time, SHA-256 of every file's git blob).
+#
+# history     Writes maestro-integration-tests/src/test/resources/upgrade/<name>/
+#             {seeded-history.sql,capture.properties}: a pg_dump of the history
+#             that <ref>'s own engine and migrations wrote. It checks <ref> out
+#             as a temporary detached worktree, copies the frozen fixture
+#             package io.b2mash.maestro.integration.upgrade.<name> (fixture
+#             workflows and the SeededHistoryCapture driver) from this checkout
+#             into it, runs that driver there with a cold Gradle build, and
+#             copies its two outputs here. The temporary worktree is removed on
+#             every exit path (success, failure, INT/TERM/HUP).
 #
 # Regeneration rule: a fixture records what <ref> shipped. It is never edited
 # and never regenerated at a later commit — that would turn it into "what the
@@ -25,10 +36,14 @@ set -euo pipefail
 
 SCRIPT="scripts/capture-upgrade-fixture.sh"
 MIGRATIONS_ROOT="maestro-store-postgres/src/test/resources/upgrade"
+HISTORY_ROOT="maestro-integration-tests/src/test/resources/upgrade"
+HISTORY_SOURCES="maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/upgrade"
 MIGRATION_PATH_RE='^.+/src/main/resources/db/maestro/(store|lock|messaging)/V[0-9]+__[^/]*\.sql$'
 # A fixture name is one plain path segment, so <name> can never point outside
 # the fixture root (no '/', no '..', no hidden directory).
 NAME_RE='^[A-Za-z0-9._-]+$'
+# A history fixture name is also a Java package segment.
+HISTORY_NAME_RE='^[a-z][a-z0-9_]*$'
 SHA256_RE='^[0-9a-f]{64}$'
 
 die() {
@@ -38,6 +53,7 @@ die() {
 
 usage() {
     echo "usage: $SCRIPT migrations <ref> <name>" >&2
+    echo "       $SCRIPT history <ref> <name>" >&2
     exit 2
 }
 
@@ -122,6 +138,102 @@ capture_migrations() {
     echo "$SCRIPT: wrote $target ($(grep -c '^[a-z]*/V' "$target/SOURCE") migrations at $sha)"
 }
 
+# ── history mode ─────────────────────────────────────────────────────────
+# Globals so the EXIT trap sees them.
+STAGING=""
+CAPTURE_DIR=""
+CAPTURE_WT=""
+GRADLE_PID=""
+
+cleanup_history() {
+    local status=$?
+    if [[ -n "$GRADLE_PID" ]] && kill -0 "$GRADLE_PID" 2>/dev/null; then
+        echo "$SCRIPT: stopping the capture build ($GRADLE_PID)" >&2
+        kill -TERM "$GRADLE_PID" 2>/dev/null || true
+        wait "$GRADLE_PID" 2>/dev/null || true
+    fi
+    if [[ -n "$STAGING" ]]; then
+        rm -rf -- "$STAGING"
+    fi
+    if [[ -n "$CAPTURE_WT" ]]; then
+        git worktree remove --force "$CAPTURE_WT" >/dev/null 2>&1 \
+            || echo "$SCRIPT: WARNING: could not remove worktree $CAPTURE_WT" >&2
+    fi
+    if [[ -n "$CAPTURE_DIR" ]]; then
+        rm -rf -- "$CAPTURE_DIR"
+    fi
+    git worktree prune >/dev/null 2>&1 || true
+    return "$status"
+}
+
+capture_history() {
+    local ref="$1" name="$2"
+    [[ "$name" =~ $HISTORY_NAME_RE ]] \
+        || die "invalid history fixture name '$name': it is a Java package segment, use [a-z][a-z0-9_]*"
+    local sha
+    sha="$(git rev-parse --verify --quiet "${ref}^{commit}")" || die "ref '$ref' does not resolve to a commit"
+
+    local target="$HISTORY_ROOT/$name"
+    [[ ! -e "$target" ]] || die "$target already exists; frozen fixtures are never regenerated (see the header of $SCRIPT)"
+    local sources="$HISTORY_SOURCES/$name"
+    [[ -f "$sources/SeededHistoryCapture.java" ]] || die "no capture driver at $sources/SeededHistoryCapture.java"
+
+    # Traps before mktemp, so no signal can leave a worktree or a temporary
+    # directory behind. 'exit' from the signal trap runs the EXIT trap.
+    trap cleanup_history EXIT
+    trap 'exit 130' INT TERM HUP
+    CAPTURE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/maestro-capture.XXXXXX")"
+    CAPTURE_WT="$CAPTURE_DIR/capture"
+    git worktree add --detach "$CAPTURE_WT" "$sha" >&2
+    [[ "$(git -C "$CAPTURE_WT" rev-parse HEAD)" == "$sha" ]] || die "capture worktree is not at $sha"
+    [[ ! -e "$CAPTURE_WT/$sources" ]] || die "$sha already has $sources; refusing to mix fixture sources"
+    mkdir -p "$CAPTURE_WT/$sources"
+    cp -R "$sources/." "$CAPTURE_WT/$sources/"
+    mkdir "$CAPTURE_DIR/out"
+
+    echo "$SCRIPT: capturing history at $sha in $CAPTURE_WT" >&2
+    # In the background with 'wait', so a signal is handled at once instead
+    # of after the build finishes; the EXIT trap then stops the build.
+    (
+        cd "$CAPTURE_WT"
+        MAESTRO_UPGRADE_CAPTURE_OUT="$CAPTURE_DIR/out" MAESTRO_UPGRADE_CAPTURE_REF="$sha" \
+            exec ./gradlew --no-watch-fs --no-daemon :maestro-integration-tests:test \
+            --tests "io.b2mash.maestro.integration.upgrade.$name.SeededHistoryCapture" --rerun
+    ) &
+    GRADLE_PID=$!
+    local rc=0
+    wait "$GRADLE_PID" || rc=$?
+    GRADLE_PID=""
+    [[ "$rc" -eq 0 ]] || die "the capture build at $sha failed (exit $rc)"
+
+    local file
+    for file in seeded-history.sql capture.properties; do
+        [[ -s "$CAPTURE_DIR/out/$file" ]] || die "the capture wrote no $file (was SeededHistoryCapture skipped?)"
+    done
+    grep -qx "ref=$sha" "$CAPTURE_DIR/out/capture.properties" \
+        || die "capture.properties does not record ref=$sha"
+
+    # Stage inside the fixture root, as migrations mode does, so the final mv
+    # is a rename on one filesystem.
+    mkdir -p "$HISTORY_ROOT"
+    STAGING="$(mktemp -d "$HISTORY_ROOT/.capture.XXXXXX")"
+    chmod "$(printf '%o' $((0777 & ~0$(umask))))" "$STAGING"
+    cp "$CAPTURE_DIR/out/seeded-history.sql" "$CAPTURE_DIR/out/capture.properties" "$STAGING/"
+
+    local hashes="" hash
+    for file in seeded-history.sql capture.properties; do
+        hash="$(sha256 "$STAGING/$file")" || die "could not hash $file"
+        [[ "$hash" =~ $SHA256_RE ]] || die "could not hash $file (got '$hash')"
+        hashes+="  $hash  $target/$file"$'\n'
+    done
+
+    [[ ! -e "$target" ]] || die "$target appeared during the capture; refusing to overwrite it"
+    mv "$STAGING" "$target"
+    STAGING=""
+    echo "$SCRIPT: wrote $target (history at $sha)"
+    printf 'SHA-256:\n%s' "$hashes"
+}
+
 main() {
     [[ $# -ge 1 ]] || usage
     local toplevel
@@ -132,6 +244,10 @@ main() {
         migrations)
             [[ $# -eq 3 ]] || usage
             capture_migrations "$2" "$3"
+            ;;
+        history)
+            [[ $# -eq 3 ]] || usage
+            capture_history "$2" "$3"
             ;;
         *)
             usage
