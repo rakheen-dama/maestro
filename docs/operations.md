@@ -626,7 +626,7 @@ than one.
 | `rate(maestro.standdown{reason="unknown_event_type"})` > 0 **during** a rolling deploy | Expected. Should return to zero once every node is upgraded. |
 | the same, **after** the deploy completes | Not expected — a node was missed, or a stale replica is still running. |
 | `rate(maestro.standdown{reason="unknown_event_payload"})` > 0 on a homogeneous fleet | **An incompatible payload change. Use `workflow.version()`.** |
-| `rate(maestro.activity.result.unreadable)` > 0 | A live result cannot be read back; those runs will stand down as `unknown_event_payload` on their next recovery. Fix the return type ([Pitfalls §12](pitfalls.md#12-your-workflow-gets-an-activitys-result-as-the-store-gives-it-back-not-the-object-the-activity-returned)). |
+| `rate(maestro.activity.result.unreadable)` > 0 | A live result cannot be read back, or reads back as another class than the object the activity returned (a subtype declared as its supertype, a value declared as `Object`). Those runs continued with the activity's own object; on their next recovery they will stand down as `unknown_event_payload` (cannot be read back) or replay the other class, which can stand them down as `nondeterministic_history` or fail a cast. The `ActivityInvocationHandler` `WARN` says which. Declare the concrete, round-trip-stable return type ([Pitfalls §12](pitfalls.md#12-your-workflow-gets-an-activitys-result-as-the-store-gives-it-back-not-the-object-the-activity-returned)). |
 | `unknown_event_payload` **and** `nondeterministic_history` both rising on a homogeneous fleet | One deploy shipped both an ungated code change and an incompatible payload change; roll it back. |
 | `maestro.workflows.running` / `maestro.workflows.parked` flat at zero on a node with traffic | That node is adopting nothing — check the lock backend and the recovery poller. |
 
@@ -860,10 +860,11 @@ What a running workflow does with one:
   (`appendEvent`, `appendEventReturningPayload`, `getEventBySequence` — an
   activity's outcome, a compensation memo, a timer memo): three attempts,
   200 ms then 1 s apart. `appendEventReturningPayload` is the same write as
-  `appendEvent`; the engine uses it for activity outcomes and for the
-  `sleep()`, `parallel()`, `currentTime()`, `randomUUID()` and `version()`
-  events, so the latch `WARN` and the abandon detail below name it there
-  (`Store unavailable on appendEventReturningPayload — …`). A
+  `appendEvent`; the engine uses it for activity outcomes (completed and
+  failed) and for `currentTime()`, so the latch `WARN` and the abandon detail
+  below name it there (`Store unavailable on appendEventReturningPayload —
+  …`). The `sleep()`, `parallel()`, `randomUUID()` and `version()` events
+  still name `appendEvent`. A
   blip shorter than that is absorbed and nothing else happens. An append
   whose commit was lost in flight is caught on retry by the
   `(workflow_instance_id, sequence_number)` index. Every other store call —

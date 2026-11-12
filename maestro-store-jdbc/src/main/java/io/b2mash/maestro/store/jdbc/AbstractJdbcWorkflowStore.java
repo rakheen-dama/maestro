@@ -82,9 +82,13 @@ import java.util.stream.Collectors;
  *       untyped {@code Object}, {@code Map<String, Object>} or
  *       {@code List<Object>} position still gets a {@code Double}, a
  *       {@code JsonNode} target still gets a {@code DoubleNode}, and
- *       {@code double}, {@code float} and integer targets get the same values.
+ *       {@code double}, {@code float} and integer targets get the same values,
+ *       except a {@code float} target reading a stored {@code double} that lies
+ *       exactly halfway between two floats (now rounded once, from the text).
  *       A mapper whose own trees already hold decimals (either
- *       {@code USE_BIG_DECIMAL_FOR_FLOATS} feature) is used unchanged.</li>
+ *       {@code USE_BIG_DECIMAL_FOR_FLOATS} feature) is used unchanged, except
+ *       that with {@code STRIP_TRAILING_BIGDECIMAL_ZEROES} also on an untyped
+ *       integral decimal such as {@code 2.0} reads as an {@code Integer}.</li>
  *   <li><b>Mixed versions.</b> An older node replays these decimals, and
  *       {@code java.time} values read from numbers, lossily, as it always has; a
  *       node of this build replays them exactly. Scale alone does not change an
@@ -94,8 +98,11 @@ import java.util.stream.Collectors;
  *       value in a precision- or scale-sensitive way ({@code toString()},
  *       {@code equals}, {@code scale()}, {@code divide} with rounding, a
  *       sub-microsecond comparison) stands down on this build as
- *       {@code nondeterministic_history} — it never fails;
+ *       {@code nondeterministic_history};
  *       {@code maestro.replay.verify-arguments=false} lets it continue. A
+ *       replayed value that differs can also steer workflow code into a
+ *       {@code throw} or another branch before the next recorded step, which
+ *       fails or completes the run differently with no stand-down. A
  *       {@code SIGNAL_RECEIVED} memo copies the signal row as read, so it now
  *       records the exact decimal.</li>
  * </ul>

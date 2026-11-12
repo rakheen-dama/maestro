@@ -359,7 +359,13 @@ Alternatively, start the child with `startAsync`, have it signal the parent when
 
 ## 12. Your workflow gets an activity's result as the store gives it back, not the object the activity returned
 
-Once an activity's result is recorded, a live call returns the stored result deserialized into the method's declared return type: the same function and type a replay of the call uses. The value is therefore the same on the first run and after every restart, but it is not always the object the activity built. It is what Jackson wrote for that object, read back as the declared type.
+Once an activity's result is recorded, a live call returns the stored result deserialized into the method's declared return type: the same function and type a replay of the call uses. For most types the value is therefore the same on the first run and after every restart, but it is not always the object the activity built. It is what Jackson wrote for that object, read back as the declared type.
+
+Three kinds of result are not read back on the live run; the workflow gets the activity's own object instead, and **a replay after a restart gets something else**:
+
+- a result that reads back as **another class** than the object the activity returned: a subtype under its declared supertype, anything under `Object` or a type variable `<T> T`, a `Long` under `Number`;
+- a result that **cannot be read back** at all;
+- a **future** (`Future`, `CompletionStage`, `CompletableFuture`).
 
 **Wrong:** code that relies on anything that round trip does not keep.
 
@@ -368,25 +374,31 @@ Once an activity's result is recorded, a live call returns the stored result des
 public interface Couriers {
     Slot reserve(Order order);                 // returns an ExpressSlot (a subclass of Slot)
     OffsetDateTime pickupAt(Order order);      // returns 10:00+02:00
-    Set<String> depots(Order order);           // returns a TreeSet
+    Set<String> depots(Order order);           // returns a TreeSet, in name order
     Map<String, Object> rates(Order order);    // returns {"base": 5L, "vat": new BigDecimal("10.50")}
+    Optional<String> note(Order order);        // returns null
     CompletableFuture<Receipt> book(Order order);
 }
 
-var express = (ExpressSlot) couriers.reserve(order);       // ClassCastException, on the first run
+var express = (ExpressSlot) couriers.reserve(order);       // works on the first run; ClassCastException after a restart
 var local = couriers.pickupAt(order).getOffset();          // Z, not +02:00
+var first = couriers.depots(order).iterator().next();      // a HashSet's first element, not the first by name
 var vat = (BigDecimal) couriers.rates(order).get("vat");   // ClassCastException: it is a Double 10.5
-var receipt = couriers.book(order).join();                 // never returns
+var noNote = couriers.note(order) == null;                 // false: it is Optional.empty(), never null
+var receipt = couriers.book(order).join();                 // works on the first run; never returns after a restart
 ```
+
+What the round trip does not keep:
 
 - **The offset of an `OffsetDateTime` or `ZonedDateTime`.** It arrives in UTC: `10:00+02:00` arrives as `08:00Z`, and a `ZonedDateTime` loses its zone id.
 - **The order of a `Set`.** A `Set` arrives as a `HashSet`, whatever the activity built (`Set.of`, `TreeSet`, `LinkedHashSet`).
-- **A subtype returned under its declared supertype, or under `Object`.** The subtype's fields are lost and a cast to it fails. It now fails on the first run, not only after a restart. Declared as `Object`, a record arrives as a `LinkedHashMap`.
-- **Number types inside `Map<String, Object>` or `List<Object>`.** A `Long` arrives as an `Integer` when it fits one, a `Float` or a `BigDecimal` as a `Double` (`10.50` as `10.5`).
+- **The class, under a supertype, `Object` or a type variable.** The live run gets the activity's own object, so a cast to the subtype works. A replay reads the declared type: the supertype without the subtype's fields, a `LinkedHashMap` for a record or bean under `Object` or `<T> T`, an `Integer` for `5L` under `Number` or `Object`, a `Double` for a `BigDecimal` under `Object`. After a restart, a cast that worked fails; a later activity that takes the value as an argument stands the run down as `nondeterministic_history` when the replayed value serializes differently (the subtype's own fields are gone); otherwise the run carries on with the replayed value. The run is not stopped on the first run, but it is reported (see "What you see"). Collections and maps are exempt: a `List.of(..)` arrives as an `ArrayList`, a `TreeMap` declared as a `Map` as a `LinkedHashMap`, a `TreeSet` under `Object` as an `ArrayList`, on the first run as after a restart.
+- **Number types inside `Map<String, Object>` or `List<Object>`.** Elements are not compared with what the activity returned. A `Long` arrives as an `Integer` when it fits one, a `Float` or a `BigDecimal` as a `Double` (`10.50` as `10.5`). On Postgres an untyped whole-number exponent such as `1.0E7` arrives as `Integer 10000000`, because `jsonb` stores it as `10000000`. These are the same on the first run and after a restart.
 - **A map's iteration order, on Postgres.** `jsonb` stores object keys shorter first, so a `LinkedHashMap` arrives in that order. The test kit keeps the order the map had.
-- **Identity with the activity's object.** The result is a copy, a `JsonNode` result included. Mutating the activity's object after it returned does not change what the workflow has.
-- **A future as the return type.** An activity call is synchronous, and what is recorded is JSON. A `CompletableFuture` is recorded as its bean properties (`{"done": true, ...}`), never its value, and arrives as a new future that never completes. A `Future` or `CompletionStage` cannot be read back at all (see "What you see"). Nothing rejects these return types at startup ([Issue 49](open-issues.md#issue-49)).
-- **`workflow.currentTime()` under a mapper that misreads its own timestamps.** It is recorded and read back the same way. A mapper that writes epoch milliseconds (`WRITE_DATE_TIMESTAMPS_AS_NANOSECONDS` off) while still reading integer timestamps as seconds (`DateTimeFeature.READ_DATE_TIMESTAMPS_AS_NANOSECONDS`, on by default) turns `2026-11-12T10:00:00.123Z` into the year 58834. That now happens on the live run too, with no error ([Issue 48](open-issues.md#issue-48)).
+- **`null` for an `Optional`.** A JSON `null` reads as the empty value for `Optional`, `OptionalInt`, `OptionalLong` and `OptionalDouble`, so an activity that returns `null` for an `Optional` gives the workflow `Optional.empty()`. Every other type reads `null` as `null`.
+- **Identity with the activity's object.** The result is a copy, a `JsonNode` result included. Mutating the activity's object after it returned does not change what the workflow has. (A `JsonNode` that reads back as another node class, such as a `LongNode` holding `5` that reads back as an `IntNode`, is the activity's own node on the first run, by the rule above.)
+- **A future as the return type.** An activity call is synchronous, and what is recorded is JSON: a `CompletableFuture` is recorded as its bean properties (`{"done": true, ...}`), never its value. The live run gets the activity's own future, so `join()` works. After a restart, a `CompletableFuture` replays as a new future that nothing completes, so `join()` never returns, and a `Future` or `CompletionStage` cannot be read back and stands the run down as `unknown_event_payload`. Nothing rejects these return types at startup ([Issue 49](open-issues.md#issue-49)).
+- **`workflow.currentTime()` under a mapper that misreads its own timestamps.** The recorded time is read back too. A mapper that writes timestamps as numbers (`DateTimeFeature.WRITE_DATES_AS_TIMESTAMPS` on; Jackson 3's default is off) in epoch milliseconds (`WRITE_DATE_TIMESTAMPS_AS_NANOSECONDS` off) while still reading integer timestamps as seconds (`READ_DATE_TIMESTAMPS_AS_NANOSECONDS`, on by default) reads `2026-11-12T10:00:00.123Z` back as the year 58834. The live run keeps the clock value, because a read-back more than a second from it is discarded, and logs a `WARN`; a replay after a restart gets the year 58834 ([Issue 48](open-issues.md#issue-48)).
 
 **Right**
 
@@ -401,15 +413,22 @@ public interface Couriers {
 }
 ```
 
-- Declare the concrete type the activity returns. Where several types are possible, put `@JsonTypeInfo` and `@JsonSubTypes` on the supertype, so the payload carries the subtype.
+- Declare the concrete type the activity returns, one that reads back as itself: never a supertype of it, `Object` or a type variable. Where several types are possible, put `@JsonTypeInfo` and `@JsonSubTypes` on the supertype, so the payload carries the subtype and reads back as it.
 - Use `Instant` for a point in time, and keep an offset or zone id as its own field if the workflow needs it.
 - When order matters, use a `List`, or a `SortedSet` (it arrives as a `TreeSet`). For an ordered map use a `SortedMap` (it arrives as a `TreeMap`) or a `List` of entries.
 - Use typed fields, and a typed `BigDecimal` for money, rather than `Map<String, Object>`. A typed `BigDecimal` keeps its digits and scale, on Postgres too.
+- Return the value, never a future.
 - Configure the `ObjectMapper` so that it reads back what it writes.
 
-**What you see:** a value that differs from what the activity returned, identically on the first run and after a restart. Nothing stands down: the workflow computes with the stored form everywhere. A type Jackson can write but not read back (an interface without type information, `Future`, `CompletionStage`) is different. The run completes with the activity's own object. A `WARN` from `ActivityInvocationHandler` reads "Workflow '…': the result of activity '…' at sequence N is recorded but cannot be read back as … (…); this run continues with the object the activity returned, and a replay of this step will stand the run down as unknown_event_payload". With the starter it is logged once per activity method and workflow type on each node, and at `DEBUG` after that. It names the cause by class and JSON path, never a value. The `maestro.activity.result.unreadable` counter increments with tags `workflow` and `activity`. Any later recovery of that run stands it down as `unknown_event_payload`, and it stays active until you fix the type or terminate it.
+**What you see:** for most forms, a value that differs from what the activity returned, identically on the first run and after a restart, with nothing logged. The three kinds above are reported on the first run:
 
-**Test it:** a plain kit test now shows the read-back value: assert on what the workflow saw, not on what the activity returned (`ReadBackFormsTest` in `maestro-test` covers each form above). `env.crashAfter(n)` past the step, then `crash.recover()` and `handle.awaitStandDown(...)`, shows the `unknown_event_payload` stand-down. Map order shows only against Postgres.
+- **Another class.** A `WARN` from `ActivityInvocationHandler`: "Workflow '…': the result of activity '…' at sequence N (declared …) reads back from the store as `<class>` rather than `<class>`; this run continues with the object the activity returned, and a replay of this step after a recovery will hand workflow code a `<class>` instead — declare the concrete type the activity returns, one that reads back as itself (docs/pitfalls.md, rule 12)". It names classes only, never a value.
+- **Cannot be read back** (an interface without type information, for example). A `WARN` from `ActivityInvocationHandler`: "Workflow '…': the result of activity '…' at sequence N is recorded but cannot be read back as … (…); this run continues with the object the activity returned, and a replay of this step will stand the run down as unknown_event_payload". It names the cause by class and JSON path, never a value. Any later recovery of the run stands it down as `unknown_event_payload`, and it stays active until you fix the type or terminate it.
+- Both `WARN`s are logged once per activity method and proxy (with the starter, once per activity method and workflow type on each node), then at `DEBUG`. Both increment the counter `maestro.activity.result.unreadable` (tags `workflow` and `activity`) and call `EngineObserver.activityResultUnreadable`, whose second argument is the cause's class name, or `maestro:read-back-type-mismatch` for another class.
+- **A future** is not reported: nothing is read back on the live run.
+- **`currentTime()`** under a mapper that misreads its own timestamps: a `WARN` from `DefaultWorkflowOperations`, "Workflow '…': currentTime() at sequence N reads back S seconds from the time it recorded: the configured ObjectMapper does not read back the timestamp it wrote (for example, epoch milliseconds written while integer timestamps are read as seconds), so this run continues with the clock value and live and replayed times will differ — make the mapper read its own timestamps (docs/pitfalls.md, rule 12)", once per `PayloadSerializer` (with the starter, once per process), then at `DEBUG`.
+
+**Test it:** a plain kit test shows the read-back value: assert on what the workflow saw, not on what the activity returned (`ReadBackFormsTest` in `maestro-test` covers the forms above). For a result declared as a supertype, `Object` or a future, the first run looks right: `env.crashAfter(n)` past the step that uses the value, then `crash.recover()`, shows what a restart does (`ActivityResultReadBackTest.subtypeDeclaredAsItsSupertype_*`), and `handle.awaitStandDown(...)` shows a stand-down. Map order and exponent numbers show only against Postgres.
 
 ---
 

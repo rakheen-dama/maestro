@@ -3513,9 +3513,9 @@ after a restart, with no stand-down to show it).
 `ActivityExecutionException` wrapping the exception the activity threw, with
 its subclass, its own fields and its cause chain. What is recorded is only
 the class name and message: `ActivityInvocationHandler.persistFailure`
-(`ActivityInvocationHandler.java:1057`) writes `ErrorDetail(exceptionType,
+(`ActivityInvocationHandler.java:1167`) writes `ErrorDetail(exceptionType,
 message)`. A replay rebuilds the cause from those two strings
-(`reconstructFailure`, `:666`, through `FailureReconstruction.reconstruct`,
+(`reconstructFailure`, `:776`, through `FailureReconstruction.reconstruct`,
 `FailureReconstruction.java:61`): the class's public `(String)` constructor if
 it has one, else a `ReconstructedActivityFailure`. A field such as
 `PaymentDeclinedException.declineCode`, and `getCause()` of the original, are
@@ -3626,7 +3626,7 @@ reads `Pair`s, live and after recovery.
 but legal for `awaitSignal`).
 
 **What's wrong.** `collectSignals` gathers the awaited payloads and returns
-`List.copyOf(results)` (`DefaultWorkflowOperations.java:712`), which throws on
+`List.copyOf(results)` (`DefaultWorkflowOperations.java:735`), which throws on
 a `null` element. A signal delivered with a `null` payload therefore makes
 `collectSignals` throw `NullPointerException` into workflow code. Observed with
 a throwaway kit probe on this branch: the run ended `FAILED` with
@@ -3661,7 +3661,7 @@ deserializer that throws an `Error`, such as an `AssertionError` or a
 
 **What's wrong.** WP1 reads every live activity result back after recording
 it. The read-back catches `SerializationException` only
-(`ActivityInvocationHandler.java:622`): an exception from Jackson becomes the
+(`ReadBack.orLive`, called from `ActivityInvocationHandler.readBack`): an exception from Jackson becomes the
 D9 path (the run continues with the activity's own object), but an `Error`
 from a custom deserializer propagates. The outcome is already recorded, so a
 successful activity ends the workflow `FAILED`. Observed with a throwaway kit
@@ -3705,11 +3705,11 @@ stored form exceeds Jackson's read limits, such as a decimal of more than
 than the number length Jackson's reader accepts. On the outcome append,
 `appendEventReturningPayload` cannot parse what `RETURNING` hands back; the
 row is written, so it returns the payload it was given and logs at `DEBUG`
-only (`AbstractJdbcWorkflowStore.java:810`). Every later read of the row,
+only (`AbstractJdbcWorkflowStore.java:817`). Every later read of the row,
 `getEventBySequence` included, throws `SerializationException`
 (`PostgresPayloadFidelityTest.aReturnedPayloadTheStoreCannotParseReturnsTheSentPayload`).
 The activity proxy calls `getEventBySequence` outside any guard
-(`ActivityInvocationHandler.java:500`), so on the run's next recovery that
+(`ActivityInvocationHandler.java:524`), so on the run's next recovery that
 exception reaches workflow code as an ordinary exception (traced, not
 reproduced). The read side is the same on any build; WP1 only added the
 `DEBUG` line on the write side.
@@ -3742,22 +3742,28 @@ recovers the run and observes an `unknown_event_payload` stand-down, not
 customisation silently changes what every workflow computes).
 
 **What's wrong.** The engine uses the host's `ObjectMapper` for every payload
-and never checks that it round-trips the values the engine itself records. A
-mapper that writes epoch milliseconds (`WRITE_DATE_TIMESTAMPS_AS_NANOSECONDS`
-off) while still reading integer timestamps as seconds
-(`DateTimeFeature.READ_DATE_TIMESTAMPS_AS_NANOSECONDS`, on by default) reads
-`currentTime()` back about a thousand times too far from the epoch: a time in
-2026 reads as the year 58834. Since WP1 that wrong value reaches the live run
-as well as every replay, with no exception and no log line
-(`CurrentTimeReadBackTest.asymmetricMillisMapper_liveRunGetsTheMisreadInstant`).
-`collectSignals` (`DefaultWorkflowOperations.java:701`) and `retryUntil`
-(`:1176`) compute their deadlines from `currentTime()`, so under such a mapper
-their budgets run out about a thousand times early (traced, not tested).
-Mappers that drop a `BigDecimal`'s scale or read `Optional.empty()` as `null`
-are equally silent.
+and never checks at startup that it round-trips the values the engine itself
+records. A mapper that writes timestamps as numbers
+(`DateTimeFeature.WRITE_DATES_AS_TIMESTAMPS` on; Jackson 3's default is off)
+in epoch milliseconds (`WRITE_DATE_TIMESTAMPS_AS_NANOSECONDS` off) while
+still reading integer timestamps as seconds
+(`READ_DATE_TIMESTAMPS_AS_NANOSECONDS`, on by default) reads `currentTime()`
+back about a thousand times too far from the epoch: a time in 2026 reads as
+the year 58834. The live run is protected: a read-back more than a second
+from the recorded clock value is discarded for the clock value, with one
+`WARN` per `PayloadSerializer`, so `collectSignals` and `retryUntil` budgets
+are computed from the real clock
+(`CurrentTimeReadBackTest.asymmetricMillisMapper_liveRunGetsTheClockValue_andWarnsOncePerSerializer`,
+`asymmetricMillisMapper_collectSignalsBudgetIsNotExhaustedEarly`). A replay
+after a restart still reads the year 58834
+(`asymmetricMillisMapper_aReplayReadsTheMisreadInstant`), so a recovered
+`collectSignals` or `retryUntil` computes its remaining budget from misread
+times (traced, not tested). Mappers that drop a `BigDecimal`'s scale or read
+`Optional.empty()` as `null` are silent.
 
 **Harm.** A configuration mistake made once, in the host application, changes
-deadlines and values in every workflow, live, with nothing to show for it.
+deadlines and values in every recovered workflow; the only sign is a `WARN`
+the first time a run reads the clock.
 
 **Why not WP1.** WP1 decided where values are read back, not which mapper
 configurations are acceptable; failing startup on a host mapper is a product
@@ -3780,23 +3786,27 @@ starts silently.
 > (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
 
 **Kind:** Library gap — API validation. **Severity:** Medium (a
-`CompletableFuture` return type hangs the workflow on its first run).
+`CompletableFuture` return type hangs the workflow after its first restart).
 
 **What's wrong.** An activity call is synchronous and its result is recorded
 as JSON, so a `Future`, `CompletionStage` or `CompletableFuture` return type
-cannot work. Nothing rejects one: `ActivityProxyFactory.createProxy` validates
-only the `@Compensate` annotations (`ActivityProxyFactory.java:309`). Jackson
-records a `CompletableFuture` as its bean properties
+cannot work across a restart. Nothing rejects one: `ActivityProxyFactory.createProxy`
+checks only that the type is an interface and validates its `@Compensate`
+annotations (`ActivityProxyFactory.java:304-309`). Jackson records a
+`CompletableFuture` as its bean properties
 (`{"cancelled":false,"completedExceptionally":false,"done":true,"numberOfDependents":0}`),
-never its value, and since WP1 the live call returns the read-back: a new
-`CompletableFuture` that nothing ever completes. A `Future` or
-`CompletionStage` cannot be read back at all: the live run continues with the
-activity's object (D9) and every recovery stands down as
-`unknown_event_payload`. Both are pinned in `ReadBackFormsTest`.
+never its value. The live run never reads a future back: it gets the
+activity's own future, and `join()` works
+(`ReadBackFormsTest.aCompletableFutureResultIsTheActivitysFuture_andJoinCompletesOnTheFirstRun`).
+A replay does read it back: a `CompletableFuture` becomes a new future that
+nothing ever completes (`ReadBackTypeValveTest`, row `completableFuture`), and
+a `Future` or `CompletionStage` cannot be read back at all, so every recovery
+stands down as `unknown_event_payload`
+(`ReadBackFormsTest.aFutureOrCompletionStageResult_standsDownOnRecovery`).
 
-**Harm.** `join()` on the returned `CompletableFuture` blocks the workflow
-thread for good, holding its task-queue slot. The other two types work once
-and then strand the run on its first restart.
+**Harm.** After a restart, `join()` on a replayed `CompletableFuture` blocks
+the workflow thread for good, holding its task-queue slot (traced, not
+tested). The other two types strand the run on its first restart.
 
 **Why not WP1.** WP1 does not validate activity interfaces; adding a startup
 failure is an API change.

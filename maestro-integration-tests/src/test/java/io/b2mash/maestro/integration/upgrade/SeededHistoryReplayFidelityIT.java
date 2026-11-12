@@ -20,7 +20,10 @@ import tools.jackson.databind.json.JsonMapper;
 import java.math.BigDecimal;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -35,7 +38,9 @@ import static io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflo
 import static io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.Seeds.WP1_SET;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * WP1 (replay fidelity) over the history the build at {@code cbf5a2a} wrote
@@ -96,6 +101,25 @@ class SeededHistoryReplayFidelityIT {
 
     /** The decimal {@code cbf5a2a} stored as {@code exactAmount}'s result. */
     private static final BigDecimal EXACT = new BigDecimal("12345678901234567890.123456789");
+
+    /** Set by the {@code seededHistoryNonUtcTest} Gradle task to the zone its JVM runs in. */
+    private static final String EXPECTED_ZONE_PROPERTY = "maestro.test.expectedZone";
+
+    /**
+     * Under {@code seededHistoryNonUtcTest} this class runs in a non-UTC
+     * default zone; this proves it here rather than relying on
+     * {@code SeededHistoryUpgradeIT}'s check of the same JVM. Skipped in the
+     * ordinary {@code test} task, which sets no expected zone.
+     */
+    @Test
+    @DisplayName("under seededHistoryNonUtcTest the JVM runs in the zone the task asks for, which is not UTC")
+    void theJvmRunsInTheZoneTheNonUtcTaskAsksFor() {
+        var expected = System.getProperty(EXPECTED_ZONE_PROPERTY);
+        assumeTrue(expected != null, EXPECTED_ZONE_PROPERTY + " is set only by the seededHistoryNonUtcTest task");
+        assertEquals(ZoneId.of(expected), ZoneId.systemDefault(),
+                "JVM default zone (user.timezone=" + System.getProperty("user.timezone") + ")");
+        assertNotEquals(ZoneOffset.UTC, ZoneId.systemDefault().getRules().getOffset(Instant.now()));
+    }
 
     @Test
     @DisplayName("the dormant seed-wp1-* runs complete on this build, each settling with the value cbf5a2a recorded as it reads back")
