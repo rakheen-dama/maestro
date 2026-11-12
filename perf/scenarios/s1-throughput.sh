@@ -108,10 +108,15 @@ scenario_run() {
   # k6 inspect reads script env only from its own -e flags (unlike k6 run,
   # it does not take the container's environment).
   plan=$(dc run --rm --no-deps k6 inspect "${inspect_args[@]}" /scripts/start-ramp.js </dev/null 2>>"${RESULTS}/harness.log" \
-    | jq -c '.scenarios.s1 | {executor, timeUnit, startRate, preAllocatedVUs, maxVUs, stages,
+    | jq -c '
+        # k6 prints durations in Go form ("10s", "2m0s", "1h0m5s").
+        def gosecs: capture("^((?<h>[0-9.]+)h)?((?<m>[0-9.]+)m)?((?<s>[0-9.]+)s)?$")
+                    | (.h // "0" | tonumber) * 3600 + (.m // "0" | tonumber) * 60 + (.s // "0" | tonumber);
+        .scenarios.s1 | {executor, timeUnit, startRate, preAllocatedVUs, maxVUs, stages,
               levels: [.stages | to_entries[] | select(.key % 2 == 1) | .value.target],
-              rampSecs: (.stages[0].duration | rtrimstr("s") | tonumber),
-              holdSecs: (.stages[1].duration | rtrimstr("s") | tonumber)}') \
+              rampSecs: (.stages[0].duration | gosecs),
+              holdSecs: (.stages[1].duration | gosecs),
+              loadSecs: ([.stages[].duration | gosecs] | add)}') \
     || die "s1-throughput: k6 inspect of start-ramp.js failed"
   plan=$(jq -c --argjson d "$drain_timeout" --arg p "$PROFILE" '. + {profile: $p, drainTimeoutSecs: $d}' <<<"$plan")
   log "s1: plan $(jq -c '{levels, rampSecs, holdSecs, preAllocatedVUs, maxVUs, drainTimeoutSecs}' <<<"$plan")"
@@ -135,7 +140,7 @@ scenario_run() {
   # interrupt exits run.sh without reaching the stop file) and after the
   # longest the scenario can legitimately take.
   local samples="${RESULTS}/s1-samples.jsonl" stop="${RESULTS}/.s1-sampler-stop" sampler deadline driver=$$
-  deadline=$(($(date +%s) + $(jq '[.stages[].duration | rtrimstr("s") | tonumber] | add' <<<"$plan") + drain_timeout + 300))
+  deadline=$(($(date +%s) + $(jq '.loadSecs | ceil' <<<"$plan") + drain_timeout + 300))
   : >"$samples"
   rm -f "$stop"
   (
