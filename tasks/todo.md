@@ -6,7 +6,7 @@ Maven Central blockers and the §6.4 feature gaps are out of scope.
 
 - [x] Four audits re-verified every finding (3.2, 3.3, 3.8 reproduced with failing tests)
 - [x] Spec written, builder-checked, approved by the maintainer with D1–D11 (2026-11-12)
-- [ ] WP0 Executor builder (Issue 37) — Lane A — PR #50 open at 9c1cfbf: 5 tasks reviewed, whole-branch review + fix wave done, uncached full build green; awaiting CI and merge
+- [x] WP0 Executor builder (Issue 37) — Lane A — PR #50 merged 2026-11-12 (56e9c00): 5 tasks reviewed, whole-branch review + fix wave, uncached full build green on 9c1cfbf, CI Build & Test green
 - [ ] WP1 Replay fidelity (3.8, exact decimals) — Lane A, after WP9
 - [ ] WP2 Wake permits, timer clock, remove activity lock (3.2, 3.7, 3.10) — Lane A
 - [ ] WP3 Admin retry (3.3, Issue 33) — Lane A
@@ -19,7 +19,7 @@ Maven Central blockers and the §6.4 feature gaps are out of scope.
 - [ ] WP8 Store hygiene (3.11a, 3.11b, Issue 39) — Lane B, after WP6
 - [ ] WP11 k6 load-test foundation (perf/, sample-perf, meters, scenarios 1 and 3) — Lane C
 - [ ] WP12 k6 finding-linked scenarios 2, 4, 5, 6 with before/after — Lane C
-- [ ] WP13 Docs and housekeeping — Lane D
+- [ ] WP13 Docs and housekeeping — Lane D (also: explicit `<a id="issue-N">` anchors for every heading in docs/open-issues.md — GitHub ignores `{#issue-N}`, CodeRabbit on PR #50)
 - [ ] Review section added here after the last merge
 
 # Milestone: Host-safety cycle (planned 2026-11-11)
