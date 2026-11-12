@@ -165,6 +165,52 @@ wait_terminal() {
   done
 }
 
+# Takes the host-wide run lock <lock-dir>, writing this shell's pid and
+# <owner> into it, or dies (exit 3) without touching anything.
+#  - mkdir is atomic: of any number of runs racing for a free lock, exactly
+#    one gets it.
+#  - A lock is HELD while its pid is running, and while it has no pid file
+#    and is less than a minute old (its owner may be between mkdir and writing
+#    the pid).
+#  - Otherwise it is STALE. Taking a stale lock over is serialised by a second
+#    atomic mkdir (<lock-dir>.takeover): only the run holding it may remove
+#    the stale lock, only if the lock still names the same dead pid, and it
+#    then re-takes the lock with the same atomic mkdir as everyone else. So
+#    runs that find one stale lock at the same moment cannot both start.
+#    A run killed while holding <lock-dir>.takeover leaves it behind; the
+#    refusal message says to remove it.
+# take_lock <lock-dir> <owner>
+take_lock() {
+  local lock=$1 owner=$2
+  local takeover="${lock}.takeover" holder current
+  if ! mkdir "$lock" 2>/dev/null; then
+    holder=$(cat "${lock}/pid" 2>/dev/null || true)
+    if [[ -n "$holder" ]] && ps -p "$holder" >/dev/null 2>&1; then
+      die "another perf run holds ${lock} (pid ${holder}: $(cat "${lock}/owner" 2>/dev/null || echo '?')); refusing to start, nothing touched"
+    fi
+    if [[ -z "$holder" && -z "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]]; then
+      die "another perf run is acquiring ${lock} (no pid yet); refusing to start, nothing touched"
+    fi
+    if ! mkdir "$takeover" 2>/dev/null; then
+      die "another perf run is taking over the stale lock ${lock} (if no perf run is active, a dead one left ${takeover}: remove it); refusing to start, nothing touched"
+    fi
+    current=$(cat "${lock}/pid" 2>/dev/null || true)
+    if [[ "$current" != "$holder" ]]; then
+      rmdir "$takeover"
+      die "${lock} changed hands while this run was taking it over (now pid ${current:-unknown}); refusing to start, nothing touched"
+    fi
+    rm -rf "$lock"
+    if ! mkdir "$lock" 2>/dev/null; then
+      rmdir "$takeover"
+      die "another perf run took ${lock} first; refusing to start, nothing touched"
+    fi
+    rmdir "$takeover"
+    log "stale lock ${lock} (pid ${holder:-none} is not running): taken over"
+  fi
+  printf '%s\n' "$$" >"${lock}/pid"
+  printf '%s\n' "$owner" >"${lock}/owner"
+}
+
 # Seconds in an ISO-8601 duration as /perf/info reports it (Java
 # Duration.toString(): PT5S, PT1M, PT0.5S, PT48H).
 iso_secs() {

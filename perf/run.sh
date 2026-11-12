@@ -202,43 +202,9 @@ if ((RECORD_BASELINE)) && [[ "$DIRTY" != false ]]; then
   die "--record-baseline refused: the working tree is dirty (commit first)"
 fi
 
-# One run per host. mkdir is atomic: exactly one concurrent run gets the lock.
-# A lock without a pid file is treated as held (its owner may be between mkdir
-# and writing the pid). A lock whose pid is no longer running is stale, and
-# taking it over is serialised by a second atomic mkdir (TAKEOVER_DIR): only
-# its holder may remove the stale lock, only if the lock still names the same
-# dead pid, and it then re-takes the lock with the same atomic mkdir as
-# everyone else, so two runs that find one stale lock cannot both start.
-TAKEOVER_DIR="${LOCK_DIR}.takeover"
-take_lock() {
-  local holder current
-  if mkdir "$LOCK_DIR" 2>/dev/null; then
-    return 0
-  fi
-  holder=$(cat "${LOCK_DIR}/pid" 2>/dev/null || true)
-  if [[ -z "$holder" ]] || ps -p "$holder" >/dev/null 2>&1; then
-    die "another perf run holds ${LOCK_DIR} (pid ${holder:-unknown}: $(cat "${LOCK_DIR}/owner" 2>/dev/null || echo '?')); refusing to start, nothing touched"
-  fi
-  if ! mkdir "$TAKEOVER_DIR" 2>/dev/null; then
-    die "another perf run is taking over the stale lock ${LOCK_DIR} (if no perf run is active, a dead one left ${TAKEOVER_DIR}: remove it); refusing to start, nothing touched"
-  fi
-  current=$(cat "${LOCK_DIR}/pid" 2>/dev/null || true)
-  if [[ "$current" != "$holder" ]]; then
-    rmdir "$TAKEOVER_DIR"
-    die "${LOCK_DIR} changed hands while this run was taking it over (now pid ${current:-unknown}); refusing to start, nothing touched"
-  fi
-  rm -rf "$LOCK_DIR"
-  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    rmdir "$TAKEOVER_DIR"
-    die "another perf run took ${LOCK_DIR} first; refusing to start, nothing touched"
-  fi
-  rmdir "$TAKEOVER_DIR"
-  log "stale lock ${LOCK_DIR} (pid ${holder} is not running): taken over"
-}
-take_lock
+# One run per host (see take_lock in lib/common.sh for the protocol).
+take_lock "$LOCK_DIR" "${RUN_ID} ${PWD}"
 LOCK_HELD=1
-printf '%s\n' "$$" >"${LOCK_DIR}/pid"
-printf '%s %s\n' "$RUN_ID" "$PWD" >"${LOCK_DIR}/owner"
 # A stack the lock does not cover (left up by PERF_KEEP_UP=1, or started by
 # hand) belongs to someone else's evidence: never tear it down from here.
 existing=$(docker ps -aq --filter "label=com.docker.compose.project=${COMPOSE_PROJECT}" | wc -l | tr -d ' ')
