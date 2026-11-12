@@ -256,7 +256,9 @@ Issue 37 is since **resolved** by `WorkflowExecutor.builder(...)` and the
 removal of the ten constructors — see its section; 36, 38 and 39 remain open.
 Issue 40, found by the review of WP9's production schema guidance
 (2026-11-12), is filed **open**: under `validate`, a role that cannot see
-`maestro_schema_history` is told to apply every migration.
+`maestro_schema_history` is told to apply every migration. Issue 41, found by
+the final review of the same work package (2026-11-12), is filed **open**: an
+older node replaying history appended by a newer node is untested.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -314,6 +316,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [38](#issue-38) | `PostgresWakeListener.close()` logs a WARN with a stack trace at every shutdown with a pooled `DataSource` | Library defect — log noise | Low | Open |
 | [39](#issue-39) | Workflows recorded under another `service_name` are stranded silently | Library gap — operability | Medium | Open |
 | [40](#issue-40) | Under `validate`, a role that cannot see `maestro_schema_history` is told to apply every migration | Library gap — operability | Low | Open |
+| [41](#issue-41) | An older node replaying history appended by a newer node is untested | Testing gap — rolling deploy | Medium | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -3440,6 +3443,45 @@ and one with a role whose `currentSchema` points elsewhere, each fail
 `validate` with a message naming the schema and the missing privilege or
 search path, not a list of pending migrations. The existing
 pending-migration messages are unchanged.
+
+---
+
+### Issue 41 — An older node replaying history appended by a newer node is untested {#issue-41}
+
+> **Open.** Filed by the final review of WP9
+> (2026-11-12, branch `test/schema-upgrade-safety`). Recorded, not fixed.
+
+**Kind:** Testing gap — rolling deploy. **Severity:** Medium (no defect is
+known, but a rolling deploy or a rollback exercises this path on every
+release, and nothing verifies it).
+
+**What's wrong.** `SeededHistoryUpgradeIT` proves one direction of a rolling
+deploy: the *new* build upgrades, recovers and replays history the *old*
+build (`cbf5a2a`) wrote. Nothing tests the other direction. During a rolling
+deploy, or after a rollback, a node of the previous build can adopt a run
+whose latest events were appended by a node of the new build. Nor are the
+payload bytes the current build appends pinned anywhere: the seeded-history
+fixture freezes only what `cbf5a2a` wrote, and its pins on what this build
+appends (the `APPENDED` list and the others in the "Pins" section of
+`SeededHistoryUpgradeIT`'s Javadoc) name event types and steps, not payload
+bytes. The stand-down design (`UnknownWorkflowHistoryException`, and the
+`unknown_event_payload` and `nondeterministic_history` stand-down reasons) is
+expected to make that direction safe — an older node that cannot read a
+newer node's event stands the run down instead of failing it — but it is
+asserted only by same-build tests, which simulate the newer event rather than
+read one a newer build wrote.
+
+**How to tackle it.** Once a release exists, add the reverse check to the
+release pipeline, beside the N-1 → N upgrade fixture (`RELEASING.md` §
+Upgrade fixtures): let a node of the current build migrate and drive
+workflows in a database, then run a node of the previous release against that
+database, and assert that every run it adopts either completes or stands
+down, and that none is failed or compensated.
+
+**Done when.** The release pipeline runs the previous release's node against
+a database a current node has written to, and fails the release if that node
+fails or compensates any run, or rewrites any event the current node
+appended.
 
 ---
 
