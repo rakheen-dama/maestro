@@ -473,9 +473,14 @@ class MaestroSchemaInitializerTest {
     /**
      * The control for the test above: the same V102 step on a database the
      * frozen {@code cbf5a2a} set migrated (no V200–V202) applies V102 in
-     * order, an ordinary {@code SUCCESS}. The retired rows are the only
-     * difference between the two databases, so they are what makes V102 out
-     * of order there.
+     * order, an ordinary {@code SUCCESS}. The two databases differ in three
+     * ways: the band database holds the retired V200–V202 history rows, the
+     * orphan {@code maestro_signal_queue} table, and V6–V9 and V101 recorded
+     * out of order (after V202). Flyway marks an applied migration
+     * {@code OUT_OF_ORDER} when a higher version was recorded before it; of
+     * the three, only the retired rows are versions above 102. V6–V9 and V101
+     * sort below it, and the orphan table is not in the history at all, so the
+     * retired rows are what makes V102 out of order there.
      */
     @Test
     @DisplayName("without the retired band, a migration added after V101 applies in order")
@@ -570,12 +575,17 @@ class MaestroSchemaInitializerTest {
     /**
      * Lists what the nodes' role holds on the two tables where
      * {@link #RUNTIME_GRANTS} grants less than {@link #DEFAULT_PRIVILEGES}
-     * would. Run as {@code maestro_owner} ({@code information_schema} shows
-     * only grants an enabled role made or received).
+     * would, in the session's current schema only — the schema the
+     * unqualified names in the grants and in {@link #WRONG_ORDER_REPAIR}
+     * resolve to — so Maestro's tables in another schema granted to the same
+     * role add no rows. Run as {@code maestro_owner}:
+     * {@code information_schema.role_table_grants} shows a grant only to its
+     * grantor, its grantee, a member of either, or a superuser.
      */
     static final String PRIVILEGE_CHECK = """
             SELECT table_name, privilege_type FROM information_schema.role_table_grants
-                WHERE grantee = 'maestro_app' AND table_name IN ('maestro_workflow_event', 'maestro_schema_history')
+                WHERE grantee = 'maestro_app' AND table_schema = current_schema()
+                    AND table_name IN ('maestro_workflow_event', 'maestro_schema_history')
                 ORDER BY table_name, privilege_type;
             """;
 
@@ -754,13 +764,19 @@ class MaestroSchemaInitializerTest {
      * migration: they then cover the tables that migration creates, so the
      * nodes' role can rewrite {@code maestro_workflow_event} and write
      * {@code maestro_schema_history}. {@link #PRIVILEGE_CHECK} shows it, and
-     * {@link #WRONG_ORDER_REPAIR} restores least privilege. A fresh database
-     * of the shared container, like every test here; no extra container.
+     * {@link #WRONG_ORDER_REPAIR} restores least privilege. A second schema
+     * holding Maestro's tables, over-granted to the same {@code maestro_app}
+     * (one role for several services' schemas, "Isolating services" in
+     * docs/configuration.md), adds no rows to the check. A role that is
+     * neither grantor nor grantee, nor a member of either, sees no rows at
+     * all. A fresh database of the shared container, like every test here; no
+     * extra container.
      */
     @Test
     @DisplayName("default privileges issued before the first migration over-grant; the documented check finds it and the repair undoes it")
     void defaultPrivilegesBeforeTheFirstMigrationOverGrant() throws Exception {
         var owner = lockedDownSchemaWithANonSuperuserOwner();
+        anotherServicesSchemaOverGrantedToTheSameAppRole();
         execute(owner, DEFAULT_PRIVILEGES);                 // wrong: before the first migration
         new MaestroSchemaInitializer(owner, SchemaMode.FLYWAY, cl).initialize();
         execute(owner, RUNTIME_GRANTS);
@@ -775,11 +791,51 @@ class MaestroSchemaInitializerTest {
                 .as("wrong order: the app role can rewrite workflow history").doesNotThrowAnyException();
         assertThatCode(() -> execute(app, "UPDATE maestro_schema_history SET description = description"))
                 .as("wrong order: the app role can write the migration history").doesNotThrowAnyException();
+        assertThat(privilegeCheck(ds)).as("a superuser sees every row").isEqualTo(privilegeCheck(owner));
+        var unrelated = unrelatedRole();
+        assertThat(currentSchema(unrelated)).isEqualTo("public");
+        assertThat(privilegeCheck(unrelated))
+                .as("a role neither grantor nor grantee, nor a member of either, sees no rows: not a pass")
+                .isEmpty();
 
         execute(owner, WRONG_ORDER_REPAIR);
 
         assertThat(privilegeCheck(owner)).as("repaired: least privilege").isEqualTo(LEAST_PRIVILEGE);
         assertAppCannotRewriteHistory(app);
+    }
+
+    /**
+     * A second schema, {@code other_service}, holding Maestro's tables:
+     * migrated by {@code maestro_owner} and granted to {@code maestro_app}
+     * with every privilege on the two tables {@link #PRIVILEGE_CHECK} lists,
+     * so any row of it that leaked into the check would show.
+     */
+    private void anotherServicesSchemaOverGrantedToTheSameAppRole() throws SQLException {
+        try (var conn = ds.getConnection(); var stmt = conn.createStatement()) {
+            stmt.execute("CREATE SCHEMA other_service");
+            stmt.execute("GRANT USAGE, CREATE ON SCHEMA other_service TO maestro_owner");
+            stmt.execute("GRANT USAGE ON SCHEMA other_service TO maestro_app");
+        }
+        var otherOwner = roleDataSource("maestro_owner", "owner");
+        otherOwner.setCurrentSchema("other_service");
+        new MaestroSchemaInitializer(otherOwner, SchemaMode.FLYWAY, cl).initialize();
+        execute(otherOwner, "GRANT ALL ON maestro_workflow_event, maestro_schema_history TO maestro_app");
+        assertThat(privilegeCheck(otherOwner)).as("the other schema is over-granted").contains(
+                "maestro_schema_history UPDATE", "maestro_workflow_event UPDATE");
+    }
+
+    /**
+     * A login role with no tie to {@code maestro_owner} or {@code maestro_app},
+     * and no superuser. It holds {@code USAGE} on {@code public}, so its
+     * {@code current_schema()} is {@code public} like the owner's: what hides
+     * the rows from it is the view's visibility rule, not the schema filter.
+     */
+    private PGSimpleDataSource unrelatedRole() throws SQLException {
+        try (var conn = ds.getConnection(); var stmt = conn.createStatement()) {
+            createLoginRole(stmt, "maestro_unrelated", "unrelated");
+            stmt.execute("GRANT USAGE ON SCHEMA public TO maestro_unrelated");
+        }
+        return roleDataSource("maestro_unrelated", "unrelated");
     }
 
     /**
@@ -789,12 +845,19 @@ class MaestroSchemaInitializerTest {
      * a block or an extra block fails here, and a CRLF checkout does not. The
      * docs file is an input of this module's {@code test} task
      * (build.gradle.kts), so a doc-only edit reruns this test instead of being
-     * served from the build cache. Gradle runs tests in the module directory.
+     * served from the build cache. It is found from the repository root
+     * ({@link #repositoryRoot}), so the test runs from any working directory
+     * inside the repository. The guard sees only fenced {@code sql} blocks
+     * between its two delimiting headings ("In production" and
+     * "{@code validate} and {@code none}"): SQL in a fence of another language,
+     * or anywhere after the end marker, is not checked.
      */
     @Test
     @DisplayName("docs/configuration.md prints exactly the SQL the role tests execute")
     void theDocumentedSqlIsTheTestedSql() throws IOException {
-        var doc = Files.readString(Path.of("../docs/configuration.md")).replace("\r\n", "\n");
+        var path = repositoryRoot(Path.of("").toAbsolutePath()).resolve("docs/configuration.md");
+        assertThat(path).as("the documented production grants").isRegularFile();
+        var doc = Files.readString(path).replace("\r\n", "\n");
         var start = doc.indexOf("**In production.**");
         var end = doc.indexOf("**`validate` and `none`.**", start);
         assertThat(start).as("the \"In production\" text").isNotNegative();
@@ -808,6 +871,44 @@ class MaestroSchemaInitializerTest {
 
         assertThat(blocks).containsExactlyInAnyOrder(
                 SCHEMA_GRANTS, RUNTIME_GRANTS, DEFAULT_PRIVILEGES, PRIVILEGE_CHECK, WRONG_ORDER_REPAIR);
+    }
+
+    /**
+     * {@link #repositoryRoot} must not depend on the working directory: Gradle
+     * runs tests in the module directory, an IDE often in the repository
+     * root. Both find the same root; a tree without {@code settings.gradle.kts}
+     * fails naming where it looked.
+     */
+    @Test
+    @DisplayName("repositoryRoot finds the root from the root and from a module directory, and names the start when there is none")
+    void repositoryRootIsFoundFromTheRootAndFromAModule(@TempDir Path dir) throws IOException {
+        var root = Files.createDirectories(dir.resolve("repo"));
+        Files.writeString(root.resolve("settings.gradle.kts"), "");
+        var module = Files.createDirectories(root.resolve("maestro-store-postgres"));
+        var outside = Files.createDirectories(dir.resolve("elsewhere"));
+
+        assertThat(repositoryRoot(root)).isEqualTo(root);
+        assertThat(repositoryRoot(module)).isEqualTo(root);
+        assertThat(repositoryRoot(module.resolve("src/../"))).isEqualTo(root);
+        assertThatThrownBy(() -> repositoryRoot(outside))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(outside.toString());
+    }
+
+    /**
+     * The repository root: the nearest directory, from {@code start} upwards,
+     * that holds {@code settings.gradle.kts}.
+     *
+     * @throws IllegalStateException naming {@code start} if there is none
+     */
+    static Path repositoryRoot(Path start) {
+        for (var dir = start.toAbsolutePath().normalize(); dir != null; dir = dir.getParent()) {
+            if (Files.isRegularFile(dir.resolve("settings.gradle.kts"))) {
+                return dir;
+            }
+        }
+        throw new IllegalStateException("No settings.gradle.kts in " + start.toAbsolutePath().normalize()
+                + " or any directory above it: cannot find the repository root");
     }
 
     // ── helpers ─────────────────────────────────────────────────────
@@ -849,6 +950,14 @@ class MaestroSchemaInitializerTest {
             }
         }
         return rows;
+    }
+
+    private static String currentSchema(PGSimpleDataSource on) throws SQLException {
+        try (var conn = on.getConnection(); var stmt = conn.createStatement();
+             var rs = stmt.executeQuery("SELECT current_schema()")) {
+            rs.next();
+            return rs.getString(1);
+        }
     }
 
     /** The nodes' role may append and purge workflow history, never rewrite it, and never write the migration history. */
