@@ -1,5 +1,6 @@
 package io.b2mash.maestro.spring.observe;
 
+import io.b2mash.maestro.core.observe.AbandonReason;
 import io.b2mash.maestro.core.observe.ActivityInfo;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.SignalInfo;
@@ -42,6 +43,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <tr><td>{@code maestro.retention.sweeps}</td><td>Counter</td><td>—</td><td>{@link #retentionPass}</td></tr>
  *   <tr><td>{@code maestro.lock.renew.failures}</td><td>Counter</td><td>outcome=error|lost</td><td>{@link #instanceLockRenewFailed}/{@link #instanceLockLost}</td></tr>
  *   <tr><td>{@code maestro.standdown}</td><td>Counter</td><td>reason</td><td>{@link #standDown}</td></tr>
+ *   <tr><td>{@code maestro.run.abandoned}</td><td>Counter</td><td>reason=shutdown|terminated|converged|terminal_write_failed|node_error|store_unavailable</td><td>{@link #runAbandoned}</td></tr>
  * </table>
  *
  * <p>{@code maestro.workflows.running} and {@code maestro.workflows.parked}
@@ -229,6 +231,30 @@ public final class MicrometerEngineObserver implements EngineObserver {
             case NONDETERMINISTIC_HISTORY -> "nondeterministic_history";
             case STALE_RUN -> "stale_run";
             case LEASE_FENCED -> "lease_fenced";
+        };
+    }
+
+    /**
+     * Counts an abandoned local run under its own meter, tagged by reason only.
+     *
+     * <p>A terminate moves this counter ({@code reason=terminated}, from the
+     * workflow's own thread) <em>and</em> {@code maestro.workflow.terminated}
+     * (from {@link #workflowTerminated}, on the operator's thread): two
+     * meters, each once. Never fold one into the other.
+     */
+    @Override
+    public void runAbandoned(WorkflowInfo w, AbandonReason reason) {
+        increment("maestro.run.abandoned", TAG_REASON, abandonTag(reason));
+    }
+
+    private static String abandonTag(AbandonReason reason) {
+        return switch (reason) {
+            case SHUTDOWN -> "shutdown";
+            case TERMINATED -> "terminated";
+            case CONVERGED -> "converged";
+            case TERMINAL_WRITE_FAILED -> "terminal_write_failed";
+            case NODE_ERROR -> "node_error";
+            case STORE_UNAVAILABLE -> "store_unavailable";
         };
     }
 

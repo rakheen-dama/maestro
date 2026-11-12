@@ -912,9 +912,11 @@ burst: roughly one `STORE_UNAVAILABLE` abandon per workflow that was running
 (not parked — parked workflows only make advisory reads) when the database
 went away, on every node. Recovery passes fail until the database answers,
 so nothing is re-adopted into the outage. Alert when the abandon rate stays
-up after the database is healthy again. Count the `WARN` lines or the segment
-spans tagged `maestro.abandon.reason=STORE_UNAVAILABLE`: `runAbandoned` has no
-meter (see `docs/observability.md`). **The same run id abandoning
+up after the database is healthy again: alert on the rate of
+`maestro_run_abandoned_total{reason="store_unavailable"}` (Micrometer
+`maestro.run.abandoned`, see `docs/observability.md`), or count the `WARN`
+lines or the segment spans tagged `maestro.abandon.reason=STORE_UNAVAILABLE`.
+**The same run id abandoning
 `STORE_UNAVAILABLE` on every recovery pass while other workflows progress is
 not an outage.** It is a deterministic fault the classifier cannot tell from
 one, most often a schema mismatch (class `42`). The `WARN` carries the

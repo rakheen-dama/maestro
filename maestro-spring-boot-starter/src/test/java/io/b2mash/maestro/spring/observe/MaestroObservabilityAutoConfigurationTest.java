@@ -14,6 +14,7 @@ import io.b2mash.maestro.spring.config.MaestroAutoConfiguration;
 import io.b2mash.maestro.spring.config.StartupRecoveryRunner;
 import io.b2mash.maestro.test.InMemoryWorkflowStore;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.search.MeterNotFoundException;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.micrometer.tracing.Tracer;
 import io.micrometer.tracing.propagation.Propagator;
@@ -222,6 +223,42 @@ class MaestroObservabilityAutoConfigurationTest {
                     await().atMost(Duration.ofSeconds(2)).until(() ->
                             registry.get("maestro.workflows.running").gauge().value() == 0.0
                                     && registry.get("maestro.workflows.parked").gauge().value() == 0.0);
+                });
+    }
+
+    /**
+     * A terminate moves two meters, each once: {@code maestro.workflow.terminated}
+     * from {@code workflowTerminated} on the operator's thread, and
+     * {@code maestro.run.abandoned{reason=terminated}} from {@code runAbandoned}
+     * when the parked run unwinds on its own workflow thread.
+     */
+    @Test
+    @DisplayName("maestro.run.abandoned{reason=terminated} counts a terminate on the workflow thread, "
+            + "alongside maestro.workflow.terminated")
+    void runAbandonedCountsATerminateOnTheWorkflowThread() {
+        runner.withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    var registry = context.getBean(MeterRegistry.class);
+                    var store = context.getBean(WorkflowStore.class);
+                    var client = context.getBean(MaestroClient.class);
+
+                    client.newWorkflow(ParkingActivityWorkflow.class, options("abandon-terminated-1"))
+                            .startAsync(null);
+                    await().atMost(Duration.ofSeconds(10)).until(() ->
+                            store.getInstance("abandon-terminated-1")
+                                    .map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL).orElse(false));
+
+                    client.getWorkflow("abandon-terminated-1").terminate("wp11");
+
+                    // runAbandoned fires asynchronously, when the parked run unwinds.
+                    await().atMost(Duration.ofSeconds(5))
+                            .ignoreException(MeterNotFoundException.class)
+                            .untilAsserted(() -> assertThat(registry.get("maestro.run.abandoned")
+                                    .tag("reason", "terminated").counter().count()).isEqualTo(1.0));
+                    assertThat(registry.get("maestro.workflow.terminated")
+                            .tag("workflow", "ObservabilityParkingActivityWorkflow")
+                            .counter().count()).isEqualTo(1.0);
                 });
     }
 

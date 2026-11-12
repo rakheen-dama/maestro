@@ -212,9 +212,11 @@ public interface EngineObserver {
      * state. Without this callback a span opened on the workflow thread is
      * never closed and therefore never exported.
      *
-     * <p>Counting observers should <b>not</b> implement this: {@link
-     * #workflowTerminated} already fires exactly once for a terminate, so a
-     * second emission here would double-count.
+     * <p>A counting observer should count this under its <b>own</b> meter,
+     * never fold {@link AbandonReason#TERMINATED} into a terminate counter:
+     * {@link #workflowTerminated} already fires exactly once per terminate, on
+     * the operator's thread, so counting {@code TERMINATED} there as well
+     * would double-count the terminate.
      *
      * @param w      identity of the workflow whose local run ended
      * @param reason why the run was abandoned

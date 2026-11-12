@@ -1,5 +1,6 @@
 package io.b2mash.maestro.spring.observe;
 
+import io.b2mash.maestro.core.observe.AbandonReason;
 import io.b2mash.maestro.core.observe.ActivityInfo;
 import io.b2mash.maestro.core.observe.SignalInfo;
 import io.b2mash.maestro.core.observe.StandDownReason;
@@ -225,6 +226,31 @@ class MicrometerEngineObserverTest {
                 .counter().count()).isEqualTo(1.0);
         assertThat(registry.get("maestro.standdown").tag("reason", "lease_fenced")
                 .counter().count()).isEqualTo(1.0);
+    }
+
+    @Test
+    @DisplayName("maestro.run.abandoned — Counter, tag reason=shutdown|terminated|converged"
+            + "|terminal_write_failed|node_error|store_unavailable, no workflow tag")
+    void runAbandonedCountsByReason() {
+        for (var reason : AbandonReason.values()) {
+            observer.runAbandoned(WORKFLOW, reason);
+        }
+        observer.runAbandoned(WORKFLOW, AbandonReason.STORE_UNAVAILABLE);
+
+        assertThat(registry.get("maestro.run.abandoned").tag("reason", "store_unavailable")
+                .counter().count()).isEqualTo(2.0);
+        for (var tag : new String[] {"shutdown", "terminated", "converged", "terminal_write_failed", "node_error"}) {
+            assertThat(registry.get("maestro.run.abandoned").tag("reason", tag).counter().count())
+                    .as("reason=%s", tag)
+                    .isEqualTo(1.0);
+        }
+        var counters = registry.get("maestro.run.abandoned").counters();
+        assertThat(counters).hasSize(6);
+        assertThat(counters).allSatisfy(counter -> {
+            var tags = counter.getId().getTags();
+            assertThat(tags).hasSize(1);
+            assertThat(tags.getFirst().getKey()).isEqualTo("reason");
+        });
     }
 
     @Test

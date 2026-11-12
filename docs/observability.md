@@ -67,7 +67,7 @@ site.
 
 ## Meter catalog
 
-Seventeen meters: **14 counters and 1 timer**, registered by
+Eighteen meters: **15 counters and 1 timer**, registered by
 `MicrometerEngineObserver`, plus **2 gauges**, registered by
 `MaestroEngineGauges` — both in the `io.b2mash.maestro.spring.observe` package
 of `maestro-spring-boot-starter`.
@@ -103,6 +103,7 @@ type is known (the instance exists).
 | `maestro.retention.purged` | `kind` | `instance`, `event`, `signal`, `timer` | Incremented by the number of rows of that kind a retention sweep deleted |
 | `maestro.lock.renew.failures` | `outcome` | `error`, `lost` | Instance-lock renewal errored (`error`) or the lock was found gone (`lost`) |
 | `maestro.standdown` | `reason` | `unknown_event_type`, `unknown_event_payload`, `nondeterministic_history`, `stale_run`, `lease_fenced` | A local run stood down without recording a workflow outcome |
+| `maestro.run.abandoned` | `reason` | `shutdown`, `terminated`, `converged`, `terminal_write_failed`, `node_error`, `store_unavailable` | A local run ended on the workflow's own thread without this node recording a terminal outcome (`runAbandoned`) — see [below](#which-callbacks-the-meter-adapter-implements) |
 
 `maestro.recovery.scanned`, `maestro.recovery.adopted` and
 `maestro.retention.purged` are `increment(n)` calls, not `increment()` — one
@@ -169,7 +170,7 @@ correct: no JVM is holding it.
 
 ### Which callbacks the meter adapter implements
 
-`MicrometerEngineObserver` implements 13 of the 23 `EngineObserver` callbacks.
+`MicrometerEngineObserver` implements 16 of the 25 `EngineObserver` callbacks.
 It deliberately does **not** implement:
 
 - `workflowResumed`, `workflowParked`, `workflowUnparked`, `activityStarted`,
@@ -177,29 +178,40 @@ It deliberately does **not** implement:
   `instanceLockAcquired` — no meter in the catalog needs them.
 - `wrapActivityAttempt` — its default returns the attempt unchanged; a meter
   needs no thread-local context on the attempt thread.
-- **`runAbandoned`** — this fires when a run stops because the node is shutting
-  down, an operator terminated the workflow, another writer finalised the row
-  first, the terminal status write failed, the store was unavailable
-  (`STORE_UNAVAILABLE`), or a node-level `Error` escaped the
-  workflow method, an activity or a compensation action (`NODE_ERROR`). Counting it would double-count:
-  `workflowTerminated` already fires exactly once per terminate. It exists for
-  the tracing adapter, which needs a callback on the workflow's own thread to
-  close its span. `NODE_ERROR` — a `LinkageError` (`NoClassDefFoundError`,
-  `ExceptionInInitializerError`, ...) or a `VirtualMachineError` other than
-  `StackOverflowError` (`OutOfMemoryError`, `InternalError`, ...) — is the one
-  reason that is not routine: it is a bad deploy or resource exhaustion on that
-  node, the instance keeps its active status (`RUNNING`, or `COMPENSATING`
-  mid-unwind) and stays recoverable, and nothing is recorded as a workflow or
-  activity failure — an activity that throws one is not retried. It is visible as the segment attribute
-  `maestro.abandon.reason=NODE_ERROR` and as an `ERROR` log line under the
-  workflow MDC (`... abandoned its local run on a node-level error (<class>)
-  ...`); alert on either. `STORE_UNAVAILABLE` is routine during a database
-  outage and a problem only when it persists after the database is back: the
-  store kept failing after the in-place retries, nothing was recorded, and
-  recovery resumes the instance once the store answers. It is visible as
-  `maestro.abandon.reason=STORE_UNAVAILABLE` and as a `WARN` (`... abandoned
-  its local run — the store is unavailable ...`); see
-  [Operations §10.9](operations.md#109-store-outages-store_unavailable-abandons).
+
+**`runAbandoned` is counted under its own meter, `maestro.run.abandoned{reason}`.**
+It fires on the workflow's own thread when a run stops because the node is
+shutting down (`shutdown`), an operator terminated the workflow
+(`terminated`), another writer finalised the row first (`converged`), the
+terminal status write failed (`terminal_write_failed`), a node-level `Error`
+escaped the workflow method, an activity or a compensation action
+(`node_error`), or the store was unavailable (`store_unavailable`). The tag
+value set is closed at six, mapped from
+`io.b2mash.maestro.core.observe.AbandonReason`, and the meter carries no
+`workflow` tag. A terminate moves two meters, each once:
+`maestro.workflow.terminated` from `workflowTerminated` on the operator's
+thread, and `maestro.run.abandoned{reason="terminated"}` when the run unwinds
+on its own thread. Never add the two together as "terminates". The tracing
+adapter uses the same callback to close its segment span.
+
+`node_error` is the one reason that is not routine. It is a `LinkageError`
+(`NoClassDefFoundError`, `ExceptionInInitializerError`, ...) or a
+`VirtualMachineError` other than `StackOverflowError` (`OutOfMemoryError`,
+`InternalError`, ...): a bad deploy or resource exhaustion on that node. The
+instance keeps its active status (`RUNNING`, or `COMPENSATING` mid-unwind) and
+stays recoverable, and nothing is recorded as a workflow or activity failure —
+an activity that throws one is not retried. Alert on any increase of
+`maestro_run_abandoned_total{reason="node_error"}`; the same event is the
+segment attribute `maestro.abandon.reason=NODE_ERROR` and an `ERROR` log line
+under the workflow MDC (`... abandoned its local run on a node-level error
+(<class>) ...`). `store_unavailable` is routine during a database outage and a
+problem only when it persists after the database is back: the store kept
+failing after the in-place retries, nothing was recorded, and recovery resumes
+the instance once the store answers. Alert on a sustained rate of
+`maestro_run_abandoned_total{reason="store_unavailable"}` after the database
+is healthy; the same event is `maestro.abandon.reason=STORE_UNAVAILABLE` and a
+`WARN` (`... abandoned its local run — the store is unavailable ...`); see
+[Operations §10.9](operations.md#109-store-outages-store_unavailable-abandons).
 
 Every `EngineObserver` method is a `default` no-op, so a custom observer
 implements only what it cares about.
