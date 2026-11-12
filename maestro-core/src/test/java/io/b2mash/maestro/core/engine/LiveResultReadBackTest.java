@@ -173,17 +173,19 @@ class LiveResultReadBackTest {
     @Test
     void outcomeAppendOutage_latchesAndNeverReadsBack() throws Exception {
         store.failWhen("appendEvent", args -> ((WorkflowEvent) args[0]).eventType() == EventType.ACTIVITY_COMPLETED);
-        var impl = new SlotActs();
-        var workflow = new SinkOnce(proxy(Acts.class, impl));
+        // The faulted step's result cannot be read back: a read-back reached on
+        // the fault path would fire activityResultUnreadable, not pass silently.
+        var decider = new BareDecider();
+        var workflow = new DecideBare(proxy(Decider.class, decider));
         var id = "rb-outage";
 
-        start(id, workflow, SinkOnce.class.getMethod("run", String.class));
+        start(id, workflow, DecideBare.class.getMethod("run", String.class), "bob");
         await().atMost(BOUND).until(() -> !executor.isRunning(id));
 
         assertEquals(AbandonReason.STORE_UNAVAILABLE, onlyAbandonCall(observer, id).reason());
         assertEquals(WorkflowStatus.RUNNING, store.getInstance(id).orElseThrow().status());
         assertEquals(0, observer.unreadableResults().size());
-        assertEquals(1, impl.calls.get());
+        assertEquals(1, decider.calls.get());
     }
 
     // ── What is written is unchanged (D-3) ────────────────────────────
@@ -323,8 +325,11 @@ class LiveResultReadBackTest {
     }
 
     public static final class BareDecider implements Decider {
+        final AtomicInteger calls = new AtomicInteger();
+
         @Override
         public BareDecision decideBare(String applicant) {
+            calls.incrementAndGet();
             return new BareApproved(applicant);
         }
     }
@@ -413,11 +418,9 @@ class LiveResultReadBackTest {
 
     public static final class SlotActs implements Acts {
         final AtomicReference<Slot> released = new AtomicReference<>();
-        final AtomicInteger calls = new AtomicInteger();
 
         @Override
         public Slot reserve() {
-            calls.incrementAndGet();
             return new Slot("slot-7", OffsetDateTime.parse("2026-11-12T10:00:00+02:00"));
         }
 
@@ -433,7 +436,6 @@ class LiveResultReadBackTest {
 
         @Override
         public String sink(Object value) {
-            calls.incrementAndGet();
             return "sunk";
         }
     }
@@ -476,18 +478,6 @@ class LiveResultReadBackTest {
             acts.reserve();
             acts.fail();
             return "unreachable";
-        }
-    }
-
-    public static class SinkOnce {
-        private final Acts acts;
-
-        public SinkOnce(Acts acts) {
-            this.acts = acts;
-        }
-
-        public String run(String in) {
-            return acts.sink(in);
         }
     }
 

@@ -7,6 +7,7 @@ import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.engine.ArgumentFingerprint;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
+import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -14,7 +15,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.JsonNodeFactory;
+import tools.jackson.databind.node.ObjectNode;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -27,6 +31,7 @@ import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
@@ -34,6 +39,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 
 /**
  * A live activity call returns the value a replay of that call returns: the
@@ -129,12 +135,60 @@ class ActivityResultReadBackTest {
 
         var seen = Seen.of(id);                                     // [live value, replayed value]
         assertEquals(2, seen.size(), "seen=" + seen + " status=" + status);
+        if (c.hasExpectedReplay) {
+            assertEquals(c.expectedReplay, c.comparable(seen.get(1)), c.name());
+        }
         assertEquals(ArgumentFingerprint.of(serializer, new Object[]{seen.get(1)}),
                 ArgumentFingerprint.of(serializer, new Object[]{seen.get(0)}), c.name());
         assertEquals(seen.get(1) == null ? null : seen.get(1).getClass(),
                 seen.get(0) == null ? null : seen.get(0).getClass(), c.name());
         assertEquals(c.comparable(seen.get(1)), c.comparable(seen.get(0)), c.name());
         assertEquals("COMPLETED", status, c.name());
+    }
+
+    // ── Optional.empty() and JsonNode results (Task 5) ───────────────────
+
+    @Test
+    void optionalEmptyResult_isEmptyLive_andIsPresentCompletes() throws Exception {
+        var handle = env.startWorkflow("optional-live", OptionalNowWorkflow.class, "x");
+        var status = settle(handle);
+        assertEquals(List.of(Optional.empty()), Seen.of("optional-live"), "status=" + status);
+        assertEquals("COMPLETED", status);
+        assertEquals("absent", handle.getResult(String.class, Duration.ofSeconds(10)));
+    }
+
+    @Test
+    void optionalEmptyResult_isEmptyLiveAndAfterRecovery_andIsPresentCompletes() throws Exception {
+        // Two completions: optionalEmpty() and the sink. The node dies after the
+        // sink's event, so recovery replays both and isPresent() runs on the replayed value.
+        var crash = env.crashAfter(2);
+        var handle = env.startWorkflow("optional-replay", OptionalLaterWorkflow.class, "x");
+        crash.awaitCrash(Duration.ofSeconds(10));
+        crash.recover();
+        var status = settle(handle);
+        assertEquals(List.of(Optional.empty(), Optional.empty()), Seen.of("optional-replay"),
+                "[live, replayed] status=" + status);
+        assertEquals("COMPLETED", status);
+        assertEquals("absent", handle.getResult(String.class, Duration.ofSeconds(10)));
+    }
+
+    @Test
+    void jsonNodeResult_isACopyOfTheStoredNode_andMutatingItLeavesHistory() throws Exception {
+        var id = "node-alias";
+        var crash = env.crashAfter(2);
+        var handle = env.startWorkflow(id, NodeWorkflow.class, "x");
+        crash.awaitCrash(Duration.ofSeconds(10));
+        crash.recover();
+        var status = settle(handle);
+
+        // What workflow code saw before mutating it: live, then replayed.
+        assertEquals(List.of("{\"a\":1}", "{\"a\":1}"), Seen.of(id + "#text"), "status=" + status);
+        var stored = handle.getEvents().stream()
+                .filter(e -> e.eventType() == EventType.ACTIVITY_COMPLETED && e.stepName().endsWith(".node"))
+                .findFirst().orElseThrow().payload();
+        assertEquals("{\"a\":1}", String.valueOf(stored));
+        assertNotSame(stored, Seen.of(id + "#node").getFirst());
+        assertEquals("COMPLETED", status);
     }
 
     /**
@@ -260,6 +314,8 @@ class ActivityResultReadBackTest {
         Map<String, Object> mapDecimalTwoPlaces();
         Map<String, Object> mapDecimalEighteenPlaces();
         List<Object> listFloat();
+        Optional<String> optionalEmpty();
+        JsonNode node();
     }
 
     public static final class ProbesImpl implements Probes {
@@ -291,6 +347,8 @@ class ActivityResultReadBackTest {
             return Map.of("d", new BigDecimal("1.123456789012345678"));
         }
         @Override public List<Object> listFloat() { return List.of(0.1f); }
+        @Override public Optional<String> optionalEmpty() { return Optional.empty(); }
+        @Override public JsonNode node() { return JsonNodeFactory.instance.objectNode().put("a", 1); }
     }
 
     /** The probe's 18 cases (default mapper), each bound to its typed method. */
@@ -312,14 +370,30 @@ class ActivityResultReadBackTest {
         MAP_FLOAT(Probes::mapFloat, v -> v),
         MAP_DECIMAL_2DP(Probes::mapDecimalTwoPlaces, v -> v),
         MAP_DECIMAL_18DP(Probes::mapDecimalEighteenPlaces, v -> v),
-        LIST_FLOAT(Probes::listFloat, v -> v);
+        LIST_FLOAT(Probes::listFloat, v -> v),
+        // Task 5: a JSON null reads as the declared type's null value, live and on replay.
+        OPTIONAL_EMPTY(Probes::optionalEmpty, v -> v, Optional.empty()),
+        // Task 5: an untyped float reads back as a text store returns it — a Double.
+        MAP_FLOAT_STAYS_DOUBLE_ON_REPLAY(Probes::mapFloat, ProbeCase::classAndValueOfF, "Double 0.1");
 
         private final Function<Probes, Object> call;
         private final Function<Object, Object> comparable;
+        /** Whether the replayed value's comparable form is pinned, not only compared with the live one. */
+        private final boolean hasExpectedReplay;
+        private final @Nullable Object expectedReplay;
 
         ProbeCase(Function<Probes, Object> call, Function<Object, Object> comparable) {
             this.call = call;
             this.comparable = comparable;
+            this.hasExpectedReplay = false;
+            this.expectedReplay = null;
+        }
+
+        ProbeCase(Function<Probes, Object> call, Function<Object, Object> comparable, Object expectedReplay) {
+            this.call = call;
+            this.comparable = comparable;
+            this.hasExpectedReplay = true;
+            this.expectedReplay = expectedReplay;
         }
 
         Object call(Probes probes) {
@@ -337,6 +411,12 @@ class ActivityResultReadBackTest {
 
         private static Object setInOrder(Object value) {
             return List.copyOf((Set<?>) value);
+        }
+
+        /** The class and value of the map's {@code "f"} entry, e.g. {@code "Double 0.1"}. */
+        private static Object classAndValueOfF(Object value) {
+            var f = ((Map<?, ?>) value).get("f");
+            return f.getClass().getSimpleName() + " " + f;
         }
 
         /** {@code Base} has no {@code equals}: its class and public fields, as {@code Sub} would add one. */
@@ -376,6 +456,58 @@ class ActivityResultReadBackTest {
             var v = ProbeCase.valueOf(caseName).call(probes);
             Seen.record(WorkflowContext.current().workflowId(), v);
             return sink.take(v);
+        }
+    }
+
+    /** Calls {@code isPresent()} on the result at once. */
+    @DurableWorkflow(name = "optional-now-workflow")
+    public static class OptionalNowWorkflow {
+        @ActivityStub(startToCloseTimeout = "PT10S")
+        private Probes probes;
+
+        @WorkflowMethod
+        public String run(String in) {
+            var result = probes.optionalEmpty();
+            Seen.record(WorkflowContext.current().workflowId(), result);
+            return result.isPresent() ? "present" : "absent";
+        }
+    }
+
+    /** Calls {@code isPresent()} on the result after the sink, so it runs on the replayed value. */
+    @DurableWorkflow(name = "optional-later-workflow")
+    public static class OptionalLaterWorkflow {
+        @ActivityStub(startToCloseTimeout = "PT10S")
+        private Probes probes;
+
+        @ActivityStub(startToCloseTimeout = "PT10S")
+        private Sink sink;
+
+        @WorkflowMethod
+        public String run(String in) {
+            var result = probes.optionalEmpty();
+            Seen.record(WorkflowContext.current().workflowId(), result);
+            sink.take("after");
+            return result.isPresent() ? "present" : "absent";
+        }
+    }
+
+    /** Records the node it got (and its text), then mutates it before the next step. */
+    @DurableWorkflow(name = "node-workflow")
+    public static class NodeWorkflow {
+        @ActivityStub(startToCloseTimeout = "PT10S")
+        private Probes probes;
+
+        @ActivityStub(startToCloseTimeout = "PT10S")
+        private Sink sink;
+
+        @WorkflowMethod
+        public String run(String in) {
+            var id = WorkflowContext.current().workflowId();
+            var node = probes.node();
+            Seen.record(id + "#node", node);
+            Seen.record(id + "#text", node.toString());
+            ((ObjectNode) node).put("a", 99);
+            return sink.take("after");
         }
     }
 
