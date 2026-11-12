@@ -2,11 +2,15 @@ package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.exception.SerializationException;
 import org.jspecify.annotations.Nullable;
+import tools.jackson.core.StreamWriteFeature;
+import tools.jackson.core.json.JsonWriteFeature;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.JavaType;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.ObjectReader;
+import tools.jackson.databind.ObjectWriter;
+import tools.jackson.databind.SerializationFeature;
 import tools.jackson.databind.cfg.JsonNodeFeature;
 import tools.jackson.databind.node.NullNode;
 
@@ -67,6 +71,20 @@ import java.util.OptionalLong;
  * mapper's feature, never on the node: under a mapper without it, an untyped
  * target reads even a {@code DecimalNode} as a {@code Double}.
  *
+ * <p>The node is rendered by a writer derived from the mapper with every
+ * write feature that would change the rendering of an existing tree turned
+ * off: {@link StreamWriteFeature#WRITE_BIGDECIMAL_AS_PLAIN} and
+ * {@link JsonWriteFeature#WRITE_NUMBERS_AS_STRINGS} off,
+ * {@link JsonNodeFeature#WRITE_PROPERTIES_SORTED} off,
+ * {@link SerializationFeature#WRAP_ROOT_VALUE} off, and
+ * {@link JsonNodeFeature#WRITE_NULL_PROPERTIES},
+ * {@link SerializationFeature#WRITE_EMPTY_JSON_ARRAYS} and
+ * {@link JsonWriteFeature#QUOTE_PROPERTY_NAMES} on. This rendering is a
+ * transport of a tree the store already parsed: how the host configured its
+ * mapper for writing must not change what existing history replays. The
+ * reader keeps the mapper's own features. {@link #serialize(Object)} is
+ * untouched — what is stored does not change.
+ *
  * <p>One value differs from the tree path and is accepted: under a mapper
  * without decimal nodes, a number exactly halfway between two {@code float}s,
  * read into a {@code float}, is now rounded once from its text instead of twice
@@ -83,12 +101,23 @@ public final class PayloadSerializer {
     /** Whether the mapper's {@code readTree} builds {@code DecimalNode}s (class Javadoc). */
     private final boolean decimalNodes;
 
+    /** Renders a node for the text path, faithfully whatever the mapper's write features (class Javadoc). */
+    private final ObjectWriter nodeWriter;
+
     /**
      * @param objectMapper the Jackson 3 ObjectMapper to use
      */
     public PayloadSerializer(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
         this.decimalNodes = objectMapper.isEnabled(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS);
+        this.nodeWriter = objectMapper.writer()
+                .without(StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN)
+                .without(JsonWriteFeature.WRITE_NUMBERS_AS_STRINGS)
+                .with(JsonWriteFeature.QUOTE_PROPERTY_NAMES)
+                .without(JsonNodeFeature.WRITE_PROPERTIES_SORTED)
+                .with(JsonNodeFeature.WRITE_NULL_PROPERTIES)
+                .without(SerializationFeature.WRAP_ROOT_VALUE)
+                .with(SerializationFeature.WRITE_EMPTY_JSON_ARRAYS);
     }
 
     /**
@@ -183,8 +212,8 @@ public final class PayloadSerializer {
         return decimalNodes ? reader.with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS) : reader;
     }
 
-    /** The node's JSON text as this mapper writes it; a {@code null} node is JSON {@code null}. */
+    /** The node's JSON text, rendered faithfully (class Javadoc); a {@code null} node is JSON {@code null}. */
     private byte[] textOf(@Nullable JsonNode node) {
-        return objectMapper.writeValueAsBytes(node == null ? NullNode.instance : node);
+        return nodeWriter.writeValueAsBytes(node == null ? NullNode.instance : node);
     }
 }
