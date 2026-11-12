@@ -451,13 +451,19 @@ public final class SeededHistoryWorkflows {
         void verify(String orderId);
     }
 
-    /** Saga activities: every forward step but {@code ship} has a compensation. */
+    /**
+     * Saga activities: every forward step but {@code ship} has a compensation.
+     * A one-parameter compensation assignable from the forward step's return
+     * type receives that return value ({@link Compensate}'s argument
+     * resolution), so {@code reserve} and {@code charge} return the item
+     * itself and each compensation receives the item.
+     */
     @Activity(name = "seed-saga")
     public interface SeedSagaActivities {
 
         /**
          * @param item the item
-         * @return the reservation reference
+         * @return {@code item}, which {@code releaseReservation} receives
          */
         @Compensate("releaseReservation")
         String reserve(String item);
@@ -467,7 +473,7 @@ public final class SeededHistoryWorkflows {
 
         /**
          * @param item the item
-         * @return the charge reference
+         * @return {@code item}, which {@code refund} receives
          */
         @Compensate("refund")
         String charge(String item);
@@ -595,7 +601,7 @@ public final class SeededHistoryWorkflows {
                 return "reservation:" + skuOrItem;
             }
             enter("seed-saga.reserve", skuOrItem);
-            return "reserved:" + skuOrItem;
+            return skuOrItem;
         }
 
         @Override
@@ -619,7 +625,7 @@ public final class SeededHistoryWorkflows {
         @Override
         public String charge(String item) {
             enter("seed-saga.charge", item);
-            return "charged:" + item;
+            return item;
         }
 
         @Override

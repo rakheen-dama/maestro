@@ -366,7 +366,7 @@ class SeededHistoryCapture {
         var manifest = String.join("\n",
                 "# Identity of seeded-history.sql: written by SeededHistoryCapture, run by",
                 "# scripts/capture-upgrade-fixture.sh history in a detached worktree of ref.",
-                "# Frozen with the dump; never edit (RELEASING.md § Upgrade fixtures).",
+                "# Frozen with the dump; never edit (RELEASING.md, section Upgrade fixtures).",
                 "ref=" + ref,
                 "capturedAt=" + Instant.now(),
                 "serverVersion=" + serverVersion,
