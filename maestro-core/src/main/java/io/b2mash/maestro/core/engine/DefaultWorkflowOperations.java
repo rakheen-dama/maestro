@@ -8,7 +8,6 @@ import io.b2mash.maestro.core.exception.FencedWriteException;
 import io.b2mash.maestro.core.exception.MaestroControlFlowError;
 import io.b2mash.maestro.core.exception.NodeErrors;
 import io.b2mash.maestro.core.exception.RetryExhaustedException;
-import io.b2mash.maestro.core.exception.SerializationException;
 import io.b2mash.maestro.core.exception.SignalTimeoutException;
 import io.b2mash.maestro.core.exception.StaleRunException;
 import io.b2mash.maestro.core.exception.StoreUnavailableException;
@@ -986,23 +985,24 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         // clock the per-await deadlines are armed on.
         WorkflowContextInternals.setReplaying(ctx, false);
         var now = instantSource.instant();
-        var stored = appendEvent(ctx, seq, EventType.SIDE_EFFECT, "$maestro:currentTime", serializer.serialize(now));
+        var stored = appendEventReturningPayload(ctx, seq, EventType.SIDE_EFFECT, "$maestro:currentTime",
+                serializer.serialize(now));
         // D7: return what a replay of this slot reads — the payload as the
-        // store returned it — not the raw clock value. The try holds no store
-        // call and names SerializationException only.
-        @Nullable Instant readBack;
-        try {
-            readBack = serializer.deserialize(stored, Instant.class);
-        } catch (SerializationException unreadable) {
-            // The host mapper throws reading the Instant it wrote. Never fail
-            // the run for it (D9's principle): the side effect is durable, and
-            // a replay of this slot stands down as UNKNOWN_EVENT_PAYLOAD. The
-            // cause is named by class and JSON path only.
-            var root = unreadable.getCause() != null ? unreadable.getCause() : unreadable;
-            logger.debug("Workflow '{}': currentTime() at sequence {} is recorded but cannot be read back as an"
-                            + " Instant ({}); this run continues with the clock value, and a replay of this slot"
-                            + " will stand the run down as unknown_event_payload",
-                    ctx.workflowId(), seq, UnknownHistoryGuard.redactedCause(root));
+        // store returned it — not the raw clock value. ReadBack's try holds no
+        // store call and names SerializationException only.
+        var readBack = ReadBack.orLive(now, () -> serializer.deserialize(stored, Instant.class), root ->
+                // The host mapper throws reading the Instant it wrote. Never
+                // fail the run for it (D9's principle): the side effect is
+                // durable, and a replay of this slot stands down as
+                // UNKNOWN_EVENT_PAYLOAD. The run continues with the clock
+                // value. The cause is named by class and JSON path only.
+                logger.debug("Workflow '{}': currentTime() at sequence {} is recorded but cannot be read back as an"
+                                + " Instant ({}); this run continues with the clock value, and a replay of this slot"
+                                + " will stand the run down as unknown_event_payload",
+                        ctx.workflowId(), seq, UnknownHistoryGuard.redactedCause(root)));
+        if (readBack == null) {
+            // A store that reads the recorded node back as JSON null: nothing
+            // a replay could agree with either, so keep the clock value.
             return now;
         }
         // A read-back more than a second from the clock value is a mapper
@@ -1014,11 +1014,6 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         // retryUntil) would run out ~1000x early on a run that never crashed:
         // keep the clock value live. A replay still reads the misread instant.
         // Precision loss (millis, micros) is well inside the second.
-        if (readBack == null) {
-            // A store that reads the recorded node back as JSON null: nothing
-            // a replay could agree with either, so keep the clock value.
-            return now;
-        }
         var drift = Duration.between(now, readBack);
         if (drift.abs().compareTo(TIMESTAMP_READ_BACK_TOLERANCE) > 0) {
             var warning = timestampMisreadWarning(ctx.workflowId(), seq, drift);
@@ -1312,15 +1307,33 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
 
     // ── Internal helpers ───────────────────────────────────────────────
 
+    /** Appends an event under the run's lease ({@link WorkflowStore#appendEvent(WorkflowEvent, io.b2mash.maestro.core.spi.RunLease)}). */
+    private void appendEvent(WorkflowContext ctx, int seq, EventType type,
+                             String stepName, @Nullable JsonNode payload) {
+        var event = event(ctx, seq, type, stepName, payload);
+        appendFenced(ctx, seq, () -> {
+            store.appendEvent(event, ctx.lease());
+            return null;
+        });
+    }
+
     /**
-     * Appends an event under the run's lease.
-     *
-     * @return the payload as the store will read it back
-     *         ({@link io.b2mash.maestro.core.spi.WorkflowStore#appendEventReturningPayload})
+     * Appends an event under the run's lease and returns its payload as the
+     * store will read it back
+     * ({@link WorkflowStore#appendEventReturningPayload}) — for the one
+     * operation that reads back what it recorded, {@link #currentTime()}.
+     * Every other operation discards the payload, so it uses
+     * {@link #appendEvent} and the store method of that name.
      */
-    private @Nullable JsonNode appendEvent(WorkflowContext ctx, int seq, EventType type,
-                                           String stepName, @Nullable JsonNode payload) {
-        var event = new WorkflowEvent(
+    private @Nullable JsonNode appendEventReturningPayload(WorkflowContext ctx, int seq, EventType type,
+                                                           String stepName, @Nullable JsonNode payload) {
+        var event = event(ctx, seq, type, stepName, payload);
+        return appendFenced(ctx, seq, () -> store.appendEventReturningPayload(event, ctx.lease()));
+    }
+
+    private static WorkflowEvent event(WorkflowContext ctx, int seq, EventType type,
+                                       String stepName, @Nullable JsonNode payload) {
+        return new WorkflowEvent(
                 UUID.randomUUID(),
                 ctx.workflowInstanceId(),
                 seq,
@@ -1329,8 +1342,12 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                 payload,
                 Instant.now()
         );
+    }
+
+    /** Runs {@code append}; a fenced or lost append makes the run stale (sticky), then propagates. */
+    private static @Nullable JsonNode appendFenced(WorkflowContext ctx, int seq, Supplier<@Nullable JsonNode> append) {
         try {
-            return store.appendEventReturningPayload(event, ctx.lease());
+            return append.get();
         } catch (FencedWriteException fenced) {
             // Issue 11: another node adopted this workflow and the store
             // refused this run's write. Sticky for the same reason as below.

@@ -636,9 +636,10 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * returned. A method declared to return a {@code Future} or
      * {@code CompletionStage} is not read back at all.
      *
-     * <p>The {@code try} holds no store call and catches
-     * {@link SerializationException} only, so an {@link Error} (a control-flow
-     * signal included) and a store fault are never swallowed here.
+     * <p>The read goes through {@link ReadBack#orLive}, whose {@code try}
+     * holds no store call and catches {@link SerializationException} only, so
+     * an {@link Error} (a control-flow signal included) and a store fault are
+     * never swallowed here.
      *
      * @param stored   the payload as the outcome append returned it — what the
      *                 store will hand a replay of this step
@@ -657,16 +658,12 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             // still reads the payload (unsupported return type, Issue 49).
             return raw;
         }
-        Object value;
-        try {
-            value = deserializeResult(stored, method);
-        } catch (SerializationException unreadable) {
-            var root = unreadable.getCause() != null ? unreadable.getCause() : unreadable;
+        var value = ReadBack.orLive(raw, () -> deserializeResult(stored, method), root -> {
             observer.activityResultUnreadable(info, root.getClass().getName());
             warnOnce(method, unreadableResultWarning(ctx.workflowId(), stepName, seq,
                     method.getGenericReturnType(), root));
-            return raw;
-        }
+        });
+        // (After the fallback value IS raw, which never reads as another class.)
         if (raw != null && value != null && readsBackAsAnotherClass(raw, value)) {
             // The type valve: the read-back is not an instance of what the
             // activity returned (a subtype under its declared supertype, a

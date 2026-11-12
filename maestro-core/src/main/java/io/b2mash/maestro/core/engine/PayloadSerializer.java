@@ -153,17 +153,9 @@ public final class PayloadSerializer {
      *         {@code null} (class Javadoc)
      * @throws SerializationException if deserialization fails
      */
+    @SuppressWarnings("unchecked")   // the Type overload reads into exactly this class (a primitive's as its box)
     public <T> @Nullable T deserialize(@Nullable JsonNode node, Class<T> type) {
-        try {
-            JavaType javaType = objectMapper.getTypeFactory().constructType(type);
-            if (isAbsent(node) && !readsNullAsEmpty(javaType)) {
-                return null;
-            }
-            return reader(javaType).readValue(textOf(node));
-        } catch (Exception e) {
-            throw new SerializationException(
-                    "Failed to deserialize JsonNode to " + type.getName(), e);
-        }
+        return (T) deserialize(node, (Type) type);
     }
 
     /**
