@@ -42,12 +42,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * (both nanosecond features off) handed workflow code nanoseconds live and
  * milliseconds after recovery.
  *
- * <p>The read-back has one cost: a mapper that reads its own write back as a
- * <em>wrong</em> instant without throwing — epoch milliseconds written, but
- * integer timestamps still read as seconds — now hands workflow code that
- * wrong instant on the live run too, where before it was wrong only after a
- * recovery. Only a mapper that <em>throws</em> takes the "return the clock
- * value" fallback.
+ * <p>Two mappers keep the clock value on the live run. One that
+ * <em>throws</em> reading back its own {@code Instant} takes the "return the
+ * clock value" fallback (logged at DEBUG; a replay stands down). One that
+ * reads its own write back as a <em>wrong</em> instant without throwing —
+ * timestamps written ({@code WRITE_DATES_AS_TIMESTAMPS} on) as epoch
+ * milliseconds ({@code WRITE_DATE_TIMESTAMPS_AS_NANOSECONDS} off) while
+ * integer timestamps are still read as seconds
+ * ({@code READ_DATE_TIMESTAMPS_AS_NANOSECONDS} on, its default), so 2026
+ * reads as the year 58834 — is caught by the plausibility check: a read-back
+ * more than one second from the recorded clock value is discarded for the
+ * clock value, with one WARN per {@link PayloadSerializer}. Live budgets
+ * ({@code collectSignals}, {@code retryUntil}) are then computed from the
+ * real clock. A replay still reads the stored value as that mapper reads it,
+ * the misread instant, as on the released build.
  *
  * <p>Every assertion is on a collected value: the instance row's output, the
  * event log, the observer's lists.
@@ -111,13 +119,23 @@ class CurrentTimeReadBackTest {
     }
 
     private void executor(ObjectMapper mapper, VersionedInMemoryStore withStore) {
+        executor(mapper, withStore, InstantSource.fixed(NOW));
+    }
+
+    private void executor(ObjectMapper mapper, VersionedInMemoryStore withStore, InstantSource clock) {
         store = withStore;
         serializer = new PayloadSerializer(mapper);
         observer = new RecordingEngineObserver();
         executor = WorkflowExecutor.builder(store, serializer, "svc")
-                .instantSource(InstantSource.fixed(NOW))
+                .instantSource(clock)
                 .observer(observer)
                 .build();
+    }
+
+    /** A clock that starts at {@code start} and moves {@code step} forward on every read. */
+    private static InstantSource ticking(Instant start, Duration step) {
+        var reads = new java.util.concurrent.atomic.AtomicLong();
+        return () -> start.plus(step.multipliedBy(reads.getAndIncrement()));
     }
 
     @Test
@@ -209,20 +227,86 @@ class CurrentTimeReadBackTest {
     }
 
     /**
-     * A mapper that reads its own write back <em>wrong</em>, without throwing,
-     * does not take the fallback: the live run gets the wrong instant, the
-     * same one every replay reads (rule 12 of {@code docs/pitfalls.md}).
+     * A mapper that reads its own write back <em>wrong</em>, without throwing:
+     * the read-back is more than a second from the clock value, so the live
+     * run gets the clock value, and one WARN (per serializer) says the mapper
+     * does not read back the timestamp it wrote. What is recorded is unchanged.
      */
     @Test
-    void asymmetricMillisMapper_liveRunGetsTheMisreadInstant() throws Exception {
+    void asymmetricMillisMapper_liveRunGetsTheClockValue_andWarnsOncePerSerializer() throws Exception {
         executor(ASYMMETRIC_MILLIS_MAPPER, new VersionedInMemoryStore());
 
-        start("ct-asymmetric");
+        try (var logs = CapturingSlf4jProvider.watch(DefaultWorkflowOperations.class)) {
+            start("ct-asymmetric");
+            assertEquals(WorkflowStatus.COMPLETED, awaitStatus("ct-asymmetric"));
+            start("ct-asymmetric-2");
+            assertEquals(WorkflowStatus.COMPLETED, awaitStatus("ct-asymmetric-2"));
 
-        assertEquals(WorkflowStatus.COMPLETED, awaitStatus("ct-asymmetric"));
-        assertEquals("1794477600123", String.valueOf(sideEffectPayload("ct-asymmetric")));   // epoch millis
-        assertEquals("+58834-09-24T16:02:03Z", result("ct-asymmetric"));                   // read as seconds
+            var lines = logs.records().stream()
+                    .filter(r -> r.message().contains("does not read back the timestamp it wrote"))
+                    .toList();
+            assertEquals(List.of(Level.WARN, Level.DEBUG),
+                    lines.stream().map(CapturingSlf4jProvider.CapturedLog::level).toList(), lines.toString());
+            var warn = lines.getFirst().message();
+            assertEquals(DefaultWorkflowOperations.timestampMisreadWarning("ct-asymmetric", 1,
+                    Duration.between(NOW, Instant.parse("+58834-09-24T16:02:03Z"))), warn);
+            assertTrue(warn.contains("live and replayed times will differ"), warn);
+            assertFalse(warn.contains("2026") || warn.contains("58834") || warn.contains("1794477600123"), warn);
+        }
+        assertEquals("1794477600123", String.valueOf(sideEffectPayload("ct-asymmetric")));   // epoch millis, as before
+        assertEquals(NOW.toString(), result("ct-asymmetric"));                              // the clock, not year 58834
+        assertEquals(NOW.toString(), result("ct-asymmetric-2"));
         assertEquals(List.of(), observer.failed());
+    }
+
+    /**
+     * The live budget of {@code collectSignals} is computed from the clock
+     * value, not from a misread ~1000× too far from the epoch. The clock ticks
+     * one second per read: from misread instants the ten-minute budget would
+     * be gone (1000 s) before the first await, and the run would fail with a
+     * {@code SignalTimeoutException}.
+     */
+    @Test
+    void asymmetricMillisMapper_collectSignalsBudgetIsNotExhaustedEarly() throws Exception {
+        executor(ASYMMETRIC_MILLIS_MAPPER, new VersionedInMemoryStore(), ticking(NOW, Duration.ofSeconds(1)));
+        var id = "ct-asymmetric-collect";
+        executor.startWorkflow(id, "CollectWorkflow", "default", "in",
+                CollectWorkflow::new, CollectWorkflow.class.getMethod("run", String.class));
+        await().atMost(BOUND).until(() -> store.getInstance(id)
+                .map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL || i.status().isTerminal()).orElse(false));
+        executor.deliverSignal(id, "item", "first");
+
+        assertEquals(WorkflowStatus.COMPLETED, awaitStatus(id), "failed: " + observer.failed());
+        assertEquals("[first]", result(id));
+    }
+
+    /**
+     * After a recovery the asymmetric mapper's replay reads the stored millis
+     * as seconds, as on the released build: the live run saw the clock value,
+     * the replayed run sees the misread instant — what the WARN says.
+     */
+    @Test
+    void asymmetricMillisMapper_aReplayReadsTheMisreadInstant() throws Exception {
+        executor(ASYMMETRIC_MILLIS_MAPPER, new VersionedInMemoryStore());
+        var id = "ct-asymmetric-replay";
+        var seen = java.util.Collections.synchronizedList(new java.util.ArrayList<Instant>());
+        var method = RecordingParkedStampWorkflow.class.getMethod("run", String.class);
+        executor.startWorkflow(id, "RecordingParkedStampWorkflow", "default", "in",
+                () -> new RecordingParkedStampWorkflow(seen), method);
+        await().atMost(BOUND).until(() -> store.getInstance(id)
+                .map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL).orElse(false));
+
+        executor.shutdown();
+        recovering = WorkflowExecutor.builder(store, serializer, "svc").instantSource(InstantSource.fixed(NOW))
+                .observer(new RecordingEngineObserver()).build();
+        recovering.recoverWorkflows(Map.of("RecordingParkedStampWorkflow", new WorkflowRegistration(
+                "RecordingParkedStampWorkflow", "default", () -> new RecordingParkedStampWorkflow(seen), method)));
+        await().atMost(BOUND).until(() -> seen.size() == 2);
+        recovering.deliverSignal(id, "go", "go");
+        await().atMost(BOUND).until(() -> store.getInstance(id).orElseThrow().status().isTerminal());
+
+        assertEquals(List.of(NOW, Instant.parse("+58834-09-24T16:02:03Z")), List.copyOf(seen), "[live, replayed]");
+        assertEquals(WorkflowStatus.COMPLETED, store.getInstance(id).orElseThrow().status());
     }
 
     /** A store fault on the side-effect append keeps today's handling: latched, never failed. */
@@ -274,6 +358,29 @@ class CurrentTimeReadBackTest {
     public static class StampWorkflow {
         public String run(String in) {
             return WorkflowContext.current().currentTime().toString();
+        }
+    }
+
+    /** Collects one {@code "item"} signal within ten minutes and returns what it collected. */
+    public static class CollectWorkflow {
+        public String run(String in) {
+            return WorkflowContext.current().collectSignals("item", String.class, 1, Duration.ofMinutes(10)).toString();
+        }
+    }
+
+    /** Records {@code currentTime()} (live, then on every replay), then parks on {@code "go"}. */
+    public static class RecordingParkedStampWorkflow {
+        private final List<Instant> seen;
+
+        RecordingParkedStampWorkflow(List<Instant> seen) {
+            this.seen = seen;
+        }
+
+        public String run(String in) {
+            var now = WorkflowContext.current().currentTime();
+            seen.add(now);
+            WorkflowContext.current().awaitSignal("go", String.class, Duration.ofMinutes(5));
+            return now.toString();
         }
     }
 

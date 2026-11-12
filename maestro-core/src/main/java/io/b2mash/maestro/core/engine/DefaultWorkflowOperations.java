@@ -41,9 +41,12 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import java.util.StringJoiner;
 import java.util.UUID;
+import java.util.WeakHashMap;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -97,6 +100,27 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
      */
     private static final ScopedValue<List<BufferedCompensation>> BRANCH_COMPENSATIONS =
             ScopedValue.newInstance();
+
+    /**
+     * How far a live {@code currentTime()} read-back may be from the clock
+     * value it recorded before it is taken for a misread (see
+     * {@link #currentTime()}): a mapper that truncates to milliseconds or
+     * microseconds stays well inside it; one that reads millis as seconds is
+     * decades outside it.
+     */
+    static final Duration TIMESTAMP_READ_BACK_TOLERANCE = Duration.ofSeconds(1);
+
+    /**
+     * The serializers whose misread {@code currentTime()} has been WARNed:
+     * once per {@link PayloadSerializer} — the starter builds one per
+     * application, so once per process there; the test kit one per
+     * environment — then DEBUG. Weak keys, by identity (the serializer does
+     * not override {@code equals}), so a discarded serializer is not held.
+     * Bounded by the serializers alive, unlike a per-run flag, which would
+     * WARN once for every run that reads the clock.
+     */
+    private static final Set<PayloadSerializer> TIMESTAMP_MISREAD_WARNED =
+            Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
 
     private final WorkflowStore store;
     private final @Nullable DistributedLock distributedLock;
@@ -966,18 +990,14 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         // D7: return what a replay of this slot reads — the payload as the
         // store returned it — not the raw clock value. The try holds no store
         // call and names SerializationException only.
+        @Nullable Instant readBack;
         try {
-            return serializer.deserialize(stored, Instant.class);
+            readBack = serializer.deserialize(stored, Instant.class);
         } catch (SerializationException unreadable) {
             // The host mapper throws reading the Instant it wrote. Never fail
             // the run for it (D9's principle): the side effect is durable, and
-            // a replay of this slot stands down as UNKNOWN_EVENT_PAYLOAD. Only
-            // a throw lands here: a mapper that reads its own write back as a
-            // WRONG instant — epoch millis written while integer timestamps are
-            // still read as seconds (READ_DATE_TIMESTAMPS_AS_NANOSECONDS, on by
-            // default), so 2026 reads as year 58834 — returns that value above,
-            // live as on every replay. The cause is named by class and JSON
-            // path only.
+            // a replay of this slot stands down as UNKNOWN_EVENT_PAYLOAD. The
+            // cause is named by class and JSON path only.
             var root = unreadable.getCause() != null ? unreadable.getCause() : unreadable;
             logger.debug("Workflow '{}': currentTime() at sequence {} is recorded but cannot be read back as an"
                             + " Instant ({}); this run continues with the clock value, and a replay of this slot"
@@ -985,6 +1005,50 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                     ctx.workflowId(), seq, UnknownHistoryGuard.redactedCause(root));
             return now;
         }
+        // A read-back more than a second from the clock value is a mapper
+        // that misreads its own timestamps without throwing: epoch millis
+        // written (WRITE_DATES_AS_TIMESTAMPS on, WRITE_DATE_TIMESTAMPS_AS_
+        // NANOSECONDS off) while integer timestamps are still read as seconds
+        // (READ_DATE_TIMESTAMPS_AS_NANOSECONDS, on by default), so 2026 reads
+        // as the year 58834. Budgets computed from that (collectSignals,
+        // retryUntil) would run out ~1000x early on a run that never crashed:
+        // keep the clock value live. A replay still reads the misread instant.
+        // Precision loss (millis, micros) is well inside the second.
+        if (readBack == null) {
+            // A store that reads the recorded node back as JSON null: nothing
+            // a replay could agree with either, so keep the clock value.
+            return now;
+        }
+        var drift = Duration.between(now, readBack);
+        if (drift.abs().compareTo(TIMESTAMP_READ_BACK_TOLERANCE) > 0) {
+            var warning = timestampMisreadWarning(ctx.workflowId(), seq, drift);
+            if (TIMESTAMP_MISREAD_WARNED.add(serializer)) {
+                logger.warn("{}", warning);
+            } else {
+                logger.debug("{}", warning);
+            }
+            return now;
+        }
+        return readBack;
+    }
+
+    /**
+     * The fixed WARN copy for a {@code currentTime()} whose read-back is more
+     * than {@link #TIMESTAMP_READ_BACK_TOLERANCE} from the recorded clock
+     * value. It states the magnitude of the difference only — never the
+     * recorded or the misread time.
+     *
+     * @param workflowId the run's workflow id
+     * @param seq        the side effect's sequence number
+     * @param drift      read-back minus clock value
+     * @return the log line
+     */
+    static String timestampMisreadWarning(String workflowId, int seq, Duration drift) {
+        return ("Workflow '%s': currentTime() at sequence %d reads back %d seconds from the time it recorded: the "
+                + "configured ObjectMapper does not read back the timestamp it wrote (for example, epoch milliseconds "
+                + "written while integer timestamps are read as seconds), so this run continues with the clock value and live and "
+                + "replayed times will differ — make the mapper read its own timestamps (docs/pitfalls.md, rule 12)")
+                .formatted(workflowId, seq, drift.abs().toSeconds());
     }
 
     // ── randomUUID ─────────────────────────────────────────────────────

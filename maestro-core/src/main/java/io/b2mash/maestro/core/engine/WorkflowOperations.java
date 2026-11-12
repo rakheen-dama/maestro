@@ -152,8 +152,16 @@ public sealed interface WorkflowOperations permits DefaultWorkflowOperations {
      * nanosecond; a mapper that writes epoch milliseconds truncates it, on the
      * live run too ({@code docs/pitfalls.md}, rule 12).
      *
+     * <p>A mapper that cannot read back its own timestamp is the exception:
+     * if it throws, or reads back an instant more than a second from the one
+     * recorded (epoch milliseconds written while integer timestamps are read
+     * as seconds), the live call returns the clock value and logs it, and a
+     * replay gets what that mapper reads (or stands down if it throws) — live
+     * and replay then differ.
+     *
      * @return the clock value as the store reads it back, identical live and
-     *         on replay
+     *         on replay; the clock value itself, live, under a mapper that
+     *         cannot read back its own timestamps
      */
     Instant currentTime();
 
