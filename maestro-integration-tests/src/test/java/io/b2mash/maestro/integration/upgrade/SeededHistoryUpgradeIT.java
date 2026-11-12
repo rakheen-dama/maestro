@@ -3,19 +3,37 @@ package io.b2mash.maestro.integration.upgrade;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
+import io.b2mash.maestro.integration.support.MaestroEngineHarness;
+import io.b2mash.maestro.integration.support.RecordingObserver;
+import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.Approval;
+import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.Invocations;
+import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.OrderRequest;
+import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.OrderResult;
+import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.Receipt;
+import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedActivities;
+import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedFailingActivities;
+import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedOrderActivities;
+import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedOrderWorkflow;
+import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedRiskActivities;
+import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedSagaActivities;
+import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedTypedActivities;
 import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.Seeds;
 import io.b2mash.maestro.store.postgres.schema.SchemaMode;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import tools.jackson.databind.JsonNode;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.sql.SQLException;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HexFormat;
@@ -23,17 +41,30 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CopyOnWriteArrayList;
 
+import static io.b2mash.maestro.core.model.WorkflowStatus.COMPLETED;
+import static io.b2mash.maestro.core.model.WorkflowStatus.FAILED;
+import static io.b2mash.maestro.core.model.WorkflowStatus.WAITING_SIGNAL;
+import static io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.Seeds.COMPENSATING_CRASHED;
+import static io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.Seeds.CRASHED;
+import static io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.Seeds.PARKED_APPROVAL;
+import static io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.Seeds.PARKED_EXPRESS;
+import static io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.Seeds.PARKED_TIMER;
 import static java.util.stream.Collectors.toCollection;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * WP9's assertions over the history the build at {@code cbf5a2a} wrote
  * ({@link SeededHistory}): this build upgrades that database without losing a
- * row, and reads every seeded workflow back. Every other suite starts from an
- * empty schema, so this is the only one that can catch a migration valid on
- * an empty table but fatal on existing rows, or a read path that no longer
- * understands what an older build stored.
+ * row, reads every seeded workflow back, and — the replay half — recovers,
+ * wakes and completes the runs {@code cbf5a2a} left active, suppresses a
+ * duplicate of a signal id it stored and adopts the orphan signals it stored,
+ * while leaving every finished and other-service run exactly as written.
+ * Every other suite starts from an empty schema and writes the history it
+ * replays with the same build, so this is the only one that can catch a
+ * migration valid on an empty table but fatal on existing rows, or a read or
+ * replay path that no longer understands what an older build stored.
  *
  * <p>This class uses AssertJ and the plan's method names although
  * {@code maestro-integration-tests/SPEC.md} asks for plain JUnit assertions and
@@ -48,6 +79,51 @@ class SeededHistoryUpgradeIT {
     private static final List<String> TABLES = List.of(
             "maestro_workflow_instance", "maestro_workflow_event",
             "maestro_workflow_signal", "maestro_workflow_timer");
+
+    /** The five runs {@code cbf5a2a} left active in {@code Seeds.SERVICE}: the ones recovery adopts. */
+    private static final List<String> ACTIVE = List.of(
+            PARKED_TIMER, PARKED_EXPRESS, PARKED_APPROVAL, CRASHED, COMPENSATING_CRASHED);
+
+    /**
+     * What this build appends to each active run's history, after the events
+     * {@code cbf5a2a} wrote: {@code "<seq> <type> <step>"}. Step 10's approval
+     * is stored before the run reaches it, so it takes one slot; the saga's
+     * second compensation goes to branch base 6000, as {@code cbf5a2a} placed
+     * the first at 5000.
+     */
+    private static final Map<String, List<String>> APPENDED = Map.of(
+            PARKED_TIMER, List.of(
+                    "8003 TIMER_FIRED $maestro:timer-fired",
+                    "8004 TIMER_SCHEDULED $maestro:awaitSignal:express",
+                    "8005 SIGNAL_TIMEOUT $maestro:awaitSignal:express",
+                    "8006 TIMER_SCHEDULED $maestro:sleep",
+                    "8007 TIMER_FIRED $maestro:timer-fired",
+                    "8008 SIGNAL_RECEIVED $maestro:awaitSignal:approval",
+                    "8009 ACTIVITY_COMPLETED seed-order.charge",
+                    "8010 SIGNAL_RECEIVED $maestro:awaitSignal:note",
+                    "8011 WORKFLOW_COMPLETED null"),
+            PARKED_EXPRESS, List.of(
+                    "8005 SIGNAL_TIMEOUT $maestro:awaitSignal:express",
+                    "8006 TIMER_SCHEDULED $maestro:sleep",
+                    "8007 TIMER_FIRED $maestro:timer-fired",
+                    "8008 SIGNAL_RECEIVED $maestro:awaitSignal:approval",
+                    "8009 ACTIVITY_COMPLETED seed-order.charge",
+                    "8010 SIGNAL_RECEIVED $maestro:awaitSignal:note",
+                    "8011 WORKFLOW_COMPLETED null"),
+            PARKED_APPROVAL, List.of(
+                    "8009 SIGNAL_RECEIVED $maestro:awaitSignal:approval",
+                    "8010 ACTIVITY_COMPLETED seed-order.charge",
+                    "8011 SIGNAL_RECEIVED $maestro:awaitSignal:note",
+                    "8012 WORKFLOW_COMPLETED null"),
+            CRASHED, List.of(
+                    "8010 ACTIVITY_COMPLETED seed-order.charge",
+                    "8011 SIGNAL_RECEIVED $maestro:awaitSignal:note",
+                    "8012 WORKFLOW_COMPLETED null"),
+            COMPENSATING_CRASHED, List.of(
+                    "6000 COMPENSATION_STEP_COMPLETED seed-saga.releaseReservation",
+                    "6001 ACTIVITY_COMPLETED seed-saga.releaseReservation",
+                    "7001 COMPENSATION_COMPLETED $maestro:compensation",
+                    "7002 WORKFLOW_FAILED null"));
 
     @Test
     @DisplayName("The dump was captured at cbf5a2a, from the frozen fixture source, with no psql meta-commands")
@@ -90,7 +166,248 @@ class SeededHistoryUpgradeIT {
         assertThat(rawPayload(seeded, Seeds.WP1_DECIMAL, "ACTIVITY_COMPLETED")).contains("12345678901234567890.123456789");
     }
 
+    // ── replay half: this build drives the history ────────────────────────
+
+    @Test
+    @DisplayName("recovery on this build replays every active run cbf5a2a left and drives it to its end")
+    void recoveryReplaysEveryActiveSeededRunToItsEnd() throws Exception {
+        var seeded = SeededHistory.load().upgrade(SchemaMode.FLYWAY);
+        var observer = new RecordingObserver();
+        var invocations = new Invocations();
+        var before = new LinkedHashMap<String, List<WorkflowEvent>>();
+        ACTIVE.forEach(id -> before.put(id, seeded.events(id)));
+
+        try (var node = seeded.node(Seeds.SERVICE, observer, invocations)) {
+            var live = recordLiveCalls(node, invocations);
+            assertThat(node.recover()).isEqualTo(5);   // parked-timer, parked-express, parked-approval, crashed, compensating-crashed
+            // The approvals are stored before the timer poller starts, so the two runs parked on a
+            // due timer cannot reach step 10 first: step 10 then always takes exactly one slot.
+            for (var id : List.of(PARKED_TIMER, PARKED_EXPRESS, PARKED_APPROVAL)) {
+                node.deliverSignal(id, "approval", new Approval("upgrade-node", 2));
+            }
+            node.startTimerPoller(Duration.ofMillis(200), 50);
+            for (var id : List.of(PARKED_TIMER, PARKED_EXPRESS, PARKED_APPROVAL, CRASHED)) {
+                assertThat(seeded.awaitStatusOrLast(id, COMPLETED, Duration.ofSeconds(60))).as(id).isEqualTo(COMPLETED);
+            }
+            assertThat(seeded.awaitStatusOrLast(COMPENSATING_CRASHED, FAILED, Duration.ofSeconds(60))).isEqualTo(FAILED);
+
+            // every run has finished: nothing stood down or was abandoned on the way
+            assertThat(observer.standDowns()).isEmpty();
+            assertThat(observer.abandoned()).isEmpty();
+            // recorded steps came from the log, unrecorded ones ran exactly once:
+            assertThat(invocations.snapshot()).containsAllEntriesOf(Map.of(
+                    "seed-order.quote", 0, "seed-order.reserve", 0, "seed-risk.verify", 0, "seed-order.charge", 4,
+                    "seed-saga.reserve", 0, "seed-saga.charge", 0, "seed-saga.ship", 0, "seed-saga.refund", 0,
+                    "seed-saga.releaseReservation", 1));   // snapshot() has an entry for every Seeds.STEPS key
+            assertThat(invocations.snapshot()).as("the FAILED and WP1 runs ran nothing")
+                    .containsAllEntriesOf(Map.of("seed-failing.explode", 0, "seed-failing.alert", 0,
+                            "seed-typed.exactAmount", 0, "seed-typed.localStamp", 0, "seed-typed.tags", 0));
+            // ... and each live call belongs to the run whose step cbf5a2a never recorded
+            assertThat(live).containsExactlyInAnyOrder(
+                    "seed-order.charge:" + PARKED_TIMER, "seed-order.charge:" + PARKED_EXPRESS,
+                    "seed-order.charge:" + PARKED_APPROVAL, "seed-order.charge:" + CRASHED,
+                    "seed-saga.releaseReservation:crash-compensation");
+        }
+
+        for (var id : ACTIVE) {
+            var after = seeded.events(id);
+            var recorded = before.get(id);
+            assertThat(after.size()).as(id).isGreaterThan(recorded.size());
+            assertThat(after.subList(0, recorded.size())).as("%s: history cbf5a2a wrote is untouched", id)
+                    .isEqualTo(recorded);
+            assertThat(after.subList(recorded.size(), after.size()).stream().map(SeededHistoryUpgradeIT::describe))
+                    .as("%s: events this build appended", id).containsExactlyElementsOf(APPENDED.get(id));
+        }
+        for (var id : List.of(PARKED_TIMER, PARKED_EXPRESS, PARKED_APPROVAL, CRASHED)) {
+            var recorded = before.get(id);
+            var level = id.equals(CRASHED) ? 1 : 2;
+            var expected = new OrderResult(id, new Receipt(id, "charge:" + id + ":" + level, new BigDecimal("151.98")),
+                    List.of("reservation:sku-red", "reservation:sku-blue"), false,
+                    id.equals(PARKED_APPROVAL) || id.equals(CRASHED), "note for " + id,
+                    seeded.serializer().deserialize(recordedPayload(recorded, "$maestro:randomUUID"), String.class),
+                    seeded.serializer().deserialize(recordedPayload(recorded, "$maestro:currentTime"), Instant.class),
+                    1, id.equals(CRASHED) ? "capture" : "upgrade-node");
+            assertThat(orderResult(seeded, id)).as(id).isEqualTo(expected);
+        }
+        // the due timers cbf5a2a left PENDING fired on this build; every Order signal it stored was consumed
+        assertThat(timerStatus(seeded, PARKED_TIMER, "sleep-8002")).isEqualTo("FIRED");
+        assertThat(timerStatus(seeded, PARKED_EXPRESS, "await-signal-8004")).isEqualTo("FIRED");
+        for (var id : List.of(PARKED_TIMER, PARKED_EXPRESS, PARKED_APPROVAL, CRASHED)) {
+            var instance = instanceId(seeded, id);
+            assertThat(signalRows(seeded, id)).as(id).containsExactlyInAnyOrder(
+                    "approval consumed=true instance=" + instance, "note consumed=true instance=" + instance);
+        }
+    }
+
+    @Test
+    @DisplayName("finished and other-service runs are left exactly as cbf5a2a wrote them")
+    void finishedAndOtherServiceRunsAreNotAdopted() throws Exception {
+        var seeded = SeededHistory.load().upgrade(SchemaMode.FLYWAY);
+        var untouched = Seeds.STATUS_AT_CAPTURE.keySet().stream().filter(id -> !ACTIVE.contains(id)).toList();
+        assertThat(untouched).hasSize(9);   // completed, terminated, four FAILED, three seed-wp1-*
+        var rowsBefore = instanceRows(seeded, untouched);
+        var eventsBefore = new LinkedHashMap<String, List<WorkflowEvent>>();
+        untouched.forEach(id -> eventsBefore.put(id, seeded.events(id)));
+        var observer = new RecordingObserver();
+        var invocations = new Invocations();
+
+        try (var node = seeded.node(Seeds.SERVICE, observer, invocations)) {
+            var recovered = node.recover();
+            // the two runs that need nothing from the test finish, so no write of this node is still pending
+            assertThat(seeded.awaitStatusOrLast(CRASHED, COMPLETED, Duration.ofSeconds(60))).isEqualTo(COMPLETED);
+            assertThat(seeded.awaitStatusOrLast(COMPENSATING_CRASHED, FAILED, Duration.ofSeconds(60))).isEqualTo(FAILED);
+
+            assertThat(instanceRows(seeded, untouched)).isEqualTo(rowsBefore);
+            untouched.forEach(id -> assertThat(seeded.events(id)).as(id).isEqualTo(eventsBefore.get(id)));
+            for (var id : List.of(Seeds.WP1_DECIMAL, Seeds.WP1_OFFSET, Seeds.WP1_SET)) {
+                assertThat(seeded.store().getInstance(id)).get().extracting(WorkflowInstance::status).as(id)
+                        .isEqualTo(WAITING_SIGNAL);
+            }
+            // positively: exactly the five active runs were adopted, each bumping its lease epoch once
+            assertThat(recovered).isEqualTo(5);
+            assertThat(instanceRows(seeded, ACTIVE).values()).allMatch(row -> row.endsWith(" lease_epoch=1"));
+            assertThat(observer.standDowns()).isEmpty();
+        }
+    }
+
+    @Test
+    @DisplayName("a signal id stored by cbf5a2a still suppresses its duplicate")
+    void aSignalIdStoredAtCbf5a2aStillSuppressesItsDuplicate() throws Exception {
+        var seeded = SeededHistory.load().upgrade(SchemaMode.FLYWAY);
+        try (var node = seeded.node(Seeds.SERVICE, new RecordingObserver(), new Invocations())) {
+            assertThat(node.executor().deliverSignal(PARKED_APPROVAL, "note", "duplicate",
+                    "client:" + PARKED_APPROVAL + ":note")).isFalse();
+        }
+        assertThat(signalPayloads(seeded, PARKED_APPROVAL, "note"))
+                .as("only the row cbf5a2a stored, still unconsumed")
+                .containsExactly("\"note for seed-parked-approval\" consumed=false");
+    }
+
+    @Test
+    @DisplayName("a workflow started on this build adopts the orphan signals cbf5a2a stored for it")
+    void aWorkflowStartedOnThisBuildAdoptsOrphanSignalsStoredAtCbf5a2a() throws Exception {
+        var seeded = SeededHistory.load().upgrade(SchemaMode.FLYWAY);
+        var observer = new RecordingObserver();
+        var invocations = new Invocations();
+        try (var node = seeded.node(Seeds.SERVICE, observer, invocations)) {
+            node.startTimerPoller(Duration.ofMillis(200), 50);
+            node.start(Seeds.ORPHAN_TARGET, SeedOrderWorkflow.class,
+                    new OrderRequest(Seeds.ORPHAN_TARGET, List.of("sku-1"), 1, 1, 1));
+            assertThat(seeded.awaitStatusOrLast(Seeds.ORPHAN_TARGET, COMPLETED, Duration.ofSeconds(60)))
+                    .isEqualTo(COMPLETED);
+            assertThat(observer.standDowns()).isEmpty();
+        }
+        var result = orderResult(seeded, Seeds.ORPHAN_TARGET);
+        assertThat(result.approver()).isEqualTo("capture");
+        assertThat(result.note()).isEqualTo("note for seed-orphan-target");
+        assertThat(result.receipt().chargeId()).isEqualTo("charge:seed-orphan-target:1");
+        // both rows cbf5a2a stored with no instance now belong to this build's run, and were consumed by it
+        var instanceId = instanceId(seeded, Seeds.ORPHAN_TARGET);
+        assertThat(signalRows(seeded, Seeds.ORPHAN_TARGET)).containsExactlyInAnyOrder(
+                "approval consumed=true instance=" + instanceId, "note consumed=true instance=" + instanceId);
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────
+
+    /**
+     * Re-registers the node's activities behind a gate that records
+     * {@code "<step>:<key>"} for every call this build makes, so a test can
+     * tell which run a live call belonged to.
+     */
+    private static List<String> recordLiveCalls(MaestroEngineHarness node, Invocations invocations) {
+        var live = new CopyOnWriteArrayList<String>();
+        var activities = new SeedActivities(invocations, (step, key) -> live.add(step + ":" + key), true);
+        node.registerActivities(SeedOrderActivities.class, activities);
+        node.registerActivities(SeedRiskActivities.class, activities);
+        node.registerActivities(SeedSagaActivities.class, activities);
+        node.registerActivities(SeedFailingActivities.class, activities);
+        node.registerActivities(SeedTypedActivities.class, activities);
+        return live;
+    }
+
+    private static String describe(WorkflowEvent event) {
+        return event.sequenceNumber() + " " + event.eventType() + " " + event.stepName();
+    }
+
+    /** The payload of the one recorded event of {@code stepName}. */
+    private static JsonNode recordedPayload(List<WorkflowEvent> events, String stepName) {
+        var matching = events.stream().filter(e -> stepName.equals(e.stepName())).toList();
+        assertThat(matching).as(stepName).hasSize(1);
+        return Objects.requireNonNull(matching.getFirst().payload(), stepName);
+    }
+
+    private static OrderResult orderResult(SeededHistory seeded, String workflowId) {
+        var output = seeded.store().getInstance(workflowId).orElseThrow().output();
+        return Objects.requireNonNull(seeded.serializer().deserialize(output, OrderResult.class), workflowId);
+    }
+
+    /** {@code workflow_id -> "<status> version=<v> lease_epoch=<e>"}, as stored. */
+    private static Map<String, String> instanceRows(SeededHistory seeded, List<String> workflowIds) throws SQLException {
+        var rows = new LinkedHashMap<String, String>();
+        try (var conn = seeded.dataSource().getConnection();
+             var ps = conn.prepareStatement("SELECT status, version, lease_epoch FROM maestro_workflow_instance"
+                     + " WHERE workflow_id = ?")) {
+            for (var id : workflowIds) {
+                ps.setString(1, id);
+                try (var rs = ps.executeQuery()) {
+                    assertThat(rs.next()).as(id).isTrue();
+                    rows.put(id, rs.getString(1) + " version=" + rs.getInt(2) + " lease_epoch=" + rs.getLong(3));
+                }
+            }
+        }
+        return rows;
+    }
+
+    private static String timerStatus(SeededHistory seeded, String workflowId, String timerId) throws SQLException {
+        try (var conn = seeded.dataSource().getConnection();
+             var ps = conn.prepareStatement("SELECT status FROM maestro_workflow_timer"
+                     + " WHERE workflow_id = ? AND timer_id = ?")) {
+            ps.setString(1, workflowId);
+            ps.setString(2, timerId);
+            try (var rs = ps.executeQuery()) {
+                assertThat(rs.next()).as("%s timer %s", workflowId, timerId).isTrue();
+                return rs.getString(1);
+            }
+        }
+    }
+
+    /** Every signal row of the workflow: {@code "<name> consumed=<b> instance=<workflow_instance_id>"}. */
+    private static List<String> signalRows(SeededHistory seeded, String workflowId) throws SQLException {
+        var rows = new ArrayList<String>();
+        try (var conn = seeded.dataSource().getConnection();
+             var ps = conn.prepareStatement("SELECT signal_name, consumed, workflow_instance_id"
+                     + " FROM maestro_workflow_signal WHERE workflow_id = ?")) {
+            ps.setString(1, workflowId);
+            try (var rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    rows.add(rs.getString(1) + " consumed=" + rs.getBoolean(2) + " instance=" + rs.getObject(3));
+                }
+            }
+        }
+        return rows;
+    }
+
+    private static String instanceId(SeededHistory seeded, String workflowId) {
+        return seeded.store().getInstance(workflowId).orElseThrow().id().toString();
+    }
+
+    /** Every {@code signalName} row of the workflow: {@code "<payload> consumed=<b>"}. */
+    private static List<String> signalPayloads(SeededHistory seeded, String workflowId, String signalName)
+            throws SQLException {
+        var rows = new ArrayList<String>();
+        try (var conn = seeded.dataSource().getConnection();
+             var ps = conn.prepareStatement("SELECT payload::text, consumed FROM maestro_workflow_signal"
+                     + " WHERE workflow_id = ? AND signal_name = ? ORDER BY received_at")) {
+            ps.setString(1, workflowId);
+            ps.setString(2, signalName);
+            try (var rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    rows.add(rs.getString(1) + " consumed=" + rs.getBoolean(2));
+                }
+            }
+        }
+        return rows;
+    }
 
     private static Map<String, Long> rowCounts(SeededHistory seeded) throws SQLException {
         var counts = new LinkedHashMap<String, Long>();
