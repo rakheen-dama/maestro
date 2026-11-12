@@ -1,7 +1,8 @@
 # Smoke: 20 short chain workflows must all complete, nothing foreign may be in
 # the store, and the engine's statements must be measurable (and the
 # harness's own excluded). Inputs: $identity, $measurements, $baseline
-# (slurped arrays).
+# (slurped arrays). Statement figures: see the header of common.jq: the
+# gross figure includes background engine statements, the gate uses the net.
 include "common";
 
 $identity[0] as $id
@@ -11,8 +12,15 @@ $identity[0] as $id
 | ($by.COMPLETED // 0) as $done
 | ($by.FAILED // 0) as $failed
 | $m.window as $w
-| (if $done > 0 then ($w.maestroCalls / $done | round2) else null end) as $spw
+| statement_figures($m.background; $w; $done; $id.config.replicas) as $s
 | [
+    check("validity.roleSplit"; "validity";
+          if $w.maestroCalls > 0 and $w.harnessCalls > 0 and $m.background.window.windowSecs > 0
+          then "PASS" else "INVALID" end;
+          {maestroCalls: $w.maestroCalls, harnessCalls: $w.harnessCalls,
+           backgroundWindowSecs: $m.background.window.windowSecs};
+          {maestroCalls: "> 0", harnessCalls: "> 0", backgroundWindowSecs: "> 0"};
+          "engine (role maestro) and harness (role postgres) statements are both seen and counted apart"),
     check("correctness.allCompleted"; "correctness";
           if $done == $n and $failed == 0 then "PASS" else "FAIL" end;
           {completed: $done, failed: $failed, byStatus: $by, drainTimedOut: $m.drain.timedOut,
@@ -23,18 +31,23 @@ $identity[0] as $id
     check("correctness.noForeignRows"; "correctness";
           if $m.foreignRows == 0 then "PASS" else "FAIL" end;
           $m.foreignRows; 0;
-          if $m.foreignRows == 0 then "no instance row outside this run's prefix"
-          else "\($m.foreignRows) instance row(s) outside this run's prefix: leftover state" end),
+          if $m.foreignRows == 0 then "no instance row outside this run's id space \($m.runPrefix)"
+          else "\($m.foreignRows) instance row(s) outside \($m.runPrefix): leftover state" end),
     check("gate.statementsMeasured"; "gate";
-          if $spw != null and $spw >= 5 and $spw <= 500 and $w.harnessCalls > 0 then "PASS" else "FAIL" end;
-          {statementsPerWorkflow: $spw, maestroCalls: $w.maestroCalls, harnessCalls: $w.harnessCalls};
-          {statementsPerWorkflow: [5, 500], harnessCalls: "> 0"};
-          "engine statements (role maestro) per completed workflow; harness statements (role postgres) counted apart"),
+          if $s.statementsPerWorkflowNet != null and $s.statementsPerWorkflowNet >= 5
+             and $s.statementsPerWorkflowNet <= 500 then "PASS" else "FAIL" end;
+          {statementsPerWorkflowNet: $s.statementsPerWorkflowNet,
+           statementsPerWorkflowGross: $s.statementsPerWorkflowGross,
+           netTolerancePerWorkflow: $s.netTolerancePerWorkflow};
+          {statementsPerWorkflowNet: [5, 500]};
+          "net engine statements per completed workflow (background subtracted); gross includes background engine statements"),
     check("advisory.latency"; "advisory"; "PASS";
           $m.latency; null;
           "end-to-end p95 \($m.latency.p95Ms) ms (recorded, never a verdict)")
   ] as $checks
 | result($id;
-         $m + {derived: {statementsPerWorkflow: $spw},
-               baselineCandidate: {workflowShape: $m.workflowShape, statementsPerWorkflow: $spw}};
+         $m + {statements: $s,
+               baselineCandidate: {workflowShape: $m.workflowShape,
+                                   statementsPerWorkflowNet: $s.statementsPerWorkflowNet,
+                                   netTolerancePerWorkflow: $s.netTolerancePerWorkflow}};
          $checks)

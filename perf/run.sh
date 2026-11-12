@@ -14,7 +14,20 @@
 # perf/results/<runId>/ (identity.json, measurements.json, result.json,
 # summary.md, prometheus.json, compose.log, …).
 #
-# Exit: 0 PASS, 1 FAIL, 2 INVALID, 3 harness error.
+# One run per host at a time: the compose project (maestro-perf) and the
+# Prometheus port (59090) are fixed, so a run takes the host-wide lock
+# /tmp/maestro-perf.lock and refuses to start, touching nothing, while the lock
+# is held or the project has any container (e.g. one left by PERF_KEEP_UP=1).
+#
+# Statement counts are reported GROSS (every call of the engine's Postgres
+# role in the load window, which includes background engine statements: the
+# timer poller's leader election and due-timer query, the recovery poll, and
+# the lock cleaner / signal janitor / retention sweeps when due) and NET (the
+# background rate, measured on the idle stack before the load, subtracted).
+# Gates use the net figure; see perf/eval/common.jq.
+#
+# Exit: 0 PASS, 1 FAIL, 2 INVALID, 3 harness error (including an evaluator
+# ERROR verdict: a check with an unknown class or status).
 # The last stdout line is always: VERDICT <PASS|FAIL|INVALID|ERROR> <resultsDir>
 
 # SC2016: the single-quoted '$x' strings are jq filters, expanded by jq.
@@ -24,6 +37,10 @@ set -Eeuo pipefail
 PERF_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd "${PERF_DIR}/.." && pwd)
 COMPOSE_PROJECT=maestro-perf
+# Host-wide, not per worktree or per TMPDIR: the compose project and the
+# Prometheus host port it guards are host-wide.
+LOCK_DIR=/tmp/maestro-perf.lock
+LOCK_HELD=0
 RESULTS=""
 FINAL_VERDICT=""
 FINAL_RC=3
@@ -55,6 +72,9 @@ on_exit() {
       log "teardown: down -v"
       dc down -v --remove-orphans >>"${RESULTS}/harness.log" 2>&1
     fi
+  fi
+  if ((LOCK_HELD)); then
+    rm -rf "$LOCK_DIR"
   fi
   if [[ -z "$FINAL_VERDICT" ]]; then
     log "harness error (exit ${rc})"
@@ -157,6 +177,34 @@ if ((DOCKER_MEM_MB < 6144)); then
   identity_note "WARN: Docker has ${DOCKER_MEM_MB} MiB of memory, below the 6 GiB the suite is sized for"
   log "WARN: Docker memory ${DOCKER_MEM_MB} MiB < 6 GiB"
 fi
+# Dirtiness is known now: refuse before spending a build and a run on it.
+# (The "run did not PASS" refusal can only come after the run.)
+if ((RECORD_BASELINE)) && [[ "$DIRTY" != false ]]; then
+  die "--record-baseline refused: the working tree is dirty (commit first)"
+fi
+
+# One run per host. mkdir is atomic: exactly one concurrent run gets the lock.
+# A lock whose pid is no longer running is stale and taken over; a lock
+# without a pid file is treated as held (its owner may be between mkdir and
+# writing the pid).
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  holder=$(cat "${LOCK_DIR}/pid" 2>/dev/null || true)
+  if [[ -z "$holder" ]] || ps -p "$holder" >/dev/null 2>&1; then
+    die "another perf run holds ${LOCK_DIR} (pid ${holder:-unknown}: $(cat "${LOCK_DIR}/owner" 2>/dev/null || echo '?')); refusing to start, nothing touched"
+  fi
+  log "stale lock ${LOCK_DIR} (pid ${holder} is not running): taking it over"
+  rm -rf "$LOCK_DIR"
+  mkdir "$LOCK_DIR" 2>/dev/null || die "could not take ${LOCK_DIR}; refusing to start, nothing touched"
+fi
+LOCK_HELD=1
+printf '%s\n' "$$" >"${LOCK_DIR}/pid"
+printf '%s %s\n' "$RUN_ID" "$PWD" >"${LOCK_DIR}/owner"
+# A stack the lock does not cover (left up by PERF_KEEP_UP=1, or started by
+# hand) belongs to someone else's evidence: never tear it down from here.
+existing=$(docker ps -aq --filter "label=com.docker.compose.project=${COMPOSE_PROJECT}" | wc -l | tr -d ' ')
+if ((existing > 0)); then
+  die "compose project ${COMPOSE_PROJECT} already has ${existing} container(s) (another run, or one left up by PERF_KEEP_UP=1); refusing to start, nothing touched. If it is yours: docker compose -p ${COMPOSE_PROJECT} -f perf/compose.yml --profile tools down -v"
+fi
 export PERF_RESULTS_DIR="$RESULTS" PERF_ADMIN_EVENTS
 PERF_UID=$(id -u)
 PERF_GID=$(id -g)
@@ -197,6 +245,18 @@ DIGESTS=$(dc config --images | sort -u | while read -r img; do
   docker image inspect --format '{{index .RepoDigests 0}}' "$img" 2>/dev/null || echo "$img@unknown"
 done | jq -R . | jq -sc .)
 identity_set '.imageDigests = $d' --argjson d "$DIGESTS"
+# Each container's CPU and memory limit as Docker applies it ("none" = unlimited).
+# shellcheck disable=SC2046 # one argument per container id
+CONTAINERS=$(docker inspect $(dc ps -aq) | jq -c 'map({
+    name: (.Name | ltrimstr("/")),
+    service: .Config.Labels["com.docker.compose.service"],
+    image: .Config.Image,
+    cpus: (if (.HostConfig.NanoCpus // 0) > 0 then .HostConfig.NanoCpus / 1e9
+           elif (.HostConfig.CpuQuota // 0) > 0 then .HostConfig.CpuQuota / .HostConfig.CpuPeriod
+           else "none" end),
+    memoryBytes: (if (.HostConfig.Memory // 0) > 0 then .HostConfig.Memory else "none" end)})
+  | sort_by(.name)')
+identity_set '.containers = $c' --argjson c "$CONTAINERS"
 running=$(dc ps -q node | wc -l | tr -d ' ')
 ((running == REPLICAS)) || die "expected ${REPLICAS} node container(s), found ${running}"
 
@@ -305,6 +365,7 @@ prom_collect "$STACK_UP_EPOCH" "$(date +%s)"
 log "prometheus: $(jq -r '"\(.queries | length) queries, empty: \(.emptyQueries | length)"' "${RESULTS}/prometheus.json")"
 http_get "$(node_url 1)/actuator/prometheus" >"${RESULTS}/node-1-scrape.txt" || log "WARN: node-1 scrape failed"
 psql_json pg-settings | jq . >"${RESULTS}/pg-settings.json"
+identity_set '.postgres = $p' --argjson p "$(jq -c . "${RESULTS}/pg-settings.json")"
 
 # ── 9. Evaluate ────────────────────────────────────────────────────────────
 BASELINE="${PERF_DIR}/baselines/${SCENARIO}.json"
@@ -314,16 +375,14 @@ case "$VERDICT" in
   PASS) rc=0 ;;
   FAIL) rc=1 ;;
   INVALID) rc=2 ;;
+  ERROR) die "the evaluator returned ERROR: a check has an unknown class or status (see result.json)" ;;
   *) die "result.json has no verdict" ;;
 esac
 
-# ── 10. Baseline ───────────────────────────────────────────────────────────
+# ── 10. Baseline (a dirty tree was already refused in preflight) ───────────
 if ((RECORD_BASELINE)); then
   if [[ "$VERDICT" != PASS ]]; then
     die "--record-baseline refused: verdict is ${VERDICT}, not PASS"
-  fi
-  if [[ "$DIRTY" != false ]]; then
-    die "--record-baseline refused: the working tree is dirty (commit first)"
   fi
   mkdir -p "${PERF_DIR}/baselines"
   jq '{schema: 1, scenario, profile, runId: .identity.runId,

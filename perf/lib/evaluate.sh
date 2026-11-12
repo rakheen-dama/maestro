@@ -42,6 +42,11 @@ jq -r '
     "| Hikari maximum pool size | \($i.effective.hikariMaximumPoolSize | cell) |",
     "| worker default concurrency | \($i.effective.workerDefaultConcurrency | cell) workflows / \($i.effective.workerDefaultActivityConcurrency | cell) activities |",
     "| node container | heap \($i.config.nodeHeap), cpus \($i.config.nodeCpus), mem \($i.config.nodeMem) |",
+    "| container limits | \($i.containers // [] | map("\(.service): cpus \(.cpus), mem \(.memoryBytes)") | unique | join("; ")) |",
+    "| postgres | \($i.postgres.settings // {} | "fsync \(.fsync), synchronous_commit \(.synchronous_commit), wal_level \(.wal_level), shared_buffers \(.shared_buffers), max_connections \(.max_connections)") |",
+    (.measurements.statements // null | if . then
+      "| statements / workflow | gross \(.statementsPerWorkflowGross), net \(.statementsPerWorkflowNet) ± \(.netTolerancePerWorkflow) (top-level: gross \(.statementsPerWorkflowGrossTopLevel), net \(.statementsPerWorkflowNetTopLevel)); background \(.backgroundRatePerSec)/s over \(.backgroundWindowSecs) s; load window \(.loadWindowSecs) s. Gross includes background engine statements. |"
+      else empty end),
     "| host | \($i.host.cpus) CPUs, \($i.host.memoryMb) MiB; Docker \($i.host.dockerServer) (\($i.host.dockerMemoryMb) MiB), compose \($i.host.dockerCompose) |",
     (if ($i.notes | length) > 0 then "| notes | \($i.notes | join("; ") | cell) |" else empty end),
     "",

@@ -99,15 +99,21 @@ k6_run() {
   done
   log "k6 ${phase}: ${script} $*"
   local rc=0
+  local summary="${RESULTS}/k6-${phase}.json"
+  rm -f "$summary"
   dc run --rm --no-deps "${args[@]}" k6 run --quiet "/scripts/${script}" \
     </dev/null >"${RESULTS}/k6-${phase}.log" 2>&1 || rc=$?
   log "k6 ${phase}: exit ${rc}"
   grep '^k6\[' "${RESULTS}/k6-${phase}.log" >&2 || true
-  local summary="${RESULTS}/k6-${phase}.json"
+  # droppedIterations is present only when k6 wrote its summary: k6 emits the
+  # dropped_iterations metric only once an iteration is dropped, so a summary
+  # without it means 0. A record without a summary carries no
+  # droppedIterations at all, and validity.k6 / validity.droppedIterations
+  # are INVALID for it.
   if [[ -s "$summary" ]]; then
     jq -c --arg phase "$phase" --arg script "$script" --argjson rc "$rc" '
       def v($m; $k): (.metrics[$m].values[$k] // null);
-      {phase: $phase, script: $script, exitCode: $rc,
+      {phase: $phase, script: $script, exitCode: $rc, summaryMissing: false,
        iterations: v("iterations"; "count"),
        droppedIterations: (v("dropped_iterations"; "count") // 0),
        httpReqs: v("http_reqs"; "count"),
@@ -157,4 +163,59 @@ wait_terminal() {
     fi
     sleep "$interval"
   done
+}
+
+# Seconds in an ISO-8601 duration as /perf/info reports it (Java
+# Duration.toString(): PT5S, PT1M, PT0.5S, PT48H).
+iso_secs() {
+  jq -rn --arg d "$1" '"^PT((?<h>[0-9.]+)H)?((?<m>[0-9.]+)M)?((?<s>[0-9.]+)S)?$" as $re
+    | if ($d | test($re)) and $d != "PT" then $d | capture($re)
+        | ((.h // "0" | tonumber) * 3600 + (.m // "0" | tonumber) * 60 + (.s // "0" | tonumber))
+      else error("not an ISO-8601 duration: \($d)") end'
+}
+
+# Warm-up: <count> workflows of <body> under ${RUN_ID}-warmup-, started by
+# <vus> VUs round-robin over every replica and drained, BEFORE any
+# pg_stat_statements window opens. Connection warm-up and first-use catalog
+# lookups (the driver's pg_type queries) then fall outside every measured
+# window. Prints {"prefix", "count", "drain"}.
+# warm_up <count> <vus> <body-json>
+warm_up() {
+  local count=$1 vus=$2 body=$3
+  local prefix="${RUN_ID}-warmup-" drain
+  k6_run warmup start-batch.js \
+    "PERF_ID_PREFIX=${prefix}" "PERF_ID_OFFSET=0" "PERF_COUNT=${count}" \
+    "PERF_VUS=${vus}" "PERF_MAX_DURATION=2m" "PERF_BODY=${body}"
+  drain=$(wait_terminal "$prefix" "$count" 120 2)
+  log "warm-up: $(jq -c '{byStatus: .status.byStatus, waitedSecs, timedOut}' <<<"$drain")"
+  jq -nc --arg p "$prefix" --argjson c "$count" --argjson d "$drain" \
+    '{prefix: $p, count: $c, drain: {waitedSecs: $d.waitedSecs, timedOut: $d.timedOut}, runStatus: $d.status}'
+}
+
+# The engine's background statement rate, measured on an idle stack: a
+# pg_stat_statements window of a whole number of timer-poll ticks (at least
+# 2, and enough to span one recovery-poll tick), both intervals read from the
+# node's /perf/info rather than assumed. Nothing of the harness runs as the
+# maestro role, so every engine call in it is background work: the timer
+# poller (every node's leader-election upsert plus the leader's due-timer
+# query, each tick) and the recovery poller (each node, each tick); and, when
+# their much longer intervals fall due, the lock cleaner, signal janitor and
+# retention sweeper. Prints {"ticks", "timerPollSecs", "recoveryPollSecs",
+# "idleSecs", "window": <pgss-window>}.
+measure_background() {
+  local node timer recovery ticks idle window
+  node=$(jq -c '.nodes[0]' "${RESULTS}/identity.json")
+  timer=$(iso_secs "$(jq -r '.timerPollInterval // empty' <<<"$node")") \
+    || die "node 1 reports no timerPollInterval"
+  recovery=$(iso_secs "$(jq -r '.recoveryPollInterval // empty' <<<"$node")") \
+    || die "node 1 reports no recoveryPollInterval"
+  ticks=$(jq -rn --argjson t "$timer" --argjson r "$recovery" '[2, (($r / $t) | ceil)] | max')
+  idle=$(jq -rn --argjson t "$timer" --argjson n "$ticks" '$t * $n')
+  log "background: idle window of ${ticks} timer-poll ticks (${timer} s each) = ${idle} s"
+  psql_json pgss-reset >/dev/null
+  sleep "$idle"
+  window=$(psql_json pgss-window)
+  log "background: $(jq -c '{windowSecs, maestroCalls, maestroCallsTopLevel, maestroStatements}' <<<"$window")"
+  jq -nc --argjson n "$ticks" --argjson t "$timer" --argjson r "$recovery" --argjson i "$idle" \
+    --argjson w "$window" '{ticks: $n, timerPollSecs: $t, recoveryPollSecs: $r, idleSecs: $i, window: $w}'
 }
