@@ -80,9 +80,14 @@ class ReplayDriftStandDownTest {
         store = new VersionedInMemoryStore();
         observer = new RecordingEngineObserver();
         var serializer = new PayloadSerializer(JsonMapper.builder().build());
-        executor = new WorkflowExecutor(store, new MapLock(), null, null, serializer, "node",
-                LOCK_PREFIX, Duration.ofSeconds(30), true,
-                Duration.ofSeconds(5), Duration.ofSeconds(30), observer);
+        executor = WorkflowExecutor.builder(store, serializer, "node")
+                .distributedLock(new MapLock())
+                .lockKeyPrefix(LOCK_PREFIX)
+                .instanceLockTtl(Duration.ofSeconds(30))
+                .shutdownTimeout(Duration.ofSeconds(5))
+                .wakeRecheckInterval(Duration.ofSeconds(30))
+                .observer(observer)
+                .build();
         invocations = new AtomicInteger();
         Acts impl = () -> {
             invocations.incrementAndGet();

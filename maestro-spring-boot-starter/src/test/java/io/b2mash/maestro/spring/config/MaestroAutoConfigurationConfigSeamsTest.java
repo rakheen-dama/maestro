@@ -38,9 +38,11 @@ import java.time.Instant;
 import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
@@ -66,7 +68,10 @@ import static org.awaitility.Awaitility.await;
  * {@code maestro.worker.*} (the listed task queues, the
  * {@code default-concurrency}/{@code default-activity-concurrency} bound on
  * every other queue, its startup validation and INFO line) and
- * {@code maestro.replay.verify-arguments}.
+ * {@code maestro.replay.verify-arguments}. {@code maestro.lock.ttl} and
+ * {@code maestro.lock.key-prefix} are also pinned on the instance lock the
+ * executor acquires (Issue 37), so a prefix that reaches only the activity
+ * lock fails a test.
  *
  * <p>Before this fix, all four had a hardcoded value baked into
  * {@link WorkflowExecutor} / {@code ActivityInvocationHandler} /
@@ -184,6 +189,22 @@ class MaestroAutoConfigurationConfigSeamsTest {
                                     + "not the hardcoded maestro:lock: default — acquired keys were "
                                     + lock.acquiredKeys)
                             .containsExactly("custom:prefix:activity:lock-prefix-1:1");
+                });
+    }
+
+    @Test
+    @DisplayName("maestro.lock.ttl and maestro.lock.key-prefix reach the instance lock")
+    void lockTtlAndKeyPrefixReachTheInstanceLock() {
+        var lock = new RecordingLock();
+        runner.withBean(DistributedLock.class, () -> lock)
+                .withPropertyValues("maestro.lock.ttl=45s", "maestro.lock.key-prefix=custom:prefix:")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    context.getBean(MaestroClient.class)
+                            .newWorkflow(ActivityCallingWorkflow.class, options("lock-ttl-1"))
+                            .startAndWait(null, Duration.ofSeconds(10), String.class);
+                    assertThat(lock.acquiredTtls)
+                            .containsEntry("custom:prefix:workflow:lock-ttl-1", Duration.ofSeconds(45));
                 });
     }
 
@@ -837,10 +858,12 @@ class MaestroAutoConfigurationConfigSeamsTest {
     private static final class RecordingLock implements DistributedLock {
 
         final List<String> acquiredKeys = new ArrayList<>();
+        final Map<String, Duration> acquiredTtls = new ConcurrentHashMap<>();
 
         @Override
         public synchronized Optional<LockHandle> tryAcquire(String key, Duration ttl) {
             acquiredKeys.add(key);
+            acquiredTtls.put(key, ttl);
             return Optional.of(new LockHandle(key, UUID.randomUUID().toString(), Instant.now().plus(ttl)));
         }
 

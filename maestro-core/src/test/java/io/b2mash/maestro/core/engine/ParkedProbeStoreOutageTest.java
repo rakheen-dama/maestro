@@ -74,10 +74,10 @@ class ParkedProbeStoreOutageTest {
         store = new OutageStore();
         serializer = new PayloadSerializer(new ObjectMapper());
         observer = new RecordingEngineObserver();
-        executor = new WorkflowExecutor(store, null, null, null, serializer, "test-service",
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
-                WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
-                true, WorkflowExecutor.DEFAULT_SHUTDOWN_TIMEOUT, SHORT_RECHECK, observer);
+        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .wakeRecheckInterval(SHORT_RECHECK)
+                .observer(observer)
+                .build();
     }
 
     @AfterEach

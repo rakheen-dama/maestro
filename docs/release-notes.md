@@ -2,6 +2,24 @@
 
 ## Unreleased — Postgres + Kafka only
 
+### Changed — WorkflowExecutor is built with a builder; its ten constructors are removed (Issue 37)
+
+- **Before:** `WorkflowExecutor` had ten public constructors (6, 7, 8, 9, 11, 12, 13, 14 and 15 arguments, two of them at 14), and a caller chose one by argument count. Several neighbouring parameters share a type (`Duration`, `boolean`, `String`), so swapped arguments compiled. The starter and the test kit each chose a different constructor, which is how the test kit came to miss the default task-queue limits ([Issue 36](open-issues.md#issue-36)).
+- **Now:** `WorkflowExecutor.builder(store, serializer, serviceName)` returns a `WorkflowExecutor.Builder` with one named setter per setting; `build()` returns the executor. The three arguments are required: `builder(...)` rejects a `null` one with a `NullPointerException` naming it. Every other setting has the default the six-argument constructor supplied:
+  - `distributedLock`, `messaging`, `signalNotifier`: `null` (none);
+  - `lockKeyPrefix`: `"maestro:lock:"`;
+  - `instanceLockTtl`: 30 s;
+  - `lifecycleEventsEnabled`: `true`;
+  - `shutdownTimeout`: 30 s;
+  - `wakeRecheckInterval`: 30 s;
+  - `observer`: `EngineObserver.NOOP`;
+  - `taskQueueLimits`: `Map.of()`;
+  - `defaultTaskQueueLimits`: `null` (task queues not in `taskQueueLimits` are unbounded);
+  - `instantSource`: `InstantSource.system()`.
+
+  Setters only store their value; `build()` validates as the constructors did: a `null`, zero or negative `instanceLockTtl`, `shutdownTimeout` or `wakeRecheckInterval` throws `IllegalArgumentException` (`"<name> must be positive, got <value>"`), and a `null` `taskQueueLimits` or `instantSource` throws `NullPointerException`. Stricter, on invalid input only: a `null` `serializer` or `serviceName` now fails at `builder(...)`, and a `null` `lockKeyPrefix` or `observer` at `build()`, where the constructors accepted them and failed later or never. A builder is not thread-safe and may be reused; each `build()` returns a new executor. All ten constructors are removed, not deprecated: no Maven Central release has shipped them (decision D6). Pinned by `WorkflowExecutorBuilderTest` (`defaultsAreTheValuesTheSixArgumentConstructorSupplied` pins each default).
+- **Upgrade:** code that builds a `WorkflowExecutor` directly from `maestro-core` replaces `new WorkflowExecutor(a1, …)` with `WorkflowExecutor.builder(store, serializer, serviceName)`, one setter per other argument (named as the constructor parameter was), then `.build()`. Applications using the Spring Boot starter or `TestWorkflowEnvironment` change nothing. Entries below that name a `WorkflowExecutor` constructor by its argument count, as its "full constructor", or as taking a setting (the default limits, an `InstantSource`, task-queue limits), refer to the builder and its setter of the same name.
+
 ### Host load — bounded by default: batched lock renewal, a paged service-scoped recovery scan, default worker limits, `@MaestroDataSource`
 
 The engine's load on the host's database and connection pool had no bound by default. The lock renewer issued one `UPDATE` per held instance lock every 10 s on one thread, so a node holding thousands of parked workflows made thousands of round-trips per pass and, once a pass outran the TTL margin, peers adopted en masse. Every node, every 60 s, read every active instance of every service sharing the tables, payloads included, in one unbounded query, and then made one lock statement per instance not running locally. `maestro.worker.task-queues` defaulted to empty, meaning unbounded, so a deploy replayed every active workflow at once through the host's pool, and every Maestro bean took the host's `DataSource` by type with no way to give the engine its own.

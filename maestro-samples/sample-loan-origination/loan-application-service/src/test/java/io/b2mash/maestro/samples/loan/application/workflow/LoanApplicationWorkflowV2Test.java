@@ -371,8 +371,11 @@ class LoanApplicationWorkflowV2Test {
         // neither can CAS before the other has seen the row.
         var bothRead = new CountDownLatch(2);
         var latchedStore = latchOnRead(store, "dup", bothRead);
-        var node = new WorkflowExecutor(latchedStore, lock, messaging, notifier, serializer,
-                "node-same-name-pending");
+        var node = WorkflowExecutor.builder(latchedStore, serializer, "node-same-name-pending")
+                .distributedLock(lock)
+                .messaging(messaging)
+                .signalNotifier(notifier)
+                .build();
         nodes.add(node);
 
         var workflowId = "same-name-pending-1";
@@ -567,7 +570,11 @@ class LoanApplicationWorkflowV2Test {
     private record Run(String applicationId, String workflowId, UUID instanceId) {}
 
     private WorkflowExecutor node() {
-        var executor = new WorkflowExecutor(store, lock, messaging, notifier, serializer, SERVICE);
+        var executor = WorkflowExecutor.builder(store, serializer, SERVICE)
+                .distributedLock(lock)
+                .messaging(messaging)
+                .signalNotifier(notifier)
+                .build();
         nodes.add(executor);
         return executor;
     }

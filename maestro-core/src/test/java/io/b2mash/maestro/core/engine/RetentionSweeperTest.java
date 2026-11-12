@@ -338,8 +338,8 @@ class RetentionSweeperTest {
         @DisplayName("startRetentionSweeper starts it, exposes its settings, and shutdown stops it")
         void executorStartsExposesAndStops() {
             var store = new RecordingStore();
-            var executor = new WorkflowExecutor(store, null, null, null,
-                    new PayloadSerializer(new tools.jackson.databind.ObjectMapper()), SERVICE);
+            var executor = WorkflowExecutor.builder(store, new PayloadSerializer(new tools.jackson.databind.ObjectMapper()), SERVICE)
+                    .build();
             try {
                 assertFalse(executor.hasRetentionSweeperStarted());
                 assertFalse(executor.isRetentionSweeperRunning());

@@ -49,7 +49,7 @@ class AdminCommandDispatcherTest {
     void setUp() throws NoSuchMethodException {
         store = new InMemoryWorkflowStore();
         var serializer = new PayloadSerializer(JsonMapper.builder().build());
-        executor = new WorkflowExecutor(store, null, null, null, serializer, "test-service");
+        executor = WorkflowExecutor.builder(store, serializer, "test-service").build();
         registrar = new StubRegistrar(executor);
         registrar.register(WORKFLOW_TYPE, new WorkflowRegistration(
                 WORKFLOW_TYPE, "default", SimpleWorkflow::new, SimpleWorkflow.class.getMethod("run", String.class)));
