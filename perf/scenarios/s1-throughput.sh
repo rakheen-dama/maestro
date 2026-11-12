@@ -9,10 +9,13 @@
 # open-model arrival rate (perf/k6/start-ramp.js, ramping-arrival-rate; its
 # profile table is the single source of levels, ramp/hold and VUs, read back
 # here with `k6 inspect`):
-#   local  levels 5, 20, 40, 80 starts/s, ramp 5 s / hold 40 s, VUs 50 / 200,
-#          drain timeout 300 s (load 180 s; about 8 min end to end)
+#   local  levels 5, 20, 40, 80 starts/s, ramp 5 s / hold 40 s, VUs 400 / 400
+#          (pre-allocated / max), drain timeout 300 s (load 180 s; about
+#          6 min end to end)
 #   full   levels 5, 10, 20, 40, 60, 80, 120 starts/s, ramp 10 s / hold 120 s,
-#          VUs 100 / 400, drain timeout 1200 s (load 910 s)
+#          VUs 600 / 600, drain timeout 1200 s (load 910 s; about 20 min end
+#          to end)
+#   (VU sizing, and why all are pre-allocated: perf/k6/start-ramp.js.)
 #   PERF_K6_VUS / PERF_K6_MAX_VUS override the VUs (the generator-saturation
 #   test runs 1 / 1 and must come out INVALID, validity.droppedIterations).
 #

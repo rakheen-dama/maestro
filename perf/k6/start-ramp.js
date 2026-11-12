@@ -20,14 +20,18 @@
 import exec from 'k6/execution';
 import { nodeFor, startWorkflow, summary } from './lib/common.js';
 
-// Levels in starts/s. Sized so that the generator can always offer the rate
-// at the start endpoint's latency (VUs needed = rate x request seconds; 200
-// VUs carry 80/s up to 2.5 s per request, 400 carry 120/s up to 3.3 s): if it
-// cannot, k6 drops iterations and the run is INVALID
+// Levels in starts/s. VUs are sized so the generator can always offer the
+// top rate while the start endpoint stalls (VUs needed = rate x request
+// seconds): 5 s of stall at the top level, local 80/s x 5 = 400, full
+// 120/s x 5 = 600, and ALL of them pre-allocated. k6 allocates VUs above
+// preAllocatedVUs mid-test, too slowly for a sudden stall: with 100
+// pre-allocated of 400 the full profile dropped 37 iterations while k6 had
+// grown to only 121 VUs, during a 3.2 s start stall at 120/s
+// (r20261112t211806z). A dropped iteration makes the run INVALID
 // (validity.droppedIterations), never a ceiling.
 const PROFILES = {
-  local: { levels: [5, 20, 40, 80], rampSecs: 5, holdSecs: 40, preAllocatedVUs: 50, maxVUs: 200 },
-  full: { levels: [5, 10, 20, 40, 60, 80, 120], rampSecs: 10, holdSecs: 120, preAllocatedVUs: 100, maxVUs: 400 },
+  local: { levels: [5, 20, 40, 80], rampSecs: 5, holdSecs: 40, preAllocatedVUs: 400, maxVUs: 400 },
+  full: { levels: [5, 10, 20, 40, 60, 80, 120], rampSecs: 10, holdSecs: 120, preAllocatedVUs: 600, maxVUs: 600 },
 };
 
 function intEnv(name, fallback) {
