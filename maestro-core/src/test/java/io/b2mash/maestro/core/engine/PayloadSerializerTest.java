@@ -236,6 +236,24 @@ class PayloadSerializerTest {
     }
 
     /**
+     * A primitive has no null value: under Jackson 3's default
+     * {@code FAIL_ON_NULL_FOR_PRIMITIVES} the read fails, and the failure is a
+     * {@link SerializationException} — which the engine's replay guards turn
+     * into a stand-down, never a workflow failure.
+     */
+    @Test
+    void nullIntoAPrimitiveFailsAsASerializationException() {
+        Object outcome;                                       // the value read, or the failure's cause class
+        try {
+            outcome = serializer.deserialize(NullNode.instance, int.class);
+        } catch (SerializationException e) {
+            outcome = e.getCause().getClass().getName();
+        }
+        assertEquals("tools.jackson.databind.exc.MismatchedInputException", String.valueOf(outcome));
+        assertNull(serializer.deserialize(NullNode.instance, Integer.class));
+    }
+
+    /**
      * Anti-goal 2 — history replays as before: for every node a JDBC store
      * parses from a payload column, the text path returns what the tree path
      * returned, value and class.
