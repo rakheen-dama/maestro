@@ -962,12 +962,12 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         // clock the per-await deadlines are armed on.
         WorkflowContextInternals.setReplaying(ctx, false);
         var now = instantSource.instant();
-        var payload = serializer.serialize(now);
-        appendEvent(ctx, seq, EventType.SIDE_EFFECT, "$maestro:currentTime", payload);
-        // D7: return what a replay of this slot reads, not the raw clock value.
-        // The try holds no store call and names SerializationException only.
+        var stored = appendEvent(ctx, seq, EventType.SIDE_EFFECT, "$maestro:currentTime", serializer.serialize(now));
+        // D7: return what a replay of this slot reads — the payload as the
+        // store returned it — not the raw clock value. The try holds no store
+        // call and names SerializationException only.
         try {
-            return serializer.deserialize(payload, Instant.class);
+            return serializer.deserialize(stored, Instant.class);
         } catch (SerializationException unreadable) {
             // The host mapper cannot read the Instant it wrote. Never fail the
             // run for it (D9's principle): the side effect is durable, and a
@@ -1237,8 +1237,14 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
 
     // ── Internal helpers ───────────────────────────────────────────────
 
-    private void appendEvent(WorkflowContext ctx, int seq, EventType type,
-                             String stepName, @Nullable JsonNode payload) {
+    /**
+     * Appends an event under the run's lease.
+     *
+     * @return the payload as the store will read it back
+     *         ({@link io.b2mash.maestro.core.spi.WorkflowStore#appendEventReturningPayload})
+     */
+    private @Nullable JsonNode appendEvent(WorkflowContext ctx, int seq, EventType type,
+                                           String stepName, @Nullable JsonNode payload) {
         var event = new WorkflowEvent(
                 UUID.randomUUID(),
                 ctx.workflowInstanceId(),
@@ -1249,7 +1255,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                 Instant.now()
         );
         try {
-            store.appendEvent(event, ctx.lease());
+            return store.appendEventReturningPayload(event, ctx.lease());
         } catch (FencedWriteException fenced) {
             // Issue 11: another node adopted this workflow and the store
             // refused this run's write. Sticky for the same reason as below.

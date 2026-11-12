@@ -79,8 +79,11 @@ import java.util.concurrent.TimeoutException;
  *
  * <h2>Live results are read back</h2>
  * <p>Once a live outcome's append has succeeded, the handler deserializes the
- * payload it persisted with the function and generic return type a replay
- * uses, and returns that value instead of the activity's own object, so
+ * payload as the store returned it
+ * ({@link io.b2mash.maestro.core.spi.WorkflowStore#appendEventReturningPayload}:
+ * on Postgres the {@code jsonb} form, keys reordered and numbers normalised —
+ * exactly what a replay reads) with the function and generic return type a
+ * replay uses, and returns that value instead of the activity's own object, so
  * workflow code — and a {@code @Compensate} method that takes the result —
  * sees on the live run exactly what it sees after any recovery. What is
  * written does not change: the payload is still the serialized result, and a
@@ -607,7 +610,8 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * {@link SerializationException} only, so an {@link Error} (a control-flow
      * signal included) and a store fault are never swallowed here.
      *
-     * @param stored   the payload the outcome append persisted
+     * @param stored   the payload as the outcome append returned it — what the
+     *                 store will hand a replay of this step
      * @param raw      the object the activity returned
      * @return the read-back value, or {@code raw} if it cannot be read back
      */
@@ -792,8 +796,9 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             // Persist success. A result the mapper cannot write is an ordinary
             // live failure, as it always was: it propagates from here.
             var payload = serializer.serialize(result);
+            JsonNode stored;
             try {
-                appendEventSafe(ctx, seq, EventType.ACTIVITY_COMPLETED, stepName, payload, argsHash);
+                stored = appendEventSafe(ctx, seq, EventType.ACTIVITY_COMPLETED, stepName, payload, argsHash);
             } catch (DuplicateEventException | StoreUnavailableException notRecorded) {
                 // The winner is alive and ahead: stand down rather than adopt
                 // its value (class Javadoc, "Idempotency"). Or the store could
@@ -807,8 +812,9 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             }
 
             // The outcome is durable: hand workflow code what a replay of this
-            // step will hand it (class Javadoc, "Live results are read back").
-            var value = readBack(payload, method, result, info, ctx, seq, stepName);
+            // step will hand it (class Javadoc, "Live results are read back") —
+            // the payload as the store returned it, which is what replay reads.
+            var value = readBack(stored, method, result, info, ctx, seq, stepName);
             publishLifecycleEvent(ctx, stepName, LifecycleEventType.ACTIVITY_COMPLETED);
             observer.activityCompleted(info, elapsed, false);
             return value;
@@ -973,6 +979,9 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * Appends an event to the memoization log; a lost append race stands this
      * run down.
      *
+     * @return the payload as the store will read it back
+     *         ({@link io.b2mash.maestro.core.spi.WorkflowStore#appendEventReturningPayload})
+     *
      * @throws FencedWriteException    if the instance's lease epoch has moved
      *                                 past this run's (another node adopted the
      *                                 workflow) — nothing written, the run stands
@@ -986,7 +995,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      *                                 build does not define (RULING 9) — the
      *                                 run stands down as {@code UNKNOWN_EVENT_TYPE}
      */
-    private void appendEventSafe(
+    private @Nullable JsonNode appendEventSafe(
             WorkflowContext ctx, int seq, EventType type,
             String stepName, @Nullable JsonNode payload, @Nullable String argsHash
     ) {
@@ -1002,7 +1011,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         );
 
         try {
-            store.appendEvent(event, ctx.lease());
+            return store.appendEventReturningPayload(event, ctx.lease());
         } catch (FencedWriteException fenced) {
             // Issue 11: the instance row's lease epoch has moved past this
             // run's — another node adopted the workflow (this node lost or
