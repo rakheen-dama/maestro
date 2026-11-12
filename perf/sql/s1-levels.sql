@@ -11,7 +11,13 @@
 --   backlogAtStart / backlogAtEnd = rows of any level started before ws
 --     (at or before we) and not yet terminal at ws (at we),
 --   p50Ms / p95Ms / p99Ms / maxMs = start-to-terminal of this level's
---     COMPLETED rows, completed / failed / nonTerminal of this level's rows.
+--     COMPLETED rows, completed / failed / nonTerminal of this level's rows,
+--   hold* = the same rates over the level's HOLD only, [ws + :ramp s, we]
+--     (:ramp = the plan's ramp seconds; the ramp from the previous level
+--     offers less than L, so the full window's rates are biased down):
+--     holdSecs, arrivalsInHold (this level's rows started in it),
+--     completionsInHold (COMPLETED rows of any level completed in it), and
+--     both per second.
 -- unlabeled counts s1 rows whose label is not L<digits> (must be 0).
 -- Runs as postgres.
 WITH r AS (
@@ -36,6 +42,11 @@ WITH r AS (
     GROUP BY label
 ), lw AS (
     SELECT lv.*, extract(epoch FROM we - ws) AS secs,
+           extract(epoch FROM we - (ws + make_interval(secs => :ramp))) AS hold_secs,
+           (SELECT count(*) FROM r WHERE r.label = 'L' || lv.level
+                AND r.started_at >= lv.ws + make_interval(secs => :ramp)) AS arrivals_hold,
+           (SELECT count(*) FROM r WHERE r.status = 'COMPLETED'
+                AND r.completed_at BETWEEN lv.ws + make_interval(secs => :ramp) AND lv.we) AS done_hold,
            (SELECT count(*) FROM r WHERE r.status = 'COMPLETED' AND r.completed_at BETWEEN lv.ws AND lv.we) AS done_in_window,
            (SELECT count(*) FROM r WHERE r.started_at < lv.ws
                 AND (r.completed_at IS NULL OR r.completed_at >= lv.ws)) AS backlog_start,
@@ -61,6 +72,11 @@ SELECT json_build_object(
         'p95Ms', round(p95::numeric, 1),
         'p99Ms', round(p99::numeric, 1),
         'maxMs', round(pmax::numeric, 1),
+        'holdSecs', CASE WHEN hold_secs > 0 THEN round(hold_secs::numeric, 3) END,
+        'arrivalsInHold', arrivals_hold,
+        'completionsInHold', done_hold,
+        'arrivalInHoldPerSec', CASE WHEN hold_secs > 0 THEN round((arrivals_hold / hold_secs)::numeric, 2) END,
+        'completionsInHoldPerSec', CASE WHEN hold_secs > 0 THEN round((done_hold / hold_secs)::numeric, 2) END,
         'completed', completed,
         'failed', failed,
         'nonTerminal', non_terminal) ORDER BY level) FROM lw), '[]'::json),

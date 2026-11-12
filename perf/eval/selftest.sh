@@ -540,6 +540,56 @@ if [[ -n "$s1src" ]]; then
   out=$(s1_eval s1-backlog "$backlog")
   expect "s1 ceiling: first level's backlog unbounded: no level sustained" null "$(s1_field s1-backlog '.measurements.ceiling.sustainedLevel')"
   expect "s1 ceiling: no level sustained: advisory.ceiling still reports (PASS)" PASS "$(st "$out" advisory.ceiling)"
+  # Fix round 1: contention, slot-hold time, Little's law, clipped duration
+  # quantiles, per-level start timing, the plan's iteration count, hold windows.
+  expect "s1: ceiling records the hold-only maximum" number "$(s1_field s1-pass '.measurements.ceiling.ceilingHoldPerSec | type' | tr -d '"')"
+  expect "s1: ceiling records engineOverheadMsPerWorkflow" number "$(s1_field s1-pass '.measurements.ceiling.engineOverheadMsPerWorkflow | type' | tr -d '"')"
+  expect "s1: levels record slot-hold time and node CPU" "true" \
+    "$(s1_field s1-pass '[.measurements.levels[] | (.slotHoldMs | type == "number") and (.nodeCpu.processAvg | type == "number")] | all')"
+  expect "s1: the real (quiet) run: advisory.contention" PASS "$(jq -r '.checks["advisory.contention"]' <<<"$(s1_eval s1-quiet '.')")"
+  expect "s1: quiet run: ceiling detail carries no contended-host note" no \
+    "$(s1_field s1-quiet '.checks[] | select(.id == "advisory.ceiling") | .detail' | grep -q 'contended host' && echo yes || echo no)"
+  ceil_idx=$(s1_field s1-pass '[.measurements.levels[] | .level] | index('"$(s1_field s1-pass '.measurements.ceiling.ceilingLevel')"')')
+  below_idx=$((ceil_idx - 1))
+  hot=".levelProm[${below_idx}].slotsUsed.workflowAvg = (.levelRows[${below_idx}].completionsInWindowPerSec * .levelRows[0].p50Ms * 1.2 / 1000)"
+  out=$(s1_eval s1-contended "$hot")
+  expect "s1: hold time 1.2 x the reference below the ceiling level: advisory.contention" WARN "$(st "$out" advisory.contention)"
+  expect "s1: contended: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
+  expect "s1: contended: ceiling detail says so" yes \
+    "$(s1_field s1-contended '.checks[] | select(.id == "advisory.ceiling") | .detail' | grep -q 'measured on a contended host' && echo yes || echo no)"
+  expect "s1: contended: Little's-law detail says so" yes \
+    "$(s1_field s1-contended '.checks[] | select(.id == "advisory.littlesLaw") | .detail' | grep -q 'measured on a contended host' && echo yes || echo no)"
+  warm=".levelProm[${below_idx}].slotsUsed.workflowAvg = (.levelRows[${below_idx}].completionsInWindowPerSec * .levelRows[0].p50Ms * 1.14 / 1000)"
+  expect "s1: hold time 1.14 x the reference: advisory.contention" PASS "$(jq -r '.checks["advisory.contention"]' <<<"$(s1_eval s1-warm "$warm")")"
+  out=$(s1_eval s1-cpu-hot ".levelProm[0].nodeCpu.processAvg = 0.95")
+  expect "s1: node process CPU averaging 0.95 at the first level: advisory.contention" WARN "$(st "$out" advisory.contention)"
+  out=$(s1_eval s1-syscpu-hot ".levelProm[${below_idx}].nodeCpu.systemAvg = 0.9")
+  expect "s1: node system CPU averaging 0.90 below the ceiling: advisory.contention" WARN "$(st "$out" advisory.contention)"
+  out=$(s1_eval s1-above-ceiling ".levelRows[-1].completionsInWindowPerSec = 1 | .levelProm[-1].slotsUsed.workflowAvg = 1000")
+  expect "s1: hold time only ABOVE the ceiling level is not judged" PASS "$(st "$out" advisory.contention)"
+  out=$(s1_eval s1-no-series '.levelProm |= map(.slotsUsed |= map_values(null) | .nodeCpu = null) | del(.containerStats)')
+  expect "s1: slot gauge, node CPU and container CPU absent: advisory.contention" WARN "$(st "$out" advisory.contention)"
+  expect "s1: series absent: contention says \"not available\"" yes \
+    "$(s1_field s1-no-series '.checks[] | select(.id == "advisory.contention") | .detail' | grep -q '^"not available' && echo yes || echo no)"
+  expect "s1: series absent: no contended-host note on the ceiling" no \
+    "$(s1_field s1-no-series '.checks[] | select(.id == "advisory.ceiling") | .detail' | grep -q 'contended host' && echo yes || echo no)"
+  expect "s1: series absent: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
+  out=$(s1_eval s1-littles-low '.levelRows[0].p50Ms = 100')
+  expect "s1: ceiling below 0.9 x the unloaded model cap: advisory.littlesLaw" WARN "$(st "$out" advisory.littlesLaw)"
+  expect "s1: Little's-law WARN: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
+  out=$(s1_eval s1-clipped '.durationMeterTopBucketSecs = 30 | .levelProm[-1].durationMeter = {p50Secs: 30, p95Secs: 30}')
+  expect "s1: duration quantile at the top finite bucket is reported as clipped" yes \
+    "$(s1_field s1-clipped '.checks[] | select(.id == "advisory.workflowDurationMeter") | .detail' | grep -q '>= 30000 ms (clipped).*row-derived start-to-terminal.*authoritative' && echo yes || echo no)"
+  expect "s1: clipped level listed" "[$(jq '.plan.levels[-1]' "${s1src}/measurements.json")]" \
+    "$(s1_field s1-clipped '.checks[] | select(.id == "advisory.workflowDurationMeter") | .value.clippedLevels')"
+  expect "s1: the real run records the duration timer's top finite bucket" true \
+    "$(s1_field s1-pass '.checks[] | select(.id == "advisory.workflowDurationMeter") | .value | (.topFiniteBucketSecs | type == "number")')"
+  expect "s1: start latency reports per-level max and starts over 1 s" yes \
+    "$(s1_field s1-pass '.checks[] | select(.id == "advisory.startLatency") | .detail' | grep -q 'per level max ms / starts over 1 s: L' && echo yes || echo no)"
+  out=$(s1_eval s1-iterations '(.k6[] | select(.phase == "s1") | .iterations) -= 100')
+  expect "s1: k6 started 100 fewer iterations than the plan implies: validity.plan" INVALID "$(st "$out" validity.plan)"
+  out=$(s1_eval s1-iterations-1 '(.k6[] | select(.phase == "s1") | .iterations) -= 1')
+  expect "s1: one iteration short (rounding): validity.plan" PASS "$(st "$out" validity.plan)"
   out=$(s1_eval s1-no-samples '.samples = []')
   expect "s1, no statement samples: advisory.statementsPerLevel" WARN "$(st "$out" advisory.statementsPerLevel)"
   expect "s1, no statement samples: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"

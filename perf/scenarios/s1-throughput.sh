@@ -15,7 +15,9 @@
 #   full   levels 5, 10, 20, 40, 60, 80, 120 starts/s, ramp 10 s / hold 120 s,
 #          VUs 600 / 600, drain timeout 1200 s (load 910 s; about 20 min end
 #          to end)
-#   (VU sizing, and why all are pre-allocated: perf/k6/start-ramp.js.)
+#   (VU sizing, and why all are pre-allocated: perf/k6/start-ramp.js. The
+#   budget is a 5 s start-endpoint stall at the top level, only about
+#   1.6-1.7 x the longest stalls observed there: 2.88 s and 3.2 s.)
 #   PERF_K6_VUS / PERF_K6_MAX_VUS override the VUs (the generator-saturation
 #   test runs 1 / 1 and must come out INVALID, validity.droppedIterations).
 #
@@ -28,9 +30,30 @@
 # pgss-window over load + drain: the gate's figure) -> per-level SQL and
 # Prometheus. Per-level statement figures come from the samples bracketing
 # each level's window; see perf/eval/s1-throughput.jq for how levels are
-# judged ("sustains", the ceiling) and for the statement gate's relative
-# allowance (0.02) and its measured justification (three cold local runs:
-# net 36.00 / 36.01 / 36.00 statements per workflow).
+# judged ("sustains", the ceiling, the ramp and maximum biases), for
+# contention, and for the statement gate's relative allowance and its
+# measured justification (re-measured in fix round 1; see the jq header).
+#
+# What this scenario measures. The ceiling is about 20 slots / the time a run
+# holds its workflow slot, and 250 ms of that hold is the sample's own
+# activity time (5 x 50 ms); measured on quiet runs the hold is 261-269 ms
+# with 19.0-19.8 of 20 slots busy, i.e. 13-19 ms of engine overhead per
+# workflow. So an engine change can move the ceiling only within about
+# 72-80/s. It is good for: showing that the 20 workflow slots bind before the
+# Hikari pool of 10 does; pinning statements per workflow (the gate); and
+# measuring engine overhead per workflow (slot hold minus activity time,
+# ceiling.engineOverheadMsPerWorkflow). It is NOT a measure of engine
+# throughput headroom. Past the ceiling, throughput has been seen to fall
+# with slots pinned and hold time rising 9-13 % (full runs r20261112t211806z
+# and r20261112t214359z); the cause is NOT established (pool, node CPU and
+# host contention are all candidates) and needs a quiet host with node CPU
+# and GC recorded.
+#
+# Recorded for contention (advisory.contention): node CPU per level from
+# Prometheus (process/system_cpu_usage, system_load_average_1m), the
+# containers' CPU from `docker stats` every ~7 s (k6, node, postgres; only
+# this compose project's containers, read-only) and the host's load average
+# at the scenario's start, at the load's start and after the drain.
 #
 # Periodic sweeps: the load window of the full profile crosses the lock
 # cleaner's 10-minute marks; validity.sweeps (common.jq) accounts for them
@@ -48,6 +71,35 @@ s1_sample() {
   cat "${PERF_DIR}/sql/pgss-window.sql" "${PERF_DIR}/sql/s1-progress.sql" \
     | dc exec -T postgres psql -U postgres -d maestro -At -v ON_ERROR_STOP=1 -v "prefix=$1" -f - \
     | jq -sc 'if length == 2 then (.[0] | del(.top)) + .[1] else error("expected 2 JSON rows, got \(length)") end'
+}
+
+# The host's load averages as the OS reports them (macOS vm.loadavg, Linux
+# /proc/loadavg): a contention indicator for the shared machine, recorded at
+# the scenario's start, at the load's start and after the drain.
+s1_host_load() {
+  local raw
+  raw=$(sysctl -n vm.loadavg 2>/dev/null || cat /proc/loadavg 2>/dev/null || true)
+  jq -nc --arg raw "$raw" --argjson cpus "$(getconf _NPROCESSORS_ONLN)" --argjson t "$(date +%s)" \
+    '($raw | [scan("[0-9]+[.][0-9]+")] | map(tonumber)) as $l
+     | {at: $t, raw: $raw, load1: ($l[0] // null), load5: ($l[1] // null), load15: ($l[2] // null), hostCpus: $cpus}'
+}
+
+# CPU of this run's containers (this compose project only, read-only) as
+# `docker stats --no-stream` reports it: percent of ONE CPU, so up to 100 x
+# the CPUs a container may use. One JSON line {at, cpuPercent: {name: %}},
+# name = the container name without the project prefix ("node-1",
+# "postgres-1"; a `compose run` container's "-run-<id>" is dropped: "k6").
+s1_container_stats() {
+  local ids
+  ids=$(docker ps -q --filter "label=com.docker.compose.project=${COMPOSE_PROJECT}")
+  [[ -n "$ids" ]] || return 0
+  # shellcheck disable=SC2086 # one argument per container id
+  docker stats --no-stream --format '{{.Name}}\t{{.CPUPerc}}' $ids 2>/dev/null \
+    | jq -Rsc --argjson t "$(date +%s)" --arg p "${COMPOSE_PROJECT}-" '
+        [split("\n")[] | select(length > 0) | split("\t")
+         | {key: (.[0] | ltrimstr($p) | sub("-run-[0-9a-f]+$"; "")),
+            value: (.[1] | rtrimstr("%") | tonumber? // null)}]
+        | {at: $t, cpuPercent: from_entries}'
 }
 
 # One Prometheus instant query at <epoch>; prints its single value as a JSON
@@ -74,6 +126,7 @@ s1_level_prom() {
   local slotsA='sum(maestro_taskqueue_slots_used{kind="activity"})'
   local act='sum(hikaricp_connections_active)' pend='sum(hikaricp_connections_pending)'
   local bucket="sum by (le) (increase(maestro_workflow_duration_seconds_bucket{outcome=\"completed\"}[${range}]))"
+  local pcpu='max(process_cpu_usage)' scpu='max(system_cpu_usage)' sload='max(system_load_average_1m)'
   jq -nc \
     --argjson rangeSecs "${range%s}" --argjson at "$at" \
     --argjson swMax "$(s1_prom "max_over_time(${slotsW}[${range}:5s])" "$at")" \
@@ -86,10 +139,17 @@ s1_level_prom() {
     --argjson pendAvg "$(s1_prom "avg_over_time(${pend}[${range}:5s])" "$at")" \
     --argjson d50 "$(s1_prom "histogram_quantile(0.5, ${bucket})" "$at")" \
     --argjson d95 "$(s1_prom "histogram_quantile(0.95, ${bucket})" "$at")" \
+    --argjson pcAvg "$(s1_prom "avg_over_time(${pcpu}[${range}:5s])" "$at")" \
+    --argjson pcMax "$(s1_prom "max_over_time(${pcpu}[${range}:5s])" "$at")" \
+    --argjson scAvg "$(s1_prom "avg_over_time(${scpu}[${range}:5s])" "$at")" \
+    --argjson scMax "$(s1_prom "max_over_time(${scpu}[${range}:5s])" "$at")" \
+    --argjson slAvg "$(s1_prom "avg_over_time(${sload}[${range}:5s])" "$at")" \
     '{rangeSecs: $rangeSecs, at: $at,
       slotsUsed: {workflowMax: $swMax, workflowAvg: $swAvg, activityMax: $saMax, activityAvg: $saAvg},
       hikari: {activeMax: $actMax, activeAvg: $actAvg, pendingMax: $pendMax, pendingAvg: $pendAvg},
-      durationMeter: {p50Secs: $d50, p95Secs: $d95}}'
+      durationMeter: {p50Secs: $d50, p95Secs: $d95},
+      nodeCpu: {processAvg: $pcAvg, processMax: $pcMax, systemAvg: $scAvg, systemMax: $scMax,
+                systemLoad1mAvg: $slAvg}}'
 }
 
 scenario_run() {
@@ -124,6 +184,9 @@ scenario_run() {
   plan=$(jq -c --argjson d "$drain_timeout" --arg p "$PROFILE" '. + {profile: $p, drainTimeoutSecs: $d}' <<<"$plan")
   log "s1: plan $(jq -c '{levels, rampSecs, holdSecs, preAllocatedVUs, maxVUs, drainTimeoutSecs}' <<<"$plan")"
 
+  local host_start host_load_start host_end
+  host_start=$(s1_host_load)
+  log "s1: host load at start $(jq -c '{load1, load5, load15, hostCpus}' <<<"$host_start")"
   local slots warm_vus warm_count
   slots=$(jq -r '.nodes[0].workerDefaultConcurrency' "${RESULTS}/identity.json")
   warm_vus=$(jq -r '.maxVUs' <<<"$plan")
@@ -155,6 +218,19 @@ scenario_run() {
     done
   ) &
   sampler=$!
+  local cstats="${RESULTS}/s1-container-stats.jsonl" cstats_sampler
+  : >"$cstats"
+  (
+    set +eE
+    trap - ERR EXIT INT TERM
+    while [[ ! -e "$stop" ]] && kill -0 "$driver" 2>/dev/null && (($(date +%s) < deadline)); do
+      s1_container_stats >>"$cstats" 2>>"${RESULTS}/harness.log"
+      sleep "$S1_SAMPLE_SECS"
+    done
+  ) &
+  cstats_sampler=$!
+  host_load_start=$(s1_host_load)
+  log "s1: host load at load start $(jq -c '{load1, load5, load15}' <<<"$host_load_start")"
 
   k6_run s1 start-ramp.js "${k6env[@]}"
   local executed=null
@@ -169,6 +245,8 @@ scenario_run() {
 
   touch "$stop"
   wait "$sampler" || true
+  wait "$cstats_sampler" || true
+  host_end=$(s1_host_load)
   rm -f "$stop"
   # The closing sample, taken after the drain, so the last level is bracketed.
   s1_sample "$prefix" >>"$samples" 2>>"${RESULTS}/harness.log" || log "WARN: s1 closing sample failed"
@@ -176,7 +254,7 @@ scenario_run() {
   window=$(psql_json pgss-window)
   status=$(psql_json run-status -v "prefix=${prefix}")
   latency=$(psql_json latency -v "prefix=${prefix}")
-  levels=$(psql_json s1-levels -v "prefix=${prefix}")
+  levels=$(psql_json s1-levels -v "prefix=${prefix}" -v "ramp=$(jq '.rampSecs' <<<"$plan")")
   foreign=$(psql_json foreign-rows -v "prefix=${RUN_ID}-")
   log "s1: window $(jq -c '{windowSecs, dealloc, maestroCalls, maestroCallsTopLevel, harnessCalls, sweepCalls}' <<<"$window"), foreign rows ${foreign}"
 
@@ -194,6 +272,20 @@ scenario_run() {
   if [[ -n "$first_ws" ]]; then
     abandoned=$(s1_prom "sum(increase(maestro_run_abandoned_total[$(jq -rn --argjson a "$first_ws" --argjson b "$last_we" '$b - $a | ceil')s]))" "$last_we")
   fi
+  # The duration timer's largest finite bucket: a quantile that lands on it
+  # is clipped (the true value is at least that), never a measurement.
+  local top_bucket
+  top_bucket=$(dc exec -T curl curl -fsS -m 30 -G http://prometheus:9090/api/v1/query \
+    --data-urlencode 'query=group by (le) (maestro_workflow_duration_seconds_bucket)' </dev/null 2>>"${RESULTS}/harness.log" \
+    | jq -c '[.data.result[]?.metric.le | select(. != "+Inf") | tonumber?] | max // null' 2>/dev/null || printf 'null')
+  # Per-level start timing from k6's custom metrics (start-ramp.js).
+  local start_by_level=null
+  if [[ -s "${RESULTS}/k6-s1.json" ]]; then
+    start_by_level=$(jq -c '.metrics as $m | [$m | keys[] | select(test("^s1_start_ms_L[0-9]+$"))
+        | (ltrimstr("s1_start_ms_L") | tonumber) as $l
+        | {level: $l, maxMs: $m[.].values.max, p95Ms: $m[.].values["p(95)"], count: ($m[.].values.count // null),
+           over1s: ($m["s1_start_over_1s_L\($l)"].values.count // null)}] | sort_by(.level)' "${RESULTS}/k6-s1.json")
+  fi
   log "s1: levels $(jq -c '[.levels[] | {level, arrivals, arrivalPerSec, completionsInWindowPerSec, backlogAtEnd, p95Ms}]' <<<"$levels")"
 
   jq -n \
@@ -203,6 +295,9 @@ scenario_run() {
     --argjson status "$status" --argjson latency "$latency" --argjson levels "$levels" \
     --argjson levelProm "$level_prom" --argjson abandoned "$abandoned" \
     --argjson foreign "$foreign" --argjson k6 "$(k6_records)" \
+    --argjson topBucket "$top_bucket" --argjson startByLevel "$start_by_level" \
+    --argjson hostStart "$host_start" --argjson hostLoadStart "$host_load_start" --argjson hostEnd "$host_end" \
+    --slurpfile containerStats "$cstats" \
     --argjson accepted "$accepted" --argjson executed "$executed" --slurpfile samples "$samples" --argjson sampleSecs "$S1_SAMPLE_SECS" \
     '{idPrefix: $prefix, runPrefix: $runPrefix,
       workflowShape: ($body | {type, activities, activityMillis}),
@@ -213,6 +308,9 @@ scenario_run() {
       runStatus: $status, window: $window, latency: $latency,
       levelRows: $levels.levels, unlabeledRows: $levels.unlabeled, levelProm: $levelProm,
       runAbandonedIncrease: $abandoned,
+      durationMeterTopBucketSecs: $topBucket, startByLevel: $startByLevel,
+      hostLoad: {scenarioStart: $hostStart, loadStart: $hostLoadStart, afterDrain: $hostEnd},
+      containerStats: $containerStats,
       sampleSecs: $sampleSecs, samples: $samples,
       foreignRows: $foreign}' \
     >"${RESULTS}/measurements.json"

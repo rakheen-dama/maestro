@@ -53,9 +53,9 @@ jq -r '
       "",
       "## Levels",
       "",
-      "| offered /s | arrivals /s | completions /s | sustained | backlog at end | p50 / p95 ms (rows) | workflow slots max | pool pending max / active max | net stmts / wf |",
-      "|---|---|---|---|---|---|---|---|---|",
-      (.[] | "| \(.offeredPerSec) | \(.arrivalPerSec | cell) | \(.completionsInWindowPerSec | cell) | \(.sustained) | \(.backlogAtEnd | cell) | \(.p50Ms | cell) / \(.p95Ms | cell) | \(.slotsUsed.workflowMax // "n/a" | cell) | \(.hikari.pendingMax // "n/a" | cell) / \(.hikari.activeMax // "n/a" | cell) | \(.statements.net | cell) |")
+      "| offered /s | arrivals /s | completions /s (hold only) | sustained | backlog at end | p50 / p95 ms (rows) | workflow slots max / avg | slot hold ms (engine overhead) | pool pending max / active max | node CPU avg (process / system) | net stmts / wf |",
+      "|---|---|---|---|---|---|---|---|---|---|---|",
+      (.[] | "| \(.offeredPerSec) | \(.arrivalPerSec | cell) | \(.completionsInWindowPerSec | cell) (\(.completionsInHoldPerSec // "n/a" | cell)) | \(.sustained) | \(.backlogAtEnd | cell) | \(.p50Ms | cell) / \(.p95Ms | cell) | \(.slotsUsed.workflowMax // "n/a" | cell) / \(.slotsUsed.workflowAvg // "n/a" | if type == "number" then (. * 10 | round / 10) else . end | cell) | \(.slotHoldMs // "n/a" | cell) (\(.engineOverheadMs // "n/a" | cell)) | \(.hikari.pendingMax // "n/a" | cell) / \(.hikari.activeMax // "n/a" | cell) | \(.nodeCpu.processAvg // "n/a" | if type == "number" then (. * 100 | round | tostring) + " %" else . end) / \(.nodeCpu.systemAvg // "n/a" | if type == "number" then (. * 100 | round | tostring) + " %" else . end) | \(.statements.net | cell) |")
       else empty end),
     "",
     "## Checks",

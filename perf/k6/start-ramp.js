@@ -18,6 +18,7 @@
 // `k6 inspect` with PERF_PROFILE set shows the resolved scenario; the harness
 // reads the stage table from there, so this file is its single source.
 import exec from 'k6/execution';
+import { Counter, Trend } from 'k6/metrics';
 import { nodeFor, startWorkflow, summary } from './lib/common.js';
 
 // Levels in starts/s. VUs are sized so the generator can always offer the
@@ -28,7 +29,10 @@ import { nodeFor, startWorkflow, summary } from './lib/common.js';
 // pre-allocated of 400 the full profile dropped 37 iterations while k6 had
 // grown to only 121 VUs, during a 3.2 s start stall at 120/s
 // (r20261112t211806z). A dropped iteration makes the run INVALID
-// (validity.droppedIterations), never a ceiling.
+// (validity.droppedIterations), never a ceiling. Margin: the longest start
+// stalls observed at the top level were 2.88 s (full, r20261112t214359z) and
+// 3.2 s (r20261112t211806z), so the 5 s budget is only about 1.6-1.7 x the
+// worst stall seen; a longer stall drops iterations and the run is INVALID.
 const PROFILES = {
   local: { levels: [5, 20, 40, 80], rampSecs: 5, holdSecs: 40, preAllocatedVUs: 400, maxVUs: 400 },
   full: { levels: [5, 10, 20, 40, 60, 80, 120], rampSecs: 10, holdSecs: 120, preAllocatedVUs: 600, maxVUs: 600 },
@@ -104,6 +108,17 @@ function levelAt(elapsedMs) {
   return BOUNDS[BOUNDS.length - 1].level;
 }
 
+// Per-level start-endpoint timing (a finding about the system under test,
+// not the generator): s1_start_ms_L<level> (Trend: max, p95, ...) and
+// s1_start_over_1s_L<level> (Counter: starts that took over 1 s). k6/metrics
+// is a built-in module like k6/execution: no extension, no remote jslib.
+const START_MS = {};
+const START_OVER_1S = {};
+for (const level of PROFILE.levels) {
+  START_MS[level] = new Trend(`s1_start_ms_L${level}`, true);
+  START_OVER_1S[level] = new Counter(`s1_start_over_1s_L${level}`);
+}
+
 export default function () {
   if (PREFIX === '') {
     throw new Error('PERF_ID_PREFIX is required');
@@ -111,7 +126,9 @@ export default function () {
   const i = exec.scenario.iterationInTest;
   const level = levelAt(Date.now() - exec.scenario.startTime);
   const body = Object.assign({}, BODY, { workflowId: `${PREFIX}L${level}-${i}` });
-  startWorkflow(nodeFor(i), body, { name: 'start' });
+  const res = startWorkflow(nodeFor(i), body, { name: 'start' });
+  START_MS[level].add(res.timings.duration);
+  START_OVER_1S[level].add(res.timings.duration > 1000 ? 1 : 0);
 }
 
 // The plan this run actually executed, next to its summary: the harness
