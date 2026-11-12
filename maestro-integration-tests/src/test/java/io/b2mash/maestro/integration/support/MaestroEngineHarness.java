@@ -68,11 +68,6 @@ public final class MaestroEngineHarness implements AutoCloseable {
     private final Map<Class<?>, Object> activityImpls = new ConcurrentHashMap<>();
     private final Map<String, WorkflowRegistration> registrations = new ConcurrentHashMap<>();
 
-    /** Matches {@code WorkflowExecutor}'s own default — package-private there,
-     * so this harness (a different module) states it explicitly rather than
-     * referencing it. */
-    private static final Duration DEFAULT_WAKE_RECHECK_INTERVAL = Duration.ofSeconds(30);
-
     private MaestroEngineHarness(Builder builder) {
         this.store = builder.store;
         this.serializer = new PayloadSerializer(builder.objectMapper);
@@ -80,24 +75,20 @@ public final class MaestroEngineHarness implements AutoCloseable {
         this.messaging = builder.messaging;
         this.observer = builder.observer != null ? builder.observer : EngineObserver.NOOP;
         this.lockKeyPrefix = builder.lockKeyPrefix;
-        // The engine's defaults for everything the builder leaves unset —
-        // lifecycle events on, 30s shutdown timeout, 30s wake re-check, no
-        // observer, unbounded task queues.
-        this.executor = new WorkflowExecutor(
-                builder.store,
-                builder.lock,
-                builder.messaging,
-                builder.signalNotifier,
-                this.serializer,
-                builder.serviceName,
-                builder.lockKeyPrefix,
-                builder.instanceLockTtl,
-                true,
-                Duration.ofSeconds(30),
-                builder.wakeRecheckInterval != null
-                        ? builder.wakeRecheckInterval : DEFAULT_WAKE_RECHECK_INTERVAL,
-                this.observer,
-                builder.taskQueueLimits);
+        // Everything the harness builder leaves unset takes WorkflowExecutor.Builder's default.
+        var executorBuilder = WorkflowExecutor.builder(builder.store, this.serializer, builder.serviceName)
+                .distributedLock(builder.lock)
+                .messaging(builder.messaging)
+                .signalNotifier(builder.signalNotifier)
+                .lockKeyPrefix(builder.lockKeyPrefix)
+                .instanceLockTtl(builder.instanceLockTtl);
+        if (builder.wakeRecheckInterval != null) {
+            executorBuilder.wakeRecheckInterval(builder.wakeRecheckInterval);
+        }
+        this.executor = executorBuilder
+                .observer(this.observer)
+                .taskQueueLimits(builder.taskQueueLimits)
+                .build();
     }
 
     /**
