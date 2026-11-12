@@ -836,7 +836,8 @@ MDC (`Workflow '<id>' abandoned its local run on a node-level error (<class>)
 `maestro.abandon.reason=NODE_ERROR`), writes nothing, releases the lock, and
 leaves the instance recoverable, so every recovery pass re-adopts it and logs
 again until the node is fixed or rolled back. Alert on that `ERROR` line (or the
-span attribute); the remedy is the node — redeploy the previous build, fix the
+span attribute, or any increase of
+`maestro_run_abandoned_total{reason="node_error"}`); the remedy is the node — redeploy the previous build, fix the
 classpath, raise the heap — or terminate the workflow if it cannot be healed.
 `StackOverflowError`, `AssertionError` and every other `Error` remain workflow
 failures (`FAILED` + compensation): they recur identically on every node.

@@ -227,7 +227,8 @@ class MaestroObservabilityAutoConfigurationTest {
     }
 
     /**
-     * A terminate moves two meters, each once: {@code maestro.workflow.terminated}
+     * On a single node that both handles the terminate and runs the workflow,
+     * a terminate moves two meters, each once: {@code maestro.workflow.terminated}
      * from {@code workflowTerminated} on the operator's thread, and
      * {@code maestro.run.abandoned{reason=terminated}} from {@code runAbandoned}
      * when the parked run unwinds on its own workflow thread.
@@ -256,6 +257,12 @@ class MaestroObservabilityAutoConfigurationTest {
                             .ignoreException(MeterNotFoundException.class)
                             .untilAsserted(() -> assertThat(registry.get("maestro.run.abandoned")
                                     .tag("reason", "terminated").counter().count()).isEqualTo(1.0));
+                    assertThat(store.getInstance("abandon-terminated-1").orElseThrow().status())
+                            .isEqualTo(WorkflowStatus.TERMINATED);
+                    assertThat(registry.get("maestro.run.abandoned")
+                            .tag("reason", "terminated").counter().count())
+                            .as("a terminate abandons the local run exactly once")
+                            .isEqualTo(1.0);
                     assertThat(registry.get("maestro.workflow.terminated")
                             .tag("workflow", "ObservabilityParkingActivityWorkflow")
                             .counter().count()).isEqualTo(1.0);

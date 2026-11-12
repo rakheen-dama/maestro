@@ -188,10 +188,12 @@ escaped the workflow method, an activity or a compensation action
 (`node_error`), or the store was unavailable (`store_unavailable`). The tag
 value set is closed at six, mapped from
 `io.b2mash.maestro.core.observe.AbandonReason`, and the meter carries no
-`workflow` tag. A terminate moves two meters, each once:
-`maestro.workflow.terminated` from `workflowTerminated` on the operator's
-thread, and `maestro.run.abandoned{reason="terminated"}` when the run unwinds
-on its own thread. Never add the two together as "terminates". The tracing
+`workflow` tag. A terminate moves `maestro.workflow.terminated` once, from
+`workflowTerminated` on the node that handled the terminate.
+`maestro.run.abandoned{reason="terminated"}` moves at most once, when the run
+unwinds on its own thread on the node running the workflow — which may be
+another node — and not at all if no node holds a live run. Never add the two
+together as "terminates". The tracing
 adapter uses the same callback to close its segment span.
 
 `node_error` is the one reason that is not routine. It is a `LinkageError`
