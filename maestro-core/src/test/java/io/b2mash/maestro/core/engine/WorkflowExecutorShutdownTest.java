@@ -85,7 +85,7 @@ class WorkflowExecutorShutdownTest {
     void setUp() {
         store = new InMemoryStore();
         serializer = new PayloadSerializer(new ObjectMapper());
-        executor = new WorkflowExecutor(store, null, null, null, serializer, SERVICE);
+        executor = WorkflowExecutor.builder(store, serializer, SERVICE).build();
     }
 
     @AfterEach
@@ -145,7 +145,7 @@ class WorkflowExecutorShutdownTest {
 
         // Prove the durable state is genuinely intact, not just untouched in
         // memory: a second executor recovers it and drives it to completion.
-        secondExecutor = new WorkflowExecutor(store, null, null, null, serializer, SERVICE);
+        secondExecutor = WorkflowExecutor.builder(store, serializer, SERVICE).build();
         var registrations = Map.of("CatchAllAwaitingWorkflow",
                 new WorkflowRegistration("CatchAllAwaitingWorkflow", "default", () -> workflow, method));
         assertEquals(1, secondExecutor.recoverWorkflows(registrations));
@@ -229,7 +229,7 @@ class WorkflowExecutorShutdownTest {
         // (nothing was memoized for it — it never completed), and once resumed,
         // finishes compensation and reaches FAILED, the correct outcome for a
         // genuine failure.
-        secondExecutor = new WorkflowExecutor(store, null, null, null, serializer, SERVICE);
+        secondExecutor = WorkflowExecutor.builder(store, serializer, SERVICE).build();
         var registrations = Map.of("ParkingCompensationWorkflow",
                 new WorkflowRegistration("ParkingCompensationWorkflow", "default", () -> workflow, method));
         assertEquals(1, secondExecutor.recoverWorkflows(registrations),
@@ -276,7 +276,7 @@ class WorkflowExecutorShutdownTest {
         assertEquals(1, completedInvocations.get(), "shutdown itself must not trigger a re-invocation");
         assertFalse(hasEvent("mid-comp-completed-first", EventType.WORKFLOW_FAILED));
 
-        secondExecutor = new WorkflowExecutor(store, null, null, null, serializer, SERVICE);
+        secondExecutor = WorkflowExecutor.builder(store, serializer, SERVICE).build();
         var registrations = Map.of("ParkingSecondCompensationWorkflow",
                 new WorkflowRegistration("ParkingSecondCompensationWorkflow", "default", () -> workflow, method));
         assertEquals(1, secondExecutor.recoverWorkflows(registrations),
@@ -336,7 +336,7 @@ class WorkflowExecutorShutdownTest {
         assertEquals(List.of("park-parallel-branch"),
                 store.getRecoverableInstances().stream().map(WorkflowInstance::workflowId).toList());
 
-        secondExecutor = new WorkflowExecutor(store, null, null, null, serializer, SERVICE);
+        secondExecutor = WorkflowExecutor.builder(store, serializer, SERVICE).build();
         var registrations = Map.of("ParkingParallelBranchWorkflow",
                 new WorkflowRegistration("ParkingParallelBranchWorkflow", "default", () -> workflow, method));
         assertEquals(1, secondExecutor.recoverWorkflows(registrations));
@@ -386,7 +386,7 @@ class WorkflowExecutorShutdownTest {
 
         // Recovery: the activity never completed (no ACTIVITY_COMPLETED was
         // persisted), so it replays live again on the second node.
-        secondExecutor = new WorkflowExecutor(store, null, null, null, serializer, SERVICE);
+        secondExecutor = WorkflowExecutor.builder(store, serializer, SERVICE).build();
         var restartedInvocations = new AtomicInteger();
         var restartedActivityImpl = new ParkingActivityImpl(restartedInvocations, RetryShutdownWorkflow.RESUME_SIGNAL);
         var restartedProxy = new ActivityProxyFactory().createProxy(
@@ -441,7 +441,7 @@ class WorkflowExecutorShutdownTest {
         assertEquals(List.of("park-compensate-activity"),
                 store.getRecoverableInstances().stream().map(WorkflowInstance::workflowId).toList());
 
-        secondExecutor = new WorkflowExecutor(store, null, null, null, serializer, SERVICE);
+        secondExecutor = WorkflowExecutor.builder(store, serializer, SERVICE).build();
         var restartedUndoCount = new AtomicInteger();
         var restartedActivityImpl = new ParkingCompensateActivityImpl(
                 restartedUndoCount, CompensateShutdownWorkflow.RESUME_SIGNAL);
@@ -542,9 +542,9 @@ class WorkflowExecutorShutdownTest {
     @DisplayName("A configured shutdown timeout bounds the drain wait instead of the 30s default")
     void shutdown_withConfiguredTimeout_returnsAfterTheConfiguredWaitNotTheDefault() throws Exception {
         executor.shutdown(); // discard the default, 30s-timeout executor from setUp
-        executor = new WorkflowExecutor(store, null, null, null, serializer, SERVICE,
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
-                true, Duration.ofMillis(300), SignalManager.DEFAULT_WAKE_RECHECK_INTERVAL);
+        executor = WorkflowExecutor.builder(store, serializer, SERVICE)
+                .shutdownTimeout(Duration.ofMillis(300))
+                .build();
 
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1); // deliberately never counted down
@@ -571,7 +571,9 @@ class WorkflowExecutorShutdownTest {
     void shutdown_withWorkflowParkedOnSignal_releasesTheInstanceLock() throws Exception {
         var lock = new MapLock();
         executor.shutdown(); // discard the default, lock-less executor
-        executor = new WorkflowExecutor(store, lock, null, null, serializer, SERVICE);
+        executor = WorkflowExecutor.builder(store, serializer, SERVICE)
+                .distributedLock(lock)
+                .build();
 
         var workflow = new AwaitingWorkflow();
         executor.startWorkflow("park-lock", "AwaitingWorkflow", "default",
@@ -598,7 +600,7 @@ class WorkflowExecutorShutdownTest {
 
         executor.shutdown();
 
-        secondExecutor = new WorkflowExecutor(store, null, null, null, serializer, SERVICE);
+        secondExecutor = WorkflowExecutor.builder(store, serializer, SERVICE).build();
         var registrations = Map.of("AwaitingWorkflow",
                 new WorkflowRegistration("AwaitingWorkflow", "default", () -> workflow, method));
         assertEquals(1, secondExecutor.recoverWorkflows(registrations),

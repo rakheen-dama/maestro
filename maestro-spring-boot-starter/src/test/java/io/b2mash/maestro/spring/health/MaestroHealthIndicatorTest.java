@@ -33,7 +33,7 @@ class MaestroHealthIndicatorTest {
     void setUp() {
         var store = new InMemoryWorkflowStore();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = new WorkflowExecutor(store, null, null, null, serializer, "health-indicator-test");
+        executor = WorkflowExecutor.builder(store, serializer, "health-indicator-test").build();
     }
 
     @AfterEach

@@ -53,11 +53,9 @@ class ParallelBranchSameSignalTest {
     }
 
     private WorkflowExecutor newExecutor(VersionedInMemoryStore store) {
-        return new WorkflowExecutor(store, null, null, null, new PayloadSerializer(new ObjectMapper()),
-                "test-service",
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
-                WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
-                true, WorkflowExecutor.DEFAULT_SHUTDOWN_TIMEOUT, Duration.ofMillis(200));
+        return WorkflowExecutor.builder(store, new PayloadSerializer(new ObjectMapper()), "test-service")
+                .wakeRecheckInterval(Duration.ofMillis(200))
+                .build();
     }
 
     @Test

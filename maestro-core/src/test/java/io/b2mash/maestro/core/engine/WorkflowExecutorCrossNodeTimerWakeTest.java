@@ -57,10 +57,9 @@ class WorkflowExecutorCrossNodeTimerWakeTest {
     }
 
     private WorkflowExecutor newExecutor(Duration wakeRecheckInterval) {
-        return new WorkflowExecutor(store, null, null, null, serializer, "test-service",
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
-                WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
-                true, WorkflowExecutor.DEFAULT_SHUTDOWN_TIMEOUT, wakeRecheckInterval);
+        return WorkflowExecutor.builder(store, serializer, "test-service")
+                .wakeRecheckInterval(wakeRecheckInterval)
+                .build();
     }
 
     @Test

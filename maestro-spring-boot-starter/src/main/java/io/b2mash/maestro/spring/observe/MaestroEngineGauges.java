@@ -14,7 +14,7 @@ import io.micrometer.core.instrument.MeterRegistry;
  * and timers in {@code MicrometerEngineObserver} need only the {@link
  * MeterRegistry} — mixing the two would create a circular executor→observer→
  * executor construction dependency (the {@code EngineObserver} handed to the
- * executor's constructor must never itself hold a reference back to that
+ * executor's builder must never itself hold a reference back to that
  * executor).
  *
  * <h2>Why node-local gauges, not store-polling</h2>

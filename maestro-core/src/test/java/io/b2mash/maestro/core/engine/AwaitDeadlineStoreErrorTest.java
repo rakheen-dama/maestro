@@ -36,10 +36,10 @@ class AwaitDeadlineStoreErrorTest {
     @BeforeEach
     void setUp() {
         store = new DeadlineFaultStore();
-        executor = new WorkflowExecutor(store, null, null, null, new PayloadSerializer(new ObjectMapper()),
-                "test-service", WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
-                WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
-                false, WorkflowExecutor.DEFAULT_SHUTDOWN_TIMEOUT, Duration.ofMillis(100));
+        executor = WorkflowExecutor.builder(store, new PayloadSerializer(new ObjectMapper()), "test-service")
+                .lifecycleEventsEnabled(false)
+                .wakeRecheckInterval(Duration.ofMillis(100))
+                .build();
     }
 
     @AfterEach
