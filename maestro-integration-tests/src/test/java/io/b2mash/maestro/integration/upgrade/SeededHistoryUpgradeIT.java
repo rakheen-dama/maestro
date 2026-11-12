@@ -29,7 +29,6 @@ import java.io.InputStreamReader;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.sql.SQLException;
 import java.time.Duration;
@@ -74,6 +73,89 @@ import static org.assertj.core.api.Assumptions.assumeThat;
  * {@code subject_expectation} names: a recorded waiver, because the tests are
  * the WP9 brief's verbatim code and Task 4 extends this same class — do not
  * "fix" it.
+ *
+ * <h2>Pins</h2>
+ * <p>Later work packages add assertions here and may deliberately change what
+ * the engine <em>appends</em> on top of old history. Every pin below is one of
+ * two kinds; know which before editing one.
+ *
+ * <p><b>Never edit</b> — these describe history the build at {@code cbf5a2a}
+ * wrote. If one goes red, this build broke reading or replaying old history;
+ * fix the engine, never the pin.
+ * <ul>
+ *   <li>{@link SeededHistory#DUMP_SHA256} and
+ *       {@link SeededHistory#CAPTURE_MANIFEST_SHA256}, and every assertion of
+ *       {@link #theDumpWasCapturedAtCbf5a2a}: the manifest's {@code ref}
+ *       ({@code cbf5a2a06acf…}) and {@code serverVersion}, the frozen source
+ *       against {@code fixtureSource.sha256}, no {@code psql} meta-command.</li>
+ *   <li>{@link #theSeededDatabaseUpgradesUnderThisBuild}: the schema versions
+ *       recorded before the upgrade ({@code appliedVersions} exactly V1–V9,
+ *       V100, V101; afterwards still that prefix) and the row counts
+ *       ({@code rowCounts} unchanged by the upgrade).</li>
+ *   <li>{@link #everySeededWorkflowReadsBackThroughThisBuildsStore}: the
+ *       statuses and event types at capture ({@code Seeds.STATUS_AT_CAPTURE},
+ *       {@code Seeds.EVENT_TYPES}, which live in the frozen source) and the
+ *       raw decimal {@code 12345678901234567890.123456789} in
+ *       {@code seed-wp1-decimal}'s stored payload.</li>
+ *   <li>In {@link #recoveryReplaysEveryActiveSeededRunToItsEnd}: the
+ *       whole-record equality of the pre-existing event prefix
+ *       ({@code after.subList(0, recorded.size())} equals {@code recorded}),
+ *       each run in {@link #ACTIVE} reaching its end ({@code COMPLETED}, the
+ *       compensating saga {@code FAILED}) with {@code observer.standDowns()}
+ *       and {@code observer.abandoned()} empty — a run {@code cbf5a2a} left
+ *       active that no longer finishes, or stands down, is broken replay —
+ *       and, inside the expected {@code OrderResult}, the values read from
+ *       recorded history ({@code $maestro:randomUUID},
+ *       {@code $maestro:currentTime}, {@code CRASHED}'s approver
+ *       {@code "capture"}).</li>
+ *   <li>{@link #finishedAndOtherServiceRunsAreNotAdopted}, except the two
+ *       lines named in the second list: the nine untouched runs
+ *       ({@code hasSize(9)}), their PENDING timers (the teeth of the
+ *       comparison), and their instance rows, events, signal rows and timer
+ *       rows ({@code instanceRows}, {@code events}, {@code wholeRows}) equal
+ *       before and after; the three {@code seed-wp1-*} runs still
+ *       {@code WAITING_SIGNAL}.</li>
+ *   <li>{@link #aSignalIdStoredAtCbf5a2aStillSuppressesItsDuplicate}: the
+ *       dedup row — {@code deliverSignal} returns {@code false} and the one
+ *       row {@code cbf5a2a} stored stays, unconsumed.</li>
+ *   <li>In {@link #aWorkflowStartedOnThisBuildAdoptsOrphanSignalsStoredAtCbf5a2a}:
+ *       the approver {@code "capture"} and the note, read from the orphan rows
+ *       {@code cbf5a2a} stored.</li>
+ *   <li>The clock-window constants {@code SeededHistory.MUST_BE_DUE},
+ *       {@link SeededHistory#LATEST_MUST_BE_DUE} and
+ *       {@link SeededHistory#EARLIEST_MUST_STAY_PENDING}, which
+ *       {@code requireClockWithinFixtureWindow} checks against the seeded
+ *       timer rows.</li>
+ * </ul>
+ *
+ * <p><b>Current-build behaviour</b> — these describe what <em>this</em> build
+ * does on top of old history. A fix that deliberately changes engine
+ * behaviour may change them, only as a named step of its plan, with the
+ * reason in the commit message.
+ * <ul>
+ *   <li>{@link #APPENDED}: the events appended to each active run.</li>
+ *   <li>In {@link #recoveryReplaysEveryActiveSeededRunToItsEnd}: the
+ *       invocation counts ({@code invocations.snapshot()}, both
+ *       {@code containsAllEntriesOf} maps), the {@code live} call list, the
+ *       derived {@code OrderResult} ({@code expected}: receipt, charge id and
+ *       level, the flags, {@code "upgrade-node"} as approver), the timer rows
+ *       {@code sleep-8002} and {@code await-signal-8004} going {@code FIRED}
+ *       ({@code timerStatus}), and the consumed signal rows
+ *       ({@code signalRows}: {@code consumed=true} under the run's
+ *       instance).</li>
+ *   <li>{@code node.recover()} returning 5, in
+ *       {@link #recoveryReplaysEveryActiveSeededRunToItsEnd} and
+ *       {@link #finishedAndOtherServiceRunsAreNotAdopted}, and in the latter
+ *       {@code lease_epoch=1} on every active run.</li>
+ *   <li>{@code assertThatEveryActivityCompletedIsFingerprinted}: every
+ *       appended {@code ACTIVITY_COMPLETED} carries a non-null
+ *       {@code argsHash}.</li>
+ *   <li>In {@link #aWorkflowStartedOnThisBuildAdoptsOrphanSignalsStoredAtCbf5a2a}:
+ *       the run completing, its charge id {@code charge:seed-orphan-target:1},
+ *       and the consumed signal rows ({@code signalRows}).</li>
+ * </ul>
+ * {@link #theJvmRunsInTheZoneTheNonUtcTaskAsksFor} guards the test setup, not
+ * the fixture, and is neither.
  */
 @Tag("integration")
 @DisplayName("Seeded history written by cbf5a2a, under this build")
@@ -135,13 +217,18 @@ class SeededHistoryUpgradeIT {
     @DisplayName("The dump was captured at cbf5a2a, from the frozen fixture source, with no psql meta-commands")
     void theDumpWasCapturedAtCbf5a2a() throws Exception {
         var seeded = SeededHistory.load();
+        // First: the manifest pins the frozen source (its path and SHA-256), so a manifest edit is
+        // reported as one, not as a source-hash mismatch.
+        assertThat(sha256(resourceBytes(SeededHistory.MANIFEST_RESOURCE)))
+                .as("capture.properties is frozen: byte for byte what the capture at cbf5a2a wrote")
+                .isEqualTo(SeededHistory.CAPTURE_MANIFEST_SHA256);
         assertThat(seeded.manifest().getProperty("ref")).isEqualTo("cbf5a2a06acfba9b0f7ae23f37b3f1f1713928f7");
         assertThat(seeded.manifest().getProperty("serverVersion")).startsWith("16.");
-        assertThat(sha256(Files.readAllBytes(Path.of(seeded.manifest().getProperty("fixtureSource.path")))))
+        assertThat(sha256(Files.readAllBytes(seeded.fixtureSource())))
                 .as("SeededHistoryWorkflows.java is frozen: it produced the seeded history")
                 .isEqualTo(seeded.manifest().getProperty("fixtureSource.sha256"));
         assertThat(dumpLines()).noneMatch(line -> line.startsWith("\\"));
-        assertThat(sha256(dumpBytes()))
+        assertThat(sha256(resourceBytes(SeededHistory.DUMP_RESOURCE)))
                 .as("seeded-history.sql is frozen: byte for byte what the capture at cbf5a2a wrote")
                 .isEqualTo(SeededHistory.DUMP_SHA256);
     }
@@ -533,10 +620,10 @@ class SeededHistoryUpgradeIT {
         }
     }
 
-    private static byte[] dumpBytes() throws Exception {
+    /** The raw bytes of a test-classpath resource. */
+    private static byte[] resourceBytes(String resource) throws Exception {
         try (var in = Objects.requireNonNull(
-                SeededHistoryUpgradeIT.class.getClassLoader().getResourceAsStream(SeededHistory.DUMP_RESOURCE),
-                SeededHistory.DUMP_RESOURCE)) {
+                SeededHistoryUpgradeIT.class.getClassLoader().getResourceAsStream(resource), resource)) {
             return in.readAllBytes();
         }
     }

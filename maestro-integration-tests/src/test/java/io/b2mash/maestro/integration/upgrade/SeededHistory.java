@@ -30,6 +30,8 @@ import tools.jackson.databind.json.JsonMapper;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
@@ -62,7 +64,11 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <ul>
  *   <li>New assertions go in new test classes that call {@link #load()}.
  *       WP9's assertions in {@code SeededHistoryUpgradeIT} change only as a
- *       named plan step.</li>
+ *       named plan step. Its class Javadoc's "Pins" section says which ones
+ *       may change at all: the pins on history {@code cbf5a2a} wrote
+ *       (including {@link #DUMP_SHA256}, {@link #CAPTURE_MANIFEST_SHA256} and
+ *       the clock-window constants below) never do; only the pins on what
+ *       this build appends may.</li>
  *   <li>WP1 adopts the dormant {@code upgrade-fixture-wp1} runs with
  *       {@code node(Seeds.WP1_SERVICE, …)}. On {@code cbf5a2a},
  *       {@code seed-wp1-offset} and {@code seed-wp1-set} are expected to stand
@@ -96,6 +102,21 @@ public final class SeededHistory {
      * without re-capturing under the regeneration rules.
      */
     public static final String DUMP_SHA256 = "ee06b7f9359e2b4cf7ca5b6ff493ae42afc9624073ff58ba7b316476ebffa134";
+
+    /**
+     * SHA-256 of the raw bytes of {@link #MANIFEST_RESOURCE} as committed with
+     * the dump. The manifest records the frozen workflow source's path
+     * ({@code fixtureSource.path}) and SHA-256 ({@code fixtureSource.sha256}),
+     * and {@code theDumpWasCapturedAtCbf5a2a} checks that file's raw bytes
+     * against them; pinning the manifest therefore pins the source too, so
+     * editing the source together with its recorded hash, or pointing the path
+     * at another file, must also change this literal, in a diff a reviewer
+     * sees. Never update it without re-capturing under the regeneration rules.
+     */
+    public static final String CAPTURE_MANIFEST_SHA256 = "b71ca8e04bf77f91baf7a0bd77b22799e7980a13f5127d5f7e23f562557f93af";
+
+    /** The directory, relative to the repository root, that {@code fixtureSource.path} is relative to. */
+    static final String MODULE_DIR = "maestro-integration-tests";
 
     /**
      * The seeded {@code PENDING} timer rows a replay needs <em>already due</em>,
@@ -252,6 +273,44 @@ public final class SeededHistory {
         var copy = new Properties();
         copy.putAll(manifest);
         return copy;
+    }
+
+    /**
+     * The frozen workflow source the manifest names, on disk:
+     * {@code fixtureSource.path} is relative to {@value #MODULE_DIR}, which is
+     * resolved from the repository root, so the result does not depend on the
+     * working directory (Gradle runs tests in the module directory, an IDE
+     * often in the repository root).
+     *
+     * @return the absolute path of the frozen source
+     * @throws IllegalStateException if no repository root is found, or the file is not there
+     */
+    public Path fixtureSource() {
+        var root = repositoryRoot(Path.of("").toAbsolutePath());
+        var source = root.resolve(MODULE_DIR).resolve(manifest.getProperty("fixtureSource.path")).normalize();
+        if (!Files.isRegularFile(source)) {
+            throw new IllegalStateException("The frozen fixture source named by " + MANIFEST_RESOURCE
+                    + " (fixtureSource.path) is not a file: " + source);
+        }
+        return source;
+    }
+
+    /**
+     * The repository root: the nearest directory, from {@code start} upwards,
+     * that holds {@code settings.gradle.kts}.
+     *
+     * @param start an absolute directory inside the repository
+     * @return the repository root
+     * @throws IllegalStateException naming {@code start} if no such directory exists
+     */
+    static Path repositoryRoot(Path start) {
+        for (var dir = start.toAbsolutePath().normalize(); dir != null; dir = dir.getParent()) {
+            if (Files.isRegularFile(dir.resolve("settings.gradle.kts"))) {
+                return dir;
+            }
+        }
+        throw new IllegalStateException("No settings.gradle.kts in " + start.toAbsolutePath().normalize()
+                + " or any directory above it: cannot find the repository root");
     }
 
     /**

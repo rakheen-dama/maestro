@@ -5,7 +5,10 @@ import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.Seed
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -16,7 +19,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Pins the contract of the {@link SeededHistory} fixture API that WP9, WP1 and
  * WP3 assert through: {@link SeededHistory#awaitStatusOrLast} returns the
  * awaited status only when the run really reached it, so a caller's assertion
- * cannot pass on a run whose terminal event never landed.
+ * cannot pass on a run whose terminal event never landed; and
+ * {@link SeededHistory#fixtureSource()} finds the frozen source from any
+ * working directory inside the repository.
  */
 @Tag("integration")
 @DisplayName("SeededHistory fixture API")
@@ -53,5 +58,33 @@ class SeededHistoryFixtureIT {
                 () -> seeded.awaitStatusOrLast(Seeds.ACTIVITY_FAILED, WorkflowStatus.FAILED, Duration.ofMillis(300)));
         assertTrue(thrown.getMessage().contains("is FAILED but its terminal event is not in the log"),
                 thrown.getMessage());
+    }
+
+    /**
+     * {@link SeededHistory#fixtureSource()} must not depend on the working
+     * directory: Gradle runs tests in the module directory, an IDE often in
+     * the repository root. Both resolve to the same root; a tree without
+     * {@code settings.gradle.kts} fails naming where it looked.
+     */
+    @Test
+    @DisplayName("repositoryRoot finds the root from the root and from a module directory, and names the start when there is none")
+    void repositoryRoot_isFoundFromTheRootAndFromAModule(@TempDir Path dir) throws Exception {
+        var root = Files.createDirectories(dir.resolve("repo"));
+        Files.writeString(root.resolve("settings.gradle.kts"), "");
+        var module = Files.createDirectories(root.resolve(SeededHistory.MODULE_DIR).resolve("src/test/java"));
+        var outside = Files.createDirectories(dir.resolve("elsewhere"));
+
+        assertEquals(root, SeededHistory.repositoryRoot(root));
+        assertEquals(root, SeededHistory.repositoryRoot(root.resolve(SeededHistory.MODULE_DIR)));
+        assertEquals(root, SeededHistory.repositoryRoot(module));
+        var thrown = assertThrows(IllegalStateException.class, () -> SeededHistory.repositoryRoot(outside));
+        assertTrue(thrown.getMessage().contains(outside.toString()), thrown.getMessage());
+    }
+
+    @Test
+    @DisplayName("the frozen fixture source resolves from this JVM's working directory")
+    void fixtureSource_resolvesFromTheWorkingDirectory() {
+        var source = SeededHistory.load().fixtureSource();
+        assertTrue(source.endsWith(Path.of("upgrade", "cbf5a2a", "SeededHistoryWorkflows.java")), source.toString());
     }
 }
