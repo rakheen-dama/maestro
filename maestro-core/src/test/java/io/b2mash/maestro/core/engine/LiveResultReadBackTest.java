@@ -1,8 +1,12 @@
 package io.b2mash.maestro.core.engine;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.Compensate;
 import io.b2mash.maestro.core.annotation.Saga;
+import io.b2mash.maestro.core.exception.SerializationException;
+import io.b2mash.maestro.core.logcapture.CapturingSlf4jProvider;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowStatus;
@@ -18,6 +22,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.slf4j.event.Level;
+import tools.jackson.databind.DatabindException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -39,6 +45,9 @@ import java.util.stream.Stream;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * A live activity call returns the read-back of the payload it persisted —
@@ -75,6 +84,74 @@ class LiveResultReadBackTest {
         executor.shutdown();
     }
 
+    // ── D9: a result that cannot be read back never fails the run ─────
+
+    @Test
+    void unreadableResult_completesLiveWithTheRawValueAndIsReported() throws Exception {
+        // Decider.decideBare() declares BareDecision (sealed interface, no type info) and returns BareApproved("bob");
+        // the workflow returns decision.getClass().getSimpleName()
+        var workflow = new DecideBare(proxy(Decider.class, new BareDecider()));
+        var id = "rb-unreadable";
+
+        start(id, workflow, DecideBare.class.getMethod("run", String.class), "bob");
+
+        assertEquals(WorkflowStatus.COMPLETED, awaitStatus(id));
+        assertEquals("BareApproved", result(id));                      // the raw object reached workflow code
+        assertEquals(1, observer.unreadableResults().size());
+        assertEquals("Decider.decideBare", observer.unreadableResults().getFirst().info().activityName());
+        assertEquals("tools.jackson.databind.exc.InvalidDefinitionException",
+                observer.unreadableResults().getFirst().exceptionType());
+        var names = observer.callbackNames();
+        assertTrue(names.indexOf("activityResultUnreadable") < names.indexOf("activityCompleted"), names.toString());
+        // The outcome is durable as written, and nothing recorded a failure.
+        assertEquals(serializer.serialize(new BareApproved("bob")), payloadOf(id, "Decider.decideBare"));
+        assertEquals(List.of(), observer.failed());
+        assertEquals(List.of(), observer.activityFailed());
+    }
+
+    @Test
+    void unreadableResultWarning_namesStepTypeAndCauseClass_neverAPayloadValue() {
+        var cause = jacksonFailureQuoting("4111-1111-1111-1111");   // a real DatabindException whose message quotes the value
+        var line = ActivityInvocationHandler.unreadableResultWarning("wf-1", "Pay.card", 3, BareDecision.class, cause);
+        assertTrue(line.contains("wf-1") && line.contains("Pay.card") && line.contains("sequence 3")
+                && line.contains(BareDecision.class.getTypeName()) && line.contains(cause.getClass().getName()), line);
+        assertFalse(line.contains("4111"), line);
+    }
+
+    @Test
+    void unreadableResult_warnsOncePerMethodAndNeverLogsThePayload() throws Exception {
+        try (var logs = CapturingSlf4jProvider.watch(ActivityInvocationHandler.class)) {
+            var workflow = new IssueTwice(proxy(Cards.class, new MaskedCards()));
+            var id = "rb-unreadable-log";
+
+            start(id, workflow, IssueTwice.class.getMethod("run", String.class));
+            assertEquals(WorkflowStatus.COMPLETED, awaitStatus(id));
+
+            // Positive controls: the marker is in the stored payload, and
+            // Jackson's own message for this failure quotes it.
+            var instanceId = store.getInstance(id).orElseThrow().id();
+            var issued = store.getEvents(instanceId).stream()
+                    .filter(e -> "Cards.issue".equals(e.stepName())).toList();
+            assertEquals(2, issued.size());
+            assertTrue(issued.getFirst().payload().toString().contains(CARD_MARKER), issued.toString());
+            var jackson = assertThrows(SerializationException.class,
+                    () -> serializer.deserialize(issued.getFirst().payload(), Card.class));
+            assertTrue(jackson.getCause().getMessage().contains(CARD_MARKER), jackson.getCause().getMessage());
+
+            var lines = logs.records().stream().filter(r -> r.message().contains(id)).toList();
+            assertEquals(List.of(Level.WARN, Level.DEBUG),
+                    lines.stream().map(CapturingSlf4jProvider.CapturedLog::level).toList(), lines.toString());
+            var warn = lines.getFirst().message();
+            assertTrue(warn.contains("Cards.issue") && warn.contains("sequence 1")
+                    && warn.contains(Card.class.getTypeName())
+                    && warn.contains("tools.jackson.databind.exc.InvalidFormatException"), warn);
+            for (var line : lines) {
+                assertFalse(rendered(line).contains(CARD_MARKER), rendered(line));
+                assertFalse(rendered(line).contains("4111"), rendered(line));
+            }
+        }
+    }
+
     // ── @Compensate gets the read-back ────────────────────────────────
 
     @Test
@@ -105,6 +182,7 @@ class LiveResultReadBackTest {
 
         assertEquals(AbandonReason.STORE_UNAVAILABLE, onlyAbandonCall(observer, id).reason());
         assertEquals(WorkflowStatus.RUNNING, store.getInstance(id).orElseThrow().status());
+        assertEquals(0, observer.unreadableResults().size());
         assertEquals(1, impl.calls.get());
     }
 
@@ -174,8 +252,33 @@ class LiveResultReadBackTest {
     }
 
     private UUID start(String id, Object workflow, Method method) {
-        return executor.startWorkflow(id, workflow.getClass().getSimpleName(), "default", "in",
+        return start(id, workflow, method, "in");
+    }
+
+    private UUID start(String id, Object workflow, Method method, String input) {
+        return executor.startWorkflow(id, workflow.getClass().getSimpleName(), "default", input,
                 () -> workflow, method);
+    }
+
+    private @Nullable String result(String id) {
+        return serializer.deserialize(store.getInstance(id).orElseThrow().output(), String.class);
+    }
+
+    /** A real Jackson failure whose own message quotes {@code value}. */
+    private static DatabindException jacksonFailureQuoting(String value) {
+        var failure = assertThrows(DatabindException.class, () -> JsonMapper.builder().build()
+                .readValue("{\"digits\":\"" + value + "\"}", CardDigits.class));
+        assertTrue(failure.getMessage().contains(value), failure.getMessage());
+        return failure;
+    }
+
+    /** A captured line as an appender would print it: message, then the throwable chain's messages. */
+    private static String rendered(CapturingSlf4jProvider.CapturedLog log) {
+        var out = new StringBuilder(log.message());
+        for (Throwable t = log.throwable(); t != null; t = t.getCause()) {
+            out.append(" | ").append(t);
+        }
+        return out.toString();
     }
 
     private WorkflowStatus awaitStatus(String id) {
@@ -209,6 +312,85 @@ class LiveResultReadBackTest {
     // ── Fixtures ──────────────────────────────────────────────────────
 
     public record Slot(String id, OffsetDateTime start) {}
+
+    /** Serialisable, not deserialisable: a sealed interface without type information. */
+    public sealed interface BareDecision permits BareApproved {}
+
+    public record BareApproved(String by) implements BareDecision {}
+
+    public interface Decider {
+        BareDecision decideBare(String applicant);
+    }
+
+    public static final class BareDecider implements Decider {
+        @Override
+        public BareDecision decideBare(String applicant) {
+            return new BareApproved(applicant);
+        }
+    }
+
+    public static class DecideBare {
+        private final Decider decider;
+
+        public DecideBare(Decider decider) {
+            this.decider = decider;
+        }
+
+        public String run(String applicant) {
+            var decision = decider.decideBare(applicant);
+            return decision.getClass().getSimpleName();
+        }
+    }
+
+    public record CardDigits(long digits) {}
+
+    static final String CARD_MARKER = "4111-1111-1111-1111";
+
+    /**
+     * Written as a string, read only from a number: Jackson's failure to read
+     * it back quotes the stored value.
+     */
+    public static final class Card {
+        private final String number;
+
+        public Card(String number) {
+            this.number = number;
+        }
+
+        @JsonProperty("number")
+        public String number() {
+            return number;
+        }
+
+        @JsonCreator
+        public static Card fromDigits(@JsonProperty("number") long digits) {
+            return new Card(Long.toString(digits));
+        }
+    }
+
+    public interface Cards {
+        Card issue();
+    }
+
+    public static final class MaskedCards implements Cards {
+        @Override
+        public Card issue() {
+            return new Card(CARD_MARKER);
+        }
+    }
+
+    /** Calls the same unreadable step twice: one WARN, then DEBUG. */
+    public static class IssueTwice {
+        private final Cards cards;
+
+        public IssueTwice(Cards cards) {
+            this.cards = cards;
+        }
+
+        public String run(String in) {
+            return cards.issue().number() + "/" + cards.issue().number();
+        }
+    }
 
     public record Pair(String left, String right) {}
 

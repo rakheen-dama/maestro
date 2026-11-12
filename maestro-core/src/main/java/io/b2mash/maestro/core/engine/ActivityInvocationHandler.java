@@ -32,11 +32,14 @@ import tools.jackson.databind.JsonNode;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.Type;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
@@ -53,7 +56,8 @@ import java.util.concurrent.TimeoutException;
  *   <li>Checks the {@link WorkflowStore} for a stored result at that sequence.</li>
  *   <li><b>Replay path:</b> If found, deserializes and returns the stored result.</li>
  *   <li><b>Live path:</b> If not found, executes the activity with retries,
- *       persists the result, and returns it.</li>
+ *       persists the result, and returns it as read back from the persisted
+ *       payload.</li>
  * </ol>
  *
  * <h2>Argument verification</h2>
@@ -72,6 +76,23 @@ import java.util.concurrent.TimeoutException;
  * arguments the mapper cannot serialize) is <em>unverified</em>, never a
  * mismatch. {@code verifyArguments=false} skips the comparison but still
  * writes fingerprints on live outcomes.
+ *
+ * <h2>Live results are read back</h2>
+ * <p>Once a live outcome's append has succeeded, the handler deserializes the
+ * payload it persisted with the function and generic return type a replay
+ * uses, and returns that value instead of the activity's own object, so
+ * workflow code — and a {@code @Compensate} method that takes the result —
+ * sees on the live run exactly what it sees after any recovery. What is
+ * written does not change: the payload is still the serialized result, and a
+ * later call's argument fingerprint moves only where the result did not
+ * round-trip, to what a replay computes. A store fault, a fenced write or
+ * a lost append race on the outcome append keeps its own handling and never
+ * reaches the read-back, whose {@code try} holds no store call and catches
+ * {@link SerializationException} only. A result that was written but cannot be
+ * read back never fails the run: the observer's
+ * {@link EngineObserver#activityResultUnreadable} fires, a WARN names the step
+ * and the redacted cause, and the activity's own object is returned, while a
+ * replay of that step will stand the run down as {@code UNKNOWN_EVENT_PAYLOAD}.
  *
  * <h2>Idempotency</h2>
  * <p>The Postgres unique constraint on {@code (workflow_instance_id, sequence_number)}
@@ -154,8 +175,9 @@ import java.util.concurrent.TimeoutException;
  * <h2>Thread Safety</h2>
  * <p>Each handler instance is associated with one activity interface but may be
  * shared across workflow instances (the per-instance state comes from
- * {@link WorkflowContext} on the current thread). All mutable state is
- * thread-local via the context.
+ * {@link WorkflowContext} on the current thread). All per-run mutable state is
+ * thread-local via the context; the only handler-level state, the set of
+ * methods whose unreadable result has been WARNed, is a concurrent set.
  *
  * @see ActivityProxyFactory
  * @see WorkflowContext
@@ -177,6 +199,8 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     private final String lockKeyPrefix;
     private final EngineObserver observer;
     private final TaskQueueGovernor governor;
+    /** Activity methods whose unreadable result has already been WARNed by this handler. */
+    private final Set<Method> warnedUnreadable = ConcurrentHashMap.newKeySet();
 
     /**
      * Creates a new handler with the default lock key prefix
@@ -568,6 +592,67 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     }
 
     /**
+     * The value a live call returns once its outcome is durable: {@code stored}
+     * read back by {@link #deserializeResult}, exactly as a replay of the step
+     * reads it.
+     *
+     * <p>A result the mapper wrote but cannot read back never fails the run
+     * (D9): the observer's {@link EngineObserver#activityResultUnreadable} fires,
+     * {@link #unreadableResultWarning} is logged — at WARN the first time per
+     * activity method of this handler, at DEBUG after that — and the activity's
+     * own object is returned. The event stays durable as written; a replay of
+     * the step stands the run down as {@code UNKNOWN_EVENT_PAYLOAD}.
+     *
+     * <p>The {@code try} holds no store call and catches
+     * {@link SerializationException} only, so an {@link Error} (a control-flow
+     * signal included) and a store fault are never swallowed here.
+     *
+     * @param stored   the payload the outcome append persisted
+     * @param raw      the object the activity returned
+     * @return the read-back value, or {@code raw} if it cannot be read back
+     */
+    private @Nullable Object readBack(@Nullable JsonNode stored, Method method, @Nullable Object raw,
+                                      ActivityInfo info, WorkflowContext ctx, int seq, String stepName) {
+        try {
+            return deserializeResult(stored, method);
+        } catch (SerializationException unreadable) {
+            var root = unreadable.getCause() != null ? unreadable.getCause() : unreadable;
+            observer.activityResultUnreadable(info, root.getClass().getName());
+            var warning = unreadableResultWarning(ctx.workflowId(), stepName, seq,
+                    method.getGenericReturnType(), root);
+            if (warnedUnreadable.add(method)) {
+                logger.warn("{}", warning);
+            } else {
+                logger.debug("{}", warning);
+            }
+            return raw;
+        }
+    }
+
+    /**
+     * The fixed WARN copy for a live result that cannot be read back. It names
+     * the cause by class and structural JSON path only
+     * ({@link UnknownHistoryGuard#redactedCause}) — never Jackson's message,
+     * which quotes stored values — and never includes a payload value.
+     *
+     * @param workflowId the run's workflow id
+     * @param stepName   {@code <ActivityName>.<method>}
+     * @param seq        the step's sequence number
+     * @param declared   the method's generic return type
+     * @param cause      the deserialization root cause
+     * @return the log line
+     */
+    static String unreadableResultWarning(String workflowId, String stepName, int seq,
+                                          Type declared, Throwable cause) {
+        return ("Workflow '%s': the result of activity '%s' at sequence %d is recorded but cannot be read back "
+                + "as %s (%s); this run continues with the object the activity returned, and a replay of this "
+                + "step will stand the run down as unknown_event_payload — make the type deserializable "
+                + "(docs/pitfalls.md, rule 12)")
+                .formatted(workflowId, stepName, seq, declared.getTypeName(),
+                        UnknownHistoryGuard.redactedCause(cause));
+    }
+
+    /**
      * Reconstructs an {@link ActivityExecutionException} from a stored failure event.
      *
      * <p>The cause is rebuilt by {@link FailureReconstruction#reconstruct}: the
@@ -704,10 +789,11 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             }
             var elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
 
-            // Persist success.
+            // Persist success. A result the mapper cannot write is an ordinary
+            // live failure, as it always was: it propagates from here.
+            var payload = serializer.serialize(result);
             try {
-                appendEventSafe(ctx, seq, EventType.ACTIVITY_COMPLETED, stepName,
-                        serializer.serialize(result), argsHash);
+                appendEventSafe(ctx, seq, EventType.ACTIVITY_COMPLETED, stepName, payload, argsHash);
             } catch (DuplicateEventException | StoreUnavailableException notRecorded) {
                 // The winner is alive and ahead: stand down rather than adopt
                 // its value (class Javadoc, "Idempotency"). Or the store could
@@ -720,9 +806,12 @@ public final class ActivityInvocationHandler implements InvocationHandler {
                 throw notRecorded;
             }
 
+            // The outcome is durable: hand workflow code what a replay of this
+            // step will hand it (class Javadoc, "Live results are read back").
+            var value = readBack(payload, method, result, info, ctx, seq, stepName);
             publishLifecycleEvent(ctx, stepName, LifecycleEventType.ACTIVITY_COMPLETED);
             observer.activityCompleted(info, elapsed, false);
-            return result;
+            return value;
 
         } finally {
             releaseLock(lockHandle, stepName, seq);
