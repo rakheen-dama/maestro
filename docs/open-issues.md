@@ -254,6 +254,9 @@ concurrency limits, `WorkflowExecutor`'s constructors need a builder, the wake
 listener's shutdown WARN, and silent stranding under another `service_name`.
 Issue 37 is since **resolved** by `WorkflowExecutor.builder(...)` and the
 removal of the ten constructors — see its section; 36, 38 and 39 remain open.
+Issue 40, found by the review of WP9's production schema guidance
+(2026-11-12), is filed **open**: under `validate`, a role that cannot see
+`maestro_schema_history` is told to apply every migration.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -310,6 +313,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [37](#issue-37) | `WorkflowExecutor` has ten public constructors | Library gap — API design | Low | **Resolved** |
 | [38](#issue-38) | `PostgresWakeListener.close()` logs a WARN with a stack trace at every shutdown with a pooled `DataSource` | Library defect — log noise | Low | Open |
 | [39](#issue-39) | Workflows recorded under another `service_name` are stranded silently | Library gap — operability | Medium | Open |
+| [40](#issue-40) | Under `validate`, a role that cannot see `maestro_schema_history` is told to apply every migration | Library gap — operability | Low | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -3393,6 +3397,49 @@ never fail startup on it.
 **Done when.** A node started beside a seeded active instance of one of its
 workflow types, recorded under another `service_name`, logs that WARN naming
 the name and the count, and a node with no such instance logs nothing.
+
+---
+
+### Issue 40 — Under `validate`, a role that cannot see `maestro_schema_history` is told to apply every migration {#issue-40}
+
+> **Open.** Filed by the review of WP9's production schema guidance
+> (2026-11-12, branch `test/schema-upgrade-safety`). Recorded, not fixed.
+
+**Kind:** Library gap — operability. **Severity:** Low (startup fails safe;
+the message only points the operator the wrong way).
+
+**What's wrong.** `MaestroSchemaInitializer` in `validate` mode reads
+`maestro_schema_history` through Flyway, in the connection's current schema.
+If the node's role lacks `USAGE` on the schema, or its `search_path` (or JDBC
+`currentSchema`) misses the schema that holds Maestro's tables, Flyway does
+not find the history table. It reports every shipped migration as pending, and
+the node fails startup with `Maestro schema is behind: pending migrations [1,
+2, 3, 4, 5, 6, 7, 8, 9, 100, 101]. Apply them (maestro.store.schema.mode=flyway)
+or run the SQL under [...] yourself.` On a fully migrated database that
+advice is wrong. Following it by switching the node to `flyway` fails with a
+permission error for a DML-only role. For a role that may create tables in the
+schema it does see, it would create a second, empty set of `maestro_*` tables
+there. The misleading message was observed on PostgreSQL 16 in both cases:
+the `USAGE` case by removing the grant from the role in
+`MaestroSchemaInitializerTest.aDmlOnlyRoleRunsValidateModeButCannotMigrate`,
+the search-path case with a scratch probe that pointed the role's
+`currentSchema` at another schema.
+
+**How to tackle it.** When `validate` finds *every* shipped migration pending,
+check before reporting. On the same connection, read `current_schema()`
+(`NULL` when no schema on the search path is usable), and look in
+`pg_catalog.pg_class`/`pg_namespace` for a `maestro_schema_history` in any
+schema, with `has_schema_privilege(<that schema>, 'USAGE')`. The catalogs are
+readable without `USAGE`. If the table exists in a schema the role cannot use
+or is not looking in, name that schema and the missing privilege or
+`search_path` instead of advising a migration. Keep today's message
+for a database that really is empty or behind.
+
+**Done when.** A test with a migrated database and a role lacking `USAGE`,
+and one with a role whose `currentSchema` points elsewhere, each fail
+`validate` with a message naming the schema and the missing privilege or
+search path, not a list of pending migrations. The existing
+pending-migration messages are unchanged.
 
 ---
 
