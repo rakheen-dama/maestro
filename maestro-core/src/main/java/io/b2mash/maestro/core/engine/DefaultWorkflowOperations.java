@@ -8,6 +8,7 @@ import io.b2mash.maestro.core.exception.FencedWriteException;
 import io.b2mash.maestro.core.exception.MaestroControlFlowError;
 import io.b2mash.maestro.core.exception.NodeErrors;
 import io.b2mash.maestro.core.exception.RetryExhaustedException;
+import io.b2mash.maestro.core.exception.SerializationException;
 import io.b2mash.maestro.core.exception.SignalTimeoutException;
 import io.b2mash.maestro.core.exception.StaleRunException;
 import io.b2mash.maestro.core.exception.StoreUnavailableException;
@@ -961,8 +962,18 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         // clock the per-await deadlines are armed on.
         WorkflowContextInternals.setReplaying(ctx, false);
         var now = instantSource.instant();
-        appendEvent(ctx, seq, EventType.SIDE_EFFECT, "$maestro:currentTime", serializer.serialize(now));
-        return now;
+        var payload = serializer.serialize(now);
+        appendEvent(ctx, seq, EventType.SIDE_EFFECT, "$maestro:currentTime", payload);
+        // D7: return what a replay of this slot reads, not the raw clock value.
+        // The try holds no store call and names SerializationException only.
+        try {
+            return serializer.deserialize(payload, Instant.class);
+        } catch (SerializationException unreadable) {
+            // The host mapper cannot read the Instant it wrote. Never fail the
+            // run for it (D9's principle): the side effect is durable, and a
+            // replay of this slot stands down as UNKNOWN_EVENT_PAYLOAD.
+            return now;
+        }
     }
 
     // ── randomUUID ─────────────────────────────────────────────────────
