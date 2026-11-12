@@ -32,6 +32,18 @@ import java.util.List;
  *                                         sleep-mode park run adds on top of its sleep
  * @param hikariMaximumPoolSize            the live Hikari pool's maximum size, or {@code -1} if the
  *                                         {@code DataSource} is not Hikari
+ * @param lockCleanupInterval              {@code maestro.lock.cleanup-interval} as bound, ISO-8601 — the
+ *                                         lock cleaner's period; its first pass is one interval after
+ *                                         the scheduler starts (the harness accounts for its passes in
+ *                                         every measured statement window)
+ * @param signalJanitorInterval            {@code maestro.signal.janitor-interval} as bound, ISO-8601 —
+ *                                         the signal janitor sweeps at startup and then every interval
+ * @param retentionEnabled                 {@code maestro.retention.enabled} as bound
+ * @param retentionInterval                {@code maestro.retention.interval} as bound, ISO-8601 — the
+ *                                         retention sweeper sweeps at startup and then every interval
+ * @param reportedAtMillis                 when this answer was produced, epoch milliseconds: the
+ *                                         context (and so every sweep scheduler) had started by then,
+ *                                         which bounds when the schedulers started from above
  */
 public record PerfInfo(
         String buildCommit,
@@ -51,5 +63,10 @@ public record PerfInfo(
         String wakeRecheckInterval,
         String recoveryPollInterval,
         String timerPollInterval,
-        int hikariMaximumPoolSize
+        int hikariMaximumPoolSize,
+        String lockCleanupInterval,
+        String signalJanitorInterval,
+        boolean retentionEnabled,
+        String retentionInterval,
+        long reportedAtMillis
 ) {}

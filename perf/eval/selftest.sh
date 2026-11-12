@@ -173,40 +173,82 @@ shift_ts() { # <seconds offset> <suffix>: rewrite every window timestamp into th
     (.background.window, .window) |= (.resetAt |= sh | .snapshotAt |= sh)' "$1" "$2"
 }
 # (the real timestamps are +00:00, so their first 19 characters are UTC)
+sweep_offsets() { check_field "$1" validity.sweeps '[.value.windows[] | .sinceEarliestNodeStartSecs]'; }
 out=$(evaluate_with ts-plus2 "$(shift_ts 7200 +02:00)")
 expect "window timestamps in +02:00: verdict (no evaluator ERROR)" PASS "$(jq -r .verdict <<<"$out")"
-expect "window timestamps in +02:00: advisory.sweepOverlap" PASS "$(jq -r '.checks["advisory.sweepOverlap"]' <<<"$out")"
+expect "window timestamps in +02:00: validity.sweeps" PASS "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
 expect "window timestamps in +02:00: same offsets from node start" \
-  "$(evaluate_with ts-utc '.' >/dev/null; check_field ts-utc advisory.sweepOverlap '.value.windows')" \
-  "$(check_field ts-plus2 advisory.sweepOverlap '.value.windows')"
+  "$(evaluate_with ts-utc '.' >/dev/null; sweep_offsets ts-utc)" "$(sweep_offsets ts-plus2)"
 out=$(evaluate_with ts-minus1345 "$(shift_ts -49500 -13:45)")
 expect "window timestamps in -13:45: verdict" PASS "$(jq -r .verdict <<<"$out")"
-expect "window timestamps in -13:45: advisory.sweepOverlap" PASS "$(jq -r '.checks["advisory.sweepOverlap"]' <<<"$out")"
+expect "window timestamps in -13:45: validity.sweeps" PASS "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
 out=$(evaluate_with ts-garbage '.window.resetAt = "not-a-time"')
-expect "unparseable window timestamp: advisory.sweepOverlap" WARN "$(jq -r '.checks["advisory.sweepOverlap"]' <<<"$out")"
-expect "unparseable window timestamp: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
+expect "unparseable window timestamp: validity.sweeps (cannot account)" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+expect "unparseable window timestamp: verdict" INVALID "$(jq -r .verdict <<<"$out")"
 # A failure inside an advisory is that advisory's WARN, never an ERROR.
-out=$(evaluate_with adv-throws '.' '(.nodes, .nodesAfter) |= map(.jvmStartMillis = "x")')
-expect "advisory that throws (jvmStartMillis \"x\"): advisory.sweepOverlap" WARN "$(jq -r '.checks["advisory.sweepOverlap"]' <<<"$out")"
-expect "advisory that throws: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
 out=$(evaluate_with adv-latency '.latency = "garbage"')
 expect "latency record not an object: advisory.latency" WARN "$(jq -r '.checks["advisory.latency"]' <<<"$out")"
 expect "latency record not an object: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
 out=$(evaluate_with adv-dirty-unknown '.' '.repo.dirty = null')
 expect "dirtiness not recorded: advisory.dirtyTree" WARN "$(jq -r '.checks["advisory.dirtyTree"]' <<<"$out")"
-out=$(evaluate_with adv-no-nodes '.' '.nodes = [] | .nodesAfter = []')
-expect "no node start recorded: advisory.sweepOverlap (cannot tell)" WARN "$(jq -r '.checks["advisory.sweepOverlap"]' <<<"$out")"
-expect "sweepOverlap detail states the assumed interval" yes \
-  "$(check_field pass advisory.sweepOverlap .detail | grep -q 'assumes the default 600 s lock-cleanup interval; the node does not report it' && echo yes || echo no)"
 
-# advisory.sweepOverlap: a window straddling node start + 600 s (lock cleaner).
-node_start=$(jq '[.nodes[].jvmStartMillis] | min / 1000 | floor' "${src}/identity.json")
-out=$(evaluate_with sweep "$(printf '.window.resetAt = (%s + 590 | todate) | .window.snapshotAt = (%s + 610 | todate)' "$node_start" "$node_start")")
-expect "window straddles node start + 600 s: advisory.sweepOverlap" WARN "$(jq -r '.checks["advisory.sweepOverlap"]' <<<"$out")"
-expect "window straddles node start + 600 s: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
-out=$(evaluate_with sweep-late "$(printf '.window.resetAt = (%s + 640 | todate) | .window.snapshotAt = (%s + 700 | todate)' "$node_start" "$node_start")")
-expect "window after the +600 s pass and its 30 s slack: advisory.sweepOverlap" PASS "$(jq -r '.checks["advisory.sweepOverlap"]' <<<"$out")"
-expect "real run: advisory.sweepOverlap" PASS "$(jq -r '.checks["advisory.sweepOverlap"]' <<<"$(evaluate_with pass3 '.')")"
+# validity.sweeps: periodic sweeps accounted for explicitly from the nodes'
+# reported intervals (lock cleaner: passes predicted, calls subtracted;
+# janitor / retention: none allowed in a window).
+expect "real run: validity.sweeps" PASS "$(jq -r '.checks["validity.sweeps"]' <<<"$(evaluate_with sw-real '.')")"
+expect "real run: lock-cleanup interval is the node's reported one (600 s)" 600 \
+  "$(check_field sw-real validity.sweeps '.value.nodes[0].lockCleanupSecs')"
+out=$(evaluate_with sw-jvm-x '.' '(.nodes, .nodesAfter) |= map(.jvmStartMillis = "x")')
+expect "jvmStartMillis not a number: validity.sweeps (no evaluator crash)" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+out=$(evaluate_with sw-no-nodes '.' '.nodes = [] | .nodesAfter = []')
+expect "no node recorded: validity.sweeps" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+out=$(evaluate_with sw-no-interval '.' '.nodes |= map(del(.lockCleanupInterval))')
+expect "node does not report lockCleanupInterval: validity.sweeps" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+out=$(evaluate_with sw-no-reported '.' '.nodes |= map(del(.reportedAtMillis))')
+expect "node does not report reportedAtMillis: validity.sweeps" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+out=$(evaluate_with sw-unclassified '.window |= del(.sweepCalls)')
+expect "window without sweepCalls: validity.sweeps" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+out=$(evaluate_with sw-janitor '.window.sweepCalls.signalJanitor = 1')
+expect "signal-janitor call inside the load window: validity.sweeps" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+out=$(evaluate_with sw-retention '.background.window.sweepCalls.retention = 3')
+expect "retention calls inside the idle window: validity.sweeps" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+out=$(evaluate_with sw-janitor-due '.' '.nodes |= map(.signalJanitorInterval = "PT10S")')
+expect "reported janitor interval 10 s (a pass predicted in a window): validity.sweeps" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+out=$(evaluate_with sw-retention-off '.' '.nodes |= map(.retentionEnabled = false | .retentionInterval = "PT10S")')
+expect "retention disabled (its interval irrelevant): validity.sweeps" PASS "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+# Lock cleaner around node start + 600 s: the load window moved to straddle
+# or contain the first pass. jvm = earliest node start, rep = latest report.
+jvm=$(jq '[.nodes[].jvmStartMillis] | min / 1000' "${src}/identity.json")
+rep=$(jq '[.nodes[].reportedAtMillis] | max / 1000' "${src}/identity.json")
+move_window() { # <start offset from jvm> <end offset from jvm or "rep+N"> <lockCleaner calls>
+  printf '.window.resetAt = (%s + %s | todate) | .window.snapshotAt = (%s | todate) | .window.sweepCalls.lockCleaner = %s' \
+    "$jvm" "$1" "$2" "$3"
+}
+out=$(evaluate_with sw-straddle-0 "$(move_window 590 "$jvm + 610" 0)")
+expect "window straddles the first lock-cleaner mark, 0 calls (pass possible): validity.sweeps" PASS "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+out=$(evaluate_with sw-straddle-2 "$(move_window 590 "$jvm + 610" 2)")
+expect "window straddles the first mark, 2 calls (one pass): validity.sweeps" PASS "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+out=$(evaluate_with sw-straddle-4 "$(move_window 590 "$jvm + 610" 4)")
+expect "window straddles the first mark, 4 calls (two passes, one possible): validity.sweeps" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+out=$(evaluate_with sw-contains-0 "$(move_window 500 "$rep + 700" 0)")
+expect "window certainly contains the first pass, 0 calls: validity.sweeps" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+out=$(evaluate_with sw-contains-2 "$(move_window 500 "$rep + 700" 2)")
+expect "window certainly contains the first pass, 2 calls: validity.sweeps" PASS "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+out=$(evaluate_with sw-early-2 '.window.sweepCalls.lockCleaner = 2')
+expect "lock-cleaner calls in a window that ends long before 600 s: validity.sweeps" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+out=$(evaluate_with sw-interval-60 '.window.sweepCalls.lockCleaner = 0' '.nodes |= map(.lockCleanupInterval = "PT20S")')
+expect "reported cleanup interval 20 s, 0 calls in a window holding passes: validity.sweeps" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+# Subtraction: two lock-cleaner calls added to the load window change nothing
+# when classified, and raise the net figure when they are not.
+net_of() { check_field "$1" gate.statementsMeasured '.value.statementsPerWorkflowNet'; }
+evaluate_with sw-sub-base "$(move_window 590 "$jvm + 610" 0)" >/dev/null
+evaluate_with sw-sub-2 "$(move_window 590 "$jvm + 610" 2) | .window.maestroCalls += 2 | .window.maestroCallsTopLevel += 2" >/dev/null
+evaluate_with sw-sub-unclassified "$(move_window 590 "$jvm + 610" 0) | .window.maestroCalls += 2 | .window.maestroCallsTopLevel += 2" >/dev/null
+expect "two classified lock-cleaner calls: net statements per workflow unchanged" "$(net_of sw-sub-base)" "$(net_of sw-sub-2)"
+expect "the same two calls unclassified: net differs (the subtraction is real)" yes \
+  "$([[ "$(net_of sw-sub-base)" != "$(net_of sw-sub-unclassified)" ]] && echo yes || echo no)"
+expect "two classified lock-cleaner calls: recorded as subtracted" 2 \
+  "$(jq -r '.measurements.statements.lockCleanerCallsSubtracted.load' "${work}/sw-sub-2/result.json")"
 
 # statements_gate, the shared baseline-relative gate: symmetric,
 # band = tolerance + relativeAllowance x expected (0.25 / 0.10 here).

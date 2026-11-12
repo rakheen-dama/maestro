@@ -63,13 +63,20 @@
 #     (60 s). Pollers with longer intervals are not in it.
 #  2. Periodic sweeps are scheduled from NODE START, not from any window: the
 #     lock cleaner first runs one maestro.lock.cleanup-interval (10m) after its
-#     node starts and then every 10 minutes; the signal janitor and the
-#     retention sweeper run once at node start (before any window) and then
-#     hourly (also multiples of 10 minutes). So ANY measured window, however
-#     short, that is open at about k x 10 min after a node's start (k >= 1)
-#     can carry statements the model neither subtracts nor tolerates; a
-#     scenario with several short windows crosses the 10-minute mark as surely
-#     as one long window does.
+#     scheduler starts and then every interval; the signal janitor and the
+#     retention sweeper run once at node start and then every
+#     maestro.signal.janitor-interval / maestro.retention.interval (1 h). They
+#     are NOT in the idle-rate model; validity.sweeps (common.jq) accounts for
+#     them EXPLICITLY in every measured window, from the intervals each node
+#     reports in /perf/info (bound values, never assumed) and its start and
+#     report times, against what the window recorded (pgss-window.sql
+#     sweepCalls, classified by statement text over every engine entry):
+#     lock-cleaner calls must match the passes the reported interval predicts
+#     and are then subtracted exactly; a signal-janitor or retention statement
+#     in a window, or a predicted pass of either, makes the run INVALID (the
+#     retention sweeper's election is the timer poller's upsert, so it cannot
+#     be subtracted). So a window of any length, at any distance from node
+#     start, is either accounted for or INVALID.
 #  3. The subtraction extrapolates the idle rate over the load window, so its
 #     error grows with loadWindowSecs / backgroundWindowSecs, while the
 #     tolerance is a fixed number of calls.
@@ -84,19 +91,10 @@
 #     can hide a missed tick. It still catches a node whose poller is fully
 #     dead: at 2 replicas and 12 ticks such a window records about 12
 #     upserts, far below the floor of 22.
-#  The rule: a scenario whose measured windows extend beyond ~8 minutes after
-#  the earliest node start (leaving margin before the first lock-cleaner pass)
-#  must extend the model (a longer idle window spanning a sweep, or explicit
-#  accounting of the sweeps) before its statement gate can be trusted.
-#  result.json carries what is needed to check this: each node's start
-#  (identity.nodes[].jvmStartMillis) and each window's start and end
-#  (resetAt / snapshotAt of measurements.background.window, .window and
-#  .windows[]). advisory.sweepOverlap already WARNs (never changes the
-#  verdict) when any measured window is open within [k x 600 s, k x 600 s +
-#  30 s] after any node's start, assuming the default cleanup interval
-#  (sample-perf sets none and /perf/info does not report it; the advisory's
-#  detail says so), and when it cannot tell (no node start, a timestamp it
-#  cannot parse). The smoke's windows close about 80 s after node start.
+#  Limit 2 is closed by validity.sweeps (above). result.json carries what it
+#  rests on: each node's jvmStartMillis, reportedAtMillis and reported sweep
+#  intervals (identity.nodes[]), each window's resetAt / snapshotAt and
+#  sweepCalls (measurements.background.window, .window, .windows[]).
 #
 # Exit: 0 PASS, 1 FAIL, 2 INVALID, 3 harness error (including an evaluator
 # ERROR verdict). The verdict (perf/eval/common.jq, verdict) takes the first
@@ -415,7 +413,11 @@ identity_set '.effective = (.nodes[0] as $n | {
     workerDefaultActivityConcurrency: $n.workerDefaultActivityConcurrency,
     wakeRecheckInterval: $n.wakeRecheckInterval,
     recoveryPollInterval: $n.recoveryPollInterval,
-    timerPollInterval: ($n.timerPollInterval // null)})' --argjson offset "$ADMIN_OFFSET"
+    timerPollInterval: ($n.timerPollInterval // null),
+    lockCleanupInterval: ($n.lockCleanupInterval // null),
+    signalJanitorInterval: ($n.signalJanitorInterval // null),
+    retentionEnabled: ($n.retentionEnabled // null),
+    retentionInterval: ($n.retentionInterval // null)})' --argjson offset "$ADMIN_OFFSET"
 log "effective: $(jq -c '.effective | {adminEventsEffective, adminTopicEndOffset, hikariMaximumPoolSize}' "${RESULTS}/identity.json")"
 
 prom_collect() {

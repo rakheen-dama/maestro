@@ -200,17 +200,25 @@ def pgss_windows($m):
 # divisor (this window's own workflows only, never warm-up rows). With an
 # unusable background every figure that depends on it is null (and
 # validity.background is INVALID).
+# Lock-cleaner calls a window recorded (pgss-window.sql sweepCalls), 0 when
+# it has no classification (validity.sweeps is then INVALID), and how many
+# distinct statements they are.
+def lock_cleaner_calls($w): ($w.sweepCalls.lockCleaner // 0 | if isnum then . else 0 end);
+def lock_cleaner_statements($w): ($w.sweepCalls.lockCleanerStatements // 0 | if isnum then . else 0 end);
 def statement_figures($bg; $w; $completed; $replicas):
   (background_problem($bg; $replicas) == null) as $bgOk
   | (if $bgOk then $bg.window else {} end) as $b
-  | (if $bgOk then $b.maestroCalls / $b.windowSecs else null end) as $rate
-  | (if $bgOk then $b.maestroCallsTopLevel / $b.windowSecs else null end) as $rateTop
+  | (if $bgOk then lock_cleaner_calls($b) else 0 end) as $bSweep
+  | lock_cleaner_calls($w) as $wSweep
+  | (if $bgOk then ($b.maestroCalls - $bSweep) / $b.windowSecs else null end) as $rate
+  | (if $bgOk then ($b.maestroCallsTopLevel - $bSweep) / $b.windowSecs else null end) as $rateTop
   | (if $bgOk then $rate * $w.windowSecs else null end) as $bgInLoad
   | (if $bgOk then $rateTop * $w.windowSecs else null end) as $bgInLoadTop
-  | (if $bgOk then $b.maestroStatements * $replicas else null end) as $tol
+  | (if $bgOk then ($b.maestroStatements - lock_cleaner_statements($b)) * $replicas else null end) as $tol
   | ($completed > 0) as $any
   | {
-      note: "gross = every engine (role maestro) call in the load window / completed workflows, including background engine statements (timer-poller leader election and due-timer poll, recovery poll; lock cleaner, signal janitor and retention sweeps when due); net = (calls - backgroundRatePerSec x loadWindowSecs) / completed. TopLevel variants exclude statements nested in others (track=all, e.g. foreign-key trigger queries).",
+      note: "gross = every engine (role maestro) call in the load window / completed workflows, including background engine statements (timer-poller leader election and due-timer poll, recovery poll; lock-cleaner passes when due); net = (calls - lockCleanerCalls - backgroundRatePerSec x loadWindowSecs) / completed, the background rate itself measured without lock-cleaner calls. Lock-cleaner calls are identified by statement text and subtracted exactly; signal-janitor and retention statements must be absent from every window (validity.sweeps). TopLevel variants exclude statements nested in others (track=all, e.g. foreign-key trigger queries).",
+      lockCleanerCallsSubtracted: {background: (if $bgOk then $bSweep else null end), load: $wSweep},
       loadWindowSecs: $w.windowSecs,
       completed: $completed,
       backgroundCalls: $b.maestroCalls,
@@ -227,11 +235,11 @@ def statement_figures($bg; $w; $completed; $replicas):
       maestroCallsTopLevel: $w.maestroCallsTopLevel,
       statementsPerWorkflowGross: (if $any then $w.maestroCalls / $completed | round2 else null end),
       statementsPerWorkflowNet:
-        (if $any and $bgOk then ($w.maestroCalls - $bgInLoad) / $completed | round2 else null end),
+        (if $any and $bgOk then ($w.maestroCalls - $wSweep - $bgInLoad) / $completed | round2 else null end),
       statementsPerWorkflowGrossTopLevel:
         (if $any then $w.maestroCallsTopLevel / $completed | round2 else null end),
       statementsPerWorkflowNetTopLevel:
-        (if $any and $bgOk then ($w.maestroCallsTopLevel - $bgInLoadTop) / $completed | round2 else null end),
+        (if $any and $bgOk then ($w.maestroCallsTopLevel - $wSweep - $bgInLoadTop) / $completed | round2 else null end),
       netToleranceCalls: $tol,
       netTolerancePerWorkflow: (if $any and $bgOk then $tol / $completed | round2 else null end)
     };
@@ -465,58 +473,139 @@ def ts_secs:
       end
   end;
 
-# advisory.sweepOverlap: whether any measured pg_stat_statements window may
-# contain a periodic engine sweep the background model does not cover (see
-# "Known limits" in perf/run.sh). The lock cleaner runs every
-# maestro.lock.cleanup-interval after its scheduler starts, its first pass one
-# interval in; the signal janitor and retention sweeper run hourly, which are
-# multiples of the same 10 min. sample-perf sets no maestro.lock.* property
-# and /perf/info does not report it, so the default 600 s is ASSUMED here (and
-# the detail says so). A node's schedulers start a few seconds after its JVM
-# (jvmStartMillis), so a sweep is taken to fall in
-# [start + k x 600 s, start + k x 600 s + 30 s], k >= 1, for every node.
-# WARN, never a verdict change, also when it cannot tell: no node start, no
-# window, or a window timestamp it cannot parse.
-def sweep_assumption: "assumes the default 600 s lock-cleanup interval; the node does not report it";
-def sweep_overlap_check($id; $m):
-  advisory_guarded("advisory.sweepOverlap";
-    600 as $interval | 30 as $slack
-    | ($id.nodes // [] | map(.jvmStartMillis / 1000)) as $starts
-    | ([{name: "background", w: ($m.background | if type == "object" then .window else null end)},
-        {name: "window", w: $m.window}]
-       + ($m.windows // [] | to_entries | map({name: "windows[\(.key)]", w: .value}))
-       | map(select(.w | type == "object")
-             | {name, resetAt: .w.resetAt, snapshotAt: .w.snapshotAt,
-                start: (.w.resetAt | ts_secs), end: (.w.snapshotAt | ts_secs)})) as $all
-    | ($all | map(select(.start == null or .end == null))) as $unparsed
-    | ($all | map(select(.start != null and .end != null))) as $ws
-    | [ $ws[] as $w | $starts[] as $s
-        | ([1, (($w.start - $slack - $s) / $interval | ceil)] | max) as $k
-        | select($s + $k * $interval <= $w.end)
-        | {window: $w.name, sinceNodeStartSecs: [($w.start - $s | round), ($w.end - $s | round)],
-           sweepMarkSecs: ($k * $interval)} ] as $hits
-    | (($starts | length) > 0 and ($ws | length) > 0 and ($unparsed | length) == 0
-       and ($hits | length) == 0) as $ok
-    | check("advisory.sweepOverlap"; "advisory"; if $ok then "PASS" else "WARN" end;
-        {windows: ($ws | map({name, sinceEarliestNodeStartSecs:
-                     (if ($starts | length) > 0
-                      then [(.start - ($starts | min) | round), (.end - ($starts | min) | round)]
-                      else null end)})),
-         overlaps: $hits,
-         unparsedTimestamps: ($unparsed | map({name, resetAt, snapshotAt}))};
-        {lockCleanupIntervalSecs: $interval, assumed: true, slackSecs: $slack};
-        [
-          (if ($starts | length) == 0 then "no node start time recorded" else null end),
-          (if ($all | length) == 0 then "no measured window" else null end),
-          (if ($unparsed | length) > 0
-           then "window(s) \($unparsed | map(.name) | join(", ")) have a resetAt/snapshotAt that is not an RFC 3339 timestamp: not checked"
+# Seconds in an ISO-8601 duration as /perf/info reports it (Java
+# Duration.toString(): PT5S, PT10M, PT1H, PT1M30S, PT0.5S). null for anything
+# else, never an error.
+def duration_secs:
+  if type != "string" then null
+  else
+    ([capture("^PT((?<h>[0-9.]+)H)?((?<m>[0-9.]+)M)?((?<s>[0-9.]+)S)?$")] | first) as $c
+    | if $c == null or . == "PT" then null
+      else (try (($c.h // "0" | tonumber) * 3600 + ($c.m // "0" | tonumber) * 60
+                 + ($c.s // "0" | tonumber)) catch null)
+      end
+  end;
+
+# ── Periodic sweeps (validity.sweeps) ───────────────────────────────────────
+# The background model (idle-window rate, one-tick tolerance) covers only the
+# pollers. The engine's periodic sweeps are accounted for EXPLICITLY, in every
+# measured pg_stat_statements window (background, .window, .windows[]), from
+# the intervals each node reports in /perf/info (the bound
+# maestro.lock.cleanup-interval, maestro.signal.janitor-interval,
+# maestro.retention.enabled / .interval) and from what the window recorded
+# (pgss-window.sql's sweepCalls, classified by statement text over every
+# engine entry):
+#
+#  Lock cleaner (PostgresLockCleanerScheduler: sleep one interval, then two
+#  DELETEs, repeat; every node). Its scheduler starts inside the node's
+#  context refresh, so between jvmStartMillis and reportedAtMillis (the
+#  node's first /perf/info answer); pass k (k >= 1) therefore falls in
+#  [jvmStart + k x I, reportedAt + k x (I + sweep_drift_secs)] (each pass
+#  may lag by its own run time; 5 s per pass is generous). Per window the
+#  passes that CERTAINLY and that POSSIBLY fall in it are counted over every
+#  node; the observed calls must lie in [2 x certain, 2 x possible]. Those
+#  calls are then SUBTRACTED exactly (statement_figures), so a window that
+#  contains a pass is as trustworthy as one that does not.
+#
+#  Signal janitor and retention sweeper (sweep at startup, then every
+#  interval). Not subtractable: the retention sweeper's leader election is
+#  the timer poller's upsert. So a measured window must contain NONE of their
+#  statements (observed calls 0, which also proves the startup sweeps ran
+#  before the first window) and no predicted pass k >= 1. Either makes the
+#  window untrustworthy.
+#
+# INVALID on any of those, and when it cannot tell: no node, a node that
+# does not report an interval or its start/report time, a window without
+# sweepCalls or with a timestamp it cannot parse.
+def sweep_drift_secs: 5;
+def lock_cleaner_calls_per_pass: 2;
+# Passes k >= 1 of a schedule whose pass k falls in [lo0 + k x I, hi0 + k x
+# (I + drift)], counted as {certain, possible} for the window [$a, $b].
+def sweep_passes($lo0; $hi0; $i; $a; $b):
+  ($i + sweep_drift_secs) as $j
+  | {possible: ([0, ((($b - $lo0) / $i | floor)
+                     -([1, (($a - $hi0) / $j | ceil)] | max) + 1)] | max),
+     certain: ([0, ((($b - $hi0) / $j | floor)
+                    - ([1, (($a - $lo0) / $i | ceil)] | max) + 1)] | max)};
+def named_windows($m):
+  [{name: "background", w: ($m.background | if type == "object" then .window else null end)},
+   {name: "window", w: $m.window}]
+  + ($m.windows // [] | to_entries | map({name: "windows[\(.key)]", w: .value}))
+  | map(select(.w | type == "object"));
+def sweeps_problems_and_value($id; $m):
+  ($id.nodes // [] | map({container, start: (.jvmStartMillis | if type == "number" then . / 1000 else null end),
+                           reported: (.reportedAtMillis | if type == "number" then . / 1000 else null end),
+                           lock: (.lockCleanupInterval | duration_secs),
+                           janitor: (.signalJanitorInterval | duration_secs),
+                           retentionEnabled: .retentionEnabled,
+                           retention: (.retentionInterval | duration_secs)})) as $nodes
+  | ($nodes | map(select((.start | isnum | not) or (.reported | isnum | not) or .reported < .start
+                         or (.lock | isnum | not) or .lock <= 0 or (.janitor | isnum | not) or .janitor <= 0
+                         or (.retentionEnabled | type) != "boolean"
+                         or (.retention | isnum | not) or .retention <= 0))) as $badNodes
+  | (named_windows($m) | map({name, a: (.w.resetAt | ts_secs), b: (.w.snapshotAt | ts_secs),
+                              sweeps: .w.sweepCalls})) as $ws
+  | ($ws | map(select(.a == null or .b == null or .b < .a))) as $unparsed
+  | ($ws | map(select((.sweeps | type) != "object"
+                      or ([.sweeps.lockCleaner, .sweeps.signalJanitor, .sweeps.retention] | all(isnum) | not)))) as $unclassified
+  | (($nodes | length) > 0 and ($badNodes | length) == 0) as $nodesOk
+  | (if $nodesOk then
+       [$ws[] | select(.a != null and .b != null and .b >= .a) | . as $w
+        | ([$nodes[] | sweep_passes(.start; .reported; .lock; $w.a; $w.b)]) as $lp
+        | ([$nodes[] | sweep_passes(.start; .reported; .janitor; $w.a; $w.b).possible] | add) as $jp
+        | ([$nodes[] | select(.retentionEnabled) | sweep_passes(.start; .reported; .retention; $w.a; $w.b).possible] | add // 0) as $rp
+        | {name: $w.name,
+           sinceEarliestNodeStartSecs: [($w.a - ($nodes | map(.start) | min) | round),
+                                        ($w.b - ($nodes | map(.start) | min) | round)],
+           lockCleaner: {observedCalls: ($w.sweeps.lockCleaner // null),
+                         predictedPasses: {certain: ($lp | map(.certain) | add), possible: ($lp | map(.possible) | add)}},
+           signalJanitor: {observedCalls: ($w.sweeps.signalJanitor // null), predictedPasses: $jp},
+           retention: {observedCalls: ($w.sweeps.retention // null), predictedPasses: $rp}}]
+     else [] end) as $per
+  | {value: {windows: $per,
+             nodes: ($nodes | map({container, lockCleanupSecs: .lock, signalJanitorSecs: .janitor,
+                                   retentionEnabled, retentionSecs: .retention,
+                                   schedulerStartBoundSecs: (if (.start | isnum) and (.reported | isnum) then (.reported - .start | round2) else null end)}))},
+     problems: [
+       (if ($nodes | length) == 0 then "no node recorded" else null end),
+       (if ($badNodes | length) > 0
+        then "node(s) \($badNodes | map(.container) | join(", ")) do not report a usable jvmStartMillis / reportedAtMillis / lockCleanupInterval / signalJanitorInterval / retentionEnabled / retentionInterval in /perf/info: sweeps cannot be accounted for"
+        else null end),
+       (if ($ws | length) == 0 then "no measured window" else null end),
+       (if ($unparsed | length) > 0
+        then "window(s) \($unparsed | map(.name) | join(", ")) have a resetAt/snapshotAt that is not an RFC 3339 timestamp (or end before they start)"
+        else null end),
+       (if ($unclassified | length) > 0
+        then "window(s) \($unclassified | map(.name) | join(", ")) carry no sweepCalls classification (pgss-window.sql)"
+        else null end),
+       ($per[] | . as $p
+        | (if ($p.lockCleaner.observedCalls | isnum)
+              and ($p.lockCleaner.observedCalls < lock_cleaner_calls_per_pass * $p.lockCleaner.predictedPasses.certain
+                   or $p.lockCleaner.observedCalls > lock_cleaner_calls_per_pass * $p.lockCleaner.predictedPasses.possible)
+           then "\($p.name): \($p.lockCleaner.observedCalls) lock-cleaner call(s) where the nodes' reported interval predicts \($p.lockCleaner.predictedPasses.certain)..\($p.lockCleaner.predictedPasses.possible) pass(es) of \(lock_cleaner_calls_per_pass) calls: the cleaner does not run as the nodes report"
            else null end),
-          (if ($hits | length) > 0
-           then "window(s) \($hits | map(.window) | unique | join(", ")) may contain a periodic sweep not in the background model; their statement counts carry un-modelled calls"
-           else null end),
-          (if $ok then "no measured window crosses a lock-cleaner / janitor / retention mark (k x 600 s after node start, +30 s)" else null end),
-          sweep_assumption
-        ] | reasons));
+          (if ($p.signalJanitor.observedCalls | isnum) and $p.signalJanitor.observedCalls > 0
+           then "\($p.name): \($p.signalJanitor.observedCalls) signal-janitor call(s) inside the window (not modelled)" else null end),
+          (if $p.signalJanitor.predictedPasses > 0
+           then "\($p.name): a signal-janitor pass may fall inside the window (not modelled)" else null end),
+          (if ($p.retention.observedCalls | isnum) and $p.retention.observedCalls > 0
+           then "\($p.name): \($p.retention.observedCalls) retention-sweep call(s) inside the window (not modelled: its leader election is the timer poller's upsert)" else null end),
+          (if $p.retention.predictedPasses > 0
+           then "\($p.name): a retention-sweep pass may fall inside the window (not modelled)" else null end))
+     ] | map(select(. != null))};
+def sweeps_check($id; $m):
+  (try sweeps_problems_and_value($id; $m)
+   catch {value: null, problems: ["the sweep record could not be evaluated: \(. | tostring)"]}) as $r
+  | ($r.problems | length == 0) as $ok
+  | check("validity.sweeps"; "validity"; if $ok then "PASS" else "INVALID" end;
+      $r.value;
+      {lockCleanerCalls: "within \(lock_cleaner_calls_per_pass) x [certain, possible] passes predicted from each node's reported interval, jvmStartMillis and reportedAtMillis (+\(sweep_drift_secs) s drift per pass); subtracted exactly from the window's calls",
+       signalJanitorCalls: 0, retentionCalls: 0, signalJanitorOrRetentionPassesPredicted: 0};
+      if $ok then
+        ([$r.value.windows[] | select(.lockCleaner.observedCalls > 0) | "\(.name) \(.lockCleaner.observedCalls)"]) as $lc
+        | "every measured window's sweeps are accounted for: no signal-janitor or retention statement in any window, none predicted; lock-cleaner calls as predicted from the reported intervals"
+          + (if ($lc | length) > 0 then " (subtracted exactly: \($lc | join(", ")))" else " (none in any window)" end)
+      else $r.problems | join("; ") end);
 
 def dirty_tree_check($id):
   advisory_guarded("advisory.dirtyTree";
@@ -530,7 +619,7 @@ def dirty_tree_check($id):
 def common_checks($id; $m):
   [identity_check($id), no_restart_check($id), admin_events_check($id),
    pgss_complete_check($m), k6_check($m), dropped_iterations_check($m), warmup_check($m),
-   dirty_tree_check($id), sweep_overlap_check($id; $m)];
+   dirty_tree_check($id), sweeps_check($id; $m)];
 
 # The result document: common checks first, then the scenario's.
 def result($id; $m; $checks):

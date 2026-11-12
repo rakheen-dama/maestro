@@ -22,8 +22,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * The controller's own wiring, without a running engine: the signal endpoint
  * rejects out-of-bounds input with {@code 400 {"error"}} before it touches the
  * client (whose collaborators are {@code null} here, so reaching it would throw),
- * and {@code /perf/info} reports the timer poll interval from the bound
- * properties rather than a constant.
+ * and {@code /perf/info} reports the timer poll interval and the sweep
+ * intervals from the bound properties rather than constants.
  */
 class PerfControllerTest {
 
@@ -62,6 +62,25 @@ class PerfControllerTest {
     void infoReportsTheBoundTimerPollInterval() {
         assertEquals("PT2S", controller(Map.of("maestro.timer.poll-interval", "2s")).info().timerPollInterval());
         assertEquals("PT5S", controller(Map.of()).info().timerPollInterval());
+    }
+
+    @Test
+    void infoReportsTheBoundSweepIntervals() {
+        var defaults = controller(Map.of()).info();
+        assertEquals("PT10M", defaults.lockCleanupInterval());
+        assertEquals("PT1H", defaults.signalJanitorInterval());
+        assertEquals(true, defaults.retentionEnabled());
+        assertEquals("PT1H", defaults.retentionInterval());
+
+        var bound = controller(Map.of(
+                "maestro.lock.cleanup-interval", "90s",
+                "maestro.signal.janitor-interval", "7m",
+                "maestro.retention.enabled", "false",
+                "maestro.retention.interval", "2h")).info();
+        assertEquals("PT1M30S", bound.lockCleanupInterval());
+        assertEquals("PT7M", bound.signalJanitorInterval());
+        assertEquals(false, bound.retentionEnabled());
+        assertEquals("PT2H", bound.retentionInterval());
     }
 
     private PerfController controller(Map<String, String> properties) {

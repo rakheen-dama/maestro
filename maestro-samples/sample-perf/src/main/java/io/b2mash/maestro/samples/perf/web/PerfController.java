@@ -145,7 +145,15 @@ public class PerfController {
                 properties.getSignal().wakeRecheckInterval().toString(),
                 properties.getRecovery().pollInterval().toString(),
                 properties.getTimer().pollInterval().toString(),
-                hikariMaximumPoolSize());
+                hikariMaximumPoolSize(),
+                // The lock cleaner's scheduler parses maestro.lock.cleanup-interval
+                // from the same Environment key with the same duration syntax;
+                // MaestroProperties is that key's binding.
+                properties.getLock().cleanupInterval().toString(),
+                properties.getSignal().janitorInterval().toString(),
+                properties.getRetention().enabled(),
+                properties.getRetention().interval().toString(),
+                System.currentTimeMillis());
     }
 
     /**
