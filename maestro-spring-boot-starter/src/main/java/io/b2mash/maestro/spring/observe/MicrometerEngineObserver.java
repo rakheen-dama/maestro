@@ -125,7 +125,8 @@ public final class MicrometerEngineObserver implements EngineObserver {
      * {@code maestro.workflow.duration}, tagged {@code outcome=completed} or
      * {@code outcome=failed}. The engine fires this only with those two
      * statuses; any other status records nothing, so the {@code outcome} tag
-     * value set stays closed at two.
+     * value set stays closed at two. One sample per terminal transition: a
+     * manually retried workflow records once per outcome it reached.
      */
     @Override
     public void workflowFinished(WorkflowInfo w, WorkflowStatus status, Duration elapsed) {

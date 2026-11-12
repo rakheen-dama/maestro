@@ -63,6 +63,9 @@ public interface EngineObserver {
      * after {@link #workflowCompleted} or {@link #workflowFailed}, on the same
      * thread. Never fired for a converged loser, a stand-down, an abandoned run
      * ({@link #runAbandoned}) or a terminate ({@link #workflowTerminated}).
+     * It fires once per terminal transition, not once per workflow: a
+     * workflow that failed, was manually retried and then completed fires it
+     * once with each status.
      *
      * @param w       identity of the workflow that finished
      * @param status  the outcome this node recorded:

@@ -251,6 +251,13 @@ class WorkflowExecutorObserverTest {
         assertEquals(1, observer.terminated().size(),
                 "only the winning terminate CAS may emit workflowTerminated");
         assertEquals("obs-term", observer.terminated().getFirst().workflowId());
+
+        // End state: the parked run has unwound on its own thread.
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertEquals(List.of(AbandonReason.TERMINATED), observer.abandonReasons()));
+        await().atMost(Duration.ofSeconds(2)).until(() -> !executor.isRunning("obs-term"));
+        assertEquals(List.of(), observer.finished(),
+                "a terminate is not a terminal transition this run won — no workflowFinished");
     }
 
     @Test
@@ -356,6 +363,8 @@ class WorkflowExecutorObserverTest {
         assertEquals(List.of(StandDownReason.STALE_RUN),
                 observer.standDowns().stream().map(RecordingEngineObserver.StandDownCall::reason).toList(),
                 "an occupied terminal slot means another run owns the outcome — a stale-run stand-down");
+        assertEquals(List.of(), observer.finished(),
+                "a stand-down records no outcome, so it must not fire workflowFinished");
     }
 
     @Test

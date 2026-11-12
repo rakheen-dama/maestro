@@ -12,6 +12,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -92,12 +93,12 @@ class MicrometerEngineObserverTest {
         var completed = registry.get("maestro.workflow.duration")
                 .tag("workflow", "OrderWorkflow").tag("outcome", "completed").timer();
         assertThat(completed.count()).isEqualTo(1);
-        assertThat(completed.totalTime(java.util.concurrent.TimeUnit.MILLISECONDS)).isEqualTo(150.0);
+        assertThat(completed.totalTime(TimeUnit.MILLISECONDS)).isEqualTo(150.0);
 
         var failed = registry.get("maestro.workflow.duration")
                 .tag("workflow", "OrderWorkflow").tag("outcome", "failed").timer();
         assertThat(failed.count()).isEqualTo(1);
-        assertThat(failed.totalTime(java.util.concurrent.TimeUnit.MILLISECONDS)).isEqualTo(75.0);
+        assertThat(failed.totalTime(TimeUnit.MILLISECONDS)).isEqualTo(75.0);
 
         assertThat(registry.get("maestro.workflow.duration").timers())
                 .as("TERMINATED must not mint a third outcome series")
@@ -119,7 +120,7 @@ class MicrometerEngineObserverTest {
                 .tag("outcome", "completed")
                 .timer();
         assertThat(timer.count()).isEqualTo(1);
-        assertThat(timer.totalTime(java.util.concurrent.TimeUnit.MILLISECONDS)).isEqualTo(150.0);
+        assertThat(timer.totalTime(TimeUnit.MILLISECONDS)).isEqualTo(150.0);
     }
 
     @Test

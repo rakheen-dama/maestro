@@ -145,13 +145,19 @@ executions only.
 
 `maestro.workflow.duration` (Prometheus `maestro_workflow_duration_seconds_count`,
 `_sum`, `_max`, plus `_bucket` when the host enables a histogram) is recorded
-from `workflowFinished`. That callback fires once per workflow, only on the
-node that won the terminal transition, directly after `workflowCompleted` or
+from `workflowFinished`. That callback fires once per terminal transition (a
+manually retried workflow records once per outcome it reached), only on the
+node that won that transition, directly after `workflowCompleted` or
 `workflowFailed`. It records end-to-end wall time: from the instance row's
 `startedAt` to the terminal write, including every park (signals, timers) and
-any downtime before a recovery adopted the run. For a manually retried
-workflow it counts from the original start. It is not recorded for a
-terminate, a stand-down, an abandoned run or a converged loser.
+any downtime before a recovery adopted the run. A manually retried workflow
+keeps its original `startedAt`, so a run that failed, was retried and then
+completed records once under `outcome=failed` and once under
+`outcome=completed`, and the completed duration includes the time it sat
+`FAILED`. The duration is measured on the wall clock (the instance row's
+`startedAt` and the terminal moment are both `Instant.now()`), so
+`TestWorkflowEnvironment`'s controllable clock does not move it. It is not
+recorded for a terminate, a stand-down, an abandoned run or a converged loser.
 
 ### Gauges
 
