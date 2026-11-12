@@ -116,6 +116,26 @@ class WorkflowExecutorBuilderTest {
 
     @Test
     @SuppressWarnings("DataFlowIssue")
+    void buildChecksDurationsBeforeReferences() {
+        // The three duration checks run first, in the order instanceLockTtl,
+        // shutdownTimeout, wakeRecheckInterval, before any requireNonNull.
+        var nullObserver = assertThrows(IllegalArgumentException.class,
+                WorkflowExecutor.builder(store, serializer, "svc")
+                        .observer(null)
+                        .instanceLockTtl(Duration.ZERO)::build);
+        assertTrue(nullObserver.getMessage().startsWith("instanceLockTtl must be positive"),
+                nullObserver.getMessage());
+
+        var twoBadDurations = assertThrows(IllegalArgumentException.class,
+                WorkflowExecutor.builder(store, serializer, "svc")
+                        .instanceLockTtl(Duration.ZERO)
+                        .shutdownTimeout(Duration.ZERO)::build);
+        assertTrue(twoBadDurations.getMessage().startsWith("instanceLockTtl must be positive"),
+                twoBadDurations.getMessage());
+    }
+
+    @Test
+    @SuppressWarnings("DataFlowIssue")
     void requiredArgumentsAndReferenceOptionsAreNeverNull() {
         assertEquals("store", assertThrows(NullPointerException.class,
                 () -> WorkflowExecutor.builder(null, serializer, "svc")).getMessage());
