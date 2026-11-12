@@ -481,6 +481,14 @@ if [[ -n "$s1src" ]]; then
   expect "s1 gate: net 1.5 x the baseline: FAIL" FAIL "$(st "$out" gate.statementsPerWorkflow)"
   out=$(s1_eval s1-gate-low '.' '.' "$(bl "$prof" 1 5 "$(jq -n --argjson n "$net" '$n * 1.5')")")
   expect "s1 gate: net 2/3 of the baseline (symmetric): FAIL" FAIL "$(st "$out" gate.statementsPerWorkflow)"
+  # With the allowance in force (0.02, tolerance about 0 at thousands of
+  # workflows) one added statement per workflow must FAIL and 1.9 % must not.
+  out=$(s1_eval s1-gate-plus1 '.' '.' "$(bl "$prof" 1 5 "$(jq -n --argjson n "$net" '$n - 1')")")
+  expect "s1 gate: one statement per workflow above the baseline: FAIL" FAIL "$(st "$out" gate.statementsPerWorkflow)"
+  out=$(s1_eval s1-gate-minus1 '.' '.' "$(bl "$prof" 1 5 "$(jq -n --argjson n "$net" '$n + 1')")")
+  expect "s1 gate: one statement per workflow below the baseline: FAIL" FAIL "$(st "$out" gate.statementsPerWorkflow)"
+  out=$(s1_eval s1-gate-1p9 '.' '.' "$(bl "$prof" 1 5 "$(jq -n --argjson n "$net" '$n / 1.019')")")
+  expect "s1 gate: 1.9 % above the baseline: PASS" PASS "$(st "$out" gate.statementsPerWorkflow)"
   out=$(s1_eval s1-gate-shape '.' '.' "$(bl "$prof" 1 2 "$net")")
   expect "s1 gate: baseline of another workflow shape: NO_BASELINE" NO_BASELINE "$(st "$out" gate.statementsPerWorkflow)"
   out=$(s1_eval s1-gate-profile '.' '.' "$(bl other 1 5 "$net")")

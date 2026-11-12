@@ -56,12 +56,24 @@
 # used only when its workflowShape {activities, activityMillis}, profile and
 # replicas match this run (otherwise NO_BASELINE, with the reason).
 #
-# relativeAllowance = s1_relative_allowance below: 0.10, PROVISIONAL until
-# justified by measured runs (Task 6 of the WP11 plan records three cold
-# local runs and replaces this paragraph with their spread).
+# relativeAllowance = s1_relative_allowance below: 0.02, from measurements.
+# Three cold local runs on clean trees (one node, 6337 workflows each), net
+# statements per completed workflow over the whole load window:
+#   r20261112t203520z 36.00   r20261112t204157z 36.01   r20261112t204918z 36.00
+# a spread of 0.01 (0.03 %), although the second ran on a host with a load
+# average of 87 on 10 CPUs, where the delivered ceiling fell from 72.6 to
+# 36.9 completions/s and the Hikari pool queued 19 deep. (Per-level figures
+# at balanced levels ranged 35.96 to 36.24; they are not gated.) The started
+# 0.10 would be a band of +/- 3.6 statements: blind to one added statement per
+# workflow (+2.8 %), the smallest real regression. 0.02 is +/- 0.72: it
+# catches that, and is still about 70 x the observed spread. What could move
+# the figure without a code change, and how much: recovery polls page over the
+# backlog (at most about 70 calls a minute at the full profile's peak backlog,
+# about 0.03 per workflow), CAS retries and lock contention (not observed);
+# lock-cleaner passes are subtracted exactly (validity.sweeps).
 include "common";
 
-def s1_relative_allowance: 0.10;
+def s1_relative_allowance: 0.02;
 def sustain_ratio: 0.95;
 def backlog_slack_secs: 1;
 # A level's statement interval is "balanced" when the runs started in it are

@@ -26,7 +26,8 @@
 # Prometheus. Per-level statement figures come from the samples bracketing
 # each level's window; see perf/eval/s1-throughput.jq for how levels are
 # judged ("sustains", the ceiling) and for the statement gate's relative
-# allowance and its measured justification.
+# allowance (0.02) and its measured justification (three cold local runs:
+# net 36.00 / 36.01 / 36.00 statements per workflow).
 #
 # Periodic sweeps: the load window of the full profile crosses the lock
 # cleaner's 10-minute marks; validity.sweeps (common.jq) accounts for them
