@@ -365,6 +365,12 @@ class AwaitSignalTimeoutRaceIT extends PostgresIntegrationSupport {
         }
 
         @Override
+        public tools.jackson.databind.@Nullable JsonNode appendEventReturningPayload(
+                WorkflowEvent event, io.b2mash.maestro.core.spi.RunLease lease) {
+            return delegate.appendEventReturningPayload(event, lease);
+        }
+
+        @Override
         public Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int sequenceNumber) {
             return delegate.getEventBySequence(instanceId, sequenceNumber);
         }

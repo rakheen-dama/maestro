@@ -140,6 +140,11 @@ abstract class DelegatingWorkflowStore implements WorkflowStore {
     }
 
     @Override
+    public tools.jackson.databind.@Nullable JsonNode appendEventReturningPayload(WorkflowEvent event, RunLease lease) {
+        return delegate.appendEventReturningPayload(event, lease);
+    }
+
+    @Override
     public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent, RunLease lease) {
         return delegate.completeInstance(terminal, terminalEvent, lease);
     }

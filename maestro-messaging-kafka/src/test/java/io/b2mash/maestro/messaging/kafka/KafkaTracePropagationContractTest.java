@@ -246,6 +246,8 @@ class KafkaTracePropagationContractTest extends KafkaTestSupport {
                 (proxy, method, args) -> switch (method.getName()) {
                     case "getEventBySequence" -> Optional.empty();
                     case "appendEvent" -> null;
+                    case "appendEventReturningPayload" ->
+                            ((io.b2mash.maestro.core.model.WorkflowEvent) args[0]).payload();
                     default -> throw new UnsupportedOperationException(method.getName());
                 });
     }

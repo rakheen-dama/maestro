@@ -391,6 +391,12 @@ class EnginePostgresParallelIT extends PostgresIntegrationSupport {
         }
 
         @Override
+        public tools.jackson.databind.JsonNode appendEventReturningPayload(
+                WorkflowEvent event, io.b2mash.maestro.core.spi.RunLease lease) {
+            return delegate.appendEventReturningPayload(event, lease);
+        }
+
+        @Override
         public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
             return delegate.completeInstance(terminal, terminalEvent);
         }
