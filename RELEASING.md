@@ -103,6 +103,44 @@ git commit -m "chore: bump version to 0.4.0-SNAPSHOT"
 git push origin main
 ```
 
+Then add the upgrade fixtures for the new tag (see [Upgrade fixtures](#upgrade-fixtures)).
+
+---
+
+## Upgrade fixtures
+
+Maestro's tests hold frozen evidence of what earlier commits shipped and wrote, so that no later change can silently break a database an earlier build migrated, or the workflow history in it. A fixture records one commit, under one name:
+
+| Fixture | Files | Pinned by |
+|---|---|---|
+| Migrations | `maestro-store-postgres/src/test/resources/upgrade/<name>/` — every migration the commit shipped (`store/`, `lock/`, and `messaging/` before the transport was removed), byte for byte, plus `SOURCE` (ref, capture time, SHA-256 of each file) | `ShippedMigrationsFrozenTest`: each `SOURCE` by a SHA-256 constant, each copy against `SOURCE`, each still-shipped migration against its copy (line endings folded). `MaestroSchemaInitializerTest`: a database the frozen set migrated is taken over by this build |
+| Seeded history | `maestro-integration-tests/src/test/resources/upgrade/<name>/seeded-history.sql` (a `pg_dump` of every `maestro_*` table: DDL, `maestro_schema_history`, rows) and `capture.properties` (ref, capture time, server version, SHA-256 of the frozen workflow source), produced by the frozen package `io.b2mash.maestro.integration.upgrade.<name>` (`SeededHistoryWorkflows`, the `SeededHistoryCapture` driver) | `SeededHistoryUpgradeIT`: the manifest's `ref` and frozen-source SHA-256, and the dump's SHA-256 against the constant in `SeededHistory` (`DUMP_SHA256`); then this build upgrades, recovers and replays the history |
+
+The fixtures today: `cbf5a2a` (migrations and seeded history) and `c01d498` (migrations only: the last set that shipped the retired V200–V202 band).
+
+### Adding a fixture at a release tag
+
+Use one name per tag for both kinds. A seeded-history name is also a Java package segment (`[a-z][a-z0-9_]*`), so tag `v0.5.0` takes the name `v0_5_0`. Run everything from the repository root, with Docker running.
+
+1. **Capture the migrations:** `scripts/capture-upgrade-fixture.sh migrations v0.5.0 v0_5_0`. It writes `maestro-store-postgres/src/test/resources/upgrade/v0_5_0/` from the tag's git objects, never from the working tree. Pin it the way `cbf5a2a` is pinned: a `SOURCE` SHA-256 constant in `ShippedMigrationsFrozenTest`, and a test in `MaestroSchemaInitializerTest` that migrates a database with the frozen set (`FrozenMigrations.named("v0_5_0")`) and then runs this build's initializer in `flyway` and `validate` mode.
+2. **Copy the latest frozen package** (today `io.b2mash.maestro.integration.upgrade.cbf5a2a`) to `io.b2mash.maestro.integration.upgrade.v0_5_0`, and rename the package only: the `package` lines, the imports, and the two path constants in `SeededHistoryCapture`, `FIXTURE_SOURCE` and `FIXTURE_PACKAGE`, which name the package's directory. Change nothing else; `SeededHistoryWorkflows` defines how the history is produced. The constants matter: the driver refuses a checkout that differs from the tag anywhere outside `FIXTURE_PACKAGE`, and it records the SHA-256 of the file at `FIXTURE_SOURCE`. The tag's own tree already holds the older packages, so a stale `FIXTURE_SOURCE` would record the hash of the wrong file. The driver compiles against the tag's code, so it may use only APIs present there. Add a `-text` line for the new `SeededHistoryWorkflows.java` to `.gitattributes`; the resources are already covered there by `upgrade/**`.
+3. **Add a `SeededHistory` factory** for the new fixture: its dump and manifest resources, and its own dump SHA-256 constant (filled in from step 4).
+4. **Capture the history:** `scripts/capture-upgrade-fixture.sh history v0.5.0 v0_5_0`. The script needs `upgrade/v0_5_0/SeededHistoryCapture.java` in this checkout (it copies the package from the working tree, so it need not be committed yet) and refuses if the tag already holds a package of that name. It checks the tag out as a temporary detached worktree, copies the package in, and runs `./gradlew --no-watch-fs --no-daemon --no-build-cache :maestro-integration-tests:test --tests io.b2mash.maestro.integration.upgrade.v0_5_0.SeededHistoryCapture --rerun` there, so every task of the capture build runs at the tag and nothing comes from a build cache. The driver runs only when the script sets `MAESTRO_UPGRADE_CAPTURE_OUT`, and refuses to capture unless that checkout's `HEAD` is the tag's full SHA and every modified or untracked file is under the fixture package. The script checks that both files were written and that `capture.properties` records the tag's SHA, moves them into `maestro-integration-tests/src/test/resources/upgrade/v0_5_0/`, and prints the SHA-256 of each. It removes the temporary worktree on every exit path: success, failure, or an interrupt.
+5. **Commit the fixture in its own commit,** with tests that assert it as `theDumpWasCapturedAtCbf5a2a` asserts `cbf5a2a`. Then run `./gradlew --no-watch-fs :maestro-store-postgres:test --tests '*ShippedMigrationsFrozenTest' --tests '*MaestroSchemaInitializerTest'` and `./gradlew --no-watch-fs :maestro-integration-tests:test --tests '*SeededHistoryUpgradeIT'`.
+
+### Never regenerate or delete an existing fixture
+
+A fixture is evidence about the past. Regenerated at a later commit it would record what the newer build ships and writes, and the guard would then pass against exactly the regression it exists to catch. The rules are in the WP9 plan's [Regeneration rules](docs/superpowers/plans/2026-11-12-engine-hardening-cycle/wp09-schema-safety.md#regeneration-rules-read-before-touching-any-frozen-file). A later release adds a new fixture under a new name; it never replaces one.
+
+The script refuses to overwrite: in both modes it stops if the fixture directory exists, checks again just before it moves the new files in, and writes nothing on failure. Re-capturing an existing fixture happens only if the committed fixture is itself defective, and needs the maintainer's explicit approval. Deleting the old directory is then part of the reviewed change; the re-capture is run with the script at the same ref, and goes in its own commit. A re-capture is not byte-identical, so reviewers should expect these differences and no others:
+
+- **Migrations:** the `.sql` copies come from git objects and are identical. `SOURCE` records a new capture time, so its SHA-256 constant in `ShippedMigrationsFrozenTest` changes.
+- **Seeded history:** UUIDs, timestamps and timer due times differ; rows can come out in a different order, because `Set.of` iteration order differs from one JVM to the next and parallel branches can write in either order. `capture.properties` records a new capture time, and a new server version if `postgres:16-alpine` has moved to a newer patch release. The dump's SHA-256 changes, so `DUMP_SHA256` in `SeededHistory` changes.
+
+Either way the regeneration is a visible change to a pinned constant, in a diff a reviewer reads.
+
+**Why an edit is always caught.** The dump's bytes are pinned by `DUMP_SHA256`; the frozen workflow source by the SHA-256 in `capture.properties`; each `SOURCE` by its constant in `ShippedMigrationsFrozenTest`; each migration copy by `SOURCE`. Gradle cannot skip these checks: `maestro-integration-tests/build.gradle.kts` declares the frozen `*/SeededHistoryWorkflows.java` sources and `src/test/resources/upgrade` as inputs of `test`, so even a comment-only edit (which leaves the bytecode unchanged) reruns the tests instead of leaving `test` up to date or restoring it from the build cache. The root `.gitattributes` marks the frozen fixtures `-text`, so git never converts their line endings on checkout and every platform reads the bytes the hashes pin.
+
 ---
 
 ## Published Modules
