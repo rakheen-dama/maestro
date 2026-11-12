@@ -156,6 +156,7 @@ class CompositeEngineObserverTest {
             assertEquals(1, recorder.activityStarted().size(), "activityStarted");
             assertEquals(1, recorder.activityCompleted().size(), "activityCompleted");
             assertEquals(1, recorder.activityFailed().size(), "activityFailed");
+            assertEquals(1, recorder.unreadableResults().size(), "activityResultUnreadable");
             assertEquals(1, recorder.signalPersisted().size(), "signalPersisted");
             assertEquals(1, recorder.signalConsumed().size(), "signalConsumed");
             assertEquals(1, recorder.signalDuplicates().size(), "signalDuplicateSuppressed");
@@ -275,6 +276,7 @@ class CompositeEngineObserverTest {
         o.activityStarted(ACT);
         o.activityCompleted(ACT, Duration.ofMillis(3), false);
         o.activityFailed(ACT, Duration.ofMillis(3), "java.lang.RuntimeException", false);
+        o.activityResultUnreadable(ACT, "tools.jackson.databind.exc.InvalidDefinitionException");
         o.signalPersisted(SIG);
         o.signalConsumed(SIG, false);
         o.signalDuplicateSuppressed(SIG);

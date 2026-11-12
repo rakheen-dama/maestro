@@ -161,6 +161,11 @@ public final class CompositeEngineObserver implements EngineObserver {
     }
 
     @Override
+    public void activityResultUnreadable(ActivityInfo a, String exceptionType) {
+        fanOut("activityResultUnreadable", d -> d.activityResultUnreadable(a, exceptionType));
+    }
+
+    @Override
     public void signalPersisted(SignalInfo s) {
         fanOut("signalPersisted", d -> d.signalPersisted(s));
     }

@@ -125,6 +125,22 @@ public interface EngineObserver {
     default void activityFailed(ActivityInfo a, Duration duration,
                                 String exceptionType, boolean replayed) {}
 
+    /**
+     * A live activity's result was persisted but cannot be read back as the
+     * method's declared return type. The run continues with the object the
+     * activity returned; a replay of this step will stand the run down as
+     * {@code unknown_event_payload}, so every call is a leading indicator of a
+     * stand-down at the run's next recovery.
+     *
+     * <p>Fired live only, on the workflow thread, after the outcome append and
+     * before {@link #activityCompleted}. Never fired on replay.
+     *
+     * @param a             the activity whose result could not be read back
+     * @param exceptionType fully-qualified class name of the deserialization
+     *                      root cause; never use it as a metric tag
+     */
+    default void activityResultUnreadable(ActivityInfo a, String exceptionType) {}
+
     // ── Signals ───────────────────────────────────────────────────────
 
     /** A signal row was durably persisted (delivery side, any node). */
