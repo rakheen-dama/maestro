@@ -27,6 +27,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -316,6 +317,7 @@ class ActivityResultReadBackTest {
         List<Object> listFloat();
         Optional<String> optionalEmpty();
         JsonNode node();
+        Map<String, Object> mapBytes();
     }
 
     public static final class ProbesImpl implements Probes {
@@ -349,6 +351,7 @@ class ActivityResultReadBackTest {
         @Override public List<Object> listFloat() { return List.of(0.1f); }
         @Override public Optional<String> optionalEmpty() { return Optional.empty(); }
         @Override public JsonNode node() { return JsonNodeFactory.instance.objectNode().put("a", 1); }
+        @Override public Map<String, Object> mapBytes() { return Map.of("b", new byte[]{1, 2, 3}); }
     }
 
     /** The probe's 18 cases (default mapper), each bound to its typed method. */
@@ -374,7 +377,9 @@ class ActivityResultReadBackTest {
         // Task 5: an Optional's JSON null reads as Optional.empty(), live and on replay.
         OPTIONAL_EMPTY(Probes::optionalEmpty, v -> v, Optional.empty()),
         // Task 5: an untyped float reads back as a text store returns it — a Double.
-        MAP_FLOAT_STAYS_DOUBLE_ON_REPLAY(Probes::mapFloat, ProbeCase::classAndValueOfF, "Double 0.1");
+        MAP_FLOAT_STAYS_DOUBLE_ON_REPLAY(Probes::mapFloat, ProbeCase::classAndValueOfF, "Double 0.1"),
+        // Task 5: binary inside an untyped map reads back as a text store returns it — a base64 String.
+        MAP_BYTES_READS_AS_BASE64(Probes::mapBytes, ProbeCase::classAndValueOfB, "String AQID");
 
         private final Function<Probes, Object> call;
         private final Function<Object, Object> comparable;
@@ -415,8 +420,17 @@ class ActivityResultReadBackTest {
 
         /** The class and value of the map's {@code "f"} entry, e.g. {@code "Double 0.1"}. */
         private static Object classAndValueOfF(Object value) {
-            var f = ((Map<?, ?>) value).get("f");
-            return f.getClass().getSimpleName() + " " + f;
+            return classAndValueOf(value, "f");
+        }
+
+        /** The class and value of the map's {@code "b"} entry, e.g. {@code "String AQID"}. */
+        private static Object classAndValueOfB(Object value) {
+            return classAndValueOf(value, "b");
+        }
+
+        private static Object classAndValueOf(Object map, String key) {
+            var v = ((Map<?, ?>) map).get(key);
+            return v.getClass().getSimpleName() + " " + (v instanceof byte[] bytes ? Arrays.toString(bytes) : v);
         }
 
         /** {@code Base} has no {@code equals}: its class and public fields, as {@code Sub} would add one. */

@@ -7,8 +7,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.cfg.JsonNodeFeature;
+import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.NullNode;
 
 import java.lang.reflect.ParameterizedType;
@@ -210,6 +213,10 @@ class PayloadSerializerTest {
         Map<String, Object> untypedMap();
 
         List<Object> untypedList();
+
+        <T> T typeVariable();
+
+        Map<?, ? extends Optional<String>> wildcards();
     }
 
     private static final Type OPTIONAL_STRING_TYPE = returnTypeOf("optionalString");
@@ -317,18 +324,116 @@ class PayloadSerializerTest {
     }
 
     /**
-     * Anti-goal 2 — history replays as before: for every node a JDBC store
-     * parses from a payload column, the text path returns what the tree path
-     * returned, value and class.
+     * Host mappers whose decimal settings decide what a JDBC store's
+     * {@code readTree} builds (a {@code DoubleNode} or a {@code DecimalNode})
+     * and how an untyped target reads it.
      */
-    @ParameterizedTest(name = "[{index}] {0} as {1}")
-    @MethodSource("jdbcReadCorpus")
-    void textPathEqualsTreePathForEveryNodeTheJdbcStoreReads(String json, Type target) {
-        var node = MAPPER.readTree(json);                     // what today's JDBC store hands the engine
-        var before = MAPPER.treeToValue(node, MAPPER.getTypeFactory().constructType(target));
-        var after = new PayloadSerializer(MAPPER).deserialize(node, target);
+    private static final Map<String, ObjectMapper> HOST_MAPPERS = Map.of(
+            "default", MAPPER,
+            "JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS",
+            JsonMapper.builder().enable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS).build(),
+            "DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS",
+            JsonMapper.builder().enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).build());
+
+    /**
+     * Anti-goal 2 — history replays as before: for every node a JDBC store
+     * parses from a payload column, under each host mapper, the text path
+     * returns what the tree path returned, value and class.
+     */
+    @ParameterizedTest(name = "[{index}] {0}: {1} as {2}")
+    @MethodSource("jdbcReadCorpusUnderEveryHostMapper")
+    void textPathEqualsTreePathForEveryNodeTheJdbcStoreReads(String mapperName, String json, Type target) {
+        var mapper = HOST_MAPPERS.get(mapperName);
+        var node = mapper.readTree(json);                     // what today's JDBC store hands the engine
+        var before = mapper.treeToValue(node, mapper.getTypeFactory().constructType(target));
+        var after = new PayloadSerializer(mapper).deserialize(node, target);
         assertEquals(contentOf(before), contentOf(after));
         assertEquals(before == null ? null : before.getClass(), after == null ? null : after.getClass());
+    }
+
+    static Stream<Arguments> jdbcReadCorpusUnderEveryHostMapper() {
+        return HOST_MAPPERS.keySet().stream().sorted().flatMap(mapperName -> jdbcReadCorpus()
+                .map(row -> Arguments.of(mapperName, row.get()[0], row.get()[1])));
+    }
+
+    /**
+     * A host mapper with {@code JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS} on
+     * (and the {@code DeserializationFeature} off) parses a stored decimal into
+     * a {@code DecimalNode}; the tree path read it as a {@code BigDecimal} for
+     * an untyped target, scale included, and so must the text path.
+     */
+    @Test
+    void aJsonNodeBigDecimalHostMapperReadsAnUntypedDecimalAsTheBigDecimalItStored() {
+        var host = HOST_MAPPERS.get("JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS");
+        var hostSerializer = new PayloadSerializer(host);
+        var node = host.readTree("{\"amount\":10.50}");
+        assertEquals("DecimalNode", node.get("amount").getClass().getSimpleName());
+        var asMap = ((Map<?, ?>) hostSerializer.deserialize(node, returnTypeOf("untypedMap"))).get("amount");
+        var asObject = ((Map<?, ?>) hostSerializer.deserialize(node, Object.class)).get("amount");
+        assertEquals(List.of("BigDecimal 10.50", "BigDecimal 10.50"), List.of(describe(asMap), describe(asObject)));
+    }
+
+    /**
+     * C1 (WP1 Task 6 relies on it): the rule keys on the host mapper's
+     * {@code JsonNodeFeature}, not on the node — under the default mapper an
+     * untyped target reads a {@code DecimalNode} as a {@code Double}.
+     */
+    @Test
+    void theDefaultMapperReadsADecimalNodeAsADoubleForAnUntypedTarget() {
+        var node = MAPPER.createObjectNode().put("amount", new BigDecimal("10.50"));
+        assertEquals("DecimalNode", node.get("amount").getClass().getSimpleName());
+        var asMap = ((Map<?, ?>) serializer.deserialize(node, returnTypeOf("untypedMap"))).get("amount");
+        var asObject = ((Map<?, ?>) serializer.deserialize(node, Object.class)).get("amount");
+        assertEquals(List.of("Double 10.5", "Double 10.5"), List.of(describe(asMap), describe(asObject)));
+    }
+
+    /**
+     * Accepted difference (release note): under the default mapper a stored
+     * number exactly halfway between two floats, read into a {@code float},
+     * was rounded twice by the tree path (text to {@code double}, then to
+     * {@code float}) and is now rounded once (text to {@code float}). Inside a
+     * record the text parse is Jackson's own, so the old value cannot be kept
+     * there, and the rule is the same at every position.
+     */
+    @Test
+    void acceptedDifference_aHalfwayFloatIsRoundedOnceFromItsText() {
+        var node = MAPPER.readTree("1.0000000596046448");
+        assertEquals("DoubleNode", node.getClass().getSimpleName());
+        assertEquals(1.0f, MAPPER.treeToValue(node, float.class));                            // the tree path
+        var record = MAPPER.readTree("{\"name\":\"x\",\"value\":1,\"ratio\":1.0000000596046448}");
+        assertEquals(List.of("Float 1.0000001", "Float 1.0000001", "Float 1.0000001"), List.of(
+                describe(serializer.deserialize(node, float.class)),
+                describe(serializer.deserialize(node, Float.class)),
+                describe(serializer.deserialize(record, Ratio.class).ratio())));
+    }
+
+    record Ratio(String name, int value, float ratio) {}
+
+    /**
+     * Whether a JSON null reads as empty is decided on the raw class Jackson
+     * resolves for the target, whatever shape of {@link Type} names it.
+     */
+    @ParameterizedTest(name = "[{index}] {0}")
+    @MethodSource("typeShapes")
+    void nullReadsByTheResolvedRawClassForEveryTypeShape(String label, Type target, String expected) {
+        assertEquals(List.of(expected, expected), List.of(
+                outcome(() -> serializer.deserialize(null, target)),
+                outcome(() -> serializer.deserialize(NullNode.instance, target))), label);
+    }
+
+    static Stream<Arguments> typeShapes() {
+        var wildcards = (ParameterizedType) returnTypeOf("wildcards");
+        return Stream.of(
+                Arguments.of("JavaType Optional<String>",
+                        MAPPER.getTypeFactory().constructType(OPTIONAL_STRING_TYPE), "Optional Optional.empty"),
+                Arguments.of("JavaType String", MAPPER.getTypeFactory().constructType(String.class), "Java null"),
+                Arguments.of("ParameterizedType Optional<String>", OPTIONAL_STRING_TYPE, "Optional Optional.empty"),
+                Arguments.of("ParameterizedType List<String>", returnTypeOf("stringList"), "Java null"),
+                Arguments.of("type variable T", returnTypeOf("typeVariable"), "Java null"),
+                Arguments.of("wildcard ?", wildcards.getActualTypeArguments()[0], "Java null"),
+                // Jackson resolves a bounded wildcard to its bound, as it does for a non-null node.
+                Arguments.of("wildcard ? extends Optional<String>", wildcards.getActualTypeArguments()[1],
+                        "Optional Optional.empty"));
     }
 
     /** A {@code byte[]} compared by content; anything else by its own {@code equals}. */
@@ -386,6 +491,7 @@ class PayloadSerializerTest {
                 Arguments.of("1E+2", BigDecimal.class),
                 Arguments.of("12345678901234567.89", BigDecimal.class),
                 Arguments.of("\"AQID\"", byte[].class),
+                Arguments.of("10.50", Number.class),
                 // untyped: decimals, exponents, ints, longs, big integers, booleans, nested objects
                 Arguments.of("0.1", Object.class),
                 Arguments.of("10.50", Object.class),
