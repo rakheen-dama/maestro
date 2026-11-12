@@ -28,6 +28,7 @@ include(
     "maestro-admin-client",
     "maestro-samples:sample-order-service",
     "maestro-samples:sample-payment-gateway",
+    "maestro-samples:sample-perf",
     "maestro-samples:sample-loan-origination:loan-application-service",
     "maestro-samples:sample-loan-origination:verification-gateway-service",
     "maestro-samples:sample-loan-origination:underwriting-service",

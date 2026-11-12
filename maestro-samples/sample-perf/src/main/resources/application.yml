@@ -1,0 +1,51 @@
+# sample-perf runs Maestro's TRUE defaults: it is the system under test of the
+# k6 load harness (perf/), and a number measured on tuned settings says nothing
+# about what an adopter gets out of the box. So it sets only what Maestro cannot
+# default (service name, store, transport, the signals topic) plus
+# maestro.admin.events.enabled, which the harness sets explicitly per run from
+# PERF_ADMIN_EVENTS (default true, today's engine default) and reads back from
+# GET /perf/info. No maestro.worker.*, maestro.signal.*, maestro.recovery.*,
+# maestro.retention.* or maestro.lock.* property, and no Hikari pool size.
+# Every addition under maestro.* or spring.datasource.hikari.* must be justified
+# in docs/test-plan.md.
+
+spring:
+  application:
+    name: sample-perf
+
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/maestro}
+    username: ${SPRING_DATASOURCE_USERNAME:maestro}
+    password: ${SPRING_DATASOURCE_PASSWORD:maestro}
+
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+
+server:
+  port: 8080
+
+maestro:
+  service-name: perf
+  store:
+    type: postgres
+  messaging:
+    type: kafka
+    topics:
+      signals: maestro.signals.perf
+  admin:
+    events:
+      enabled: ${PERF_ADMIN_EVENTS:true}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  metrics:
+    distribution:
+      # Histogram buckets for the harness's latency percentiles. A key for a
+      # meter the engine does not register (maestro.workflow.duration on an
+      # engine older than WP11) is harmless.
+      percentiles-histogram:
+        "[maestro.workflow.duration]": true
+        "[maestro.activity.duration]": true
