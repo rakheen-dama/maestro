@@ -249,9 +249,11 @@ documenting the bounded-host-load cycle's index migration (a store migration
 shipped after V100 failed startup, and its first fix moved the failure to older
 nodes), is **resolved** by `outOfOrder` and a numbering rule that puts every
 new migration above V100. Four more (36–39), found by that cycle's final
-whole-branch review, are filed **open**: the test kit cannot apply the default
+whole-branch review, were filed **open**: the test kit cannot apply the default
 concurrency limits, `WorkflowExecutor`'s constructors need a builder, the wake
 listener's shutdown WARN, and silent stranding under another `service_name`.
+Issue 37 is since **resolved** by `WorkflowExecutor.builder(...)` and the
+removal of the ten constructors — see its section; 36, 38 and 39 remain open.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the

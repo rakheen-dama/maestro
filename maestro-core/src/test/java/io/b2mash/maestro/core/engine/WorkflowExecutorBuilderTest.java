@@ -117,8 +117,11 @@ class WorkflowExecutorBuilderTest {
     @Test
     @SuppressWarnings("DataFlowIssue")
     void buildChecksDurationsBeforeReferences() {
-        // The three duration checks run first, in the order instanceLockTtl,
-        // shutdownTimeout, wakeRecheckInterval, before any requireNonNull.
+        // Pins the whole order: instanceLockTtl before a null reference and
+        // before shutdownTimeout; shutdownTimeout before wakeRecheckInterval;
+        // and wakeRecheckInterval, the last duration check, before every
+        // reference check (lockKeyPrefix, observer, taskQueueLimits,
+        // instantSource) — so no null check runs before or between them.
         var nullObserver = assertThrows(IllegalArgumentException.class,
                 WorkflowExecutor.builder(store, serializer, "svc")
                         .observer(null)
@@ -132,6 +135,23 @@ class WorkflowExecutorBuilderTest {
                         .shutdownTimeout(Duration.ZERO)::build);
         assertTrue(twoBadDurations.getMessage().startsWith("instanceLockTtl must be positive"),
                 twoBadDurations.getMessage());
+
+        var lastTwoDurations = assertThrows(IllegalArgumentException.class,
+                WorkflowExecutor.builder(store, serializer, "svc")
+                        .shutdownTimeout(Duration.ZERO)
+                        .wakeRecheckInterval(Duration.ZERO)::build);
+        assertTrue(lastTwoDurations.getMessage().startsWith("shutdownTimeout must be positive"),
+                lastTwoDurations.getMessage());
+
+        var everyReferenceNull = assertThrows(IllegalArgumentException.class,
+                WorkflowExecutor.builder(store, serializer, "svc")
+                        .wakeRecheckInterval(Duration.ZERO)
+                        .lockKeyPrefix(null)
+                        .observer(null)
+                        .taskQueueLimits(null)
+                        .instantSource(null)::build);
+        assertTrue(everyReferenceNull.getMessage().startsWith("wakeRecheckInterval must be positive"),
+                everyReferenceNull.getMessage());
     }
 
     @Test
