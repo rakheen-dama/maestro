@@ -368,6 +368,28 @@ class MaestroSchemaInitializerTest {
     }
 
     /**
+     * Upgrade safety from main @ {@code cbf5a2a} (WP9 b2): a database that
+     * exactly the migration set {@code cbf5a2a} shipped migrated — the frozen
+     * copy, not this build's resources — is taken over by this build in both
+     * {@code flyway} and {@code validate} mode. An edited shipped migration
+     * fails here with Flyway's checksum mismatch; a renamed or deleted one
+     * with "applied migration not resolved locally".
+     */
+    @Test
+    @DisplayName("a database migrated by exactly the set shipped at cbf5a2a validates under this build")
+    void aDatabaseMigratedByTheFrozenCbf5a2aSetValidatesUnderThisBuild() throws SQLException {
+        // cbf5a2a's initializer had outOfOrder(true).
+        FrozenMigrations.named("cbf5a2a").olderBuild(ds, true).migrate();
+        assertThat(versions(MaestroSchemaInitializer.HISTORY_TABLE))
+                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "100", "101");
+
+        assertThatCode(() -> new MaestroSchemaInitializer(ds, SchemaMode.FLYWAY, cl).initialize())
+                .doesNotThrowAnyException();
+        assertThatCode(() -> new MaestroSchemaInitializer(ds, SchemaMode.VALIDATE, cl).initialize())
+                .doesNotThrowAnyException();
+    }
+
+    /**
      * The numbering rule (CLAUDE.md, docs/configuration.md § Schema
      * management): every new Maestro migration, store or lock, takes the next
      * version above the highest shipped, within 101–199. Versions 1–9 and 100
