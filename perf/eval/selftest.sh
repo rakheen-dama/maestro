@@ -448,6 +448,17 @@ if [[ -n "$s1src" ]]; then
   out=$(s1_eval s1-dropped '(.k6[] | select(.phase == "s1") | .droppedIterations) = 12')
   expect "s1, k6 dropped 12 iterations: validity.droppedIterations" INVALID "$(st "$out" validity.droppedIterations)"
   expect "s1, k6 dropped 12 iterations: verdict" INVALID "$(jq -r .verdict <<<"$out")"
+  # The plan k6 executed must be the plan the harness recorded (a profile or
+  # VU override that reached `k6 run` but not `k6 inspect` once recorded the
+  # local plan for a full run).
+  out=$(s1_eval s1-plan-missing 'del(.executedPlan)')
+  expect "s1, k6 wrote no executed plan: validity.plan" INVALID "$(st "$out" validity.plan)"
+  out=$(s1_eval s1-plan-vus '.executedPlan.maxVUs = 1 | .executedPlan.preAllocatedVUs = 1')
+  expect "s1, k6 ran 1/1 VUs, harness recorded the profile's: validity.plan" INVALID "$(st "$out" validity.plan)"
+  out=$(s1_eval s1-plan-profile '.executedPlan.profile = "full" | .executedPlan.levels = [5, 10, 20, 40, 60, 80, 120]')
+  expect "s1, k6 ran another profile's levels: validity.plan" INVALID "$(st "$out" validity.plan)"
+  out=$(s1_eval s1-plan-runprofile '.' '.profile = "full"')
+  expect "s1, recorded plan is not the run's --profile: validity.plan" INVALID "$(st "$out" validity.plan)"
   out=$(s1_eval s1-level-missing '.levelRows |= .[:-1]')
   expect "s1, a planned level has no rows: validity.levels" INVALID "$(st "$out" validity.levels)"
   out=$(s1_eval s1-unlabeled '.unlabeledRows = 1')

@@ -110,6 +110,18 @@ export default function () {
   startWorkflow(nodeFor(i), body, { name: 'start' });
 }
 
+// The plan this run actually executed, next to its summary: the harness
+// compares it with what `k6 inspect` resolved (validity.plan), so a profile
+// or VU override that reached one and not the other cannot go unnoticed.
 export function handleSummary(data) {
-  return summary(PHASE)(data);
+  const out = summary(PHASE)(data);
+  out[`/results/k6-${PHASE}-plan.json`] = JSON.stringify({
+    profile: PROFILE_NAME,
+    levels: PROFILE.levels,
+    rampSecs: PROFILE.rampSecs,
+    holdSecs: PROFILE.holdSecs,
+    preAllocatedVUs: PRE_ALLOCATED_VUS,
+    maxVUs: MAX_VUS,
+  });
+  return out;
 }

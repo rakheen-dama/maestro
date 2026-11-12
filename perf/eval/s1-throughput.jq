@@ -176,6 +176,16 @@ $identity[0] as $id
           {maestroCalls: $w.maestroCalls, harnessCalls: $w.harnessCalls};
           {maestroCalls: "> 0", harnessCalls: "> 0"};
           "engine (role maestro) and harness (role postgres) statements are both seen and counted apart"),
+    ( ($m.plan // {} | {profile, levels, rampSecs, holdSecs, preAllocatedVUs, maxVUs}) as $resolved
+      | ($m.executedPlan // null) as $ran
+      | (($ran | type) == "object" and $ran == ($ran | {profile, levels, rampSecs, holdSecs, preAllocatedVUs, maxVUs})
+         and $ran == $resolved and $resolved.profile == $id.profile) as $ok
+      | check("validity.plan"; "validity"; if $ok then "PASS" else "INVALID" end;
+          {resolved: $resolved, executed: $ran, runProfile: $id.profile};
+          "the plan k6 executed (k6-s1-plan.json) == the plan k6 inspect resolved, for this run's profile";
+          if $ok then "k6 ran the \($ran.profile) plan the harness recorded: levels \($ran.levels), VUs \($ran.preAllocatedVUs)/\($ran.maxVUs)"
+          elif ($ran | type) != "object" then "k6 wrote no executed plan"
+          else "k6 executed \($ran | tojson) but the harness recorded \($resolved | tojson) for profile \($id.profile)" end) ),
     ( ($levels | map(.level)) as $got
       | ([$levels[] | select((.arrivals | isnum | not) or .arrivals <= 0) | .level]) as $empty
       | (($planned | length) > 0 and $got == $planned and ($empty | length) == 0 and $m.unlabeledRows == 0) as $ok

@@ -105,7 +105,9 @@ scenario_run() {
   # The profile as k6 resolves it (levels, ramp/hold, VUs, overrides applied).
   local inspect_args=() kv plan
   for kv in "${k6env[@]}"; do inspect_args+=(-e "$kv"); done
-  plan=$(dc run --rm --no-deps "${inspect_args[@]}" k6 inspect /scripts/start-ramp.js </dev/null 2>>"${RESULTS}/harness.log" \
+  # k6 inspect reads script env only from its own -e flags (unlike k6 run,
+  # it does not take the container's environment).
+  plan=$(dc run --rm --no-deps k6 inspect "${inspect_args[@]}" /scripts/start-ramp.js </dev/null 2>>"${RESULTS}/harness.log" \
     | jq -c '.scenarios.s1 | {executor, timeUnit, startRate, preAllocatedVUs, maxVUs, stages,
               levels: [.stages | to_entries[] | select(.key % 2 == 1) | .value.target],
               rampSecs: (.stages[0].duration | rtrimstr("s") | tonumber),
@@ -147,6 +149,10 @@ scenario_run() {
   sampler=$!
 
   k6_run s1 start-ramp.js "${k6env[@]}"
+  local executed=null
+  if [[ -s "${RESULTS}/k6-s1-plan.json" ]]; then
+    executed=$(jq -c . "${RESULTS}/k6-s1-plan.json")
+  fi
   local accepted
   accepted=$(jq -s '[.[] | select(.phase == "s1") | .checksPassed // 0] | add // 0' "${RESULTS}/k6-runs.jsonl")
   log "s1: waiting (<= ${drain_timeout} s) for ${accepted} accepted runs of ${prefix} to be terminal"
@@ -189,10 +195,10 @@ scenario_run() {
     --argjson status "$status" --argjson latency "$latency" --argjson levels "$levels" \
     --argjson levelProm "$level_prom" --argjson abandoned "$abandoned" \
     --argjson foreign "$foreign" --argjson k6 "$(k6_records)" \
-    --argjson accepted "$accepted" --slurpfile samples "$samples" --argjson sampleSecs "$S1_SAMPLE_SECS" \
+    --argjson accepted "$accepted" --argjson executed "$executed" --slurpfile samples "$samples" --argjson sampleSecs "$S1_SAMPLE_SECS" \
     '{idPrefix: $prefix, runPrefix: $runPrefix,
       workflowShape: ($body | {type, activities, activityMillis}),
-      plan: $plan, accepted: $accepted,
+      plan: $plan, executedPlan: $executed, accepted: $accepted,
       warmup: $warmup, background: $background,
       pgssReset: $reset, k6: $k6,
       drain: {waitedSecs: $drain.waitedSecs, timedOut: $drain.timedOut, timeoutSecs: $plan.drainTimeoutSecs},
