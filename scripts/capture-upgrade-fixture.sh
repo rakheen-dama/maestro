@@ -26,6 +26,10 @@ set -euo pipefail
 SCRIPT="scripts/capture-upgrade-fixture.sh"
 MIGRATIONS_ROOT="maestro-store-postgres/src/test/resources/upgrade"
 MIGRATION_PATH_RE='^.+/src/main/resources/db/maestro/(store|lock|messaging)/V[0-9]+__[^/]*\.sql$'
+# A fixture name is one plain path segment, so <name> can never point outside
+# the fixture root (no '/', no '..', no hidden directory).
+NAME_RE='^[A-Za-z0-9._-]+$'
+SHA256_RE='^[0-9a-f]{64}$'
 
 die() {
     echo "$SCRIPT: $*" >&2
@@ -54,6 +58,8 @@ version_of() {
 
 capture_migrations() {
     local ref="$1" name="$2"
+    [[ "$name" =~ $NAME_RE && "$name" != .* ]] \
+        || die "invalid fixture name '$name': use only [A-Za-z0-9._-], not starting with '.'"
     local sha
     sha="$(git rev-parse --verify --quiet "${ref}^{commit}")" || die "ref '$ref' does not resolve to a commit"
 
@@ -68,10 +74,18 @@ capture_migrations() {
     paths="$(while IFS= read -r p; do printf '%s\t%s\n' "$(version_of "$p")" "$p"; done <<<"$paths" \
         | sort -n -k1,1 | cut -f2)"
 
+    # Stage inside the fixture root, so the final mv is a rename on one
+    # filesystem: the fixture appears whole or not at all. The staging
+    # directory is removed on every failure path (die, a failing command
+    # under set -e, or an interrupt).
+    mkdir -p "$MIGRATIONS_ROOT"
     local staging
-    staging="$(mktemp -d)"
+    staging="$(mktemp -d "$MIGRATIONS_ROOT/.capture.XXXXXX")"
     # shellcheck disable=SC2064 # expand now: staging is local
     trap "rm -rf '$staging'" EXIT
+    trap 'exit 130' INT TERM HUP
+    # mktemp -d creates 0700; give the fixture the mode mkdir would.
+    chmod "$(printf '%o' $((0777 & ~0$(umask))))" "$staging"
 
     {
         echo "# Frozen Maestro migrations, produced by $SCRIPT migrations $ref $name."
@@ -82,19 +96,23 @@ capture_migrations() {
         echo "captured=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     } >"$staging/SOURCE"
 
-    local path component file
+    local path component file hash
     while IFS= read -r path; do
         component="$(basename "$(dirname "$path")")"
         file="$(basename "$path")"
         mkdir -p "$staging/$component"
         [[ ! -e "$staging/$component/$file" ]] || die "two modules ship $component/$file at $sha"
         git cat-file blob "$sha:$path" >"$staging/$component/$file"
-        echo "$component/$file=$(sha256 "$staging/$component/$file")" >>"$staging/SOURCE"
+        # Hash into a variable first: inside "$(...)" in an echo argument a
+        # failing hash would not trip set -e and SOURCE would record garbage.
+        hash="$(sha256 "$staging/$component/$file")" || die "could not hash $component/$file"
+        [[ "$hash" =~ $SHA256_RE ]] || die "could not hash $component/$file (got '$hash')"
+        echo "$component/$file=$hash" >>"$staging/SOURCE"
     done <<<"$paths"
 
-    mkdir -p "$MIGRATIONS_ROOT"
+    [[ ! -e "$target" ]] || die "$target appeared during the capture; refusing to overwrite it"
     mv "$staging" "$target"
-    trap - EXIT
+    trap - EXIT INT TERM HUP
     echo "$SCRIPT: wrote $target ($(grep -c '^[a-z]*/V' "$target/SOURCE") migrations at $sha)"
 }
 

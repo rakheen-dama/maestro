@@ -48,6 +48,23 @@ class ShippedMigrationsFrozenTest {
         }
     }
 
+    /**
+     * SHA-256 of {@code upgrade/cbf5a2a/SOURCE} (line endings folded to LF),
+     * as committed. The checks above compare the shipped SQL, the frozen copy
+     * and {@code SOURCE} with one another, so editing all three together would
+     * pass them; this literal is the fourth party that must then change too,
+     * in a diff a reviewer sees. Never update it to make this test pass.
+     */
+    static final String CBF5A2A_SOURCE_SHA256 = "89d1187d30e78505e24f79e978d0c707bfc36344f2bcc3a4a207916da4003c74";
+
+    @Test
+    @DisplayName("the cbf5a2a SOURCE manifest is byte for byte the one committed with the fixture")
+    void theCbf5a2aManifestIsPinned() {
+        assertThat(FrozenMigrations.sha256(FrozenMigrations.lf(FrozenMigrations.named("cbf5a2a").read("SOURCE"))))
+                .as("upgrade/cbf5a2a/SOURCE changed; frozen fixtures are never edited or regenerated")
+                .isEqualTo(CBF5A2A_SOURCE_SHA256);
+    }
+
     @ParameterizedTest(name = "{0}")
     @MethodSource("frozenFiles")
     @DisplayName("every migration shipped at cbf5a2a is still shipped, unchanged")
