@@ -32,14 +32,18 @@
 # each level's window; see perf/eval/s1-throughput.jq for how levels are
 # judged ("sustains", the ceiling, the ramp and maximum biases), for
 # contention, and for the statement gate's relative allowance and its
-# measured justification (re-measured in fix round 1; see the jq header).
+# measured justification: four cold local runs that PASS the final
+# evaluator and are judged quiet, net statements per workflow 36.0028 /
+# 36.0032 / 36.0028 / 36.0030 (r20261112t210341z, r20261112t213818z,
+# r20261112t222511z, r20261112t223114z); allowance 0.02.
 #
 # What this scenario measures. The ceiling is about 20 slots / the time a run
 # holds its workflow slot, and 250 ms of that hold is the sample's own
 # activity time (5 x 50 ms); measured on quiet runs the hold is 261-269 ms
-# with 19.0-19.8 of 20 slots busy, i.e. 13-19 ms of engine overhead per
-# workflow. So an engine change can move the ceiling only within about
-# 72-80/s. It is good for: showing that the 20 workflow slots bind before the
+# with 19.0-19.8 of 20 slots busy, i.e. about 11-19 ms of engine overhead
+# per workflow, and the delivered ceiling is 70.6-73.1/s. Even with zero
+# overhead the slots cap it at 20 / 0.25 s = 80/s, so an engine change can
+# move this number only within roughly 72-80/s. It is good for: showing that the 20 workflow slots bind before the
 # Hikari pool of 10 does; pinning statements per workflow (the gate); and
 # measuring engine overhead per workflow (slot hold minus activity time,
 # ceiling.engineOverheadMsPerWorkflow). It is NOT a measure of engine

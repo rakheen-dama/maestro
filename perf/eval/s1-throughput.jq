@@ -44,7 +44,9 @@
 # activityMillis. Run-level engineOverheadMsPerWorkflow is taken at the
 # ceiling level, where the slots are nearly all busy and the gauge average is
 # least quantised. Measured on quiet runs: hold 261-269 ms with 19.0-19.8 of
-# 20 slots busy, so the ceiling is about 20 / (0.25 s + 13-19 ms) = 72-77/s.
+# 20 slots busy (engine overhead about 11-19 ms), so the slot bound is about
+# 20 / (0.25 s + 11-19 ms) = 74-77/s, and the delivered ceiling 70.6-73.1/s
+# (the slots are not quite all busy all the time).
 # This scenario therefore mostly measures the slot limit against the
 # sample's activity time: an engine change can move the ceiling only within
 # about 72-80/s (80 = 20 / 0.25 s, zero overhead). What it is good for: it
@@ -119,10 +121,31 @@
 # used only when its workflowShape {activities, activityMillis}, profile and
 # replicas match this run (otherwise NO_BASELINE, with the reason).
 #
-# relativeAllowance = s1_relative_allowance below: 0.02, PENDING its evidence:
-# the three runs first cited predate validity.plan and are INVALID under this
-# evaluator; fix round 1 re-measures on this code and cites only runs that
-# PASS it.
+# relativeAllowance = s1_relative_allowance below: 0.02, from measurements.
+# Evidence: only runs that PASS THIS evaluator (validity.plan included) and
+# that advisory.contention judges quiet. Four cold local runs, one node, 6337
+# workflows each, net statements per completed workflow over the whole load
+# window (unrounded: (maestroCalls - lock-cleaner calls - background) /
+# completed):
+#   r20261112t210341z 36.0028 (228229 calls; VUs 50/200, before 4bf45b6)
+#   r20261112t213818z 36.0032 (228232 calls)
+#   r20261112t222511z 36.0028 (228229 calls; host load average 12.1 on 10
+#                              CPUs at its start)
+#   r20261112t223114z 36.0030 (228232 calls; host load 7.8)
+# a spread of 0.0004 (0.001 %): the engine issued 228229 or 228232 calls for
+# the same 6337 workflows. The full profile's PASSing run r20261112t214359z
+# (contended) gave 36.0136 over 42974 workflows. Runs r20261112t203520z,
+# r20261112t204157z and r20261112t204918z (36.00 / 36.01 / 36.00), first
+# cited here, are INVALID under this evaluator (they predate the executed-plan
+# record) and are no longer evidence. The started 0.10 would be a band of
+# +/- 3.6 statements: blind to one added statement per workflow (+2.8 %), the
+# smallest real regression. 0.02 is +/- 0.72: it catches that and is still
+# far above the observed spread. What could move the figure without a code
+# change, and how much: recovery polls page over the backlog (at most about
+# 70 calls a minute at the full profile's peak backlog, about 0.03 per
+# workflow, consistent with the full run's +0.01), CAS retries and lock
+# contention (not observed); lock-cleaner passes are subtracted exactly
+# (validity.sweeps).
 include "common";
 
 def s1_relative_allowance: 0.02;
