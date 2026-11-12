@@ -690,4 +690,97 @@ class PayloadSerializerTest {
                         [0.1,10.50,1.123456789012345678,1e3,7,1152921504606846976,1180591620717411303424,\
                         false,null,{"k":"v","n":-0.0},[1,[2.0]]]""", list));
     }
+
+    // ── WP1 Task 6 (C1): the exact-decimal tree the JDBC store builds ────
+
+    /** Host mappers beyond {@link #HOST_MAPPERS} whose decimal settings the store's exact reader must respect. */
+    private static final Map<String, ObjectMapper> DECIMAL_EDGE_MAPPERS = Map.of(
+            "edge: STRIP_TRAILING_BIGDECIMAL_ZEROES on (decimals off)",
+            JsonMapper.builder().enable(JsonNodeFeature.STRIP_TRAILING_BIGDECIMAL_ZEROES).build(),
+            "edge: JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS explicitly off",
+            JsonMapper.builder().disable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS).build(),
+            "edge: JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS + STRIP_TRAILING_BIGDECIMAL_ZEROES",
+            JsonMapper.builder().enable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+                    .enable(JsonNodeFeature.STRIP_TRAILING_BIGDECIMAL_ZEROES).build());
+
+    /**
+     * The tree {@code AbstractJdbcWorkflowStore} parses a payload column into
+     * since WP1 Task 6, mirrored here because {@code maestro-core} cannot see
+     * the store (the store's own rule is pinned per host mapper by
+     * {@code JdbcPayloadDecimalReaderTest}): the host's own tree when that
+     * already holds decimals, otherwise exact {@code DecimalNode}s with their
+     * trailing zeros kept.
+     */
+    private static JsonNode exactDecimalTree(ObjectMapper mapper, String json) {
+        return hostTreesHoldDecimals(mapper) ? mapper.readTree(json)
+                : mapper.reader().with(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+                        .without(JsonNodeFeature.STRIP_TRAILING_BIGDECIMAL_ZEROES).readTree(json);
+    }
+
+    private static boolean hostTreesHoldDecimals(ObjectMapper mapper) {
+        return mapper.readTree("0.10").isBigDecimal();
+    }
+
+    /** The corpus targets that ask for a decimal (a {@code BigDecimal}, a {@code java.time} numeric timestamp). */
+    private static boolean readsATypedDecimal(Type target) {
+        return target == BigDecimal.class || target == Typed.class;
+    }
+
+    /**
+     * C1 across every host mapper: given the tree the JDBC store now builds, a
+     * target that asks for a decimal reads the stored text exactly, and every
+     * other target — untyped {@code Object}/{@code Map}/{@code List} positions,
+     * {@code Number}, {@code double}/{@code float}, integers, strings, binary,
+     * {@link JsonNode} — reads what it read from the host's own tree before
+     * Task 6, value and class. A host whose trees already held decimals sees
+     * no change at all.
+     *
+     * <p>The corpus's {@code -0.0} is read as {@code 0.0} here: a decimal tree
+     * has no negative zero, and {@code jsonb} stores none (both pinned in the
+     * store modules).
+     */
+    @ParameterizedTest(name = "[{index}] {0}: {1} as {2}")
+    @MethodSource("exactTreeCorpusUnderEveryHostMapper")
+    void anExactDecimalTreeMovesOnlyTypedDecimals(String mapperName, String json, Type target) {
+        var mapper = HOST_MAPPERS.containsKey(mapperName) ? HOST_MAPPERS.get(mapperName)
+                : DECIMAL_EDGE_MAPPERS.get(mapperName);
+        var hostSerializer = new PayloadSerializer(mapper);
+        var before = hostSerializer.deserialize(mapper.readTree(json), target);       // the host's own tree
+        var after = hostSerializer.deserialize(exactDecimalTree(mapper, json), target);
+        var expected = readsATypedDecimal(target) && !hostTreesHoldDecimals(mapper)
+                ? mapper.readerFor(mapper.getTypeFactory().constructType(target)).readValue(json)  // the text, exactly
+                : before;
+        assertEquals(contentOf(expected), contentOf(after));
+        assertEquals(expected == null ? null : expected.getClass(), after == null ? null : after.getClass());
+    }
+
+    static Stream<Arguments> exactTreeCorpusUnderEveryHostMapper() {
+        var rows = Stream.concat(
+                jdbcReadCorpus().map(Arguments::get),
+                jdbcReadCorpus().map(row -> row.get()[0]).distinct().map(json -> new Object[]{json, JsonNode.class})
+        ).toList();
+        return Stream.concat(HOST_MAPPERS.keySet().stream(), DECIMAL_EDGE_MAPPERS.keySet().stream()).sorted()
+                .flatMap(mapperName -> rows.stream().map(row -> Arguments.of(
+                        mapperName, ((String) row[0]).replace("-0.0", "0.0"), row[1])));
+    }
+
+    /**
+     * Required pin (Task 5 re-review): under the default mapper a stored
+     * decimal beyond {@code double} range read into an untyped target is
+     * {@code Double} infinity from the exact tree ({@code DecimalNode 1E+400},
+     * rendered {@code 1E+400}) — where the double tree's
+     * {@code DoubleNode(Infinity)} renders as, and reads as, the string
+     * {@code "Infinity"}.
+     */
+    @Test
+    void anUntypedDecimalBeyondDoubleRangeReadsAsInfinityFromTheExactTree() {
+        var exact = exactDecimalTree(MAPPER, "{\"x\":1E+400}");
+        var doubles = MAPPER.readTree("{\"x\":1E+400}");
+        assertEquals(List.of("DecimalNode 1E+400", "DoubleNode \"Infinity\""), List.of(
+                exact.get("x").getClass().getSimpleName() + " " + exact.get("x"),
+                doubles.get("x").getClass().getSimpleName() + " " + doubles.get("x")));
+        assertEquals(List.of("{x=Double Infinity}", "{x=String Infinity}"), List.of(
+                deepDescribe(serializer.deserialize(exact, Object.class)),
+                deepDescribe(serializer.deserialize(doubles, Object.class))));
+    }
 }

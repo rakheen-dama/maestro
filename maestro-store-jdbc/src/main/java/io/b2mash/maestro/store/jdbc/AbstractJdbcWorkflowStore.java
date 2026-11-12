@@ -24,6 +24,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectReader;
+import tools.jackson.databind.cfg.JsonNodeFeature;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -48,6 +50,40 @@ import java.util.stream.Collectors;
  * SQL. All JSON payloads are serialized/deserialized with Jackson 3
  * ({@code tools.jackson}). Database-specific subclasses override protected
  * hook methods to provide optimized SQL where needed.
+ *
+ * <h2>Exact decimals</h2>
+ * <p>Every payload column — event {@code payload}, instance {@code input} and
+ * {@code output}, signal {@code payload} — is parsed into a tree whose
+ * decimals are {@code DecimalNode}s holding the column's digits and scale,
+ * never the nearest {@code double}. Writing is unchanged: the configured
+ * mapper renders each payload exactly as before.
+ * <ul>
+ *   <li><b>Typed decimal targets are exact.</b> A {@code BigDecimal} (top level,
+ *       field, element or typed map value), and a {@code java.time} value read
+ *       from a numeric timestamp, gets the stored value. Before, it read the
+ *       {@code double} the column was parsed into: rounded at 17 or more
+ *       significant digits, and with its trailing zeros dropped at any length
+ *       ({@code 10.50} read as {@code 10.5}).</li>
+ *   <li><b>Everything else reads as before.</b> {@code PayloadSerializer} reads
+ *       the tree with the mapper's own features, so under a default mapper an
+ *       untyped {@code Object}, {@code Map<String, Object>} or
+ *       {@code List<Object>} position still gets a {@code Double}, a
+ *       {@code JsonNode} target still gets a {@code DoubleNode}, and
+ *       {@code double}, {@code float} and integer targets get the same values.
+ *       A mapper whose own trees already hold decimals (either
+ *       {@code USE_BIG_DECIMAL_FOR_FLOATS} feature) is used unchanged.</li>
+ *   <li><b>Mixed versions.</b> An older node replays these decimals lossily, as
+ *       it always has; a node of this build replays them exactly. Scale alone
+ *       does not change an activity's argument fingerprint (it hashes a
+ *       decimal's {@code stripTrailingZeros().toPlainString()}), but a run
+ *       whose later recorded step consumed a lossily replayed decimal in a
+ *       precision- or scale-sensitive way ({@code toString()}, {@code equals},
+ *       {@code scale()}, {@code divide} with rounding) stands down on this
+ *       build as {@code nondeterministic_history} — it never fails;
+ *       {@code maestro.replay.verify-arguments=false} lets it continue. A
+ *       {@code SIGNAL_RECEIVED} memo copies the signal row as read, so it now
+ *       records the exact decimal.</li>
+ * </ul>
  *
  * <h2>Subclass Hooks</h2>
  * <ul>
@@ -130,6 +166,9 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     private final DataSource dataSource;
     private final JdbcStoreConfiguration config;
 
+    /** Parses every payload column ({@link #payloadReader(ObjectMapper)}); writing uses the mapper itself. */
+    private final ObjectReader payloadReader;
+
     /**
      * Creates a new JDBC workflow store.
      *
@@ -140,6 +179,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     protected AbstractJdbcWorkflowStore(DataSource dataSource, JdbcStoreConfiguration config) {
         this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
         this.config = Objects.requireNonNull(config, "config");
+        this.payloadReader = payloadReader(config.objectMapper());
     }
 
     // ── Subclass hooks ────────────────────────────────────────────────────
@@ -227,8 +267,10 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     /**
      * Reads a JSON value from a {@link ResultSet} column.
      *
-     * <p>Default implementation reads a string and parses it with Jackson.
-     * Override if the database returns JSON in a non-string format.
+     * <p>Default implementation reads a string and parses it with Jackson,
+     * keeping decimals exact (class Javadoc, "Exact decimals"). Override if the
+     * database returns JSON in a non-string format; an override that parses
+     * the value itself must keep decimals exact too.
      *
      * @param rs     the result set
      * @param column the column name
@@ -1678,10 +1720,32 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
     private JsonNode parseJsonNode(String json) {
         try {
-            return objectMapper().readTree(json);
+            return payloadReader.readTree(json);
         } catch (Exception e) {
             throw new SerializationException("Failed to parse JSON", e);
         }
+    }
+
+    /**
+     * The reader every payload column is parsed with: the mapper's own, made to
+     * keep each decimal exact (class Javadoc, "Exact decimals"). A mapper whose
+     * own trees already hold {@code DecimalNode}s is used as it is, trailing-zero
+     * stripping included, so its trees do not change. Any other mapper gets
+     * {@link JsonNodeFeature#USE_BIG_DECIMAL_FOR_FLOATS} (which, unlike
+     * {@code DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS}, also overrides
+     * a mapper that turned the node feature off) with
+     * {@link JsonNodeFeature#STRIP_TRAILING_BIGDECIMAL_ZEROES} off: stripping
+     * {@code 2.0} to {@code 2} would turn an untyped {@code Double} into an
+     * {@code Integer}. Whether the mapper's trees hold decimals is asked of the
+     * mapper, not re-derived from its features.
+     */
+    private static ObjectReader payloadReader(ObjectMapper mapper) {
+        var own = mapper.reader();
+        if (own.readTree("0.10").isBigDecimal()) {
+            return own;
+        }
+        return own.with(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+                .without(JsonNodeFeature.STRIP_TRAILING_BIGDECIMAL_ZEROES);
     }
 
     // ── Parameter helpers ─────────────────────────────────────────────────
