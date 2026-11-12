@@ -67,7 +67,7 @@ site.
 
 ## Meter catalog
 
-Seventeen meters: **14 counters and 1 timer**, registered by
+Eighteen meters: **15 counters and 1 timer**, registered by
 `MicrometerEngineObserver`, plus **2 gauges**, registered by
 `MaestroEngineGauges` — both in the `io.b2mash.maestro.spring.observe` package
 of `maestro-spring-boot-starter`.
@@ -94,6 +94,7 @@ type is known (the instance exists).
 | `maestro.workflow.failed` | `workflow` | workflow type | A run is recorded `FAILED` |
 | `maestro.workflow.compensated` | `workflow` | workflow type | The saga compensation phase starts (callback is `workflowCompensating`) |
 | `maestro.workflow.terminated` | `workflow` | workflow type | An operator terminated the workflow |
+| `maestro.activity.result.unreadable` | `workflow`, `activity` | workflow type, activity name | A live activity's result was recorded but cannot be read back as its declared type; the run continued with the activity's own object and will stand down as `unknown_event_payload` at its next recovery (D9) |
 | `maestro.signal.consumed` | `workflow`, `signal` | workflow type (or the literal `unknown` when the workflow type is not yet known), signal name | A signal is consumed live |
 | `maestro.signal.duplicates` | `workflow`, `signal` | workflow type and signal name — both the literal `unknown` for a pre-delivered (orphan) duplicate, see the cardinality rule | A delivery carried a message id already stored for that workflow and signal name, so no row was written (a transport redelivery, a producer republish, a client retry) — see [Cross-service §Signal identity](cross-service.md#signal-identity) |
 | `maestro.timer.fired` | `workflow` | workflow type | A durable timer fires live |
@@ -169,7 +170,7 @@ correct: no JVM is holding it.
 
 ### Which callbacks the meter adapter implements
 
-`MicrometerEngineObserver` implements 13 of the 23 `EngineObserver` callbacks.
+`MicrometerEngineObserver` implements 16 of the 26 `EngineObserver` callbacks.
 It deliberately does **not** implement:
 
 - `workflowResumed`, `workflowParked`, `workflowUnparked`, `activityStarted`,

@@ -133,6 +133,54 @@ class MaestroObservabilityAutoConfigurationTest {
                 });
     }
 
+    /**
+     * WP1 D9 through a real engine run: an activity whose declared return
+     * type Jackson can write but not read (a sealed interface without type
+     * information) completes live with the activity's own object and moves
+     * {@code maestro.activity.result.unreadable} by exactly one, tagged only
+     * by workflow type and step name. The context is built from Boot's real
+     * metrics auto-configuration chain (lessons 2026-08-03: a
+     * {@code withBean(MeterRegistry)} stub hides auto-configuration ordering).
+     */
+    @Test
+    @DisplayName("maestro.activity.result.unreadable counts a live result that cannot be read back; the run completes")
+    void anUnreadableActivityResultIsCounted() {
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        MetricsAutoConfiguration.class,
+                        CompositeMeterRegistryAutoConfiguration.class,
+                        SimpleMetricsExportAutoConfiguration.class,
+                        MaestroAutoConfiguration.class,
+                        MaestroObservabilityAutoConfiguration.class))
+                .withUserConfiguration(UnreadableResultConfiguration.class)
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .withPropertyValues("maestro.service-name=observability-unreadable-test")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(MeterRegistry.class);
+                    assertThat(context.getBean(MeterRegistry.class)).isInstanceOf(SimpleMeterRegistry.class);
+                    var client = context.getBean(MaestroClient.class);
+                    var registry = context.getBean(MeterRegistry.class);
+
+                    var result = client.newWorkflow(UnreadableResultWorkflow.class, options("unreadable-1"))
+                            .startAndWait("bob", Duration.ofSeconds(10), String.class);
+
+                    assertThat(result).as("the raw object reached workflow code").isEqualTo("BareApproved");
+                    var counter = registry.get("maestro.activity.result.unreadable")
+                            .tag("workflow", "ObservabilityUnreadableResultWorkflow")
+                            .tag("activity", "ObservabilityDecider.decide")
+                            .counter();
+                    assertThat(counter.count()).isEqualTo(1.0);
+                    assertThat(counter.getId().getTags())
+                            .extracting(tag -> tag.getKey())
+                            .containsExactlyInAnyOrder("workflow", "activity");
+                    assertThat(registry.get("maestro.workflow.completed")
+                            .tag("workflow", "ObservabilityUnreadableResultWorkflow")
+                            .counter().count()).isEqualTo(1.0);
+                });
+    }
+
     @Test
     @DisplayName("maestro.observability.metrics.enabled=false — no maestro.* meters registered at all")
     void disabledFlagRegistersNoMeters() {
@@ -504,6 +552,67 @@ class MaestroObservabilityAutoConfigurationTest {
         @Override
         public void step() {
             // no-op
+        }
+    }
+
+    /** The workflow and activity beans of {@link #anUnreadableActivityResultIsCounted}. */
+    @Configuration(proxyBeanMethods = false)
+    static class UnreadableResultConfiguration {
+
+        @Bean
+        @Scope(BeanDefinition.SCOPE_PROTOTYPE)
+        UnreadableResultWorkflow unreadableResultWorkflow() {
+            return new UnreadableResultWorkflow();
+        }
+
+        @Bean
+        Decider decider() {
+            return new BareDecider();
+        }
+    }
+
+    /** Serialisable, not deserialisable: a sealed interface without type information. */
+    public sealed interface BareDecision permits BareApproved {}
+
+    /**
+     * The only {@link BareDecision}.
+     *
+     * @param by who approved
+     */
+    public record BareApproved(String by) implements BareDecision {}
+
+    /** One activity whose declared result cannot be read back. */
+    @Activity(name = "ObservabilityDecider")
+    public interface Decider {
+        /**
+         * @param applicant who applies
+         * @return a decision Jackson can write but not read as {@link BareDecision}
+         */
+        BareDecision decide(String applicant);
+    }
+
+    /** Approves everyone. */
+    public static class BareDecider implements Decider {
+        @Override
+        public BareDecision decide(String applicant) {
+            return new BareApproved(applicant);
+        }
+    }
+
+    /** Calls the decider and returns the simple class name of what it received. */
+    @DurableWorkflow(name = "ObservabilityUnreadableResultWorkflow")
+    public static class UnreadableResultWorkflow {
+
+        @ActivityStub
+        private Decider decider;
+
+        /**
+         * @param applicant who applies
+         * @return the simple class name of the decision workflow code received
+         */
+        @WorkflowMethod
+        public String run(String applicant) {
+            return decider.decide(applicant).getClass().getSimpleName();
         }
     }
 }

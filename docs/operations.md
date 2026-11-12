@@ -626,6 +626,7 @@ than one.
 | `rate(maestro.standdown{reason="unknown_event_type"})` > 0 **during** a rolling deploy | Expected. Should return to zero once every node is upgraded. |
 | the same, **after** the deploy completes | Not expected — a node was missed, or a stale replica is still running. |
 | `rate(maestro.standdown{reason="unknown_event_payload"})` > 0 on a homogeneous fleet | **An incompatible payload change. Use `workflow.version()`.** |
+| `rate(maestro.activity.result.unreadable)` > 0 | A live result cannot be read back; those runs will stand down as `unknown_event_payload` on their next recovery. Fix the return type (Pitfalls §12). |
 | `unknown_event_payload` **and** `nondeterministic_history` both rising on a homogeneous fleet | One deploy shipped both an ungated code change and an incompatible payload change; roll it back. |
 | `maestro.workflows.running` / `maestro.workflows.parked` flat at zero on a node with traffic | That node is adopting nothing — check the lock backend and the recovery poller. |
 
