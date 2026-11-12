@@ -35,8 +35,7 @@ class AwaitTimerStrayPermitTest {
     @BeforeEach
     void setUp() throws Exception {
         store = new VersionedInMemoryStore();
-        executor = new WorkflowExecutor(store, null, null, null,
-                new PayloadSerializer(new ObjectMapper()), "test-service");
+        executor = WorkflowExecutor.builder(store, new PayloadSerializer(new ObjectMapper()), "test-service").build();
         var field = WorkflowExecutor.class.getDeclaredField("parkingLot");
         field.setAccessible(true);
         parkingLot = (ParkingLot) field.get(executor);

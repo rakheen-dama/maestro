@@ -71,7 +71,9 @@ class AwaitTimeoutRetryRearmTest {
     void setUp() throws Exception {
         store = new VersionedInMemoryStore();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
-        executor = new WorkflowExecutor(store, null, null, null, serializer, "test-service", clock);
+        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .instantSource(clock)
+                .build();
         registration = new WorkflowRegistration("ApprovalWorkflow", "default",
                 ApprovalWorkflow::new, ApprovalWorkflow.class.getMethod("run"));
     }
