@@ -1,5 +1,6 @@
 package io.b2mash.maestro.spring.observe;
 
+import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.observe.AbandonReason;
 import io.b2mash.maestro.core.observe.ActivityInfo;
 import io.b2mash.maestro.core.observe.EngineObserver;
@@ -33,6 +34,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <tr><td>{@code maestro.workflow.failed}</td><td>Counter</td><td>workflow</td><td>{@link #workflowFailed}</td></tr>
  *   <tr><td>{@code maestro.workflow.compensated}</td><td>Counter</td><td>workflow</td><td>{@link #workflowCompensating}</td></tr>
  *   <tr><td>{@code maestro.workflow.terminated}</td><td>Counter</td><td>workflow</td><td>{@link #workflowTerminated}</td></tr>
+ *   <tr><td>{@code maestro.workflow.duration}</td><td>Timer</td><td>workflow, outcome=completed|failed</td><td>{@link #workflowFinished}</td></tr>
  *   <tr><td>{@code maestro.activity.duration}</td><td>Timer</td><td>workflow, activity, outcome</td><td>{@link #activityCompleted}/{@link #activityFailed} (live only)</td></tr>
  *   <tr><td>{@code maestro.signal.consumed}</td><td>Counter</td><td>workflow, signal</td><td>{@link #signalConsumed} (live only)</td></tr>
  *   <tr><td>{@code maestro.signal.duplicates}</td><td>Counter</td><td>workflow, signal</td><td>{@link #signalDuplicateSuppressed}</td></tr>
@@ -116,6 +118,26 @@ public final class MicrometerEngineObserver implements EngineObserver {
     public void workflowFailed(WorkflowInfo w, String exceptionType) {
         // exceptionType is intentionally not tagged — open-ended cardinality (design §2.2 note).
         increment("maestro.workflow.failed", TAG_WORKFLOW, w.workflowType());
+    }
+
+    /**
+     * Records the workflow's start-to-terminal wall time under
+     * {@code maestro.workflow.duration}, tagged {@code outcome=completed} or
+     * {@code outcome=failed}. The engine fires this only with those two
+     * statuses; any other status records nothing, so the {@code outcome} tag
+     * value set stays closed at two.
+     */
+    @Override
+    public void workflowFinished(WorkflowInfo w, WorkflowStatus status, Duration elapsed) {
+        String outcome;
+        switch (status) {
+            case COMPLETED -> outcome = "completed";
+            case FAILED -> outcome = "failed";
+            default -> {
+                return;
+            }
+        }
+        record("maestro.workflow.duration", elapsed, TAG_WORKFLOW, w.workflowType(), TAG_OUTCOME, outcome);
     }
 
     @Override
@@ -237,10 +259,11 @@ public final class MicrometerEngineObserver implements EngineObserver {
     /**
      * Counts an abandoned local run under its own meter, tagged by reason only.
      *
-     * <p>A terminate moves this counter ({@code reason=terminated}, from the
-     * workflow's own thread) <em>and</em> {@code maestro.workflow.terminated}
-     * (from {@link #workflowTerminated}, on the operator's thread): two
-     * meters, each once. Never fold one into the other.
+     * <p>A terminate moves {@code maestro.workflow.terminated} once (from
+     * {@link #workflowTerminated}, on the node that handled the terminate) and
+     * this counter ({@code reason=terminated}) at most once, from the
+     * workflow's own thread on the node running it — not at all if no node
+     * holds a live run. Never fold one into the other.
      */
     @Override
     public void runAbandoned(WorkflowInfo w, AbandonReason reason) {

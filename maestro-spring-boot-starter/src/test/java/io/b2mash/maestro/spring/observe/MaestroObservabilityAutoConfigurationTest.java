@@ -135,6 +135,30 @@ class MaestroObservabilityAutoConfigurationTest {
     }
 
     @Test
+    @DisplayName("maestro.workflow.duration{outcome=completed} records a workflow run through the starter's engine")
+    void workflowDurationRecordedThroughRealEngineRun() {
+        runner.withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    var client = context.getBean(MaestroClient.class);
+                    var registry = context.getBean(MeterRegistry.class);
+
+                    client.newWorkflow(EchoWorkflow.class, options("observability-duration-1"))
+                            .startAndWait("hi", Duration.ofSeconds(10), String.class);
+
+                    // workflowFinished fires right after workflowCompleted, on the
+                    // workflow thread, which may still be running when startAndWait
+                    // returns on the completion it observed.
+                    await().atMost(Duration.ofSeconds(5))
+                            .ignoreException(MeterNotFoundException.class)
+                            .untilAsserted(() -> assertThat(registry.get("maestro.workflow.duration")
+                                    .tag("workflow", "ObservabilityEchoWorkflow")
+                                    .tag("outcome", "completed")
+                                    .timer().count()).isEqualTo(1));
+                });
+    }
+
+    @Test
     @DisplayName("maestro.observability.metrics.enabled=false — no maestro.* meters registered at all")
     void disabledFlagRegistersNoMeters() {
         runner.withBean(MeterRegistry.class, SimpleMeterRegistry::new)

@@ -51,6 +51,11 @@ not `workflowStarted`, and `MicrometerEngineObserver` does not implement
 replayed step's timer count stays 1) and, for spans, by
 `TracingReplayNoSpansIT`.
 
+`maestro.workflow.duration` is not replay-flagged: it is recorded once, by the
+node that finishes the workflow. For a recovered run that duration spans the
+downtime too — it is measured from the instance row's `startedAt`, not from
+the recovering node's adoption.
+
 ### Failure containment
 
 Both adapters wrap each emission: a `RuntimeException` thrown by the registry
@@ -67,7 +72,7 @@ site.
 
 ## Meter catalog
 
-Eighteen meters: **15 counters and 1 timer**, registered by
+Nineteen meters: **15 counters and 2 timers**, registered by
 `MicrometerEngineObserver`, plus **2 gauges**, registered by
 `MaestroEngineGauges` — both in the `io.b2mash.maestro.spring.observe` package
 of `maestro-spring-boot-starter`.
@@ -132,9 +137,21 @@ incompatible payload change on a homogeneous fleet.
 | Meter | Tags | Tag values |
 |---|---|---|
 | `maestro.activity.duration` | `workflow`, `activity`, `outcome` | workflow type, activity name, `completed` or `failed` |
+| `maestro.workflow.duration` | `workflow`, `outcome` | workflow type, `completed` or `failed` |
 
-`outcome` has exactly two values. Replayed activities are excluded, so this
-timer measures real executions only.
+On both timers `outcome` has exactly two values.
+`maestro.activity.duration` excludes replayed activities, so it measures real
+executions only.
+
+`maestro.workflow.duration` (Prometheus `maestro_workflow_duration_seconds_count`,
+`_sum`, `_max`, plus `_bucket` when the host enables a histogram) is recorded
+from `workflowFinished`. That callback fires once per workflow, only on the
+node that won the terminal transition, directly after `workflowCompleted` or
+`workflowFailed`. It records end-to-end wall time: from the instance row's
+`startedAt` to the terminal write, including every park (signals, timers) and
+any downtime before a recovery adopted the run. For a manually retried
+workflow it counts from the original start. It is not recorded for a
+terminate, a stand-down, an abandoned run or a converged loser.
 
 ### Gauges
 
@@ -170,7 +187,7 @@ correct: no JVM is holding it.
 
 ### Which callbacks the meter adapter implements
 
-`MicrometerEngineObserver` implements 16 of the 25 `EngineObserver` callbacks.
+`MicrometerEngineObserver` implements 17 of the 26 `EngineObserver` callbacks.
 It deliberately does **not** implement:
 
 - `workflowResumed`, `workflowParked`, `workflowUnparked`, `activityStarted`,

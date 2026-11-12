@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.observe;
 
+import io.b2mash.maestro.core.model.WorkflowStatus;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -94,6 +95,11 @@ public final class CompositeEngineObserver implements EngineObserver {
     @Override
     public void workflowFailed(WorkflowInfo w, String exceptionType) {
         fanOut("workflowFailed", d -> d.workflowFailed(w, exceptionType));
+    }
+
+    @Override
+    public void workflowFinished(WorkflowInfo w, WorkflowStatus status, Duration elapsed) {
+        fanOut("workflowFinished", d -> d.workflowFinished(w, status, elapsed));
     }
 
     @Override

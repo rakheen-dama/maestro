@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.observe;
 
+import io.b2mash.maestro.core.model.WorkflowStatus;
 import org.jspecify.annotations.Nullable;
 
 import java.time.Duration;
@@ -29,6 +30,7 @@ public final class RecordingEngineObserver implements EngineObserver {
     public record RetentionPassCall(io.b2mash.maestro.core.spi.PurgeResult purged) {}
     public record AbandonCall(WorkflowInfo info, AbandonReason reason) {}
     public record WorkflowFailure(WorkflowInfo info, String exceptionType) {}
+    public record WorkflowFinish(WorkflowInfo info, WorkflowStatus status, Duration elapsed) {}
 
     private final List<Invocation> invocations = new CopyOnWriteArrayList<>();
 
@@ -36,6 +38,7 @@ public final class RecordingEngineObserver implements EngineObserver {
     private final List<WorkflowInfo> resumed = new CopyOnWriteArrayList<>();
     private final List<WorkflowInfo> completed = new CopyOnWriteArrayList<>();
     private final List<WorkflowFailure> failed = new CopyOnWriteArrayList<>();
+    private final List<WorkflowFinish> finished = new CopyOnWriteArrayList<>();
     private final List<WorkflowInfo> compensating = new CopyOnWriteArrayList<>();
     private final List<WorkflowInfo> terminated = new CopyOnWriteArrayList<>();
     private final List<ParkEvent> parked = new CopyOnWriteArrayList<>();
@@ -81,6 +84,12 @@ public final class RecordingEngineObserver implements EngineObserver {
     public void workflowFailed(WorkflowInfo w, String exceptionType) {
         record("workflowFailed", w, exceptionType);
         failed.add(new WorkflowFailure(w, exceptionType));
+    }
+
+    @Override
+    public void workflowFinished(WorkflowInfo w, WorkflowStatus status, Duration elapsed) {
+        record("workflowFinished", w, status, elapsed);
+        finished.add(new WorkflowFinish(w, status, elapsed));
     }
 
     @Override
@@ -213,6 +222,7 @@ public final class RecordingEngineObserver implements EngineObserver {
     public List<WorkflowInfo> resumed() { return List.copyOf(resumed); }
     public List<WorkflowInfo> completed() { return List.copyOf(completed); }
     public List<WorkflowFailure> failed() { return List.copyOf(failed); }
+    public List<WorkflowFinish> finished() { return List.copyOf(finished); }
     public List<WorkflowInfo> compensating() { return List.copyOf(compensating); }
     public List<WorkflowInfo> terminated() { return List.copyOf(terminated); }
     public List<ParkEvent> parked() { return List.copyOf(parked); }

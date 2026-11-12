@@ -2439,6 +2439,9 @@ public final class WorkflowExecutor {
                 // would compensate a workflow that just succeeded.
                 emit("workflowCompleted", ctx.workflowId(),
                         () -> observer.workflowCompleted(observed(instance)));
+                emit("workflowFinished", ctx.workflowId(),
+                        () -> observer.workflowFinished(observed(instance), WorkflowStatus.COMPLETED,
+                                elapsedSince(instance)));
 
                 publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_COMPLETED, null);
 
@@ -3008,6 +3011,9 @@ public final class WorkflowExecutor {
                 // observed.
                 emit("workflowFailed", ctx.workflowId(), () ->
                         observer.workflowFailed(observed(instance), failure.getClass().getName()));
+                emit("workflowFinished", ctx.workflowId(), () ->
+                        observer.workflowFinished(observed(instance), WorkflowStatus.FAILED,
+                                elapsedSince(instance)));
 
                 publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_FAILED, null);
             } else {
@@ -3158,6 +3164,18 @@ public final class WorkflowExecutor {
     /** Builds the identity-only observation record for an instance. */
     private WorkflowInfo observed(WorkflowInstance instance) {
         return new WorkflowInfo(instance.workflowId(), instance.workflowType(), serviceName);
+    }
+
+    /**
+     * Wall time from the instance row's {@code startedAt} to now, for
+     * {@link EngineObserver#workflowFinished}. Uses {@link Instant#now()}
+     * because {@link #transitionToTerminal} stamps {@code completedAt} with it;
+     * floored at {@link Duration#ZERO} so a clock step backwards cannot report a
+     * negative duration.
+     */
+    private static Duration elapsedSince(WorkflowInstance instance) {
+        var elapsed = Duration.between(instance.startedAt(), Instant.now());
+        return elapsed.isNegative() ? Duration.ZERO : elapsed;
     }
 
     /**

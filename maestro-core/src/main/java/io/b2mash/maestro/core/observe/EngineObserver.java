@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.observe;
 
+import io.b2mash.maestro.core.model.WorkflowStatus;
 import org.jspecify.annotations.Nullable;
 
 import java.time.Duration;
@@ -53,6 +54,25 @@ public interface EngineObserver {
      *        (open-ended cardinality)
      */
     default void workflowFailed(WorkflowInfo w, String exceptionType) {}
+
+    /**
+     * This node won the terminal transition, and this is how long the workflow
+     * took from start to that outcome.
+     *
+     * <p>Fired only by the node that won the terminal transition, directly
+     * after {@link #workflowCompleted} or {@link #workflowFailed}, on the same
+     * thread. Never fired for a converged loser, a stand-down, an abandoned run
+     * ({@link #runAbandoned}) or a terminate ({@link #workflowTerminated}).
+     *
+     * @param w       identity of the workflow that finished
+     * @param status  the outcome this node recorded:
+     *                {@link WorkflowStatus#COMPLETED} or {@link WorkflowStatus#FAILED}
+     * @param elapsed now minus the instance row's {@code startedAt}, clamped at
+     *                {@link Duration#ZERO}. It is end-to-end wall time, not
+     *                execution time: it includes park time (signals, timers)
+     *                and any downtime before a recovery adopted the workflow
+     */
+    default void workflowFinished(WorkflowInfo w, WorkflowStatus status, Duration elapsed) {}
 
     /** Saga compensation is starting for this workflow. */
     default void workflowCompensating(WorkflowInfo w) {}

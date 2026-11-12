@@ -1,5 +1,6 @@
 package io.b2mash.maestro.spring.observe;
 
+import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.observe.AbandonReason;
 import io.b2mash.maestro.core.observe.ActivityInfo;
 import io.b2mash.maestro.core.observe.SignalInfo;
@@ -79,6 +80,29 @@ class MicrometerEngineObserverTest {
 
         assertThat(registry.get("maestro.workflow.terminated").tag("workflow", "OrderWorkflow")
                 .counter().count()).isEqualTo(1.0);
+    }
+
+    @Test
+    @DisplayName("maestro.workflow.duration — Timer, tags workflow/outcome=completed|failed; other statuses record nothing")
+    void workflowFinishedRecordsDurationByOutcome() {
+        observer.workflowFinished(WORKFLOW, WorkflowStatus.COMPLETED, Duration.ofMillis(150));
+        observer.workflowFinished(WORKFLOW, WorkflowStatus.FAILED, Duration.ofMillis(75));
+        observer.workflowFinished(WORKFLOW, WorkflowStatus.TERMINATED, Duration.ofMillis(999));
+
+        var completed = registry.get("maestro.workflow.duration")
+                .tag("workflow", "OrderWorkflow").tag("outcome", "completed").timer();
+        assertThat(completed.count()).isEqualTo(1);
+        assertThat(completed.totalTime(java.util.concurrent.TimeUnit.MILLISECONDS)).isEqualTo(150.0);
+
+        var failed = registry.get("maestro.workflow.duration")
+                .tag("workflow", "OrderWorkflow").tag("outcome", "failed").timer();
+        assertThat(failed.count()).isEqualTo(1);
+        assertThat(failed.totalTime(java.util.concurrent.TimeUnit.MILLISECONDS)).isEqualTo(75.0);
+
+        assertThat(registry.get("maestro.workflow.duration").timers())
+                .as("TERMINATED must not mint a third outcome series")
+                .extracting(t -> t.getId().getTag("outcome"))
+                .containsExactlyInAnyOrder("completed", "failed");
     }
 
     @Test
