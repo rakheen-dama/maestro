@@ -22,6 +22,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>The reference is the frozen copy under {@code upgrade/cbf5a2a/}, written
  * once from git by {@code scripts/capture-upgrade-fixture.sh}; see
  * {@link FrozenMigrations}. No database is needed.
+ *
+ * <p>It also pins each frozen set's {@code SOURCE} manifest by a literal
+ * SHA-256, including {@code upgrade/c01d498/} (the retired V200–V202 band,
+ * which nothing ships any more), so no frozen set can be rewritten together
+ * with its manifest unnoticed.
  */
 @DisplayName("Migrations shipped at cbf5a2a are frozen")
 class ShippedMigrationsFrozenTest {
@@ -63,6 +68,31 @@ class ShippedMigrationsFrozenTest {
         assertThat(FrozenMigrations.sha256(FrozenMigrations.lf(FrozenMigrations.named("cbf5a2a").read("SOURCE"))))
                 .as("upgrade/cbf5a2a/SOURCE changed; frozen fixtures are never edited or regenerated")
                 .isEqualTo(CBF5A2A_SOURCE_SHA256);
+    }
+
+    /**
+     * SHA-256 of {@code upgrade/c01d498/SOURCE} (line endings folded to LF), as
+     * committed: the last set that shipped the retired V200–V202 band, which
+     * {@code MaestroSchemaInitializerTest} migrates as the older build. Nothing
+     * ships those files any more, so this literal is the only thing that
+     * catches the frozen copy and its {@code SOURCE} being edited together.
+     * Never update it to make this test pass.
+     */
+    static final String C01D498_SOURCE_SHA256 = "658ea81e2a4685abe86ffc276f6074aa3aaec0529f2ad4ce76a6ee09bcc562b2";
+
+    @Test
+    @DisplayName("the c01d498 SOURCE manifest is byte for byte the one committed with the fixture, and each copy matches it")
+    void theC01d498ManifestIsPinned() {
+        var frozen = FrozenMigrations.named("c01d498");
+
+        assertThat(FrozenMigrations.sha256(FrozenMigrations.lf(frozen.read("SOURCE"))))
+                .as("upgrade/c01d498/SOURCE changed; frozen fixtures are never edited or regenerated")
+                .isEqualTo(C01D498_SOURCE_SHA256);
+        for (var file : frozen.files()) {
+            assertThat(FrozenMigrations.sha256(FrozenMigrations.lf(frozen.read(file))))
+                    .as("frozen copy of %s hashes to its SOURCE entry", file)
+                    .isEqualTo(frozen.recordedSha256(file));
+        }
     }
 
     @ParameterizedTest(name = "{0}")

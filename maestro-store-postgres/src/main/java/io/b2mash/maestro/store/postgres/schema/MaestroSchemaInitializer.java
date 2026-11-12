@@ -47,8 +47,10 @@ import java.util.TreeSet;
  * — only if it sorts above V100. Below V100 it is "missing" and fails the older
  * node's startup. Band 200–299 belonged to the removed Postgres messaging
  * transport and is retired — never reuse it: databases that applied V200–V202
- * keep those history rows (Flyway ignores them as future versions) and an
- * orphan {@code maestro_signal_queue}.
+ * keep those history rows (Flyway ignores them as future versions in
+ * validation, but they still count as the highest applied version, so every
+ * later migration applies there only out of order; see below) and an orphan
+ * {@code maestro_signal_queue}.
  *
  * <h2>Modes</h2>
  * <ul>
@@ -60,13 +62,20 @@ import java.util.TreeSet;
  *   <li>{@link SchemaMode#NONE} — do nothing.</li>
  * </ul>
  *
- * <h2>Out-of-order application</h2>
- * <p>A database first migrated before V6–V9 shipped recorded V100 before them
- * (Issue 35). The store and lock migrations never depend on each other, so
- * Flyway runs with {@code outOfOrder(true)}: such a migration is applied, and
- * reported pending by {@code VALIDATE}, even though it sorts below the highest
- * applied version. Under the numbering rule above no new migration sorts
- * below an applied one, so the option matters only for that history.
+ * <h2>Out-of-order application is load-bearing</h2>
+ * <p>Flyway refuses a resolved migration that sorts below the highest version
+ * already recorded, and that highest version includes rows this build does
+ * not ship. Two real histories put shipped migrations below it. A database
+ * first migrated before V6–V9 shipped recorded V100 before them (Issue 35).
+ * A database that ran the retired Postgres messaging transport recorded
+ * V200–V202, so V6–V9, V101 and every future V102–V199 sort below V202 there,
+ * whatever the numbering rule above says. The store, lock and retired
+ * migrations never depend on each other, so Flyway runs with
+ * {@code outOfOrder(true)}: such a migration is applied, and reported pending
+ * by {@code VALIDATE}, even though it sorts below the highest applied version.
+ * Without it, {@code flyway} mode fails startup on both histories ("Detected
+ * resolved migration not applied to database"). Never remove it;
+ * {@code MaestroSchemaInitializerTest} pins both histories.
  *
  * <h2>Sharing a schema with the host</h2>
  * <p>The host's tables (and the host's {@code flyway_schema_history}) are
@@ -146,16 +155,19 @@ public final class MaestroSchemaInitializer {
                 .locations(locations.toArray(String[]::new))
                 .baselineOnMigrate(true)
                 .baselineVersion(BASELINE_VERSION)
-                // Store and lock migrations share one history table but never
-                // depend on each other. A database first migrated before
-                // V6-V9 shipped recorded V100 before them, so they sort below
-                // the highest applied version, and Flyway's default refuses
-                // them ("Detected resolved migration not applied to
-                // database") — failing startup in flyway mode (Issue 35).
-                // Applying them out of order is the intended semantics. It
-                // also makes such a migration "pending" to info(), so
-                // VALIDATE names it below. New migrations take 101-199, above
-                // every applied version, and need no out-of-order help.
+                // outOfOrder is load-bearing; never remove it. Flyway refuses a
+                // resolved migration that sorts below the highest version already
+                // recorded ("Detected resolved migration not applied to
+                // database"), and that highest version includes rows this build
+                // does not ship. Two real histories hit this. (1) Issue 35: a
+                // database first migrated before V6-V9 shipped recorded V100
+                // first, so V6-V9 sort below it. (2) A database that ran the
+                // retired Postgres messaging transport recorded V200-V202, so V6-V9,
+                // V101 and every future V102-V199 sort below V202. Store, lock and
+                // the retired band never depend on each other, so out-of-order
+                // application is the intended semantics. It also makes such a
+                // migration "pending" to info(), so VALIDATE names it below.
+                // MaestroSchemaInitializerTest pins both histories.
                 .outOfOrder(true)
                 .load();
 

@@ -12,6 +12,9 @@ import org.junit.jupiter.api.io.TempDir;
 import org.postgresql.ds.PGSimpleDataSource;
 import org.testcontainers.containers.PostgreSQLContainer;
 
+import java.io.IOException;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.DriverManager;
@@ -390,6 +393,51 @@ class MaestroSchemaInitializerTest {
     }
 
     /**
+     * A database that ran the retired Postgres messaging transport, exactly as
+     * main @ {@code c01d498} left it: V1–V5, V100 and V200–V202, migrated by
+     * that build's initializer (no {@code outOfOrder}) over the frozen copy of
+     * what it shipped. V202 is the highest applied version, so V6–V9 and V101
+     * apply only out of order. The retired rows and the orphan
+     * {@code maestro_signal_queue} stay; {@code maestro_task_queue}, which
+     * V202 dropped, stays dropped.
+     */
+    @Test
+    @DisplayName("a database holding the retired V200–V202 band upgrades to this build and validates")
+    void aDatabaseHoldingTheRetiredMessagingBandUpgradesToThisBuild() throws SQLException {
+        FrozenMigrations.named("c01d498").olderBuild(ds, false).migrate();    // c01d498's initializer: no outOfOrder
+        assertThat(versions(MaestroSchemaInitializer.HISTORY_TABLE))
+                .containsExactly("1", "2", "3", "4", "5", "100", "200", "201", "202");
+
+        new MaestroSchemaInitializer(ds, SchemaMode.FLYWAY, cl).initialize();
+
+        assertThat(versions(MaestroSchemaInitializer.HISTORY_TABLE)).containsExactly(
+                "1", "2", "3", "4", "5", "100", "200", "201", "202", "6", "7", "8", "9", "101");
+        assertThat(tables()).contains("maestro_signal_queue").doesNotContain("maestro_task_queue");   // orphan kept, V202's drop kept
+        assertThatCode(() -> new MaestroSchemaInitializer(ds, SchemaMode.VALIDATE, cl).initialize())
+                .doesNotThrowAnyException();
+    }
+
+    /**
+     * Every future V102–V199 sorts below V202 on a database holding the
+     * retired band; it applies only out of order. V102 sorts above V100 and
+     * V101, so only the V200–V202 rows can make it out of order.
+     */
+    @Test
+    @DisplayName("a migration added after V101 still applies on a database holding the retired band")
+    void aMigrationAddedAfterV101AppliesOnADatabaseHoldingTheRetiredBand(@TempDir Path dir) throws Exception {
+        FrozenMigrations.named("c01d498").olderBuild(ds, false).migrate();
+        new MaestroSchemaInitializer(ds, SchemaMode.FLYWAY, cl).initialize();
+        var future = withFutureMigration(dir, "V102__future_probe.sql", "CREATE TABLE maestro_future_probe (id INT);");
+
+        new MaestroSchemaInitializer(ds, SchemaMode.FLYWAY, future).initialize();
+
+        assertThat(versions(MaestroSchemaInitializer.HISTORY_TABLE)).endsWith("101", "102");
+        assertThat(tables()).contains("maestro_future_probe");
+        assertThatCode(() -> new MaestroSchemaInitializer(ds, SchemaMode.VALIDATE, future).initialize())
+                .doesNotThrowAnyException();
+    }
+
+    /**
      * The numbering rule (CLAUDE.md, docs/configuration.md § Schema
      * management): every new Maestro migration, store or lock, takes the next
      * version above the highest shipped, within 101–199. Versions 1–9 and 100
@@ -424,6 +472,23 @@ class MaestroSchemaInitializerTest {
     }
 
     // ── helpers ─────────────────────────────────────────────────────
+
+    /**
+     * This build plus one migration it does not ship: a class loader (parent:
+     * the test class loader) over {@code dir}, which holds a
+     * {@value MaestroSchemaInitializer#LOCATIONS_RESOURCE} resource naming
+     * {@code filesystem:<dir>/future}, and {@code <dir>/future/<fileName>}
+     * holding {@code sql}. No shipped resource is touched.
+     */
+    @SuppressWarnings("resource") // lives as long as the @TempDir it reads
+    private ClassLoader withFutureMigration(Path dir, String fileName, String sql) throws IOException {
+        var future = Files.createDirectories(dir.resolve("future"));
+        Files.writeString(future.resolve(fileName), sql);
+        var locations = dir.resolve(MaestroSchemaInitializer.LOCATIONS_RESOURCE);
+        Files.createDirectories(locations.getParent());
+        Files.writeString(locations, "filesystem:" + future + "\n");
+        return new URLClassLoader(new URL[] {dir.toUri().toURL()}, cl);
+    }
 
     private long indexOid(String name) throws SQLException {
         try (var conn = ds.getConnection();
