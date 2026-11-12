@@ -85,8 +85,11 @@ import java.util.OptionalLong;
  * reader keeps the mapper's own features. {@link #serialize(Object)} is
  * untouched — what is stored does not change.
  *
- * <p>One value differs from the tree path and is accepted: under a mapper
- * without decimal nodes, a number exactly halfway between two {@code float}s,
+ * <p>One value differs from the tree path and is accepted, whatever the
+ * mapper's decimal features — under the default mapper and equally under a
+ * mapper with either {@code USE_BIG_DECIMAL_FOR_FLOATS} feature
+ * ({@link JsonNodeFeature} or {@link DeserializationFeature}) on: a number
+ * exactly halfway between two {@code float}s,
  * read into a {@code float}, is now rounded once from its text instead of twice
  * (to {@code double}, then to {@code float}); {@code 1.0000000596046448} reads as
  * {@code 1.0000001f}, where it read as {@code 1.0f}.
