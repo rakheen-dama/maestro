@@ -371,7 +371,7 @@ class ActivityResultReadBackTest {
         MAP_DECIMAL_2DP(Probes::mapDecimalTwoPlaces, v -> v),
         MAP_DECIMAL_18DP(Probes::mapDecimalEighteenPlaces, v -> v),
         LIST_FLOAT(Probes::listFloat, v -> v),
-        // Task 5: a JSON null reads as the declared type's null value, live and on replay.
+        // Task 5: an Optional's JSON null reads as Optional.empty(), live and on replay.
         OPTIONAL_EMPTY(Probes::optionalEmpty, v -> v, Optional.empty()),
         // Task 5: an untyped float reads back as a text store returns it — a Double.
         MAP_FLOAT_STAYS_DOUBLE_ON_REPLAY(Probes::mapFloat, ProbeCase::classAndValueOfF, "Double 0.1");

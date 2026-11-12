@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.exception.SerializationException;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -10,16 +11,23 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.NullNode;
 
+import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalDouble;
+import java.util.OptionalInt;
+import java.util.OptionalLong;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -197,6 +205,8 @@ class PayloadSerializerTest {
     interface Targets {
         Optional<String> optionalString();
 
+        List<String> stringList();
+
         Map<String, Object> untypedMap();
 
         List<Object> untypedList();
@@ -229,28 +239,81 @@ class PayloadSerializerTest {
     }
 
     @Test
-    void nullReadsAsTheTargetTypesNullValue() {
+    void nullReadsAsEmptyForAnOptionalAndAsJavaNullOtherwise() {
         assertEquals(Optional.empty(), serializer.deserialize(NullNode.instance, OPTIONAL_STRING_TYPE));
         assertEquals(Optional.empty(), serializer.deserialize(null, OPTIONAL_STRING_TYPE));
         assertNull(serializer.deserialize(NullNode.instance, String.class));
     }
 
     /**
-     * A primitive has no null value: under Jackson 3's default
-     * {@code FAIL_ON_NULL_FOR_PRIMITIVES} the read fails, and the failure is a
-     * {@link SerializationException} — which the engine's replay guards turn
-     * into a stand-down, never a workflow failure.
+     * Every target outside the {@code Optional} family reads a JSON null as Java
+     * {@code null}, exactly as before WP1 Task 5 — through both overloads, from a
+     * {@code null} node and from a {@link NullNode}. No failure for a primitive,
+     * no {@code NullNode} for {@code JsonNode}, no {@code AtomicReference(null)}.
      */
-    @Test
-    void nullIntoAPrimitiveFailsAsASerializationException() {
-        Object outcome;                                       // the value read, or the failure's cause class
-        try {
-            outcome = serializer.deserialize(NullNode.instance, int.class);
-        } catch (SerializationException e) {
-            outcome = e.getCause().getClass().getName();
+    @ParameterizedTest(name = "[{index}] {0}")
+    @MethodSource("targetsOutsideTheOptionalFamily")
+    void nullReadsAsJavaNullOutsideTheOptionalFamily(String label, Type target) {
+        assertEquals(List.of("Java null", "Java null", "Java null", "Java null"), readsOfNull(target), label);
+    }
+
+    /** The {@code Optional} family reads a JSON null as its empty value, through both overloads. */
+    @ParameterizedTest(name = "[{index}] {0}")
+    @MethodSource("theOptionalFamily")
+    void nullReadsAsEmptyForTheOptionalFamily(String label, Type target, Object empty) {
+        var expected = describe(empty);
+        assertEquals(List.of(expected, expected, expected, expected), readsOfNull(target), label);
+    }
+
+    static Stream<Arguments> targetsOutsideTheOptionalFamily() {
+        return Stream.of(
+                Arguments.of("int", int.class),
+                Arguments.of("long", long.class),
+                Arguments.of("boolean", boolean.class),
+                Arguments.of("double", double.class),
+                Arguments.of("Integer", Integer.class),
+                Arguments.of("JsonNode", JsonNode.class),
+                Arguments.of("AtomicReference", AtomicReference.class),
+                Arguments.of("record", TestPayload.class),
+                Arguments.of("List<String>", returnTypeOf("stringList")),
+                Arguments.of("String", String.class),
+                Arguments.of("Object", Object.class));
+    }
+
+    static Stream<Arguments> theOptionalFamily() {
+        return Stream.of(
+                Arguments.of("Optional<String>", OPTIONAL_STRING_TYPE, Optional.empty()),
+                Arguments.of("OptionalInt", OptionalInt.class, OptionalInt.empty()),
+                Arguments.of("OptionalLong", OptionalLong.class, OptionalLong.empty()),
+                Arguments.of("OptionalDouble", OptionalDouble.class, OptionalDouble.empty()));
+    }
+
+    /**
+     * A JSON null read as {@code target}: {@code (Class, null)}, {@code (Class, NullNode)},
+     * {@code (Type, null)}, {@code (Type, NullNode)} — each the value read, or the failure's cause.
+     */
+    private List<String> readsOfNull(Type target) {
+        var raw = (Class<?>) (target instanceof ParameterizedType p ? p.getRawType() : target);
+        var reads = new ArrayList<String>();
+        for (JsonNode node : Arrays.asList(null, NullNode.instance)) {
+            reads.add(outcome(() -> serializer.deserialize(node, raw)));
         }
-        assertEquals("tools.jackson.databind.exc.MismatchedInputException", String.valueOf(outcome));
-        assertNull(serializer.deserialize(NullNode.instance, Integer.class));
+        for (JsonNode node : Arrays.asList(null, NullNode.instance)) {
+            reads.add(outcome(() -> serializer.deserialize(node, target)));
+        }
+        return reads;
+    }
+
+    private static String outcome(Supplier<@Nullable Object> read) {
+        try {
+            return describe(read.get());
+        } catch (SerializationException e) {
+            return "throws " + e.getCause().getClass().getName();
+        }
+    }
+
+    private static String describe(@Nullable Object value) {
+        return value == null ? "Java null" : value.getClass().getSimpleName() + " " + value;
     }
 
     /**

@@ -7,7 +7,12 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.NullNode;
 
+import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
+import java.util.Optional;
+import java.util.OptionalDouble;
+import java.util.OptionalInt;
+import java.util.OptionalLong;
 
 /**
  * Serializes and deserializes activity method arguments and return values
@@ -20,19 +25,25 @@ import java.lang.reflect.Type;
  * <ul>
  *   <li>{@link #serialize(Object)} with {@code null} returns {@link NullNode}.</li>
  *   <li>Both {@code deserialize} overloads read a {@code null} node or a
- *       {@link NullNode} as the mapper's null value for the target type:
- *       {@code null} for an ordinary reference (and for {@code void}/{@code Void}),
- *       {@code Optional.empty()} for {@code Optional} (likewise
- *       {@code OptionalInt}/{@code OptionalLong}/{@code OptionalDouble}), and
- *       {@link NullNode} for {@link JsonNode}. A primitive target fails with
- *       {@link SerializationException} while the mapper has
- *       {@code DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES} on (Jackson 3's
- *       default), and reads as {@code 0}/{@code false} while it is off.</li>
+ *       {@link NullNode} whose target's raw class is {@link Optional},
+ *       {@link OptionalInt}, {@link OptionalLong} or {@link OptionalDouble} as
+ *       that type's empty value, obtained through the mapper's own null handling
+ *       (the text path), so a host mapper's configuration is respected.
+ *       {@code null} is never a legitimate {@code Optional}: a caller that calls
+ *       {@code isPresent()} on it fails.</li>
+ *   <li>For every other target — primitives, wrappers, {@link JsonNode},
+ *       {@code AtomicReference}, records, collections, {@code Object},
+ *       {@code void}/{@code Void}, everything — a {@code null} node or a
+ *       {@link NullNode} reads as Java {@code null}, without consulting the
+ *       mapper.</li>
+ *   <li>A {@code null} nested inside a non-null document is the mapper's
+ *       business, as it always was.</li>
  * </ul>
  *
  * <h2>Read through JSON text</h2>
- * <p>Both {@code deserialize} overloads render the node to JSON text and parse
- * that text with the same mapper, exactly as a JDBC store parses a payload
+ * <p>Both {@code deserialize} overloads render a non-null node (and the JSON
+ * null an {@code Optional}-family target reads) to JSON text and parse that
+ * text with the same mapper, exactly as a JDBC store parses a payload
  * column. A value workflow code receives is therefore what a text store returns
  * for it, whichever store holds the history: an untyped number reads as the
  * smallest of {@code Integer}, {@code Long} and {@code BigInteger} that holds it,
@@ -81,10 +92,14 @@ public final class PayloadSerializer {
      * @param node the JsonNode to deserialize, may be {@code null}
      * @param type the target class
      * @return the deserialized value; for a {@code null} node or {@link NullNode},
-     *         the target type's null value (class Javadoc)
+     *         the empty value of an {@code Optional}-family target, otherwise
+     *         {@code null} (class Javadoc)
      * @throws SerializationException if deserialization fails
      */
     public <T> @Nullable T deserialize(@Nullable JsonNode node, Class<T> type) {
+        if (isAbsent(node) && !readsNullAsEmpty(type)) {
+            return null;
+        }
         try {
             return objectMapper.readerFor(type).readValue(textOf(node));
         } catch (Exception e) {
@@ -103,10 +118,14 @@ public final class PayloadSerializer {
      * @param node the JsonNode to deserialize, may be {@code null}
      * @param type the generic return type (from {@code Method.getGenericReturnType()})
      * @return the deserialized value; for a {@code null} node or {@link NullNode},
-     *         the target type's null value (class Javadoc)
+     *         the empty value of an {@code Optional}-family target, otherwise
+     *         {@code null} (class Javadoc)
      * @throws SerializationException if deserialization fails
      */
     public @Nullable Object deserialize(@Nullable JsonNode node, Type type) {
+        if (isAbsent(node) && !readsNullAsEmpty(type)) {
+            return null;
+        }
         try {
             JavaType javaType = objectMapper.getTypeFactory().constructType(type);
             return objectMapper.readerFor(javaType).readValue(textOf(node));
@@ -114,6 +133,20 @@ public final class PayloadSerializer {
             throw new SerializationException(
                     "Failed to deserialize JsonNode to " + type.getTypeName(), e);
         }
+    }
+
+    private static boolean isAbsent(@Nullable JsonNode node) {
+        return node == null || node.isNull();
+    }
+
+    /**
+     * Whether a JSON null reads as the target's empty value rather than Java
+     * {@code null}: the {@code Optional} family, by raw class.
+     */
+    private static boolean readsNullAsEmpty(Type type) {
+        var raw = type instanceof ParameterizedType p ? p.getRawType() : type;
+        return raw == Optional.class || raw == OptionalInt.class
+                || raw == OptionalLong.class || raw == OptionalDouble.class;
     }
 
     /** The node's JSON text as this mapper writes it; a {@code null} node is JSON {@code null}. */
