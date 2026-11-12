@@ -530,7 +530,7 @@ class MaestroSchemaInitializerTest {
 
     // ── the production recipe: docs/configuration.md § Schema management, "In production" ──
     //
-    // The five SQL constants below are exactly the sql blocks printed in that
+    // The six SQL constants below are exactly the sql blocks printed in that
     // section, no more and no fewer; theDocumentedSqlIsTheTestedSql fails if
     // the two drift apart.
 
@@ -587,6 +587,26 @@ class MaestroSchemaInitializerTest {
                 WHERE grantee = 'maestro_app' AND table_schema = current_schema()
                     AND table_name IN ('maestro_workflow_event', 'maestro_schema_history')
                 ORDER BY table_name, privilege_type;
+            """;
+
+    /**
+     * What the nodes' role can actually do on the same two tables in the
+     * session's current schema, wherever the privilege comes from: granted to
+     * it, to {@code PUBLIC}, or to a role it inherits from, at table or (for
+     * {@code INSERT}, {@code SELECT}, {@code UPDATE}) column level. Unlike
+     * {@link #PRIVILEGE_CHECK} it does not depend on who runs it; the caller
+     * only needs to resolve the tables ({@code USAGE} on the schema), and
+     * gets an error, not an empty result, when it cannot.
+     */
+    static final String EFFECTIVE_PRIVILEGE_CHECK = """
+            SELECT t.table_name, p.privilege_type
+                FROM (VALUES ('maestro_schema_history'), ('maestro_workflow_event')) AS t (table_name)
+                CROSS JOIN (VALUES ('DELETE'), ('INSERT'), ('SELECT'), ('TRUNCATE'), ('UPDATE')) AS p (privilege_type)
+                WHERE CASE WHEN p.privilege_type IN ('DELETE', 'TRUNCATE')
+                    THEN has_table_privilege('maestro_app', format('%I.%I', current_schema(), t.table_name), p.privilege_type)
+                    ELSE has_any_column_privilege('maestro_app', format('%I.%I', current_schema(), t.table_name), p.privilege_type)
+                    END
+                ORDER BY t.table_name, p.privilege_type;
             """;
 
     /** Takes back what {@link #DEFAULT_PRIVILEGES} issued too early added. Issued by {@code maestro_owner}. */
@@ -741,6 +761,7 @@ class MaestroSchemaInitializerTest {
 
         execute(owner, DEFAULT_PRIVILEGES);                 // the documented order: migrate, table grants, then this
         assertThat(privilegeCheck(owner)).as("documented order: least privilege").isEqualTo(LEAST_PRIVILEGE);
+        assertThat(effectivePrivilegeCheck(owner)).as("documented order: effective").isEqualTo(LEAST_PRIVILEGE);
         assertAppCannotRewriteHistory(app);
         var v103 = withFutureMigration(dir, "V103__future_table.sql", "CREATE TABLE maestro_future_probe_2 (id INT);");
         new MaestroSchemaInitializer(owner, SchemaMode.FLYWAY, v103).initialize();
@@ -787,6 +808,7 @@ class MaestroSchemaInitializerTest {
                 "maestro_schema_history UPDATE",
                 "maestro_workflow_event DELETE", "maestro_workflow_event INSERT", "maestro_workflow_event SELECT",
                 "maestro_workflow_event UPDATE");
+        assertThat(effectivePrivilegeCheck(owner)).as("wrong order: effective").isEqualTo(privilegeCheck(owner));
         assertThatCode(() -> execute(app, "UPDATE maestro_workflow_event SET step_name = step_name"))
                 .as("wrong order: the app role can rewrite workflow history").doesNotThrowAnyException();
         assertThatCode(() -> execute(app, "UPDATE maestro_schema_history SET description = description"))
@@ -797,10 +819,67 @@ class MaestroSchemaInitializerTest {
         assertThat(privilegeCheck(unrelated))
                 .as("a role neither grantor nor grantee, nor a member of either, sees no rows: not a pass")
                 .isEmpty();
+        assertThat(effectivePrivilegeCheck(unrelated)).as("the effective check does not depend on who runs it")
+                .isEqualTo(effectivePrivilegeCheck(owner));
 
         execute(owner, WRONG_ORDER_REPAIR);
 
         assertThat(privilegeCheck(owner)).as("repaired: least privilege").isEqualTo(LEAST_PRIVILEGE);
+        assertThat(effectivePrivilegeCheck(owner)).as("repaired: effective").isEqualTo(LEAST_PRIVILEGE);
+        assertAppCannotRewriteHistory(app);
+    }
+
+    /**
+     * {@link #PRIVILEGE_CHECK} reads grants recorded <em>to</em>
+     * {@code maestro_app}. A privilege the role holds through {@code PUBLIC},
+     * or through a role it inherits from — here a column-level
+     * {@code UPDATE} — is not among them: the check still returns exactly
+     * {@link #LEAST_PRIVILEGE} while the role can rewrite workflow history.
+     * {@link #EFFECTIVE_PRIVILEGE_CHECK} asks PostgreSQL what the role can
+     * actually do, and shows both.
+     */
+    @Test
+    @DisplayName("privileges held through PUBLIC or a parent role escape the grants check; the effective-privilege check shows them")
+    void privilegesHeldThroughPublicOrAParentRoleEscapeTheGrantsCheck() throws Exception {
+        var owner = lockedDownSchemaMigratedByANonSuperuserOwner();
+        execute(owner, RUNTIME_GRANTS);
+        var app = roleDataSource("maestro_app", "app");
+        assertThat(privilegeCheck(owner)).isEqualTo(LEAST_PRIVILEGE);
+        assertThat(effectivePrivilegeCheck(owner)).as("documented state").isEqualTo(LEAST_PRIVILEGE);
+
+        execute(owner, "GRANT UPDATE ON maestro_workflow_event TO PUBLIC");
+        assertThat(privilegeCheck(owner)).as("through PUBLIC: the grants check sees nothing").isEqualTo(LEAST_PRIVILEGE);
+        assertThatCode(() -> execute(app, "UPDATE maestro_workflow_event SET step_name = step_name"))
+                .as("through PUBLIC: the app role can rewrite workflow history").doesNotThrowAnyException();
+        assertThat(effectivePrivilegeCheck(owner)).as("through PUBLIC").containsExactly(
+                "maestro_schema_history SELECT",
+                "maestro_workflow_event DELETE", "maestro_workflow_event INSERT", "maestro_workflow_event SELECT",
+                "maestro_workflow_event UPDATE");
+        execute(owner, "REVOKE UPDATE ON maestro_workflow_event FROM PUBLIC");
+
+        try (var conn = ds.getConnection(); var stmt = conn.createStatement()) {
+            stmt.execute("DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'maestro_app_parent') THEN"
+                    + " CREATE ROLE maestro_app_parent NOLOGIN; END IF; END $$");
+            stmt.execute("GRANT maestro_app_parent TO maestro_app");
+        }
+        try {
+            execute(owner, "GRANT UPDATE (step_name) ON maestro_workflow_event TO maestro_app_parent");
+            assertThat(privilegeCheck(owner)).as("through a parent role: the grants check sees nothing")
+                    .isEqualTo(LEAST_PRIVILEGE);
+            assertThatCode(() -> execute(app, "UPDATE maestro_workflow_event SET step_name = step_name"))
+                    .as("through a parent role: the app role can rewrite workflow history").doesNotThrowAnyException();
+            assertThat(effectivePrivilegeCheck(owner)).as("through a parent role, one column").containsExactly(
+                    "maestro_schema_history SELECT",
+                    "maestro_workflow_event DELETE", "maestro_workflow_event INSERT", "maestro_workflow_event SELECT",
+                    "maestro_workflow_event UPDATE");
+            execute(owner, "REVOKE UPDATE (step_name) ON maestro_workflow_event FROM maestro_app_parent");
+        } finally {
+            try (var conn = ds.getConnection(); var stmt = conn.createStatement()) {
+                stmt.execute("REVOKE maestro_app_parent FROM maestro_app");
+            }
+        }
+
+        assertThat(effectivePrivilegeCheck(owner)).as("revoked where granted").isEqualTo(LEAST_PRIVILEGE);
         assertAppCannotRewriteHistory(app);
     }
 
@@ -870,7 +949,8 @@ class MaestroSchemaInitializerTest {
         }
 
         assertThat(blocks).containsExactlyInAnyOrder(
-                SCHEMA_GRANTS, RUNTIME_GRANTS, DEFAULT_PRIVILEGES, PRIVILEGE_CHECK, WRONG_ORDER_REPAIR);
+                SCHEMA_GRANTS, RUNTIME_GRANTS, DEFAULT_PRIVILEGES, PRIVILEGE_CHECK, EFFECTIVE_PRIVILEGE_CHECK,
+                WRONG_ORDER_REPAIR);
     }
 
     /**
@@ -945,6 +1025,18 @@ class MaestroSchemaInitializerTest {
         var rows = new ArrayList<String>();
         try (var conn = owner.getConnection(); var stmt = conn.createStatement();
              var rs = stmt.executeQuery(PRIVILEGE_CHECK)) {
+            while (rs.next()) {
+                rows.add(rs.getString(1) + " " + rs.getString(2));
+            }
+        }
+        return rows;
+    }
+
+    /** {@link #EFFECTIVE_PRIVILEGE_CHECK}'s rows, as "table privilege", run as {@code on}. */
+    private static List<String> effectivePrivilegeCheck(PGSimpleDataSource on) throws SQLException {
+        var rows = new ArrayList<String>();
+        try (var conn = on.getConnection(); var stmt = conn.createStatement();
+             var rs = stmt.executeQuery(EFFECTIVE_PRIVILEGE_CHECK)) {
             while (rs.next()) {
                 rows.add(rs.getString(1) + " " + rs.getString(2));
             }
