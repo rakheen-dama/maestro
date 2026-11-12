@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.flywaydb.core.api.MigrationInfo;
+import org.flywaydb.core.api.MigrationState;
 import org.flywaydb.core.api.output.MigrateResult;
 import org.junit.jupiter.api.io.TempDir;
 import org.postgresql.ds.PGSimpleDataSource;
@@ -201,9 +202,14 @@ class MaestroSchemaInitializerTest {
      * the lock band (V2–V9 — the band that sorts below V100), a database
      * holding the store band up to the version before it plus the whole lock
      * band takes it, out of order, in {@code flyway} mode, and then validates.
-     * Versions above V100 are applied in order by the numbering rule
-     * ({@link #migrationVersionsFollowTheNumberingRule}), so they need no
-     * out-of-order case.
+     * On a database whose highest recorded version is V100, versions above it
+     * are applied in order by the numbering rule
+     * ({@link #migrationVersionsFollowTheNumberingRule}). On a database that
+     * holds the retired V200–V202 rows they are not: V101 and every later
+     * migration sort below those rows and apply only out of order, which
+     * {@link #aDatabaseHoldingTheRetiredMessagingBandUpgradesToThisBuild} and
+     * {@link #aMigrationAddedAfterV101AppliesOnADatabaseHoldingTheRetiredBand}
+     * pin.
      */
     @ParameterizedTest(name = "store V{0} after the lock band")
     @MethodSource("storeVersionsAfterTheFirst")
@@ -418,23 +424,47 @@ class MaestroSchemaInitializerTest {
     }
 
     /**
-     * Every future V102–V199 sorts below V202 on a database holding the
-     * retired band; it applies only out of order. V102 sorts above V100 and
-     * V101, so only the V200–V202 rows can make it out of order.
+     * Every future V102–V199 sorts below the retired rows on a database
+     * holding the band; it applies only out of order. V102 sorts above V100
+     * and V101, so only the V200–V202 rows can make it out of order: Flyway
+     * reports it {@code OUT_OF_ORDER} here and {@code SUCCESS} on a database
+     * without them (the test below). The setup applies this build's
+     * migrations through {@link #applyThisBuildsMigrationsOutOfOrder()}, so
+     * only the V102 step runs {@link MaestroSchemaInitializer}.
      */
     @Test
-    @DisplayName("a migration added after V101 still applies on a database holding the retired band")
+    @DisplayName("a migration added after V101 still applies on a database holding the retired band, out of order")
     void aMigrationAddedAfterV101AppliesOnADatabaseHoldingTheRetiredBand(@TempDir Path dir) throws Exception {
         FrozenMigrations.named("c01d498").olderBuild(ds, false).migrate();
-        new MaestroSchemaInitializer(ds, SchemaMode.FLYWAY, cl).initialize();
+        applyThisBuildsMigrationsOutOfOrder();
         var future = withFutureMigration(dir, "V102__future_probe.sql", "CREATE TABLE maestro_future_probe (id INT);");
 
         new MaestroSchemaInitializer(ds, SchemaMode.FLYWAY, future).initialize();
 
         assertThat(versions(MaestroSchemaInitializer.HISTORY_TABLE)).endsWith("101", "102");
+        assertThat(stateOf(future, "102")).as("V102 sorts below the retired rows").isEqualTo(MigrationState.OUT_OF_ORDER);
         assertThat(tables()).contains("maestro_future_probe");
         assertThatCode(() -> new MaestroSchemaInitializer(ds, SchemaMode.VALIDATE, future).initialize())
                 .doesNotThrowAnyException();
+    }
+
+    /**
+     * The control for the test above: the same V102 step on a database the
+     * frozen {@code cbf5a2a} set migrated (no V200–V202) applies V102 in
+     * order, an ordinary {@code SUCCESS}. The retired rows are the only
+     * difference between the two databases, so they are what makes V102 out
+     * of order there.
+     */
+    @Test
+    @DisplayName("without the retired band, a migration added after V101 applies in order")
+    void aMigrationAddedAfterV101AppliesInOrderWithoutTheRetiredBand(@TempDir Path dir) throws Exception {
+        FrozenMigrations.named("cbf5a2a").olderBuild(ds, true).migrate();    // cbf5a2a's initializer: outOfOrder(true)
+        var future = withFutureMigration(dir, "V102__future_probe.sql", "CREATE TABLE maestro_future_probe (id INT);");
+
+        new MaestroSchemaInitializer(ds, SchemaMode.FLYWAY, future).initialize();
+
+        assertThat(versions(MaestroSchemaInitializer.HISTORY_TABLE)).endsWith("101", "102");
+        assertThat(stateOf(future, "102")).as("V102 sorts above every applied version").isEqualTo(MigrationState.SUCCESS);
     }
 
     /**
@@ -472,6 +502,35 @@ class MaestroSchemaInitializerTest {
     }
 
     // ── helpers ─────────────────────────────────────────────────────
+
+    /**
+     * Applies every migration this build ships, as {@link MaestroSchemaInitializer}
+     * does, but through an explicit Flyway with {@code outOfOrder(true)}: test
+     * setup that does not depend on the production setting under test.
+     */
+    private void applyThisBuildsMigrationsOutOfOrder() {
+        Flyway.configure(cl).dataSource(ds).table(MaestroSchemaInitializer.HISTORY_TABLE)
+                .locations(MaestroSchemaInitializer.discoverLocations(cl).toArray(String[]::new))
+                .baselineOnMigrate(true).baselineVersion("0")
+                .outOfOrder(true)
+                .load().migrate();
+    }
+
+    /**
+     * Flyway's {@code info()} state of applied {@code version}, read through
+     * {@code loader}'s locations. Flyway derives {@code OUT_OF_ORDER} from the
+     * recorded history (a version installed after a higher one), not from the
+     * {@code outOfOrder} setting of the Flyway that reads it.
+     */
+    private MigrationState stateOf(ClassLoader loader, String version) {
+        return Arrays.stream(Flyway.configure(loader).dataSource(ds).table(MaestroSchemaInitializer.HISTORY_TABLE)
+                        .locations(MaestroSchemaInitializer.discoverLocations(loader).toArray(String[]::new))
+                        .load().info().applied())
+                .filter(migration -> migration.getVersion() != null && migration.getVersion().getVersion().equals(version))
+                .map(MigrationInfo::getState)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("version " + version + " is not applied"));
+    }
 
     /**
      * This build plus one migration it does not ship: a class loader (parent:

@@ -28,7 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * which nothing ships any more), so no frozen set can be rewritten together
  * with its manifest unnoticed.
  */
-@DisplayName("Migrations shipped at cbf5a2a are frozen")
+@DisplayName("Migrations shipped at cbf5a2a, and the frozen cbf5a2a and c01d498 sets, are frozen")
 class ShippedMigrationsFrozenTest {
 
     static final String CBF5A2A = "cbf5a2a06acfba9b0f7ae23f37b3f1f1713928f7";

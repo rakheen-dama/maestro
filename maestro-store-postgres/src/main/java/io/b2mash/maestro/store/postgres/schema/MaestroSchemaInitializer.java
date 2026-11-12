@@ -68,8 +68,9 @@ import java.util.TreeSet;
  * not ship. Two real histories put shipped migrations below it. A database
  * first migrated before V6–V9 shipped recorded V100 before them (Issue 35).
  * A database that ran the retired Postgres messaging transport recorded
- * V200–V202, so V6–V9, V101 and every future V102–V199 sort below V202 there,
- * whatever the numbering rule above says. The store, lock and retired
+ * V200–V202, or as much of that band as it reached, so V6–V9, V101 and every
+ * future V102–V199 sort below the retired rows there, whatever the numbering
+ * rule above says. The store, lock and retired
  * migrations never depend on each other, so Flyway runs with
  * {@code outOfOrder(true)}: such a migration is applied, and reported pending
  * by {@code VALIDATE}, even though it sorts below the highest applied version.
@@ -162,8 +163,9 @@ public final class MaestroSchemaInitializer {
                 // does not ship. Two real histories hit this. (1) Issue 35: a
                 // database first migrated before V6-V9 shipped recorded V100
                 // first, so V6-V9 sort below it. (2) A database that ran the
-                // retired Postgres messaging transport recorded V200-V202, so V6-V9,
-                // V101 and every future V102-V199 sort below V202. Store, lock and
+                // retired Postgres messaging transport recorded V200-V202 (or as
+                // much of that band as it reached), so V6-V9, V101 and every future
+                // V102-V199 sort below the retired rows. Store, lock and
                 // the retired band never depend on each other, so out-of-order
                 // application is the intended semantics. It also makes such a
                 // migration "pending" to info(), so VALIDATE names it below.

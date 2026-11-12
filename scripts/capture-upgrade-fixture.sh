@@ -78,12 +78,14 @@ capture_migrations() {
     # filesystem: the fixture appears whole or not at all. The staging
     # directory is removed on every failure path (die, a failing command
     # under set -e, or an interrupt).
+    # The traps go in before mktemp, so no signal can leave a staging
+    # directory behind; STAGING is global so the EXIT trap sees it.
     mkdir -p "$MIGRATIONS_ROOT"
-    local staging
-    staging="$(mktemp -d "$MIGRATIONS_ROOT/.capture.XXXXXX")"
-    # shellcheck disable=SC2064 # expand now: staging is local
-    trap "rm -rf '$staging'" EXIT
+    STAGING=""
+    trap 'if [[ -n "$STAGING" ]]; then rm -rf -- "$STAGING"; fi' EXIT
     trap 'exit 130' INT TERM HUP
+    STAGING="$(mktemp -d "$MIGRATIONS_ROOT/.capture.XXXXXX")"
+    local staging="$STAGING"
     # mktemp -d creates 0700; give the fixture the mode mkdir would.
     chmod "$(printf '%o' $((0777 & ~0$(umask))))" "$staging"
 
@@ -110,8 +112,12 @@ capture_migrations() {
         echo "$component/$file=$hash" >>"$staging/SOURCE"
     done <<<"$paths"
 
+    # Still racy: a directory created between this check and the mv would get
+    # the staging directory moved inside it. mv -T would close that, but it is
+    # GNU-only and this script must also run on macOS (BSD mv).
     [[ ! -e "$target" ]] || die "$target appeared during the capture; refusing to overwrite it"
     mv "$staging" "$target"
+    STAGING=""
     trap - EXIT INT TERM HUP
     echo "$SCRIPT: wrote $target ($(grep -c '^[a-z]*/V' "$target/SOURCE") migrations at $sha)"
 }
