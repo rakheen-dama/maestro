@@ -20,7 +20,7 @@ Two adapters ship:
 
 | Adapter | Class | Produces |
 |---|---|---|
-| Meters | `MicrometerEngineObserver` + `MaestroEngineGauges` | Micrometer counters, timers, gauges under `maestro.*` |
+| Meters | `MicrometerEngineObserver` + `MaestroEngineGauges` + `MaestroTaskQueueGauges` | Micrometer counters, timers, gauges under `maestro.*` |
 | Tracing | `TracingEngineObserver` | Spans via the Micrometer Tracing API (`io.micrometer.tracing.Tracer`) |
 
 Both are registered by `MaestroObservabilityAutoConfiguration`, and both are
@@ -72,10 +72,11 @@ site.
 
 ## Meter catalog
 
-Nineteen meters: **15 counters and 2 timers**, registered by
-`MicrometerEngineObserver`, plus **2 gauges**, registered by
-`MaestroEngineGauges` — both in the `io.b2mash.maestro.spring.observe` package
-of `maestro-spring-boot-starter`.
+Twenty meters: **15 counters and 2 timers**, registered by
+`MicrometerEngineObserver`, plus **3 gauges** — two registered by
+`MaestroEngineGauges`, one (`maestro.taskqueue.slots.used`, one series per
+bounded task queue and kind) by `MaestroTaskQueueGauges` — all in the
+`io.b2mash.maestro.spring.observe` package of `maestro-spring-boot-starter`.
 
 **Cardinality rule:** no meter is ever tagged with `workflowId`, `runId`, or a
 timer ID. `workflowFailed`'s exception type is deliberately *not* a tag either
@@ -165,10 +166,17 @@ recorded for a terminate, a stand-down, an abandoned run or a converged loser.
 |---|---|---|
 | `maestro.workflows.running` | *(none)* | `WorkflowExecutor.runningCount()` |
 | `maestro.workflows.parked` | *(none)* | `WorkflowExecutor.parkedCount()` |
+| `maestro.taskqueue.slots.used` | `queue`, `kind` | `TaskQueueGovernor.workflowSlotsInUse(queue)` (`kind=workflow`) / `activitySlotsInUse(queue)` (`kind=activity`) |
 
-Both are registered by `MaestroEngineGauges` with `.strongReference(true)` —
-Micrometer's `Gauge.Builder` holds its state object behind a `WeakReference` by
-default, which would report `NaN` once the builder went out of scope.
+`queue` is the `taskQueue` of a registered `@DurableWorkflow` that is bounded
+on this node; `kind` is `workflow` or `activity`. Prometheus exposes it as
+`maestro_taskqueue_slots_used`.
+
+All three are registered with `.strongReference(true)` — the first two by
+`MaestroEngineGauges`, `maestro.taskqueue.slots.used` by
+`MaestroTaskQueueGauges` — because Micrometer's `Gauge.Builder` holds its state
+object behind a `WeakReference` by default, which would report `NaN` once the
+builder went out of scope.
 
 **How they are sourced, and what a value means:**
 
@@ -181,6 +189,21 @@ default, which would report `NaN` once the builder went out of scope.
   by **parking key** — one entry per active park (a `sleep()` on a durable
   timer, or an `awaitSignal()`). Entries are removed on unpark, timeout,
   interrupt, or exception.
+- `maestro.taskqueue.slots.used` is the queue's limit minus the free permits of
+  its slot pool in `TaskQueueGovernor` — the slots held right now **on this
+  JVM**. `kind=workflow` counts runs executing on the queue; a parked run gives
+  its slot back for the park, so a parked workflow counts in
+  `maestro.workflows.running` but not here. `kind=activity` counts live
+  activity executions (from the dedup lock through every retry to the
+  persisted outcome); a replayed step takes no slot. Compare it against the
+  queue's `maestro.worker.task-queues[]` limits, or the
+  `maestro.worker.default-*` limits (20/20) for an unlisted queue, to see
+  saturation. The gauges are registered on `ContextRefreshedEvent`, once
+  `WorkflowRegistrar` has registered every workflow, for each distinct task
+  queue those workflows name. **An unbounded queue has no gauge** (both
+  defaults `0` and not listed): it has no slots to count. A queue listed in
+  configuration that no registered workflow names has none either. Reading the
+  gauge never takes or waits for a slot.
 
 **These are node-local, in-JVM values.** They are not store-derived, they do not
 survive a restart, and they say nothing about workflows owned by other nodes.
