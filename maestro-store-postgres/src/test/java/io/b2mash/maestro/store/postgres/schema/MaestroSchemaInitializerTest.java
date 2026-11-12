@@ -1,5 +1,19 @@
 package io.b2mash.maestro.store.postgres.schema;
 
+import io.b2mash.maestro.core.model.EventType;
+import io.b2mash.maestro.core.model.TimerStatus;
+import io.b2mash.maestro.core.model.WorkflowEvent;
+import io.b2mash.maestro.core.model.WorkflowInstance;
+import io.b2mash.maestro.core.model.WorkflowSignal;
+import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.spi.RunLease;
+import io.b2mash.maestro.store.postgres.PostgresWorkflowStore;
+import io.b2mash.maestro.store.postgres.lock.PostgresDistributedLock;
+import io.b2mash.maestro.store.postgres.lock.PostgresLockCleaner;
+import io.b2mash.maestro.store.postgres.notify.PostgresSignalNotifier;
+import io.b2mash.maestro.store.postgres.notify.PostgresWakeListener;
+import io.b2mash.maestro.store.postgres.notify.WakeChannel;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -12,6 +26,7 @@ import org.flywaydb.core.api.output.MigrateResult;
 import org.junit.jupiter.api.io.TempDir;
 import org.postgresql.ds.PGSimpleDataSource;
 import org.testcontainers.containers.PostgreSQLContainer;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.io.IOException;
 import java.net.URL;
@@ -20,12 +35,17 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.DriverManager;
 import java.sql.SQLException;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 
@@ -499,6 +519,142 @@ class MaestroSchemaInitializerTest {
         new MaestroSchemaInitializer(ds, SchemaMode.NONE, cl).initialize();
 
         assertThat(tables()).isEmpty();
+    }
+
+    /**
+     * The runtime grants docs/configuration.md § Schema management ("In
+     * production") tells an operator to issue, verbatim: keep the two
+     * identical. Everything a node does under {@code validate} must work with
+     * these and nothing more.
+     */
+    static final String RUNTIME_GRANTS = """
+            GRANT USAGE ON SCHEMA public TO maestro_app;
+            GRANT SELECT, INSERT, UPDATE, DELETE ON maestro_workflow_instance, maestro_workflow_event,
+                maestro_workflow_timer, maestro_workflow_signal, maestro_distributed_lock,
+                maestro_leader_election TO maestro_app;
+            GRANT SELECT ON maestro_schema_history TO maestro_app;
+            """;
+
+    /**
+     * The production recipe in docs/configuration.md § Schema management, run:
+     * the owner migrates, and a node then runs under {@code validate} as a
+     * role holding only {@link #RUNTIME_GRANTS}. That role passes validation
+     * and drives the store, the lock, the lock cleaner and the signal wake
+     * through each kind of statement they issue ({@code SELECT}, {@code INSERT},
+     * {@code INSERT ... ON CONFLICT}, {@code UPDATE}, {@code DELETE},
+     * {@code SELECT ... FOR UPDATE SKIP LOCKED}, {@code LISTEN},
+     * {@code pg_notify}); and it cannot migrate or run any other DDL.
+     * {@code PUBLIC} is stripped of its rights on the schema first, so every
+     * right the role uses is one the grants gave it.
+     */
+    @Test
+    @DisplayName("a role with only the documented DML grants runs validate mode and the store, and cannot migrate")
+    void aDmlOnlyRoleRunsValidateModeButCannotMigrate(@TempDir Path dir) throws Exception {
+        new MaestroSchemaInitializer(ds, SchemaMode.FLYWAY, cl).initialize();               // as the owner
+        try (var conn = ds.getConnection(); var stmt = conn.createStatement()) {
+            stmt.execute("REVOKE ALL ON SCHEMA public FROM PUBLIC");                          // a locked-down schema
+            stmt.execute("CREATE ROLE maestro_app LOGIN PASSWORD 'app'");
+            stmt.execute(RUNTIME_GRANTS);
+            // Rows a crashed node left behind, expired for more than a minute: the lock cleaner's work.
+            stmt.execute("INSERT INTO maestro_distributed_lock (lock_key, token, expires_at)"
+                    + " VALUES ('maestro:lock:workflow:crashed', 't', now() - interval '2 minutes')");
+            stmt.execute("INSERT INTO maestro_leader_election (election_key, candidate_id, expires_at)"
+                    + " VALUES ('maestro:leader:retention:svc', 'crashed', now() - interval '2 minutes')");
+        }
+        var app = new PGSimpleDataSource();
+        app.setServerNames(ds.getServerNames());
+        app.setPortNumbers(ds.getPortNumbers());
+        app.setDatabaseName(ds.getDatabaseName());
+        app.setUser("maestro_app");
+        app.setPassword("app");
+
+        // Startup under validate.
+        assertThatCode(() -> new MaestroSchemaInitializer(app, SchemaMode.VALIDATE, cl).initialize())
+                .doesNotThrowAnyException();
+
+        // Lock and leader election, then the lock cleaner. release() and clean() log
+        // a failure rather than throw it, so their effect is asserted.
+        var lock = new PostgresDistributedLock(app);
+        var handle = lock.tryAcquire("maestro:lock:workflow:wf-dml", Duration.ofSeconds(30)).orElseThrow();
+        assertThat(lock.renew(handle, Duration.ofSeconds(30))).isTrue();
+        assertThat(lock.renewAll(List.of(handle), Duration.ofSeconds(30))).isEmpty();
+        assertThat(lock.heldKeys(List.of(handle.key()))).containsExactly(handle.key());
+        lock.release(handle);
+        assertThat(lock.heldKeys(List.of(handle.key()))).as("released").isEmpty();
+        assertThat(lock.trySetLeader("maestro:leader:timer-poller:svc", "node-a", Duration.ofSeconds(15))).isTrue();
+        assertThat(new PostgresLockCleaner(app).clean()).as("both expired rows deleted").isEqualTo(2);
+
+        // A workflow's life in the store: signals before start, adoption, run-scoped
+        // writes, signal consumption, a timer, completion, then the janitor and the sweeper.
+        var json = JsonMapper.builder().build();
+        var store = new PostgresWorkflowStore(app, json);
+        var now = Instant.now().truncatedTo(ChronoUnit.MILLIS);
+        store.saveSignal(new WorkflowSignal(UUID.randomUUID(), null, "wf-dml", "approve",
+                json.readTree("{\"ok\":true}"), false, now));
+        assertThat(store.saveSignalIfAbsent(new WorkflowSignal(UUID.randomUUID(), null, "wf-dml", "approve",
+                json.readTree("{\"ok\":true}"), false, now, null, "client:dml-1"))).isTrue();
+        var created = store.createInstance(WorkflowInstance.builder()
+                .id(UUID.randomUUID()).workflowId("wf-dml").runId(UUID.randomUUID())
+                .workflowType("dml").taskQueue("default").status(WorkflowStatus.RUNNING)
+                .serviceName("svc").eventSequence(0).startedAt(now).updatedAt(now).version(0)
+                .build());
+        var lease = new RunLease(created.id(), created.leaseEpoch());
+        store.appendEvent(new WorkflowEvent(UUID.randomUUID(), created.id(), 1, EventType.ACTIVITY_COMPLETED,
+                "step-1", json.readTree("\"done\""), now), lease);
+        assertThat(store.getRecoverableInstances("svc", null, 10)).extracting(WorkflowInstance::workflowId)
+                .containsExactly("wf-dml");
+        var signals = store.getUnconsumedSignals("wf-dml", "approve");
+        assertThat(signals).hasSize(2).allSatisfy(s -> assertThat(s.workflowInstanceId()).isEqualTo(created.id()));
+        assertThat(store.appendEventAndConsumeSignal(new WorkflowEvent(UUID.randomUUID(), created.id(), 2,
+                EventType.SIGNAL_RECEIVED, "approve", json.readTree("{\"ok\":true}"), now), lease,
+                signals.get(0).id())).isTrue();
+        assertThat(store.markSignalConsumed(signals.get(1).id(), lease)).isTrue();
+        var timer = new WorkflowTimer(UUID.randomUUID(), created.id(), "wf-dml", "t-1",
+                now.minusSeconds(1), TimerStatus.PENDING, now);
+        store.saveTimer(timer, lease);
+        assertThat(store.getDueTimers(Instant.now(), 10)).extracting(WorkflowTimer::id).containsExactly(timer.id());
+        assertThat(store.markTimerFired(timer.id(), lease)).isTrue();
+        var running = created.toBuilder().eventSequence(3).updatedAt(now).version(1).build();
+        store.updateInstance(running, lease);
+        var completedAt = now.minusSeconds(60);
+        assertThat(store.completeInstance(running.toBuilder().status(WorkflowStatus.COMPLETED)
+                        .completedAt(completedAt).updatedAt(completedAt).version(2).build(),
+                new WorkflowEvent(UUID.randomUUID(), created.id(), 4, EventType.WORKFLOW_COMPLETED,
+                        null, json.readTree("\"done\""), now), lease)).isTrue();
+        assertThat(store.deleteUnconsumedSignalsForTerminalInstancesBefore(now)).isZero();
+        assertThat(store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, now, 10).instances()).isOne();
+        assertThat(store.getInstance("wf-dml")).isEmpty();
+
+        // Cross-node signal wake: LISTEN and pg_notify as the role.
+        var channel = WakeChannel.channelFor("svc");
+        var woken = new LinkedBlockingQueue<String>();
+        try (var listener = new PostgresWakeListener(app, channel);
+             var notifier = new PostgresSignalNotifier(app, listener, channel)) {
+            listener.start();
+            assertThat(listener.isConnected()).isTrue();
+            listener.register("wf-dml", woken::add);
+            notifier.publish("wf-dml", "approve");
+            assertThat(woken.poll(10, TimeUnit.SECONDS)).isEqualTo("approve");
+        }
+
+        // No DDL: a migration attempted as the role fails on a permission check, and records nothing.
+        var future = withFutureMigration(dir, "V102__future_probe.sql", "CREATE TABLE maestro_future_probe (id INT);");
+        assertThatThrownBy(() -> new MaestroSchemaInitializer(app, SchemaMode.FLYWAY, future).initialize())
+                .rootCause()
+                .isInstanceOfSatisfying(SQLException.class, e -> assertThat(e.getSQLState()).isEqualTo("42501"))
+                .hasMessageContaining("permission denied for schema public");
+        assertThat(tables()).doesNotContain("maestro_future_probe");
+        assertThat(versions(MaestroSchemaInitializer.HISTORY_TABLE)).doesNotContain("102");
+        for (var ddl : List.of(
+                "CREATE TABLE maestro_future_probe (id INT)",
+                "CREATE INDEX IF NOT EXISTS idx_wf_instance_recovery ON maestro_workflow_instance (service_name)",
+                "ALTER TABLE maestro_workflow_signal ADD COLUMN IF NOT EXISTS probe TEXT")) {
+            try (var conn = app.getConnection(); var stmt = conn.createStatement()) {
+                assertThatThrownBy(() -> stmt.execute(ddl))
+                        .as(ddl)
+                        .isInstanceOfSatisfying(SQLException.class, e -> assertThat(e.getSQLState()).isEqualTo("42501"));
+            }
+        }
     }
 
     // ── helpers ─────────────────────────────────────────────────────
