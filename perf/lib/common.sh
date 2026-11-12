@@ -178,18 +178,29 @@ iso_secs() {
 # <vus> VUs round-robin over every replica and drained, BEFORE any
 # pg_stat_statements window opens. Connection warm-up and first-use catalog
 # lookups (the driver's pg_type queries) then fall outside every measured
-# window. Prints {"prefix", "count", "drain"}.
+# window. validity.warmup is INVALID unless every warm-up run COMPLETED before
+# the drain timed out: an unfinished warm-up would leak workflow statements
+# into the idle (background) window. Prints {"prefix", "count", "drain",
+# "runStatus"}.
+# Test-only overrides (to force an unfinished warm-up): PERF_WARMUP_TIMEOUT
+# (drain timeout, s, default 120) and PERF_WARMUP_ACTIVITY_MILLIS (replaces
+# the body's activityMillis).
 # warm_up <count> <vus> <body-json>
 warm_up() {
   local count=$1 vus=$2 body=$3
-  local prefix="${RUN_ID}-warmup-" drain
+  local prefix="${RUN_ID}-warmup-" drain timeout="${PERF_WARMUP_TIMEOUT:-120}"
+  if [[ -n "${PERF_WARMUP_ACTIVITY_MILLIS:-}" ]]; then
+    body=$(jq -c --argjson ms "$PERF_WARMUP_ACTIVITY_MILLIS" '.activityMillis = $ms' <<<"$body")
+    log "warm-up: PERF_WARMUP_ACTIVITY_MILLIS override, body ${body}"
+  fi
   k6_run warmup start-batch.js \
     "PERF_ID_PREFIX=${prefix}" "PERF_ID_OFFSET=0" "PERF_COUNT=${count}" \
     "PERF_VUS=${vus}" "PERF_MAX_DURATION=2m" "PERF_BODY=${body}"
-  drain=$(wait_terminal "$prefix" "$count" 120 2)
+  drain=$(wait_terminal "$prefix" "$count" "$timeout" 2)
   log "warm-up: $(jq -c '{byStatus: .status.byStatus, waitedSecs, timedOut}' <<<"$drain")"
-  jq -nc --arg p "$prefix" --argjson c "$count" --argjson d "$drain" \
-    '{prefix: $p, count: $c, drain: {waitedSecs: $d.waitedSecs, timedOut: $d.timedOut}, runStatus: $d.status}'
+  jq -nc --arg p "$prefix" --argjson c "$count" --argjson t "$timeout" --argjson d "$drain" \
+    '{prefix: $p, count: $c, timeoutSecs: $t,
+      drain: {waitedSecs: $d.waitedSecs, timedOut: $d.timedOut}, runStatus: $d.status}'
 }
 
 # The engine's background statement rate, measured on an idle stack: a

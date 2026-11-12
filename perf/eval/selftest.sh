@@ -74,6 +74,50 @@ expect "background window evicted entries: validity.pgssComplete" INVALID "$(jq 
 out=$(evaluate_with incomplete '.runStatus.byStatus = {COMPLETED: 19, FAILED: 1}')
 expect "one FAILED run: verdict" FAIL "$(jq -r .verdict <<<"$out")"
 
+out=$(evaluate_with pass2 '.')
+expect "warm-up all COMPLETED: validity.warmup" PASS "$(jq -r '.checks["validity.warmup"]' <<<"$out")"
+
+out=$(evaluate_with wu-timeout '.warmup.drain.timedOut = true | .warmup.runStatus = {total: .warmup.count, byStatus: {COMPLETED: (.warmup.count - 15), RUNNING: 15}}')
+expect "warm-up timed out, 15 RUNNING: verdict" INVALID "$(jq -r .verdict <<<"$out")"
+expect "warm-up timed out, 15 RUNNING: validity.warmup" INVALID "$(jq -r '.checks["validity.warmup"]' <<<"$out")"
+
+out=$(evaluate_with wu-running '.warmup.runStatus = {total: .warmup.count, byStatus: {COMPLETED: (.warmup.count - 1), RUNNING: 1}}')
+expect "warm-up not timed out but 1 RUNNING: validity.warmup" INVALID "$(jq -r '.checks["validity.warmup"]' <<<"$out")"
+
+out=$(evaluate_with wu-failed '.warmup.runStatus = {total: .warmup.count, byStatus: {COMPLETED: (.warmup.count - 1), FAILED: 1}}')
+expect "warm-up with 1 FAILED: validity.warmup" INVALID "$(jq -r '.checks["validity.warmup"]' <<<"$out")"
+
+out=$(evaluate_with wu-missing 'del(.warmup)')
+expect "warm-up record missing: verdict" INVALID "$(jq -r .verdict <<<"$out")"
+expect "warm-up record missing: validity.warmup" INVALID "$(jq -r '.checks["validity.warmup"]' <<<"$out")"
+
+out=$(evaluate_with bg-missing 'del(.background)')
+expect "background missing: verdict (no jq crash)" INVALID "$(jq -r .verdict <<<"$out")"
+expect "background missing: validity.background" INVALID "$(jq -r '.checks["validity.background"]' <<<"$out")"
+
+out=$(evaluate_with bg-string '.background = "garbage"')
+expect "background not an object: validity.background" INVALID "$(jq -r '.checks["validity.background"]' <<<"$out")"
+
+out=$(evaluate_with bg-nowindow '.background |= del(.window)')
+expect "background without window: validity.background" INVALID "$(jq -r '.checks["validity.background"]' <<<"$out")"
+
+out=$(evaluate_with bg-zero '.background.window.windowSecs = 0')
+expect "background window of 0 s: validity.background" INVALID "$(jq -r '.checks["validity.background"]' <<<"$out")"
+
+# statements_gate, the shared baseline-relative gate: net vs expected x 1.10 + tolerance.
+gate_of() { # <net|null> <tolerance> <expected|null>
+  jq -n -r -L "${PERF_DIR}/eval" --argjson n "$1" --argjson t "$2" --argjson e "$3" \
+    'include "common"; statements_gate("gate.x"; {statementsPerWorkflowNet: $n, netTolerancePerWorkflow: $t}; $e; 1.10; 0.80)
+     | "\(.status)\(if .value.belowStaleFloor then "+stale" else "" end)"'
+}
+expect "gate: net 21 vs expected 20 (limit 22.15)" PASS "$(gate_of 21 0.15 20)"
+expect "gate: net 22.15 at the limit (20 x 1.10 + 0.15)" PASS "$(gate_of 22.15 0.15 20)"
+expect "gate: net 22.2 just over the limit" FAIL "$(gate_of 22.2 0.15 20)"
+expect "gate: tolerance applied (22.1 > 22.0, < 22.15)" PASS "$(gate_of 22.1 0.15 20)"
+expect "gate: no expected value" NO_BASELINE "$(gate_of 21 0.15 null)"
+expect "gate: net missing" FAIL "$(gate_of null 0.15 20)"
+expect "gate: far below baseline" PASS+stale "$(gate_of 15 0.15 20)"
+
 expect "unknown status PASSED" ERROR "$(verdict_of '.[0].status = "PASSED"')"
 expect "unknown class" ERROR "$(verdict_of '.[0].class = "validty"')"
 expect "validity check WARN" INVALID "$(verdict_of 'map(if .id == "validity.identity" then .status = "WARN" else . end)')"

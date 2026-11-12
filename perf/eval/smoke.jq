@@ -3,6 +3,9 @@
 # harness's own excluded). Inputs: $identity, $measurements, $baseline
 # (slurped arrays). Statement figures: see the header of common.jq: the
 # gross figure includes background engine statements, the gate uses the net.
+# The smoke has no expected value, so gate.statementsMeasured is a wide
+# absolute range ([5, 500] net per workflow) that proves the measurement
+# works; it does not call statements_gate and applies no tolerance.
 include "common";
 
 $identity[0] as $id
@@ -14,12 +17,11 @@ $identity[0] as $id
 | $m.window as $w
 | statement_figures($m.background; $w; $done; $id.config.replicas) as $s
 | [
+    background_check($m.background),
     check("validity.roleSplit"; "validity";
-          if $w.maestroCalls > 0 and $w.harnessCalls > 0 and $m.background.window.windowSecs > 0
-          then "PASS" else "INVALID" end;
-          {maestroCalls: $w.maestroCalls, harnessCalls: $w.harnessCalls,
-           backgroundWindowSecs: $m.background.window.windowSecs};
-          {maestroCalls: "> 0", harnessCalls: "> 0", backgroundWindowSecs: "> 0"};
+          if $w.maestroCalls > 0 and $w.harnessCalls > 0 then "PASS" else "INVALID" end;
+          {maestroCalls: $w.maestroCalls, harnessCalls: $w.harnessCalls};
+          {maestroCalls: "> 0", harnessCalls: "> 0"};
           "engine (role maestro) and harness (role postgres) statements are both seen and counted apart"),
     check("correctness.allCompleted"; "correctness";
           if $done == $n and $failed == 0 then "PASS" else "FAIL" end;
@@ -34,13 +36,13 @@ $identity[0] as $id
           if $m.foreignRows == 0 then "no instance row outside this run's id space \($m.runPrefix)"
           else "\($m.foreignRows) instance row(s) outside \($m.runPrefix): leftover state" end),
     check("gate.statementsMeasured"; "gate";
-          if $s.statementsPerWorkflowNet != null and $s.statementsPerWorkflowNet >= 5
+          if ($s.statementsPerWorkflowNet | isnum) and $s.statementsPerWorkflowNet >= 5
              and $s.statementsPerWorkflowNet <= 500 then "PASS" else "FAIL" end;
           {statementsPerWorkflowNet: $s.statementsPerWorkflowNet,
            statementsPerWorkflowGross: $s.statementsPerWorkflowGross,
            netTolerancePerWorkflow: $s.netTolerancePerWorkflow};
           {statementsPerWorkflowNet: [5, 500]};
-          "net engine statements per completed workflow (background subtracted); gross includes background engine statements"),
+          "net engine statements per completed workflow (background subtracted), wide absolute range, no tolerance applied; gross includes background engine statements"),
     check("advisory.latency"; "advisory"; "PASS";
           $m.latency; null;
           "end-to-end p95 \($m.latency.p95Ms) ms (recorded, never a verdict)")

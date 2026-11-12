@@ -7,7 +7,9 @@
 # Env:  PERF_ADMIN_EVENTS (true|false, default true)  PERF_KEEP_UP=1 (skip the
 #       final down -v)  PERF_ENGINE_REF (free-text label)  PERF_NODE_HEAP /
 #       PERF_NODE_CPUS / PERF_NODE_MEM (node container sizing)
-#       Test-only overrides: PERF_EXPECT_COMMIT, PERF_K6_VUS, PERF_K6_MAX_VUS.
+#       Test-only overrides: PERF_EXPECT_COMMIT, PERF_K6_VUS, PERF_K6_MAX_VUS,
+#       PERF_WARMUP_TIMEOUT / PERF_WARMUP_ACTIVITY_MILLIS (force an unfinished
+#       warm-up: validity.warmup INVALID).
 #
 # Every run is cold (down -v first), builds and stamps its own jar, proves
 # each node runs that jar, and writes a self-identifying directory
@@ -25,6 +27,23 @@
 # the lock cleaner / signal janitor / retention sweeps when due) and NET (the
 # background rate, measured on the idle stack before the load, subtracted).
 # Gates use the net figure; see perf/eval/common.jq.
+#
+# ── Known limits of the background model (extend before relying on it) ──────
+#  1. The tolerance (netToleranceCalls = distinct background statements x
+#     replicas, one tick per poller) models only the pollers SEEN in the idle
+#     window: at the defaults the timer poller (5 s) and the recovery poller
+#     (60 s). Pollers with longer intervals are not in it.
+#  2. The lock cleaner first runs 10 minutes after node start and then every
+#     maestro.lock.cleanup-interval (10m); the signal janitor and the retention
+#     sweeper run once at node start (before any window) and then hourly. A
+#     load window that crosses one of those marks carries
+#     statements the model neither subtracts nor tolerates.
+#  3. The subtraction extrapolates the idle rate over the load window, so its
+#     error grows with loadWindowSecs / backgroundWindowSecs, while the
+#     tolerance is a fixed number of calls.
+#  A scenario whose load windows exceed ~8 minutes must extend the model (a
+#  longer idle window, or explicit accounting of those sweeps) before its
+#  statement gate can be trusted. The smoke's ~1 s window is far inside it.
 #
 # Exit: 0 PASS, 1 FAIL, 2 INVALID, 3 harness error (including an evaluator
 # ERROR verdict: a check with an unknown class or status).
@@ -184,18 +203,39 @@ if ((RECORD_BASELINE)) && [[ "$DIRTY" != false ]]; then
 fi
 
 # One run per host. mkdir is atomic: exactly one concurrent run gets the lock.
-# A lock whose pid is no longer running is stale and taken over; a lock
-# without a pid file is treated as held (its owner may be between mkdir and
-# writing the pid).
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+# A lock without a pid file is treated as held (its owner may be between mkdir
+# and writing the pid). A lock whose pid is no longer running is stale, and
+# taking it over is serialised by a second atomic mkdir (TAKEOVER_DIR): only
+# its holder may remove the stale lock, only if the lock still names the same
+# dead pid, and it then re-takes the lock with the same atomic mkdir as
+# everyone else, so two runs that find one stale lock cannot both start.
+TAKEOVER_DIR="${LOCK_DIR}.takeover"
+take_lock() {
+  local holder current
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    return 0
+  fi
   holder=$(cat "${LOCK_DIR}/pid" 2>/dev/null || true)
   if [[ -z "$holder" ]] || ps -p "$holder" >/dev/null 2>&1; then
     die "another perf run holds ${LOCK_DIR} (pid ${holder:-unknown}: $(cat "${LOCK_DIR}/owner" 2>/dev/null || echo '?')); refusing to start, nothing touched"
   fi
-  log "stale lock ${LOCK_DIR} (pid ${holder} is not running): taking it over"
+  if ! mkdir "$TAKEOVER_DIR" 2>/dev/null; then
+    die "another perf run is taking over the stale lock ${LOCK_DIR} (if no perf run is active, a dead one left ${TAKEOVER_DIR}: remove it); refusing to start, nothing touched"
+  fi
+  current=$(cat "${LOCK_DIR}/pid" 2>/dev/null || true)
+  if [[ "$current" != "$holder" ]]; then
+    rmdir "$TAKEOVER_DIR"
+    die "${LOCK_DIR} changed hands while this run was taking it over (now pid ${current:-unknown}); refusing to start, nothing touched"
+  fi
   rm -rf "$LOCK_DIR"
-  mkdir "$LOCK_DIR" 2>/dev/null || die "could not take ${LOCK_DIR}; refusing to start, nothing touched"
-fi
+  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    rmdir "$TAKEOVER_DIR"
+    die "another perf run took ${LOCK_DIR} first; refusing to start, nothing touched"
+  fi
+  rmdir "$TAKEOVER_DIR"
+  log "stale lock ${LOCK_DIR} (pid ${holder} is not running): taken over"
+}
+take_lock
 LOCK_HELD=1
 printf '%s\n' "$$" >"${LOCK_DIR}/pid"
 printf '%s %s\n' "$RUN_ID" "$PWD" >"${LOCK_DIR}/owner"
