@@ -1,0 +1,26 @@
+-- Lease epoch: the fencing token every run-scoped write is validated against.
+--
+-- Each adoption of a workflow instance by a run — a recovery resume, a manual
+-- retry's relaunch — bumps lease_epoch by one under the row's version
+-- compare-and-set, and the run carries the epoch it wrote. A write a workflow's
+-- own thread makes (event append, park/wake status write, timer arm, the
+-- terminal write) is applied only while the row still carries that epoch:
+-- AbstractJdbcWorkflowStore's fenced overloads INSERT ... SELECT FROM this row
+-- WHERE id = ? AND lease_epoch = ? (FOR SHARE on Postgres, so a concurrent bump
+-- orders strictly before or after the write), and add AND lease_epoch = ? to
+-- the instance CAS. Once another node has adopted the instance, every write
+-- from the previous holder — a node frozen past its instance-lock TTL,
+-- partitioned, or running without a lock backend — is rejected and nothing is
+-- persisted. Closes docs/open-issues.md Issue 11; the unique index on
+-- (workflow_instance_id, sequence_number) remains as depth.
+--
+-- BIGINT NOT NULL DEFAULT 0: a fresh start writes 0, and every row an earlier
+-- build created reads back as epoch 0 — the epoch that build's still-running
+-- runs implicitly hold, so a mixed-version window needs no special handling.
+-- On Postgres 11+ a constant DEFAULT on ADD COLUMN is metadata-only (no table
+-- rewrite), so this is safe to apply to a live table.
+--
+-- Band 1-99 belongs to maestro-store-postgres (see V1). Names only V1 objects,
+-- so it applies in any order relative to V7+.
+ALTER TABLE maestro_workflow_instance
+    ADD COLUMN lease_epoch BIGINT NOT NULL DEFAULT 0;

@@ -1,0 +1,15 @@
+# Frozen Maestro migrations, produced by scripts/capture-upgrade-fixture.sh migrations c01d498 c01d498.
+# Every migration Maestro shipped at the ref below, byte for byte, and the
+# SHA-256 of each file's git blob. Never edit or regenerate this directory;
+# a later release adds a new fixture (RELEASING.md § Upgrade fixtures).
+ref=c01d498309047b2da5adc453f73a29055f431add
+captured=2026-11-12T14:19:09Z
+store/V1__create_maestro_schema.sql=a196d3e8e379c5e6b62f74f38b47e4942bca7d5df2e485ece945bb7786fc4225
+store/V2__create_indexes.sql=3f8e43889ff034b492e25c321f38b76ae2a5fbc9e3c0c94da6b91c059b6b6602
+store/V3__timer_lookup_index.sql=f703aa08346287c1c081d4e8837ee45952a32a639fc3b2783d8e6c3128fe2379
+store/V4__signal_trace_context.sql=dbdb000a5635c89bfb7f0ebdf63bc6b2c19efb3ab8e195f559ee9021f1fc84b1
+store/V5__signal_received_at_default.sql=46974a0c63e1b3fbf9e6c7d97f0d2b8c375dccb41206771ec8a419186e61d28f
+lock/V100__maestro_lock_postgres.sql=4e6d77f4bc1223357c78b0a2a46a502d5e9915ea56dcbcd9eb7b1a5acce7b553
+messaging/V200__maestro_messaging_postgres.sql=f6625a7cb0f69118a10ca626c83e6887ecf36ed875626ca6b799850dc97dcdb0
+messaging/V201__redelivery_dead_letter.sql=094947f2e1ac4e9dc457815dac28950ca899f5ef19582cb19aea969016acb9d3
+messaging/V202__drop_task_and_lifecycle_queues.sql=364c2bddb2bf94ef51f52ee7d2910f44271942a38d28bae819cf82c6dcdb18bd
