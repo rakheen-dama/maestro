@@ -1,5 +1,6 @@
 package io.b2mash.maestro.store.jdbc;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
@@ -7,9 +8,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import tools.jackson.core.Base64Variants;
+import tools.jackson.core.StreamWriteFeature;
+import tools.jackson.core.json.JsonWriteFeature;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.SerializationFeature;
 import tools.jackson.databind.cfg.JsonNodeFeature;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -40,23 +45,81 @@ class JdbcPayloadDecimalReaderTest {
     private static final String DECIMALS = "[2.0,10.50,1.123456789012345678]";
     private static final String EXACT = "DecimalNode 2.0, DecimalNode 10.50, DecimalNode 1.123456789012345678";
 
+    /**
+     * The 25 host mapper kinds of {@code PayloadSerializerTest}'s exact-tree
+     * guard ({@code HOST_MAPPERS} plus {@code DECIMAL_EDGE_MAPPERS}, same names).
+     * That guard copies the store's read rule into {@code exactDecimalTree},
+     * because {@code maestro-core} cannot see this module; this test pins the
+     * real rule for every one of those kinds, so the two cannot drift apart
+     * unnoticed. None is skipped: the write-only kinds cannot change what
+     * {@code readTree} builds, and their rows prove it rather than assume it.
+     */
     static Stream<Arguments> hostMappers() {
+        var stripped = "DecimalNode 2, DecimalNode 10.5, DecimalNode 1.123456789012345678";
         return Stream.of(
                 // a host whose own trees hold doubles: the store now builds exact DecimalNodes
                 Arguments.of("default", JsonMapper.builder().build(), EXACT),
-                Arguments.of("STRIP_TRAILING_BIGDECIMAL_ZEROES on (decimals off)",
+                Arguments.of("edge: STRIP_TRAILING_BIGDECIMAL_ZEROES on (decimals off)",
                         JsonMapper.builder().enable(JsonNodeFeature.STRIP_TRAILING_BIGDECIMAL_ZEROES).build(), EXACT),
-                Arguments.of("JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS explicitly off",
+                Arguments.of("edge: JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS explicitly off",
                         JsonMapper.builder().disable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS).build(), EXACT),
                 // a host whose own trees already hold decimals: its own tree, unchanged
-                Arguments.of("JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS on",
+                Arguments.of("JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS",
                         JsonMapper.builder().enable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS).build(), EXACT),
-                Arguments.of("DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS on",
+                Arguments.of("DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS",
                         JsonMapper.builder().enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).build(), EXACT),
-                Arguments.of("JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS + STRIP_TRAILING_BIGDECIMAL_ZEROES on",
+                Arguments.of("edge: JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS + STRIP_TRAILING_BIGDECIMAL_ZEROES",
                         JsonMapper.builder().enable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS)
-                                .enable(JsonNodeFeature.STRIP_TRAILING_BIGDECIMAL_ZEROES).build(),
-                        "DecimalNode 2, DecimalNode 10.5, DecimalNode 1.123456789012345678"));
+                                .enable(JsonNodeFeature.STRIP_TRAILING_BIGDECIMAL_ZEROES).build(), stripped),
+                Arguments.of("write: WRITE_BIGDECIMAL_AS_PLAIN (decimal nodes)", JsonMapper.builder()
+                        .enable(StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN)
+                        .enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).build(), EXACT),
+                Arguments.of("write: all of the above", JsonMapper.builder()
+                        .enable(StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN)
+                        .enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+                        .enable(JsonWriteFeature.WRITE_NUMBERS_AS_STRINGS)
+                        .enable(JsonNodeFeature.WRITE_PROPERTIES_SORTED)
+                        .disable(JsonNodeFeature.WRITE_NULL_PROPERTIES)
+                        .disable(JsonWriteFeature.QUOTE_PROPERTY_NAMES)
+                        .enable(SerializationFeature.WRAP_ROOT_VALUE)
+                        .disable(SerializationFeature.WRITE_EMPTY_JSON_ARRAYS).build(), EXACT),
+                // write-only kinds: readTree is unaffected, so the store builds exact DecimalNodes as for default
+                Arguments.of("write: WRITE_NUMBERS_AS_STRINGS",
+                        JsonMapper.builder().enable(JsonWriteFeature.WRITE_NUMBERS_AS_STRINGS).build(), EXACT),
+                Arguments.of("write: WRITE_PROPERTIES_SORTED",
+                        JsonMapper.builder().enable(JsonNodeFeature.WRITE_PROPERTIES_SORTED).build(), EXACT),
+                Arguments.of("write: WRITE_NULL_PROPERTIES off",
+                        JsonMapper.builder().disable(JsonNodeFeature.WRITE_NULL_PROPERTIES).build(), EXACT),
+                Arguments.of("write: QUOTE_PROPERTY_NAMES off",
+                        JsonMapper.builder().disable(JsonWriteFeature.QUOTE_PROPERTY_NAMES).build(), EXACT),
+                Arguments.of("write: WRAP_ROOT_VALUE",
+                        JsonMapper.builder().enable(SerializationFeature.WRAP_ROOT_VALUE).build(), EXACT),
+                Arguments.of("write: WRITE_EMPTY_JSON_ARRAYS off",
+                        JsonMapper.builder().disable(SerializationFeature.WRITE_EMPTY_JSON_ARRAYS).build(), EXACT),
+                Arguments.of("neutral: ESCAPE_NON_ASCII",
+                        JsonMapper.builder().enable(JsonWriteFeature.ESCAPE_NON_ASCII).build(), EXACT),
+                Arguments.of("neutral: ESCAPE_FORWARD_SLASHES",
+                        JsonMapper.builder().enable(JsonWriteFeature.ESCAPE_FORWARD_SLASHES).build(), EXACT),
+                Arguments.of("neutral: COMBINE_UNICODE_SURROGATES_IN_UTF8",
+                        JsonMapper.builder().enable(JsonWriteFeature.COMBINE_UNICODE_SURROGATES_IN_UTF8).build(), EXACT),
+                Arguments.of("neutral: WRITE_HEX_UPPER_CASE off",
+                        JsonMapper.builder().disable(JsonWriteFeature.WRITE_HEX_UPPER_CASE).build(), EXACT),
+                Arguments.of("neutral: WRITE_NAN_AS_STRINGS off",
+                        JsonMapper.builder().disable(JsonWriteFeature.WRITE_NAN_AS_STRINGS).build(), EXACT),
+                Arguments.of("neutral: USE_FAST_DOUBLE_WRITER",
+                        JsonMapper.builder().enable(StreamWriteFeature.USE_FAST_DOUBLE_WRITER).build(), EXACT),
+                Arguments.of("neutral: INDENT_OUTPUT",
+                        JsonMapper.builder().enable(SerializationFeature.INDENT_OUTPUT).build(), EXACT),
+                Arguments.of("neutral: ORDER_MAP_ENTRIES_BY_KEYS",
+                        JsonMapper.builder().enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS).build(), EXACT),
+                Arguments.of("neutral: WRITE_SINGLE_ELEM_ARRAYS_UNWRAPPED",
+                        JsonMapper.builder().enable(SerializationFeature.WRITE_SINGLE_ELEM_ARRAYS_UNWRAPPED).build(),
+                        EXACT),
+                Arguments.of("neutral: inclusion NON_EMPTY", JsonMapper.builder()
+                        .changeDefaultPropertyInclusion(i -> i.withValueInclusion(JsonInclude.Include.NON_EMPTY)
+                                .withContentInclusion(JsonInclude.Include.NON_EMPTY)).build(), EXACT),
+                Arguments.of("neutral: Base64 MIME",
+                        JsonMapper.builder().defaultBase64Variant(Base64Variants.MIME).build(), EXACT));
     }
 
     @ParameterizedTest(name = "[{index}] {0}")

@@ -55,15 +55,28 @@ import java.util.stream.Collectors;
  * <p>Every payload column — event {@code payload}, instance {@code input} and
  * {@code output}, signal {@code payload} — is parsed into a tree whose
  * decimals are {@code DecimalNode}s holding the column's digits and scale,
- * never the nearest {@code double}. Writing is unchanged: the configured
- * mapper renders each payload exactly as before.
+ * never the nearest {@code double}.
  * <ul>
  *   <li><b>Typed decimal targets are exact.</b> A {@code BigDecimal} (top level,
  *       field, element or typed map value), and a {@code java.time} value read
- *       from a numeric timestamp, gets the stored value. Before, it read the
- *       {@code double} the column was parsed into: rounded at 17 or more
- *       significant digits, and with its trailing zeros dropped at any length
- *       ({@code 10.50} read as {@code 10.5}).</li>
+ *       from a number ({@code Instant}, {@code OffsetDateTime},
+ *       {@code ZonedDateTime}, {@code Duration}), gets the stored value. Before,
+ *       it read the {@code double} the column was parsed into: rounded when the
+ *       decimal has more digits than a {@code double} holds
+ *       ({@code 9.000000000000001} read as {@code 9.000000000000002}), and with
+ *       its trailing zeros dropped at any length ({@code 10.50} read as
+ *       {@code 10.5}).</li>
+ *   <li><b>What is written.</b> The bytes written for a payload the caller hands
+ *       the store are unchanged: the configured mapper renders it exactly as
+ *       before. What changed is a row the store's caller re-writes after reading
+ *       it: every instance status write (park, resume, adoption, retry,
+ *       {@code COMPENSATING}, completion, termination) re-reads the instance and
+ *       writes its {@code input} and {@code output} back from the parsed tree, so
+ *       those columns now keep their decimals exactly where they used to be
+ *       rounded through {@code double} on the first such write. Two caveats: an
+ *       input an older build already rewrote stays rounded, and reads and
+ *       replays as the rounded value it holds, as before; and in a mixed fleet
+ *       an older node rounds the row again whenever it writes it.</li>
  *   <li><b>Everything else reads as before.</b> {@code PayloadSerializer} reads
  *       the tree with the mapper's own features, so under a default mapper an
  *       untyped {@code Object}, {@code Map<String, Object>} or
@@ -72,14 +85,16 @@ import java.util.stream.Collectors;
  *       {@code double}, {@code float} and integer targets get the same values.
  *       A mapper whose own trees already hold decimals (either
  *       {@code USE_BIG_DECIMAL_FOR_FLOATS} feature) is used unchanged.</li>
- *   <li><b>Mixed versions.</b> An older node replays these decimals lossily, as
- *       it always has; a node of this build replays them exactly. Scale alone
- *       does not change an activity's argument fingerprint (it hashes a
- *       decimal's {@code stripTrailingZeros().toPlainString()}), but a run
- *       whose later recorded step consumed a lossily replayed decimal in a
- *       precision- or scale-sensitive way ({@code toString()}, {@code equals},
- *       {@code scale()}, {@code divide} with rounding) stands down on this
- *       build as {@code nondeterministic_history} — it never fails;
+ *   <li><b>Mixed versions.</b> An older node replays these decimals, and
+ *       {@code java.time} values read from numbers, lossily, as it always has; a
+ *       node of this build replays them exactly. Scale alone does not change an
+ *       activity's argument fingerprint (it hashes a decimal's
+ *       {@code stripTrailingZeros().toPlainString()}), but a run whose later
+ *       recorded step consumed a lossily replayed decimal or {@code java.time}
+ *       value in a precision- or scale-sensitive way ({@code toString()},
+ *       {@code equals}, {@code scale()}, {@code divide} with rounding, a
+ *       sub-microsecond comparison) stands down on this build as
+ *       {@code nondeterministic_history} — it never fails;
  *       {@code maestro.replay.verify-arguments=false} lets it continue. A
  *       {@code SIGNAL_RECEIVED} memo copies the signal row as read, so it now
  *       records the exact decimal.</li>

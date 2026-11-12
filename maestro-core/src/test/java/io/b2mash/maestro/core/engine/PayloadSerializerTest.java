@@ -706,10 +706,14 @@ class PayloadSerializerTest {
     /**
      * The tree {@code AbstractJdbcWorkflowStore} parses a payload column into
      * since WP1 Task 6, mirrored here because {@code maestro-core} cannot see
-     * the store (the store's own rule is pinned per host mapper by
-     * {@code JdbcPayloadDecimalReaderTest}): the host's own tree when that
-     * already holds decimals, otherwise exact {@code DecimalNode}s with their
-     * trailing zeros kept.
+     * the store: the host's own tree when that already holds decimals,
+     * otherwise exact {@code DecimalNode}s with their trailing zeros kept.
+     *
+     * <p>Cross-reference: {@code maestro-store-jdbc}'s
+     * {@code JdbcPayloadDecimalReaderTest.hostMappers} pins the store's real
+     * rule for every one of the 25 mapper kinds used here ({@link #HOST_MAPPERS}
+     * plus {@link #DECIMAL_EDGE_MAPPERS}, same names). A change to the rule, or
+     * a new mapper kind, goes into both.
      */
     private static JsonNode exactDecimalTree(ObjectMapper mapper, String json) {
         return hostTreesHoldDecimals(mapper) ? mapper.readTree(json)

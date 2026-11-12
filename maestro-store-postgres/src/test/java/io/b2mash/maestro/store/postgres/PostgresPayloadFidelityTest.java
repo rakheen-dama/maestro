@@ -1,6 +1,7 @@
 package io.b2mash.maestro.store.postgres;
 
 import io.b2mash.maestro.core.engine.PayloadSerializer;
+import io.b2mash.maestro.core.exception.SerializationException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
@@ -25,7 +26,11 @@ import java.lang.reflect.Type;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
@@ -69,6 +74,16 @@ class PostgresPayloadFidelityTest extends PostgresTestSupport {
 
     /** A typed result with an {@link Instant} read from a numeric timestamp. */
     record At(Instant at) {}
+
+    /** Typed results with the other {@code java.time} types a number can be read into. */
+    record Odt(OffsetDateTime at) {}
+
+    record Zdt(ZonedDateTime at) {}
+
+    record Dur(Duration d) {}
+
+    /** A typed workflow input or output with a two-place amount and a 29-significant-digit decimal. */
+    record Order(BigDecimal amount, BigDecimal big) {}
 
     private PayloadSerializer serializer;
 
@@ -197,8 +212,24 @@ class PostgresPayloadFidelityTest extends PostgresTestSupport {
                         "DoubleNode 10.5"),
                 // java.time from a numeric timestamp asks for a decimal, so it becomes exact too (plan D-6)
                 Arguments.of("Instant from a numeric timestamp", Map.of("at", new BigDecimal("1762941600.123456789")),
-                        At.class, leaf(v -> ((At) v).at()), "Instant " + Instant.ofEpochSecond(1762941600L, 123456789L)));
+                        At.class, leaf(v -> ((At) v).at()), "Instant " + Instant.ofEpochSecond(1762941600L, 123456789L)),
+                // fix round 1: the other java.time types read from a number, a 16-digit decimal, a halfway float
+                Arguments.of("OffsetDateTime from a numeric timestamp", Map.of("at", TIMESTAMP), Odt.class,
+                        leaf(v -> ((Odt) v).at()), "OffsetDateTime " + EXACT_INSTANT.atOffset(ZoneOffset.UTC)),
+                Arguments.of("ZonedDateTime from a numeric timestamp", Map.of("at", TIMESTAMP), Zdt.class,
+                        leaf(v -> ((Zdt) v).at()), "ZonedDateTime " + EXACT_INSTANT.atZone(ZoneOffset.UTC)),
+                Arguments.of("Duration from a number", Map.of("d", TIMESTAMP), Dur.class,
+                        leaf(v -> ((Dur) v).d()), "Duration " + Duration.ofSeconds(1762941600L, 123456789L)),
+                Arguments.of("BigDecimal, top level, 16 digits", new BigDecimal("9.000000000000001"), BigDecimal.class,
+                        self, "BigDecimal 9.000000000000001 (scale 15)"),
+                Arguments.of("float field, exactly halfway between two floats",
+                        Map.of("f", new BigDecimal("1.000000059604644775390625")), Floats.class,
+                        leaf(v -> ((Floats) v).f()), "Float 1.0"));
     }
+
+    /** {@code 1762941600.123456789}: 19 significant digits, more than a {@code double} holds. */
+    private static final BigDecimal TIMESTAMP = new BigDecimal("1762941600.123456789");
+    private static final Instant EXACT_INSTANT = Instant.ofEpochSecond(1762941600L, 123456789L);
 
     /** Gives a row's leaf extractor its type inside {@code Arguments.of}. */
     private static Function<Object, Object> leaf(Function<Object, Object> extractor) {
@@ -297,9 +328,12 @@ class PostgresPayloadFidelityTest extends PostgresTestSupport {
     }
 
     /**
-     * What is written does not change: the {@code jsonb} text Postgres stores
-     * for these payloads, recorded at {@code 03b17c0} (before Task 6), is the
-     * text it stores now.
+     * The bytes written for a payload the caller hands the store do not change:
+     * the {@code jsonb} text Postgres stores for these payloads, recorded at
+     * {@code 03b17c0} (before Task 6), is the text it stores now. A row the
+     * engine re-writes after reading it does change — see
+     * {@link #anInstanceRewriteKeepsTheStoredDecimalsExactly} and
+     * {@link #signalReceivedCopiesTheExactDecimal}.
      */
     @Test
     @DisplayName("the stored jsonb text is the text stored before Task 6")
@@ -361,6 +395,136 @@ class PostgresPayloadFidelityTest extends PostgresTestSupport {
     void jsonbHasNoNegativeZero() {
         var read = roundTrip(serializer.serialize(Map.of("n", -0.0d)));
         assertEquals("Double 0.0", describe(((Map<?, ?>) serializer.deserialize(read, Object.class)).get("n")));
+    }
+
+    // ── Fix round 1 ──────────────────────────────────────────────────────
+
+    /**
+     * Beyond {@code double} range is not a text-store-only case: {@code jsonb}
+     * keeps a non-integral decimal with more than 309 integer digits as plain
+     * text. Untyped and {@link JsonNode} targets read it as {@code Double}
+     * infinity, as the released build did; a typed {@code BigDecimal} reads it
+     * exactly.
+     */
+    @Test
+    @DisplayName("jsonb keeps 10^400 + 0.5 as plain digits: untyped and JsonNode read infinity, typed reads it exactly")
+    void aNonIntegralDecimalBeyondDoubleRangeFromJsonb() {
+        var huge = new BigDecimal(BigInteger.TEN.pow(400)).add(new BigDecimal("0.5"));
+        var read = roundTrip(serializer.serialize(Map.of("x", huge)));
+        assertEquals(List.of(
+                        "Double Infinity",
+                        "DoubleNode Infinity",
+                        "BigDecimal " + huge.toPlainString() + " (scale 1)"),
+                List.of(
+                        outcome(() -> describe(((Map<?, ?>) serializer.deserialize(read, Object.class)).get("x"))),
+                        outcome(() -> {
+                            var node = serializer.deserialize(read, JsonNode.class).get("x");
+                            return node.getClass().getSimpleName() + " "
+                                    + (node.isNumber() ? String.valueOf(node.doubleValue()) : node.toString());
+                        }),
+                        outcome(() -> describe(serializer.deserialize(read.get("x"), BigDecimal.class)))));
+    }
+
+    /**
+     * A host mapper with {@code DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS}
+     * on but the node feature explicitly off read untyped decimals as
+     * {@code BigDecimal} from a {@code double} tree; it now reads them exact in
+     * precision and scale.
+     */
+    @Test
+    @DisplayName("a host with DeserializationFeature on and the node feature off gets exact untyped BigDecimals")
+    void aHostWithTheDeserializationFeatureButNotTheNodeFeatureGetsExactUntypedDecimals() {
+        ObjectMapper host = JsonMapper.builder().enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+                .disable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS).build();
+        var hostSerializer = new PayloadSerializer(host);
+        var read = roundTrip(new PostgresWorkflowStore(dataSource, host), hostSerializer.serialize(
+                List.of(new BigDecimal("10.50"), new BigDecimal("1.123456789012345678"))));
+        var untyped = (List<?>) hostSerializer.deserialize(read, Object.class);
+        assertEquals(List.of("BigDecimal 10.50 (scale 2)", "BigDecimal 1.123456789012345678 (scale 18)"),
+                List.of(describe(untyped.get(0)), describe(untyped.get(1))));
+    }
+
+    /**
+     * Every instance status write ({@code InstanceStatusWriter}, adoption,
+     * retry, saga {@code COMPENSATING}, completion) re-reads the instance and
+     * writes its {@code input} and {@code output} back from the tree the store
+     * parsed. At {@code 03b17c0} that rewrite rounded the stored decimals through
+     * {@code double}; now the stored text keeps its digits and scale.
+     */
+    @ParameterizedTest(name = "[{index}] {0}")
+    @ValueSource(strings = {"input", "output"})
+    @DisplayName("an instance rewrite keeps a stored decimal's digits and scale")
+    void anInstanceRewriteKeepsTheStoredDecimalsExactly(String column) throws SQLException {
+        var workflowId = "rewrite-" + column + "-" + UUID.randomUUID();
+        var written = serializer.serialize(new Order(new BigDecimal("10.50"),
+                new BigDecimal("12345678901234567890.123456789")));
+        var fresh = newInstance(workflowId).toBuilder();
+        store.createInstance((column.equals("input") ? fresh.input(written) : fresh.output(written)).build());
+
+        var read = store.getInstance(workflowId).orElseThrow();          // as every status writer re-reads it
+        store.updateInstance(read.toBuilder().status(WorkflowStatus.WAITING_SIGNAL)
+                .updatedAt(Instant.now().truncatedTo(ChronoUnit.MILLIS)).version(read.version() + 1).build());
+
+        var reread = store.getInstance(workflowId).orElseThrow();
+        var order = serializer.deserialize(column.equals("input") ? reread.input() : reread.output(), Order.class);
+        assertEquals(List.of(
+                        "{\"big\": 12345678901234567890.123456789, \"amount\": 10.50}",
+                        "BigDecimal 10.50 (scale 2)",
+                        "BigDecimal 12345678901234567890.123456789 (scale 9)"),
+                List.of(instanceColumnText(column, workflowId), describe(order.amount()), describe(order.big())));
+    }
+
+    /**
+     * An input an older build already rewrote lossily stays as it is: it reads
+     * as the rounded values it holds, with no exception, exactly as before.
+     */
+    @Test
+    @DisplayName("an input an old build already rounded reads as before")
+    void anInputAnOldBuildAlreadyRoundedReadsAsBefore() throws SQLException {
+        var workflowId = "damaged-" + UUID.randomUUID();
+        store.createInstance(newInstance(workflowId).toBuilder().input(serializer.serialize(
+                new Order(new BigDecimal("10.50"), new BigDecimal("12345678901234567890.123456789")))).build());
+        seedLossyInput(workflowId);
+
+        var order = serializer.deserialize(store.getInstance(workflowId).orElseThrow().input(), Order.class);
+        assertEquals(List.of("BigDecimal 10.5 (scale 1)", "BigDecimal 12345678901234567000 (scale 0)"),
+                List.of(describe(order.amount()), describe(order.big())));
+    }
+
+    /** The input an older build leaves after its first status rewrite of {@link Order} (10.50, 29 digits). */
+    static final String LOSSY_ORDER_INPUT = "{\"big\": 12345678901234567000, \"amount\": 10.5}";
+
+    /** Overwrites {@code workflowId}'s input with {@link #LOSSY_ORDER_INPUT}, as an older build would have. */
+    void seedLossyInput(String workflowId) throws SQLException {
+        try (var conn = dataSource.getConnection();
+             var ps = conn.prepareStatement(
+                     "UPDATE maestro_workflow_instance SET input = ?::jsonb WHERE workflow_id = ?")) {
+            ps.setString(1, LOSSY_ORDER_INPUT);
+            ps.setString(2, workflowId);
+            assertEquals(1, ps.executeUpdate());
+        }
+    }
+
+    /** The stored {@code jsonb} text of {@code column} ({@code input} or {@code output}) of an instance. */
+    String instanceColumnText(String column, String workflowId) throws SQLException {
+        try (var conn = dataSource.getConnection();
+             var ps = conn.prepareStatement("SELECT " + column + "::text FROM maestro_workflow_instance "
+                     + "WHERE workflow_id = ?")) {
+            ps.setString(1, workflowId);
+            try (var rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : "no row";
+            }
+        }
+    }
+
+    /** The value {@code read} describes, or the failure's root cause, described. */
+    private static String outcome(java.util.function.Supplier<String> read) {
+        try {
+            return read.get();
+        } catch (SerializationException e) {
+            var cause = e.getCause() == null ? e : e.getCause();
+            return "throws " + cause.getClass().getSimpleName();
+        }
     }
 
     // ── helpers ───────────────────────────────────────────────────────────
