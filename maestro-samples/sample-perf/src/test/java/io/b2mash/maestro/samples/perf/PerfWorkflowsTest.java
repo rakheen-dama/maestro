@@ -17,7 +17,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeoutException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * In-memory tests for the two load-test workflows, {@link PerfChainWorkflow}
@@ -94,14 +93,12 @@ class PerfWorkflowsTest {
         crash.recover();
 
         assertEquals(5, h.getResult(Integer.class, WAIT));
-        assertEquals(1, activities.calls(0), "step 0 replays after the crash, never re-runs");
-        assertEquals(1, activities.calls(1), "step 1 replays after the crash, never re-runs");
+        // Exactly once each: crashAfter(2) kills the node on the very write that
+        // persists step 1's result (the crashing thread throws from that write),
+        // so step 2 never starts on the dying node; steps 0 and 1 replay, and
+        // 2..4 run live once on the recovered node.
+        assertEquals(List.of(0, 1, 2, 3, 4), activities.indices);
         assertEquals(List.of("PerfActivities.step", "PerfActivities.step"), h.replayedSteps());
-        // Step 2 may have started on the dying node before it stopped, so only
-        // "at least once" holds for the steps after the crash point.
-        for (var index = 2; index < 5; index++) {
-            assertTrue(activities.calls(index) >= 1, "step " + index + " ran on recovery");
-        }
         assertEquals(1, h.recoveries());
     }
 
@@ -114,10 +111,6 @@ class PerfWorkflowsTest {
         public int step(int index, long millis) {
             indices.add(index);
             return index + 1;
-        }
-
-        long calls(int index) {
-            return indices.stream().filter(i -> i == index).count();
         }
     }
 }

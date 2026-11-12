@@ -14,7 +14,11 @@ import java.util.regex.Pattern;
  */
 public final class StartRequestValidator {
 
-    private static final Pattern WORKFLOW_ID = Pattern.compile("[A-Za-z0-9._-]{1,200}");
+    /** The workflow ID rule, shared with {@link SignalRequestValidator}. */
+    static final Pattern WORKFLOW_ID = Pattern.compile("[A-Za-z0-9._-]{1,200}");
+
+    /** The error text for a workflow ID that breaks {@link #WORKFLOW_ID}. */
+    static final String WORKFLOW_ID_ERROR = "workflowId must match [A-Za-z0-9._-]{1,200}";
 
     private StartRequestValidator() {}
 
@@ -28,7 +32,7 @@ public final class StartRequestValidator {
      */
     public static Optional<String> validate(StartRequest request) {
         if (request.workflowId() == null || !WORKFLOW_ID.matcher(request.workflowId()).matches()) {
-            return Optional.of("workflowId must match [A-Za-z0-9._-]{1,200}");
+            return Optional.of(WORKFLOW_ID_ERROR);
         }
         if (StartRequest.CHAIN.equals(request.type())) {
             var input = request.chainInput();

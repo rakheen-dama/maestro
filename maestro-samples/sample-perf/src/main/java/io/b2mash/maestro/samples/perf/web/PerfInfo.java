@@ -27,6 +27,9 @@ import java.util.List;
  * @param workerTaskQueues                 names of the configured {@code maestro.worker.task-queues}
  * @param wakeRecheckInterval              {@code maestro.signal.wake-recheck-interval}, ISO-8601
  * @param recoveryPollInterval             {@code maestro.recovery.poll-interval}, ISO-8601
+ * @param timerPollInterval                {@code maestro.timer.poll-interval}, ISO-8601 — how often the
+ *                                         timer poller looks for due timers, so the latency a
+ *                                         sleep-mode park run adds on top of its sleep
  * @param hikariMaximumPoolSize            the live Hikari pool's maximum size, or {@code -1} if the
  *                                         {@code DataSource} is not Hikari
  */
@@ -47,5 +50,6 @@ public record PerfInfo(
         List<String> workerTaskQueues,
         String wakeRecheckInterval,
         String recoveryPollInterval,
+        String timerPollInterval,
         int hikariMaximumPoolSize
 ) {}

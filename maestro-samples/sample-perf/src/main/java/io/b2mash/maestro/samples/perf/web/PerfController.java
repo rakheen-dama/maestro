@@ -36,7 +36,8 @@ import java.util.Objects;
  *   <li>{@code POST /perf/workflows} — {@link StartRequest} → {@code 202 {"workflowId"}},
  *       {@code 400 {"error"}} on validation, {@code 409 {"error"}} if the ID exists</li>
  *   <li>{@code POST /perf/workflows/{id}/signals/{name}} — {@code {"payload"?}} →
- *       {@code 202 {"workflowId", "signal"}}</li>
+ *       {@code 202 {"workflowId", "signal"}}, {@code 400 {"error"}} on validation
+ *       ({@link SignalRequestValidator})</li>
  *   <li>{@code GET /perf/info} — {@link PerfInfo}</li>
  * </ul>
  *
@@ -102,12 +103,18 @@ public class PerfController {
      * @param workflowId the run's workflow ID
      * @param name       the signal name ({@code perf.release} releases a park run)
      * @param body       optional {@code {"payload": str}}
-     * @return {@code 202} with the workflow ID and signal name
+     * @return {@code 202} with the workflow ID and signal name, or {@code 400} with an error
+     *         ({@link SignalRequestValidator})
      */
     @PostMapping("/workflows/{workflowId}/signals/{name}")
-    public ResponseEntity<SignalResponse> signal(@PathVariable String workflowId, @PathVariable String name,
-                                                 @RequestBody(required = false) @Nullable SignalRequest body) {
-        maestro.getWorkflow(workflowId).signal(name, body == null ? null : body.payload());
+    public ResponseEntity<?> signal(@PathVariable String workflowId, @PathVariable String name,
+                                    @RequestBody(required = false) @Nullable SignalRequest body) {
+        var payload = body == null ? null : body.payload();
+        var error = SignalRequestValidator.validate(workflowId, name, payload);
+        if (error.isPresent()) {
+            return ResponseEntity.badRequest().body(new ErrorResponse(error.get()));
+        }
+        maestro.getWorkflow(workflowId).signal(name, payload);
         return ResponseEntity.accepted().body(new SignalResponse(workflowId, name));
     }
 
@@ -137,6 +144,7 @@ public class PerfController {
                 worker.taskQueues().stream().map(MaestroProperties.TaskQueueProperties::name).toList(),
                 properties.getSignal().wakeRecheckInterval().toString(),
                 properties.getRecovery().pollInterval().toString(),
+                properties.getTimer().pollInterval().toString(),
                 hikariMaximumPoolSize());
     }
 
