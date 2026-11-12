@@ -1,3 +1,27 @@
+# Milestone: Engine-hardening cycle (planned 2026-11-12)
+
+Spec, evidence and plans: `docs/superpowers/plans/2026-11-12-engine-hardening-cycle/`.
+Driver: the handover's remaining findings, re-verified on `cbf5a2a`, plus a k6 load suite.
+Maven Central blockers and the §6.4 feature gaps are out of scope.
+
+- [x] Four audits re-verified every finding (3.2, 3.3, 3.8 reproduced with failing tests)
+- [x] Spec written, builder-checked, approved by the maintainer with D1–D11 (2026-11-12)
+- [ ] WP0 Executor builder (Issue 37) — Lane A
+- [ ] WP1 Replay fidelity (3.8, exact decimals) — Lane A, after WP9
+- [ ] WP2 Wake permits, timer clock, remove activity lock (3.2, 3.7, 3.10) — Lane A
+- [ ] WP3 Admin retry (3.3, Issue 33) — Lane A
+- [ ] WP4 Loop liveness and health (3.5) — Lane A
+- [ ] WP5 Shutdown (Issue 29, 3.6) — Lane A
+- [ ] WP6 Recovery capacity (Issue 30, Issue 36) — Lane A
+- [ ] WP9 Schema safety and upgrade fixture — Lane B, first
+- [ ] WP7 Kafka coexistence (3.4, 3.11c) — Lane B
+- [ ] WP10 Wake-listener shutdown (Issue 38) — Lane B
+- [ ] WP8 Store hygiene (3.11a, 3.11b, Issue 39) — Lane B, after WP6
+- [ ] WP11 k6 load-test foundation (perf/, sample-perf, meters, scenarios 1 and 3) — Lane C
+- [ ] WP12 k6 finding-linked scenarios 2, 4, 5, 6 with before/after — Lane C
+- [ ] WP13 Docs and housekeeping — Lane D
+- [ ] Review section added here after the last merge
+
 # Milestone: Host-safety cycle (planned 2026-11-11)
 
 Plans: `docs/superpowers/plans/2026-11-11-host-safety-cycle/` (spec + two plans).
