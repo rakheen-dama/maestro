@@ -415,8 +415,8 @@ if [[ -n "$s1src" ]]; then
 
   out=$(s1_eval s1-pass '.')
   expect "s1: unchanged run" PASS "$(jq -r .verdict <<<"$out")"
-  expect "s1: every check is PASS or NO_BASELINE (gate) on the real run" "" \
-    "$(jq -r '.checks | to_entries | map(select(.value != "PASS" and .value != "NO_BASELINE")) | map(.key) | join(",")' <<<"$out")"
+  expect "s1: every check (of at least 20) is PASS or NO_BASELINE (gate) on the real run" "true []" \
+    "$(jq -r '.checks | "\(length >= 20) \(to_entries | map(select(.value != "PASS" and .value != "NO_BASELINE")) | map(.key) | tojson)"' <<<"$out")"
   expect "s1: levels recorded = plan" "$(jq -c .plan.levels "${s1src}/measurements.json")" "$(s1_field s1-pass '[.measurements.levels[].level]')"
   expect "s1: ceilingPerSec is a number" number "$(s1_field s1-pass '.measurements.ceiling.ceilingPerSec | type' | tr -d '"')"
 
@@ -430,9 +430,11 @@ if [[ -n "$s1src" ]]; then
   expect "s1, WP11 meters absent: advisory.runAbandoned" WARN "$(st "$out" advisory.runAbandoned)"
   expect "s1, WP11 meters absent: each says \"not available\"" 3 \
     "$(s1_field s1-no-wp11 '[.checks[] | select(.id == "advisory.slotsUsed" or .id == "advisory.workflowDurationMeter" or .id == "advisory.runAbandoned") | select(.detail | startswith("not available"))] | length')"
+  non_advisory='.checks | with_entries(select(.key | startswith("advisory.") | not)) | "\(length) \(tojson)"'
   expect "s1, WP11 meters absent: no validity/correctness/gate check moved" \
-    "$(jq -c '.checks | with_entries(select(.key | startswith("advisory.") | not))' <<<"$(s1_eval s1-pass2 '.')")" \
-    "$(jq -c '.checks | with_entries(select(.key | startswith("advisory.") | not))' <<<"$out")"
+    "$(jq -r "$non_advisory" <<<"$(s1_eval s1-pass2 '.')")" "$(jq -r "$non_advisory" <<<"$out")"
+  expect "s1, WP11 meters absent: those checks are there to compare (>= 15)" true \
+    "$(jq -r '.checks | with_entries(select(.key | startswith("advisory.") | not)) | length >= 15' <<<"$out")"
   out=$(s1_eval s1-no-prom 'del(.levelProm) | .runAbandonedIncrease = null')
   expect "s1, no Prometheus data at all: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
   expect "s1, no Prometheus data at all: advisory.hikariPool" WARN "$(st "$out" advisory.hikariPool)"
