@@ -50,8 +50,11 @@
 # check is ERROR). The gate is INVALID when the tolerance alone exceeds 25 %
 # of the expected value: too few workflows completed for the figure to mean
 # anything. The smoke has no baseline and uses neither (its own [5, 500]
-# range). Advisory checks never change the verdict and never raise ERROR: a
-# failure inside one is that advisory's WARN with the reason.
+# range). Advisory checks report only PASS or WARN and never change the
+# verdict: a failure inside one is that advisory's WARN with the reason. An
+# advisory that reports any other status (FAIL, INVALID, NO_BASELINE, ERROR)
+# is a programming error in the scenario and makes the run ERROR, as does an
+# empty check list.
 #
 # ── Known limits of the background model (extend before relying on it) ──────
 #  1. The tolerance (netToleranceCalls = distinct background statements x
@@ -98,8 +101,11 @@
 # Exit: 0 PASS, 1 FAIL, 2 INVALID, 3 harness error (including an evaluator
 # ERROR verdict). The verdict (perf/eval/common.jq, verdict) takes the first
 # match of:
-#   a. any check has status ERROR, or an unknown class or status
-#      (evaluator defect, misconfigured check, invalid allowance)  -> ERROR    exit 3
+#   a. any check has status ERROR, or an unknown class or status,
+#      or an ADVISORY check has any status other than PASS or
+#      WARN, or the check list is empty (or not a list)
+#      (evaluator defect, misconfigured check, invalid allowance,
+#      a scenario that misuses an advisory)                        -> ERROR    exit 3
 #   b. any VALIDITY check is not PASS
 #      (the measurement itself cannot be trusted)                  -> INVALID  exit 2
 #   c. any CORRECTNESS check is not PASS or NO_BASELINE: FAIL, and
@@ -112,7 +118,8 @@
 #   f. otherwise (NO_BASELINE gates count as pass)                 -> PASS     exit 0
 # So a GATE check that is INVALID makes the run INVALID only when no
 # correctness or gate check FAILed: only validity outranks FAIL. Advisory
-# checks never change the verdict.
+# checks at PASS or WARN never change the verdict (any other advisory status
+# is ERROR, rule a).
 # The last stdout line is always: VERDICT <PASS|FAIL|INVALID|ERROR> <resultsDir>
 
 # SC2016: the single-quoted '$x' strings are jq filters, expanded by jq.
@@ -446,7 +453,7 @@ VERDICT=$(jq -r .verdict "${RESULTS}/result.json")
 rc=$(verdict_rc "$VERDICT")
 case "$VERDICT" in
   PASS | FAIL | INVALID) ;;
-  ERROR) die "the evaluator returned ERROR: a check is misconfigured (status ERROR) or has an unknown class or status (see result.json)" ;;
+  ERROR) die "the evaluator returned ERROR: a check is misconfigured (status ERROR), has an unknown class or status, or is an advisory reporting something other than PASS/WARN, or there are no checks (see result.json)" ;;
   *) die "result.json has no verdict" ;;
 esac
 

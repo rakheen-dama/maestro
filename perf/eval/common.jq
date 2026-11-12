@@ -8,8 +8,11 @@
 #
 # The verdict is decided by allow-list, never by enumerating bad statuses.
 # Precedence (first match wins; exit code as perf/run.sh returns it):
-#   a. any check has status ERROR, or an unknown class or status
-#      (evaluator defect, misconfigured check, invalid allowance)  -> ERROR    exit 3
+#   a. any check has status ERROR, or an unknown class or status,
+#      or an ADVISORY check has any status other than PASS or
+#      WARN, or the check list is empty (or not a list)
+#      (evaluator defect, misconfigured check, invalid allowance,
+#      a scenario that misuses an advisory)                        -> ERROR    exit 3
 #   b. any VALIDITY check is not PASS
 #      (the measurement itself cannot be trusted)                  -> INVALID  exit 2
 #   c. any CORRECTNESS check is not PASS or NO_BASELINE: FAIL, and
@@ -22,9 +25,13 @@
 #   f. otherwise (NO_BASELINE gates count as pass)                 -> PASS     exit 0
 # So only validity outranks FAIL: a correctness FAIL is never hidden behind
 # a gate that could not be judged. Advisory checks (PASS or WARN) never
-# change the verdict, and an advisory cannot raise ERROR: anything that goes
-# wrong inside one is reported as that advisory's WARN with the reason
-# (advisory_guarded).
+# change the verdict, and a failure INSIDE an advisory cannot raise ERROR:
+# anything that goes wrong while evaluating one is reported as that
+# advisory's WARN with the reason (advisory_guarded). An advisory that
+# REPORTS FAIL, INVALID, NO_BASELINE or ERROR is a programming error in the
+# scenario (a judgement given the wrong class) and makes the run ERROR (a)
+# rather than letting the run PASS silently past it. An empty check list is
+# ERROR too: a run that judged nothing has not passed.
 #
 # Statement counts. pg_stat_statements counts every call the engine's role
 # makes in a window, and an engine is never idle: its timer poller (each
@@ -64,9 +71,11 @@ def known_statuses: ["PASS", "FAIL", "INVALID", "NO_BASELINE", "WARN", "ERROR"];
 def verdict:
   def has($cls; $statuses): any(.[]; .class == $cls and (.status as $s | $statuses | index([$s])));
   def lacks($cls; $statuses): any(.[]; .class == $cls and (.status as $s | $statuses | index([$s]) | not));
-  if any(.[]; (.class as $c | known_classes | index([$c]) | not)
+  if type != "array" or length == 0 then "ERROR"                       # a
+  elif any(.[]; (.class as $c | known_classes | index([$c]) | not)
               or (.status as $s | known_statuses | index([$s]) | not)
-              or .status == "ERROR") then "ERROR"                     # a
+              or .status == "ERROR"
+              or (.class == "advisory" and .status != "PASS" and .status != "WARN")) then "ERROR" # a
   elif lacks("validity"; ["PASS"]) then "INVALID"                       # b
   elif lacks("correctness"; ["PASS", "NO_BASELINE"]) then "FAIL"        # c
   elif lacks("gate"; ["PASS", "NO_BASELINE", "INVALID"]) then "FAIL"    # d

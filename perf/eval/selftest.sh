@@ -323,6 +323,14 @@ expect "precedence: correctness ERROR (a)" "ERROR 3 yes" "$(probe p-err-corr cor
 expect "precedence: advisory ERROR (a)" "ERROR 3 yes" "$(probe p-err-adv advisory:ERROR)"
 expect "precedence: validity ERROR + gate INVALID (a)" "ERROR 3 yes" "$(probe p-err-val validity:ERROR,gate:INVALID)"
 expect "precedence: unknown status PASSED on a correctness check (a)" "ERROR 3 yes" "$(probe p-unknown correctness:PASSED)"
+# An advisory reports only PASS or WARN; any other status is a scenario
+# programming error and must not pass silently (a).
+expect "precedence: advisory FAIL (a: an advisory never FAILs)" "ERROR 3 yes" "$(probe p-adv-fail advisory:FAIL)"
+expect "precedence: advisory INVALID (a)" "ERROR 3 yes" "$(probe p-adv-inv advisory:INVALID)"
+expect "precedence: advisory NO_BASELINE (a)" "ERROR 3 yes" "$(probe p-adv-nobase advisory:NO_BASELINE)"
+expect "precedence: advisory PASS and WARN (f)" "PASS 0 yes" "$(probe p-adv-ok advisory:PASS,advisory:WARN)"
+expect "empty check list" ERROR "$(verdict_of '[]')"
+expect "check list not an array" ERROR "$(verdict_of '{}')"
 
 expect "unknown status PASSED" ERROR "$(verdict_of '.[0].status = "PASSED"')"
 expect "unknown class" ERROR "$(verdict_of '.[0].class = "validty"')"
