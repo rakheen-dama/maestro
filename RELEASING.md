@@ -144,12 +144,14 @@ The script backs these rules up: it refuses to overwrite. In both modes it stops
 - `DUMP_SHA256` in `SeededHistory` (the dump's bytes);
 - `CAPTURE_MANIFEST_SHA256` in `SeededHistory` (the bytes of `capture.properties`, which always records a new capture time);
 - the frozen-source SHA-256 in `capture.properties`, if `SeededHistoryWorkflows.java` was the defect (`theDumpWasCapturedAtCbf5a2a` checks it against the file);
+- the clock window in `SeededHistory`, `LATEST_MUST_BE_DUE` and `EARLIEST_MUST_STAY_PENDING` (and the `"<workflowId>/<timerId>"` entries of `MUST_BE_DUE`, if the timer ids moved). They are the old dump's timer due times, and `requireClockWithinFixtureWindow()` refuses to run any replay test until they match the new one. Read them from the restored dump with `SELECT workflow_id, timer_id, fire_at FROM maestro_workflow_timer WHERE status = 'PENDING' ORDER BY fire_at`: `LATEST_MUST_BE_DUE` is the latest `fire_at` among the `MUST_BE_DUE` rows, and `EARLIEST_MUST_STAY_PENDING` the earliest `fire_at` among all the others;
+- `RECORDED_EVENTS` in `SeededHistoryUpgradeIT`, only if the corrected defect changes which events a seeded workflow wrote. Re-derive it from the restored dump by raw SQL, as its Javadoc says, never through the store, and explain every changed entry in the commit;
 - the `SOURCE` SHA-256 constants in `ShippedMigrationsFrozenTest`, for a migrations re-capture.
 
 Reviewers should expect these differences and no others:
 
 - **Migrations:** the `.sql` copies come from git objects and are identical. `SOURCE` records a new capture time, so its SHA-256 constant in `ShippedMigrationsFrozenTest` changes.
-- **Seeded history:** UUIDs, timestamps and timer due times differ; rows can come out in a different order, because `Set.of` iteration order differs from one JVM to the next and parallel branches can write in either order. `capture.properties` records a new capture time, and a new server version if `postgres:16-alpine` has moved to a newer patch release. The dump's and the manifest's SHA-256 change, so `DUMP_SHA256` and `CAPTURE_MANIFEST_SHA256` in `SeededHistory` change.
+- **Seeded history:** UUIDs, timestamps and timer due times differ; rows can come out in a different order, because `Set.of` iteration order differs from one JVM to the next and parallel branches can write in either order. `capture.properties` records a new capture time, and a new server version if `postgres:16-alpine` has moved to a newer patch release. The dump's and the manifest's SHA-256 change, so `DUMP_SHA256` and `CAPTURE_MANIFEST_SHA256` in `SeededHistory` change, and the new timer due times move `LATEST_MUST_BE_DUE` and `EARLIEST_MUST_STAY_PENDING`.
 
 Either way the regeneration is a visible change to a pinned constant, in a diff a reviewer reads. (The WP9 plan, `docs/superpowers/plans/2026-11-12-engine-hardening-cycle/wp09-schema-safety.md`, records how these rules were made; this section is the rule.)
 

@@ -52,6 +52,7 @@ import static io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflo
 import static io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.Seeds.PARKED_APPROVAL;
 import static io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.Seeds.PARKED_EXPRESS;
 import static io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.Seeds.PARKED_TIMER;
+import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.toCollection;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assumptions.assumeThat;
@@ -92,6 +93,10 @@ import static org.assertj.core.api.Assumptions.assumeThat;
  *       recorded before the upgrade ({@code appliedVersions} exactly V1–V9,
  *       V100, V101; afterwards still that prefix) and the row counts
  *       ({@code rowCounts} unchanged by the upgrade).</li>
+ *   <li>{@link #RECORDED_EVENTS} and
+ *       {@link #eachSeededWorkflowsEventsAreExactlyTheOnesCbf5a2aWrote}: every
+ *       seeded workflow's events ({@code "<seq>:<type>"}), as raw rows and
+ *       through the store.</li>
  *   <li>{@link #everySeededWorkflowReadsBackThroughThisBuildsStore}: the
  *       statuses and event types at capture ({@code Seeds.STATUS_AT_CAPTURE},
  *       {@code Seeds.EVENT_TYPES}, which live in the frozen source) and the
@@ -111,9 +116,9 @@ import static org.assertj.core.api.Assumptions.assumeThat;
  *   <li>{@link #finishedAndOtherServiceRunsAreNotAdopted}, except the two
  *       lines named in the second list: the nine untouched runs
  *       ({@code hasSize(9)}), their PENDING timers (the teeth of the
- *       comparison), and their instance rows, events, signal rows and timer
- *       rows ({@code instanceRows}, {@code events}, {@code wholeRows}) equal
- *       before and after; the three {@code seed-wp1-*} runs still
+ *       comparison), and their whole instance rows, events, signal rows and
+ *       timer rows ({@code wholeRows}, {@code events}) equal before and
+ *       after; the three {@code seed-wp1-*} runs still
  *       {@code WAITING_SIGNAL}.</li>
  *   <li>{@link #aSignalIdStoredAtCbf5a2aStillSuppressesItsDuplicate}: the
  *       dedup row — {@code deliverSignal} returns {@code false} and the one
@@ -213,6 +218,66 @@ class SeededHistoryUpgradeIT {
                     "7001 COMPENSATION_COMPLETED $maestro:compensation",
                     "7002 WORKFLOW_FAILED null"));
 
+    /**
+     * Every event {@code cbf5a2a} wrote, per seeded workflow (all 14
+     * instances in the dump): {@code "<seq>:<type>"} in sequence order. Derived
+     * from the committed dump by raw SQL over the restored tables
+     * ({@code string_agg} of {@code maestro_workflow_event} joined to
+     * {@code maestro_workflow_instance}), never through the store, so it can
+     * catch a read path that drops, reorders or retypes an event. Never edit.
+     */
+    private static final Map<String, String> RECORDED_EVENTS = Map.ofEntries(
+            Map.entry("seed-activity-failed",
+                    "1:ACTIVITY_FAILED,2:WORKFLOW_FAILED"),
+            Map.entry("seed-alert-failed",
+                    "1:ACTIVITY_FAILED,2:ACTIVITY_COMPLETED,3:WORKFLOW_FAILED"),
+            Map.entry("seed-compensating-crashed",
+                    "1:ACTIVITY_COMPLETED,2:ACTIVITY_COMPLETED,3:ACTIVITY_FAILED,4:COMPENSATION_STARTED,"
+                    + "5000:COMPENSATION_STEP_COMPLETED,5001:ACTIVITY_COMPLETED"),
+            Map.entry("seed-completed",
+                    "1:ACTIVITY_COMPLETED,2:SIDE_EFFECT,3:SIDE_EFFECT,4:VERSION_MARKER,"
+                    + "5:SIDE_EFFECT,6001:ACTIVITY_COMPLETED,7001:ACTIVITY_COMPLETED,8001:ACTIVITY_FAILED,"
+                    + "8002:TIMER_SCHEDULED,8003:TIMER_FIRED,8004:TIMER_SCHEDULED,8005:SIGNAL_TIMEOUT,"
+                    + "8006:TIMER_SCHEDULED,8007:TIMER_CANCELLED,8008:TIMER_SCHEDULED,8009:SIGNAL_RECEIVED,"
+                    + "8010:ACTIVITY_COMPLETED,8011:SIGNAL_RECEIVED,8012:WORKFLOW_COMPLETED"),
+            Map.entry("seed-crashed",
+                    "1:ACTIVITY_COMPLETED,2:SIDE_EFFECT,3:SIDE_EFFECT,4:VERSION_MARKER,"
+                    + "5:SIDE_EFFECT,6001:ACTIVITY_COMPLETED,7001:ACTIVITY_COMPLETED,8001:ACTIVITY_FAILED,"
+                    + "8002:TIMER_SCHEDULED,8003:TIMER_FIRED,8004:TIMER_SCHEDULED,8005:SIGNAL_TIMEOUT,"
+                    + "8006:TIMER_SCHEDULED,8007:TIMER_CANCELLED,8008:TIMER_SCHEDULED,8009:SIGNAL_RECEIVED"),
+            Map.entry("seed-parked-approval",
+                    "1:ACTIVITY_COMPLETED,2:SIDE_EFFECT,3:SIDE_EFFECT,4:VERSION_MARKER,"
+                    + "5:SIDE_EFFECT,6001:ACTIVITY_COMPLETED,7001:ACTIVITY_COMPLETED,8001:ACTIVITY_FAILED,"
+                    + "8002:TIMER_SCHEDULED,8003:TIMER_FIRED,8004:TIMER_SCHEDULED,8005:SIGNAL_TIMEOUT,"
+                    + "8006:TIMER_SCHEDULED,8007:TIMER_CANCELLED,8008:TIMER_SCHEDULED"),
+            Map.entry("seed-parked-express",
+                    "1:ACTIVITY_COMPLETED,2:SIDE_EFFECT,3:SIDE_EFFECT,4:VERSION_MARKER,"
+                    + "5:SIDE_EFFECT,6001:ACTIVITY_COMPLETED,7001:ACTIVITY_COMPLETED,8001:ACTIVITY_FAILED,"
+                    + "8002:TIMER_SCHEDULED,8003:TIMER_FIRED,8004:TIMER_SCHEDULED"),
+            Map.entry("seed-parked-timer",
+                    "1:ACTIVITY_COMPLETED,2:SIDE_EFFECT,3:SIDE_EFFECT,4:VERSION_MARKER,"
+                    + "5:SIDE_EFFECT,6001:ACTIVITY_COMPLETED,7001:ACTIVITY_COMPLETED,8001:ACTIVITY_FAILED,"
+                    + "8002:TIMER_SCHEDULED"),
+            Map.entry("seed-saga-compensated",
+                    "1:ACTIVITY_COMPLETED,2:ACTIVITY_COMPLETED,3:ACTIVITY_FAILED,4:COMPENSATION_STARTED,"
+                    + "5000:COMPENSATION_STEP_COMPLETED,5001:ACTIVITY_COMPLETED,6000:COMPENSATION_STEP_COMPLETED,6001:ACTIVITY_COMPLETED,"
+                    + "7001:COMPENSATION_COMPLETED,7002:WORKFLOW_FAILED"),
+            Map.entry("seed-saga-compensation-failed",
+                    "1:ACTIVITY_COMPLETED,2:ACTIVITY_COMPLETED,3:ACTIVITY_FAILED,4:COMPENSATION_STARTED,"
+                    + "5000:COMPENSATION_STEP_FAILED,5001:ACTIVITY_FAILED,6000:COMPENSATION_STEP_COMPLETED,6001:ACTIVITY_COMPLETED,"
+                    + "7001:COMPENSATION_COMPLETED,7002:WORKFLOW_FAILED"),
+            Map.entry("seed-terminated",
+                    "1:ACTIVITY_COMPLETED,2:SIDE_EFFECT,3:SIDE_EFFECT,4:VERSION_MARKER,"
+                    + "5:SIDE_EFFECT,6001:ACTIVITY_COMPLETED,7001:ACTIVITY_COMPLETED,8001:ACTIVITY_FAILED,"
+                    + "8002:TIMER_SCHEDULED,8003:TIMER_FIRED,8004:TIMER_SCHEDULED,8005:SIGNAL_TIMEOUT,"
+                    + "8006:TIMER_SCHEDULED,8007:TIMER_CANCELLED,8008:TIMER_SCHEDULED"),
+            Map.entry("seed-wp1-decimal",
+                    "1:ACTIVITY_COMPLETED,2:TIMER_SCHEDULED"),
+            Map.entry("seed-wp1-offset",
+                    "1:ACTIVITY_COMPLETED,2:TIMER_SCHEDULED"),
+            Map.entry("seed-wp1-set",
+                    "1:ACTIVITY_COMPLETED,2:TIMER_SCHEDULED"));
+
     @Test
     @DisplayName("The dump was captured at cbf5a2a, from the frozen fixture source, with no psql meta-commands")
     void theDumpWasCapturedAtCbf5a2a() throws Exception {
@@ -257,6 +322,17 @@ class SeededHistoryUpgradeIT {
         assertThat(types).isEqualTo(Seeds.EVENT_TYPES);          // includes: no UNKNOWN
         // WP1 input: the store wrote the decimal exactly (raw JSONB text of seed-wp1-decimal's ACTIVITY_COMPLETED payload)
         assertThat(rawPayload(seeded, Seeds.WP1_DECIMAL, "ACTIVITY_COMPLETED")).contains("12345678901234567890.123456789");
+    }
+
+    @Test
+    @DisplayName("each seeded workflow's events, as raw rows and through this build's store, are exactly the ones cbf5a2a wrote")
+    void eachSeededWorkflowsEventsAreExactlyTheOnesCbf5a2aWrote() throws Exception {
+        var seeded = SeededHistory.load().upgrade(SchemaMode.FLYWAY);
+        assertThat(RECORDED_EVENTS.keySet()).isEqualTo(Seeds.STATUS_AT_CAPTURE.keySet());
+        assertThat(rawEvents(seeded)).as("raw rows of every instance in the database").isEqualTo(RECORDED_EVENTS);
+        RECORDED_EVENTS.forEach((id, recorded) -> assertThat(seeded.events(id).stream()
+                        .map(e -> e.sequenceNumber() + ":" + e.eventType()).collect(joining(",")))
+                .as("%s through this build's store", id).isEqualTo(recorded));
     }
 
     // ── replay half: this build drives the history ────────────────────────
@@ -345,7 +421,7 @@ class SeededHistoryUpgradeIT {
         var seeded = SeededHistory.load().upgrade(SchemaMode.FLYWAY).requireClockWithinFixtureWindow();
         var untouched = Seeds.STATUS_AT_CAPTURE.keySet().stream().filter(id -> !ACTIVE.contains(id)).toList();
         assertThat(untouched).hasSize(9);   // completed, terminated, four FAILED, three seed-wp1-*
-        var rowsBefore = instanceRows(seeded, untouched);
+        var rowsBefore = wholeRows(seeded, "maestro_workflow_instance", untouched);
         var eventsBefore = new LinkedHashMap<String, List<WorkflowEvent>>();
         untouched.forEach(id -> eventsBefore.put(id, seeded.events(id)));
         var signalsBefore = wholeRows(seeded, "maestro_workflow_signal", untouched);
@@ -365,7 +441,7 @@ class SeededHistoryUpgradeIT {
             assertThat(seeded.awaitStatusOrLast(COMPENSATING_CRASHED, FAILED, Duration.ofSeconds(60)))
                     .as("%s; stand-downs: %s", COMPENSATING_CRASHED, observer.standDowns()).isEqualTo(FAILED);
 
-            assertThat(instanceRows(seeded, untouched)).isEqualTo(rowsBefore);
+            assertThat(wholeRows(seeded, "maestro_workflow_instance", untouched)).isEqualTo(rowsBefore);
             untouched.forEach(id -> assertThat(seeded.events(id)).as(id).isEqualTo(eventsBefore.get(id)));
             assertThat(wholeRows(seeded, "maestro_workflow_signal", untouched)).isEqualTo(signalsBefore);
             assertThat(wholeRows(seeded, "maestro_workflow_timer", untouched)).isEqualTo(timersBefore);
@@ -588,6 +664,24 @@ class SeededHistoryUpgradeIT {
             }
         }
         return versions;
+    }
+
+    /** {@code workflow_id -> "<seq>:<type>,..."} for every instance in the database, by raw SQL. */
+    private static Map<String, String> rawEvents(SeededHistory seeded) throws SQLException {
+        var events = new LinkedHashMap<String, String>();
+        try (var conn = seeded.dataSource().getConnection();
+             var st = conn.createStatement();
+             var rs = st.executeQuery("""
+                     SELECT i.workflow_id,
+                            COALESCE(string_agg(e.sequence_number || ':' || e.event_type, ',' ORDER BY e.sequence_number), '')
+                     FROM maestro_workflow_instance i
+                     LEFT JOIN maestro_workflow_event e ON e.workflow_instance_id = i.id
+                     GROUP BY i.workflow_id""")) {
+            while (rs.next()) {
+                events.put(rs.getString(1), rs.getString(2));
+            }
+        }
+        return events;
     }
 
     /** The raw JSONB text of the workflow's one event of {@code eventType}, as Postgres holds it. */
