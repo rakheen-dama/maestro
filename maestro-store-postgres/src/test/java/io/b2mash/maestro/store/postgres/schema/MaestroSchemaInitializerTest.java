@@ -35,6 +35,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.DriverManager;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -521,39 +522,64 @@ class MaestroSchemaInitializerTest {
         assertThat(tables()).isEmpty();
     }
 
+    // ── the production recipe: docs/configuration.md § Schema management, "In production" ──
+    //
+    // The three SQL constants below are printed verbatim in that section;
+    // theDocumentedSqlIsTheTestedSql fails if the two drift apart.
+
     /**
-     * The runtime grants docs/configuration.md § Schema management ("In
-     * production") tells an operator to issue, verbatim: keep the two
-     * identical. Everything a node does under {@code validate} must work with
-     * these and nothing more.
+     * The schema grants, issued by the schema's owner (here the container's
+     * superuser): a non-superuser migration role needs {@code USAGE} and
+     * {@code CREATE}, the nodes' role {@code USAGE}. Only the schema's owner
+     * can grant on it; a {@code GRANT} on the schema issued by
+     * {@code maestro_owner} draws a warning and grants nothing.
+     */
+    static final String SCHEMA_GRANTS = """
+            GRANT USAGE, CREATE ON SCHEMA public TO maestro_owner;
+            GRANT USAGE ON SCHEMA public TO maestro_app;
+            """;
+
+    /**
+     * The runtime table grants, issued by {@code maestro_owner}, which owns the
+     * tables. With {@link #SCHEMA_GRANTS}, everything a node does under
+     * {@code validate} must work with these and nothing more. No {@code UPDATE}
+     * on {@code maestro_workflow_event}: the engine appends and purges history
+     * but never rewrites it.
      */
     static final String RUNTIME_GRANTS = """
-            GRANT USAGE ON SCHEMA public TO maestro_app;
-            GRANT SELECT, INSERT, UPDATE, DELETE ON maestro_workflow_instance, maestro_workflow_event,
-                maestro_workflow_timer, maestro_workflow_signal, maestro_distributed_lock,
-                maestro_leader_election TO maestro_app;
+            GRANT SELECT, INSERT, UPDATE, DELETE ON maestro_workflow_instance, maestro_workflow_timer,
+                maestro_workflow_signal, maestro_distributed_lock, maestro_leader_election TO maestro_app;
+            GRANT SELECT, INSERT, DELETE ON maestro_workflow_event TO maestro_app;
             GRANT SELECT ON maestro_schema_history TO maestro_app;
             """;
 
     /**
+     * Grants on every table the owner creates in the schema from now on, so a
+     * table added by a later migration is usable by the nodes without a new
+     * grant. Issued by the owner.
+     */
+    static final String DEFAULT_PRIVILEGES = """
+            ALTER DEFAULT PRIVILEGES FOR ROLE maestro_owner IN SCHEMA public
+                GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO maestro_app;
+            """;
+
+    /**
      * The production recipe in docs/configuration.md § Schema management, run:
-     * the owner migrates, and a node then runs under {@code validate} as a
-     * role holding only {@link #RUNTIME_GRANTS}. That role passes validation
-     * and drives the store, the lock, the lock cleaner and the signal wake
-     * through each kind of statement they issue ({@code SELECT}, {@code INSERT},
-     * {@code INSERT ... ON CONFLICT}, {@code UPDATE}, {@code DELETE},
-     * {@code SELECT ... FOR UPDATE SKIP LOCKED}, {@code LISTEN},
+     * a non-superuser owner migrates, and a node then runs under
+     * {@code validate} as a role holding only its {@code USAGE} from
+     * {@link #SCHEMA_GRANTS} and {@link #RUNTIME_GRANTS}. That role passes
+     * validation and drives the store, the lock, the lock cleaner and the
+     * signal wake through each kind of statement they issue
+     * ({@code SELECT}, {@code INSERT}, {@code INSERT ... ON CONFLICT},
+     * {@code UPDATE}, {@code DELETE}, {@code SELECT ... FOR UPDATE SKIP LOCKED},
+     * {@code INSERT ... SELECT ... FOR SHARE}, {@code LISTEN},
      * {@code pg_notify}); and it cannot migrate or run any other DDL.
-     * {@code PUBLIC} is stripped of its rights on the schema first, so every
-     * right the role uses is one the grants gave it.
      */
     @Test
     @DisplayName("a role with only the documented DML grants runs validate mode and the store, and cannot migrate")
     void aDmlOnlyRoleRunsValidateModeButCannotMigrate(@TempDir Path dir) throws Exception {
-        new MaestroSchemaInitializer(ds, SchemaMode.FLYWAY, cl).initialize();               // as the owner
-        try (var conn = ds.getConnection(); var stmt = conn.createStatement()) {
-            stmt.execute("REVOKE ALL ON SCHEMA public FROM PUBLIC");                          // a locked-down schema
-            stmt.execute("CREATE ROLE maestro_app LOGIN PASSWORD 'app'");
+        var owner = lockedDownSchemaMigratedByANonSuperuserOwner();
+        try (var conn = owner.getConnection(); var stmt = conn.createStatement()) {
             stmt.execute(RUNTIME_GRANTS);
             // Rows a crashed node left behind, expired for more than a minute: the lock cleaner's work.
             stmt.execute("INSERT INTO maestro_distributed_lock (lock_key, token, expires_at)"
@@ -561,12 +587,7 @@ class MaestroSchemaInitializerTest {
             stmt.execute("INSERT INTO maestro_leader_election (election_key, candidate_id, expires_at)"
                     + " VALUES ('maestro:leader:retention:svc', 'crashed', now() - interval '2 minutes')");
         }
-        var app = new PGSimpleDataSource();
-        app.setServerNames(ds.getServerNames());
-        app.setPortNumbers(ds.getPortNumbers());
-        app.setDatabaseName(ds.getDatabaseName());
-        app.setUser("maestro_app");
-        app.setPassword("app");
+        var app = roleDataSource("maestro_app", "app");
 
         // Startup under validate.
         assertThatCode(() -> new MaestroSchemaInitializer(app, SchemaMode.VALIDATE, cl).initialize())
@@ -657,7 +678,109 @@ class MaestroSchemaInitializerTest {
         }
     }
 
+    /**
+     * A table added by a later migration, with and without the documented
+     * {@link #DEFAULT_PRIVILEGES}. {@code validate} checks migration history,
+     * never grants, so without them the node starts and the new table then
+     * refuses every statement with SQLSTATE {@code 42501}. With them issued
+     * first, the next migration's table is usable at once; they are not
+     * retroactive, so the earlier table stays refused.
+     */
+    @Test
+    @DisplayName("a table added by a later migration is refused to the app role unless default privileges were issued first")
+    void aTableAddedByALaterMigrationNeedsDefaultPrivileges(@TempDir Path dir) throws Exception {
+        var owner = lockedDownSchemaMigratedByANonSuperuserOwner();
+        execute(owner, RUNTIME_GRANTS);
+        var app = roleDataSource("maestro_app", "app");
+
+        var v102 = withFutureMigration(dir, "V102__future_table.sql", "CREATE TABLE maestro_future_probe (id INT);");
+        new MaestroSchemaInitializer(owner, SchemaMode.FLYWAY, v102).initialize();
+        assertThatCode(() -> new MaestroSchemaInitializer(app, SchemaMode.VALIDATE, v102).initialize())
+                .as("validate checks history, never grants")
+                .doesNotThrowAnyException();
+        assertThatThrownBy(() -> execute(app, "INSERT INTO maestro_future_probe VALUES (1)"))
+                .isInstanceOfSatisfying(SQLException.class, e -> assertThat(e.getSQLState()).isEqualTo("42501"))
+                .hasMessageContaining("permission denied for table maestro_future_probe");
+
+        execute(owner, DEFAULT_PRIVILEGES);
+        var v103 = withFutureMigration(dir, "V103__future_table.sql", "CREATE TABLE maestro_future_probe_2 (id INT);");
+        new MaestroSchemaInitializer(owner, SchemaMode.FLYWAY, v103).initialize();
+        assertThatCode(() -> new MaestroSchemaInitializer(app, SchemaMode.VALIDATE, v103).initialize())
+                .doesNotThrowAnyException();
+        execute(app, "INSERT INTO maestro_future_probe_2 VALUES (1)");
+        execute(app, "UPDATE maestro_future_probe_2 SET id = 2 WHERE id = 1");
+        try (var conn = app.getConnection(); var stmt = conn.createStatement();
+             var rs = stmt.executeQuery("SELECT id FROM maestro_future_probe_2")) {
+            assertThat(rs.next()).isTrue();
+            assertThat(rs.getInt(1)).isEqualTo(2);
+        }
+        execute(app, "DELETE FROM maestro_future_probe_2");
+        assertThatThrownBy(() -> execute(app, "SELECT * FROM maestro_future_probe"))
+                .as("default privileges cover only tables created after them")
+                .isInstanceOfSatisfying(SQLException.class, e -> assertThat(e.getSQLState()).isEqualTo("42501"));
+    }
+
+    /**
+     * docs/configuration.md prints the SQL the two tests above execute; an
+     * edit to either side alone fails here. The docs file is an input of this
+     * module's {@code test} task (build.gradle.kts), so a doc-only edit reruns
+     * this test instead of being served from the build cache. Gradle runs
+     * tests in the module directory.
+     */
+    @Test
+    @DisplayName("docs/configuration.md prints exactly the SQL the role tests execute")
+    void theDocumentedSqlIsTheTestedSql() throws IOException {
+        var doc = Files.readString(Path.of("../docs/configuration.md"));
+
+        assertThat(doc).contains(SCHEMA_GRANTS).contains(RUNTIME_GRANTS).contains(DEFAULT_PRIVILEGES);
+    }
+
     // ── helpers ─────────────────────────────────────────────────────
+
+    /**
+     * The setup of the production recipe on this test's database. {@code PUBLIC}
+     * is stripped of its rights on the schema, so every right a role uses is
+     * one granted here; the schema's owner issues {@link #SCHEMA_GRANTS};
+     * {@code maestro_owner}, a non-superuser holding only those, migrates and
+     * so owns every {@code maestro_*} table; {@code maestro_app} holds only
+     * {@code USAGE} on the schema.
+     *
+     * @return the owner's data source
+     */
+    private PGSimpleDataSource lockedDownSchemaMigratedByANonSuperuserOwner() throws SQLException {
+        try (var conn = ds.getConnection(); var stmt = conn.createStatement()) {
+            stmt.execute("REVOKE ALL ON SCHEMA public FROM PUBLIC");
+            createLoginRole(stmt, "maestro_owner", "owner");
+            createLoginRole(stmt, "maestro_app", "app");
+            stmt.execute(SCHEMA_GRANTS);
+        }
+        var owner = roleDataSource("maestro_owner", "owner");
+        new MaestroSchemaInitializer(owner, SchemaMode.FLYWAY, cl).initialize();
+        return owner;
+    }
+
+    /** Roles are cluster-wide and every test here shares one server: create {@code role} once. */
+    private static void createLoginRole(Statement stmt, String role, String password) throws SQLException {
+        stmt.execute("DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '" + role + "') THEN"
+                + " CREATE ROLE " + role + " LOGIN PASSWORD '" + password + "'; END IF; END $$");
+    }
+
+    /** A data source on this test's database, connecting as {@code role}. */
+    private PGSimpleDataSource roleDataSource(String role, String password) {
+        var roleDs = new PGSimpleDataSource();
+        roleDs.setServerNames(ds.getServerNames());
+        roleDs.setPortNumbers(ds.getPortNumbers());
+        roleDs.setDatabaseName(ds.getDatabaseName());
+        roleDs.setUser(role);
+        roleDs.setPassword(password);
+        return roleDs;
+    }
+
+    private static void execute(PGSimpleDataSource on, String sql) throws SQLException {
+        try (var conn = on.getConnection(); var stmt = conn.createStatement()) {
+            stmt.execute(sql);
+        }
+    }
 
     /**
      * Applies every migration this build ships, as {@link MaestroSchemaInitializer}
