@@ -379,6 +379,51 @@ class TaskQueueGovernorTest {
         assertEquals(OptionalInt.of(0), g.availableWorkflowSlots("q"), "the waiter took nothing");
     }
 
+    // ── in-use accessors (WP11: maestro.taskqueue.slots.used) ─────────
+
+    @Test
+    void inUseTracksAcquireParkAndRelease() throws Exception {
+        var g = new TaskQueueGovernor(Map.of("q", new TaskQueueLimits(2, 3)));
+        assertEquals(OptionalInt.of(0), g.workflowSlotsInUse("q"));
+        assertEquals(OptionalInt.of(0), g.activitySlotsInUse("q"));
+
+        g.acquireWorkflowSlot("q", "a");
+        assertEquals(OptionalInt.of(1), g.workflowSlotsInUse("q"));
+
+        var seenWhileParked = g.parked("a", () -> g.workflowSlotsInUse("q"));
+        assertEquals(OptionalInt.of(0), seenWhileParked, "a parked run gives its slot back");
+        assertEquals(OptionalInt.of(1), g.workflowSlotsInUse("q"), "the run holds its slot again after the park");
+
+        g.acquireActivitySlot("q");
+        g.acquireActivitySlot("q");
+        assertEquals(OptionalInt.of(2), g.activitySlotsInUse("q"), "2 of 3 activity slots held");
+        assertEquals(OptionalInt.of(1), g.workflowSlotsInUse("q"), "the two pools are independent");
+
+        g.releaseActivitySlot("q");
+        g.releaseActivitySlot("q");
+        assertEquals(OptionalInt.of(0), g.activitySlotsInUse("q"));
+
+        g.releaseWorkflowSlot("a");
+        assertEquals(OptionalInt.of(0), g.workflowSlotsInUse("q"));
+    }
+
+    @Test
+    void inUseIsEmptyForUnboundedQueues() {
+        assertEquals(OptionalInt.empty(), UNBOUNDED.workflowSlotsInUse("x"));
+        assertEquals(OptionalInt.empty(), UNBOUNDED.activitySlotsInUse("x"));
+    }
+
+    @Test
+    void inUseUsesDefaultLimitsForUnconfiguredQueue() {
+        var g = new TaskQueueGovernor(Map.of(), new TaskQueueLimits(20, 20));
+        assertEquals(OptionalInt.of(0), g.workflowSlotsInUse("default"));
+        assertEquals(OptionalInt.of(0), g.activitySlotsInUse("default"));
+        g.acquireWorkflowSlot("default", "a");
+        assertEquals(OptionalInt.of(1), g.workflowSlotsInUse("default"));
+        assertEquals(OptionalInt.of(19), g.availableWorkflowSlots("default"),
+                "the in-use read created the same pool the acquire then used");
+    }
+
     @Test
     void limitsMustBePositive() {
         assertThrows(IllegalArgumentException.class, () -> new TaskQueueLimits(0, 1));
