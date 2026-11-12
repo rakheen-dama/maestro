@@ -75,14 +75,15 @@ tasks.named<Test>("test") {
 // must read them back unchanged. Pacific/Chatham (+12:45/+13:45, a quarter-hour
 // offset) is far from UTC and from any CI runner's zone. The expected-zone
 // property lets SeededHistoryUpgradeIT assert the zone really took effect, so
-// the guard cannot pass in UTC by accident. Wired into `check`, so it runs on
-// every `./gradlew build`.
+// the guard cannot pass in UTC by accident. SeededHistoryReplayFidelityIT (WP1)
+// runs here too: its +02:00 result must read back as the same UTC value in any
+// zone. Wired into `check`, so it runs on every `./gradlew build`.
 // ---------------------------------------------------------------------------
 val seededHistoryZone = "Pacific/Chatham"
 
 val seededHistoryNonUtcTest = tasks.register<Test>("seededHistoryNonUtcTest") {
     group = "verification"
-    description = "Runs SeededHistoryUpgradeIT in a JVM whose default zone is $seededHistoryZone."
+    description = "Runs SeededHistoryUpgradeIT and SeededHistoryReplayFidelityIT in a JVM whose default zone is $seededHistoryZone."
 
     testClassesDirs = sourceSets["test"].output.classesDirs
     classpath = sourceSets["test"].runtimeClasspath
@@ -91,6 +92,7 @@ val seededHistoryNonUtcTest = tasks.register<Test>("seededHistoryNonUtcTest") {
     }
     filter {
         includeTestsMatching("*SeededHistoryUpgradeIT")
+        includeTestsMatching("*SeededHistoryReplayFidelityIT")
     }
     systemProperty("user.timezone", seededHistoryZone)
     systemProperty("maestro.test.expectedZone", seededHistoryZone)

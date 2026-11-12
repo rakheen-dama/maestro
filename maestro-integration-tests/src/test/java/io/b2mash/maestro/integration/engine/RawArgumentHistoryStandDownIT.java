@@ -40,7 +40,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * worse. A replay on this build hashes the read-back slot ({@code 08:00Z}),
  * so it stands down as {@code nondeterministic_history}, exactly as the old
  * build did after any restart: nothing fails, nothing compensates, nothing
- * re-executes. (The escape hatch is {@code maestro.replay.verify-arguments=false}.)
+ * re-executes. The escape hatch is {@code maestro.replay.verify-arguments=false}:
+ * the recorded step then replays and the run continues with the read-back
+ * value, pinned here end to end too.
  *
  * <p>This passes before and after Task 7: what Task 7 changes is which node
  * the live read-back reads, and an {@code OffsetDateTime} reads back the same
@@ -113,12 +115,67 @@ class RawArgumentHistoryStandDownIT extends PostgresIntegrationSupport {
         }
     }
 
+    @Test
+    @DisplayName("with verify-arguments=false the same history replays the recorded confirm and completes with the read-back slot")
+    void rawArgumentHistory_verifyArgumentsOff_replaysTheRecordedStepAndContinuesWithTheReadBackValue()
+            throws Exception {
+        var confirms = new AtomicInteger();
+        var workflowId = MaestroEngineHarness.uniqueWorkflowId("raw-args-off");
+
+        // ── Node A: reserveSlot() and confirm(slot) run live; the run parks.
+        var parkedA = new CountDownLatch(1);
+        WorkflowHandle handle;
+        try (var nodeA = node(confirms, parkedA, null)) {
+            handle = nodeA.start(workflowId, SlotWorkflow.class, "order-1");
+            assertTrue(parkedA.await(30, TimeUnit.SECONDS), "node A must reach the await point");
+            handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
+        }
+        var instanceId = handle.instanceId();
+        assertEquals(1, confirms.get());
+
+        // Seq 2 as cbf5a2a wrote it: confirm's result over the raw +02:00 slot, and that slot's fingerprint.
+        var fpRaw = ArgumentFingerprint.of(serializer, new Object[]{BookingImpl.SLOT});
+        assertNotNull(fpRaw);
+        setArgsHash(instanceId, 2, fpRaw);
+        var recordedConfirmation = "confirmed slot-7 at 2026-11-12T10:00+02:00";
+        setPayload(instanceId, 2, "\"" + recordedConfirmation + "\"");
+
+        // ── Node B, verification off: replays both steps without comparing fingerprints, then completes.
+        var observer = new RecordingObserver();
+        var parkedB = new CountDownLatch(1);
+        WorkflowStatus terminal;
+        try (var nodeB = node(confirms, parkedB, observer, false)) {
+            assertEquals(1, nodeB.recover());
+            var deadline = System.nanoTime() + BOUND.toNanos();
+            while (parkedB.getCount() > 0 && observer.standDowns().isEmpty() && System.nanoTime() < deadline) {
+                Thread.sleep(20);
+            }
+            assertEquals(List.of(), observer.standDowns(), "verification is off: the replay must not stand down");
+            nodeB.deliverSignal(workflowId, "go", "go");
+            terminal = handle.awaitTerminal(BOUND);
+        }
+
+        assertAll(
+                () -> assertEquals(WorkflowStatus.COMPLETED, terminal),
+                // the recorded confirmation (seq 2 replayed, never re-run), then the slot as it reads back
+                () -> assertEquals(recordedConfirmation + ":2026-11-12T08:00Z:go", handle.result(String.class)),
+                () -> assertEquals(1, confirms.get(), "confirm ran once, on node A"),
+                () -> assertEquals(List.of(), observer.failed(), "nothing failed"),
+                () -> assertEquals(List.of(), observer.compensating(), "nothing is compensated"));
+    }
+
     private MaestroEngineHarness node(AtomicInteger confirms, CountDownLatch parked,
                                       @Nullable RecordingObserver observer) {
+        return node(confirms, parked, observer, true);
+    }
+
+    private MaestroEngineHarness node(AtomicInteger confirms, CountDownLatch parked,
+                                      @Nullable RecordingObserver observer, boolean verifyArguments) {
         var builder = MaestroEngineHarness.builder(store, objectMapper)
                 .serviceName(SERVICE)
                 .lock(newLock())
-                .instanceLockTtl(LOCK_TTL);
+                .instanceLockTtl(LOCK_TTL)
+                .verifyArguments(verifyArguments);
         if (observer != null) {
             builder.observer(observer);
         }
@@ -133,6 +190,17 @@ class RawArgumentHistoryStandDownIT extends PostgresIntegrationSupport {
              var ps = conn.prepareStatement("UPDATE maestro_workflow_event SET args_hash = ? "
                      + "WHERE workflow_instance_id = ? AND sequence_number = ?")) {
             ps.setString(1, argsHash);
+            ps.setObject(2, instanceId);
+            ps.setInt(3, seq);
+            assertEquals(1, ps.executeUpdate());
+        }
+    }
+
+    private void setPayload(UUID instanceId, int seq, String json) throws SQLException {
+        try (var conn = dataSource.getConnection();
+             var ps = conn.prepareStatement("UPDATE maestro_workflow_event SET payload = ?::jsonb "
+                     + "WHERE workflow_instance_id = ? AND sequence_number = ?")) {
+            ps.setString(1, json);
             ps.setObject(2, instanceId);
             ps.setInt(3, seq);
             assertEquals(1, ps.executeUpdate());
@@ -190,7 +258,8 @@ class RawArgumentHistoryStandDownIT extends PostgresIntegrationSupport {
             var slot = booking.reserveSlot(orderId);
             var confirmation = booking.confirm(slot);
             parked.countDown();
-            return confirmation + ":" + WorkflowContext.current().awaitSignal("go", String.class, Duration.ofSeconds(60));
+            var go = WorkflowContext.current().awaitSignal("go", String.class, Duration.ofSeconds(60));
+            return confirmation + ":" + slot.start() + ":" + go;
         }
     }
 }

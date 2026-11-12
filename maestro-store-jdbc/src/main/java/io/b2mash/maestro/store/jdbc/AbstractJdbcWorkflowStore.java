@@ -765,6 +765,19 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * must return {@code true}, as must one that overrides
      * {@link #getJsonValue} to read a non-text form.
      *
+     * <p>Return {@code true} only for a database and driver that run the
+     * fenced {@code INSERT ... SELECT ... RETURNING payload} through
+     * {@code executeQuery} and hand back a result set holding one row when the
+     * row was inserted and <em>zero rows</em> when the lease predicate
+     * rejected the write (zero rows is how the fence is detected). Without
+     * that, the engine's event appends break, never silently: a database that
+     * rejects the clause fails every one as a store fault (the run latches
+     * {@code STORE_UNAVAILABLE} and is abandoned for recovery, which meets the
+     * same fault); a driver that runs the insert but returns no result set
+     * fails it as a store fault <em>after</em> the row committed, so the
+     * engine's retry meets that row as a {@link DuplicateEventException} and
+     * the run stands down.
+     *
      * @return {@code true} to append {@code " RETURNING payload"} to the
      *         fenced event insert
      */
