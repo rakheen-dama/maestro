@@ -114,6 +114,9 @@ import java.util.stream.Collectors;
  *       returns JSON in a non-string format.</li>
  *   <li>{@link #fenceRowLockClause()} — override to lock the instance row the
  *       fenced {@code INSERT ... SELECT} checked (Postgres: {@code FOR SHARE}).</li>
+ *   <li>{@link #returnsInsertedPayload()} — override to {@code true} when the
+ *       database normalises what it stores and can return it from the insert
+ *       ({@code INSERT ... RETURNING payload}; Postgres {@code jsonb}).</li>
  * </ul>
  *
  * <h2>Lease fencing</h2>
@@ -699,6 +702,123 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The write is the one {@link #appendEvent(WorkflowEvent, RunLease)}
+     * makes: one fenced {@code INSERT ... SELECT}, the same parameters, the
+     * same conflict and fence handling — zero rows is a
+     * {@link FencedWriteException}, a unique violation a
+     * {@link DuplicateEventException}, any other {@link SQLException}
+     * {@link #storeFault classified} exactly as there. What is returned:
+     * <ul>
+     *   <li>With {@link #returnsInsertedPayload()} on, the statement carries
+     *       {@code " RETURNING payload"} and runs with {@code executeQuery} —
+     *       still one statement — and the returned column is parsed by
+     *       {@link #getJsonValue}, the very parse {@code getEventBySequence}
+     *       applies to that column, so this and a later read are equal by
+     *       construction.</li>
+     *   <li>With the hook off, the payload's text round trip: the text
+     *       {@link #setJsonParameter} writes, parsed by the reader
+     *       {@link #getJsonValue} uses — what a text column hands back.</li>
+     * </ul>
+     * A stored form the parser rejects ({@link SerializationException})
+     * returns {@code event.payload()} and is logged at DEBUG: the row is
+     * written, and a later read of it fails exactly as it would have anyway.
+     */
+    @Override
+    public @Nullable JsonNode appendEventReturningPayload(WorkflowEvent event, RunLease lease) {
+        Objects.requireNonNull(event, "event");
+        Objects.requireNonNull(lease, "lease");
+        if (!returnsInsertedPayload()) {
+            appendEvent(event, lease);
+            return textRoundTrip(event);
+        }
+        requireNotUnknown(event);
+
+        Inserted inserted;
+        try (var conn = dataSource.getConnection()) {
+            inserted = insertEventReturningPayload(conn, event, lease);
+        } catch (SQLException e) {
+            if (UNIQUE_VIOLATION.equals(e.getSQLState())) {
+                var ex = new DuplicateEventException(event.workflowInstanceId(),
+                        event.sequenceNumber());
+                ex.initCause(e);
+                throw ex;
+            }
+            throw storeFault("Update failed: " + insertEventSql(true) + RETURNING_PAYLOAD, e);
+        }
+        if (inserted == null) {
+            throw new FencedWriteException(lease.instanceId(), lease.epoch(), "appendEvent");
+        }
+        return inserted.payload();
+    }
+
+    /**
+     * Whether the database can return the inserted {@code payload} from the
+     * event {@code INSERT} itself ({@code INSERT ... RETURNING payload}), so
+     * {@link #appendEventReturningPayload} returns the stored form rather than
+     * a text round trip of the payload it sent. The default is {@code false}:
+     * correct for a store that keeps payloads as text, because a text column
+     * reads back exactly the text written. A store that normalises what it
+     * stores — Postgres {@code jsonb} reorders keys and rewrites numbers —
+     * must return {@code true}, as must one that overrides
+     * {@link #getJsonValue} to read a non-text form.
+     *
+     * @return {@code true} to append {@code " RETURNING payload"} to the
+     *         fenced event insert
+     */
+    protected boolean returnsInsertedPayload() {
+        return false;
+    }
+
+    private static final String RETURNING_PAYLOAD = " RETURNING payload";
+
+    /** A row the {@code RETURNING} insert wrote, with its payload as the store reads it. */
+    private record Inserted(@Nullable JsonNode payload) {}
+
+    /**
+     * The fenced event insert with {@code RETURNING payload}, as one
+     * {@code executeQuery}.
+     *
+     * @return the inserted row, or {@code null} when the lease is stale (no row)
+     */
+    private @Nullable Inserted insertEventReturningPayload(Connection conn, WorkflowEvent event, RunLease lease)
+            throws SQLException {
+        try (var ps = conn.prepareStatement(insertEventSql(true) + RETURNING_PAYLOAD)) {
+            bindEvent(ps, event, lease);
+            try (var rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    return null;
+                }
+                try {
+                    return new Inserted(getJsonValue(rs, "payload"));
+                } catch (SerializationException unparseable) {
+                    log.debug("Stored payload of (instance={}, seq={}) cannot be parsed back; returning the "
+                                    + "payload that was sent: {}", event.workflowInstanceId(),
+                            event.sequenceNumber(), unparseable.toString());
+                    return new Inserted(event.payload());
+                }
+            }
+        }
+    }
+
+    /** What a text column hands back for {@code event}'s payload (see {@link #appendEventReturningPayload}). */
+    private @Nullable JsonNode textRoundTrip(WorkflowEvent event) {
+        var payload = event.payload();
+        if (payload == null || payload.isNull()) {
+            return null;            // written as SQL NULL, read back as null
+        }
+        try {
+            return parseJsonNode(toJsonString(payload));
+        } catch (SerializationException unparseable) {
+            log.debug("Payload of (instance={}, seq={}) does not survive a text round trip; returning the "
+                            + "payload that was sent: {}", event.workflowInstanceId(), event.sequenceNumber(),
+                    unparseable.toString());
+            return payload;
+        }
+    }
+
     private void requireNotUnknown(WorkflowEvent event) {
         if (event.eventType() == EventType.UNKNOWN) {
             // The sentinel is how the READ path represents a type this build
@@ -740,19 +860,24 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      */
     private int insertEvent(Connection conn, WorkflowEvent event, @Nullable RunLease lease) throws SQLException {
         try (var ps = conn.prepareStatement(insertEventSql(lease != null))) {
-            ps.setObject(1, event.id());
-            ps.setObject(2, event.workflowInstanceId());
-            ps.setInt(3, event.sequenceNumber());
-            ps.setString(4, event.eventType().name());
-            setNullableString(ps, 5, event.stepName());
-            setJsonParameter(ps, 6, event.payload());
-            ps.setTimestamp(7, Timestamp.from(event.createdAt()));
-            setNullableString(ps, 8, event.argsHash());
-            if (lease != null) {
-                ps.setObject(9, lease.instanceId());
-                ps.setLong(10, lease.epoch());
-            }
+            bindEvent(ps, event, lease);
             return ps.executeUpdate();
+        }
+    }
+
+    /** Binds the event insert's parameters — and, fenced, the lease's — in {@link #insertEventSql} order. */
+    private void bindEvent(PreparedStatement ps, WorkflowEvent event, @Nullable RunLease lease) throws SQLException {
+        ps.setObject(1, event.id());
+        ps.setObject(2, event.workflowInstanceId());
+        ps.setInt(3, event.sequenceNumber());
+        ps.setString(4, event.eventType().name());
+        setNullableString(ps, 5, event.stepName());
+        setJsonParameter(ps, 6, event.payload());
+        ps.setTimestamp(7, Timestamp.from(event.createdAt()));
+        setNullableString(ps, 8, event.argsHash());
+        if (lease != null) {
+            ps.setObject(9, lease.instanceId());
+            ps.setLong(10, lease.epoch());
         }
     }
 
