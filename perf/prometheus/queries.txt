@@ -1,0 +1,10 @@
+sum by (instance) (rate(maestro_workflow_completed_total[30s]))
+maestro_taskqueue_slots_used
+maestro_workflows_running
+maestro_workflows_parked
+hikaricp_connections_active
+hikaricp_connections_pending
+histogram_quantile(0.95, sum by (le) (rate(maestro_workflow_duration_seconds_bucket[30s])))
+sum by (reason) (increase(maestro_run_abandoned_total[1m]))
+sum by (instance) (jvm_memory_used_bytes{area="heap"})
+process_cpu_usage
