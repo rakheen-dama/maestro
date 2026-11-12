@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Evaluator self-test: perf/eval/selftest.sh <a PASSING smoke result directory>
+# Evaluator self-test:
+#   perf/eval/selftest.sh <a PASSING smoke result dir> [<a PASSING s1-throughput result dir>]
+# With the second argument it also runs the Scenario 1 cases (ceiling and
+# "sustains", the WP11 meters degrading to "not available", the statement
+# gate's baseline matching, warm-up size, levels, correctness).
 #
 # Copies the run's identity.json and measurements.json to a scratch directory,
 # doctors them (and the resulting check list) one fault at a time, re-runs the
@@ -11,7 +15,8 @@
 set -Eeuo pipefail
 
 PERF_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-src=${1:?usage: perf/eval/selftest.sh <passing smoke result dir>}
+src=${1:?usage: perf/eval/selftest.sh <passing smoke result dir> [<passing s1-throughput result dir>]}
+s1src=${2:-}
 scenario=$(jq -r .scenario "${src}/identity.json")
 work=$(mktemp -d "${TMPDIR:-/tmp}/perf-selftest.XXXXXX")
 trap 'rm -rf "$work"' EXIT
@@ -385,6 +390,133 @@ expect "gate WARN" FAIL "$(verdict_of 'map(if .class == "gate" then .status = "W
 expect "correctness INVALID" FAIL "$(verdict_of 'map(if .id == "correctness.allCompleted" then .status = "INVALID" else . end)')"
 expect "advisory WARN" PASS "$(verdict_of 'map(if .class == "advisory" then .status = "WARN" else . end)')"
 expect "validity INVALID beats gate FAIL" INVALID "$(verdict_of 'map(if .class == "gate" then .status = "FAIL" elif .id == "validity.k6" then .status = "INVALID" else . end)')"
+
+# ── Scenario 1 (s1-throughput) ──────────────────────────────────────────────
+if [[ -n "$s1src" ]]; then
+  [[ "$(jq -r .scenario "${s1src}/identity.json")" == s1-throughput ]] || { echo "selftest: ${s1src} is not an s1-throughput run"; exit 1; }
+  # s1_eval <case> <measurements filter> [<identity filter>] [<baseline json>]
+  s1_eval() {
+    local dir="${work}/$1" base=""
+    mkdir -p "$dir"
+    jq "${3:-.}" "${s1src}/identity.json" >"${dir}/identity.json"
+    jq "$2" "${s1src}/measurements.json" >"${dir}/measurements.json"
+    if [[ -n "${4:-}" ]]; then
+      printf '%s\n' "$4" >"${dir}/baseline.json"
+      base="${dir}/baseline.json"
+    fi
+    if ! bash "${PERF_DIR}/lib/evaluate.sh" "$dir" s1-throughput "$base" >/dev/null 2>"${dir}/stderr"; then
+      printf '{"verdict":"CRASH","checks":{}}\n'
+      return 0
+    fi
+    jq -c '{verdict, checks: (.checks | map({key: .id, value: .status}) | from_entries)}' "${dir}/result.json"
+  }
+  s1_field() { jq -c "$2" "${work}/$1/result.json" 2>/dev/null || echo CRASH; }
+  st() { jq -r --arg id "$2" '.checks[$id] // "absent"' <<<"$1"; }
+
+  out=$(s1_eval s1-pass '.')
+  expect "s1: unchanged run" PASS "$(jq -r .verdict <<<"$out")"
+  expect "s1: every check is PASS or NO_BASELINE (gate) on the real run" "" \
+    "$(jq -r '.checks | to_entries | map(select(.value != "PASS" and .value != "NO_BASELINE")) | map(.key) | join(",")' <<<"$out")"
+  expect "s1: levels recorded = plan" "$(jq -c .plan.levels "${s1src}/measurements.json")" "$(s1_field s1-pass '[.measurements.levels[].level]')"
+  expect "s1: ceilingPerSec is a number" number "$(s1_field s1-pass '.measurements.ceiling.ceilingPerSec | type' | tr -d '"')"
+
+  # WP11 meters missing (the harness on an older engine): "not available"
+  # advisories, never INVALID or ERROR, and the verdict does not move.
+  degrade='.levelProm |= map(.slotsUsed |= map_values(null) | .durationMeter |= map_values(null)) | .runAbandonedIncrease = null'
+  out=$(s1_eval s1-no-wp11 "$degrade")
+  expect "s1, WP11 meters absent: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
+  expect "s1, WP11 meters absent: advisory.slotsUsed" WARN "$(st "$out" advisory.slotsUsed)"
+  expect "s1, WP11 meters absent: advisory.workflowDurationMeter" WARN "$(st "$out" advisory.workflowDurationMeter)"
+  expect "s1, WP11 meters absent: advisory.runAbandoned" WARN "$(st "$out" advisory.runAbandoned)"
+  expect "s1, WP11 meters absent: each says \"not available\"" 3 \
+    "$(s1_field s1-no-wp11 '[.checks[] | select(.id == "advisory.slotsUsed" or .id == "advisory.workflowDurationMeter" or .id == "advisory.runAbandoned") | select(.detail | startswith("not available"))] | length')"
+  expect "s1, WP11 meters absent: no validity/correctness/gate check moved" \
+    "$(jq -c '.checks | with_entries(select(.key | startswith("advisory.") | not))' <<<"$(s1_eval s1-pass2 '.')")" \
+    "$(jq -c '.checks | with_entries(select(.key | startswith("advisory.") | not))' <<<"$out")"
+  out=$(s1_eval s1-no-prom 'del(.levelProm) | .runAbandonedIncrease = null')
+  expect "s1, no Prometheus data at all: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
+  expect "s1, no Prometheus data at all: advisory.hikariPool" WARN "$(st "$out" advisory.hikariPool)"
+  out=$(s1_eval s1-abandon-lazy '.runAbandonedIncrease = null')
+  expect "s1, abandoned counter absent on a WP11 engine (lazy): advisory.runAbandoned" PASS "$(st "$out" advisory.runAbandoned)"
+  out=$(s1_eval s1-abandon-3 '.runAbandonedIncrease = 3')
+  expect "s1, 3 runs abandoned: advisory.runAbandoned" WARN "$(st "$out" advisory.runAbandoned)"
+  expect "s1, 3 runs abandoned: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
+
+  # Validity.
+  out=$(s1_eval s1-dropped '(.k6[] | select(.phase == "s1") | .droppedIterations) = 12')
+  expect "s1, k6 dropped 12 iterations: validity.droppedIterations" INVALID "$(st "$out" validity.droppedIterations)"
+  expect "s1, k6 dropped 12 iterations: verdict" INVALID "$(jq -r .verdict <<<"$out")"
+  out=$(s1_eval s1-level-missing '.levelRows |= .[:-1]')
+  expect "s1, a planned level has no rows: validity.levels" INVALID "$(st "$out" validity.levels)"
+  out=$(s1_eval s1-unlabeled '.unlabeledRows = 1')
+  expect "s1, an unlabeled s1 row: validity.levels" INVALID "$(st "$out" validity.levels)"
+  out=$(s1_eval s1-wu-small '.warmup.vus = 50')
+  expect "s1, warm-up VUs below the plan's maxVUs: validity.warmupSize" INVALID "$(st "$out" validity.warmupSize)"
+  out=$(s1_eval s1-wu-peak '(.k6[] | select(.phase == "s1") | .vusMax) = 100000')
+  expect "s1, load peaked above the warm-up's VUs: validity.warmupSize" INVALID "$(st "$out" validity.warmupSize)"
+  out=$(s1_eval s1-wu-count '.warmup.count = 39')
+  expect "s1, warm-up below 2 x the workflow slots: validity.warmupSize" INVALID "$(st "$out" validity.warmupSize)"
+
+  # Correctness.
+  out=$(s1_eval s1-failed '.runStatus.byStatus.COMPLETED -= 1 | .runStatus.byStatus.FAILED = 1')
+  expect "s1, one FAILED run: correctness.allCompleted" FAIL "$(st "$out" correctness.allCompleted)"
+  expect "s1, one FAILED run: verdict" FAIL "$(jq -r .verdict <<<"$out")"
+  out=$(s1_eval s1-residue '.drain.timedOut = true | .runStatus.byStatus.COMPLETED -= 5 | .runStatus.byStatus.RUNNING = 5')
+  expect "s1, drain timed out with 5 RUNNING: correctness.allCompleted" FAIL "$(st "$out" correctness.allCompleted)"
+  expect "s1, drain timed out: detail names the residue" yes \
+    "$(s1_field s1-residue '.checks[] | select(.id == "correctness.allCompleted") | .detail' | grep -q 'drain timed out.*RUNNING' && echo yes || echo no)"
+  out=$(s1_eval s1-accepted '.accepted += 1')
+  expect "s1, one accepted start has no row: correctness.allCompleted" FAIL "$(st "$out" correctness.allCompleted)"
+
+  # The statement gate: baseline matched on shape, profile and replicas.
+  net=$(s1_field s1-pass '.measurements.statements.statementsPerWorkflowNet')
+  prof=$(jq -r .profile "${s1src}/identity.json")
+  bl() { printf '{"schema":1,"scenario":"s1-throughput","profile":"%s","replicas":%s,"workflowShape":{"type":"chain","activities":%s,"activityMillis":50},"statementsPerWorkflowNet":%s}' "$1" "$2" "$3" "$4"; }
+  out=$(s1_eval s1-gate-match '.' '.' "$(bl "$prof" 1 5 "$net")")
+  expect "s1 gate: baseline = this run's net: PASS" PASS "$(st "$out" gate.statementsPerWorkflow)"
+  expect "s1 gate: the allowance in force is s1_relative_allowance" \
+    "$(sed -n 's/^def s1_relative_allowance: \(.*\);$/\1/p' "${PERF_DIR}/eval/s1-throughput.jq")" \
+    "$(s1_field s1-gate-match '.checks[] | select(.id == "gate.statementsPerWorkflow") | .limit.relativeAllowance')"
+  out=$(s1_eval s1-gate-high '.' '.' "$(bl "$prof" 1 5 "$(jq -n --argjson n "$net" '$n / 1.5')")")
+  expect "s1 gate: net 1.5 x the baseline: FAIL" FAIL "$(st "$out" gate.statementsPerWorkflow)"
+  out=$(s1_eval s1-gate-low '.' '.' "$(bl "$prof" 1 5 "$(jq -n --argjson n "$net" '$n * 1.5')")")
+  expect "s1 gate: net 2/3 of the baseline (symmetric): FAIL" FAIL "$(st "$out" gate.statementsPerWorkflow)"
+  out=$(s1_eval s1-gate-shape '.' '.' "$(bl "$prof" 1 2 "$net")")
+  expect "s1 gate: baseline of another workflow shape: NO_BASELINE" NO_BASELINE "$(st "$out" gate.statementsPerWorkflow)"
+  out=$(s1_eval s1-gate-profile '.' '.' "$(bl other 1 5 "$net")")
+  expect "s1 gate: baseline of another profile: NO_BASELINE" NO_BASELINE "$(st "$out" gate.statementsPerWorkflow)"
+  out=$(s1_eval s1-gate-replicas '.' '.' "$(bl "$prof" 2 5 "$net")")
+  expect "s1 gate: baseline of another replica count: NO_BASELINE" NO_BASELINE "$(st "$out" gate.statementsPerWorkflow)"
+
+  # Ceiling and "sustains" (doctored level rows; the ceiling never moves the verdict).
+  all_ok='.levelRows |= map(.completionsInWindowPerSec = .arrivalPerSec | .backlogAtEnd = 0)'
+  out=$(s1_eval s1-all-sustained "$all_ok")
+  expect "s1 ceiling: every level sustained: sustainedLevel = top level" "$(jq -c '.plan.levels[-1]' "${s1src}/measurements.json")" \
+    "$(s1_field s1-all-sustained '.measurements.ceiling.sustainedLevel')"
+  expect "s1 ceiling: every level sustained: ceilingReached" false "$(s1_field s1-all-sustained '.measurements.ceiling.ceilingReached')"
+  gap="${all_ok} | .levelRows[1].completionsInWindowPerSec = (.levelRows[1].arrivalPerSec * 0.94)"
+  out=$(s1_eval s1-gap "$gap")
+  expect "s1 ceiling: level 2 below 0.95 x arrivals: knee is level 1, the rest saturated" \
+    "$(jq -c '[.plan.levels[0], .plan.levels[1:]]' "${s1src}/measurements.json")" \
+    "$(s1_field s1-gap '[.measurements.ceiling.sustainedLevel, .measurements.ceiling.saturatedLevels]')"
+  expect "s1 ceiling: a gap does not move the verdict" PASS "$(jq -r .verdict <<<"$out")"
+  edge="${all_ok} | .levelRows[1].completionsInWindowPerSec = (.levelRows[1].arrivalPerSec * 0.95)"
+  expect "s1 ceiling: exactly 0.95 x arrivals sustains" "$(jq -c '.plan.levels[-1]' "${s1src}/measurements.json")" \
+    "$(s1_eval s1-edge "$edge" >/dev/null; s1_field s1-edge '.measurements.ceiling.sustainedLevel')"
+  below="${all_ok} | .levelRows[1].completionsInWindowPerSec = (.levelRows[1].arrivalPerSec * 0.9499)"
+  expect "s1 ceiling: 0.9499 x arrivals does not sustain" "$(jq -c '.plan.levels[0]' "${s1src}/measurements.json")" \
+    "$(s1_eval s1-below "$below" >/dev/null; s1_field s1-below '.measurements.ceiling.sustainedLevel')"
+  bedge="${all_ok} | .levelRows[0].backlogAtEnd = (20 * $(jq .config.replicas "${s1src}/identity.json") + .levelRows[0].arrivalPerSec | floor)"
+  expect "s1 ceiling: backlog at the bound (slots + 1 s of arrivals) sustains" "$(jq -c '.plan.levels[-1]' "${s1src}/measurements.json")" \
+    "$(s1_eval s1-bedge "$bedge" >/dev/null; s1_field s1-bedge '.measurements.ceiling.sustainedLevel')"
+  backlog="${all_ok} | .levelRows[0].backlogAtEnd = 1000"
+  out=$(s1_eval s1-backlog "$backlog")
+  expect "s1 ceiling: first level's backlog unbounded: no level sustained" null "$(s1_field s1-backlog '.measurements.ceiling.sustainedLevel')"
+  expect "s1 ceiling: no level sustained: advisory.ceiling still reports (PASS)" PASS "$(st "$out" advisory.ceiling)"
+  out=$(s1_eval s1-no-samples '.samples = []')
+  expect "s1, no statement samples: advisory.statementsPerLevel" WARN "$(st "$out" advisory.statementsPerLevel)"
+  expect "s1, no statement samples: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
+fi
 
 if ((failures > 0)); then
   echo "selftest: ${failures} case(s) failed"

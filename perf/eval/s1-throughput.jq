@@ -118,7 +118,8 @@ $identity[0] as $id
        arrivalPerSec: $r.arrivalPerSec, completionsInWindowPerSec: $r.completionsInWindowPerSec,
        completionRatio: ($ratio | round4), backlogAtStart: $r.backlogAtStart, backlogAtEnd: $r.backlogAtEnd,
        backlogBound: ($bound | round2),
-       sustained: (($ratio | isnum) and $ratio >= sustain_ratio and ($bound | isnum) and $r.backlogAtEnd <= $bound),
+       sustained: (($ratio | isnum) and $r.completionsInWindowPerSec >= sustain_ratio * $r.arrivalPerSec
+                   and ($bound | isnum) and ($r.backlogAtEnd | isnum) and $r.backlogAtEnd <= $bound),
        p50Ms: $r.p50Ms, p95Ms: $r.p95Ms, p99Ms: $r.p99Ms, maxMs: $r.maxMs,
        completed: $r.completed, failed: $r.failed, nonTerminal: $r.nonTerminal,
        slotsUsed: ($p.slotsUsed // null), hikari: ($p.hikari // null), durationMeter: ($p.durationMeter // null),
