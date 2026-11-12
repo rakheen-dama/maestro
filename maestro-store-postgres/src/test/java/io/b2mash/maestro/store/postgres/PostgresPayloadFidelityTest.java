@@ -527,6 +527,175 @@ class PostgresPayloadFidelityTest extends PostgresTestSupport {
         }
     }
 
+    // ── Task 7: the store returns what it stored (INSERT … RETURNING payload) ──
+
+    /**
+     * The corpus: every shape {@code jsonb} normalises (key order, exponent
+     * numbers, unicode keys, nesting) and the ones it must leave alone
+     * (decimals with trailing zeros, 29-digit decimals, an empty object),
+     * plus a JSON null and a Java null, both stored as SQL {@code NULL}.
+     */
+    static Stream<Arguments> returnedPayloadCorpus() {
+        var f = tools.jackson.databind.node.JsonNodeFactory.instance;
+        var mapper = JsonMapper.builder().build();
+        var serializer = new PayloadSerializer(mapper);
+        var nested = f.objectNode();
+        nested.putObject("zz").put("bb", 1).putArray("a").addObject().put("ccc", 1).put("d", 2);
+        nested.put("y", 1);
+        return Stream.of(
+                Arguments.of("key order {aa,b}", f.objectNode().put("aa", 1).put("b", 2)),
+                Arguments.of("exponent in a map", serializer.serialize(Map.of("x", 1.0E7))),
+                Arguments.of("exponent at top level", serializer.serialize(1.0E7)),
+                Arguments.of("decimal 10.50", serializer.serialize(new Quote(new BigDecimal("10.50")))),
+                Arguments.of("decimal, 29 digits",
+                        serializer.serialize(new Quote(new BigDecimal("12345678901234567890.123456789")))),
+                Arguments.of("exact decimal, 19 digits", serializer.serialize(new BigDecimal("1.123456789012345678"))),
+                Arguments.of("nested maps", nested),
+                Arguments.of("unicode keys", f.objectNode().put("日本", 1).put("é", 2).put("a", 3).put("zz", 4)),
+                Arguments.of("empty object", f.objectNode()),
+                Arguments.of("NullNode", tools.jackson.databind.node.NullNode.getInstance()),
+                Arguments.of("null", null));
+    }
+
+    @ParameterizedTest(name = "[{index}] {0}")
+    @MethodSource("returnedPayloadCorpus")
+    @DisplayName("appendEventReturningPayload returns exactly what getEventBySequence reads, property order included")
+    void appendEventReturningPayloadReturnsWhatGetEventBySequenceReads(String label, @Nullable JsonNode payload) {
+        var instance = createInstance(store, "returning-" + UUID.randomUUID());
+
+        var returned = store.appendEventReturningPayload(event(instance.id(), 1, payload),
+                new io.b2mash.maestro.core.spi.RunLease(instance.id(), 0));
+        var reread = store.getEventBySequence(instance.id(), 1).orElseThrow().payload();
+
+        assertEquals(reread, returned, label);
+        // JsonNode.equals ignores property order; the rendered text does not.
+        assertEquals(String.valueOf(reread), String.valueOf(returned), label);
+    }
+
+    @ParameterizedTest(name = "[{index}] {0}")
+    @MethodSource("returnedPayloadCorpus")
+    @DisplayName("RETURNING stores the same jsonb as appendEvent")
+    void returningInsertStoresTheSameJsonbAsAppendEvent(String label, @Nullable JsonNode payload) throws SQLException {
+        var instance = createInstance(store, "returning-bytes-" + UUID.randomUUID());
+        var lease = new io.b2mash.maestro.core.spi.RunLease(instance.id(), 0);
+
+        store.appendEvent(event(instance.id(), 1, payload), lease);
+        store.appendEventReturningPayload(event(instance.id(), 2, payload), lease);
+
+        var texts = payloadTexts(instance.id());
+        assertEquals(2, texts.size(), label);
+        assertEquals(texts.get(0), texts.get(1), label);
+    }
+
+    @Test
+    @DisplayName("RETURNING is fenced and unique exactly like appendEvent")
+    void returningInsertIsFencedAndUniqueLikeAppendEvent() throws SQLException {
+        var instance = createInstance(store, "returning-fence-" + UUID.randomUUID());
+        var payload = serializer.serialize(Map.of("a", 1));
+
+        var stale = new io.b2mash.maestro.core.spi.RunLease(instance.id(), 1);
+        var fenced = org.junit.jupiter.api.Assertions.assertThrows(
+                io.b2mash.maestro.core.exception.FencedWriteException.class,
+                () -> store.appendEventReturningPayload(event(instance.id(), 1, payload), stale));
+        assertTrue(fenced.getMessage().contains("appendEvent"), fenced.getMessage());
+        assertEquals(List.of(), payloadTexts(instance.id()), "a fenced insert writes nothing");
+
+        var current = new io.b2mash.maestro.core.spi.RunLease(instance.id(), 0);
+        store.appendEventReturningPayload(event(instance.id(), 1, payload), current);
+        // A retry after an ambiguous commit lands here: the row is there, the
+        // second insert is a duplicate and returns nothing.
+        org.junit.jupiter.api.Assertions.assertThrows(
+                io.b2mash.maestro.core.exception.DuplicateEventException.class,
+                () -> store.appendEventReturningPayload(event(instance.id(), 1, payload), current));
+        assertEquals(List.of("{\"a\": 1}"), payloadTexts(instance.id()));
+    }
+
+    @Test
+    @DisplayName("RETURNING costs no statement: one execution, the fenced INSERT with RETURNING payload appended")
+    void returningInsertIsOneStatementLikeAppendEvent() {
+        var executed = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        var counting = countingDataSource(dataSource, executed);
+        var countingStore = new PostgresWorkflowStore(counting, objectMapper);
+        var instance = createInstance(store, "returning-count-" + UUID.randomUUID());
+        var lease = new io.b2mash.maestro.core.spi.RunLease(instance.id(), 0);
+        var payload = serializer.serialize(Map.of("b", 2, "aa", 1));
+
+        countingStore.appendEvent(event(instance.id(), 1, payload), lease);
+        var appendEvent = List.copyOf(executed);
+        executed.clear();
+        countingStore.appendEventReturningPayload(event(instance.id(), 2, payload), lease);
+        var returning = List.copyOf(executed);
+
+        assertEquals(1, appendEvent.size(), appendEvent.toString());
+        assertEquals(List.of(appendEvent.getFirst() + " RETURNING payload"), returning);
+    }
+
+    /**
+     * {@code jsonb} hands {@code 1E+1500} back as a 1501-digit integer, longer
+     * than the reader's number-length limit, so the store cannot parse what it
+     * stored. The write succeeded: the method returns the payload it was given
+     * and reports no fault.
+     */
+    @Test
+    @DisplayName("a stored form the store cannot parse returns the payload that was sent")
+    void aReturnedPayloadTheStoreCannotParseReturnsTheSentPayload() throws SQLException {
+        var instance = createInstance(store, "returning-unparseable-" + UUID.randomUUID());
+        var payload = serializer.serialize(Map.of("x", new BigDecimal("1E+1500")));
+
+        var returned = store.appendEventReturningPayload(event(instance.id(), 1, payload),
+                new io.b2mash.maestro.core.spi.RunLease(instance.id(), 0));
+
+        org.junit.jupiter.api.Assertions.assertSame(payload, returned);
+        assertEquals(1, payloadTexts(instance.id()).size(), "the row was written");
+        org.junit.jupiter.api.Assertions.assertThrows(SerializationException.class,
+                () -> store.getEventBySequence(instance.id(), 1), "a later read cannot parse it either");
+    }
+
+    private static WorkflowEvent event(UUID instanceId, int seq, @Nullable JsonNode payload) {
+        return new WorkflowEvent(UUID.randomUUID(), instanceId, seq, EventType.ACTIVITY_COMPLETED,
+                "Probes.probe", payload, Instant.now().truncatedTo(ChronoUnit.MILLIS));
+    }
+
+    /** {@code delegate}, recording the SQL of every prepared-statement execution into {@code executed}. */
+    private static javax.sql.DataSource countingDataSource(javax.sql.DataSource delegate, List<String> executed) {
+        return (javax.sql.DataSource) java.lang.reflect.Proxy.newProxyInstance(
+                javax.sql.DataSource.class.getClassLoader(), new Class<?>[]{javax.sql.DataSource.class},
+                (_, method, args) -> {
+                    var result = invoke(delegate, method, args);
+                    if (result instanceof java.sql.Connection conn) {
+                        return java.lang.reflect.Proxy.newProxyInstance(
+                                java.sql.Connection.class.getClassLoader(), new Class<?>[]{java.sql.Connection.class},
+                                (_, m, a) -> {
+                                    var r = invoke(conn, m, a);
+                                    if (m.getName().equals("prepareStatement")
+                                            && r instanceof java.sql.PreparedStatement ps) {
+                                        var sql = (String) a[0];
+                                        return java.lang.reflect.Proxy.newProxyInstance(
+                                                java.sql.PreparedStatement.class.getClassLoader(),
+                                                new Class<?>[]{java.sql.PreparedStatement.class},
+                                                (_, sm, sa) -> {
+                                                    if (sm.getName().startsWith("execute")) {
+                                                        executed.add(sql);
+                                                    }
+                                                    return invoke(ps, sm, sa);
+                                                });
+                                    }
+                                    return r;
+                                });
+                    }
+                    return result;
+                });
+    }
+
+    private static @Nullable Object invoke(Object target, java.lang.reflect.Method method,
+                                           @Nullable Object @Nullable [] args) throws Throwable {
+        try {
+            return method.invoke(target, args);
+        } catch (java.lang.reflect.InvocationTargetException e) {
+            throw e.getCause();
+        }
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────
 
     /**

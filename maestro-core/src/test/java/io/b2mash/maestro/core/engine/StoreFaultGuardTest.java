@@ -9,11 +9,14 @@ import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.spi.RunLease;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.JsonNodeFactory;
 
 import java.sql.SQLException;
 import java.sql.SQLTransientConnectionException;
@@ -299,5 +302,64 @@ class StoreFaultGuardTest {
     @DisplayName("the production retry waits are 200 ms then 1 s")
     void productionBackoffIs200msThen1s() {
         assertEquals(List.of(Duration.ofMillis(200), Duration.ofSeconds(1)), StoreFaultGuard.RETRY_BACKOFF);
+    }
+
+    // ── appendEventReturningPayload (WP1 Task 7) ─────────────────────────
+
+    /** The instance row the fenced append checks, at lease epoch 0. */
+    private RunLease leaseOnStoredInstance() {
+        delegate.createInstance(instance().toBuilder().version(0).build());
+        return new RunLease(instanceId, 0);
+    }
+
+    private WorkflowEvent eventWithPayload(int seq, JsonNode payload) {
+        return new WorkflowEvent(UUID.randomUUID(), instanceId, seq, EventType.ACTIVITY_COMPLETED,
+                "step", payload, Instant.now());
+    }
+
+    @Test
+    @DisplayName("appendEventReturningPayload failing twice is retried like appendEvent and returns the payload")
+    void appendEventReturningPayloadIsRetriedLikeAppendEvent() {
+        var lease = leaseOnStoredInstance();
+        var payload = JsonNodeFactory.instance.objectNode().put("a", 1);
+        delegate.failNext("appendEvent", 2);
+        var returned = new AtomicReference<JsonNode>();
+
+        inRun(() -> returned.set(guarded.appendEventReturningPayload(eventWithPayload(1, payload), lease)));
+
+        assertAll(
+                () -> assertEquals(payload, returned.get()),
+                () -> assertEquals(3, delegate.calls("appendEvent")),
+                () -> assertEquals(1, delegate.getEvents(instanceId).size(), "the event is stored exactly once"),
+                () -> assertNull(ctx.cancellation().cause()));
+    }
+
+    @Test
+    @DisplayName("a run latched STORE_UNAVAILABLE cannot appendEventReturningPayload")
+    void appendEventReturningPayloadIsRefusedOnceLatched() {
+        var lease = leaseOnStoredInstance();
+        ctx.cancellation().requestStoreUnavailable("getEventBySequence: earlier fault");
+
+        assertThrows(StoreUnavailableException.class,
+                () -> inRun(() -> guarded.appendEventReturningPayload(event(1), lease)));
+
+        assertEquals(0, delegate.calls("appendEvent"), "the append must be refused before the store");
+        assertEquals(0, delegate.getEvents(instanceId).size());
+        assertEquals("getEventBySequence: earlier fault", ctx.cancellation().reason(),
+                "a refused append does not re-latch");
+    }
+
+    @Test
+    @DisplayName("appendEventReturningPayload: a commit lost in flight surfaces on retry as a duplicate and returns nothing")
+    void appendEventReturningPayloadAmbiguousCommitSurfacesAsDuplicate() {
+        var lease = leaseOnStoredInstance();
+        delegate.commitThenFailNext("appendEvent", 1);
+
+        assertThrows(DuplicateEventException.class,
+                () -> inRun(() -> guarded.appendEventReturningPayload(event(1), lease)));
+
+        assertEquals(2, delegate.calls("appendEvent"));
+        assertEquals(1, delegate.getEvents(instanceId).size());
+        assertNull(ctx.cancellation().cause());
     }
 }
