@@ -2434,12 +2434,17 @@ public final class WorkflowExecutor {
                 // is a workflow that never ran a single step being marked
                 // failed. Sequence 0 names the instance's own input rather than
                 // any event.
+                //
+                // A null input always goes through the serializer too: the live
+                // start holds the NullNode that Optional.empty() serializes to,
+                // while a JDBC store hands recovery a Java null (SQL NULL). The
+                // serializer reads both alike — Optional.empty() for an
+                // Optional parameter, null for any other — so the live run and
+                // every recovery receive the same argument.
                 var paramType = workflowMethod.getParameterTypes()[0];
-                var input = inputPayload != null
-                        ? UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), 0,
-                                "persisted workflow input",
-                                () -> serializer.deserialize(inputPayload, paramType))
-                        : null;
+                var input = UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), 0,
+                        "persisted workflow input",
+                        () -> serializer.deserialize(inputPayload, paramType));
                 return workflowMethod.invoke(workflowImpl, input);
             }
         } catch (InvocationTargetException e) {
