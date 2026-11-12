@@ -38,6 +38,15 @@
 # time. Statements and completions are counted over the same interval; the
 # residual error is the work of the runs in flight at the two edges (at most
 # the slots, about 1 % of a level's completions). Recorded, not gated.
+# Caveat: a run's statements are not all paid at completion: its start
+# (instance insert and what goes with it) is paid at ARRIVAL. In an interval
+# where arrivals outrun completions (a saturated level) those start
+# statements of runs that complete later are charged to fewer completions,
+# so the figure rises without any run costing more (local run
+# r20261112t204157z: L80 45.5 while the whole-run figure was 36.0). Each
+# level therefore records started and completed in its interval and
+# balanced = |started - completed| <= 5 % of completed; per-level figures are
+# comparable across runs only where balanced. The gate never uses them.
 #
 # ── The statement gate (gate.statementsPerWorkflow) ────────────────────────
 # Over the whole load window (reset before k6 -> after the drain, so every
@@ -55,6 +64,9 @@ include "common";
 def s1_relative_allowance: 0.10;
 def sustain_ratio: 0.95;
 def backlog_slack_secs: 1;
+# A level's statement interval is "balanced" when the runs started in it are
+# within 5 % of the runs completed in it (see "Per-level statements").
+def balanced_fraction: 0.05;
 
 def s1_baseline_match($b; $m; $id):
   if $b == null then "perf/baselines/s1-throughput.json is absent"
@@ -73,9 +85,10 @@ def bg_rate($bg; $replicas):
 
 # Per-level statement figures from the cumulative samples.
 def level_statements($m; $ws; $we; $rate):
-  ([{t: ($m.pgssReset.resetAt | ts_secs), calls: 0, sweep: 0, done: 0, reset: true}]
+  ([{t: ($m.pgssReset.resetAt | ts_secs), calls: 0, sweep: 0, done: 0, rows: 0, reset: true}]
    + ($m.samples // [] | map(select(type == "object")
-       | {t: (.snapshotAt | ts_secs), calls: .maestroCalls, sweep: lock_cleaner_calls(.), done: .completed, reset: false})
+       | {t: (.snapshotAt | ts_secs), calls: .maestroCalls, sweep: lock_cleaner_calls(.), done: .completed,
+          rows: .rows, reset: false})
        | map(select((.t | isnum) and (.calls | isnum) and (.done | isnum))))
    | sort_by(.t)) as $pts
   | ([$pts[] | select(.t <= $ws)] | last) as $a
@@ -85,10 +98,12 @@ def level_statements($m; $ws; $we; $rate):
     else
       (($b.calls - $b.sweep) - ($a.calls - $a.sweep)) as $dc
       | ($b.done - $a.done) as $dd
+      | (if ($a.rows | isnum) and ($b.rows | isnum) then $b.rows - $a.rows else null end) as $ds
       | ($b.t - $a.t) as $dt
       | {intervalSecs: ($dt | round2), fromReset: $a.reset,
          edgeOffsetsSecs: [($a.t - $ws | round2), ($b.t - $we | round2)],
-         calls: $dc, completed: $dd,
+         calls: $dc, completed: $dd, started: $ds,
+         balanced: (($ds | isnum) and $dd > 0 and (($ds - $dd) | fabs) <= balanced_fraction * $dd),
          gross: (if $dd > 0 then $dc / $dd | round2 else null end),
          net: (if $dd > 0 and ($rate | isnum) then ($dc - $rate * $dt) / $dd | round2 else null end)}
     end;
@@ -230,9 +245,10 @@ $identity[0] as $id
     advisory_guarded("advisory.statementsPerLevel";
       ([$levels[] | select((.statements.net | isnum) | not) | .level]) as $missing
       | check("advisory.statementsPerLevel"; "advisory"; if ($missing | length) == 0 and ($levels | length) > 0 then "PASS" else "WARN" end;
-              [$levels[] | {level, gross: .statements.gross, net: .statements.net, intervalSecs: .statements.intervalSecs}];
+              [$levels[] | {level, gross: .statements.gross, net: .statements.net, intervalSecs: .statements.intervalSecs,
+                            started: .statements.started, completed: .statements.completed, balanced: .statements.balanced}];
               null;
-              if ($missing | length) == 0 then "net statements per completed workflow per level (recorded, not gated): \([$levels[] | "L\(.level) \(.statements.net)"] | join(", "))"
+              if ($missing | length) == 0 then "net statements per completed workflow per level (recorded, not gated; comparable only where balanced, i.e. started within 5 % of completed in the interval): \([$levels[] | "L\(.level) \(.statements.net)\(if .statements.balanced then "" else " (unbalanced)" end)"] | join(", "))"
               else "per-level statement figures not available for level(s) \($missing)" end)),
     advisory_guarded("advisory.slotsUsed";
       ([$levels[] | .slotsUsed.workflowMax] | map(select(isnum))) as $have
