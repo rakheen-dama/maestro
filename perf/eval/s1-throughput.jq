@@ -199,10 +199,14 @@ $identity[0] as $id
             (if ($empty | length) > 0 then "no arrivals at level(s) \($empty)" else null end),
             (if $m.unlabeledRows != 0 then "\($m.unlabeledRows | tojson) s1 row(s) carry no L<level> label" else null end)
           ] | reasons end) ),
+    # The warm-up's concurrency is its configured VUs (shared-iterations
+    # starts min(vus, count) VUs at once; k6's vus_max gauge may not even be
+    # sampled in a sub-second warm-up). The load's peak is k6's vus_max, or
+    # the plan's maxVUs (its upper bound) when k6 did not sample it.
     ( ($m.warmup.vus // null) as $wv
       | ($m.warmup.count // null) as $wc
-      | ($k6wu.vusMax // null) as $wPeak
-      | ($k6s1.vusMax // null) as $lPeak
+      | (if ($wv | isnum) and ($wc | isnum) then [$wv, $wc] | min else null end) as $wPeak
+      | ($k6s1.vusMax // $m.plan.maxVUs // null) as $lPeak
       | ([$wv, $wc, $wPeak, $lPeak, $slots, $m.plan.maxVUs] | all(isnum)) as $known
       | ($known and $wv >= $m.plan.maxVUs and $wPeak >= $lPeak and $wc >= 2 * $slots) as $ok
       | check("validity.warmupSize"; "validity"; if $ok then "PASS" else "INVALID" end;

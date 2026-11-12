@@ -467,6 +467,12 @@ if [[ -n "$s1src" ]]; then
   expect "s1, warm-up VUs below the plan's maxVUs: validity.warmupSize" INVALID "$(st "$out" validity.warmupSize)"
   out=$(s1_eval s1-wu-peak '(.k6[] | select(.phase == "s1") | .vusMax) = 100000')
   expect "s1, load peaked above the warm-up's VUs: validity.warmupSize" INVALID "$(st "$out" validity.warmupSize)"
+  out=$(s1_eval s1-wu-nogauge '(.k6[] | select(.phase == "warmup") | .vusMax) = null')
+  expect "s1, k6 sampled no vus_max in the warm-up (configured VUs count): validity.warmupSize" PASS "$(st "$out" validity.warmupSize)"
+  out=$(s1_eval s1-load-nogauge '(.k6[] | select(.phase == "s1") | .vusMax) = null')
+  expect "s1, k6 sampled no vus_max in the load (plan maxVUs bounds it): validity.warmupSize" PASS "$(st "$out" validity.warmupSize)"
+  out=$(s1_eval s1-load-nogauge-small '(.k6[] | select(.phase == "s1") | .vusMax) = null | .warmup.vus = (.plan.maxVUs - 1)')
+  expect "s1, no load vus_max and warm-up below the plan's maxVUs: validity.warmupSize" INVALID "$(st "$out" validity.warmupSize)"
   out=$(s1_eval s1-wu-count '.warmup.count = 39')
   expect "s1, warm-up below 2 x the workflow slots: validity.warmupSize" INVALID "$(st "$out" validity.warmupSize)"
 
