@@ -118,6 +118,7 @@ k6_run() {
        droppedIterations: (v("dropped_iterations"; "count") // 0),
        httpReqs: v("http_reqs"; "count"),
        httpReqFailedRate: v("http_req_failed"; "rate"),
+       vusMax: (.metrics.vus_max.values.max // null),
        checksPassed: v("checks"; "passes"),
        checksFailed: v("checks"; "fails"),
        startMs: (.metrics["http_req_duration{name:start}"].values // null
@@ -278,8 +279,8 @@ iso_secs() {
 # lookups (the driver's pg_type queries) then fall outside every measured
 # window. validity.warmup is INVALID unless every warm-up run COMPLETED before
 # the drain timed out: an unfinished warm-up would leak workflow statements
-# into the idle (background) window. Prints {"prefix", "count", "drain",
-# "runStatus"}.
+# into the idle (background) window. Prints {"prefix", "count", "vus",
+# "timeoutSecs", "drain", "runStatus"}.
 # Test-only overrides (to force an unfinished warm-up): PERF_WARMUP_TIMEOUT
 # (drain timeout, s, default 120) and PERF_WARMUP_ACTIVITY_MILLIS (replaces
 # the body's activityMillis).
@@ -296,8 +297,8 @@ warm_up() {
     "PERF_VUS=${vus}" "PERF_MAX_DURATION=2m" "PERF_BODY=${body}"
   drain=$(wait_terminal "$prefix" "$count" "$timeout" 2)
   log "warm-up: $(jq -c '{byStatus: .status.byStatus, waitedSecs, timedOut}' <<<"$drain")"
-  jq -nc --arg p "$prefix" --argjson c "$count" --argjson t "$timeout" --argjson d "$drain" \
-    '{prefix: $p, count: $c, timeoutSecs: $t,
+  jq -nc --arg p "$prefix" --argjson c "$count" --argjson v "$vus" --argjson t "$timeout" --argjson d "$drain" \
+    '{prefix: $p, count: $c, vus: $v, timeoutSecs: $t,
       drain: {waitedSecs: $d.waitedSecs, timedOut: $d.timedOut}, runStatus: $d.status}'
 }
 

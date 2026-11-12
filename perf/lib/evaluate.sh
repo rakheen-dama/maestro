@@ -49,6 +49,14 @@ jq -r '
       else empty end),
     "| host | \($i.host.cpus) CPUs, \($i.host.memoryMb) MiB; Docker \($i.host.dockerServer) (\($i.host.dockerMemoryMb) MiB), compose \($i.host.dockerCompose) |",
     (if ($i.notes | length) > 0 then "| notes | \($i.notes | join("; ") | cell) |" else empty end),
+    (.measurements.levels // null | if type == "array" and length > 0 then
+      "",
+      "## Levels",
+      "",
+      "| offered /s | arrivals /s | completions /s | sustained | backlog at end | p50 / p95 ms (rows) | workflow slots max | pool pending max / active max | net stmts / wf |",
+      "|---|---|---|---|---|---|---|---|---|",
+      (.[] | "| \(.offeredPerSec) | \(.arrivalPerSec | cell) | \(.completionsInWindowPerSec | cell) | \(.sustained) | \(.backlogAtEnd | cell) | \(.p50Ms | cell) / \(.p95Ms | cell) | \(.slotsUsed.workflowMax // "n/a" | cell) | \(.hikari.pendingMax // "n/a" | cell) / \(.hikari.activeMax // "n/a" | cell) | \(.statements.net | cell) |")
+      else empty end),
     "",
     "## Checks",
     "",
