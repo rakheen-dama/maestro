@@ -446,10 +446,14 @@ class PostgresPayloadFidelityTest extends PostgresTestSupport {
 
     /**
      * Every instance status write ({@code InstanceStatusWriter}, adoption,
-     * retry, saga {@code COMPENSATING}, completion) re-reads the instance and
-     * writes its {@code input} and {@code output} back from the tree the store
-     * parsed. At {@code 03b17c0} that rewrite rounded the stored decimals through
-     * {@code double}; now the stored text keeps its digits and scale.
+     * retry, saga {@code COMPENSATING}, completion, terminate) re-reads the
+     * instance and writes its {@code input} and {@code output} back from the
+     * tree the store parsed. At {@code 03b17c0} that rewrite rounded the stored
+     * decimals through {@code double}; now the stored text keeps its digits and
+     * scale. This test drives {@code updateInstance}; the {@code COMPENSATING}
+     * and terminate writes are {@code updateInstance} calls too, and completion
+     * ({@code completeInstance}) binds the row through the same private
+     * {@code updateInstanceRow} statement, so one test covers them all.
      */
     @ParameterizedTest(name = "[{index}] {0}")
     @ValueSource(strings = {"input", "output"})

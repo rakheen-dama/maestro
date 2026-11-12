@@ -23,7 +23,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * End to end through the kit: {@code currentTime()} hands workflow code the
  * same value live and after a crash and recovery, under a host mapper that
- * writes timestamps as epoch milliseconds (WP1 D7, Task 4).
+ * writes and reads timestamps as epoch milliseconds — both nanosecond
+ * features off (WP1 D7, Task 4). A mapper that writes millis but leaves
+ * {@code READ_DATE_TIMESTAMPS_AS_NANOSECONDS} on reads its own writes as
+ * seconds: it gets one wrong instant live and on replay alike
+ * ({@code CurrentTimeReadBackTest.asymmetricMillisMapper_liveRunGetsTheMisreadInstant}).
  *
  * <p>Before the fix the live call returned the clock's nanoseconds while the
  * replay read the stored milliseconds. A later activity that took the time

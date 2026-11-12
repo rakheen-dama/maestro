@@ -362,4 +362,19 @@ class StoreFaultGuardTest {
         assertEquals(1, delegate.getEvents(instanceId).size());
         assertNull(ctx.cancellation().cause());
     }
+
+    /** The release note tells operators the latch detail names this method, not {@code appendEvent}. */
+    @Test
+    @DisplayName("appendEventReturningPayload failing three times latches with a detail naming appendEventReturningPayload")
+    void appendEventReturningPayloadExhaustsThenLatchesNamingItself() {
+        var lease = leaseOnStoredInstance();
+        delegate.failNext("appendEvent", 3);
+
+        assertThrows(StoreUnavailableException.class,
+                () -> inRun(() -> guarded.appendEventReturningPayload(event(1), lease)));
+
+        assertEquals(RunCancellation.Cause.STORE_UNAVAILABLE, ctx.cancellation().cause());
+        assertTrue(ctx.cancellation().reason().startsWith("appendEventReturningPayload: "),
+                "the detail names the method: " + ctx.cancellation().reason());
+    }
 }

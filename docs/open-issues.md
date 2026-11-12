@@ -258,7 +258,14 @@ Issue 40, found by the review of WP9's production schema guidance
 (2026-11-12), is filed **open**: under `validate`, a role that cannot see
 `maestro_schema_history` is told to apply every migration. Issue 41, found by
 the final review of the same work package (2026-11-12), is filed **open**: an
-older node replaying history appended by a newer node is untested.
+older node replaying history appended by a newer node is untested. Issues
+42–49, found while making a live activity result equal its replay (WP1,
+2026-11-12), are filed **open**: a replayed failure keeps only type and
+message, workflow input on Postgres differs between the first run and
+recovery, input is read with the raw parameter class, `collectSignals` throws
+on a null payload, an `Error` from a result deserializer fails the run, an
+unparseable stored payload is logged only at `DEBUG`, nothing checks the
+mapper at startup, and future-typed activity results are accepted.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -317,6 +324,14 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [39](#issue-39) | Workflows recorded under another `service_name` are stranded silently | Library gap — operability | Medium | Open |
 | [40](#issue-40) | Under `validate`, a role that cannot see `maestro_schema_history` is told to apply every migration | Library gap — operability | Low | Open |
 | [41](#issue-41) | An older node replaying history appended by a newer node is untested | Testing gap — rolling deploy | Medium | Open |
+| [42](#issue-42) | A replayed activity failure keeps only the exception's type and message | Library gap — replay fidelity | Medium | Open |
+| [43](#issue-43) | Workflow input on Postgres differs between the first run and recovery | Library defect — replay fidelity | Low | Open |
+| [44](#issue-44) | Workflow input is read with the raw parameter class | Library defect | Medium | Open |
+| [45](#issue-45) | `collectSignals` throws `NullPointerException` on a signal with a null payload | Library defect | Low | Open |
+| [46](#issue-46) | An `Error` thrown by a result deserializer fails a recorded activity, live and on replay | Library gap — D9 coverage | Low | Open |
+| [47](#issue-47) | A stored payload the store cannot parse is logged at `DEBUG` only, and every later read of it throws | Library gap — operability | Low | Open |
+| [48](#issue-48) | No startup check that the configured mapper reads back what it writes | Library gap — configuration safety | Medium | Open |
+| [49](#issue-49) | Future-typed activity results are not rejected at startup | Library gap — API validation | Medium | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -3482,6 +3497,317 @@ down, and that none is failed or compensated.
 a database a current node has written to, and fails the release if that node
 fails or compensates any run, or rewrites any event the current node
 appended.
+
+---
+
+### Issue 42 — A replayed activity failure keeps only the exception's type and message {#issue-42}
+
+> **Open.** Filed by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+
+**Kind:** Library gap — replay fidelity. **Severity:** Medium (workflow code
+that reads more than the type and message of a failure behaves differently
+after a restart, with no stand-down to show it).
+
+**What's wrong.** A live activity failure reaches workflow code as
+`ActivityExecutionException` wrapping the exception the activity threw, with
+its subclass, its own fields and its cause chain. What is recorded is only
+the class name and message: `ActivityInvocationHandler.persistFailure`
+(`ActivityInvocationHandler.java:1057`) writes `ErrorDetail(exceptionType,
+message)`. A replay rebuilds the cause from those two strings
+(`reconstructFailure`, `:666`, through `FailureReconstruction.reconstruct`,
+`FailureReconstruction.java:61`): the class's public `(String)` constructor if
+it has one, else a `ReconstructedActivityFailure`. A field such as
+`PaymentDeclinedException.declineCode`, and `getCause()` of the original, are
+gone after a restart. `docs/concepts.md` and Pitfalls rule 2 document the type
+part only.
+
+**Harm.** A workflow that branches on such a field takes one path live and
+another after recovery. If the branch decides a later activity's arguments, it
+stands down as `nondeterministic_history`; if not, it diverges silently.
+
+**Why not WP1.** WP1 made a live *result* equal its replay. The same move for
+failures, throwing the reconstruction live, changes which exception types and
+fields authors can catch on the first run, which needs its own decision
+(plan D-2).
+
+**How to tackle it.** Either record more (a serialized form of the exception's
+own fields, read back into the same type when it can be), or throw the
+reconstruction live too, so both runs see the same thing. The second is
+smaller and matches WP1; the first keeps more for authors.
+
+**Done when.** A kit test whose activity throws an exception with a custom
+field and a cause, and whose workflow reads both, sees the same values live
+and after `crashAfter(n)` + `recover()`.
+
+---
+
+### Issue 43 — Workflow input on Postgres differs between the first run and recovery {#issue-43}
+
+> **Open.** Filed by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+
+**Kind:** Library defect — replay fidelity. **Severity:** Low (only untyped or
+order-sensitive input shapes are affected).
+
+**What's wrong.** The first run deserializes the node the engine serialized
+(`WorkflowExecutor.java:596`, passed to `launchWorkflow` at `:632`). A
+recovery (`:673`) and a retry (`:1377`) deserialize the stored `jsonb` row,
+which Postgres has normalised: object keys shorter first, and a whole exponent
+number such as `1.0E7` stored as `10000000`
+(`PostgresPayloadFidelityTest.jsonbReordersObjectKeysShortestFirst` and
+`jsonbRewritesAWholeExponentNumberAsAnInteger`). A `Map<String, Object>` input
+therefore iterates in one order on the first run and another after recovery,
+and an untyped `1.0E7` is a `Double` first and an `Integer` after. This is the
+input-side twin of what Task 7 fixed for activity results; it was traced from
+the code and the store's characterisation tests, not reproduced end to end.
+WP1's text read path already made decimals and other untyped numbers agree.
+
+**Harm.** Workflow code that builds a string or a list from such an input's
+iteration order, or that calls `toString()` on such a number, sees different
+values after a restart. If those reach an activity's arguments, the run stands
+down; the fingerprint itself sorts keys and normalises numbers, so passing the
+map or number directly is safe.
+
+**Why not WP1.** WP1's scope was activity results (3.8). The fix touches
+`createInstance`, which no WP1 task changed.
+
+**How to tackle it.** The Task 7 pattern on `createInstance`: return the
+stored `input` (`INSERT … RETURNING input` on Postgres) and launch the first
+run from it.
+
+**Done when.** An integration test starts a workflow whose input map has keys
+`aa` and `b` and an untyped `1.0E7`, records what the workflow saw, crashes it
+and recovers it on Postgres, and both runs saw the same key order and the same
+number class.
+
+---
+
+### Issue 44 — Workflow input is read with the raw parameter class {#issue-44}
+
+> **Open.** Filed by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+
+**Kind:** Library defect. **Severity:** Medium (the workflow fails on its
+first run, so it is caught early, but the cause is not obvious).
+
+**What's wrong.** `WorkflowExecutor` deserializes the workflow input with
+`workflowMethod.getParameterTypes()[0]` (`WorkflowExecutor.java:2444`), the
+raw class, not `getGenericParameterTypes()[0]`. A `List<Pair>` parameter
+therefore arrives as a `List` of `LinkedHashMap`s, and the first
+`pairs.get(0).a()` throws `ClassCastException`. Observed with a throwaway kit
+probe on this branch: the run ended `FAILED` with
+`java.lang.ClassCastException: class java.util.LinkedHashMap cannot be cast
+to class …Pair`. A `@QueryMethod` argument is read the same way (`:3133`).
+Activity results do not have this problem: they use the generic return type.
+
+**Harm.** A workflow method that takes a parameterized type fails, with a
+compensation if it is a `@Saga`. Users work around it with a wrapper record.
+
+**Why not WP1.** It is not a live-versus-replay difference: the first run and
+every recovery read the input the same wrong way.
+
+**How to tackle it.** Use `getGenericParameterTypes()[0]` (and the same for
+query methods); the `deserialize(JsonNode, Type)` overload already exists.
+Check it does not change what existing inputs read as: a raw `List` parameter
+must still read as it does now.
+
+**Done when.** A kit test with a `List<Pair>` workflow parameter completes and
+reads `Pair`s, live and after recovery.
+
+---
+
+### Issue 45 — `collectSignals` throws `NullPointerException` on a signal with a null payload {#issue-45}
+
+> **Open.** Filed by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+
+**Kind:** Library defect. **Severity:** Low (a null signal payload is unusual,
+but legal for `awaitSignal`).
+
+**What's wrong.** `collectSignals` gathers the awaited payloads and returns
+`List.copyOf(results)` (`DefaultWorkflowOperations.java:712`), which throws on
+a `null` element. A signal delivered with a `null` payload therefore makes
+`collectSignals` throw `NullPointerException` into workflow code. Observed with
+a throwaway kit probe on this branch: the run ended `FAILED` with
+`java.lang.NullPointerException`. `awaitSignal` returns the same `null`
+without trouble (`NullSignalPayloadTest`, whose Javadoc notes this gap).
+
+**Harm.** One `null` signal fails a workflow that collects signals, with
+compensation for a `@Saga`.
+
+**Why not WP1.** It predates WP1 and is not a replay-fidelity difference; WP1
+only noticed it while pinning null payloads.
+
+**How to tackle it.** Return an unmodifiable list that allows `null`
+(`Collections.unmodifiableList(new ArrayList<>(results))`), or reject a `null`
+payload at delivery for workflows that collect. The first keeps today's
+`awaitSignal` contract.
+
+**Done when.** A test delivers a `null` and a non-null signal to a workflow
+that collects two, and the workflow receives `[null, value]` live and after
+recovery.
+
+---
+
+### Issue 46 — An `Error` thrown by a result deserializer fails a recorded activity, live and on replay {#issue-46}
+
+> **Open.** Filed by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+
+**Kind:** Library gap — D9 coverage. **Severity:** Low (needs a custom
+deserializer that throws an `Error`, such as an `AssertionError` or a
+`StackOverflowError`).
+
+**What's wrong.** WP1 reads every live activity result back after recording
+it. The read-back catches `SerializationException` only
+(`ActivityInvocationHandler.java:622`): an exception from Jackson becomes the
+D9 path (the run continues with the activity's own object), but an `Error`
+from a custom deserializer propagates. The outcome is already recorded, so a
+successful activity ends the workflow `FAILED`. Observed with a throwaway kit
+probe on this branch: the events were `1:ACTIVITY_COMPLETED,
+2:WORKFLOW_FAILED`, with the failure `java.lang.AssertionError`. A replay of
+the step is guarded the same way (`UnknownHistoryGuard.requireReadablePayload`
+catches `SerializationException` only), so it fails there too (traced, not
+reproduced). Before WP1 the live run never read the result back and only the
+replay failed.
+
+**Harm.** A recorded success is recorded as a workflow failure, and a `@Saga`
+compensates work that succeeded.
+
+**Why not WP1.** The plan's constraints allow no new `catch` broader than
+`SerializationException`, so that no control-flow `Error`
+(`MaestroControlFlowError`) and no node error can be swallowed.
+
+**How to tackle it.** Around the deserialize call only (no store call inside),
+catch `Error`, rethrow `MaestroControlFlowError`, `VirtualMachineError` and
+`LinkageError` (the node errors), and treat any other `Error` like a
+`SerializationException`: live, return the activity's object and report it;
+on replay, stand down as `unknown_event_payload`.
+
+**Done when.** A test with a deserializer that throws `AssertionError`
+completes the live run with the activity's object, counts it in
+`maestro.activity.result.unreadable`, and stands down on recovery; a
+deserializer that throws `OutOfMemoryError` still ends the run as a node error.
+
+---
+
+### Issue 47 — A stored payload the store cannot parse is logged at `DEBUG` only, and every later read of it throws {#issue-47}
+
+> **Open.** Filed by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+
+**Kind:** Library gap — operability. **Severity:** Low (needs a value whose
+stored form exceeds Jackson's read limits, such as a decimal of more than
+1,000 digits once `jsonb` expands it).
+
+**What's wrong.** Postgres stores `1E+1500` as a 1,501-digit integer, longer
+than the number length Jackson's reader accepts. On the outcome append,
+`appendEventReturningPayload` cannot parse what `RETURNING` hands back; the
+row is written, so it returns the payload it was given and logs at `DEBUG`
+only (`AbstractJdbcWorkflowStore.java:810`). Every later read of the row,
+`getEventBySequence` included, throws `SerializationException`
+(`PostgresPayloadFidelityTest.aReturnedPayloadTheStoreCannotParseReturnsTheSentPayload`).
+The activity proxy calls `getEventBySequence` outside any guard
+(`ActivityInvocationHandler.java:500`), so on the run's next recovery that
+exception reaches workflow code as an ordinary exception (traced, not
+reproduced). The read side is the same on any build; WP1 only added the
+`DEBUG` line on the write side.
+
+**Harm.** The live run carries on normally; nothing above `DEBUG` says a row
+is unreadable, and the first recovery fails the workflow where it should stand
+down.
+
+**Why not WP1.** The write succeeded and the live run is unaffected, so no WP1
+path can fail it; the read-side handling of a store that cannot parse its own
+row is outside 3.8.
+
+**How to tackle it.** Log the write-side case at `WARN` with the step and
+sequence (never the value) and count it. On the read side, map a store parse
+failure on an event row to the `unknown_event_payload` stand-down, as an
+unreadable payload already is.
+
+**Done when.** A Postgres test appends `1E+1500`, sees one `WARN`, then
+recovers the run and observes an `unknown_event_payload` stand-down, not
+`FAILED`.
+
+---
+
+### Issue 48 — No startup check that the configured mapper reads back what it writes {#issue-48}
+
+> **Open.** Filed by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+
+**Kind:** Library gap — configuration safety. **Severity:** Medium (a mapper
+customisation silently changes what every workflow computes).
+
+**What's wrong.** The engine uses the host's `ObjectMapper` for every payload
+and never checks that it round-trips the values the engine itself records. A
+mapper that writes epoch milliseconds (`WRITE_DATE_TIMESTAMPS_AS_NANOSECONDS`
+off) while still reading integer timestamps as seconds
+(`DateTimeFeature.READ_DATE_TIMESTAMPS_AS_NANOSECONDS`, on by default) reads
+`currentTime()` back about a thousand times too far from the epoch: a time in
+2026 reads as the year 58834. Since WP1 that wrong value reaches the live run
+as well as every replay, with no exception and no log line
+(`CurrentTimeReadBackTest.asymmetricMillisMapper_liveRunGetsTheMisreadInstant`).
+`collectSignals` (`DefaultWorkflowOperations.java:701`) and `retryUntil`
+(`:1176`) compute their deadlines from `currentTime()`, so under such a mapper
+their budgets run out about a thousand times early (traced, not tested).
+Mappers that drop a `BigDecimal`'s scale or read `Optional.empty()` as `null`
+are equally silent.
+
+**Harm.** A configuration mistake made once, in the host application, changes
+deadlines and values in every workflow, live, with nothing to show for it.
+
+**Why not WP1.** WP1 decided where values are read back, not which mapper
+configurations are acceptable; failing startup on a host mapper is a product
+decision.
+
+**How to tackle it.** At startup, round-trip a small fixed set through
+`PayloadSerializer` (an `Instant` with nanoseconds, `BigDecimal("10.50")`,
+`Optional.empty()`, an `OffsetDateTime` in UTC) and WARN, or fail under a
+property, naming each value that does not come back equal.
+
+**Done when.** A starter context test with the asymmetric millisecond mapper
+fails startup (or logs the WARN) naming `Instant`, and the default mapper
+starts silently.
+
+---
+
+### Issue 49 — Future-typed activity results are not rejected at startup {#issue-49}
+
+> **Open.** Filed by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+
+**Kind:** Library gap — API validation. **Severity:** Medium (a
+`CompletableFuture` return type hangs the workflow on its first run).
+
+**What's wrong.** An activity call is synchronous and its result is recorded
+as JSON, so a `Future`, `CompletionStage` or `CompletableFuture` return type
+cannot work. Nothing rejects one: `ActivityProxyFactory.createProxy` validates
+only the `@Compensate` annotations (`ActivityProxyFactory.java:309`). Jackson
+records a `CompletableFuture` as its bean properties
+(`{"cancelled":false,"completedExceptionally":false,"done":true,"numberOfDependents":0}`),
+never its value, and since WP1 the live call returns the read-back: a new
+`CompletableFuture` that nothing ever completes. A `Future` or
+`CompletionStage` cannot be read back at all: the live run continues with the
+activity's object (D9) and every recovery stands down as
+`unknown_event_payload`. Both are pinned in `ReadBackFormsTest`.
+
+**Harm.** `join()` on the returned `CompletableFuture` blocks the workflow
+thread for good, holding its task-queue slot. The other two types work once
+and then strand the run on its first restart.
+
+**Why not WP1.** WP1 does not validate activity interfaces; adding a startup
+failure is an API change.
+
+**How to tackle it.** In `createProxy`, reject an activity method whose return
+type is assignable to `Future` or `CompletionStage`, naming the interface and
+method, so the starter fails at context start.
+
+**Done when.** Creating a proxy for an interface with a `CompletableFuture`
+method throws, naming the method, and `ReadBackFormsTest`'s future cases are
+replaced by that test.
 
 ---
 

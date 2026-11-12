@@ -969,9 +969,20 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         try {
             return serializer.deserialize(stored, Instant.class);
         } catch (SerializationException unreadable) {
-            // The host mapper cannot read the Instant it wrote. Never fail the
-            // run for it (D9's principle): the side effect is durable, and a
-            // replay of this slot stands down as UNKNOWN_EVENT_PAYLOAD.
+            // The host mapper throws reading the Instant it wrote. Never fail
+            // the run for it (D9's principle): the side effect is durable, and
+            // a replay of this slot stands down as UNKNOWN_EVENT_PAYLOAD. Only
+            // a throw lands here: a mapper that reads its own write back as a
+            // WRONG instant — epoch millis written while integer timestamps are
+            // still read as seconds (READ_DATE_TIMESTAMPS_AS_NANOSECONDS, on by
+            // default), so 2026 reads as year 58834 — returns that value above,
+            // live as on every replay. The cause is named by class and JSON
+            // path only.
+            var root = unreadable.getCause() != null ? unreadable.getCause() : unreadable;
+            logger.debug("Workflow '{}': currentTime() at sequence {} is recorded but cannot be read back as an"
+                            + " Instant ({}); this run continues with the clock value, and a replay of this slot"
+                            + " will stand the run down as unknown_event_payload",
+                    ctx.workflowId(), seq, UnknownHistoryGuard.redactedCause(root));
             return now;
         }
     }

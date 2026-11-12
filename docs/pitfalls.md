@@ -1,6 +1,6 @@
 # Pitfalls
 
-Eleven rules whose violations pass every test that runs a workflow straight through and fail in production, usually on the first restart, the first retry or the first traffic peak. Each rule shows the wrong code, the right code, what you see when you get it wrong, and how a test catches it.
+Twelve rules whose violations pass every test that runs a workflow straight through and fail in production, usually on the first restart, the first retry or the first traffic peak. Each rule shows the wrong code, the right code, what you see when you get it wrong, and how a test catches it.
 
 [← Back to README](../README.md)
 
@@ -357,9 +357,65 @@ Alternatively, start the child with `startAsync`, have it signal the parent when
 
 ---
 
+## 12. Your workflow gets an activity's result as the store gives it back, not the object the activity returned
+
+Once an activity's result is recorded, a live call returns the stored result deserialized into the method's declared return type: the same function and type a replay of the call uses. The value is therefore the same on the first run and after every restart, but it is not always the object the activity built. It is what Jackson wrote for that object, read back as the declared type.
+
+**Wrong:** code that relies on anything that round trip does not keep.
+
+```java
+@Activity
+public interface Couriers {
+    Slot reserve(Order order);                 // returns an ExpressSlot (a subclass of Slot)
+    OffsetDateTime pickupAt(Order order);      // returns 10:00+02:00
+    Set<String> depots(Order order);           // returns a TreeSet
+    Map<String, Object> rates(Order order);    // returns {"base": 5L, "vat": new BigDecimal("10.50")}
+    CompletableFuture<Receipt> book(Order order);
+}
+
+var express = (ExpressSlot) couriers.reserve(order);       // ClassCastException, on the first run
+var local = couriers.pickupAt(order).getOffset();          // Z, not +02:00
+var vat = (BigDecimal) couriers.rates(order).get("vat");   // ClassCastException: it is a Double 10.5
+var receipt = couriers.book(order).join();                 // never returns
+```
+
+- **The offset of an `OffsetDateTime` or `ZonedDateTime`.** It arrives in UTC: `10:00+02:00` arrives as `08:00Z`, and a `ZonedDateTime` loses its zone id.
+- **The order of a `Set`.** A `Set` arrives as a `HashSet`, whatever the activity built (`Set.of`, `TreeSet`, `LinkedHashSet`).
+- **A subtype returned under its declared supertype, or under `Object`.** The subtype's fields are lost and a cast to it fails. It now fails on the first run, not only after a restart. Declared as `Object`, a record arrives as a `LinkedHashMap`.
+- **Number types inside `Map<String, Object>` or `List<Object>`.** A `Long` arrives as an `Integer` when it fits one, a `Float` or a `BigDecimal` as a `Double` (`10.50` as `10.5`).
+- **A map's iteration order, on Postgres.** `jsonb` stores object keys shorter first, so a `LinkedHashMap` arrives in that order. The test kit keeps the order the map had.
+- **Identity with the activity's object.** The result is a copy, a `JsonNode` result included. Mutating the activity's object after it returned does not change what the workflow has.
+- **A future as the return type.** An activity call is synchronous, and what is recorded is JSON. A `CompletableFuture` is recorded as its bean properties (`{"done": true, ...}`), never its value, and arrives as a new future that never completes. A `Future` or `CompletionStage` cannot be read back at all (see "What you see"). Nothing rejects these return types at startup ([Issue 49](open-issues.md#issue-49)).
+- **`workflow.currentTime()` under a mapper that misreads its own timestamps.** It is recorded and read back the same way. A mapper that writes epoch milliseconds (`WRITE_DATE_TIMESTAMPS_AS_NANOSECONDS` off) while still reading integer timestamps as seconds (`DateTimeFeature.READ_DATE_TIMESTAMPS_AS_NANOSECONDS`, on by default) turns `2026-11-12T10:00:00.123Z` into the year 58834. That now happens on the live run too, with no error ([Issue 48](open-issues.md#issue-48)).
+
+**Right**
+
+```java
+public record CourierSlot(String depot, Instant pickupAt, String zoneId, BigDecimal price) {}
+
+@Activity
+public interface Couriers {
+    CourierSlot reserve(Order order);          // the concrete type: an Instant, the zone as its own field
+    SortedSet<String> depots(Order order);     // arrives as a TreeSet, in order
+    Receipt book(Order order);                 // the value, not a future
+}
+```
+
+- Declare the concrete type the activity returns. Where several types are possible, put `@JsonTypeInfo` and `@JsonSubTypes` on the supertype, so the payload carries the subtype.
+- Use `Instant` for a point in time, and keep an offset or zone id as its own field if the workflow needs it.
+- When order matters, use a `List`, or a `SortedSet` (it arrives as a `TreeSet`). For an ordered map use a `SortedMap` (it arrives as a `TreeMap`) or a `List` of entries.
+- Use typed fields, and a typed `BigDecimal` for money, rather than `Map<String, Object>`. A typed `BigDecimal` keeps its digits and scale, on Postgres too.
+- Configure the `ObjectMapper` so that it reads back what it writes.
+
+**What you see:** a value that differs from what the activity returned, identically on the first run and after a restart. Nothing stands down: the workflow computes with the stored form everywhere. A type Jackson can write but not read back (an interface without type information, `Future`, `CompletionStage`) is different. The run completes with the activity's own object. A `WARN` from `ActivityInvocationHandler` reads "Workflow '…': the result of activity '…' at sequence N is recorded but cannot be read back as … (…); this run continues with the object the activity returned, and a replay of this step will stand the run down as unknown_event_payload". With the starter it is logged once per activity method and workflow type on each node, and at `DEBUG` after that. It names the cause by class and JSON path, never a value. The `maestro.activity.result.unreadable` counter increments with tags `workflow` and `activity`. Any later recovery of that run stands it down as `unknown_event_payload`, and it stays active until you fix the type or terminate it.
+
+**Test it:** a plain kit test now shows the read-back value: assert on what the workflow saw, not on what the activity returned (`ReadBackFormsTest` in `maestro-test` covers each form above). `env.crashAfter(n)` past the step, then `crash.recover()` and `handle.awaitStandDown(...)`, shows the `unknown_event_payload` stand-down. Map order shows only against Postgres.
+
+---
+
 ## See Also
 
-- [Testing Guide](testing.md#crash-recovery-testing) -- crash-recovery tests that catch rules 2, 3, 4 and 7
+- [Testing Guide](testing.md#crash-recovery-testing) -- crash-recovery tests that catch rules 2, 3, 4, 7 and 12
 - [Core Concepts](concepts.md) -- sagas, determinism, versioning, queries
 - [Cross-Service Patterns](cross-service.md) -- signal identity in depth
 - [Operations](operations.md) -- stand-downs and mixed-version deploys

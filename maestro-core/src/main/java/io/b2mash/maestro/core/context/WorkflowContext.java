@@ -620,7 +620,8 @@ public final class WorkflowContext {
      *
      * <p>Use this instead of {@code Instant.now()} in workflow code.
      *
-     * @return the current time (live) or the stored time (replay)
+     * @return the clock value as the store reads it back, identical live and
+     *         on replay
      * @throws IllegalStateException if operations are not configured
      * @see WorkflowOperations#currentTime()
      */
