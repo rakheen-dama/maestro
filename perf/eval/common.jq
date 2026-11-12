@@ -24,10 +24,13 @@
 # (distinct background statements x replicas) bounds that.
 #
 # Gates on statements: a BASELINE-RELATIVE statement gate (S1, S3) must go
-# through statements_gate below, which compares the net figure and applies
-# netTolerancePerWorkflow inside. The smoke has no expected value and gates
-# only a wide absolute range ([5, 500] net statements per workflow) that
-# proves the measurement works; it does not apply the tolerance.
+# through statements_gate below: symmetric, PASS only when
+# |net - expected| <= netTolerancePerWorkflow (same tolerance on both sides),
+# FAIL for a null, zero or negative net, and a drop below the band FAILs with
+# a message to re-record the baseline deliberately if the improvement is
+# intended. The smoke has no expected value and gates only a wide absolute
+# range ([5, 500] net statements per workflow) that proves the measurement
+# works; it does not call statements_gate.
 # Known limits of this model: see "Known limits" in perf/run.sh's header.
 
 def check($id; $class; $status; $value; $limit; $detail):
@@ -60,16 +63,25 @@ def background_problem($bg):
          $bg.window.maestroStatements] | all(isnum) | not)
     then "background window lacks windowSecs/maestroCalls/maestroCallsTopLevel/maestroStatements"
   elif $bg.window.windowSecs <= 0 then "background window has no length"
+  elif ($bg.timerPollSecs | isnum | not) or $bg.timerPollSecs <= 0
+    then "background record has no timer-poll interval"
+  elif ($bg.window.windowSecs / $bg.timerPollSecs | floor) < 2
+    then "background window of \($bg.window.windowSecs) s spans \($bg.window.windowSecs / $bg.timerPollSecs | floor) timer-poll tick(s) of \($bg.timerPollSecs) s, fewer than 2: the background rate is not trustworthy"
   else null end;
+
+# Whole timer-poll ticks the idle window actually spanned (observed length,
+# not the planned tick count).
+def observed_ticks($bg): ($bg.window.windowSecs / $bg.timerPollSecs | floor);
 
 # validity.background: the idle window the net figures rest on was measured.
 def background_check($bg):
   background_problem($bg) as $p
   | check("validity.background"; "validity"; if $p == null then "PASS" else "INVALID" end;
       (if $p == null then {windowSecs: $bg.window.windowSecs, maestroCalls: $bg.window.maestroCalls,
-                           ticks: $bg.ticks} else null end);
-      {windowSecs: "> 0", ticks: ">= 2"};
-      if $p == null then "background rate measured over \($bg.window.windowSecs) s (\($bg.ticks) timer-poll ticks)"
+                           plannedTicks: $bg.ticks, observedTicks: observed_ticks($bg),
+                           timerPollSecs: $bg.timerPollSecs} else null end);
+      {windowSecs: "> 0", observedTicks: ">= 2"};
+      if $p == null then "background rate measured over \($bg.window.windowSecs) s (\(observed_ticks($bg)) whole timer-poll ticks of \($bg.timerPollSecs) s)"
       else $p end);
 
 # Every pg_stat_statements window a scenario measured: the background
@@ -120,31 +132,50 @@ def statement_figures($bg; $w; $completed; $replicas):
 
 # THE baseline-relative statement gate (for S1, S3 and any later scenario).
 # $s is statement_figures' output; $expected the baseline's net statements
-# per workflow (null: no usable baseline). PASS when
-#   net <= $expected x $upper + netTolerancePerWorkflow,
-# FAIL above it; NO_BASELINE without an expected value; FAIL when the net
-# figure itself is missing. A net figure below $expected x $lowerWarn -
-# tolerance is reported in the detail as a stale baseline but never fails
-# (the caller may add a WARN advisory for it).
-def statements_gate($id; $s; $expected; $upper; $lowerWarn):
+# per workflow (null: no usable baseline). The gate is SYMMETRIC: a drop is
+# as suspicious as a rise (work silently not done, runs not really
+# completing, a mis-measured window), and an intended improvement must show
+# up as a deliberate, reviewed baseline change, not as a silent pass.
+#   FAIL        net is null, not a number, zero or negative (regardless of
+#               $expected): nothing true was measured;
+#   NO_BASELINE no expected value;
+#   PASS        |net - expected| <= band;
+#   FAIL        otherwise; below the band the detail says to re-record the
+#               baseline deliberately (--record-baseline on a clean tree) if
+#               the improvement is intended.
+# band = netTolerancePerWorkflow (one tick per background poller, the same on
+# both sides) + $extra. The 3-argument form uses $extra = 0. A scenario that
+# passes a non-zero $extra (a per-workflow allowance for variance the
+# background model does not explain) must state the number and the reason in
+# its own header.
+def statements_gate($id; $s; $expected; $extra):
   ($s.statementsPerWorkflowNet) as $net
   | ($s.netTolerancePerWorkflow) as $tol
-  | if $expected == null then
-      check($id; "gate"; "NO_BASELINE"; {statementsPerWorkflowNet: $net, netTolerancePerWorkflow: $tol};
-            null; "no usable baseline")
-    elif ($net | isnum | not) or ($tol | isnum | not) then
-      check($id; "gate"; "FAIL"; {statementsPerWorkflowNet: $net, netTolerancePerWorkflow: $tol};
-            {expected: $expected}; "net statements per workflow could not be computed")
+  | {statementsPerWorkflowNet: $net, netTolerancePerWorkflow: $tol} as $value
+  | if ($net | isnum | not) or $net <= 0 then
+      check($id; "gate"; "FAIL"; $value; {expected: $expected};
+            "net statements per workflow is \($net | tojson): nothing true was measured")
+    elif $expected == null then
+      check($id; "gate"; "NO_BASELINE"; $value; null; "no usable baseline")
+    elif ($tol | isnum | not) then
+      check($id; "gate"; "FAIL"; $value; {expected: $expected}; "no net tolerance could be computed")
     else
-      ($expected * $upper + $tol) as $limit
-      | ($expected * $lowerWarn - $tol) as $floor
-      | check($id; "gate"; if $net <= $limit then "PASS" else "FAIL" end;
-          {statementsPerWorkflowNet: $net, netTolerancePerWorkflow: $tol,
-           belowStaleFloor: ($net < $floor)};
-          {expected: $expected, max: ($limit | round2), staleBelow: ($floor | round2)};
-          "net \($net) vs expected \($expected) x \($upper) + tolerance \($tol) = \($limit | round2)"
-          + (if $net < $floor then "; below \($lowerWarn) x expected - tolerance: baseline stale, re-record" else "" end))
+      ($tol + $extra) as $band
+      | ($net - $expected) as $delta
+      | check($id; "gate";
+          if ($delta | fabs) <= $band then "PASS" else "FAIL" end;
+          $value + {delta: ($delta | round2)};
+          {expected: $expected, band: ($band | round2), min: ($expected - $band | round2),
+           max: ($expected + $band | round2)};
+          if ($delta | fabs) <= $band then
+            "net \($net) within expected \($expected) +/- \($band | round2)"
+          elif $delta > 0 then
+            "net \($net) is above expected \($expected) + \($band | round2): more statements per workflow than the baseline"
+          else
+            "net \($net) is below expected \($expected) - \($band | round2): fewer statements per workflow than the baseline. If this improvement is intended, re-record the baseline deliberately (perf/run.sh <scenario> --record-baseline on a clean tree) so it is reviewed; otherwise work is missing or the window is mis-measured"
+          end)
     end;
+def statements_gate($id; $s; $expected): statements_gate($id; $s; $expected; 0);
 
 # validity.warmup: the warm-up batch finished, every run of it COMPLETED,
 # before the idle window opened. Otherwise warm-up work leaks into the
@@ -270,6 +301,41 @@ def dropped_iterations_check($m):
         (if ($dropped | length) > 0 then "generator saturated, not the SUT: \($dropped | map("\(.phase) dropped \(.droppedIterations)") | join(", "))" else null end)
       ] | reasons end);
 
+# advisory.sweepOverlap: whether any measured pg_stat_statements window may
+# contain a periodic engine sweep the background model does not cover (see
+# "Known limits" in perf/run.sh). The lock cleaner runs every
+# maestro.lock.cleanup-interval after its scheduler starts, its first pass one
+# interval in; the signal janitor and retention sweeper run hourly, which are
+# multiples of the same 10 min. sample-perf sets no maestro.lock.* property
+# and /perf/info does not report it, so the default 600 s is ASSUMED here. A
+# node's schedulers start a few seconds after its JVM (jvmStartMillis), so a
+# sweep is taken to fall in [start + k x 600 s, start + k x 600 s + 30 s],
+# k >= 1, for every node. WARN only, never a verdict change.
+def ts_secs:
+  if type == "string" then sub("\\.[0-9]+"; "") | sub("\\+00(:00)?$"; "Z") | fromdateiso8601
+  else null end;
+def sweep_overlap_check($id; $m):
+  600 as $interval | 30 as $slack
+  | ($id.nodes // [] | map(.jvmStartMillis / 1000)) as $starts
+  | ([{name: "background", w: ($m.background | if type == "object" then .window else null end)},
+      {name: "window", w: $m.window}]
+     + ($m.windows // [] | to_entries | map({name: "windows[\(.key)]", w: .value}))
+     | map(select(.w | type == "object") | {name, start: (.w.resetAt | ts_secs), end: (.w.snapshotAt | ts_secs)})
+     | map(select(.start != null and .end != null))) as $ws
+  | [ $ws[] as $w | $starts[] as $s
+      | ([1, (($w.start - $slack - $s) / $interval | ceil)] | max) as $k
+      | select($s + $k * $interval <= $w.end)
+      | {window: $w.name, sinceNodeStartSecs: [($w.start - $s | round), ($w.end - $s | round)],
+         sweepMarkSecs: ($k * $interval)} ] as $hits
+  | check("advisory.sweepOverlap"; "advisory"; if ($hits | length) == 0 then "PASS" else "WARN" end;
+      {windows: ($ws | map({name, sinceEarliestNodeStartSecs:
+                   [(.start - ($starts | min) | round), (.end - ($starts | min) | round)]})),
+       overlaps: $hits};
+      {lockCleanupIntervalSecs: $interval, assumed: true, slackSecs: $slack};
+      if ($starts | length) == 0 then "no node start time recorded"
+      elif ($hits | length) == 0 then "no measured window crosses a lock-cleaner / janitor / retention mark (k x 600 s after node start, +30 s)"
+      else "window(s) \($hits | map(.window) | unique | join(", ")) may contain a periodic sweep not in the background model; their statement counts carry un-modelled calls" end);
+
 def dirty_tree_check($id):
   check("advisory.dirtyTree"; "advisory"; if $id.repo.dirty then "WARN" else "PASS" end;
         $id.repo.dirty; false;
@@ -278,7 +344,7 @@ def dirty_tree_check($id):
 def common_checks($id; $m):
   [identity_check($id), no_restart_check($id), admin_events_check($id),
    pgss_complete_check($m), k6_check($m), dropped_iterations_check($m), warmup_check($m),
-   dirty_tree_check($id)];
+   dirty_tree_check($id), sweep_overlap_check($id; $m)];
 
 # The result document: common checks first, then the scenario's.
 def result($id; $m; $checks):

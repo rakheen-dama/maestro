@@ -104,19 +104,43 @@ expect "background without window: validity.background" INVALID "$(jq -r '.check
 out=$(evaluate_with bg-zero '.background.window.windowSecs = 0')
 expect "background window of 0 s: validity.background" INVALID "$(jq -r '.checks["validity.background"]' <<<"$out")"
 
-# statements_gate, the shared baseline-relative gate: net vs expected x 1.10 + tolerance.
+out=$(evaluate_with bg-one-tick '.background.window.windowSecs = (.background.timerPollSecs * 1.9)')
+expect "background spans < 2 timer-poll ticks: validity.background" INVALID "$(jq -r '.checks["validity.background"]' <<<"$out")"
+out=$(evaluate_with bg-two-ticks '.background.window.windowSecs = (.background.timerPollSecs * 2)')
+expect "background spans exactly 2 ticks: validity.background" PASS "$(jq -r '.checks["validity.background"]' <<<"$out")"
+
+# advisory.sweepOverlap: a window straddling node start + 600 s (lock cleaner).
+node_start=$(jq '[.nodes[].jvmStartMillis] | min / 1000 | floor' "${src}/identity.json")
+out=$(evaluate_with sweep "$(printf '.window.resetAt = (%s + 590 | todate) | .window.snapshotAt = (%s + 610 | todate)' "$node_start" "$node_start")")
+expect "window straddles node start + 600 s: advisory.sweepOverlap" WARN "$(jq -r '.checks["advisory.sweepOverlap"]' <<<"$out")"
+expect "window straddles node start + 600 s: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
+out=$(evaluate_with sweep-late "$(printf '.window.resetAt = (%s + 640 | todate) | .window.snapshotAt = (%s + 700 | todate)' "$node_start" "$node_start")")
+expect "window after the +600 s pass and its 30 s slack: advisory.sweepOverlap" PASS "$(jq -r '.checks["advisory.sweepOverlap"]' <<<"$out")"
+expect "real run: advisory.sweepOverlap" PASS "$(jq -r '.checks["advisory.sweepOverlap"]' <<<"$(evaluate_with pass3 '.')")"
+
+# statements_gate, the shared baseline-relative gate: symmetric,
+# PASS only when |net - expected| <= tolerance (0.25 here: exact in binary).
 gate_of() { # <net|null> <tolerance> <expected|null>
   jq -n -r -L "${PERF_DIR}/eval" --argjson n "$1" --argjson t "$2" --argjson e "$3" \
-    'include "common"; statements_gate("gate.x"; {statementsPerWorkflowNet: $n, netTolerancePerWorkflow: $t}; $e; 1.10; 0.80)
-     | "\(.status)\(if .value.belowStaleFloor then "+stale" else "" end)"'
+    'include "common"; statements_gate("gate.x"; {statementsPerWorkflowNet: $n, netTolerancePerWorkflow: $t}; $e) | .status'
 }
-expect "gate: net 21 vs expected 20 (limit 22.15)" PASS "$(gate_of 21 0.15 20)"
-expect "gate: net 22.15 at the limit (20 x 1.10 + 0.15)" PASS "$(gate_of 22.15 0.15 20)"
-expect "gate: net 22.2 just over the limit" FAIL "$(gate_of 22.2 0.15 20)"
-expect "gate: tolerance applied (22.1 > 22.0, < 22.15)" PASS "$(gate_of 22.1 0.15 20)"
-expect "gate: no expected value" NO_BASELINE "$(gate_of 21 0.15 null)"
-expect "gate: net missing" FAIL "$(gate_of null 0.15 20)"
-expect "gate: far below baseline" PASS+stale "$(gate_of 15 0.15 20)"
+gate_detail() { # <net> <tolerance> <expected>
+  jq -n -r -L "${PERF_DIR}/eval" --argjson n "$1" --argjson t "$2" --argjson e "$3" \
+    'include "common"; statements_gate("gate.x"; {statementsPerWorkflowNet: $n, netTolerancePerWorkflow: $t}; $e) | .detail'
+}
+expect "gate: net = expected" PASS "$(gate_of 20 0.25 20)"
+expect "gate: upper edge expected + tolerance (20.25)" PASS "$(gate_of 20.25 0.25 20)"
+expect "gate: lower edge expected - tolerance (19.75)" PASS "$(gate_of 19.75 0.25 20)"
+expect "gate: just above the band (20.26)" FAIL "$(gate_of 20.26 0.25 20)"
+expect "gate: just below the band (19.74)" FAIL "$(gate_of 19.74 0.25 20)"
+expect "gate: net 5 vs expected 20" FAIL "$(gate_of 5 0.25 20)"
+expect "gate: net 0" FAIL "$(gate_of 0 0.25 20)"
+expect "gate: net -3" FAIL "$(gate_of -3 0.25 20)"
+expect "gate: net missing" FAIL "$(gate_of null 0.25 20)"
+expect "gate: net 0 without a baseline (FAIL beats NO_BASELINE)" FAIL "$(gate_of 0 0.25 null)"
+expect "gate: no expected value" NO_BASELINE "$(gate_of 21 0.25 null)"
+expect "gate: below-band message asks for a deliberate re-record" yes \
+  "$(gate_detail 5 0.25 20 | grep -q 're-record the baseline deliberately (perf/run.sh <scenario> --record-baseline on a clean tree)' && echo yes || echo no)"
 
 expect "unknown status PASSED" ERROR "$(verdict_of '.[0].status = "PASSED"')"
 expect "unknown class" ERROR "$(verdict_of '.[0].class = "validty"')"

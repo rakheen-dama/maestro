@@ -4,8 +4,14 @@
 # Races <contenders> shells (default 8), released at the same instant, for
 # take_lock (lib/common.sh) on a scratch lock directory, <iterations> times
 # (default 30) for each starting state: a free lock, a stale lock naming a dead
-# pid, and a stale pid-less lock older than a minute. Every race must have
-# exactly one winner, and the lock must name that winner's pid. No Docker.
+# pid, and a stale pid-less lock older than a minute; plus a forced
+# interleaving on the pid-less stale lock ("stale-no-pid-interleaved"):
+# contender 1 pauses 0.4 s between acquiring the lock and writing its pid
+# (PERF_LOCK_TEST_PAUSE_BEFORE_PID) while every other contender, having
+# already judged the OLD lock stale, pauses 0.15 s before trying the takeover
+# mutex (PERF_LOCK_TEST_PAUSE_BEFORE_TAKEOVER) - so they try it exactly while
+# contender 1's new lock has no pid. Every race must have exactly one winner,
+# and the lock must name that winner's pid. No Docker.
 # Exit 0 when every race holds, 1 otherwise.
 set -Eeuo pipefail
 
@@ -21,7 +27,7 @@ if ps -p "$dead" >/dev/null 2>&1; then
 fi
 failures=0
 
-for state in free stale-pid stale-no-pid; do
+for state in free stale-pid stale-no-pid stale-no-pid-interleaved; do
   bad=0
   for ((it = 1; it <= iterations; it++)); do
     lock="${work}/lock"
@@ -30,13 +36,17 @@ for state in free stale-pid stale-no-pid; do
     : >"${work}/decided"
     case "$state" in
       stale-pid) mkdir "$lock" && printf '%s\n' "$dead" >"${lock}/pid" ;;
-      stale-no-pid) mkdir "$lock" && touch -t 200001010000 "$lock" ;;
+      stale-no-pid | stale-no-pid-interleaved) mkdir "$lock" && touch -t 200001010000 "$lock" ;;
     esac
     pids=()
     for ((c = 1; c <= contenders; c++)); do
+      pause_pid="" pause_takeover=""
+      if [[ "$state" == stale-no-pid-interleaved ]]; then
+        if ((c == 1)); then pause_pid=0.4; else pause_takeover=0.15; fi
+      fi
       # A winner keeps running (holding the lock) until every contender has
       # decided, as a real run holds it for its whole life; a loser exits.
-      bash -c '
+      PERF_LOCK_TEST_PAUSE_BEFORE_PID="$pause_pid" PERF_LOCK_TEST_PAUSE_BEFORE_TAKEOVER="$pause_takeover" bash -c '
         source "$1/lib/common.sh"
         while [[ ! -e "$2/go" ]]; do :; done
         if (take_lock "$3" "contender $4" 2>/dev/null); then

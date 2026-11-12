@@ -33,17 +33,30 @@
 #     replicas, one tick per poller) models only the pollers SEEN in the idle
 #     window: at the defaults the timer poller (5 s) and the recovery poller
 #     (60 s). Pollers with longer intervals are not in it.
-#  2. The lock cleaner first runs 10 minutes after node start and then every
-#     maestro.lock.cleanup-interval (10m); the signal janitor and the retention
-#     sweeper run once at node start (before any window) and then hourly. A
-#     load window that crosses one of those marks carries
-#     statements the model neither subtracts nor tolerates.
+#  2. Periodic sweeps are scheduled from NODE START, not from any window: the
+#     lock cleaner first runs one maestro.lock.cleanup-interval (10m) after its
+#     node starts and then every 10 minutes; the signal janitor and the
+#     retention sweeper run once at node start (before any window) and then
+#     hourly (also multiples of 10 minutes). So ANY measured window, however
+#     short, that is open at about k x 10 min after a node's start (k >= 1)
+#     can carry statements the model neither subtracts nor tolerates; a
+#     scenario with several short windows crosses the 10-minute mark as surely
+#     as one long window does.
 #  3. The subtraction extrapolates the idle rate over the load window, so its
 #     error grows with loadWindowSecs / backgroundWindowSecs, while the
 #     tolerance is a fixed number of calls.
-#  A scenario whose load windows exceed ~8 minutes must extend the model (a
-#  longer idle window, or explicit accounting of those sweeps) before its
-#  statement gate can be trusted. The smoke's ~1 s window is far inside it.
+#  The rule: a scenario whose measured windows extend beyond ~8 minutes after
+#  the earliest node start (leaving margin before the first lock-cleaner pass)
+#  must extend the model (a longer idle window spanning a sweep, or explicit
+#  accounting of the sweeps) before its statement gate can be trusted.
+#  result.json carries what is needed to check this: each node's start
+#  (identity.nodes[].jvmStartMillis) and each window's start and end
+#  (resetAt / snapshotAt of measurements.background.window, .window and
+#  .windows[]). advisory.sweepOverlap already WARNs (never changes the
+#  verdict) when any measured window is open within [k x 600 s, k x 600 s +
+#  30 s] after any node's start, assuming the default cleanup interval
+#  (sample-perf sets none and /perf/info does not report it). The smoke's
+#  windows close about 80 s after node start.
 #
 # Exit: 0 PASS, 1 FAIL, 2 INVALID, 3 harness error (including an evaluator
 # ERROR verdict: a check with an unknown class or status).
