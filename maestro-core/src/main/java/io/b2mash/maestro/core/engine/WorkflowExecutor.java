@@ -213,6 +213,7 @@ public final class WorkflowExecutor {
         Objects.requireNonNull(lockKeyPrefix, "lockKeyPrefix");
         Objects.requireNonNull(observer, "observer");
         Objects.requireNonNull(taskQueueLimits, "taskQueueLimits");
+        this.instantSource = Objects.requireNonNull(instantSource, "instantSource");
         // Guarded once, here, before any component below is built from it, so
         // every store call this executor and its components make on a run's
         // behalf — memo lookups, outcome appends, status writes, signal and
@@ -237,7 +238,6 @@ public final class WorkflowExecutor {
         this.taskQueueGovernor = taskQueueLimits.isEmpty() && defaultTaskQueueLimits == null
                 ? TaskQueueGovernor.UNBOUNDED
                 : new TaskQueueGovernor(taskQueueLimits, defaultTaskQueueLimits);
-        this.instantSource = Objects.requireNonNull(instantSource, "instantSource");
         this.lifecycleEventsEnabled = lifecycleEventsEnabled;
         // Built before the components below so they can share the one off-thread
         // sink: every lifecycle event this executor or its components produce is
