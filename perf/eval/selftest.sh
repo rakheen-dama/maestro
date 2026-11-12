@@ -550,6 +550,9 @@ if [[ -n "$s1src" ]]; then
   expect "s1: quiet run: ceiling detail carries no contended-host note" no \
     "$(s1_field s1-quiet '.checks[] | select(.id == "advisory.ceiling") | .detail' | grep -q 'contended host' && echo yes || echo no)"
   ceil_idx=$(s1_field s1-pass '[.measurements.levels[] | .level] | index('"$(s1_field s1-pass '.measurements.ceiling.ceilingLevel')"')')
+  # (an evaluator without ceilingLevel: fall back to the top level, so every
+  # case below still runs and reports instead of the script stopping here)
+  [[ "$ceil_idx" =~ ^[0-9]+$ ]] || ceil_idx=$(($(jq '.plan.levels | length' "${s1src}/measurements.json") - 1))
   below_idx=$((ceil_idx - 1))
   hot=".levelProm[${below_idx}].slotsUsed.workflowAvg = (.levelRows[${below_idx}].completionsInWindowPerSec * .levelRows[0].p50Ms * 1.2 / 1000)"
   out=$(s1_eval s1-contended "$hot")
