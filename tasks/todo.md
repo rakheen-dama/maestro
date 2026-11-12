@@ -6,7 +6,7 @@ Maven Central blockers and the §6.4 feature gaps are out of scope.
 
 - [x] Four audits re-verified every finding (3.2, 3.3, 3.8 reproduced with failing tests)
 - [x] Spec written, builder-checked, approved by the maintainer with D1–D11 (2026-11-12)
-- [ ] WP0 Executor builder (Issue 37) — Lane A
+- [ ] WP0 Executor builder (Issue 37) — Lane A — PR #50 open at 9c1cfbf: 5 tasks reviewed, whole-branch review + fix wave done, uncached full build green; awaiting CI and merge
 - [ ] WP1 Replay fidelity (3.8, exact decimals) — Lane A, after WP9
 - [ ] WP2 Wake permits, timer clock, remove activity lock (3.2, 3.7, 3.10) — Lane A
 - [ ] WP3 Admin retry (3.3, Issue 33) — Lane A
