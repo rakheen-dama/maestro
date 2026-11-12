@@ -34,6 +34,8 @@ import java.security.MessageDigest;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HexFormat;
@@ -53,6 +55,7 @@ import static io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflo
 import static io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.Seeds.PARKED_TIMER;
 import static java.util.stream.Collectors.toCollection;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assumptions.assumeThat;
 
 /**
  * WP9's assertions over the history the build at {@code cbf5a2a} wrote
@@ -79,6 +82,9 @@ class SeededHistoryUpgradeIT {
     private static final List<String> TABLES = List.of(
             "maestro_workflow_instance", "maestro_workflow_event",
             "maestro_workflow_signal", "maestro_workflow_timer");
+
+    /** Set by the {@code seededHistoryNonUtcTest} Gradle task to the zone its JVM runs in. */
+    private static final String EXPECTED_ZONE_PROPERTY = "maestro.test.expectedZone";
 
     /** The five runs {@code cbf5a2a} left active in {@code Seeds.SERVICE}: the ones recovery adopts. */
     private static final List<String> ACTIVE = List.of(
@@ -171,7 +177,7 @@ class SeededHistoryUpgradeIT {
     @Test
     @DisplayName("recovery on this build replays every active run cbf5a2a left and drives it to its end")
     void recoveryReplaysEveryActiveSeededRunToItsEnd() throws Exception {
-        var seeded = SeededHistory.load().upgrade(SchemaMode.FLYWAY);
+        var seeded = SeededHistory.load().upgrade(SchemaMode.FLYWAY).requireClockWithinFixtureWindow();
         var observer = new RecordingObserver();
         var invocations = new Invocations();
         var before = new LinkedHashMap<String, List<WorkflowEvent>>();
@@ -180,8 +186,10 @@ class SeededHistoryUpgradeIT {
         try (var node = seeded.node(Seeds.SERVICE, observer, invocations)) {
             var live = recordLiveCalls(node, invocations);
             assertThat(node.recover()).isEqualTo(5);   // parked-timer, parked-express, parked-approval, crashed, compensating-crashed
-            // The approvals are stored before the timer poller starts, so the two runs parked on a
-            // due timer cannot reach step 10 first: step 10 then always takes exactly one slot.
+            // The approvals are stored before the timer poller starts. parked-timer needs the poller for
+            // its seeded nap (sleep-8002); parked-express self-fires its seeded express deadline during
+            // replay but then needs the poller for its 1 ms nap (sleep() never self-fires). So neither
+            // reaches step 10 before its approval is stored, and step 10 always takes exactly one slot.
             for (var id : List.of(PARKED_TIMER, PARKED_EXPRESS, PARKED_APPROVAL)) {
                 node.deliverSignal(id, "approval", new Approval("upgrade-node", 2));
             }
@@ -217,8 +225,10 @@ class SeededHistoryUpgradeIT {
             assertThat(after.size()).as(id).isGreaterThan(recorded.size());
             assertThat(after.subList(0, recorded.size())).as("%s: history cbf5a2a wrote is untouched", id)
                     .isEqualTo(recorded);
-            assertThat(after.subList(recorded.size(), after.size()).stream().map(SeededHistoryUpgradeIT::describe))
+            var appended = after.subList(recorded.size(), after.size());
+            assertThat(appended.stream().map(SeededHistoryUpgradeIT::describe))
                     .as("%s: events this build appended", id).containsExactlyElementsOf(APPENDED.get(id));
+            assertThatEveryActivityCompletedIsFingerprinted(id, appended);
         }
         for (var id : List.of(PARKED_TIMER, PARKED_EXPRESS, PARKED_APPROVAL, CRASHED)) {
             var recorded = before.get(id);
@@ -231,7 +241,8 @@ class SeededHistoryUpgradeIT {
                     1, id.equals(CRASHED) ? "capture" : "upgrade-node");
             assertThat(orderResult(seeded, id)).as(id).isEqualTo(expected);
         }
-        // the due timers cbf5a2a left PENDING fired on this build; every Order signal it stored was consumed
+        // the due rows cbf5a2a left PENDING are FIRED on this build (sleep-8002 by the timer poller,
+        // await-signal-8004 by awaitSignal's self-fire during replay); every Order signal it stored was consumed
         assertThat(timerStatus(seeded, PARKED_TIMER, "sleep-8002")).isEqualTo("FIRED");
         assertThat(timerStatus(seeded, PARKED_EXPRESS, "await-signal-8004")).isEqualTo("FIRED");
         for (var id : List.of(PARKED_TIMER, PARKED_EXPRESS, PARKED_APPROVAL, CRASHED)) {
@@ -244,12 +255,18 @@ class SeededHistoryUpgradeIT {
     @Test
     @DisplayName("finished and other-service runs are left exactly as cbf5a2a wrote them")
     void finishedAndOtherServiceRunsAreNotAdopted() throws Exception {
-        var seeded = SeededHistory.load().upgrade(SchemaMode.FLYWAY);
+        var seeded = SeededHistory.load().upgrade(SchemaMode.FLYWAY).requireClockWithinFixtureWindow();
         var untouched = Seeds.STATUS_AT_CAPTURE.keySet().stream().filter(id -> !ACTIVE.contains(id)).toList();
         assertThat(untouched).hasSize(9);   // completed, terminated, four FAILED, three seed-wp1-*
         var rowsBefore = instanceRows(seeded, untouched);
         var eventsBefore = new LinkedHashMap<String, List<WorkflowEvent>>();
         untouched.forEach(id -> eventsBefore.put(id, seeded.events(id)));
+        var signalsBefore = wholeRows(seeded, "maestro_workflow_signal", untouched);
+        var timersBefore = wholeRows(seeded, "maestro_workflow_timer", untouched);
+        // the comparison has teeth: these runs hold PENDING timers a wrongly adopting node would touch
+        for (var id : List.of(Seeds.TERMINATED_RUN, Seeds.WP1_DECIMAL, Seeds.WP1_OFFSET, Seeds.WP1_SET)) {
+            assertThat(timersBefore.get(id)).as(id).anyMatch(row -> row.contains(",PENDING,"));
+        }
         var observer = new RecordingObserver();
         var invocations = new Invocations();
 
@@ -263,6 +280,8 @@ class SeededHistoryUpgradeIT {
 
             assertThat(instanceRows(seeded, untouched)).isEqualTo(rowsBefore);
             untouched.forEach(id -> assertThat(seeded.events(id)).as(id).isEqualTo(eventsBefore.get(id)));
+            assertThat(wholeRows(seeded, "maestro_workflow_signal", untouched)).isEqualTo(signalsBefore);
+            assertThat(wholeRows(seeded, "maestro_workflow_timer", untouched)).isEqualTo(timersBefore);
             for (var id : List.of(Seeds.WP1_DECIMAL, Seeds.WP1_OFFSET, Seeds.WP1_SET)) {
                 assertThat(seeded.store().getInstance(id)).get().extracting(WorkflowInstance::status).as(id)
                         .isEqualTo(WAITING_SIGNAL);
@@ -271,6 +290,7 @@ class SeededHistoryUpgradeIT {
             assertThat(recovered).isEqualTo(5);
             assertThat(instanceRows(seeded, ACTIVE).values()).allMatch(row -> row.endsWith(" lease_epoch=1"));
             assertThat(observer.standDowns()).isEmpty();
+            assertThat(observer.abandoned()).isEmpty();
         }
     }
 
@@ -290,7 +310,7 @@ class SeededHistoryUpgradeIT {
     @Test
     @DisplayName("a workflow started on this build adopts the orphan signals cbf5a2a stored for it")
     void aWorkflowStartedOnThisBuildAdoptsOrphanSignalsStoredAtCbf5a2a() throws Exception {
-        var seeded = SeededHistory.load().upgrade(SchemaMode.FLYWAY);
+        var seeded = SeededHistory.load().upgrade(SchemaMode.FLYWAY).requireClockWithinFixtureWindow();
         var observer = new RecordingObserver();
         var invocations = new Invocations();
         try (var node = seeded.node(Seeds.SERVICE, observer, invocations)) {
@@ -300,7 +320,9 @@ class SeededHistoryUpgradeIT {
             assertThat(seeded.awaitStatusOrLast(Seeds.ORPHAN_TARGET, COMPLETED, Duration.ofSeconds(60)))
                     .as("%s; stand-downs: %s", Seeds.ORPHAN_TARGET, observer.standDowns()).isEqualTo(COMPLETED);
             assertThat(observer.standDowns()).isEmpty();
+            assertThat(observer.abandoned()).isEmpty();
         }
+        assertThatEveryActivityCompletedIsFingerprinted(Seeds.ORPHAN_TARGET, seeded.events(Seeds.ORPHAN_TARGET));
         var result = orderResult(seeded, Seeds.ORPHAN_TARGET);
         assertThat(result.approver()).isEqualTo("capture");
         assertThat(result.note()).isEqualTo("note for seed-orphan-target");
@@ -313,7 +335,46 @@ class SeededHistoryUpgradeIT {
                 "approval consumed=true instance=" + instanceId, "note consumed=true instance=" + instanceId);
     }
 
+    @Test
+    @DisplayName("under seededHistoryNonUtcTest the test JVM really runs in the non-UTC zone that task asks for")
+    void theJvmRunsInTheZoneTheNonUtcTaskAsksFor() {
+        var expected = System.getProperty(EXPECTED_ZONE_PROPERTY);
+        assumeThat(expected).as("%s is set only by the seededHistoryNonUtcTest task", EXPECTED_ZONE_PROPERTY)
+                .isNotNull();
+        assertThat(ZoneId.systemDefault()).as("JVM default zone (user.timezone=%s)", System.getProperty("user.timezone"))
+                .isEqualTo(ZoneId.of(expected));
+        assertThat(ZoneId.systemDefault().getRules().getOffset(Instant.now())).isNotEqualTo(ZoneOffset.UTC);
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────
+
+    /** Every {@code ACTIVITY_COMPLETED} carries a SHA-256 argument fingerprint a later build can verify. */
+    private static void assertThatEveryActivityCompletedIsFingerprinted(String workflowId, List<WorkflowEvent> events) {
+        var completed = events.stream().filter(e -> e.eventType() == EventType.ACTIVITY_COMPLETED).toList();
+        assertThat(completed).as("%s: ACTIVITY_COMPLETED events", workflowId).isNotEmpty();
+        assertThat(completed).as("%s: argsHash of every ACTIVITY_COMPLETED", workflowId)
+                .allSatisfy(e -> assertThat(e.argsHash()).as(describe(e)).matches("[0-9a-f]{64}"));
+    }
+
+    /** {@code workflow_id -> every row of table, whole, as Postgres renders it}, sorted by row id. */
+    private static Map<String, List<String>> wholeRows(SeededHistory seeded, String table, List<String> workflowIds)
+            throws SQLException {
+        var rows = new LinkedHashMap<String, List<String>>();
+        try (var conn = seeded.dataSource().getConnection();
+             var ps = conn.prepareStatement("SELECT t::text FROM " + table + " t WHERE workflow_id = ? ORDER BY id")) {
+            for (var id : workflowIds) {
+                ps.setString(1, id);
+                var forId = new ArrayList<String>();
+                try (var rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        forId.add(rs.getString(1));
+                    }
+                }
+                rows.put(id, forId);
+            }
+        }
+        return rows;
+    }
 
     /**
      * Re-registers the node's activities behind a gate that records

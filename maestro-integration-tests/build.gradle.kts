@@ -54,7 +54,7 @@ dependencies {
 // classpath already; they are declared here too, so every byte the upgrade
 // guards pin is a stated input in one place.
 // ---------------------------------------------------------------------------
-tasks.named<Test>("test") {
+fun Test.declareFrozenUpgradeFixtures() {
     inputs.files(
         fileTree("src/test/java/io/b2mash/maestro/integration/upgrade") {
             include("*/SeededHistoryWorkflows.java")
@@ -62,6 +62,47 @@ tasks.named<Test>("test") {
     ).withPathSensitivity(PathSensitivity.RELATIVE).withPropertyName("frozenUpgradeFixtureSources")
     inputs.files(fileTree("src/test/resources/upgrade"))
         .withPathSensitivity(PathSensitivity.RELATIVE).withPropertyName("frozenUpgradeFixtureResources")
+}
+
+tasks.named<Test>("test") {
+    declareFrozenUpgradeFixtures()
+}
+
+// ---------------------------------------------------------------------------
+// The seeded-history upgrade test again, in a JVM whose zone is not UTC (WP9,
+// Review Focus 3). History written at cbf5a2a holds Instant/OffsetDateTime
+// payloads and recorded currentTime() values; a replaying node in another zone
+// must read them back unchanged. Pacific/Chatham (+12:45/+13:45, a quarter-hour
+// offset) is far from UTC and from any CI runner's zone. The expected-zone
+// property lets SeededHistoryUpgradeIT assert the zone really took effect, so
+// the guard cannot pass in UTC by accident. Wired into `check`, so it runs on
+// every `./gradlew build`.
+// ---------------------------------------------------------------------------
+val seededHistoryZone = "Pacific/Chatham"
+
+val seededHistoryNonUtcTest = tasks.register<Test>("seededHistoryNonUtcTest") {
+    group = "verification"
+    description = "Runs SeededHistoryUpgradeIT in a JVM whose default zone is $seededHistoryZone."
+
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    useJUnitPlatform {
+        excludeTags("e2e")
+    }
+    filter {
+        includeTestsMatching("*SeededHistoryUpgradeIT")
+    }
+    systemProperty("user.timezone", seededHistoryZone)
+    systemProperty("maestro.test.expectedZone", seededHistoryZone)
+    declareFrozenUpgradeFixtures()
+    shouldRunAfter(tasks.named("test"))
+    testLogging {
+        events("passed", "skipped", "failed")
+    }
+}
+
+tasks.named("check") {
+    dependsOn(seededHistoryNonUtcTest)
 }
 
 // ---------------------------------------------------------------------------

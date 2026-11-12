@@ -33,8 +33,10 @@ import java.io.UncheckedIOException;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -94,6 +96,32 @@ public final class SeededHistory {
      * without re-capturing under the regeneration rules.
      */
     public static final String DUMP_SHA256 = "ee06b7f9359e2b4cf7ca5b6ff493ae42afc9624073ff58ba7b316476ebffa134";
+
+    /**
+     * The seeded {@code PENDING} timer rows a replay needs <em>already due</em>,
+     * as {@code "<workflowId>/<timerId>"}: {@code seed-parked-timer}'s 10-minute
+     * nap (fired by the timer poller) and {@code seed-parked-express}'s
+     * 10-minute {@code express} deadline (self-fired by {@code awaitSignal}
+     * during replay).
+     */
+    static final Set<String> MUST_BE_DUE = Set.of("seed-parked-timer/sleep-8002", "seed-parked-express/await-signal-8004");
+
+    /**
+     * The latest {@code fire_at} among {@link #MUST_BE_DUE}
+     * ({@code seed-parked-express}'s {@code await-signal-8004}). Before this
+     * instant the parked runs would wait out real time instead of replaying.
+     */
+    public static final Instant LATEST_MUST_BE_DUE = Instant.parse("2026-11-12T15:02:18.853649Z");
+
+    /**
+     * The earliest {@code fire_at} among every other seeded {@code PENDING}
+     * timer row ({@code seed-parked-approval}'s 10-year {@code approval}
+     * deadline; {@code seed-terminated}'s and the three {@code seed-wp1-*} ones
+     * follow within seconds). {@code getDueTimers} has no service filter, so
+     * from this instant on a timer poller would fire them: the parked approval
+     * would time out, and the terminated and WP1 rows would change.
+     */
+    public static final Instant EARLIEST_MUST_STAY_PENDING = Instant.parse("2036-11-09T14:52:08.619137Z");
 
     private static final String DUMP_IN_CONTAINER = "/tmp/seeded-history-cbf5a2a.sql";
     private static final AtomicInteger DATABASES = new AtomicInteger();
@@ -156,6 +184,51 @@ public final class SeededHistory {
      */
     public SeededHistory upgrade(SchemaMode mode) {
         new MaestroSchemaInitializer(dataSource, mode, SeededHistory.class.getClassLoader()).initialize();
+        return this;
+    }
+
+    /**
+     * The precondition of every test that runs a node over this history: the
+     * wall clock lies after {@link #LATEST_MUST_BE_DUE} and before
+     * {@link #EARLIEST_MUST_STAY_PENDING}. It first checks that both constants
+     * still match the seeded {@code PENDING} timer rows, so neither can drift
+     * from the data. Call it before a node touches the database.
+     *
+     * @return this
+     * @throws IllegalStateException if a constant disagrees with the seeded rows,
+     *                               or the clock is outside the window
+     */
+    public SeededHistory requireClockWithinFixtureWindow() {
+        Instant latestDue = null;
+        Instant earliestPending = null;
+        try (var conn = dataSource.getConnection();
+             var st = conn.createStatement();
+             var rs = st.executeQuery("SELECT workflow_id, timer_id, fire_at FROM maestro_workflow_timer"
+                     + " WHERE status = 'PENDING'")) {
+            while (rs.next()) {
+                var fireAt = rs.getObject(3, OffsetDateTime.class).toInstant();
+                if (MUST_BE_DUE.contains(rs.getString(1) + "/" + rs.getString(2))) {
+                    latestDue = latestDue == null || fireAt.isAfter(latestDue) ? fireAt : latestDue;
+                } else {
+                    earliestPending = earliestPending == null || fireAt.isBefore(earliestPending) ? fireAt : earliestPending;
+                }
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Cannot read the seeded timer rows", e);
+        }
+        if (!LATEST_MUST_BE_DUE.equals(latestDue) || !EARLIEST_MUST_STAY_PENDING.equals(earliestPending)) {
+            throw new IllegalStateException("The clock window no longer matches the seeded PENDING timers: latest"
+                    + " must-be-due " + latestDue + " (constant " + LATEST_MUST_BE_DUE + "), earliest must-stay-pending "
+                    + earliestPending + " (constant " + EARLIEST_MUST_STAY_PENDING + ")");
+        }
+        var now = Instant.now();
+        if (!now.isAfter(LATEST_MUST_BE_DUE) || !now.isBefore(EARLIEST_MUST_STAY_PENDING)) {
+            throw new IllegalStateException("Wall clock " + now + " is outside the seeded-history window: it must be"
+                    + " after " + LATEST_MUST_BE_DUE + " (the latest seeded timer a replay needs already due) and"
+                    + " before " + EARLIEST_MUST_STAY_PENDING + " (the earliest seeded PENDING timer that must still"
+                    + " be pending, which a timer poller would otherwise fire). Once the second instant has passed,"
+                    + " the fixture must be re-captured (RELEASING.md, Upgrade fixtures).");
+        }
         return this;
     }
 
