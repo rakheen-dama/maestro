@@ -31,6 +31,9 @@
 # run at the same ref, and goes in its own commit (RELEASING.md § Upgrade
 # fixtures). A later release adds a NEW fixture under a new name.
 #
+# history mode builds with --no-daemon --no-build-cache: every task of the
+# capture build runs in the fresh worktree, nothing is restored from a cache.
+#
 # The script writes nothing on failure and commits nothing.
 set -euo pipefail
 
@@ -155,14 +158,16 @@ cleanup_history() {
     if [[ -n "$STAGING" ]]; then
         rm -rf -- "$STAGING"
     fi
+    # Removed by path: only this capture's worktree entry is touched, never
+    # another stale entry of the repository (so no repo-wide 'git worktree prune').
     if [[ -n "$CAPTURE_WT" ]]; then
         git worktree remove --force "$CAPTURE_WT" >/dev/null 2>&1 \
-            || echo "$SCRIPT: WARNING: could not remove worktree $CAPTURE_WT" >&2
+            || echo "$SCRIPT: WARNING: could not remove worktree $CAPTURE_WT;" \
+                "remove it with: git worktree remove --force '$CAPTURE_WT'" >&2
     fi
     if [[ -n "$CAPTURE_DIR" ]]; then
         rm -rf -- "$CAPTURE_DIR"
     fi
-    git worktree prune >/dev/null 2>&1 || true
     return "$status"
 }
 
@@ -197,7 +202,7 @@ capture_history() {
     (
         cd "$CAPTURE_WT"
         MAESTRO_UPGRADE_CAPTURE_OUT="$CAPTURE_DIR/out" MAESTRO_UPGRADE_CAPTURE_REF="$sha" \
-            exec ./gradlew --no-watch-fs --no-daemon :maestro-integration-tests:test \
+            exec ./gradlew --no-watch-fs --no-daemon --no-build-cache :maestro-integration-tests:test \
             --tests "io.b2mash.maestro.integration.upgrade.$name.SeededHistoryCapture" --rerun
     ) &
     GRADLE_PID=$!

@@ -85,6 +85,14 @@ class SeededHistoryCapture {
     static final String FIXTURE_SOURCE =
             "src/test/java/io/b2mash/maestro/integration/upgrade/cbf5a2a/SeededHistoryWorkflows.java";
 
+    /**
+     * Repository-relative path of this fixture package: the only place a
+     * capture checkout may differ from the capture ref (the script copies the
+     * package in; everything else must be the ref's own tree).
+     */
+    static final String FIXTURE_PACKAGE =
+            "maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/upgrade/cbf5a2a/";
+
     private static final Duration WAIT = Duration.ofSeconds(60);
     private static final Approval CAPTURE_APPROVAL = new Approval("capture", 1);
 
@@ -94,6 +102,7 @@ class SeededHistoryCapture {
         var ref = System.getenv("MAESTRO_UPGRADE_CAPTURE_REF");
         assertTrue(ref != null && ref.matches("[0-9a-f]{40}"),
                 "MAESTRO_UPGRADE_CAPTURE_REF must be a full commit SHA, was: " + ref);
+        requireCheckoutAt(ref);
         Files.createDirectories(out);
 
         try (var postgres = new PostgreSQLContainer<>("postgres:16-alpine")
@@ -139,6 +148,38 @@ class SeededHistoryCapture {
                 }
             }
         }
+    }
+
+    // ── provenance ────────────────────────────────────────────────────────
+
+    /**
+     * Refuses to seed anything unless this JVM runs in a checkout of
+     * {@code ref} that differs from it only under {@link #FIXTURE_PACKAGE}.
+     * {@code capture.properties} records {@code ref}; without this check it
+     * would record whatever the environment variable claimed, and a capture
+     * run by hand at another commit (or over local edits) would pass every
+     * guard downstream.
+     */
+    private static void requireCheckoutAt(String ref) throws Exception {
+        var head = git("rev-parse", "HEAD").strip();
+        assertEquals(ref, head, "SeededHistoryCapture must run in a checkout of MAESTRO_UPGRADE_CAPTURE_REF"
+                + " (scripts/capture-upgrade-fixture.sh history does that); refusing to capture at HEAD " + head);
+        var foreign = git("status", "--porcelain", "--untracked-files=all").lines()
+                .filter(line -> !line.isBlank())
+                .filter(line -> !line.substring(3).startsWith(FIXTURE_PACKAGE))
+                .toList();
+        assertEquals(List.of(), foreign, "the capture checkout may differ from " + ref + " only under "
+                + FIXTURE_PACKAGE + "; refusing to capture over these changes");
+    }
+
+    private static String git(String... args) throws Exception {
+        var command = new ArrayList<String>();
+        command.add("git");
+        command.addAll(List.of(args));
+        var process = new ProcessBuilder(command).redirectErrorStream(true).start();
+        var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertEquals(0, process.waitFor(), String.join(" ", command) + " failed: " + output);
+        return output;
     }
 
     // ── nodes ─────────────────────────────────────────────────────────────

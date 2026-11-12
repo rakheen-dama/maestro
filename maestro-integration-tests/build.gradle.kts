@@ -43,6 +43,28 @@ dependencies {
 }
 
 // ---------------------------------------------------------------------------
+// Frozen upgrade fixtures (WP9) are inputs of `test`.
+//
+// SeededHistoryUpgradeIT hashes the frozen fixture source
+// (upgrade/<ref>/SeededHistoryWorkflows.java) from disk, by path. That file
+// otherwise reaches `test` only as bytecode, and a comment-only edit leaves the
+// bytecode unchanged: `test` would stay UP-TO-DATE, or be restored from the
+// build cache (org.gradle.caching=true), and the hash guard would never run.
+// The fixture resources (dump, capture.properties) reach `test` through the
+// classpath already; they are declared here too, so every byte the upgrade
+// guards pin is a stated input in one place.
+// ---------------------------------------------------------------------------
+tasks.named<Test>("test") {
+    inputs.files(
+        fileTree("src/test/java/io/b2mash/maestro/integration/upgrade") {
+            include("*/SeededHistoryWorkflows.java")
+        },
+    ).withPathSensitivity(PathSensitivity.RELATIVE).withPropertyName("frozenUpgradeFixtureSources")
+    inputs.files(fileTree("src/test/resources/upgrade"))
+        .withPathSensitivity(PathSensitivity.RELATIVE).withPropertyName("frozenUpgradeFixtureResources")
+}
+
+// ---------------------------------------------------------------------------
 // Chaos/soak harness (e2e/chaos) — boot-jar wiring.
 //
 // The @Tag("e2e") chaos suite launches the three loan-origination services as

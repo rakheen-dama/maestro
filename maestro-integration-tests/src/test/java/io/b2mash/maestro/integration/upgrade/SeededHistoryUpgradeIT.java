@@ -34,6 +34,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * empty schema, so this is the only one that can catch a migration valid on
  * an empty table but fatal on existing rows, or a read path that no longer
  * understands what an older build stored.
+ *
+ * <p>This class uses AssertJ and the plan's method names although
+ * {@code maestro-integration-tests/SPEC.md} asks for plain JUnit assertions and
+ * {@code subject_expectation} names: a recorded waiver, because the tests are
+ * the WP9 brief's verbatim code and Task 4 extends this same class — do not
+ * "fix" it.
  */
 @Tag("integration")
 @DisplayName("Seeded history written by cbf5a2a, under this build")
@@ -53,6 +59,9 @@ class SeededHistoryUpgradeIT {
                 .as("SeededHistoryWorkflows.java is frozen: it produced the seeded history")
                 .isEqualTo(seeded.manifest().getProperty("fixtureSource.sha256"));
         assertThat(dumpLines()).noneMatch(line -> line.startsWith("\\"));
+        assertThat(sha256(dumpBytes()))
+                .as("seeded-history.sql is frozen: byte for byte what the capture at cbf5a2a wrote")
+                .isEqualTo(SeededHistory.DUMP_SHA256);
     }
 
     @Test
@@ -137,6 +146,14 @@ class SeededHistoryUpgradeIT {
                 SeededHistory.DUMP_RESOURCE);
              var reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
             return reader.lines().toList();
+        }
+    }
+
+    private static byte[] dumpBytes() throws Exception {
+        try (var in = Objects.requireNonNull(
+                SeededHistoryUpgradeIT.class.getClassLoader().getResourceAsStream(SeededHistory.DUMP_RESOURCE),
+                SeededHistory.DUMP_RESOURCE)) {
+            return in.readAllBytes();
         }
     }
 

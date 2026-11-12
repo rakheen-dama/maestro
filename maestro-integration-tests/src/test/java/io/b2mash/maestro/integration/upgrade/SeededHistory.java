@@ -67,6 +67,15 @@ public final class SeededHistory {
     /** Classpath location of the capture manifest. */
     static final String MANIFEST_RESOURCE = "upgrade/cbf5a2a/capture.properties";
 
+    /**
+     * SHA-256 of the raw bytes of {@link #DUMP_RESOURCE} as the capture at
+     * {@code cbf5a2a} wrote it (the value the capture script printed). The
+     * row-level guards (counts, statuses, event types, the WP1 decimal) cannot
+     * see a hand-edited payload or timer row; this digest can. Never update it
+     * without re-capturing under the regeneration rules.
+     */
+    public static final String DUMP_SHA256 = "ee06b7f9359e2b4cf7ca5b6ff493ae42afc9624073ff58ba7b316476ebffa134";
+
     private static final String DUMP_IN_CONTAINER = "/tmp/seeded-history-cbf5a2a.sql";
     private static final AtomicInteger DATABASES = new AtomicInteger();
     private static @Nullable PostgreSQLContainer<?> postgres;
@@ -165,17 +174,32 @@ public final class SeededHistory {
     }
 
     /**
-     * Polls every 100 ms until the workflow's status equals {@code expected}
-     * — and, for {@code COMPLETED}/{@code FAILED}, its terminal event is in
-     * the log ({@link TerminalWait#isFinalised}) — or {@code within} elapses.
-     * Returns the last status seen rather than throwing, so an assertion on it
-     * reads "expected COMPLETED but was WAITING_SIGNAL" instead of a timeout.
+     * Polls every 100 ms until the workflow has <em>reached</em>
+     * {@code expected}, or {@code within} elapses.
+     *
+     * <p>Contract:
+     * <ul>
+     *   <li>"Reached" means the status equals {@code expected} and, when
+     *       {@code expected} is terminal, the run is finalised in the log
+     *       ({@link TerminalWait#isFinalised}: {@code COMPLETED}/{@code FAILED}
+     *       need their terminal event; {@code TERMINATED} appends none).</li>
+     *   <li>Returns {@code expected} only once it is reached.</li>
+     *   <li>Otherwise, at the deadline, returns the status last observed, which
+     *       then differs from {@code expected} — so an assertion on it reads
+     *       "expected COMPLETED but was WAITING_SIGNAL" rather than a timeout.</li>
+     *   <li>If at the deadline the status column equals {@code expected} but the
+     *       terminal event is missing, it throws: returning {@code expected}
+     *       there would let a caller's assertion pass on a run that did not
+     *       finish.</li>
+     * </ul>
      *
      * @param workflowId the workflow id
      * @param expected   the awaited status
      * @param within     the bound
-     * @return {@code expected} once reached, else the last status seen
+     * @return {@code expected} once reached, else the last observed status (never {@code expected})
      * @throws IllegalArgumentException if no instance has that id
+     * @throws IllegalStateException    if the status is {@code expected} and terminal but its
+     *                                  terminal event never appeared within the bound
      */
     public WorkflowStatus awaitStatusOrLast(String workflowId, WorkflowStatus expected, Duration within) {
         var deadline = Instant.now().plus(within);
@@ -183,9 +207,15 @@ public final class SeededHistory {
             var instance = store.getInstance(workflowId)
                     .orElseThrow(() -> new IllegalArgumentException("No seeded instance '" + workflowId + "'"));
             var status = instance.status();
-            var reached = status == expected
-                    && (!expected.isTerminal() || TerminalWait.isFinalised(store, instance));
-            if (reached || !Instant.now().isBefore(deadline)) {
+            var finalised = !status.isTerminal() || TerminalWait.isFinalised(store, instance);
+            if (status == expected && finalised) {
+                return status;
+            }
+            if (!Instant.now().isBefore(deadline)) {
+                if (status == expected) {
+                    throw new IllegalStateException("Workflow '" + workflowId + "' is " + status
+                            + " but its terminal event is not in the log after " + within);
+                }
                 return status;
             }
             try {
