@@ -153,8 +153,10 @@ public interface EngineObserver {
      *       down as {@code nondeterministic_history}; workflow code that
      *       branches on it can also fail or complete differently.</li>
      * </ul>
-     * Elements inside a collection or map are not compared: only the
-     * top-level class.
+     * Only the top-level class is compared, never the elements of a
+     * collection or map, and a container that reads back as another
+     * container of the same kind (both a {@code List}, a {@code Set}, a
+     * {@code Queue} or a {@code Map}) is not a class difference.
      *
      * <p>Fired live only, on the workflow thread, after the outcome append and
      * before {@link #activityCompleted}. Never fired on replay.

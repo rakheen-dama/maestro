@@ -35,9 +35,10 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Type;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Queue;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
@@ -106,8 +107,9 @@ import java.util.concurrent.TimeoutException;
  *       replay of that step will stand the run down as
  *       {@code UNKNOWN_EVENT_PAYLOAD}.</li>
  *   <li><b>Another class (the type valve).</b> A read-back that is not an
- *       instance of the returned object's class — unless both are a
- *       {@code Collection} or both a {@code Map}
+ *       instance of the returned object's class — unless both are the same
+ *       kind of container: both a {@code List}, a {@code Set}, a
+ *       {@code Queue} or a {@code Map}
  *       ({@link #readsBackAsAnotherClass}) — would hand workflow code a
  *       {@code ClassCastException} on a run that never crashed. The live run
  *       keeps the activity's object, as the released build did; the callback
@@ -700,12 +702,17 @@ public final class ActivityInvocationHandler implements InvocationHandler {
 
     /**
      * The type valve's test: {@code readBack} is not an instance of
-     * {@code raw}'s class, and the two are not both a {@link Collection} nor
-     * both a {@link Map} — collections and maps legitimately read back as
-     * another implementation ({@code List.of(..)} as an {@code ArrayList}, a
-     * {@code TreeMap} declared as a {@code Map} as a {@code LinkedHashMap}).
-     * Only the top-level class is compared, never the elements. A
-     * {@code null} on either side is never a mismatch.
+     * {@code raw}'s class, and the two are not the same kind of container —
+     * both a {@link List}, both a {@link Set}, both a {@link Queue} (a
+     * {@code Deque} included) or both a {@link Map}. A container of the same
+     * kind legitimately reads back as another implementation
+     * ({@code List.of(..)} as an {@code ArrayList}, a {@code TreeSet} declared
+     * as a {@code Set} as a {@code HashSet}, a {@code TreeMap} declared as a
+     * {@code Map} as a {@code LinkedHashMap}); a container read back as
+     * another kind (a {@code TreeSet} declared as {@code Object} or
+     * {@code Collection}, read back as an {@code ArrayList}) does not. Only
+     * the top-level class is compared, never the elements. A {@code null} on
+     * either side is never a mismatch.
      *
      * @param raw      the object the activity returned
      * @param readBack the stored result as read back into the declared type
@@ -715,9 +722,15 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         if (raw == null || readBack == null || raw.getClass().isInstance(readBack)) {
             return false;
         }
-        var bothCollections = raw instanceof Collection<?> && readBack instanceof Collection<?>;
-        var bothMaps = raw instanceof Map<?, ?> && readBack instanceof Map<?, ?>;
-        return !bothCollections && !bothMaps;
+        return !sameKindOfContainer(raw, readBack);
+    }
+
+    /** Both a {@link List}, both a {@link Set}, both a {@link Queue} or both a {@link Map}. */
+    private static boolean sameKindOfContainer(Object a, Object b) {
+        return (a instanceof List<?> && b instanceof List<?>)
+                || (a instanceof Set<?> && b instanceof Set<?>)
+                || (a instanceof Queue<?> && b instanceof Queue<?>)
+                || (a instanceof Map<?, ?> && b instanceof Map<?, ?>);
     }
 
     /**
@@ -908,7 +921,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             var payload = serializer.serialize(result);
             JsonNode stored;
             try {
-                stored = appendEventSafe(ctx, seq, EventType.ACTIVITY_COMPLETED, stepName, payload, argsHash);
+                stored = appendEventSafe(ctx, seq, EventType.ACTIVITY_COMPLETED, stepName, payload, argsHash, true);
             } catch (DuplicateEventException | StoreUnavailableException notRecorded) {
                 // The winner is alive and ahead: stand down rather than adopt
                 // its value (class Javadoc, "Idempotency"). Or the store could
@@ -1089,8 +1102,18 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * Appends an event to the memoization log; a lost append race stands this
      * run down.
      *
-     * @return the payload as the store will read it back
-     *         ({@link io.b2mash.maestro.core.spi.WorkflowStore#appendEventReturningPayload})
+     * <p>Only the {@code ACTIVITY_COMPLETED} outcome reads back what it
+     * appended, so only it asks the store for the stored payload
+     * ({@link io.b2mash.maestro.core.spi.WorkflowStore#appendEventReturningPayload});
+     * the {@code ACTIVITY_FAILED} memo uses
+     * {@link WorkflowStore#appendEvent(WorkflowEvent, io.b2mash.maestro.core.spi.RunLease)}.
+     * Either is the same write, with the same fencing and the same
+     * store-fault handling; only the method a store-fault message names
+     * differs.
+     *
+     * @param returnStoredPayload whether to return the payload as stored
+     * @return the payload as the store will read it back if
+     *         {@code returnStoredPayload}, else {@code null}
      *
      * @throws FencedWriteException    if the instance's lease epoch has moved
      *                                 past this run's (another node adopted the
@@ -1107,7 +1130,8 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      */
     private @Nullable JsonNode appendEventSafe(
             WorkflowContext ctx, int seq, EventType type,
-            String stepName, @Nullable JsonNode payload, @Nullable String argsHash
+            String stepName, @Nullable JsonNode payload, @Nullable String argsHash,
+            boolean returnStoredPayload
     ) {
         var event = new WorkflowEvent(
                 UUID.randomUUID(),
@@ -1121,7 +1145,11 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         );
 
         try {
-            return store.appendEventReturningPayload(event, ctx.lease());
+            if (returnStoredPayload) {
+                return store.appendEventReturningPayload(event, ctx.lease());
+            }
+            store.appendEvent(event, ctx.lease());
+            return null;
         } catch (FencedWriteException fenced) {
             // Issue 11: the instance row's lease epoch has moved past this
             // run's — another node adopted the workflow (this node lost or
@@ -1180,7 +1208,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             errorPayload = null;
         }
 
-        appendEventSafe(ctx, seq, EventType.ACTIVITY_FAILED, stepName, errorPayload, argsHash);
+        appendEventSafe(ctx, seq, EventType.ACTIVITY_FAILED, stepName, errorPayload, argsHash, false);
     }
 
     /**

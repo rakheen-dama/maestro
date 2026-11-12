@@ -26,14 +26,21 @@ import tools.jackson.databind.node.NullNode;
 import java.lang.reflect.InvocationTargetException;
 import java.math.BigDecimal;
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Queue;
+import java.util.Set;
+import java.util.SortedSet;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.CompletableFuture;
@@ -55,9 +62,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * the node stops and another node adopts the run.
  *
  * <p>The rule: a live result whose read-back succeeds but is not an instance
- * of the class of the object the activity returned — and the two are not both
- * a {@code Collection} nor both a {@code Map} — is handed to workflow code as
- * the activity's own object; the observer's
+ * of the class of the object the activity returned is handed to workflow code as
+ * the activity's own object (a read-back of the same kind of container —
+ * both a {@code List}, both a {@code Set}, both a {@code Queue}, both a
+ * {@code Map} — is not a class difference); the observer's
  * {@link EngineObserver#activityResultUnreadable} fires with
  * {@link EngineObserver#READ_BACK_TYPE_MISMATCH}, and a {@code WARN} names
  * the two classes. A replay still reads the stored payload as the declared
@@ -121,7 +129,13 @@ class ReadBackTypeValveTest {
                 row("nullNode",           "null",                                false, "null"),
                 row("immutableList",      "ArrayList [a, b]",                    false, "ArrayList [a, b]"),
                 row("treeMap",            "LinkedHashMap {a=1, b=2}",            false, "LinkedHashMap {a=1, b=2}"),
-                row("setAsObject",        "ArrayList [a, b]",                    false, "ArrayList [a, b]"),
+                row("immutableListAsObject", "ArrayList [a, b]",                 false, "ArrayList [a, b]"),
+                // Same kind of container only (follow-up): a Set read back as a List is valved.
+                row("setAsObject",        "TreeSet [a, b]",                      true,  "ArrayList [a, b]"),
+                row("setAsCollection",    "TreeSet [a, b]",                      true,  "ArrayList [a, b]"),
+                row("treeSetAsSet",       "HashSet [a, b]",                      false, "HashSet [a, b]"),
+                row("treeSetAsSortedSet", "TreeSet [a, b]",                      false, "TreeSet [a, b]"),
+                row("arrayDequeAsQueue",  "LinkedList [a, b]",                   false, "LinkedList [a, b]"),
                 row("untypedMap",         "LinkedHashMap {n=Integer 5}",         false, "LinkedHashMap {n=Integer 5}"),
                 row("pojoAsObject",       "Pair Pair[left=l, right=r]",          true,  "LinkedHashMap {left=l, right=r}"),
                 row("typeVariable",       "Pair Pair[left=l, right=r]",          true,  "LinkedHashMap {left=l, right=r}"),
@@ -190,8 +204,13 @@ class ReadBackTypeValveTest {
         return Stream.of(
                 Arguments.of(new ArrayList<>(), new LinkedHashMap<>(), true),      // a Collection read back as a Map
                 Arguments.of(new HashMap<>(), new ArrayList<>(), true),            // a Map read back as a Collection
-                Arguments.of(List.of("a"), new ArrayList<>(List.of("a")), false),  // both Collection
-                Arguments.of(new TreeSet<>(), new ArrayList<>(), false),           // both Collection
+                Arguments.of(List.of("a"), new ArrayList<>(List.of("a")), false),  // both List
+                Arguments.of(new LinkedList<>(), new ArrayList<>(), false),        // both List
+                Arguments.of(new TreeSet<>(), new ArrayList<>(), true),            // a Set read back as a List
+                Arguments.of(new HashSet<>(), new ArrayList<>(), true),            // a Set read back as a List
+                Arguments.of(new ArrayList<>(), new HashSet<>(), true),            // a List read back as a Set
+                Arguments.of(new TreeSet<>(), new HashSet<>(), false),             // both Set
+                Arguments.of(new ArrayDeque<>(), new LinkedList<>(), false),       // both Queue
                 Arguments.of(new TreeMap<>(), new LinkedHashMap<>(), false),       // both Map
                 Arguments.of(5L, 5, true),
                 Arguments.of(5L, 5L, false),
@@ -380,6 +399,11 @@ class ReadBackTypeValveTest {
         JsonNode longNode();
         JsonNode nullNode();
         List<String> immutableList();
+        Object immutableListAsObject();
+        Collection<String> setAsCollection();
+        Set<String> treeSetAsSet();
+        SortedSet<String> treeSetAsSortedSet();
+        Queue<String> arrayDequeAsQueue();
         Map<String, Integer> treeMap();
         Object setAsObject();
         Map<String, Object> untypedMap();
@@ -415,6 +439,11 @@ class ReadBackTypeValveTest {
         @Override public JsonNode longNode() { return LongNode.valueOf(5); }
         @Override public JsonNode nullNode() { return NullNode.instance; }
         @Override public List<String> immutableList() { return List.of("a", "b"); }
+        @Override public Object immutableListAsObject() { return List.of("a", "b"); }
+        @Override public Collection<String> setAsCollection() { return new TreeSet<>(List.of("b", "a")); }
+        @Override public Set<String> treeSetAsSet() { return new TreeSet<>(List.of("b", "a")); }
+        @Override public SortedSet<String> treeSetAsSortedSet() { return new TreeSet<>(List.of("b", "a")); }
+        @Override public Queue<String> arrayDequeAsQueue() { return new ArrayDeque<>(List.of("a", "b")); }
         @Override public Map<String, Integer> treeMap() { return new TreeMap<>(Map.of("b", 2, "a", 1)); }
         @Override public Object setAsObject() { return new TreeSet<>(List.of("b", "a")); }
         @Override public Map<String, Object> untypedMap() { return Map.of("n", 5L); }

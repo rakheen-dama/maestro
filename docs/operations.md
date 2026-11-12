@@ -860,11 +860,12 @@ What a running workflow does with one:
   (`appendEvent`, `appendEventReturningPayload`, `getEventBySequence` — an
   activity's outcome, a compensation memo, a timer memo): three attempts,
   200 ms then 1 s apart. `appendEventReturningPayload` is the same write as
-  `appendEvent`; the engine uses it for activity outcomes (completed and
-  failed) and for `currentTime()`, so the latch `WARN` and the abandon detail
-  below name it there (`Store unavailable on appendEventReturningPayload —
-  …`). The `sleep()`, `parallel()`, `randomUUID()` and `version()` events
-  still name `appendEvent`. A
+  `appendEvent`; the engine uses it only where it reads back what it
+  stored, a completed activity's outcome and `currentTime()`, so the latch
+  `WARN` and the abandon detail below name it there (`Store unavailable on
+  appendEventReturningPayload — …`). A failed activity's memo and the
+  `sleep()`, `parallel()`, `randomUUID()` and `version()` events still name
+  `appendEvent`. A
   blip shorter than that is absorbed and nothing else happens. An append
   whose commit was lost in flight is caught on retry by the
   `(workflow_instance_id, sequence_number)` index. Every other store call —
