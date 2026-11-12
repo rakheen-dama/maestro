@@ -70,7 +70,9 @@ class WorkflowExecutorTest {
         store = new InMemoryWorkflowStore();
         messaging = new RecordingMessaging();
         serializer = new PayloadSerializer(new ObjectMapper());
-        executor = new WorkflowExecutor(store, null, messaging, null, serializer, "test-service");
+        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .messaging(messaging)
+                .build();
     }
 
     @AfterEach
@@ -181,11 +183,12 @@ class WorkflowExecutorTest {
         // Default recheck interval (30s) would never notice a signal persisted
         // without a local unpark inside this test's short await window — so a
         // short custom interval completing the workflow proves it was threaded
-        // from the constructor into SignalManager, not just left at the default.
+        // from the builder into SignalManager, not just left at the default.
         executor.shutdown();
-        executor = new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
-                true, WorkflowExecutor.DEFAULT_SHUTDOWN_TIMEOUT, Duration.ofMillis(200));
+        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .messaging(messaging)
+                .wakeRecheckInterval(Duration.ofMillis(200))
+                .build();
 
         var completedLatch = new CountDownLatch(1);
         var waitingLatch = new CountDownLatch(1);
@@ -207,7 +210,7 @@ class WorkflowExecutorTest {
                 serializer.serialize("cross-node"), false, Instant.now()));
 
         assertTrue(completedLatch.await(3, TimeUnit.SECONDS),
-                "the 200ms wake-recheck-interval configured on the constructor must have reached "
+                "the 200ms wake-recheck-interval configured on the builder must have reached "
                         + "SignalManager — with the 30s default this would still be waiting");
     }
 
@@ -304,7 +307,9 @@ class WorkflowExecutorTest {
         var registration = new WorkflowRegistration(
                 "SleepingWorkflow", "default", () -> nodeBWorkflow, method);
         // A second node of the SAME service: recovery adopts only its own service's instances.
-        var nodeB = new WorkflowExecutor(store, null, messaging, null, serializer, "test-service");
+        var nodeB = WorkflowExecutor.builder(store, serializer, "test-service")
+                .messaging(messaging)
+                .build();
         try {
             assertEquals(1, nodeB.recoverWorkflows(Map.of("SleepingWorkflow", registration)));
 
@@ -344,7 +349,9 @@ class WorkflowExecutorTest {
         var registration = new WorkflowRegistration(
                 "SleepingWorkflow", "default", () -> nodeBWorkflow, method);
         // A second node of the SAME service: recovery adopts only its own service's instances.
-        var nodeB = new WorkflowExecutor(store, null, messaging, null, serializer, "test-service");
+        var nodeB = WorkflowExecutor.builder(store, serializer, "test-service")
+                .messaging(messaging)
+                .build();
         try {
             assertEquals(1, nodeB.recoverWorkflows(Map.of("SleepingWorkflow", registration)));
 
@@ -488,7 +495,9 @@ class WorkflowExecutorTest {
         var registration = new WorkflowRegistration(
                 "CancellableSleepWorkflow", "default", () -> nodeBWorkflow, method);
         // A second node of the SAME service: recovery adopts only its own service's instances.
-        var nodeB = new WorkflowExecutor(store, null, messaging, null, serializer, "test-service");
+        var nodeB = WorkflowExecutor.builder(store, serializer, "test-service")
+                .messaging(messaging)
+                .build();
         try {
             assertEquals(1, nodeB.recoverWorkflows(Map.of("CancellableSleepWorkflow", registration)));
 
@@ -645,7 +654,10 @@ class WorkflowExecutorTest {
     @DisplayName("Start acquires the instance lock and releases it on completion")
     void startAcquiresInstanceLockAndReleasesOnCompletion() throws Exception {
         var lock = new MapLock();
-        var lockedExecutor = new WorkflowExecutor(store, lock, messaging, null, serializer, "test-service");
+        var lockedExecutor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .distributedLock(lock)
+                .messaging(messaging)
+                .build();
         try {
             var latch = new CountDownLatch(1);
             var workflow = new SimpleWorkflow(latch);
@@ -677,7 +689,10 @@ class WorkflowExecutorTest {
                 return super.createInstance(instance);
             }
         };
-        var lockedExecutor = new WorkflowExecutor(checkingStore, lock, messaging, null, serializer, "test-service");
+        var lockedExecutor = WorkflowExecutor.builder(checkingStore, serializer, "test-service")
+                .distributedLock(lock)
+                .messaging(messaging)
+                .build();
         try {
             var latch = new CountDownLatch(1);
             var workflow = new SimpleWorkflow(latch);
@@ -699,7 +714,10 @@ class WorkflowExecutorTest {
     @DisplayName("Duplicate workflow start releases the pre-acquired instance lock")
     void duplicateStartReleasesLock() throws Exception {
         var lock = new MapLock();
-        var lockedExecutor = new WorkflowExecutor(store, lock, messaging, null, serializer, "test-service");
+        var lockedExecutor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .distributedLock(lock)
+                .messaging(messaging)
+                .build();
         try {
             var latch = new CountDownLatch(1);
             var workflow = new SimpleWorkflow(latch);
@@ -725,7 +743,10 @@ class WorkflowExecutorTest {
     @DisplayName("Instance lock is released after workflow failure")
     void lockReleasedAfterFailure() throws Exception {
         var lock = new MapLock();
-        var lockedExecutor = new WorkflowExecutor(store, lock, messaging, null, serializer, "test-service");
+        var lockedExecutor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .distributedLock(lock)
+                .messaging(messaging)
+                .build();
         try {
             var latch = new CountDownLatch(1);
             var workflow = new FailingWorkflow(latch);
@@ -749,7 +770,10 @@ class WorkflowExecutorTest {
     @DisplayName("Instance lock stays held while parked awaiting a signal")
     void lockHeldWhileParked() throws Exception {
         var lock = new MapLock();
-        var lockedExecutor = new WorkflowExecutor(store, lock, messaging, null, serializer, "test-service");
+        var lockedExecutor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .distributedLock(lock)
+                .messaging(messaging)
+                .build();
         try {
             var waitingLatch = new CountDownLatch(1);
             var completedLatch = new CountDownLatch(1);
@@ -777,7 +801,10 @@ class WorkflowExecutorTest {
     void resumeSkippedWhenLockHeldByAnotherNode() throws Exception {
         var lock = new MapLock();
         lock.holdForeign("maestro:lock:workflow:recover-locked");
-        var lockedExecutor = new WorkflowExecutor(store, lock, messaging, null, serializer, "test-service");
+        var lockedExecutor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .distributedLock(lock)
+                .messaging(messaging)
+                .build();
         try {
             store.createInstance(recoverableInstance("recover-locked"));
 
@@ -801,7 +828,10 @@ class WorkflowExecutorTest {
     @DisplayName("Resume skips an instance that turned terminal between query and lock grant")
     void resumeSkipsTerminalInstanceAfterLockGrant() throws Exception {
         var lock = new MapLock();
-        var lockedExecutor = new WorkflowExecutor(store, lock, messaging, null, serializer, "test-service");
+        var lockedExecutor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .distributedLock(lock)
+                .messaging(messaging)
+                .build();
         try {
             // The store already shows COMPLETED …
             var completed = recoverableInstance("recover-done").toBuilder()
@@ -853,51 +883,84 @@ class WorkflowExecutorTest {
     }
 
     @Test
-    @DisplayName("Constructor rejects a non-positive instance lock TTL")
-    void constructorRejectsNonPositiveInstanceLockTtl() {
+    @DisplayName("build() rejects a non-positive instance lock TTL")
+    void buildRejectsNonPositiveInstanceLockTtl() {
         assertThrows(IllegalArgumentException.class, () ->
-                new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
-                        "maestro:lock:", Duration.ZERO));
+                WorkflowExecutor.builder(store, serializer, "test-service")
+                        .messaging(messaging)
+                        .lockKeyPrefix("maestro:lock:")
+                        .instanceLockTtl(Duration.ZERO)
+                        .build());
         assertThrows(IllegalArgumentException.class, () ->
-                new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
-                        "maestro:lock:", Duration.ofSeconds(-5)));
+                WorkflowExecutor.builder(store, serializer, "test-service")
+                        .messaging(messaging)
+                        .lockKeyPrefix("maestro:lock:")
+                        .instanceLockTtl(Duration.ofSeconds(-5))
+                        .build());
         assertThrows(IllegalArgumentException.class, () ->
-                new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
-                        "maestro:lock:", null));
+                WorkflowExecutor.builder(store, serializer, "test-service")
+                        .messaging(messaging)
+                        .lockKeyPrefix("maestro:lock:")
+                        .instanceLockTtl(null)
+                        .build());
     }
 
     @Test
-    @DisplayName("Constructor rejects a non-positive shutdown timeout")
-    void constructorRejectsNonPositiveShutdownTimeout() {
+    @DisplayName("build() rejects a non-positive shutdown timeout")
+    void buildRejectsNonPositiveShutdownTimeout() {
         assertThrows(IllegalArgumentException.class, () ->
-                new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
-                        "maestro:lock:", Duration.ofSeconds(30), true,
-                        Duration.ZERO, Duration.ofSeconds(30)));
+                WorkflowExecutor.builder(store, serializer, "test-service")
+                        .messaging(messaging)
+                        .lockKeyPrefix("maestro:lock:")
+                        .instanceLockTtl(Duration.ofSeconds(30))
+                        .shutdownTimeout(Duration.ZERO)
+                        .wakeRecheckInterval(Duration.ofSeconds(30))
+                        .build());
         assertThrows(IllegalArgumentException.class, () ->
-                new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
-                        "maestro:lock:", Duration.ofSeconds(30), true,
-                        Duration.ofSeconds(-5), Duration.ofSeconds(30)));
+                WorkflowExecutor.builder(store, serializer, "test-service")
+                        .messaging(messaging)
+                        .lockKeyPrefix("maestro:lock:")
+                        .instanceLockTtl(Duration.ofSeconds(30))
+                        .shutdownTimeout(Duration.ofSeconds(-5))
+                        .wakeRecheckInterval(Duration.ofSeconds(30))
+                        .build());
         assertThrows(IllegalArgumentException.class, () ->
-                new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
-                        "maestro:lock:", Duration.ofSeconds(30), true,
-                        null, Duration.ofSeconds(30)));
+                WorkflowExecutor.builder(store, serializer, "test-service")
+                        .messaging(messaging)
+                        .lockKeyPrefix("maestro:lock:")
+                        .instanceLockTtl(Duration.ofSeconds(30))
+                        .shutdownTimeout(null)
+                        .wakeRecheckInterval(Duration.ofSeconds(30))
+                        .build());
     }
 
     @Test
-    @DisplayName("Constructor rejects a non-positive wake-recheck interval")
-    void constructorRejectsNonPositiveWakeRecheckInterval() {
+    @DisplayName("build() rejects a non-positive wake-recheck interval")
+    void buildRejectsNonPositiveWakeRecheckInterval() {
         assertThrows(IllegalArgumentException.class, () ->
-                new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
-                        "maestro:lock:", Duration.ofSeconds(30), true,
-                        Duration.ofSeconds(30), Duration.ZERO));
+                WorkflowExecutor.builder(store, serializer, "test-service")
+                        .messaging(messaging)
+                        .lockKeyPrefix("maestro:lock:")
+                        .instanceLockTtl(Duration.ofSeconds(30))
+                        .shutdownTimeout(Duration.ofSeconds(30))
+                        .wakeRecheckInterval(Duration.ZERO)
+                        .build());
         assertThrows(IllegalArgumentException.class, () ->
-                new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
-                        "maestro:lock:", Duration.ofSeconds(30), true,
-                        Duration.ofSeconds(30), Duration.ofSeconds(-5)));
+                WorkflowExecutor.builder(store, serializer, "test-service")
+                        .messaging(messaging)
+                        .lockKeyPrefix("maestro:lock:")
+                        .instanceLockTtl(Duration.ofSeconds(30))
+                        .shutdownTimeout(Duration.ofSeconds(30))
+                        .wakeRecheckInterval(Duration.ofSeconds(-5))
+                        .build());
         assertThrows(IllegalArgumentException.class, () ->
-                new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
-                        "maestro:lock:", Duration.ofSeconds(30), true,
-                        Duration.ofSeconds(30), null));
+                WorkflowExecutor.builder(store, serializer, "test-service")
+                        .messaging(messaging)
+                        .lockKeyPrefix("maestro:lock:")
+                        .instanceLockTtl(Duration.ofSeconds(30))
+                        .shutdownTimeout(Duration.ofSeconds(30))
+                        .wakeRecheckInterval(null)
+                        .build());
     }
 
     @Test
@@ -905,7 +968,10 @@ class WorkflowExecutorTest {
     void freshStartProceedsWhenLockUnavailable() throws Exception {
         var lock = new MapLock();
         lock.holdForeign("maestro:lock:workflow:lock-4");
-        var lockedExecutor = new WorkflowExecutor(store, lock, messaging, null, serializer, "test-service");
+        var lockedExecutor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .distributedLock(lock)
+                .messaging(messaging)
+                .build();
         try {
             var latch = new CountDownLatch(1);
             var workflow = new SimpleWorkflow(latch);
@@ -929,7 +995,10 @@ class WorkflowExecutorTest {
     void recoveryPollerPicksUpAfterForeignLockRelease() throws Exception {
         var lock = new MapLock();
         lock.holdForeign("maestro:lock:workflow:recover-later");
-        var lockedExecutor = new WorkflowExecutor(store, lock, messaging, null, serializer, "test-service");
+        var lockedExecutor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .distributedLock(lock)
+                .messaging(messaging)
+                .build();
         try {
             store.createInstance(recoverableInstance("recover-later"));
 
@@ -963,7 +1032,10 @@ class WorkflowExecutorTest {
     void resumeBumpsLeaseEpochAndRunsUnderIt() throws Exception {
         var versioned = new VersionedInMemoryStore();
         var lock = new MapLock();
-        var fencedExecutor = new WorkflowExecutor(versioned, lock, messaging, null, serializer, "test-service");
+        var fencedExecutor = WorkflowExecutor.builder(versioned, serializer, "test-service")
+                .distributedLock(lock)
+                .messaging(messaging)
+                .build();
         try {
             var seeded = recoverableInstance("adopt-win");
             versioned.createInstance(seeded);
@@ -993,7 +1065,10 @@ class WorkflowExecutorTest {
     void resumeLosingTheAdoptionCas_yieldsAndReleasesTheLock() throws Exception {
         var versioned = new VersionedInMemoryStore();
         var lock = new MapLock();
-        var fencedExecutor = new WorkflowExecutor(versioned, lock, messaging, null, serializer, "test-service");
+        var fencedExecutor = WorkflowExecutor.builder(versioned, serializer, "test-service")
+                .distributedLock(lock)
+                .messaging(messaging)
+                .build();
         try {
             var seeded = recoverableInstance("adopt-lose");
             versioned.createInstance(seeded);
@@ -1022,9 +1097,15 @@ class WorkflowExecutorTest {
         var observer = new io.b2mash.maestro.core.observe.RecordingEngineObserver();
         var lock = new MapLock();
         // 300 ms TTL → the renewer runs every 100 ms, so a lost lock is noticed quickly.
-        var fencedExecutor = new WorkflowExecutor(store, lock, messaging, null, serializer, "test-service",
-                "maestro:lock:", Duration.ofMillis(300), true, Duration.ofSeconds(5), Duration.ofSeconds(30),
-                observer, Map.of());
+        var fencedExecutor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .distributedLock(lock)
+                .messaging(messaging)
+                .lockKeyPrefix("maestro:lock:")
+                .instanceLockTtl(Duration.ofMillis(300))
+                .shutdownTimeout(Duration.ofSeconds(5))
+                .wakeRecheckInterval(Duration.ofSeconds(30))
+                .observer(observer)
+                .build();
         var gate = new CountDownLatch(1);
         try {
             var entered = new CountDownLatch(1);
@@ -1068,9 +1149,14 @@ class WorkflowExecutorTest {
     void fencedFailedTerminalWrite_standsDownAsLeaseFenced() throws Exception {
         var observer = new io.b2mash.maestro.core.observe.RecordingEngineObserver();
         var versioned = new VersionedInMemoryStore();
-        var fencedExecutor = new WorkflowExecutor(versioned, null, messaging, null, serializer, "test-service",
-                "maestro:lock:", Duration.ofSeconds(30), true, Duration.ofSeconds(5), Duration.ofSeconds(30),
-                observer, Map.of());
+        var fencedExecutor = WorkflowExecutor.builder(versioned, serializer, "test-service")
+                .messaging(messaging)
+                .lockKeyPrefix("maestro:lock:")
+                .instanceLockTtl(Duration.ofSeconds(30))
+                .shutdownTimeout(Duration.ofSeconds(5))
+                .wakeRecheckInterval(Duration.ofSeconds(30))
+                .observer(observer)
+                .build();
         var gate = new CountDownLatch(1);
         try {
             var entered = new CountDownLatch(1);
@@ -1113,7 +1199,10 @@ class WorkflowExecutorTest {
             }
         };
         var lock = new MapLock();
-        var fencedExecutor = new WorkflowExecutor(faulty, lock, messaging, null, serializer, "test-service");
+        var fencedExecutor = WorkflowExecutor.builder(faulty, serializer, "test-service")
+                .distributedLock(lock)
+                .messaging(messaging)
+                .build();
         try {
             var seeded = recoverableInstance("adopt-blip");
             faulty.createInstance(seeded);
@@ -1155,9 +1244,14 @@ class WorkflowExecutorTest {
                 return consumed;
             }
         };
-        var fencedExecutor = new WorkflowExecutor(bumping, null, messaging, null, serializer, "test-service",
-                "maestro:lock:", Duration.ofSeconds(30), true, Duration.ofSeconds(5), Duration.ofSeconds(30),
-                observer, Map.of());
+        var fencedExecutor = WorkflowExecutor.builder(bumping, serializer, "test-service")
+                .messaging(messaging)
+                .lockKeyPrefix("maestro:lock:")
+                .instanceLockTtl(Duration.ofSeconds(30))
+                .shutdownTimeout(Duration.ofSeconds(5))
+                .wakeRecheckInterval(Duration.ofSeconds(30))
+                .observer(observer)
+                .build();
         try {
             var waiting = new CountDownLatch(1);
             var completed = new CountDownLatch(1);
