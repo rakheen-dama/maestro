@@ -305,7 +305,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [34](#issue-34) | A store outage during a state write fails a healthy workflow and compensates work that succeeded | Library defect | High | **Resolved** |
 | [35](#issue-35) | A new store migration fails startup on a database that already has the lock band | Library defect — upgrade | High | **Resolved** — `outOfOrder`, and new migrations numbered from V101 |
 | [36](#issue-36) | The test kit cannot apply production's default concurrency limits | Library gap — test fidelity | Medium | Open |
-| [37](#issue-37) | `WorkflowExecutor` has ten public constructors | Library gap — API design | Low | Open — before a first Maven Central release |
+| [37](#issue-37) | `WorkflowExecutor` has ten public constructors | Library gap — API design | Low | **Resolved** |
 | [38](#issue-38) | `PostgresWakeListener.close()` logs a WARN with a stack trace at every shutdown with a pooled `DataSource` | Library defect — log noise | Low | Open |
 | [39](#issue-39) | Workflows recorded under another `service_name` are stranded silently | Library gap — operability | Medium | Open |
 
@@ -3281,15 +3281,15 @@ production reaches at its default limits passes every test).
 `maestro.worker.task-queues` is bounded at 20 workflow runs and 20 live
 activities per node (`maestro.worker.default-concurrency` /
 `default-activity-concurrency`). `TestWorkflowEnvironment` builds its
-executors with a constructor that passes no limits at all (`Map.of()` and no
-defaults), and offers no way to pass any. A user's test therefore never queues
+executors with no limits at all (no `taskQueueLimits` and no
+`defaultTaskQueueLimits`), and offers no way to pass any. A user's test therefore never queues
 for a slot. Default-path behaviour that depends on slots is invisible in it:
 the same-queue wait deadlock ([Pitfalls rule 11](pitfalls.md#11-never-make-an-activity-wait-for-a-workflow-of-its-own-task-queue)),
 a parked run's re-check waiting for a slot, and Issues 29 and 30.
 
 **How to tackle it.** Add a `TestWorkflowEnvironment` option that takes the
-default and per-queue limits, and pass them to the executor constructor that
-takes default limits. `@MaestroTest` can bind it from `maestro.worker.*`.
+default and per-queue limits, and pass them to
+`WorkflowExecutor.Builder#taskQueueLimits` / `#defaultTaskQueueLimits`. `@MaestroTest` can bind it from `maestro.worker.*`.
 Decide whether the kit should default to production's 20/20: that makes tests
 behave like production, but could make existing user tests with more than 20
 concurrent runs on one queue slower.
@@ -3302,8 +3302,18 @@ limits unset (or both `0`) completes.
 
 ### Issue 37 — `WorkflowExecutor` has ten public constructors {#issue-37}
 
-> **Open.** Filed by the final whole-branch review of the bounded-host-load
-> cycle (2026-11-11). Recorded, not fixed, in that cycle.
+> **Resolved (2026-11-12, branch `refactor/executor-builder`).** Filed by the
+> final whole-branch review of the bounded-host-load cycle (2026-11-11).
+> `WorkflowExecutor.builder(store, serializer, serviceName)` returns a
+> `WorkflowExecutor.Builder` with one named setter per engine setting, each
+> defaulting to the value the six-argument constructor supplied; `build()`
+> validates as the constructors did, and a `null` `serializer`, `serviceName`,
+> `lockKeyPrefix` or `observer` now fails fast. The starter, the test kit and
+> every test build their executors through it. All ten constructors were
+> removed rather than deprecated, because no Maven Central release has
+> shipped them (engine-hardening cycle decision D6).
+> Pinned by `WorkflowExecutorBuilderTest`, whose
+> `defaultsAreTheValuesTheSixArgumentConstructorSupplied` pins each default.
 
 **Kind:** Library gap — API design. **Severity:** Low (no behaviour impact;
 a public-API cost that grows with every new engine setting).

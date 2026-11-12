@@ -25,8 +25,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Issue 37: {@link WorkflowExecutor.Builder} — its defaults are exactly the
- * values the six-argument constructor supplied, and {@code build()} keeps
- * today's validation.
+ * values the removed six-argument form supplied, and {@code build()} keeps
+ * the validation the removed constructors performed.
  */
 @DisplayName("WorkflowExecutor.Builder")
 class WorkflowExecutorBuilderTest {

@@ -124,9 +124,9 @@ public final class WorkflowExecutor {
 
     /**
      * Default wait for in-flight workflows to drain during {@link #shutdown()},
-     * used when no explicit {@code shutdownTimeout} is passed to the
-     * constructor. Corresponds to {@code maestro.shutdown.timeout} in the
-     * Spring Boot starter.
+     * used when no explicit {@code shutdownTimeout} is set with
+     * {@link Builder#shutdownTimeout}. Corresponds to
+     * {@code maestro.shutdown.timeout} in the Spring Boot starter.
      */
     static final Duration DEFAULT_SHUTDOWN_TIMEOUT = Duration.ofSeconds(30);
 
@@ -169,530 +169,8 @@ public final class WorkflowExecutor {
     private volatile @Nullable RetentionSettings retentionSettings;
 
     /**
-     * Creates a new workflow executor with the default lock key prefix
-     * ({@code maestro:lock:}) and instance-lock TTL (30s).
-     *
-     * @param store           workflow store for persistence
-     * @param distributedLock optional distributed lock backend
-     * @param messaging       optional messaging for lifecycle events
-     * @param signalNotifier  optional cross-instance signal notification
-     * @param serializer      Jackson serializer for payloads
-     * @param serviceName     the name of the owning service
-     */
-    public WorkflowExecutor(
-            WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
-            @Nullable WorkflowMessaging messaging,
-            @Nullable SignalNotifier signalNotifier,
-            PayloadSerializer serializer,
-            String serviceName
-    ) {
-        this(builder(store, serializer, serviceName)
-                .distributedLock(distributedLock)
-                .messaging(messaging)
-                .signalNotifier(signalNotifier));
-    }
-
-    /**
-     * Creates a new workflow executor with explicit lock configuration and
-     * lifecycle event publishing enabled.
-     *
-     * @param store           workflow store for persistence
-     * @param distributedLock optional distributed lock backend
-     * @param messaging       optional messaging for lifecycle events
-     * @param signalNotifier  optional cross-instance signal notification
-     * @param serializer      Jackson serializer for payloads
-     * @param serviceName     the name of the owning service
-     * @param lockKeyPrefix   prefix for distributed lock keys (e.g. {@code maestro:lock:})
-     * @param instanceLockTtl TTL for the per-workflow instance lock; renewed
-     *                        at one third of this interval — must be strictly
-     *                        positive
-     * @throws IllegalArgumentException if {@code instanceLockTtl} is
-     *                                  {@code null}, zero, or negative
-     */
-    public WorkflowExecutor(
-            WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
-            @Nullable WorkflowMessaging messaging,
-            @Nullable SignalNotifier signalNotifier,
-            PayloadSerializer serializer,
-            String serviceName,
-            String lockKeyPrefix,
-            Duration instanceLockTtl
-    ) {
-        this(builder(store, serializer, serviceName)
-                .distributedLock(distributedLock)
-                .messaging(messaging)
-                .signalNotifier(signalNotifier)
-                .lockKeyPrefix(lockKeyPrefix)
-                .instanceLockTtl(instanceLockTtl));
-    }
-
-    /**
-     * Creates a new workflow executor with explicit lock configuration and
-     * explicit control over lifecycle event publishing.
-     *
-     * @param store                   workflow store for persistence
-     * @param distributedLock         optional distributed lock backend
-     * @param messaging               optional messaging for lifecycle events
-     * @param signalNotifier          optional cross-instance signal notification
-     * @param serializer              Jackson serializer for payloads
-     * @param serviceName             the name of the owning service
-     * @param lockKeyPrefix           prefix for distributed lock keys (e.g. {@code maestro:lock:})
-     * @param instanceLockTtl         TTL for the per-workflow instance lock; renewed
-     *                                at one third of this interval — must be strictly
-     *                                positive
-     * @param lifecycleEventsEnabled  whether {@code WORKFLOW_STARTED}/{@code _COMPLETED}/
-     *                                {@code _FAILED} lifecycle events are published at all
-     *                                (independent of whether {@code messaging} is configured).
-     *                                Corresponds to {@code maestro.admin.events.enabled} in the
-     *                                Spring Boot starter.
-     * @throws IllegalArgumentException if {@code instanceLockTtl} is
-     *                                  {@code null}, zero, or negative
-     */
-    public WorkflowExecutor(
-            WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
-            @Nullable WorkflowMessaging messaging,
-            @Nullable SignalNotifier signalNotifier,
-            PayloadSerializer serializer,
-            String serviceName,
-            String lockKeyPrefix,
-            Duration instanceLockTtl,
-            boolean lifecycleEventsEnabled
-    ) {
-        this(builder(store, serializer, serviceName)
-                .distributedLock(distributedLock)
-                .messaging(messaging)
-                .signalNotifier(signalNotifier)
-                .lockKeyPrefix(lockKeyPrefix)
-                .instanceLockTtl(instanceLockTtl)
-                .lifecycleEventsEnabled(lifecycleEventsEnabled));
-    }
-
-    /**
-     * Creates a new workflow executor with explicit lock configuration,
-     * explicit control over lifecycle event publishing, and explicit
-     * shutdown/signal timing.
-     *
-     * @param store                  workflow store for persistence
-     * @param distributedLock        optional distributed lock backend
-     * @param messaging              optional messaging for lifecycle events
-     * @param signalNotifier         optional cross-instance signal notification
-     * @param serializer             Jackson serializer for payloads
-     * @param serviceName            the name of the owning service
-     * @param lockKeyPrefix          prefix for distributed lock keys (e.g. {@code maestro:lock:})
-     * @param instanceLockTtl        TTL for the per-workflow instance lock; renewed
-     *                               at one third of this interval — must be strictly
-     *                               positive
-     * @param lifecycleEventsEnabled whether {@code WORKFLOW_STARTED}/{@code _COMPLETED}/
-     *                               {@code _FAILED} lifecycle events are published at all
-     *                               (independent of whether {@code messaging} is configured).
-     *                               Corresponds to {@code maestro.admin.events.enabled} in the
-     *                               Spring Boot starter.
-     * @param shutdownTimeout        how long {@link #shutdown()} waits for in-flight
-     *                               workflows to drain before returning — must be strictly
-     *                               positive. Corresponds to {@code maestro.shutdown.timeout}.
-     * @param wakeRecheckInterval    how often a parked {@code awaitSignal()} or
-     *                               {@code sleep()} re-checks the store for a wake that
-     *                               happened without a local unpark — a signal persisted
-     *                               on another node, or a timer fired/cancelled by a
-     *                               remote timer-poller leader — must be strictly
-     *                               positive. Bounds cross-node signal, timer-fire and
-     *                               timer-cancel latency for a parked workflow.
-     *                               Corresponds to {@code maestro.signal.wake-recheck-interval}.
-     * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
-     *                                  or {@code wakeRecheckInterval} is {@code null}, zero,
-     *                                  or negative
-     */
-    public WorkflowExecutor(
-            WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
-            @Nullable WorkflowMessaging messaging,
-            @Nullable SignalNotifier signalNotifier,
-            PayloadSerializer serializer,
-            String serviceName,
-            String lockKeyPrefix,
-            Duration instanceLockTtl,
-            boolean lifecycleEventsEnabled,
-            Duration shutdownTimeout,
-            Duration wakeRecheckInterval
-    ) {
-        this(builder(store, serializer, serviceName)
-                .distributedLock(distributedLock)
-                .messaging(messaging)
-                .signalNotifier(signalNotifier)
-                .lockKeyPrefix(lockKeyPrefix)
-                .instanceLockTtl(instanceLockTtl)
-                .lifecycleEventsEnabled(lifecycleEventsEnabled)
-                .shutdownTimeout(shutdownTimeout)
-                .wakeRecheckInterval(wakeRecheckInterval));
-    }
-
-    /**
-     * Creates a new workflow executor with explicit lock configuration,
-     * explicit control over lifecycle event publishing, explicit
-     * shutdown/signal timing, and an {@link EngineObserver}.
-     *
-     * @param store                  workflow store for persistence
-     * @param distributedLock        optional distributed lock backend
-     * @param messaging              optional messaging for lifecycle events
-     * @param signalNotifier         optional cross-instance signal notification
-     * @param serializer             Jackson serializer for payloads
-     * @param serviceName            the name of the owning service
-     * @param lockKeyPrefix          prefix for distributed lock keys (e.g. {@code maestro:lock:})
-     * @param instanceLockTtl        TTL for the per-workflow instance lock; renewed
-     *                               at one third of this interval — must be strictly
-     *                               positive
-     * @param lifecycleEventsEnabled whether {@code WORKFLOW_STARTED}/{@code _COMPLETED}/
-     *                               {@code _FAILED} lifecycle events are published at all
-     *                               (independent of whether {@code messaging} is configured).
-     *                               Corresponds to {@code maestro.admin.events.enabled} in the
-     *                               Spring Boot starter.
-     * @param shutdownTimeout        how long {@link #shutdown()} waits for in-flight
-     *                               workflows to drain before returning — must be strictly
-     *                               positive. Corresponds to {@code maestro.shutdown.timeout}.
-     * @param wakeRecheckInterval    how often a parked {@code awaitSignal()} or
-     *                               {@code sleep()} re-checks the store for a wake that
-     *                               happened without a local unpark — must be strictly
-     *                               positive. Corresponds to
-     *                               {@code maestro.signal.wake-recheck-interval}.
-     * @param observer               engine observation seam invoked synchronously at
-     *                               execution boundaries and handed to every component
-     *                               this executor builds; pass
-     *                               {@link EngineObserver#NOOP} (never {@code null})
-     *                               when no observation is wanted — see
-     *                               {@link EngineObserver} for the callback and
-     *                               thread-safety contract
-     * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
-     *                                  or {@code wakeRecheckInterval} is {@code null}, zero,
-     *                                  or negative
-     */
-    public WorkflowExecutor(
-            WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
-            @Nullable WorkflowMessaging messaging,
-            @Nullable SignalNotifier signalNotifier,
-            PayloadSerializer serializer,
-            String serviceName,
-            String lockKeyPrefix,
-            Duration instanceLockTtl,
-            boolean lifecycleEventsEnabled,
-            Duration shutdownTimeout,
-            Duration wakeRecheckInterval,
-            EngineObserver observer
-    ) {
-        this(builder(store, serializer, serviceName)
-                .distributedLock(distributedLock)
-                .messaging(messaging)
-                .signalNotifier(signalNotifier)
-                .lockKeyPrefix(lockKeyPrefix)
-                .instanceLockTtl(instanceLockTtl)
-                .lifecycleEventsEnabled(lifecycleEventsEnabled)
-                .shutdownTimeout(shutdownTimeout)
-                .wakeRecheckInterval(wakeRecheckInterval)
-                .observer(observer));
-    }
-
-    /**
-     * Creates a new workflow executor with every setting of the 12-argument
-     * constructor plus per-task-queue concurrency limits (F8 / Issue 25).
-     *
-     * @param store                  workflow store for persistence
-     * @param distributedLock        optional distributed lock backend
-     * @param messaging              optional messaging for lifecycle events
-     * @param signalNotifier         optional cross-instance signal notification
-     * @param serializer             Jackson serializer for payloads
-     * @param serviceName            the name of the owning service
-     * @param lockKeyPrefix          prefix for distributed lock keys (e.g. {@code maestro:lock:})
-     * @param instanceLockTtl        TTL for the per-workflow instance lock; renewed
-     *                               at one third of this interval — must be strictly
-     *                               positive
-     * @param lifecycleEventsEnabled whether {@code WORKFLOW_*} lifecycle events are
-     *                               published at all. Corresponds to
-     *                               {@code maestro.admin.events.enabled}.
-     * @param shutdownTimeout        how long {@link #shutdown()} waits for in-flight
-     *                               workflows to drain — must be strictly positive.
-     *                               Corresponds to {@code maestro.shutdown.timeout}.
-     * @param wakeRecheckInterval    how often a parked {@code awaitSignal()} or
-     *                               {@code sleep()} re-checks the store — must be
-     *                               strictly positive. Corresponds to
-     *                               {@code maestro.signal.wake-recheck-interval}.
-     * @param observer               engine observation seam; pass
-     *                               {@link EngineObserver#NOOP} (never {@code null})
-     *                               when no observation is wanted
-     * @param taskQueueLimits        per-node concurrency limits keyed by task-queue
-     *                               name, enforced by this executor's
-     *                               {@link #taskQueueGovernor()}; queues not listed
-     *                               are unbounded. Corresponds to
-     *                               {@code maestro.worker.task-queues}.
-     * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
-     *                                  or {@code wakeRecheckInterval} is {@code null}, zero,
-     *                                  or negative
-     */
-    public WorkflowExecutor(
-            WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
-            @Nullable WorkflowMessaging messaging,
-            @Nullable SignalNotifier signalNotifier,
-            PayloadSerializer serializer,
-            String serviceName,
-            String lockKeyPrefix,
-            Duration instanceLockTtl,
-            boolean lifecycleEventsEnabled,
-            Duration shutdownTimeout,
-            Duration wakeRecheckInterval,
-            EngineObserver observer,
-            Map<String, TaskQueueLimits> taskQueueLimits
-    ) {
-        this(builder(store, serializer, serviceName)
-                .distributedLock(distributedLock)
-                .messaging(messaging)
-                .signalNotifier(signalNotifier)
-                .lockKeyPrefix(lockKeyPrefix)
-                .instanceLockTtl(instanceLockTtl)
-                .lifecycleEventsEnabled(lifecycleEventsEnabled)
-                .shutdownTimeout(shutdownTimeout)
-                .wakeRecheckInterval(wakeRecheckInterval)
-                .observer(observer)
-                .taskQueueLimits(taskQueueLimits));
-    }
-
-    /**
-     * Creates a new workflow executor with every setting of the 13-argument
-     * constructor plus the limits of every task queue not listed in
-     * {@code taskQueueLimits}. Every other constructor passes {@code null} —
-     * unlisted queues unbounded; the Spring Boot starter passes
-     * {@code maestro.worker.default-concurrency} /
-     * {@code default-activity-concurrency}.
-     *
-     * @param store                  workflow store for persistence
-     * @param distributedLock        optional distributed lock backend
-     * @param messaging              optional messaging for lifecycle events
-     * @param signalNotifier         optional cross-instance signal notification
-     * @param serializer             Jackson serializer for payloads
-     * @param serviceName            the name of the owning service
-     * @param lockKeyPrefix          prefix for distributed lock keys (e.g. {@code maestro:lock:})
-     * @param instanceLockTtl        TTL for the per-workflow instance lock — must be
-     *                               strictly positive
-     * @param lifecycleEventsEnabled whether {@code WORKFLOW_*} lifecycle events are
-     *                               published at all
-     * @param shutdownTimeout        how long {@link #shutdown()} waits for in-flight
-     *                               workflows to drain — must be strictly positive
-     * @param wakeRecheckInterval    how often a parked {@code awaitSignal()} or
-     *                               {@code sleep()} re-checks the store — must be
-     *                               strictly positive
-     * @param observer               engine observation seam; pass
-     *                               {@link EngineObserver#NOOP} (never {@code null})
-     * @param taskQueueLimits        per-node concurrency limits keyed by task-queue name
-     * @param defaultTaskQueueLimits per-node limits of each task queue not in
-     *                               {@code taskQueueLimits} — each such queue gets
-     *                               its own pools of this size (see
-     *                               {@link TaskQueueGovernor#TaskQueueGovernor(Map, TaskQueueLimits)});
-     *                               {@code null} leaves them unbounded
-     * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
-     *                                  or {@code wakeRecheckInterval} is {@code null}, zero,
-     *                                  or negative
-     */
-    public WorkflowExecutor(
-            WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
-            @Nullable WorkflowMessaging messaging,
-            @Nullable SignalNotifier signalNotifier,
-            PayloadSerializer serializer,
-            String serviceName,
-            String lockKeyPrefix,
-            Duration instanceLockTtl,
-            boolean lifecycleEventsEnabled,
-            Duration shutdownTimeout,
-            Duration wakeRecheckInterval,
-            EngineObserver observer,
-            Map<String, TaskQueueLimits> taskQueueLimits,
-            @Nullable TaskQueueLimits defaultTaskQueueLimits
-    ) {
-        this(builder(store, serializer, serviceName)
-                .distributedLock(distributedLock)
-                .messaging(messaging)
-                .signalNotifier(signalNotifier)
-                .lockKeyPrefix(lockKeyPrefix)
-                .instanceLockTtl(instanceLockTtl)
-                .lifecycleEventsEnabled(lifecycleEventsEnabled)
-                .shutdownTimeout(shutdownTimeout)
-                .wakeRecheckInterval(wakeRecheckInterval)
-                .observer(observer)
-                .taskQueueLimits(taskQueueLimits)
-                .defaultTaskQueueLimits(defaultTaskQueueLimits));
-    }
-
-    /**
-     * Creates a workflow executor with the defaults of the six-argument
-     * constructor but an explicit {@link InstantSource} for arming durable
-     * deadlines — the seam {@code TestWorkflowEnvironment} uses to put
-     * {@code sleep()} timers and {@code awaitSignal()} deadlines on its
-     * controllable test clock (R59). Production code has no reason to call
-     * this: every other constructor uses {@link InstantSource#system()}.
-     *
-     * @param store           workflow store for persistence
-     * @param distributedLock optional distributed lock backend
-     * @param messaging       optional messaging for lifecycle events
-     * @param signalNotifier  optional cross-instance signal notification
-     * @param serializer      Jackson serializer for payloads
-     * @param serviceName     the name of the owning service
-     * @param instantSource   the clock deadlines are armed on — see
-     *                        {@link #instantSource()}
-     */
-    public WorkflowExecutor(
-            WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
-            @Nullable WorkflowMessaging messaging,
-            @Nullable SignalNotifier signalNotifier,
-            PayloadSerializer serializer,
-            String serviceName,
-            InstantSource instantSource
-    ) {
-        this(builder(store, serializer, serviceName)
-                .distributedLock(distributedLock)
-                .messaging(messaging)
-                .signalNotifier(signalNotifier)
-                .instantSource(instantSource));
-    }
-
-    /**
-     * Creates a new workflow executor with every setting of the 13-argument
-     * constructor plus the {@link InstantSource} durable deadlines are armed
-     * on (R59).
-     *
-     * @param store                  workflow store for persistence
-     * @param distributedLock        optional distributed lock backend
-     * @param messaging              optional messaging for lifecycle events
-     * @param signalNotifier         optional cross-instance signal notification
-     * @param serializer             Jackson serializer for payloads
-     * @param serviceName            the name of the owning service
-     * @param lockKeyPrefix          prefix for distributed lock keys (e.g. {@code maestro:lock:})
-     * @param instanceLockTtl        TTL for the per-workflow instance lock — must be
-     *                               strictly positive
-     * @param lifecycleEventsEnabled whether {@code WORKFLOW_*} lifecycle events are
-     *                               published at all
-     * @param shutdownTimeout        how long {@link #shutdown()} waits for in-flight
-     *                               workflows to drain — must be strictly positive
-     * @param wakeRecheckInterval    how often a parked {@code awaitSignal()} or
-     *                               {@code sleep()} re-checks the store — must be
-     *                               strictly positive
-     * @param observer               engine observation seam; pass
-     *                               {@link EngineObserver#NOOP} (never {@code null})
-     * @param taskQueueLimits        per-node concurrency limits keyed by task-queue name
-     * @param instantSource          the clock a live {@code sleep()} arms its timer's
-     *                               {@code fireAt} from, a live {@code awaitSignal()}
-     *                               arms and decides its deadline on, and
-     *                               {@code currentTime()} records — see
-     *                               {@link #instantSource()}. Pass
-     *                               {@link InstantSource#system()} in production:
-     *                               the timer poller ({@link #startTimerPoller})
-     *                               still compares due rows against the system
-     *                               clock, so a non-system source is only for a
-     *                               test harness that fires timers itself (as
-     *                               {@code TestWorkflowEnvironment.advanceTime}
-     *                               does) and never starts the poller.
-     * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
-     *                                  or {@code wakeRecheckInterval} is {@code null}, zero,
-     *                                  or negative
-     */
-    public WorkflowExecutor(
-            WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
-            @Nullable WorkflowMessaging messaging,
-            @Nullable SignalNotifier signalNotifier,
-            PayloadSerializer serializer,
-            String serviceName,
-            String lockKeyPrefix,
-            Duration instanceLockTtl,
-            boolean lifecycleEventsEnabled,
-            Duration shutdownTimeout,
-            Duration wakeRecheckInterval,
-            EngineObserver observer,
-            Map<String, TaskQueueLimits> taskQueueLimits,
-            InstantSource instantSource
-    ) {
-        this(builder(store, serializer, serviceName)
-                .distributedLock(distributedLock)
-                .messaging(messaging)
-                .signalNotifier(signalNotifier)
-                .lockKeyPrefix(lockKeyPrefix)
-                .instanceLockTtl(instanceLockTtl)
-                .lifecycleEventsEnabled(lifecycleEventsEnabled)
-                .shutdownTimeout(shutdownTimeout)
-                .wakeRecheckInterval(wakeRecheckInterval)
-                .observer(observer)
-                .taskQueueLimits(taskQueueLimits)
-                .instantSource(instantSource));
-    }
-
-    /**
-     * The constructor every other one delegates to: every setting of the
-     * 14-argument {@link InstantSource} constructor plus the limits of every
-     * task queue not listed in {@code taskQueueLimits}.
-     *
-     * @param store                  workflow store for persistence
-     * @param distributedLock        optional distributed lock backend
-     * @param messaging              optional messaging for lifecycle events
-     * @param signalNotifier         optional cross-instance signal notification
-     * @param serializer             Jackson serializer for payloads
-     * @param serviceName            the name of the owning service
-     * @param lockKeyPrefix          prefix for distributed lock keys
-     * @param instanceLockTtl        TTL for the per-workflow instance lock — must be
-     *                               strictly positive
-     * @param lifecycleEventsEnabled whether {@code WORKFLOW_*} lifecycle events are
-     *                               published at all
-     * @param shutdownTimeout        how long {@link #shutdown()} waits for in-flight
-     *                               workflows to drain — must be strictly positive
-     * @param wakeRecheckInterval    how often a parked run re-checks the store —
-     *                               must be strictly positive
-     * @param observer               engine observation seam; never {@code null}
-     * @param taskQueueLimits        per-node concurrency limits keyed by task-queue name
-     * @param defaultTaskQueueLimits per-node limits of each task queue not in
-     *                               {@code taskQueueLimits}; {@code null} leaves
-     *                               them unbounded
-     * @param instantSource          the clock durable deadlines are armed on — pass
-     *                               {@link InstantSource#system()} in production
-     * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
-     *                                  or {@code wakeRecheckInterval} is {@code null}, zero,
-     *                                  or negative
-     */
-    public WorkflowExecutor(
-            WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
-            @Nullable WorkflowMessaging messaging,
-            @Nullable SignalNotifier signalNotifier,
-            PayloadSerializer serializer,
-            String serviceName,
-            String lockKeyPrefix,
-            Duration instanceLockTtl,
-            boolean lifecycleEventsEnabled,
-            Duration shutdownTimeout,
-            Duration wakeRecheckInterval,
-            EngineObserver observer,
-            Map<String, TaskQueueLimits> taskQueueLimits,
-            @Nullable TaskQueueLimits defaultTaskQueueLimits,
-            InstantSource instantSource
-    ) {
-        this(builder(store, serializer, serviceName)
-                .distributedLock(distributedLock)
-                .messaging(messaging)
-                .signalNotifier(signalNotifier)
-                .lockKeyPrefix(lockKeyPrefix)
-                .instanceLockTtl(instanceLockTtl)
-                .lifecycleEventsEnabled(lifecycleEventsEnabled)
-                .shutdownTimeout(shutdownTimeout)
-                .wakeRecheckInterval(wakeRecheckInterval)
-                .observer(observer)
-                .taskQueueLimits(taskQueueLimits)
-                .defaultTaskQueueLimits(defaultTaskQueueLimits)
-                .instantSource(instantSource));
-    }
-
-    /**
-     * The single build path: {@link Builder#build()} and every public
-     * constructor end here. Validates the builder's values — the three
+     * The single build path: {@link Builder#build()} ends here, and it is
+     * the only way to obtain an executor. Validates the builder's values — the three
      * durations first, then the reference options — before building any
      * component from them.
      *
@@ -909,8 +387,10 @@ public final class WorkflowExecutor {
         }
 
         /**
-         * Sets whether lifecycle events are published at all. Default:
-         * {@code true}.
+         * Sets whether lifecycle events are published at all, independent of
+         * whether {@link #messaging(WorkflowMessaging)} is configured.
+         * Corresponds to {@code maestro.admin.events.enabled} in the Spring
+         * Boot starter. Default: {@code true}.
          *
          * @param lifecycleEventsEnabled whether {@code WORKFLOW_*} lifecycle events are
          *                               published at all
@@ -923,7 +403,8 @@ public final class WorkflowExecutor {
 
         /**
          * Sets how long {@link WorkflowExecutor#shutdown()} waits for in-flight
-         * workflows to drain. Default: 30 seconds. {@link #build()} rejects
+         * workflows to drain before returning. Corresponds to
+         * {@code maestro.shutdown.timeout}. Default: 30 seconds. {@link #build()} rejects
          * {@code null}, zero or negative with an {@link IllegalArgumentException}.
          *
          * @param shutdownTimeout how long {@link WorkflowExecutor#shutdown()} waits for
@@ -936,8 +417,13 @@ public final class WorkflowExecutor {
         }
 
         /**
-         * Sets how often a parked run re-checks the store for a wake that
-         * happened without a local unpark. Default: 30 seconds.
+         * Sets how often a parked {@code awaitSignal()} or {@code sleep()}
+         * re-checks the store for a wake that happened without a local
+         * unpark — a signal persisted on another node, or a timer
+         * fired/cancelled by a remote timer-poller leader. Bounds cross-node
+         * signal, timer-fire and timer-cancel latency for a parked workflow.
+         * Corresponds to {@code maestro.signal.wake-recheck-interval}.
+         * Default: 30 seconds.
          * {@link #build()} rejects {@code null}, zero or negative with an
          * {@link IllegalArgumentException}.
          *
@@ -951,9 +437,13 @@ public final class WorkflowExecutor {
         }
 
         /**
-         * Sets the engine observation seam. Default:
-         * {@link EngineObserver#NOOP}. {@link #build()} rejects {@code null}
-         * with a {@link NullPointerException}.
+         * Sets the engine observation seam, invoked synchronously at
+         * execution boundaries and handed to every component the executor
+         * builds — see {@link EngineObserver} for the callback and
+         * thread-safety contract. Default: {@link EngineObserver#NOOP}, which
+         * is also what to pass when no observation is wanted.
+         * {@link #build()} rejects {@code null} with a
+         * {@link NullPointerException}.
          *
          * @param observer engine observation seam; never {@code null}
          * @return this builder
@@ -964,7 +454,11 @@ public final class WorkflowExecutor {
         }
 
         /**
-         * Sets the per-node concurrency limits keyed by task-queue name.
+         * Sets the per-node concurrency limits keyed by task-queue name,
+         * enforced by the executor's {@link WorkflowExecutor#taskQueueGovernor()}
+         * (F8 / Issue 25); a queue not listed gets
+         * {@link #defaultTaskQueueLimits(TaskQueueLimits)}. Corresponds to
+         * {@code maestro.worker.task-queues}.
          * Default: an empty map. {@link #build()} rejects {@code null} with a
          * {@link NullPointerException}.
          *
@@ -978,8 +472,13 @@ public final class WorkflowExecutor {
 
         /**
          * Sets the per-node limits of each task queue not in
-         * {@link #taskQueueLimits(Map)}. Default: {@code null} — unlisted
-         * queues are unbounded.
+         * {@link #taskQueueLimits(Map)}: each such queue gets its own pools
+         * of this size (see
+         * {@link TaskQueueGovernor#TaskQueueGovernor(Map, TaskQueueLimits)}).
+         * The Spring Boot starter passes
+         * {@code maestro.worker.default-concurrency} /
+         * {@code default-activity-concurrency}. Default: {@code null} —
+         * unlisted queues are unbounded.
          *
          * @param defaultTaskQueueLimits per-node limits of each task queue not in
          *                               {@code taskQueueLimits}; {@code null} leaves
@@ -995,11 +494,14 @@ public final class WorkflowExecutor {
          * Sets the clock a live {@code sleep()} arms its timer's
          * {@code fireAt} from, a live {@code awaitSignal()} arms and decides
          * its deadline on, and {@code currentTime()} records — see
-         * {@link WorkflowExecutor#instantSource()}. Default:
+         * {@link WorkflowExecutor#instantSource()} (R59). Default:
          * {@link InstantSource#system()}. {@link #build()} rejects {@code null}
          * with a {@link NullPointerException}.
          *
-         * <p>Keep {@link InstantSource#system()} in production: the timer
+         * <p>This is the seam {@code TestWorkflowEnvironment} uses to put
+         * {@code sleep()} timers and {@code awaitSignal()} deadlines on its
+         * controllable test clock; production code has no reason to set it.
+         * Keep {@link InstantSource#system()} in production: the timer
          * poller ({@link WorkflowExecutor#startTimerPoller}) still compares
          * due rows against the system clock, so a non-system source is only
          * for a test harness that fires timers itself (as
@@ -1036,8 +538,8 @@ public final class WorkflowExecutor {
      * deadline (armed {@code now + timeout} and decided against "now"), and
      * the value a live {@code currentTime()} records (R59).
      *
-     * <p>{@link InstantSource#system()} unless the seven- or 14-argument
-     * constructor was given another — the Spring starter never does, and the
+     * <p>{@link InstantSource#system()} unless {@link Builder#instantSource}
+     * was given another — the Spring starter never does, and the
      * timer poller compares due rows against the system clock, so a
      * non-system source is only coherent where the poller is not running and
      * something else fires the rows ({@code TestWorkflowEnvironment.advanceTime}).
@@ -3532,7 +3034,7 @@ public final class WorkflowExecutor {
      * {@link io.b2mash.maestro.core.observe.CompositeEngineObserver#of} always
      * wraps, so a registered adapter's {@code RuntimeException} is contained
      * before it ever reaches here. This guard stays as depth — the
-     * constructors accept <em>any</em> {@code EngineObserver}, so nothing
+     * builder accepts <em>any</em> {@code EngineObserver}, so nothing
      * forces an embedder or a test wiring the engine by hand through
      * {@code of(...)} — and because every emission in this class sits on a
      * durable path where an escaping {@code RuntimeException} would be read as
