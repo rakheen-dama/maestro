@@ -48,6 +48,7 @@ import java.util.UUID;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -524,15 +525,16 @@ class MaestroSchemaInitializerTest {
 
     // ── the production recipe: docs/configuration.md § Schema management, "In production" ──
     //
-    // The three SQL constants below are printed verbatim in that section;
-    // theDocumentedSqlIsTheTestedSql fails if the two drift apart.
+    // The five SQL constants below are exactly the sql blocks printed in that
+    // section, no more and no fewer; theDocumentedSqlIsTheTestedSql fails if
+    // the two drift apart.
 
     /**
      * The schema grants, issued by the schema's owner (here the container's
      * superuser): a non-superuser migration role needs {@code USAGE} and
-     * {@code CREATE}, the nodes' role {@code USAGE}. Only the schema's owner
-     * can grant on it; a {@code GRANT} on the schema issued by
-     * {@code maestro_owner} draws a warning and grants nothing.
+     * {@code CREATE}, the nodes' role {@code USAGE}. Issued by a role without
+     * the right to grant on the schema (such as {@code maestro_owner}), a
+     * {@code GRANT} grants nothing.
      */
     static final String SCHEMA_GRANTS = """
             GRANT USAGE, CREATE ON SCHEMA public TO maestro_owner;
@@ -556,12 +558,37 @@ class MaestroSchemaInitializerTest {
     /**
      * Grants on every table the owner creates in the schema from now on, so a
      * table added by a later migration is usable by the nodes without a new
-     * grant. Issued by the owner.
+     * grant. Issued by the owner, after the first migration and
+     * {@link #RUNTIME_GRANTS}: issued before the first migration it also
+     * covers the tables that migration creates.
      */
     static final String DEFAULT_PRIVILEGES = """
             ALTER DEFAULT PRIVILEGES FOR ROLE maestro_owner IN SCHEMA public
                 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO maestro_app;
             """;
+
+    /**
+     * Lists what the nodes' role holds on the two tables where
+     * {@link #RUNTIME_GRANTS} grants less than {@link #DEFAULT_PRIVILEGES}
+     * would. Run as {@code maestro_owner} ({@code information_schema} shows
+     * only grants an enabled role made or received).
+     */
+    static final String PRIVILEGE_CHECK = """
+            SELECT table_name, privilege_type FROM information_schema.role_table_grants
+                WHERE grantee = 'maestro_app' AND table_name IN ('maestro_workflow_event', 'maestro_schema_history')
+                ORDER BY table_name, privilege_type;
+            """;
+
+    /** Takes back what {@link #DEFAULT_PRIVILEGES} issued too early added. Issued by {@code maestro_owner}. */
+    static final String WRONG_ORDER_REPAIR = """
+            REVOKE UPDATE ON maestro_workflow_event FROM maestro_app;
+            REVOKE INSERT, UPDATE, DELETE ON maestro_schema_history FROM maestro_app;
+            """;
+
+    /** {@link #PRIVILEGE_CHECK}'s rows in the documented order, as "table privilege". */
+    private static final List<String> LEAST_PRIVILEGE = List.of(
+            "maestro_schema_history SELECT",
+            "maestro_workflow_event DELETE", "maestro_workflow_event INSERT", "maestro_workflow_event SELECT");
 
     /**
      * The production recipe in docs/configuration.md § Schema management, run:
@@ -702,7 +729,9 @@ class MaestroSchemaInitializerTest {
                 .isInstanceOfSatisfying(SQLException.class, e -> assertThat(e.getSQLState()).isEqualTo("42501"))
                 .hasMessageContaining("permission denied for table maestro_future_probe");
 
-        execute(owner, DEFAULT_PRIVILEGES);
+        execute(owner, DEFAULT_PRIVILEGES);                 // the documented order: migrate, table grants, then this
+        assertThat(privilegeCheck(owner)).as("documented order: least privilege").isEqualTo(LEAST_PRIVILEGE);
+        assertAppCannotRewriteHistory(app);
         var v103 = withFutureMigration(dir, "V103__future_table.sql", "CREATE TABLE maestro_future_probe_2 (id INT);");
         new MaestroSchemaInitializer(owner, SchemaMode.FLYWAY, v103).initialize();
         assertThatCode(() -> new MaestroSchemaInitializer(app, SchemaMode.VALIDATE, v103).initialize())
@@ -721,18 +750,64 @@ class MaestroSchemaInitializerTest {
     }
 
     /**
-     * docs/configuration.md prints the SQL the two tests above execute; an
-     * edit to either side alone fails here. The docs file is an input of this
-     * module's {@code test} task (build.gradle.kts), so a doc-only edit reruns
-     * this test instead of being served from the build cache. Gradle runs
-     * tests in the module directory.
+     * {@link #DEFAULT_PRIVILEGES} issued in the wrong order, before the first
+     * migration: they then cover the tables that migration creates, so the
+     * nodes' role can rewrite {@code maestro_workflow_event} and write
+     * {@code maestro_schema_history}. {@link #PRIVILEGE_CHECK} shows it, and
+     * {@link #WRONG_ORDER_REPAIR} restores least privilege. A fresh database
+     * of the shared container, like every test here; no extra container.
+     */
+    @Test
+    @DisplayName("default privileges issued before the first migration over-grant; the documented check finds it and the repair undoes it")
+    void defaultPrivilegesBeforeTheFirstMigrationOverGrant() throws Exception {
+        var owner = lockedDownSchemaWithANonSuperuserOwner();
+        execute(owner, DEFAULT_PRIVILEGES);                 // wrong: before the first migration
+        new MaestroSchemaInitializer(owner, SchemaMode.FLYWAY, cl).initialize();
+        execute(owner, RUNTIME_GRANTS);
+        var app = roleDataSource("maestro_app", "app");
+
+        assertThat(privilegeCheck(owner)).as("wrong order: the check shows the extra privileges").containsExactly(
+                "maestro_schema_history DELETE", "maestro_schema_history INSERT", "maestro_schema_history SELECT",
+                "maestro_schema_history UPDATE",
+                "maestro_workflow_event DELETE", "maestro_workflow_event INSERT", "maestro_workflow_event SELECT",
+                "maestro_workflow_event UPDATE");
+        assertThatCode(() -> execute(app, "UPDATE maestro_workflow_event SET step_name = step_name"))
+                .as("wrong order: the app role can rewrite workflow history").doesNotThrowAnyException();
+        assertThatCode(() -> execute(app, "UPDATE maestro_schema_history SET description = description"))
+                .as("wrong order: the app role can write the migration history").doesNotThrowAnyException();
+
+        execute(owner, WRONG_ORDER_REPAIR);
+
+        assertThat(privilegeCheck(owner)).as("repaired: least privilege").isEqualTo(LEAST_PRIVILEGE);
+        assertAppCannotRewriteHistory(app);
+    }
+
+    /**
+     * docs/configuration.md prints the SQL the role tests execute: the set of
+     * {@code sql} blocks in its "In production" text is exactly the set of
+     * tested constants, line endings normalised, so an extra statement inside
+     * a block or an extra block fails here, and a CRLF checkout does not. The
+     * docs file is an input of this module's {@code test} task
+     * (build.gradle.kts), so a doc-only edit reruns this test instead of being
+     * served from the build cache. Gradle runs tests in the module directory.
      */
     @Test
     @DisplayName("docs/configuration.md prints exactly the SQL the role tests execute")
     void theDocumentedSqlIsTheTestedSql() throws IOException {
-        var doc = Files.readString(Path.of("../docs/configuration.md"));
+        var doc = Files.readString(Path.of("../docs/configuration.md")).replace("\r\n", "\n");
+        var start = doc.indexOf("**In production.**");
+        var end = doc.indexOf("**`validate` and `none`.**", start);
+        assertThat(start).as("the \"In production\" text").isNotNegative();
+        assertThat(end).as("the \"In production\" text ends where \"validate and none\" starts").isGreaterThan(start);
 
-        assertThat(doc).contains(SCHEMA_GRANTS).contains(RUNTIME_GRANTS).contains(DEFAULT_PRIVILEGES);
+        var blocks = new ArrayList<String>();
+        var fence = Pattern.compile("^```sql\n(.*?)^```$", Pattern.DOTALL | Pattern.MULTILINE).matcher(doc.substring(start, end));
+        while (fence.find()) {
+            blocks.add(fence.group(1));
+        }
+
+        assertThat(blocks).containsExactlyInAnyOrder(
+                SCHEMA_GRANTS, RUNTIME_GRANTS, DEFAULT_PRIVILEGES, PRIVILEGE_CHECK, WRONG_ORDER_REPAIR);
     }
 
     // ── helpers ─────────────────────────────────────────────────────
@@ -748,15 +823,44 @@ class MaestroSchemaInitializerTest {
      * @return the owner's data source
      */
     private PGSimpleDataSource lockedDownSchemaMigratedByANonSuperuserOwner() throws SQLException {
+        var owner = lockedDownSchemaWithANonSuperuserOwner();
+        new MaestroSchemaInitializer(owner, SchemaMode.FLYWAY, cl).initialize();
+        return owner;
+    }
+
+    /** {@link #lockedDownSchemaMigratedByANonSuperuserOwner()} before the first migration. */
+    private PGSimpleDataSource lockedDownSchemaWithANonSuperuserOwner() throws SQLException {
         try (var conn = ds.getConnection(); var stmt = conn.createStatement()) {
             stmt.execute("REVOKE ALL ON SCHEMA public FROM PUBLIC");
             createLoginRole(stmt, "maestro_owner", "owner");
             createLoginRole(stmt, "maestro_app", "app");
             stmt.execute(SCHEMA_GRANTS);
         }
-        var owner = roleDataSource("maestro_owner", "owner");
-        new MaestroSchemaInitializer(owner, SchemaMode.FLYWAY, cl).initialize();
-        return owner;
+        return roleDataSource("maestro_owner", "owner");
+    }
+
+    /** {@link #PRIVILEGE_CHECK}'s rows, as "table privilege", run as {@code owner}. */
+    private static List<String> privilegeCheck(PGSimpleDataSource owner) throws SQLException {
+        var rows = new ArrayList<String>();
+        try (var conn = owner.getConnection(); var stmt = conn.createStatement();
+             var rs = stmt.executeQuery(PRIVILEGE_CHECK)) {
+            while (rs.next()) {
+                rows.add(rs.getString(1) + " " + rs.getString(2));
+            }
+        }
+        return rows;
+    }
+
+    /** The nodes' role may append and purge workflow history, never rewrite it, and never write the migration history. */
+    private static void assertAppCannotRewriteHistory(PGSimpleDataSource app) {
+        for (var write : List.of(
+                "UPDATE maestro_workflow_event SET step_name = step_name",
+                "UPDATE maestro_schema_history SET description = description",
+                "DELETE FROM maestro_schema_history WHERE false")) {
+            assertThatThrownBy(() -> execute(app, write))
+                    .as(write)
+                    .isInstanceOfSatisfying(SQLException.class, e -> assertThat(e.getSQLState()).isEqualTo("42501"));
+        }
     }
 
     /** Roles are cluster-wide and every test here shares one server: create {@code role} once. */
