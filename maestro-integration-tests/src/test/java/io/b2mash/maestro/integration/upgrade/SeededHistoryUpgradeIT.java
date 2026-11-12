@@ -187,9 +187,11 @@ class SeededHistoryUpgradeIT {
             }
             node.startTimerPoller(Duration.ofMillis(200), 50);
             for (var id : List.of(PARKED_TIMER, PARKED_EXPRESS, PARKED_APPROVAL, CRASHED)) {
-                assertThat(seeded.awaitStatusOrLast(id, COMPLETED, Duration.ofSeconds(60))).as(id).isEqualTo(COMPLETED);
+                assertThat(seeded.awaitStatusOrLast(id, COMPLETED, Duration.ofSeconds(60)))
+                        .as("%s; stand-downs: %s", id, observer.standDowns()).isEqualTo(COMPLETED);
             }
-            assertThat(seeded.awaitStatusOrLast(COMPENSATING_CRASHED, FAILED, Duration.ofSeconds(60))).isEqualTo(FAILED);
+            assertThat(seeded.awaitStatusOrLast(COMPENSATING_CRASHED, FAILED, Duration.ofSeconds(60)))
+                    .as("%s; stand-downs: %s", COMPENSATING_CRASHED, observer.standDowns()).isEqualTo(FAILED);
 
             // every run has finished: nothing stood down or was abandoned on the way
             assertThat(observer.standDowns()).isEmpty();
@@ -254,8 +256,10 @@ class SeededHistoryUpgradeIT {
         try (var node = seeded.node(Seeds.SERVICE, observer, invocations)) {
             var recovered = node.recover();
             // the two runs that need nothing from the test finish, so no write of this node is still pending
-            assertThat(seeded.awaitStatusOrLast(CRASHED, COMPLETED, Duration.ofSeconds(60))).isEqualTo(COMPLETED);
-            assertThat(seeded.awaitStatusOrLast(COMPENSATING_CRASHED, FAILED, Duration.ofSeconds(60))).isEqualTo(FAILED);
+            assertThat(seeded.awaitStatusOrLast(CRASHED, COMPLETED, Duration.ofSeconds(60)))
+                    .as("%s; stand-downs: %s", CRASHED, observer.standDowns()).isEqualTo(COMPLETED);
+            assertThat(seeded.awaitStatusOrLast(COMPENSATING_CRASHED, FAILED, Duration.ofSeconds(60)))
+                    .as("%s; stand-downs: %s", COMPENSATING_CRASHED, observer.standDowns()).isEqualTo(FAILED);
 
             assertThat(instanceRows(seeded, untouched)).isEqualTo(rowsBefore);
             untouched.forEach(id -> assertThat(seeded.events(id)).as(id).isEqualTo(eventsBefore.get(id)));
@@ -294,14 +298,16 @@ class SeededHistoryUpgradeIT {
             node.start(Seeds.ORPHAN_TARGET, SeedOrderWorkflow.class,
                     new OrderRequest(Seeds.ORPHAN_TARGET, List.of("sku-1"), 1, 1, 1));
             assertThat(seeded.awaitStatusOrLast(Seeds.ORPHAN_TARGET, COMPLETED, Duration.ofSeconds(60)))
-                    .isEqualTo(COMPLETED);
+                    .as("%s; stand-downs: %s", Seeds.ORPHAN_TARGET, observer.standDowns()).isEqualTo(COMPLETED);
             assertThat(observer.standDowns()).isEmpty();
         }
         var result = orderResult(seeded, Seeds.ORPHAN_TARGET);
         assertThat(result.approver()).isEqualTo("capture");
         assertThat(result.note()).isEqualTo("note for seed-orphan-target");
         assertThat(result.receipt().chargeId()).isEqualTo("charge:seed-orphan-target:1");
-        // both rows cbf5a2a stored with no instance now belong to this build's run, and were consumed by it
+        // Both rows cbf5a2a stored with no instance now belong to this build's run, and were consumed by it.
+        // This is the assertion that guards adoption: the consume path finds signals by workflow id, so a
+        // build that adopted nothing would still complete with approver "capture" (seen in the mutation check).
         var instanceId = instanceId(seeded, Seeds.ORPHAN_TARGET);
         assertThat(signalRows(seeded, Seeds.ORPHAN_TARGET)).containsExactlyInAnyOrder(
                 "approval consumed=true instance=" + instanceId, "note consumed=true instance=" + instanceId);

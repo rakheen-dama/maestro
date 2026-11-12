@@ -56,6 +56,25 @@ import java.util.concurrent.atomic.AtomicInteger;
  * upgrade, recover and mutate it freely. One {@code postgres:16-alpine}
  * container serves every load in the JVM; Ryuk removes it at exit.
  *
+ * <h2>Using it from a later work package</h2>
+ * <ul>
+ *   <li>New assertions go in new test classes that call {@link #load()}.
+ *       WP9's assertions in {@code SeededHistoryUpgradeIT} change only as a
+ *       named plan step.</li>
+ *   <li>WP1 adopts the dormant {@code upgrade-fixture-wp1} runs with
+ *       {@code node(Seeds.WP1_SERVICE, …)}. On {@code cbf5a2a},
+ *       {@code seed-wp1-offset} and {@code seed-wp1-set} are expected to stand
+ *       down (3.8). A fix must not turn that stand-down into {@code FAILED}
+ *       (anti-goal 1).</li>
+ *   <li>WP3 calls {@code node.retry(id, SeedFailingWorkflow.class)} or
+ *       {@code node.retry(id, SeedSagaWorkflow.class)} on the {@code FAILED}
+ *       ids. It may first re-register
+ *       {@code new SeedActivities(invocations, StepGate.OPEN, false)} so that
+ *       {@code explode} succeeds.</li>
+ *   <li>Activity-step keys and expected payload values are in the
+ *       {@code Seeds} Javadoc.</li>
+ * </ul>
+ *
  * <h2>Thread Safety</h2>
  * <p>{@link #load()} is thread-safe. An instance is meant for one test thread;
  * the store, data source and serializer it hands out are thread-safe.
