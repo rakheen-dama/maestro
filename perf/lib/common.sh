@@ -186,14 +186,34 @@ wait_terminal() {
 #  Test-only hooks (perf/lib/lock-selftest.sh forces interleavings with them):
 #  PERF_LOCK_TEST_PAUSE_BEFORE_TAKEOVER (s, after judging a lock stale) and
 #  PERF_LOCK_TEST_PAUSE_BEFORE_PID (s, between acquiring the lock directory
-#  and writing the pid).
+#  and writing the pid). They are INERT unless PERF_LOCK_SELFTEST=1 is also
+#  set (only the lock self-test sets it); with it, each value must be a
+#  non-negative number, checked before anything is touched (a bad one makes
+#  take_lock refuse, nothing created), and an active hook logs one line.
 # take_lock <lock-dir> <owner>
 lock_is_young() { [[ -z "$(find "$1" -maxdepth 0 -mmin +1 2>/dev/null)" ]]; }
+# Prints the validated pause of test hook <var>, or nothing when the hooks are
+# inert or <var> is unset; dies (before take_lock touches anything) on a value
+# that is not a non-negative number.
+lock_test_pause() {
+  local name=$1 value
+  [[ "${PERF_LOCK_SELFTEST:-}" == 1 ]] || return 0
+  value=${!name:-}
+  [[ -n "$value" ]] || return 0
+  [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]] \
+    || die "lock test hook ${name}='${value}' is not a non-negative number of seconds; refusing to start, nothing touched"
+  printf '%s' "$value"
+}
 take_lock() {
   local lock=$1 owner=$2
-  local takeover="${lock}.takeover" holder current took_over=""
+  local takeover="${lock}.takeover" holder current took_over="" pause_pid pause_takeover
+  pause_pid=$(lock_test_pause PERF_LOCK_TEST_PAUSE_BEFORE_PID) || exit 3
+  pause_takeover=$(lock_test_pause PERF_LOCK_TEST_PAUSE_BEFORE_TAKEOVER) || exit 3
+  if [[ -n "${pause_pid}${pause_takeover}" ]]; then
+    log "lock test hooks active (PERF_LOCK_SELFTEST=1): pause before pid ${pause_pid:-none} s, before takeover ${pause_takeover:-none} s"
+  fi
   if mkdir "$lock" 2>/dev/null; then
-    [[ -z "${PERF_LOCK_TEST_PAUSE_BEFORE_PID:-}" ]] || sleep "$PERF_LOCK_TEST_PAUSE_BEFORE_PID"
+    [[ -z "$pause_pid" ]] || sleep "$pause_pid"
     printf '%s\n' "$$" >"${lock}/pid"
   else
     holder=$(cat "${lock}/pid" 2>/dev/null || true)
@@ -203,7 +223,7 @@ take_lock() {
     if [[ -z "$holder" ]] && lock_is_young "$lock"; then
       die "another perf run is acquiring ${lock} (no pid yet); refusing to start, nothing touched"
     fi
-    [[ -z "${PERF_LOCK_TEST_PAUSE_BEFORE_TAKEOVER:-}" ]] || sleep "$PERF_LOCK_TEST_PAUSE_BEFORE_TAKEOVER"
+    [[ -z "$pause_takeover" ]] || sleep "$pause_takeover"
     if ! mkdir "$takeover" 2>/dev/null; then
       die "another perf run is taking over the stale lock ${lock} (if no perf run is active, a dead one left ${takeover}: remove it); refusing to start, nothing touched"
     fi
@@ -219,7 +239,7 @@ take_lock() {
       rmdir "$takeover"
       die "another perf run took ${lock} first; refusing to start, nothing touched"
     fi
-    [[ -z "${PERF_LOCK_TEST_PAUSE_BEFORE_PID:-}" ]] || sleep "$PERF_LOCK_TEST_PAUSE_BEFORE_PID"
+    [[ -z "$pause_pid" ]] || sleep "$pause_pid"
     printf '%s\n' "$$" >"${lock}/pid"
     rmdir "$takeover"
     took_over="pid ${holder:-none}"

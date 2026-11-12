@@ -3,14 +3,19 @@
 # result.json, schema 1 (pinned for WP12):
 #   {schema: 1, identity, scenario, profile, measurements,
 #    checks: [{id, class: validity|correctness|gate|advisory,
-#              status: PASS|FAIL|INVALID|NO_BASELINE|WARN, value, limit, detail}],
+#              status: PASS|FAIL|INVALID|NO_BASELINE|WARN|ERROR, value, limit, detail}],
 #    verdict: PASS|FAIL|INVALID|ERROR}
 #
 # The verdict is decided by allow-list, never by enumerating bad statuses:
-#   ERROR   any check has an unknown class or status (an evaluator bug);
-#   INVALID unless every validity check is exactly PASS;
+#   ERROR   any check has an unknown class or status (an evaluator bug), or
+#           status ERROR (a misconfigured check, e.g. a statement gate given
+#           an out-of-range allowance);
+#   INVALID unless every validity check is exactly PASS, and whenever a gate
+#           check is INVALID (it could not be judged: too few workflows);
 #   FAIL    unless every correctness and gate check is PASS or NO_BASELINE;
-#   PASS    otherwise. Advisory checks (PASS or WARN) never change it.
+#   PASS    otherwise. Advisory checks (PASS or WARN) never change it, and an
+#           advisory cannot raise ERROR: anything that goes wrong inside one is
+#           reported as that advisory's WARN with the reason (advisory_guarded).
 #
 # Statement counts. pg_stat_statements counts every call the engine's role
 # makes in a window, and an engine is never idle: its timer poller (each
@@ -22,27 +27,37 @@
 # the idle stack times the load window's length. Background is periodic, so
 # the subtraction is exact only up to one tick per poller; netToleranceCalls
 # (distinct background statements x replicas) bounds that.
+# The idle window counts its timer-poll ticks from what the database
+# recorded, not from its length: see "Timer-poll ticks" below.
 #
 # Gates on statements: a BASELINE-RELATIVE statement gate (S1, S3) must go
 # through statements_gate below: symmetric, PASS only when
-# |net - expected| <= netTolerancePerWorkflow (same tolerance on both sides),
-# FAIL for a null, zero or negative net, and a drop below the band FAILs with
-# a message to re-record the baseline deliberately if the improvement is
+# |net - expected| <= band, band = tolerance + relativeAllowance x expected
+# (tolerance = netTolerancePerWorkflow, the same on both sides;
+# relativeAllowance a fraction in [0, 0.5] the scenario declares and
+# justifies with measurements in its own header, 0 by default; anything else
+# is ERROR). INVALID when the tolerance alone exceeds 25 % of the expected
+# value (too few workflows completed for the figure to mean anything). FAIL
+# for a null, zero or negative net, and a drop below the band FAILs with a
+# message to re-record the baseline deliberately if the improvement is
 # intended. The smoke has no expected value and gates only a wide absolute
 # range ([5, 500] net statements per workflow) that proves the measurement
-# works; it does not call statements_gate.
+# works; it does not call statements_gate, so neither the allowance nor the
+# 25 % cap applies to it.
 # Known limits of this model: see "Known limits" in perf/run.sh's header.
 
 def check($id; $class; $status; $value; $limit; $detail):
   {id: $id, class: $class, status: $status, value: $value, limit: $limit, detail: $detail};
 
 def known_classes: ["validity", "correctness", "gate", "advisory"];
-def known_statuses: ["PASS", "FAIL", "INVALID", "NO_BASELINE", "WARN"];
+def known_statuses: ["PASS", "FAIL", "INVALID", "NO_BASELINE", "WARN", "ERROR"];
 
 def verdict:
   if any(.[]; (.class as $c | known_classes | index([$c]) | not)
-              or (.status as $s | known_statuses | index([$s]) | not)) then "ERROR"
-  elif any(.[]; .class == "validity" and .status != "PASS") then "INVALID"
+              or (.status as $s | known_statuses | index([$s]) | not)
+              or .status == "ERROR") then "ERROR"
+  elif any(.[]; (.class == "validity" and .status != "PASS")
+                or (.class == "gate" and .status == "INVALID")) then "INVALID"
   elif any(.[]; (.class == "correctness" or .class == "gate")
                 and .status != "PASS" and .status != "NO_BASELINE") then "FAIL"
   else "PASS" end;
@@ -54,8 +69,57 @@ def reasons: map(select(. != null)) | join("; ");
 
 def isnum: type == "number";
 
+# ── Timer-poll ticks ────────────────────────────────────────────────────────
+# The idle window's ticks are COUNTED from the statements the database
+# recorded in it (its pg_stat_statements list, .window.top), never assumed
+# from its length: a stalled poller, or a database that recorded nothing,
+# must not pass.
+#
+# The tick statement is the timer poller's due-timer query
+# (PostgresWorkflowStore.getDueTimersSql, called only by
+# TimerPoller.pollDueTimers), which pg_stat_statements records as
+#   SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status,
+#   created_at FROM maestro_workflow_timer WHERE fire_at <= $1 AND status = $3
+#   ORDER BY fire_at ASC LIMIT $2 FOR UPDATE SKIP LOCKED
+# ('PENDING' normalised to $3; whitespace collapsed and the text cut at 200
+# characters by pgss-window.sql). It is matched, top-level entries only, by
+# the regex tick_query_re, which needs only the stable head of its WHERE
+# clause: it survives the normalisation and the cut, and no other engine
+# statement (and nothing of the harness, which runs as postgres and is not in
+# the engine's list) reads maestro_workflow_timer by fire_at.
+#
+# What one tick looks like (idle windows of 60.3 s at a 5 s poll, results
+# r20261112t170809z / r20261112t165400z at 1 replica, r20261112t153828z /
+# r20261112t154022z at 2):
+#   1 replica:  1 leader-election upsert + 1 due-timer query  (12 + 12);
+#   2 replicas: 2 leader-election upserts (every node tries every tick)
+#               + 1 due-timer query (only the leader polls) (24 + 12).
+# So observedTicks = the due-timer query's calls, at any replica count. The
+# leader-election upsert is shared with the retention sweeper's election, so
+# it is no tick counter; it only checks from below that every node's poller
+# ran: leaderElectionCalls >= replicas x (observedTicks - 1).
+def tick_query_re: "FROM maestro_workflow_timer WHERE fire_at <= \\$[0-9]+ AND status = ";
+def leader_election_query_re: "^INSERT INTO maestro_leader_election ";
+
+# Calls of the engine's top-level statements matching $re in a pgss window's
+# statement list, and how many entries matched.
+def statement_calls($w; $re):
+  ($w.top | if type == "array" then . else [] end
+   | map(select(type == "object" and .toplevel == true and (.query | type) == "string"
+                and (.calls | isnum) and (.query | test($re))))) as $hits
+  | {entries: ($hits | length), calls: ($hits | map(.calls) | add // 0)};
+
+# What the idle window shows about the timer poller (null fields when the
+# record is too malformed to say).
+def background_ticks($bg; $replicas):
+  statement_calls($bg.window; tick_query_re) as $tick
+  | statement_calls($bg.window; leader_election_query_re) as $el
+  | {expectedTicks: ($bg.window.windowSecs / $bg.timerPollSecs | floor),
+     observedTicks: $tick.calls, tickStatementEntries: $tick.entries,
+     leaderElectionCalls: $el.calls, replicas: $replicas};
+
 # Why measure_background's output cannot be used, or null if it can.
-def background_problem($bg):
+def background_problem($bg; $replicas):
   if $bg == null then "no background (idle) window was measured"
   elif ($bg | type) != "object" then "background is a \($bg | type), not an object"
   elif ($bg.window | type) != "object" then "background has no pg_stat_statements window"
@@ -65,23 +129,38 @@ def background_problem($bg):
   elif $bg.window.windowSecs <= 0 then "background window has no length"
   elif ($bg.timerPollSecs | isnum | not) or $bg.timerPollSecs <= 0
     then "background record has no timer-poll interval"
-  elif ($bg.window.windowSecs / $bg.timerPollSecs | floor) < 2
-    then "background window of \($bg.window.windowSecs) s spans \($bg.window.windowSecs / $bg.timerPollSecs | floor) timer-poll tick(s) of \($bg.timerPollSecs) s, fewer than 2: the background rate is not trustworthy"
-  else null end;
+  elif ($replicas | isnum | not) or $replicas < 1 then "the run records no replica count"
+  else
+    background_ticks($bg; $replicas) as $t
+    | if $t.expectedTicks < 2
+        then "background window of \($bg.window.windowSecs) s spans \($t.expectedTicks) timer-poll tick(s) of \($bg.timerPollSecs) s, fewer than 2: the background rate is not trustworthy"
+      elif $t.tickStatementEntries == 0
+        then "the timer poller's due-timer query (FROM maestro_workflow_timer WHERE fire_at <= …) is absent from the idle window: the poller did not run there, or the database recorded nothing; the background rate is not trustworthy"
+      elif $t.observedTicks < 2
+        then "the idle window recorded \($t.observedTicks) timer-poll tick(s), fewer than 2: the background rate is not trustworthy"
+      elif ($t.observedTicks - $t.expectedTicks | fabs) > 1
+        then "the idle window recorded \($t.observedTicks) timer-poll ticks where its \($bg.window.windowSecs) s at the node's \($bg.timerPollSecs) s interval hold \($t.expectedTicks) (+/- 1): the poller is not running at the interval the node reports, so the background model is wrong"
+      elif $t.leaderElectionCalls < $replicas * ($t.observedTicks - 1)
+        then "the idle window recorded \($t.leaderElectionCalls) leader-election upserts for \($t.observedTicks) ticks at \($replicas) replica(s), fewer than \($replicas) x (\($t.observedTicks) - 1): not every node's timer poller ran each tick"
+      elif $bg.window.maestroCalls < $t.observedTicks + $t.leaderElectionCalls
+        then "the idle window's maestroCalls (\($bg.window.maestroCalls)) is below the calls of its own poller statements (\($t.observedTicks + $t.leaderElectionCalls)): the record contradicts itself"
+      else null end
+  end;
 
-# Whole timer-poll ticks the idle window actually spanned (observed length,
-# not the planned tick count).
-def observed_ticks($bg): ($bg.window.windowSecs / $bg.timerPollSecs | floor);
-
-# validity.background: the idle window the net figures rest on was measured.
-def background_check($bg):
-  background_problem($bg) as $p
+# validity.background: the idle window the net figures rest on was measured,
+# and the timer poller demonstrably ran in it at the interval the node reports.
+def background_check($bg; $replicas):
+  background_problem($bg; $replicas) as $p
+  | (try ({windowSecs: $bg.window.windowSecs, maestroCalls: $bg.window.maestroCalls,
+           timerPollSecs: $bg.timerPollSecs, plannedTicks: $bg.ticks}
+          + background_ticks($bg; $replicas)) catch null) as $v
   | check("validity.background"; "validity"; if $p == null then "PASS" else "INVALID" end;
-      (if $p == null then {windowSecs: $bg.window.windowSecs, maestroCalls: $bg.window.maestroCalls,
-                           plannedTicks: $bg.ticks, observedTicks: observed_ticks($bg),
-                           timerPollSecs: $bg.timerPollSecs} else null end);
-      {windowSecs: "> 0", observedTicks: ">= 2"};
-      if $p == null then "background rate measured over \($bg.window.windowSecs) s (\(observed_ticks($bg)) whole timer-poll ticks of \($bg.timerPollSecs) s)"
+      $v;
+      {windowSecs: "> 0", expectedTicks: ">= 2 (floor(windowSecs / timerPollSecs))",
+       observedTicks: ">= 2 and within expectedTicks +/- 1 (calls of the due-timer query)",
+       tickStatement: tick_query_re,
+       leaderElectionCalls: ">= replicas x (observedTicks - 1)"};
+      if $p == null then "background rate measured over \($bg.window.windowSecs) s: \($v.observedTicks) timer-poll ticks recorded (due-timer query calls), \($v.expectedTicks) expected at \($bg.timerPollSecs) s; \($v.leaderElectionCalls) leader-election upserts at \($replicas) replica(s)"
       else $p end);
 
 # Every pg_stat_statements window a scenario measured: the background
@@ -97,7 +176,7 @@ def pgss_windows($m):
 # unusable background every figure that depends on it is null (and
 # validity.background is INVALID).
 def statement_figures($bg; $w; $completed; $replicas):
-  (background_problem($bg) == null) as $bgOk
+  (background_problem($bg; $replicas) == null) as $bgOk
   | (if $bgOk then $bg.window else {} end) as $b
   | (if $bgOk then $b.maestroCalls / $b.windowSecs else null end) as $rate
   | (if $bgOk then $b.maestroCallsTopLevel / $b.windowSecs else null end) as $rateTop
@@ -114,6 +193,8 @@ def statement_figures($bg; $w; $completed; $replicas):
       backgroundStatements: $b.maestroStatements,
       backgroundWindowSecs: $b.windowSecs,
       backgroundTicks: (if $bgOk then $bg.ticks else null end),
+      backgroundTicksObserved: (if $bgOk then background_ticks($bg; $replicas).observedTicks else null end),
+      backgroundTicksExpected: (if $bgOk then background_ticks($bg; $replicas).expectedTicks else null end),
       backgroundRatePerSec: ($rate | round4),
       backgroundRateTopLevelPerSec: ($rateTop | round4),
       backgroundCallsExpectedInLoadWindow: ($bgInLoad | round2),
@@ -132,47 +213,76 @@ def statement_figures($bg; $w; $completed; $replicas):
 
 # THE baseline-relative statement gate (for S1, S3 and any later scenario).
 # $s is statement_figures' output; $expected the baseline's net statements
-# per workflow (null: no usable baseline). The gate is SYMMETRIC: a drop is
-# as suspicious as a rise (work silently not done, runs not really
-# completing, a mis-measured window), and an intended improvement must show
-# up as a deliberate, reviewed baseline change, not as a silent pass.
+# per workflow (null: no usable baseline); $relativeAllowance a fraction of
+# $expected (0 in the 3-argument form). The gate is SYMMETRIC: a drop is as
+# suspicious as a rise (work silently not done, runs not really completing, a
+# mis-measured window), and an intended improvement must show up as a
+# deliberate, reviewed baseline change, not as a silent pass. In order:
+#   ERROR       $relativeAllowance is not a number in [0, max_relative_allowance]
+#               (0.5), or $expected is present but not a positive number: the
+#               gate is misconfigured, so it judges nothing;
 #   FAIL        net is null, not a number, zero or negative (regardless of
 #               $expected): nothing true was measured;
 #   NO_BASELINE no expected value;
+#   FAIL        no net tolerance could be computed;
+#   INVALID     tolerance > max_tolerance_fraction (25 %) x expected: too few
+#               workflows completed for the per-workflow figure to mean
+#               anything, so the gate cannot be judged either way;
 #   PASS        |net - expected| <= band;
 #   FAIL        otherwise; below the band the detail says to re-record the
 #               baseline deliberately (--record-baseline on a clean tree) if
 #               the improvement is intended.
-# band = netTolerancePerWorkflow (one tick per background poller, the same on
-# both sides) + $extra. The 3-argument form uses $extra = 0. A scenario that
-# passes a non-zero $extra (a per-workflow allowance for variance the
-# background model does not explain) must state the number and the reason in
-# its own header.
-def statements_gate($id; $s; $expected; $extra):
+# band = tolerance + relativeAllowance x expected, the same on both sides.
+# tolerance = netTolerancePerWorkflow: one tick per background poller.
+# relativeAllowance: variance the background model does not explain (CAS
+# retries, lock contention under load). A scenario that passes a non-zero
+# one must state the fraction AND the measurements that justify it in its own
+# header. The check records tolerance, relativeAllowance, the allowance in
+# statements and the band, each on its own.
+def max_relative_allowance: 0.5;
+def max_tolerance_fraction: 0.25;
+def statements_gate($id; $s; $expected; $relativeAllowance):
   ($s.statementsPerWorkflowNet) as $net
   | ($s.netTolerancePerWorkflow) as $tol
   | {statementsPerWorkflowNet: $net, netTolerancePerWorkflow: $tol} as $value
-  | if ($net | isnum | not) or $net <= 0 then
+  | if ($relativeAllowance | isnum | not) or $relativeAllowance < 0
+       or $relativeAllowance > max_relative_allowance then
+      check($id; "gate"; "ERROR"; $value;
+            {relativeAllowance: $relativeAllowance, allowed: [0, max_relative_allowance]};
+            "relative allowance \($relativeAllowance | tojson) is not a number in [0, \(max_relative_allowance)]: the scenario's statement gate is misconfigured and judges nothing")
+    elif $expected != null and (($expected | isnum | not) or $expected <= 0) then
+      check($id; "gate"; "ERROR"; $value; {expected: $expected};
+            "the baseline's expected value \($expected | tojson) is not a positive number: the baseline is malformed")
+    elif ($net | isnum | not) or $net <= 0 then
       check($id; "gate"; "FAIL"; $value; {expected: $expected};
             "net statements per workflow is \($net | tojson): nothing true was measured")
     elif $expected == null then
-      check($id; "gate"; "NO_BASELINE"; $value; null; "no usable baseline")
+      check($id; "gate"; "NO_BASELINE"; $value; {relativeAllowance: $relativeAllowance}; "no usable baseline")
     elif ($tol | isnum | not) then
       check($id; "gate"; "FAIL"; $value; {expected: $expected}; "no net tolerance could be computed")
+    elif $tol > max_tolerance_fraction * $expected then
+      check($id; "gate"; "INVALID"; $value;
+            {expected: $expected, tolerance: $tol,
+             maxTolerance: (max_tolerance_fraction * $expected | round2),
+             maxToleranceFraction: max_tolerance_fraction};
+            "tolerance \($tol) per workflow exceeds \(max_tolerance_fraction * 100) % of expected \($expected): too few workflows completed for the statement figure to mean anything; the gate cannot be judged")
     else
-      ($tol + $extra) as $band
+      ($relativeAllowance * $expected) as $allowance
+      | ($tol + $allowance) as $band
       | ($net - $expected) as $delta
       | check($id; "gate";
           if ($delta | fabs) <= $band then "PASS" else "FAIL" end;
           $value + {delta: ($delta | round2)};
-          {expected: $expected, band: ($band | round2), min: ($expected - $band | round2),
-           max: ($expected + $band | round2)};
-          if ($delta | fabs) <= $band then
-            "net \($net) within expected \($expected) +/- \($band | round2)"
+          {expected: $expected, tolerance: $tol, relativeAllowance: $relativeAllowance,
+           allowance: ($allowance | round4), band: ($band | round4),
+           min: ($expected - $band | round4), max: ($expected + $band | round4)};
+          "band = tolerance \($tol) + relativeAllowance \($relativeAllowance) x expected \($expected) = \($band | round4); "
+          + if ($delta | fabs) <= $band then
+            "net \($net) within expected \($expected) +/- \($band | round4)"
           elif $delta > 0 then
-            "net \($net) is above expected \($expected) + \($band | round2): more statements per workflow than the baseline"
+            "net \($net) is above expected \($expected) + \($band | round4): more statements per workflow than the baseline"
           else
-            "net \($net) is below expected \($expected) - \($band | round2): fewer statements per workflow than the baseline. If this improvement is intended, re-record the baseline deliberately (perf/run.sh <scenario> --record-baseline on a clean tree) so it is reviewed; otherwise work is missing or the window is mis-measured"
+            "net \($net) is below expected \($expected) - \($band | round4): fewer statements per workflow than the baseline. If this improvement is intended, re-record the baseline deliberately (perf/run.sh <scenario> --record-baseline on a clean tree) so it is reviewed; otherwise work is missing or the window is mis-measured"
           end)
     end;
 def statements_gate($id; $s; $expected): statements_gate($id; $s; $expected; 0);
@@ -301,45 +411,96 @@ def dropped_iterations_check($m):
         (if ($dropped | length) > 0 then "generator saturated, not the SUT: \($dropped | map("\(.phase) dropped \(.droppedIterations)") | join(", "))" else null end)
       ] | reasons end);
 
+# Every advisory is built through advisory_guarded: whatever goes wrong
+# inside it (a malformed record, a jq error) becomes that advisory's WARN with
+# the reason, so an advisory can never turn a run into ERROR.
+def advisory_guarded($id; f):
+  try f
+  catch check($id; "advisory"; "WARN"; null; null;
+              "this advisory could not be evaluated: \(. | tostring)");
+
+# Seconds since the epoch (fractional) of an RFC 3339 timestamp, as Postgres
+# writes timestamptz into JSON ("2026-11-12T17:08:49.054477+00:00"): date,
+# T or space, time, optional fractional seconds, and an offset of Z, +HH,
+# +HHMM or +HH:MM (either sign). null for anything else, never an error.
+def ts_secs:
+  if type != "string" then null
+  else
+    ([capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2})[Tt ](?<t>[0-9]{2}:[0-9]{2}:[0-9]{2})(?<f>[.][0-9]+)?(?<z>[Zz]|[+-][0-9]{2}(:?[0-9]{2})?)$")] | first) as $c
+    | if $c == null then null
+      else
+        (try ("\($c.d)T\($c.t)Z" | fromdateiso8601) catch null) as $base
+        | ($c.z | if . == "Z" or . == "z" then 0
+                  else (.[1:] | gsub(":"; "")) as $hm
+                    | (($hm[0:2] | tonumber) * 3600
+                       + (if ($hm | length) == 4 then ($hm[2:4] | tonumber) * 60 else 0 end))
+                      * (if startswith("-") then -1 else 1 end)
+                  end) as $offset
+        | if $base == null then null else $base + ("0\($c.f // "")" | tonumber) - $offset end
+      end
+  end;
+
 # advisory.sweepOverlap: whether any measured pg_stat_statements window may
 # contain a periodic engine sweep the background model does not cover (see
 # "Known limits" in perf/run.sh). The lock cleaner runs every
 # maestro.lock.cleanup-interval after its scheduler starts, its first pass one
 # interval in; the signal janitor and retention sweeper run hourly, which are
 # multiples of the same 10 min. sample-perf sets no maestro.lock.* property
-# and /perf/info does not report it, so the default 600 s is ASSUMED here. A
-# node's schedulers start a few seconds after its JVM (jvmStartMillis), so a
-# sweep is taken to fall in [start + k x 600 s, start + k x 600 s + 30 s],
-# k >= 1, for every node. WARN only, never a verdict change.
-def ts_secs:
-  if type == "string" then sub("\\.[0-9]+"; "") | sub("\\+00(:00)?$"; "Z") | fromdateiso8601
-  else null end;
+# and /perf/info does not report it, so the default 600 s is ASSUMED here (and
+# the detail says so). A node's schedulers start a few seconds after its JVM
+# (jvmStartMillis), so a sweep is taken to fall in
+# [start + k x 600 s, start + k x 600 s + 30 s], k >= 1, for every node.
+# WARN, never a verdict change, also when it cannot tell: no node start, no
+# window, or a window timestamp it cannot parse.
+def sweep_assumption: "assumes the default 600 s lock-cleanup interval; the node does not report it";
 def sweep_overlap_check($id; $m):
-  600 as $interval | 30 as $slack
-  | ($id.nodes // [] | map(.jvmStartMillis / 1000)) as $starts
-  | ([{name: "background", w: ($m.background | if type == "object" then .window else null end)},
-      {name: "window", w: $m.window}]
-     + ($m.windows // [] | to_entries | map({name: "windows[\(.key)]", w: .value}))
-     | map(select(.w | type == "object") | {name, start: (.w.resetAt | ts_secs), end: (.w.snapshotAt | ts_secs)})
-     | map(select(.start != null and .end != null))) as $ws
-  | [ $ws[] as $w | $starts[] as $s
-      | ([1, (($w.start - $slack - $s) / $interval | ceil)] | max) as $k
-      | select($s + $k * $interval <= $w.end)
-      | {window: $w.name, sinceNodeStartSecs: [($w.start - $s | round), ($w.end - $s | round)],
-         sweepMarkSecs: ($k * $interval)} ] as $hits
-  | check("advisory.sweepOverlap"; "advisory"; if ($hits | length) == 0 then "PASS" else "WARN" end;
-      {windows: ($ws | map({name, sinceEarliestNodeStartSecs:
-                   [(.start - ($starts | min) | round), (.end - ($starts | min) | round)]})),
-       overlaps: $hits};
-      {lockCleanupIntervalSecs: $interval, assumed: true, slackSecs: $slack};
-      if ($starts | length) == 0 then "no node start time recorded"
-      elif ($hits | length) == 0 then "no measured window crosses a lock-cleaner / janitor / retention mark (k x 600 s after node start, +30 s)"
-      else "window(s) \($hits | map(.window) | unique | join(", ")) may contain a periodic sweep not in the background model; their statement counts carry un-modelled calls" end);
+  advisory_guarded("advisory.sweepOverlap";
+    600 as $interval | 30 as $slack
+    | ($id.nodes // [] | map(.jvmStartMillis / 1000)) as $starts
+    | ([{name: "background", w: ($m.background | if type == "object" then .window else null end)},
+        {name: "window", w: $m.window}]
+       + ($m.windows // [] | to_entries | map({name: "windows[\(.key)]", w: .value}))
+       | map(select(.w | type == "object")
+             | {name, resetAt: .w.resetAt, snapshotAt: .w.snapshotAt,
+                start: (.w.resetAt | ts_secs), end: (.w.snapshotAt | ts_secs)})) as $all
+    | ($all | map(select(.start == null or .end == null))) as $unparsed
+    | ($all | map(select(.start != null and .end != null))) as $ws
+    | [ $ws[] as $w | $starts[] as $s
+        | ([1, (($w.start - $slack - $s) / $interval | ceil)] | max) as $k
+        | select($s + $k * $interval <= $w.end)
+        | {window: $w.name, sinceNodeStartSecs: [($w.start - $s | round), ($w.end - $s | round)],
+           sweepMarkSecs: ($k * $interval)} ] as $hits
+    | (($starts | length) > 0 and ($ws | length) > 0 and ($unparsed | length) == 0
+       and ($hits | length) == 0) as $ok
+    | check("advisory.sweepOverlap"; "advisory"; if $ok then "PASS" else "WARN" end;
+        {windows: ($ws | map({name, sinceEarliestNodeStartSecs:
+                     (if ($starts | length) > 0
+                      then [(.start - ($starts | min) | round), (.end - ($starts | min) | round)]
+                      else null end)})),
+         overlaps: $hits,
+         unparsedTimestamps: ($unparsed | map({name, resetAt, snapshotAt}))};
+        {lockCleanupIntervalSecs: $interval, assumed: true, slackSecs: $slack};
+        [
+          (if ($starts | length) == 0 then "no node start time recorded" else null end),
+          (if ($all | length) == 0 then "no measured window" else null end),
+          (if ($unparsed | length) > 0
+           then "window(s) \($unparsed | map(.name) | join(", ")) have a resetAt/snapshotAt that is not an RFC 3339 timestamp: not checked"
+           else null end),
+          (if ($hits | length) > 0
+           then "window(s) \($hits | map(.window) | unique | join(", ")) may contain a periodic sweep not in the background model; their statement counts carry un-modelled calls"
+           else null end),
+          (if $ok then "no measured window crosses a lock-cleaner / janitor / retention mark (k x 600 s after node start, +30 s)" else null end),
+          sweep_assumption
+        ] | reasons));
 
 def dirty_tree_check($id):
-  check("advisory.dirtyTree"; "advisory"; if $id.repo.dirty then "WARN" else "PASS" end;
-        $id.repo.dirty; false;
-        if $id.repo.dirty then "uncommitted changes: the result is not reproducible from a commit" else "clean tree" end);
+  advisory_guarded("advisory.dirtyTree";
+    $id.repo.dirty as $d
+    | check("advisory.dirtyTree"; "advisory"; if $d == false then "PASS" else "WARN" end;
+            $d; false;
+            if $d == false then "clean tree"
+            elif $d == true then "uncommitted changes: the result is not reproducible from a commit"
+            else "the run did not record whether the tree was clean (\($d | tojson))" end));
 
 def common_checks($id; $m):
   [identity_check($id), no_restart_check($id), admin_events_check($id),

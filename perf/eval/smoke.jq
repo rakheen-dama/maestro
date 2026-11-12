@@ -17,7 +17,7 @@ $identity[0] as $id
 | $m.window as $w
 | statement_figures($m.background; $w; $done; $id.config.replicas) as $s
 | [
-    background_check($m.background),
+    background_check($m.background; $id.config.replicas),
     check("validity.roleSplit"; "validity";
           if $w.maestroCalls > 0 and $w.harnessCalls > 0 then "PASS" else "INVALID" end;
           {maestroCalls: $w.maestroCalls, harnessCalls: $w.harnessCalls};
@@ -43,9 +43,12 @@ $identity[0] as $id
            netTolerancePerWorkflow: $s.netTolerancePerWorkflow};
           {statementsPerWorkflowNet: [5, 500]};
           "net engine statements per completed workflow (background subtracted), wide absolute range, no tolerance applied; gross includes background engine statements"),
-    check("advisory.latency"; "advisory"; "PASS";
-          $m.latency; null;
-          "end-to-end p95 \($m.latency.p95Ms) ms (recorded, never a verdict)")
+    advisory_guarded("advisory.latency";
+      ($m.latency.p95Ms | isnum) as $has
+      | check("advisory.latency"; "advisory"; if $has then "PASS" else "WARN" end;
+              $m.latency; null;
+              if $has then "end-to-end p95 \($m.latency.p95Ms) ms (recorded, never a verdict)"
+              else "no end-to-end latency was recorded" end))
   ] as $checks
 | result($id;
          $m + {statements: $s,

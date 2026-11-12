@@ -9,7 +9,9 @@
 #       PERF_NODE_CPUS / PERF_NODE_MEM (node container sizing)
 #       Test-only overrides: PERF_EXPECT_COMMIT, PERF_K6_VUS, PERF_K6_MAX_VUS,
 #       PERF_WARMUP_TIMEOUT / PERF_WARMUP_ACTIVITY_MILLIS (force an unfinished
-#       warm-up: validity.warmup INVALID).
+#       warm-up: validity.warmup INVALID). The run lock's
+#       PERF_LOCK_TEST_PAUSE_* hooks are inert here: they act only with
+#       PERF_LOCK_SELFTEST=1, which only perf/lib/lock-selftest.sh sets.
 #
 # Every run is cold (down -v first), builds and stamps its own jar, proves
 # each node runs that jar, and writes a self-identifying directory
@@ -27,6 +29,29 @@
 # the lock cleaner / signal janitor / retention sweeps when due) and NET (the
 # background rate, measured on the idle stack before the load, subtracted).
 # Gates use the net figure; see perf/eval/common.jq.
+#
+# The idle window's timer-poll ticks are COUNTED from what Postgres recorded
+# in it, never assumed from its length: observedTicks = calls of the timer
+# poller's due-timer query (pattern "FROM maestro_workflow_timer WHERE
+# fire_at <= $n AND status = ", common.jq tick_query_re), which only the
+# leader issues, once per tick. One tick at 1 replica = 1 leader-election
+# upsert + 1 due-timer query; at 2 replicas = 2 upserts (every node tries
+# every tick) + 1 due-timer query. expectedTicks = floor(windowSecs /
+# timerPollSecs). validity.background is INVALID when the due-timer query is
+# absent, observedTicks < 2, |observedTicks - expectedTicks| > 1 (the poller
+# does not run at the interval the node reports), or the upserts fall below
+# replicas x (observedTicks - 1) (a node's poller did not run).
+#
+# Statement gate (statements_gate in common.jq; S1, S3): symmetric,
+# PASS when |net - expected| <= band, band = tolerance +
+# relativeAllowance x expected; tolerance = netTolerancePerWorkflow;
+# relativeAllowance a fraction in [0, 0.5] the scenario states and justifies
+# with measurements in its own header (default 0; outside that range the
+# check is ERROR). The gate is INVALID when the tolerance alone exceeds 25 %
+# of the expected value: too few workflows completed for the figure to mean
+# anything. The smoke has no baseline and uses neither (its own [5, 500]
+# range). Advisory checks never change the verdict and never raise ERROR: a
+# failure inside one is that advisory's WARN with the reason.
 #
 # ── Known limits of the background model (extend before relying on it) ──────
 #  1. The tolerance (netToleranceCalls = distinct background statements x
@@ -55,11 +80,13 @@
 #  .windows[]). advisory.sweepOverlap already WARNs (never changes the
 #  verdict) when any measured window is open within [k x 600 s, k x 600 s +
 #  30 s] after any node's start, assuming the default cleanup interval
-#  (sample-perf sets none and /perf/info does not report it). The smoke's
-#  windows close about 80 s after node start.
+#  (sample-perf sets none and /perf/info does not report it; the advisory's
+#  detail says so), and when it cannot tell (no node start, a timestamp it
+#  cannot parse). The smoke's windows close about 80 s after node start.
 #
 # Exit: 0 PASS, 1 FAIL, 2 INVALID, 3 harness error (including an evaluator
-# ERROR verdict: a check with an unknown class or status).
+# ERROR verdict: a check with status ERROR, i.e. misconfigured, or with an
+# unknown class or status).
 # The last stdout line is always: VERDICT <PASS|FAIL|INVALID|ERROR> <resultsDir>
 
 # SC2016: the single-quoted '$x' strings are jq filters, expanded by jq.
@@ -86,12 +113,12 @@ usage() {
 }
 
 # on_err and on_exit run from traps (SC2317: invoked indirectly).
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 on_err() {
   log "command failed (rc=$1) at line $2: $3"
 }
 
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 on_exit() {
   local rc=$?
   set +e
@@ -394,7 +421,7 @@ case "$VERDICT" in
   PASS) rc=0 ;;
   FAIL) rc=1 ;;
   INVALID) rc=2 ;;
-  ERROR) die "the evaluator returned ERROR: a check has an unknown class or status (see result.json)" ;;
+  ERROR) die "the evaluator returned ERROR: a check is misconfigured (status ERROR) or has an unknown class or status (see result.json)" ;;
   *) die "result.json has no verdict" ;;
 esac
 
