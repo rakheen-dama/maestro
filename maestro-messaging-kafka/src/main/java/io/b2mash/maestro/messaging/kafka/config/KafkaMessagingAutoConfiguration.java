@@ -403,4 +403,17 @@ public class KafkaMessagingAutoConfiguration {
     public MaestroSignalListenerBeanPostProcessor maestroSignalListenerBeanPostProcessor() {
         return new MaestroSignalListenerBeanPostProcessor();
     }
+
+    /**
+     * Fails startup when a bean injects a {@code KafkaTemplate<…, byte[]>}
+     * without a qualifier and received a template that cannot serialize
+     * {@code byte[]} (Spring Boot's {@code kafkaTemplate} with its default
+     * {@code StringSerializer}). See {@link ByteArrayTemplateInjectionCheck}.
+     *
+     * @return the startup check
+     */
+    @Bean
+    ByteArrayTemplateInjectionCheck maestroKafkaTemplateInjectionCheck() {
+        return new ByteArrayTemplateInjectionCheck();
+    }
 }

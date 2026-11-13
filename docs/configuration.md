@@ -1054,6 +1054,26 @@ names only a type gets Boot's bean. Pinned by
   (`io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans`; also
   `PRODUCER_FACTORY` and `CONSUMER_FACTORY`). Without the qualifier you get
   Boot's template, whose default value serializer is `StringSerializer`.
+  A service that does that fails at startup rather than on its first send,
+  with one `IllegalStateException` per offending injection point, e.g.:
+
+  ```text
+  Bean 'legacyBytesSender' injects a KafkaTemplate<…, byte[]> without a qualifier (constructor parameter 0 of com.example.LegacyBytesSender) and received 'kafkaTemplate', whose value serializer org.apache.kafka.common.serialization.StringSerializer cannot serialize byte[]: every send through it would fail.
+  ```
+
+  The message goes on to name both fixes: the qualifier, or
+  `spring.kafka.producer.value-serializer=org.apache.kafka.common.serialization.ByteArraySerializer`
+  to send `byte[]` through Boot's template (a service that sets it starts and
+  uses Boot's template). The check (`ByteArrayTemplateInjectionCheck`) sees
+  constructor, field, `@Bean`-method and `@Autowired`-method parameters of
+  beans created at startup, typed `KafkaTemplate<…, byte[]>` or
+  `KafkaOperations<…, byte[]>`. It cannot see an `ObjectProvider` point or a
+  class with several constructors none of which is `@Autowired`, nor
+  (traced) an `Optional` or collection point, a `getBean` call, or a lazy bean
+  or prototype not created at startup. A value serializer it cannot classify (for example
+  `JacksonJsonSerializer`, which is generic) does not fail startup; the check
+  logs a `WARN` naming the bean and the fix instead. Pinned by
+  `ByteArrayTemplateInjectionCheckTest` (`maestro-messaging-kafka`).
 - **Replacing an engine bean.** Declare a bean with its name and
   `defaultCandidate = false`, e.g.
   `@Bean(name = MaestroKafkaBeans.TEMPLATE, defaultCandidate = false)`; the
@@ -1062,7 +1082,28 @@ names only a type gets Boot's bean. Pinned by
     **required**. A plain `@Bean` of that name makes Boot's
     `kafkaProducerFactory` back off while Boot's `kafkaTemplate` still
     registers, and startup fails with
-    `NoSuchBeanDefinitionException: No qualifying bean of type 'org.springframework.kafka.core.ProducerFactory<java.lang.Object, java.lang.Object>'`.
+    `NoSuchBeanDefinitionException: No qualifying bean of type 'org.springframework.kafka.core.ProducerFactory<java.lang.Object, java.lang.Object>'`,
+    raised while creating `kafkaTemplate`. A Spring Boot application reports
+    it as:
+
+    ```text
+    ***************************
+    APPLICATION FAILED TO START
+    ***************************
+
+    Description:
+
+    The bean 'maestroKafkaProducerFactory' replaces Maestro's engine producer factory but is a default candidate, so Spring Boot's kafkaProducerFactory backed off. Spring Boot's kafkaTemplate (parameter 0 of method kafkaTemplate in org.springframework.boot.kafka.autoconfigure.KafkaAutoConfiguration) then found no ProducerFactory<Object, Object> to use.
+
+    Action:
+
+    Declare the replacement with @Bean(name = MaestroKafkaBeans.PRODUCER_FACTORY, defaultCandidate = false), so Spring Boot's kafkaProducerFactory registers beside it, or define your own KafkaTemplate bean, so Spring Boot's kafkaTemplate backs off. See docs/configuration.md § Kafka Client Configuration.
+    ```
+
+    Either fix starts. The analysis (`ProducerFactoryReplacementFailureAnalyzer`)
+    appears only for this failure; any other missing `ProducerFactory` is
+    left to Spring Boot's own failure reporting. Pinned by
+    `ProducerFactoryReplacementFailureAnalyzerTest`.
   - For `maestroKafkaTemplate` and `maestroKafkaConsumerFactory` it is
     recommended. A plain `@Bean` of that name also replaces the engine's, but
     Boot's `kafkaTemplate` (respectively `kafkaConsumerFactory`) then backs
