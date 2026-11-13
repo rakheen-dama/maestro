@@ -619,6 +619,8 @@ Timer polling uses leader election via the distributed lock so that only one nod
 in the cluster polls at a time. The poll interval directly affects the maximum
 delay between a timer becoming due and the workflow resuming.
 
+Due timers are compared with the store's clock: on Postgres the poller selects `PENDING` rows with `fire_at <= now()`, so the poller leader's own clock no longer moves when a timer fires. A timer's `fire_at`, and an `awaitSignal` deadline, are still computed from the clock of the node that schedules them, so a node whose clock is off arms its deadlines off by the same amount (see the clock-skew `WARN` below). A store without a clock of its own (the in-memory test store, a custom store) is polled with the poller's clock, as before.
+
 ---
 
 ## Recovery Configuration

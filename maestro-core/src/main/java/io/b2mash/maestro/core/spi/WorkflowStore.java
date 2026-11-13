@@ -832,11 +832,46 @@ public interface WorkflowStore {
      * SKIP LOCKED} in Postgres) to allow concurrent timer pollers without
      * contention.
      *
-     * @param now       the current time to compare against {@code fireAt}
+     * @param now       the current time by the caller's clock, compared against
+     *                  {@code fireAt}; see {@link #getDueTimers(int)} for the store's
      * @param batchSize maximum number of timers to return
      * @return list of due timers, ordered by {@code fireAt} ascending
      */
     List<WorkflowTimer> getDueTimers(Instant now, int batchSize);
+
+    /**
+     * Retrieves the timers due now <em>by the store's own clock</em>: the
+     * {@code PENDING} timers whose {@code fireAt} the store's clock has
+     * passed, ordered by {@code fireAt} ascending, at most {@code batchSize}.
+     * The engine's timer poller calls this, so the poller leader's own clock
+     * does not decide when a timer fires (finding 3.7). Locking as
+     * {@link #getDueTimers(Instant, int)}.
+     *
+     * <p>Only the comparison moves: {@code fireAt} is still computed and
+     * written by the node that schedules the timer, on that node's clock.
+     *
+     * <p>The default compares with this JVM's clock —
+     * {@code getDueTimers(Instant.now(), batchSize)}, the behaviour before this
+     * method existed — for a store with no clock of its own (the in-memory
+     * test store, a custom store). The Postgres store overrides it to compare
+     * {@code fire_at <= now()}. A decorating store should forward it to its
+     * delegate; one that does not degrades to the default, which is correct
+     * but compares on the caller's clock.
+     *
+     * <p><b>Mixed-version fleets.</b> Only the elected leader polls. A leader on
+     * a build without this method compares with its JVM clock; a leader on this
+     * build compares with the store's. Both select exactly the {@code PENDING}
+     * rows their clock has passed, and firing is a compare-and-set on the row
+     * ({@link #markTimerFired(UUID)}), so in every combination a timer fires
+     * once and is never lost — only the moment it fires differs, by the old
+     * leader's clock skew, as it did before whenever leadership moved.
+     *
+     * @param batchSize maximum number of timers to return
+     * @return the due timers, ordered by {@code fireAt} ascending
+     */
+    default List<WorkflowTimer> getDueTimers(int batchSize) {
+        return getDueTimers(Instant.now(), batchSize);
+    }
 
     /**
      * Looks up a workflow's timer by its logical timer ID, whatever its status.

@@ -8,7 +8,6 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 
 import java.time.Duration;
-import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -27,6 +26,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * when newly elected and when the candidate is already the current leader
  * (effectively renewing the TTL). If the lock backend is unavailable
  * ({@code null}), the poller runs unconditionally (single-node mode).
+ *
+ * <h2>Clock</h2>
+ * <p>A due timer is one the store says is due by its own clock
+ * ({@link WorkflowStore#getDueTimers(int)}). On Postgres that is the
+ * database's clock ({@code fire_at <= now()}), so this leader's own clock
+ * does not decide when a timer fires. On a store without a clock of its own
+ * (the in-memory test store, a custom store) it is this JVM's clock, as
+ * before. A timer's {@code fireAt} itself is still armed by the node that
+ * schedules it, on that node's clock.
  *
  * <h2>Idempotency</h2>
  * <p>Duplicate timer fires are handled safely:
@@ -183,7 +191,7 @@ final class TimerPoller {
     }
 
     private int pollDueTimers() {
-        var dueTimers = store.getDueTimers(Instant.now(), batchSize);
+        var dueTimers = store.getDueTimers(batchSize);
         var fired = 0;
 
         for (var timer : dueTimers) {

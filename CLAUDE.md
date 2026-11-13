@@ -102,6 +102,7 @@ public interface WorkflowStore {
 
     void saveTimer(WorkflowTimer timer);
     List<WorkflowTimer> getDueTimers(Instant now, int batchSize);
+    default List<WorkflowTimer> getDueTimers(int batchSize); // due by the store's clock (Postgres: fire_at <= now()); the timer poller calls this
     Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId); // any status; replay self-heal
     boolean markTimerFired(UUID timerId);                 // CAS: false if already fired/cancelled
     void markTimerCancelled(UUID timerId);
