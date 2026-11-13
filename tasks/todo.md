@@ -7,17 +7,17 @@ Maven Central blockers and the §6.4 feature gaps are out of scope.
 - [x] Four audits re-verified every finding (3.2, 3.3, 3.8 reproduced with failing tests)
 - [x] Spec written, builder-checked, approved by the maintainer with D1–D11 (2026-11-12)
 - [x] WP0 Executor builder (Issue 37) — Lane A — PR #50 merged 2026-11-12 (56e9c00): 5 tasks reviewed, whole-branch review + fix wave, uncached full build green on 9c1cfbf, CI Build & Test green
-- [ ] WP1 Replay fidelity (3.8, exact decimals) — Lane A, after WP9
+- [x] WP1 Replay fidelity (3.8, exact decimals, stored-input rounding) — Lane A — PR #53 merged 2026-11-13 (834a9da): 9 tasks, whole-branch review + fix wave, uncached full build green; NOT yet run on it: nightly E2E, chaos PR-gate x3, 2 h soak; Issues 42-49 filed
 - [ ] WP2 Wake permits, timer clock, remove activity lock (3.2, 3.7, 3.10) — Lane A
 - [ ] WP3 Admin retry (3.3, Issue 33) — Lane A
 - [ ] WP4 Loop liveness and health (3.5) — Lane A
 - [ ] WP5 Shutdown (Issue 29, 3.6) — Lane A
 - [ ] WP6 Recovery capacity (Issue 30, Issue 36) — Lane A
-- [ ] WP9 Schema safety and upgrade fixture — Lane B, first
+- [x] WP9 Schema safety and upgrade fixture — Lane B — PR #52 merged 2026-11-12 (6c8248b); Issues 40-41 filed
 - [ ] WP7 Kafka coexistence (3.4, 3.11c) — Lane B
 - [ ] WP10 Wake-listener shutdown (Issue 38) — Lane B
 - [ ] WP8 Store hygiene (3.11a, 3.11b, Issue 39) — Lane B, after WP6
-- [ ] WP11 k6 load-test foundation (perf/, sample-perf, meters, scenarios 1 and 3) — Lane C
+- [ ] WP11 k6 load-test foundation — Lane C — Tasks 1-5 done (3 meters, sample-perf, harness after 5 review rounds); Task 6 (Scenario 1) in fix round 2; Tasks 7-9 remain; first numbers: ~71-73 completions/s on one node at 20/20 (slot-limited, 5x50 ms activities), 36.00 net statements per workflow
 - [ ] WP12 k6 finding-linked scenarios 2, 4, 5, 6 with before/after — Lane C
 - [ ] WP13 Docs and housekeeping — Lane D (also: explicit `<a id="issue-N">` anchors for every heading in docs/open-issues.md — GitHub ignores `{#issue-N}`, CodeRabbit on PR #50)
 - [ ] Review section added here after the last merge
