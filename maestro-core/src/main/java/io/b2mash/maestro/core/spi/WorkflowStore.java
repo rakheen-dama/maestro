@@ -10,6 +10,7 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import org.jspecify.annotations.Nullable;
+import tools.jackson.databind.JsonNode;
 
 import java.time.Instant;
 import java.util.List;
@@ -40,7 +41,8 @@ import java.util.UUID;
  *
  * <h2>Lease fencing</h2>
  * <p>Every write a <em>running workflow's own thread</em> makes has a fenced
- * overload taking a {@link RunLease}: {@link #appendEvent(WorkflowEvent, RunLease)},
+ * overload taking a {@link RunLease}: {@link #appendEvent(WorkflowEvent, RunLease)}
+ * (and {@link #appendEventReturningPayload}, the same write),
  * {@link #completeInstance(WorkflowInstance, WorkflowEvent, RunLease)},
  * {@link #updateInstance(WorkflowInstance, RunLease)},
  * {@link #saveTimer(WorkflowTimer, RunLease)},
@@ -354,6 +356,54 @@ public interface WorkflowStore {
      */
     default void appendEvent(WorkflowEvent event, RunLease lease) {
         appendEvent(event);
+    }
+
+    /**
+     * {@link #appendEvent(WorkflowEvent, RunLease)}, returning the event's
+     * payload <em>exactly as a later read of this store returns it</em> — what
+     * {@link #getEventBySequence} or {@link #getEvents} will hand back for this
+     * event, not the node the caller passed in. The engine hands workflow code
+     * the read-back of a live result through this, so the live value is the
+     * value a replay of the step reads.
+     *
+     * <p>The two can differ: Postgres {@code jsonb} reorders object keys
+     * (shortest first, then bytewise) and normalises numbers ({@code 1.0E7}
+     * is stored as {@code 10000000}), and a store that writes text reads every
+     * payload back through its own parser. A {@code null} payload, or a JSON
+     * {@code null}, comes back as whatever the store reads for it (the JDBC
+     * stores: {@code null}).
+     *
+     * <p>The write is exactly the write {@code appendEvent(event, lease)}
+     * makes — the same stored value, the same atomic lease fence, the same
+     * {@code (workflow_instance_id, sequence_number)} uniqueness — and its
+     * exceptions are that method's. On any exception nothing is returned; in
+     * particular a retry after a write whose commit was lost in flight meets
+     * its own earlier row and throws {@link DuplicateEventException}, exactly
+     * as {@code appendEvent} does. If the store cannot parse the stored form
+     * after the write succeeded, it returns {@code event.payload()} and does
+     * not throw: the event is durable, and a later read of it fails exactly
+     * as it would have anyway.
+     *
+     * <p>The default appends with {@code appendEvent(event, lease)} and
+     * returns {@code event.payload()} — correct for a store that returns what
+     * it was given (the in-memory test store does). A decorating store should
+     * forward this method to its delegate; one that does not degrades to the
+     * default, keeping its own {@code appendEvent} behaviour but returning the
+     * node it was given.
+     *
+     * @param event the event to append; {@code event.workflowInstanceId()}
+     *              must equal {@code lease.instanceId()}
+     * @param lease the appending run's lease
+     * @return the payload as this store will read it back; {@code null} where
+     *         a read returns {@code null}
+     * @throws FencedWriteException    if the stored lease epoch differs from
+     *                                 {@code lease.epoch()} (nothing was written)
+     * @throws DuplicateEventException as for {@link #appendEvent(WorkflowEvent)}
+     *                                 (nothing was written)
+     */
+    default @Nullable JsonNode appendEventReturningPayload(WorkflowEvent event, RunLease lease) {
+        appendEvent(event, lease);
+        return event.payload();
     }
 
     /**

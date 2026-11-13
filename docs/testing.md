@@ -429,7 +429,7 @@ It runs the workflow once uninterrupted. Then, for every `k` from 1 to that run'
 
 - One node runs at a time. Two live nodes racing for one workflow (lock expiry, lease fencing between them) are covered by the integration tests' `MaestroEngineHarness`, not by the kit.
 - A crash fires at an event write. To crash between two non-event writes (a timer row and its memo, for instance), use `crashNow()` at a moment the test controls.
-- The in-memory store keeps payloads as Jackson trees and never renders them to text. A type whose round trip depends on the JSON text form is covered only against Postgres.
+- The in-memory store keeps payloads as Jackson trees, but every value the engine hands workflow code is parsed from JSON text, as a JDBC store parses it: untyped numbers arrive as `Integer`, `Long` or `Double`, binary inside an untyped map as a base64 string, decimals exactly, and a `JsonNode` as a copy. What the kit cannot show is Postgres `jsonb`'s own normalisation (object keys shorter first, `1.0E7` stored as `10000000`), so map order can differ from production's, but a live call and its replay read the same stored form on each store, so that difference cannot hide a stand-down (the results rule 12 returns as the activity's own object on the first run — another class, one that cannot be read back (its recovery stands down as `unknown_event_payload`), a future — are the exception, on every store, so a live call that succeeds does not prove its replay will) ([Pitfalls §12](pitfalls.md#12-your-workflow-gets-an-activitys-result-as-the-store-gives-it-back-not-the-object-the-activity-returned)). Workflow input is not read back: the first run gets the input as the engine serialized it, while a recovery or retry reads the stored row, so on Postgres an order-sensitive or untyped-number input (a `Map<String, Object>`'s key order, an untyped `1.0E7`) can differ between the first run and a recovery, and the kit cannot show it ([Issue 43](open-issues.md#issue-43): traced from the code, not reproduced end to end).
 - `crashNow()` lets another workflow's in-flight activity finish (up to 30 seconds) before that workflow stops.
 - With `parallel()` branches, `crashAfter(n)` counts completions across the branches in the order they happen to land, so which step is the `n`-th depends on thread timing. Sibling branches still mid-activity at the crash run that activity again after recovery. `assertRecoverable` can therefore report a live-step difference for a parallel workflow that is in fact correct. Use it on sequential workflows, and test parallel ones with targeted `crashAfterPersisting` predicates instead.
 
@@ -712,6 +712,6 @@ assertTrue(handle.getEvents().stream()
 ## See Also
 
 - [Concepts](concepts.md) -- Core concepts: memoization, replay, determinism constraints
-- [Pitfalls](pitfalls.md) -- The ten mistakes that fail only in production, and how a test catches each
+- [Pitfalls](pitfalls.md) -- Twelve rules whose violations pass every straight-through test and fail in production, and how a test catches each
 - [Configuration](configuration.md) -- Runtime configuration reference
 - [Architecture](maestro-architecture.md) -- System architecture and failure modes

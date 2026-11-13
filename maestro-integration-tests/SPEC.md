@@ -168,8 +168,8 @@ parallel branches, saga with compensation, failing activity with retry.
 - Awaitility bounds: **generous** (5–15s), poll interval short. A generous bound
   on a fast condition is not slow; it is what makes CI stable.
 - The parked-workflow re-check interval (signals **and**, since Issue 17,
-  timers) defaults to **30s** and is configurable through `WorkflowExecutor`'s
-  full constructor (`maestro.signal.wake-recheck-interval`). The harness
+  timers) defaults to **30s** and is configurable through
+  `WorkflowExecutor.Builder#wakeRecheckInterval` (`maestro.signal.wake-recheck-interval`). The harness
   exposes it as `MaestroEngineHarness.Builder.wakeRecheckInterval(Duration)` —
   use a short interval (≈200–500ms) for any test that depends on the
   store-re-check wake path (no-notifier signal delivery, cross-node timer

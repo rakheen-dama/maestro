@@ -35,7 +35,7 @@ class OrderControllerTest {
 
     @BeforeEach
     void setUp() {
-        executor = new WorkflowExecutor(store, null, null, null, serializer, "order-service");
+        executor = WorkflowExecutor.builder(store, serializer, "order-service").build();
         controller = new OrderController(
                 new MaestroClient(executor, new WorkflowRegistrar(executor), serializer, store));
     }

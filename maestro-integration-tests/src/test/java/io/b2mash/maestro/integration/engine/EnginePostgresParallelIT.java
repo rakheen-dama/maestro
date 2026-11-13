@@ -17,6 +17,7 @@ import io.b2mash.maestro.integration.support.MaestroEngineHarness;
 import io.b2mash.maestro.integration.support.PostgresIntegrationSupport;
 import io.b2mash.maestro.integration.workflows.CountingActivities;
 import io.b2mash.maestro.integration.workflows.TestWorkflows;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -388,6 +389,12 @@ class EnginePostgresParallelIT extends PostgresIntegrationSupport {
         @Override
         public void appendEvent(WorkflowEvent event) {
             delegate.appendEvent(event);
+        }
+
+        @Override
+        public tools.jackson.databind.@Nullable JsonNode appendEventReturningPayload(
+                WorkflowEvent event, io.b2mash.maestro.core.spi.RunLease lease) {
+            return delegate.appendEventReturningPayload(event, lease);
         }
 
         @Override

@@ -131,7 +131,7 @@ public final class UnknownHistoryGuard {
      * offending field are kept (see {@link #structuralPath}). The raw message
      * stays on the attached cause, logged at DEBUG only.
      */
-    private static String redactedCause(Throwable root) {
+    static String redactedCause(Throwable root) {
         var name = root.getClass().getName();
         if (root instanceof DatabindException databind) {
             var path = structuralPath(databind.getPath());

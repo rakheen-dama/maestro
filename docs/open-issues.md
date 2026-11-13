@@ -249,9 +249,23 @@ documenting the bounded-host-load cycle's index migration (a store migration
 shipped after V100 failed startup, and its first fix moved the failure to older
 nodes), is **resolved** by `outOfOrder` and a numbering rule that puts every
 new migration above V100. Four more (36–39), found by that cycle's final
-whole-branch review, are filed **open**: the test kit cannot apply the default
+whole-branch review, were filed **open**: the test kit cannot apply the default
 concurrency limits, `WorkflowExecutor`'s constructors need a builder, the wake
 listener's shutdown WARN, and silent stranding under another `service_name`.
+Issue 37 is since **resolved** by `WorkflowExecutor.builder(...)` and the
+removal of the ten constructors — see its section; 36, 38 and 39 remain open.
+Issue 40, found by the review of WP9's production schema guidance
+(2026-11-12), is filed **open**: under `validate`, a role that cannot see
+`maestro_schema_history` is told to apply every migration. Issue 41, found by
+the final review of the same work package (2026-11-12), is filed **open**: an
+older node replaying history appended by a newer node is untested. Issues
+42–49, found while making a live activity result equal its replay (WP1,
+2026-11-12), are filed **open**: a replayed failure keeps only type and
+message, workflow input on Postgres differs between the first run and
+recovery, input is read with the raw parameter class, `collectSignals` throws
+on a null payload, an `Error` from a result deserializer fails the run, an
+unparseable stored payload is logged only at `DEBUG`, nothing checks the
+mapper at startup, and future-typed activity results are accepted.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -305,9 +319,19 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [34](#issue-34) | A store outage during a state write fails a healthy workflow and compensates work that succeeded | Library defect | High | **Resolved** |
 | [35](#issue-35) | A new store migration fails startup on a database that already has the lock band | Library defect — upgrade | High | **Resolved** — `outOfOrder`, and new migrations numbered from V101 |
 | [36](#issue-36) | The test kit cannot apply production's default concurrency limits | Library gap — test fidelity | Medium | Open |
-| [37](#issue-37) | `WorkflowExecutor` has ten public constructors | Library gap — API design | Low | Open — before a first Maven Central release |
+| [37](#issue-37) | `WorkflowExecutor` has ten public constructors | Library gap — API design | Low | **Resolved** |
 | [38](#issue-38) | `PostgresWakeListener.close()` logs a WARN with a stack trace at every shutdown with a pooled `DataSource` | Library defect — log noise | Low | Open |
 | [39](#issue-39) | Workflows recorded under another `service_name` are stranded silently | Library gap — operability | Medium | Open |
+| [40](#issue-40) | Under `validate`, a role that cannot see `maestro_schema_history` is told to apply every migration | Library gap — operability | Low | Open |
+| [41](#issue-41) | An older node replaying history appended by a newer node is untested | Testing gap — rolling deploy | Medium | Open |
+| [42](#issue-42) | A replayed activity failure keeps only the exception's type and message | Library gap — replay fidelity | Medium | Open |
+| [43](#issue-43) | Workflow input on Postgres differs between the first run and recovery | Library defect — replay fidelity | Low | Open |
+| [44](#issue-44) | Workflow input is read with the raw parameter class | Library defect | Medium | Open |
+| [45](#issue-45) | `collectSignals` throws `NullPointerException` on a signal with a null payload | Library defect | Low | Open |
+| [46](#issue-46) | An `Error` thrown by a result deserializer fails a recorded activity, live and on replay | Library gap — D9 coverage | Low | Open |
+| [47](#issue-47) | A stored payload the store cannot parse is logged at `DEBUG` only, and every later read of it throws | Library gap — operability | Low | Open |
+| [48](#issue-48) | No startup check that the configured mapper reads back what it writes | Library gap — configuration safety | Medium | Open |
+| [49](#issue-49) | Future-typed activity results are not rejected at startup | Library gap — API validation | Medium | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -3281,15 +3305,15 @@ production reaches at its default limits passes every test).
 `maestro.worker.task-queues` is bounded at 20 workflow runs and 20 live
 activities per node (`maestro.worker.default-concurrency` /
 `default-activity-concurrency`). `TestWorkflowEnvironment` builds its
-executors with a constructor that passes no limits at all (`Map.of()` and no
-defaults), and offers no way to pass any. A user's test therefore never queues
+executors with no limits at all (no `taskQueueLimits` and no
+`defaultTaskQueueLimits`), and offers no way to pass any. A user's test therefore never queues
 for a slot. Default-path behaviour that depends on slots is invisible in it:
 the same-queue wait deadlock ([Pitfalls rule 11](pitfalls.md#11-never-make-an-activity-wait-for-a-workflow-of-its-own-task-queue)),
 a parked run's re-check waiting for a slot, and Issues 29 and 30.
 
 **How to tackle it.** Add a `TestWorkflowEnvironment` option that takes the
-default and per-queue limits, and pass them to the executor constructor that
-takes default limits. `@MaestroTest` can bind it from `maestro.worker.*`.
+default and per-queue limits, and pass them to
+`WorkflowExecutor.Builder#taskQueueLimits` / `#defaultTaskQueueLimits`. `@MaestroTest` can bind it from `maestro.worker.*`.
 Decide whether the kit should default to production's 20/20: that makes tests
 behave like production, but could make existing user tests with more than 20
 concurrent runs on one queue slower.
@@ -3302,8 +3326,18 @@ limits unset (or both `0`) completes.
 
 ### Issue 37 — `WorkflowExecutor` has ten public constructors {#issue-37}
 
-> **Open.** Filed by the final whole-branch review of the bounded-host-load
-> cycle (2026-11-11). Recorded, not fixed, in that cycle.
+> **Resolved (2026-11-12, branch `refactor/executor-builder`).** Filed by the
+> final whole-branch review of the bounded-host-load cycle (2026-11-11).
+> `WorkflowExecutor.builder(store, serializer, serviceName)` returns a
+> `WorkflowExecutor.Builder` with one named setter per engine setting, each
+> defaulting to the value the six-argument constructor supplied; `build()`
+> validates as the constructors did, and a `null` `serializer`, `serviceName`,
+> `lockKeyPrefix` or `observer` now fails fast. The starter, the test kit and
+> every test build their executors through it. All ten constructors were
+> removed rather than deprecated, because no Maven Central release has
+> shipped them (engine-hardening cycle decision D6).
+> Pinned by `WorkflowExecutorBuilderTest`, whose
+> `defaultsAreTheValuesTheSixArgumentConstructorSupplied` pins each default.
 
 **Kind:** Library gap — API design. **Severity:** Low (no behaviour impact;
 a public-API cost that grows with every new engine setting).
@@ -3381,6 +3415,409 @@ never fail startup on it.
 **Done when.** A node started beside a seeded active instance of one of its
 workflow types, recorded under another `service_name`, logs that WARN naming
 the name and the count, and a node with no such instance logs nothing.
+
+---
+
+### Issue 40 — Under `validate`, a role that cannot see `maestro_schema_history` is told to apply every migration {#issue-40}
+
+> **Open.** Filed by the review of WP9's production schema guidance
+> (2026-11-12, branch `test/schema-upgrade-safety`). Recorded, not fixed.
+
+**Kind:** Library gap — operability. **Severity:** Low (startup fails safe;
+the message only points the operator the wrong way).
+
+**What's wrong.** `MaestroSchemaInitializer` in `validate` mode reads
+`maestro_schema_history` through Flyway, in the connection's current schema.
+If the node's role lacks `USAGE` on the schema, or its `search_path` (or JDBC
+`currentSchema`) misses the schema that holds Maestro's tables, Flyway does
+not find the history table. It reports every shipped migration as pending, and
+the node fails startup with `Maestro schema is behind: pending migrations [1,
+2, 3, 4, 5, 6, 7, 8, 9, 100, 101]. Apply them (maestro.store.schema.mode=flyway)
+or run the SQL under [...] yourself.` On a fully migrated database that
+advice is wrong. Following it by switching the node to `flyway` fails with a
+permission error for a DML-only role. For a role that may create tables in the
+schema it does see, it would create a second, empty set of `maestro_*` tables
+there. The misleading message was observed on PostgreSQL 16 in both cases:
+the `USAGE` case by removing the grant from the role in
+`MaestroSchemaInitializerTest.aDmlOnlyRoleRunsValidateModeButCannotMigrate`,
+the search-path case with a scratch probe that pointed the role's
+`currentSchema` at another schema.
+
+**How to tackle it.** When `validate` finds *every* shipped migration pending,
+check before reporting. On the same connection, read `current_schema()`
+(`NULL` when no schema on the search path is usable), and look in
+`pg_catalog.pg_class`/`pg_namespace` for a `maestro_schema_history` in any
+schema, with `has_schema_privilege(<that schema>, 'USAGE')`. The catalogs are
+readable without `USAGE`. If the table exists in a schema the role cannot use
+or is not looking in, name that schema and the missing privilege or
+`search_path` instead of advising a migration. Keep today's message
+for a database that really is empty or behind.
+
+**Done when.** A test with a migrated database and a role lacking `USAGE`,
+and one with a role whose `currentSchema` points elsewhere, each fail
+`validate` with a message naming the schema and the missing privilege or
+search path, not a list of pending migrations. The existing
+pending-migration messages are unchanged.
+
+---
+
+### Issue 41 — An older node replaying history appended by a newer node is untested {#issue-41}
+
+> **Open.** Filed by the final review of WP9
+> (2026-11-12, branch `test/schema-upgrade-safety`). Recorded, not fixed.
+
+**Kind:** Testing gap — rolling deploy. **Severity:** Medium (no defect is
+known, but a rolling deploy or a rollback exercises this path on every
+release, and nothing verifies it).
+
+**What's wrong.** `SeededHistoryUpgradeIT` proves one direction of a rolling
+deploy: the *new* build upgrades, recovers and replays history the *old*
+build (`cbf5a2a`) wrote. Nothing tests the other direction. During a rolling
+deploy, or after a rollback, a node of the previous build can adopt a run
+whose latest events were appended by a node of the new build. Nor are the
+payload bytes the current build appends pinned anywhere: the seeded-history
+fixture freezes only what `cbf5a2a` wrote, and its pins on what this build
+appends (the `APPENDED` list and the others in the "Pins" section of
+`SeededHistoryUpgradeIT`'s Javadoc) name event types and steps, not payload
+bytes. The stand-down design (`UnknownWorkflowHistoryException`, and the
+`unknown_event_payload` and `nondeterministic_history` stand-down reasons) is
+expected to make that direction safe — an older node that cannot read a
+newer node's event stands the run down instead of failing it — but it is
+asserted only by same-build tests, which simulate the newer event rather than
+read one a newer build wrote.
+
+**How to tackle it.** Once a release exists, add the reverse check to the
+release pipeline, beside the N-1 → N upgrade fixture (`RELEASING.md` §
+Upgrade fixtures): let a node of the current build migrate and drive
+workflows in a database, then run a node of the previous release against that
+database, and assert that every run it adopts either completes or stands
+down, and that none is failed or compensated.
+
+**Done when.** The release pipeline runs the previous release's node against
+a database a current node has written to, and fails the release if that node
+fails or compensates any run, or rewrites any event the current node
+appended.
+
+---
+
+### Issue 42 — A replayed activity failure keeps only the exception's type and message {#issue-42}
+
+> **Open.** Filed by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+
+**Kind:** Library gap — replay fidelity. **Severity:** Medium (workflow code
+that reads more than the type and message of a failure behaves differently
+after a restart, with no stand-down to show it).
+
+**What's wrong.** A live activity failure reaches workflow code as
+`ActivityExecutionException` wrapping the exception the activity threw, with
+its subclass, its own fields and its cause chain. What is recorded is only
+the class name and message: `ActivityInvocationHandler.persistFailure`
+(`ActivityInvocationHandler.java:1167`) writes `ErrorDetail(exceptionType,
+message)`. A replay rebuilds the cause from those two strings
+(`reconstructFailure`, `:776`, through `FailureReconstruction.reconstruct`,
+`FailureReconstruction.java:61`): the class's public `(String)` constructor if
+it has one, else a `ReconstructedActivityFailure`. A field such as
+`PaymentDeclinedException.declineCode`, and `getCause()` of the original, are
+gone after a restart. `docs/concepts.md` and Pitfalls rule 2 document the type
+part only.
+
+**Harm.** A workflow that branches on such a field takes one path live and
+another after recovery. If the branch decides a later activity's arguments, it
+stands down as `nondeterministic_history`; if not, it diverges silently.
+
+**Why not WP1.** WP1 made a live *result* equal its replay. The same move for
+failures, throwing the reconstruction live, changes which exception types and
+fields authors can catch on the first run, which needs its own decision
+(plan D-2).
+
+**How to tackle it.** Either record more (a serialized form of the exception's
+own fields, read back into the same type when it can be), or throw the
+reconstruction live too, so both runs see the same thing. The second is
+smaller and matches WP1; the first keeps more for authors.
+
+**Done when.** A kit test whose activity throws an exception with a custom
+field and a cause, and whose workflow reads both, sees the same values live
+and after `crashAfter(n)` + `recover()`.
+
+---
+
+### Issue 43 — Workflow input on Postgres differs between the first run and recovery {#issue-43}
+
+> **Open.** Filed by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+
+**Kind:** Library defect — replay fidelity. **Severity:** Low (only untyped or
+order-sensitive input shapes are affected).
+
+**What's wrong.** The first run deserializes the node the engine serialized
+(`WorkflowExecutor.java:596`, passed to `launchWorkflow` at `:632`). A
+recovery (`:673`) and a retry (`:1377`) deserialize the stored `jsonb` row,
+which Postgres has normalised: object keys shorter first, and a whole exponent
+number such as `1.0E7` stored as `10000000`
+(`PostgresPayloadFidelityTest.jsonbReordersObjectKeysShortestFirst` and
+`jsonbRewritesAWholeExponentNumberAsAnInteger`). A `Map<String, Object>` input
+therefore iterates in one order on the first run and another after recovery,
+and an untyped `1.0E7` is a `Double` first and an `Integer` after. This is the
+input-side twin of what Task 7 fixed for activity results; it was traced from
+the code and the store's characterisation tests, not reproduced end to end.
+WP1's text read path already made decimals and other untyped numbers agree.
+
+**Harm.** Workflow code that builds a string or a list from such an input's
+iteration order, or that calls `toString()` on such a number, sees different
+values after a restart. If those reach an activity's arguments, the run stands
+down; the fingerprint itself sorts keys and normalises numbers, so passing the
+map or number directly is safe.
+
+**Why not WP1.** WP1's scope was activity results (3.8). The fix touches
+`createInstance`, which no WP1 task changed.
+
+**How to tackle it.** The Task 7 pattern on `createInstance`: return the
+stored `input` (`INSERT … RETURNING input` on Postgres) and launch the first
+run from it.
+
+**Done when.** An integration test starts a workflow whose input map has keys
+`aa` and `b` and an untyped `1.0E7`, records what the workflow saw, crashes it
+and recovers it on Postgres, and both runs saw the same key order and the same
+number class.
+
+---
+
+### Issue 44 — Workflow input is read with the raw parameter class {#issue-44}
+
+> **Open.** Filed by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+
+**Kind:** Library defect. **Severity:** Medium (the workflow fails on its
+first run, so it is caught early, but the cause is not obvious).
+
+**What's wrong.** `WorkflowExecutor` deserializes the workflow input with
+`workflowMethod.getParameterTypes()[0]` (`WorkflowExecutor.java:2444`), the
+raw class, not `getGenericParameterTypes()[0]`. A `List<Pair>` parameter
+therefore arrives as a `List` of `LinkedHashMap`s, and the first
+`pairs.get(0).a()` throws `ClassCastException`. Observed with a throwaway kit
+probe on this branch: the run ended `FAILED` with
+`java.lang.ClassCastException: class java.util.LinkedHashMap cannot be cast
+to class …Pair`. A `@QueryMethod` argument is read the same way (`:3133`).
+Activity results do not have this problem: they use the generic return type.
+
+**Harm.** A workflow method that takes a parameterized type fails, with a
+compensation if it is a `@Saga`. Users work around it with a wrapper record.
+
+**Why not WP1.** It is not a live-versus-replay difference: the first run and
+every recovery read the input the same wrong way.
+
+**How to tackle it.** Use `getGenericParameterTypes()[0]` (and the same for
+query methods); the `deserialize(JsonNode, Type)` overload already exists.
+Check it does not change what existing inputs read as: a raw `List` parameter
+must still read as it does now.
+
+**Done when.** A kit test with a `List<Pair>` workflow parameter completes and
+reads `Pair`s, live and after recovery.
+
+---
+
+### Issue 45 — `collectSignals` throws `NullPointerException` on a signal with a null payload {#issue-45}
+
+> **Open.** Filed by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+
+**Kind:** Library defect. **Severity:** Low (a null signal payload is unusual,
+but legal for `awaitSignal`).
+
+**What's wrong.** `collectSignals` gathers the awaited payloads and returns
+`List.copyOf(results)` (`DefaultWorkflowOperations.java:735`), which throws on
+a `null` element. A signal delivered with a `null` payload therefore makes
+`collectSignals` throw `NullPointerException` into workflow code. Observed with
+a throwaway kit probe on this branch: the run ended `FAILED` with
+`java.lang.NullPointerException`. `awaitSignal` returns the same `null`
+without trouble (`NullSignalPayloadTest`, whose Javadoc notes this gap).
+
+**Harm.** One `null` signal fails a workflow that collects signals, with
+compensation for a `@Saga`.
+
+**Why not WP1.** It predates WP1 and is not a replay-fidelity difference; WP1
+only noticed it while pinning null payloads.
+
+**How to tackle it.** Return an unmodifiable list that allows `null`
+(`Collections.unmodifiableList(new ArrayList<>(results))`), or reject a `null`
+payload at delivery for workflows that collect. The first keeps today's
+`awaitSignal` contract.
+
+**Done when.** A test delivers a `null` and a non-null signal to a workflow
+that collects two, and the workflow receives `[null, value]` live and after
+recovery.
+
+---
+
+### Issue 46 — An `Error` thrown by a result deserializer fails a recorded activity, live and on replay {#issue-46}
+
+> **Open.** Filed by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+
+**Kind:** Library gap — D9 coverage. **Severity:** Low (needs a custom
+deserializer that throws an `Error`, such as an `AssertionError` or a
+`StackOverflowError`).
+
+**What's wrong.** WP1 reads every live activity result back after recording
+it. The read-back catches `SerializationException` only
+(`ReadBack.orLive`, called from `ActivityInvocationHandler.readBack`): an exception from Jackson becomes the
+D9 path (the run continues with the activity's own object), but an `Error`
+from a custom deserializer propagates. The outcome is already recorded, so a
+successful activity ends the workflow `FAILED`. Observed with a throwaway kit
+probe on this branch: the events were `1:ACTIVITY_COMPLETED,
+2:WORKFLOW_FAILED`, with the failure `java.lang.AssertionError`. A replay of
+the step is guarded the same way (`UnknownHistoryGuard.requireReadablePayload`
+catches `SerializationException` only), so it fails there too (traced, not
+reproduced). Before WP1 the live run never read the result back and only the
+replay failed.
+
+**Harm.** A recorded success is recorded as a workflow failure, and a `@Saga`
+compensates work that succeeded.
+
+**Why not WP1.** The plan's constraints allow no new `catch` broader than
+`SerializationException`, so that no control-flow `Error`
+(`MaestroControlFlowError`) and no node error can be swallowed.
+
+**How to tackle it.** Around the deserialize call only (no store call inside),
+catch `Error`, rethrow `MaestroControlFlowError`, `VirtualMachineError` and
+`LinkageError` (the node errors), and treat any other `Error` like a
+`SerializationException`: live, return the activity's object and report it;
+on replay, stand down as `unknown_event_payload`.
+
+**Done when.** A test with a deserializer that throws `AssertionError`
+completes the live run with the activity's object, counts it in
+`maestro.activity.result.unreadable`, and stands down on recovery; a
+deserializer that throws `OutOfMemoryError` still ends the run as a node error.
+
+---
+
+### Issue 47 — A stored payload the store cannot parse is logged at `DEBUG` only, and every later read of it throws {#issue-47}
+
+> **Open.** Filed by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+
+**Kind:** Library gap — operability. **Severity:** Low (needs a value whose
+stored form exceeds Jackson's read limits, such as a decimal of more than
+1,000 digits once `jsonb` expands it).
+
+**What's wrong.** Postgres stores `1E+1500` as a 1,501-digit integer, longer
+than the number length Jackson's reader accepts. On the outcome append,
+`appendEventReturningPayload` cannot parse what `RETURNING` hands back; the
+row is written, so it returns the payload it was given and logs at `DEBUG`
+only (`AbstractJdbcWorkflowStore.java:817`). Every later read of the row,
+`getEventBySequence` included, throws `SerializationException`
+(`PostgresPayloadFidelityTest.aReturnedPayloadTheStoreCannotParseReturnsTheSentPayload`).
+The activity proxy calls `getEventBySequence` outside any guard
+(`ActivityInvocationHandler.java:524`), so on the run's next recovery that
+exception reaches workflow code as an ordinary exception (traced, not
+reproduced). The read side is the same on any build; WP1 only added the
+`DEBUG` line on the write side.
+
+**Harm.** The live run carries on normally; nothing above `DEBUG` says a row
+is unreadable, and the first recovery fails the workflow where it should stand
+down.
+
+**Why not WP1.** The write succeeded and the live run is unaffected, so no WP1
+path can fail it; the read-side handling of a store that cannot parse its own
+row is outside 3.8.
+
+**How to tackle it.** Log the write-side case at `WARN` with the step and
+sequence (never the value) and count it. On the read side, map a store parse
+failure on an event row to the `unknown_event_payload` stand-down, as an
+unreadable payload already is.
+
+**Done when.** A Postgres test appends `1E+1500`, sees one `WARN`, then
+recovers the run and observes an `unknown_event_payload` stand-down, not
+`FAILED`.
+
+---
+
+### Issue 48 — No startup check that the configured mapper reads back what it writes {#issue-48}
+
+> **Open.** Filed by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+
+**Kind:** Library gap — configuration safety. **Severity:** Medium (a mapper
+customisation silently changes what every workflow computes).
+
+**What's wrong.** The engine uses the host's `ObjectMapper` for every payload
+and never checks at startup that it round-trips the values the engine itself
+records. A mapper that writes timestamps as numbers
+(`DateTimeFeature.WRITE_DATES_AS_TIMESTAMPS` on; Jackson 3's default is off)
+in epoch milliseconds (`WRITE_DATE_TIMESTAMPS_AS_NANOSECONDS` off) while
+still reading integer timestamps as seconds
+(`READ_DATE_TIMESTAMPS_AS_NANOSECONDS`, on by default) reads `currentTime()`
+back about a thousand times too far from the epoch: a time in 2026 reads as
+the year 58834. The live run is protected: a read-back more than a second
+from the recorded clock value is discarded for the clock value, with one
+`WARN` per `PayloadSerializer`, so `collectSignals` and `retryUntil` budgets
+are computed from the real clock
+(`CurrentTimeReadBackTest.asymmetricMillisMapper_liveRunGetsTheClockValue_andWarnsOncePerSerializer`,
+`asymmetricMillisMapper_collectSignalsBudgetIsNotExhaustedEarly`). A replay
+after a restart still reads the year 58834
+(`asymmetricMillisMapper_aReplayReadsTheMisreadInstant`), so a recovered
+`collectSignals` or `retryUntil` computes its remaining budget from misread
+times (traced, not tested). Mappers that drop a `BigDecimal`'s scale or read
+`Optional.empty()` as `null` are silent.
+
+**Harm.** A configuration mistake made once, in the host application, changes
+deadlines and values in every recovered workflow; the only sign is a `WARN`
+the first time a run reads the clock.
+
+**Why not WP1.** WP1 decided where values are read back, not which mapper
+configurations are acceptable; failing startup on a host mapper is a product
+decision.
+
+**How to tackle it.** At startup, round-trip a small fixed set through
+`PayloadSerializer` (an `Instant` with nanoseconds, `BigDecimal("10.50")`,
+`Optional.empty()`, an `OffsetDateTime` in UTC) and WARN, or fail under a
+property, naming each value that does not come back equal.
+
+**Done when.** A starter context test with the asymmetric millisecond mapper
+fails startup (or logs the WARN) naming `Instant`, and the default mapper
+starts silently.
+
+---
+
+### Issue 49 — Future-typed activity results are not rejected at startup {#issue-49}
+
+> **Open.** Filed by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+
+**Kind:** Library gap — API validation. **Severity:** Medium (a
+`CompletableFuture` return type hangs the workflow after its first restart).
+
+**What's wrong.** An activity call is synchronous and its result is recorded
+as JSON, so a `Future`, `CompletionStage` or `CompletableFuture` return type
+cannot work across a restart. Nothing rejects one: `ActivityProxyFactory.createProxy`
+checks only that the type is an interface and validates its `@Compensate`
+annotations (`ActivityProxyFactory.java:304-309`). Jackson records a
+`CompletableFuture` as its bean properties
+(`{"cancelled":false,"completedExceptionally":false,"done":true,"numberOfDependents":0}`),
+never its value. The live run never reads a future back: it gets the
+activity's own future, and `join()` works
+(`ReadBackFormsTest.aCompletableFutureResultIsTheActivitysFuture_andJoinCompletesOnTheFirstRun`).
+A replay does read it back: a `CompletableFuture` becomes a new future that
+nothing ever completes (`ReadBackTypeValveTest`, row `completableFuture`), and
+a `Future` or `CompletionStage` cannot be read back at all, so every recovery
+stands down as `unknown_event_payload`
+(`ReadBackFormsTest.aFutureOrCompletionStageResult_standsDownOnRecovery`).
+
+**Harm.** After a restart, `join()` on a replayed `CompletableFuture` blocks
+the workflow thread for good, holding its task-queue slot (traced, not
+tested). The other two types strand the run on its first restart.
+
+**Why not WP1.** WP1 does not validate activity interfaces; adding a startup
+failure is an API change.
+
+**How to tackle it.** In `createProxy`, reject an activity method whose return
+type is assignable to `Future` or `CompletionStage`, naming the interface and
+method, so the starter fails at context start.
+
+**Done when.** Creating a proxy for an interface with a `CompletableFuture`
+method throws, naming the method, and `ReadBackFormsTest`'s future cases are
+replaced by that test.
 
 ---
 

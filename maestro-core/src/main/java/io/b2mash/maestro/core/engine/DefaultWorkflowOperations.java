@@ -40,9 +40,12 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import java.util.StringJoiner;
 import java.util.UUID;
+import java.util.WeakHashMap;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -96,6 +99,27 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
      */
     private static final ScopedValue<List<BufferedCompensation>> BRANCH_COMPENSATIONS =
             ScopedValue.newInstance();
+
+    /**
+     * How far a live {@code currentTime()} read-back may be from the clock
+     * value it recorded before it is taken for a misread (see
+     * {@link #currentTime()}): a mapper that truncates to milliseconds or
+     * microseconds stays well inside it; one that reads millis as seconds is
+     * decades outside it.
+     */
+    static final Duration TIMESTAMP_READ_BACK_TOLERANCE = Duration.ofSeconds(1);
+
+    /**
+     * The serializers whose misread {@code currentTime()} has been WARNed:
+     * once per {@link PayloadSerializer} — the starter builds one per
+     * application, so once per process there; the test kit one per
+     * environment — then DEBUG. Weak keys, by identity (the serializer does
+     * not override {@code equals}), so a discarded serializer is not held.
+     * Bounded by the serializers alive, unlike a per-run flag, which would
+     * WARN once for every run that reads the clock.
+     */
+    private static final Set<PayloadSerializer> TIMESTAMP_MISREAD_WARNED =
+            Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
 
     private final WorkflowStore store;
     private final @Nullable DistributedLock distributedLock;
@@ -961,8 +985,65 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         // clock the per-await deadlines are armed on.
         WorkflowContextInternals.setReplaying(ctx, false);
         var now = instantSource.instant();
-        appendEvent(ctx, seq, EventType.SIDE_EFFECT, "$maestro:currentTime", serializer.serialize(now));
-        return now;
+        var stored = appendEventReturningPayload(ctx, seq, EventType.SIDE_EFFECT, "$maestro:currentTime",
+                serializer.serialize(now));
+        // D7: return what a replay of this slot reads — the payload as the
+        // store returned it — not the raw clock value. ReadBack's try holds no
+        // store call and names SerializationException only.
+        var readBack = ReadBack.orLive(now, () -> serializer.deserialize(stored, Instant.class), root ->
+                // The host mapper throws reading the Instant it wrote. Never
+                // fail the run for it (D9's principle): the side effect is
+                // durable, and a replay of this slot stands down as
+                // UNKNOWN_EVENT_PAYLOAD. The run continues with the clock
+                // value. The cause is named by class and JSON path only.
+                logger.debug("Workflow '{}': currentTime() at sequence {} is recorded but cannot be read back as an"
+                                + " Instant ({}); this run continues with the clock value, and a replay of this slot"
+                                + " will stand the run down as unknown_event_payload",
+                        ctx.workflowId(), seq, UnknownHistoryGuard.redactedCause(root)));
+        if (readBack == null) {
+            // A store that reads the recorded node back as JSON null: nothing
+            // a replay could agree with either, so keep the clock value.
+            return now;
+        }
+        // A read-back more than a second from the clock value is a mapper
+        // that misreads its own timestamps without throwing: epoch millis
+        // written (WRITE_DATES_AS_TIMESTAMPS on, WRITE_DATE_TIMESTAMPS_AS_
+        // NANOSECONDS off) while integer timestamps are still read as seconds
+        // (READ_DATE_TIMESTAMPS_AS_NANOSECONDS, on by default), so 2026 reads
+        // as the year 58834. Budgets computed from that (collectSignals,
+        // retryUntil) would run out ~1000x early on a run that never crashed:
+        // keep the clock value live. A replay still reads the misread instant.
+        // Precision loss (millis, micros) is well inside the second.
+        var drift = Duration.between(now, readBack);
+        if (drift.abs().compareTo(TIMESTAMP_READ_BACK_TOLERANCE) > 0) {
+            var warning = timestampMisreadWarning(ctx.workflowId(), seq, drift);
+            if (TIMESTAMP_MISREAD_WARNED.add(serializer)) {
+                logger.warn("{}", warning);
+            } else {
+                logger.debug("{}", warning);
+            }
+            return now;
+        }
+        return readBack;
+    }
+
+    /**
+     * The fixed WARN copy for a {@code currentTime()} whose read-back is more
+     * than {@link #TIMESTAMP_READ_BACK_TOLERANCE} from the recorded clock
+     * value. It states the magnitude of the difference only — never the
+     * recorded or the misread time.
+     *
+     * @param workflowId the run's workflow id
+     * @param seq        the side effect's sequence number
+     * @param drift      read-back minus clock value
+     * @return the log line
+     */
+    static String timestampMisreadWarning(String workflowId, int seq, Duration drift) {
+        return ("Workflow '%s': currentTime() at sequence %d reads back %d seconds from the time it recorded: the "
+                + "configured ObjectMapper does not read back the timestamp it wrote (for example, epoch milliseconds "
+                + "written while integer timestamps are read as seconds), so this run continues with the clock value and live and "
+                + "replayed times will differ — make the mapper read its own timestamps (docs/pitfalls.md, rule 12)")
+                .formatted(workflowId, seq, drift.abs().toSeconds());
     }
 
     // ── randomUUID ─────────────────────────────────────────────────────
@@ -1226,9 +1307,33 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
 
     // ── Internal helpers ───────────────────────────────────────────────
 
+    /** Appends an event under the run's lease ({@link WorkflowStore#appendEvent(WorkflowEvent, io.b2mash.maestro.core.spi.RunLease)}). */
     private void appendEvent(WorkflowContext ctx, int seq, EventType type,
                              String stepName, @Nullable JsonNode payload) {
-        var event = new WorkflowEvent(
+        var event = event(ctx, seq, type, stepName, payload);
+        appendFenced(ctx, seq, () -> {
+            store.appendEvent(event, ctx.lease());
+            return null;
+        });
+    }
+
+    /**
+     * Appends an event under the run's lease and returns its payload as the
+     * store will read it back
+     * ({@link WorkflowStore#appendEventReturningPayload}) — for the one
+     * operation that reads back what it recorded, {@link #currentTime()}.
+     * Every other operation discards the payload, so it uses
+     * {@link #appendEvent} and the store method of that name.
+     */
+    private @Nullable JsonNode appendEventReturningPayload(WorkflowContext ctx, int seq, EventType type,
+                                                           String stepName, @Nullable JsonNode payload) {
+        var event = event(ctx, seq, type, stepName, payload);
+        return appendFenced(ctx, seq, () -> store.appendEventReturningPayload(event, ctx.lease()));
+    }
+
+    private static WorkflowEvent event(WorkflowContext ctx, int seq, EventType type,
+                                       String stepName, @Nullable JsonNode payload) {
+        return new WorkflowEvent(
                 UUID.randomUUID(),
                 ctx.workflowInstanceId(),
                 seq,
@@ -1237,8 +1342,12 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                 payload,
                 Instant.now()
         );
+    }
+
+    /** Runs {@code append}; a fenced or lost append makes the run stale (sticky), then propagates. */
+    private static @Nullable JsonNode appendFenced(WorkflowContext ctx, int seq, Supplier<@Nullable JsonNode> append) {
         try {
-            store.appendEvent(event, ctx.lease());
+            return append.get();
         } catch (FencedWriteException fenced) {
             // Issue 11: another node adopted this workflow and the store
             // refused this run's write. Sticky for the same reason as below.

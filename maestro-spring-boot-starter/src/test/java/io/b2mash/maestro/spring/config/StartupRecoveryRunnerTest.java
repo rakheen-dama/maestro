@@ -32,7 +32,7 @@ class StartupRecoveryRunnerTest {
     void setUp() {
         var store = new InMemoryWorkflowStore();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = new WorkflowExecutor(store, null, null, null, serializer, "test-service");
+        executor = WorkflowExecutor.builder(store, serializer, "test-service").build();
         properties = new MaestroProperties();
         properties.setServiceName("test-service");
         runner = new StartupRecoveryRunner(executor, new WorkflowRegistrar(executor), properties);

@@ -122,12 +122,8 @@ public final class TestWorkflowEnvironment {
     private static final Logger logger = LoggerFactory.getLogger(TestWorkflowEnvironment.class);
     private static final String SERVICE_NAME = "maestro-test";
 
-    // The engine defaults (WorkflowExecutor's short constructors), spelled out
-    // because the environment uses the full constructor to attach its observer.
+    // The activity-proxy lock prefix must equal the executor's; everything else is the engine's default (WorkflowExecutor.Builder).
     private static final String LOCK_KEY_PREFIX = "maestro:lock:";
-    private static final Duration INSTANCE_LOCK_TTL = Duration.ofSeconds(30);
-    private static final Duration SHUTDOWN_TIMEOUT = Duration.ofSeconds(30);
-    private static final Duration WAKE_RECHECK_INTERVAL = Duration.ofSeconds(30);
 
     private final ControllableClock clock;
     private final InMemoryWorkflowStore store;
@@ -578,10 +574,14 @@ public final class TestWorkflowEnvironment {
             this.view = NodeStoreView.over(store, this);
             // Deadlines arm on the test clock, not the wall clock (R59): a timer
             // armed at clock.now() + d fires on exactly advanceTime(d).
-            this.executor = new WorkflowExecutor(
-                    view.store(), lock, messaging, signalNotifier, serializer, SERVICE_NAME,
-                    LOCK_KEY_PREFIX, INSTANCE_LOCK_TTL, true, SHUTDOWN_TIMEOUT, WAKE_RECHECK_INTERVAL,
-                    observer, Map.of(), clock);
+            this.executor = WorkflowExecutor.builder(view.store(), serializer, SERVICE_NAME)
+                    .distributedLock(lock)
+                    .messaging(messaging)
+                    .signalNotifier(signalNotifier)
+                    .lockKeyPrefix(LOCK_KEY_PREFIX)
+                    .observer(observer)
+                    .instantSource(clock)
+                    .build();
         }
 
         // The crash this node's view is about to announce: set by fire() on the

@@ -71,7 +71,7 @@ class SequenceSpaceExhaustionTest extends ParallelSagaTestSupport {
     void compensationOverflow_finishesFailedWithoutRunningCompensations() throws Exception {
         var undone = new AtomicInteger();
         var workflow = new TripleForkWorkflow(undone);
-        var executor = new WorkflowExecutor(store, null, null, null, serializer, "node-a");
+        var executor = WorkflowExecutor.builder(store, serializer, "node-a").build();
         try {
             executor.startWorkflow("triple-fork", "TripleForkWorkflow", "default", "in", () -> workflow,
                     TripleForkWorkflow.class.getMethod("run", String.class));

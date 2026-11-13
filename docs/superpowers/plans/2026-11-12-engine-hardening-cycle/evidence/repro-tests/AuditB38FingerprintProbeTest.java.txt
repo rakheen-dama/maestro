@@ -1,0 +1,130 @@
+package io.b2mash.maestro.test;
+
+import io.b2mash.maestro.core.engine.ArgumentFingerprint;
+import io.b2mash.maestro.core.engine.PayloadSerializer;
+import org.junit.jupiter.api.Test;
+import tools.jackson.databind.DeserializationFeature;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
+
+import java.lang.reflect.Type;
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * AUDIT-B 3.8 (throwaway probe). For each result type: the fingerprint of the
+ * LIVE value (what the run that recorded the next activity hashed) versus the
+ * fingerprint of the REPLAYED value (what recovery hashes), where "replayed"
+ * is deserialize(serialize(live)) exactly as ActivityInvocationHandler does —
+ * once with the JsonNode kept in memory (InMemoryWorkflowStore) and once
+ * through JSON text (the JDBC store's writeValueAsString / readTree).
+ */
+class AuditB38FingerprintProbeTest {
+
+    public record Tags(Set<String> tags) { }
+    public record Slot(OffsetDateTime at) { }
+    public record ZSlot(ZonedDateTime at) { }
+    public record Quote(BigDecimal amount) { }
+    public record At(Instant at) { }
+    public static class Base { public String a = "a"; }
+    public static class Sub extends Base { public String b = "b"; }
+
+    /** Generic return types, read the way deserializeResult reads them. */
+    public interface Shapes {
+        Tags tags();
+        Slot slot();
+        ZSlot zslot();
+        Quote quote();
+        At at();
+        Base base();
+        Map<String, Object> map();
+        List<Object> list();
+        Set<String> set();
+    }
+
+    private static Type type(String method) throws Exception {
+        return Shapes.class.getMethod(method).getGenericReturnType();
+    }
+
+    @Test
+    void probe() throws Exception {
+        var failures = new ArrayList<String>();
+        for (var mapperName : List.of("default", "bigDecimalForFloats")) {
+            ObjectMapper mapper = mapperName.equals("default")
+                    ? JsonMapper.builder().build()
+                    : JsonMapper.builder().enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).build();
+            var ser = new PayloadSerializer(mapper);
+            var cases = new LinkedHashMap<String, Object[]>();
+            cases.put("record Set<String> from Set.of", new Object[]{
+                    new Tags(Set.of("delta", "alpha", "charlie", "bravo", "echo")), type("tags")});
+            cases.put("record Set<String> from TreeSet", new Object[]{
+                    new Tags(new TreeSet<>(List.of("delta", "alpha", "charlie", "bravo", "echo"))), type("tags")});
+            cases.put("record Set<String> from LinkedHashSet", new Object[]{
+                    new Tags(new LinkedHashSet<>(List.of("zeta", "alpha", "mid"))), type("tags")});
+            cases.put("Set<String> (top-level) from TreeSet", new Object[]{
+                    new TreeSet<>(List.of("delta", "alpha", "charlie", "bravo", "echo")), type("set")});
+            cases.put("OffsetDateTime +02:00", new Object[]{
+                    new Slot(OffsetDateTime.parse("2026-11-12T10:00:00+02:00")), type("slot")});
+            cases.put("ZonedDateTime Europe/Berlin", new Object[]{
+                    new ZSlot(ZonedDateTime.of(2026, 11, 12, 10, 0, 0, 0, ZoneId.of("Europe/Berlin"))), type("zslot")});
+            cases.put("OffsetDateTime UTC", new Object[]{
+                    new Slot(OffsetDateTime.parse("2026-11-12T10:00:00Z")), type("slot")});
+            cases.put("BigDecimal 10.50", new Object[]{new Quote(new BigDecimal("10.50")), type("quote")});
+            cases.put("BigDecimal 18dp (1.123456789012345678)", new Object[]{
+                    new Quote(new BigDecimal("1.123456789012345678")), type("quote")});
+            cases.put("BigDecimal 20 digits (12345678901234567.89)", new Object[]{
+                    new Quote(new BigDecimal("12345678901234567.89")), type("quote")});
+            cases.put("Instant with nanos", new Object[]{
+                    new At(Instant.parse("2026-11-12T10:00:00.123456789Z")), type("at")});
+            cases.put("declared Base, live Sub (extra field)", new Object[]{new Sub(), type("base")});
+            cases.put("Map<String,Object> Long 5", new Object[]{Map.of("n", 5L), type("map")});
+            cases.put("Map<String,Object> Long 2^60", new Object[]{Map.of("n", 1L << 60), type("map")});
+            cases.put("Map<String,Object> Float 0.1f", new Object[]{Map.of("f", 0.1f), type("map")});
+            cases.put("Map<String,Object> BigDecimal 10.50", new Object[]{Map.of("d", new BigDecimal("10.50")), type("map")});
+            cases.put("Map<String,Object> BigDecimal 18dp", new Object[]{
+                    Map.of("d", new BigDecimal("1.123456789012345678")), type("map")});
+            cases.put("List<Object> Float 0.1f", new Object[]{List.of(0.1f), type("list")});
+
+            for (var entry : cases.entrySet()) {
+                var live = entry.getValue()[0];
+                var t = (Type) entry.getValue()[1];
+                var liveHash = ArgumentFingerprint.of(ser, new Object[]{live});
+                String memResult;
+                String textResult;
+                try {
+                    var node = ser.serialize(live);
+                    var memReplay = ser.deserialize(node, t);
+                    var memHash = ArgumentFingerprint.of(ser, new Object[]{memReplay});
+                    memResult = (liveHash != null && liveHash.equals(memHash)) ? "same" : "DIFFERS";
+                    var textNode = mapper.readTree(mapper.writeValueAsString(node));
+                    var textReplay = ser.deserialize(textNode, t);
+                    var textHash = ArgumentFingerprint.of(ser, new Object[]{textReplay});
+                    textResult = (liveHash != null && liveHash.equals(textHash)) ? "same" : "DIFFERS";
+                    var detail = "live=" + mapper.writeValueAsString(live)
+                            + " | mem=" + mapper.writeValueAsString(memReplay)
+                            + " | text=" + mapper.writeValueAsString(textReplay);
+                    System.out.printf("AUDIT-B 3.8 [%s] %-45s in-memory:%-8s jdbc-text:%-8s %s%n",
+                            mapperName, entry.getKey(), memResult, textResult, detail);
+                    if (memResult.equals("DIFFERS") || textResult.equals("DIFFERS")) {
+                        failures.add(mapperName + ": " + entry.getKey());
+                    }
+                } catch (RuntimeException e) {
+                    System.out.printf("AUDIT-B 3.8 [%s] %-45s threw %s%n", mapperName, entry.getKey(), e);
+                }
+            }
+        }
+        assertTrue(failures.isEmpty(), "fingerprint changes across replay: " + failures);
+    }
+}

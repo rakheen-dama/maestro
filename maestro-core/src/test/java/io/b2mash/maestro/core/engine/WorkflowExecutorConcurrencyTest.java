@@ -190,10 +190,12 @@ class WorkflowExecutorConcurrencyTest {
 
     @Test
     void aRunStillWaitingForASlotAtShutdownStandsDownRecoverable() throws Exception {
-        executor = new WorkflowExecutor(store, null, null, null, serializer, "node-a",
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
-                false, Duration.ofMillis(200), Duration.ofMillis(200), EngineObserver.NOOP,
-                Map.of("orders", new TaskQueueLimits(1, 10)));
+        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+                .lifecycleEventsEnabled(false)
+                .shutdownTimeout(Duration.ofMillis(200))
+                .wakeRecheckInterval(Duration.ofMillis(200))
+                .taskQueueLimits(Map.of("orders", new TaskQueueLimits(1, 10)))
+                .build();
         var activities = proxy();
         start("wf-running", "orders", new WorkWorkflow(activities));
         await().atMost(5, SECONDS).until(() -> started.get() == 1);
@@ -212,10 +214,12 @@ class WorkflowExecutorConcurrencyTest {
 
     @Test
     void aRunStillWaitingForAnActivitySlotAtShutdownStandsDownRecoverable() throws Exception {
-        executor = new WorkflowExecutor(store, null, null, null, serializer, "node-a",
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
-                false, Duration.ofMillis(200), Duration.ofMillis(200), EngineObserver.NOOP,
-                Map.of("orders", new TaskQueueLimits(10, 1)));
+        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+                .lifecycleEventsEnabled(false)
+                .shutdownTimeout(Duration.ofMillis(200))
+                .wakeRecheckInterval(Duration.ofMillis(200))
+                .taskQueueLimits(Map.of("orders", new TaskQueueLimits(10, 1)))
+                .build();
         var activities = proxy();
         start("wf-holding", "orders", new WorkWorkflow(activities));
         await().atMost(5, SECONDS).until(() -> started.get() == 1);
@@ -327,9 +331,13 @@ class WorkflowExecutorConcurrencyTest {
     // ── helpers ────────────────────────────────────────────────────────
 
     private void newExecutor(Map<String, TaskQueueLimits> limits, TaskQueueLimits defaults) {
-        executor = new WorkflowExecutor(store, null, null, null, serializer, "node-a",
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
-                false, Duration.ofSeconds(5), Duration.ofMillis(200), EngineObserver.NOOP, limits, defaults);
+        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+                .lifecycleEventsEnabled(false)
+                .shutdownTimeout(Duration.ofSeconds(5))
+                .wakeRecheckInterval(Duration.ofMillis(200))
+                .taskQueueLimits(limits)
+                .defaultTaskQueueLimits(defaults)
+                .build();
     }
 
     private void seedRecoverable(String workflowId, String taskQueue) {
@@ -350,9 +358,12 @@ class WorkflowExecutorConcurrencyTest {
     }
 
     private void newExecutor(Map<String, TaskQueueLimits> limits) {
-        executor = new WorkflowExecutor(store, null, null, null, serializer, "node-a",
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
-                false, Duration.ofSeconds(5), Duration.ofMillis(200), EngineObserver.NOOP, limits);
+        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+                .lifecycleEventsEnabled(false)
+                .shutdownTimeout(Duration.ofSeconds(5))
+                .wakeRecheckInterval(Duration.ofMillis(200))
+                .taskQueueLimits(limits)
+                .build();
     }
 
     private BlockingActivities proxy() {

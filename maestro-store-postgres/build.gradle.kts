@@ -36,3 +36,18 @@ dependencies {
     // NOTIFY is delivered asynchronously; the wake tests poll for it.
     testImplementation(libs.awaitility)
 }
+
+// ---------------------------------------------------------------------------
+// docs/configuration.md is an input of `test`.
+//
+// MaestroSchemaInitializerTest.theDocumentedSqlIsTheTestedSql reads the
+// production grants printed in docs/configuration.md (§ Schema management, "In
+// production") from disk and checks they are the SQL its role tests execute.
+// The file is outside this module and off the test classpath, so without this
+// declaration a doc-only edit would leave `test` UP-TO-DATE, or restore it from
+// the build cache (org.gradle.caching=true), and the guard would never run.
+// ---------------------------------------------------------------------------
+tasks.named<Test>("test") {
+    inputs.file(rootProject.layout.projectDirectory.file("docs/configuration.md"))
+        .withPathSensitivity(PathSensitivity.NONE).withPropertyName("documentedProductionGrants")
+}

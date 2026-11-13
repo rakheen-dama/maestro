@@ -13,14 +13,14 @@ Read these before making architectural decisions:
 - `docs/maestro-architecture.md` — System architecture, diagrams, failure modes
 - `docs/observability.md` — Meter catalog, span topology, Kafka trace-propagation contract
 - `docs/operations.md` — Multi-instance behaviour; versioning + mixed-version deploy playbook
-- `docs/pitfalls.md` — The eleven workflow-author rules (saga throws, `causedBy`, idempotency, determinism, owning-node queries, sequence budget, versioning, per-run fields, signal ids, control-flow `Error`s, no same-queue waits in activities)
+- `docs/pitfalls.md` — The twelve workflow-author rules (saga throws, `causedBy`, idempotency, determinism, owning-node queries, sequence budget, versioning, per-run fields, signal ids, control-flow `Error`s, no same-queue waits in activities, results arrive as the store returns them)
 
 ## Core Design: Hybrid Memoization
 
 1. Workflow method runs on a **Java 25 virtual thread**.
 2. Activity calls intercepted by a **proxy**. Proxy checks Postgres for stored result at current **sequence number**.
 3. **Replay (found):** Return stored result instantly — no execution.
-4. **Live (not found):** Execute activity, persist result, return it.
+4. **Live (not found):** Execute activity, persist result, return it **as read back from the persisted payload** (deserialized into the method's declared return type, exactly as a replay reads it — not the activity's own object). Three exceptions return the activity's own object and still differ on replay (`docs/pitfalls.md` rule 12): a result that cannot be read back (stands down on replay), one that reads back as another class (the type valve: supertype/`Object`/type-variable declarations; a same-kind container — both `List`, `Set`, `Queue` or `Map` — is not a difference), and a `Future`/`CompletionStage` return type (never read back live). The first two are reported via `EngineObserver.activityResultUnreadable` and `maestro.activity.result.unreadable`.
 5. **Recovery:** Re-invoke workflow method. Completed steps replay instantly. Resumes from first uncompleted step.
 
 **Determinism constraint:** Code between activity calls must be deterministic. No `Math.random()`, `LocalDateTime.now()`, `UUID.randomUUID()`, or direct I/O. Use `workflow.currentTime()`, `workflow.randomUUID()`.
@@ -89,6 +89,7 @@ public interface WorkflowStore {
     boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent); // atomic terminal write (CAS + event in one transaction)
 
     void appendEvent(WorkflowEvent event);
+    default @Nullable JsonNode appendEventReturningPayload(WorkflowEvent event, RunLease lease); // the payload as stored (Postgres: INSERT … RETURNING); a live activity returns what replay reads; a store decorator must forward it (the default returns the payload sent, not the jsonb form)
     Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int seq);
     List<WorkflowEvent> getEvents(UUID instanceId);
 
@@ -165,7 +166,7 @@ io.b2mash.maestro.samples.payment            — Sample payment gateway (e-comme
 
 ## Database Tables
 
-Prefix `maestro_` (fixed; `maestro.store.table-prefix` was removed). Migrations live in maestro-store-postgres under `db/maestro/store` (V1–V9, V101) and `db/maestro/lock` (V100). **Every new Maestro migration, store or lock, takes the next version above the highest shipped, within 101–199; versions 1–9 and 100 are history; band 200–299 (the removed Postgres messaging transport) stays retired and must never be reused** (orphan-table upgrade note: `docs/configuration.md` § Schema management). The directory says which component a migration belongs to; the version number does not. Why: every build since PR #36 resolves V100, and to it an applied migration it does not ship is "future" (ignored, the node starts) above V100 but "missing" (startup fails) below it; `MaestroSchemaInitializerTest.migrationVersionsFollowTheNumberingRule` guards the rule. They run through `MaestroSchemaInitializer` into Maestro's own history table `maestro_schema_history` (`maestro.store.schema.mode` = flyway | validate | none); the host's `flyway_schema_history` is untouched. Flyway runs with `outOfOrder(true)` for databases that recorded V100 before V6–V9 (Issue 35):
+Prefix `maestro_` (fixed; `maestro.store.table-prefix` was removed). Migrations live in maestro-store-postgres under `db/maestro/store` (V1–V9, V101) and `db/maestro/lock` (V100). **Every new Maestro migration, store or lock, takes the next version above the highest shipped, within 101–199; versions 1–9 and 100 are history; band 200–299 (the removed Postgres messaging transport) stays retired and must never be reused** (orphan-table upgrade note: `docs/configuration.md` § Schema management). The directory says which component a migration belongs to; the version number does not. Why: every build since PR #36 resolves V100, and to it an applied migration it does not ship is "future" (ignored, the node starts) above V100 but "missing" (startup fails) below it; `MaestroSchemaInitializerTest.migrationVersionsFollowTheNumberingRule` guards the rule. They run through `MaestroSchemaInitializer` into Maestro's own history table `maestro_schema_history` (`maestro.store.schema.mode` = flyway | validate | none); the host's `flyway_schema_history` is untouched. Flyway runs with `outOfOrder(true)`, which is load-bearing: databases that recorded V100 before V6–V9 (Issue 35), and databases holding any of the retired V200–V202 rows, where V101 and every future migration sort below the retired rows, apply them only out of order. The migrations shipped at `cbf5a2a` (V1–V9, V100, V101) are frozen (`ShippedMigrationsFrozenTest` fails if one is edited, renamed or deleted); a migration added after it (V102 onward) is not protected until a later release's migrations fixture is captured (`RELEASING.md` § Upgrade fixtures). Tables:
 
 - `maestro_workflow_instance`
 - `maestro_workflow_event` (unique on `workflow_instance_id, sequence_number`)

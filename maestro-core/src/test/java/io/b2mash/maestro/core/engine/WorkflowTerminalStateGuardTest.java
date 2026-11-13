@@ -68,10 +68,13 @@ class WorkflowTerminalStateGuardTest {
     }
 
     private WorkflowExecutor newExecutor(Duration wakeRecheckInterval) {
-        return new WorkflowExecutor(
-                store, null, null, null, serializer, "test-service",
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, Duration.ofSeconds(30),
-                false, Duration.ofSeconds(5), wakeRecheckInterval, observer);
+        return WorkflowExecutor.builder(store, serializer, "test-service")
+                .instanceLockTtl(Duration.ofSeconds(30))
+                .lifecycleEventsEnabled(false)
+                .shutdownTimeout(Duration.ofSeconds(5))
+                .wakeRecheckInterval(wakeRecheckInterval)
+                .observer(observer)
+                .build();
     }
 
     // ── Signal delivery ────────────────────────────────────────────────

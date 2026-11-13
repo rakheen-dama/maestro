@@ -87,10 +87,11 @@ class StoreFaultStandDownTest {
     }
 
     private WorkflowExecutor newExecutor(WorkflowStore store, Duration wakeRecheckInterval) {
-        return new WorkflowExecutor(store, null, null, null, serializer, "test-service",
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
-                WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
-                false, WorkflowExecutor.DEFAULT_SHUTDOWN_TIMEOUT, wakeRecheckInterval, observer);
+        return WorkflowExecutor.builder(store, serializer, "test-service")
+                .lifecycleEventsEnabled(false)
+                .wakeRecheckInterval(wakeRecheckInterval)
+                .observer(observer)
+                .build();
     }
 
     private <T> T proxy(Class<T> iface, T impl, WorkflowStore store, RetryPolicy policy) {

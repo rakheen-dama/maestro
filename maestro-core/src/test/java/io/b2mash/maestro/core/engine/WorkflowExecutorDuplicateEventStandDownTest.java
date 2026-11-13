@@ -80,9 +80,13 @@ class WorkflowExecutorDuplicateEventStandDownTest {
         store = new ConflictingStore();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
         observer = new RecordingEngineObserver();
-        executor = new WorkflowExecutor(store, null, null, null, serializer, "test-service",
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, Duration.ofSeconds(30), false,
-                Duration.ofSeconds(5), Duration.ofSeconds(30), observer);
+        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .instanceLockTtl(Duration.ofSeconds(30))
+                .lifecycleEventsEnabled(false)
+                .shutdownTimeout(Duration.ofSeconds(5))
+                .wakeRecheckInterval(Duration.ofSeconds(30))
+                .observer(observer)
+                .build();
     }
 
     @AfterEach

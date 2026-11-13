@@ -67,10 +67,11 @@ class WorkflowExecutorObserverTest {
     }
 
     private WorkflowExecutor newExecutor(EngineObserver obs) {
-        return new WorkflowExecutor(store, null, null, null, serializer, SERVICE,
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
-                WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
-                false, WorkflowExecutor.DEFAULT_SHUTDOWN_TIMEOUT, Duration.ofMillis(200), obs);
+        return WorkflowExecutor.builder(store, serializer, SERVICE)
+                .lifecycleEventsEnabled(false)
+                .wakeRecheckInterval(Duration.ofMillis(200))
+                .observer(obs)
+                .build();
     }
 
     private StepActivities proxy(EngineObserver obs) {

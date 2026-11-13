@@ -28,7 +28,9 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  *
  * <h2>The crash</h2>
  * <p>Writes that persist an event — {@code appendEvent} (both forms),
- * {@code appendEventAndConsumeSignal} (when it returns {@code true}) and
+ * {@code appendEventReturningPayload} (the engine's live activity outcome and
+ * side-effect appends), {@code appendEventAndConsumeSignal} (when it returns
+ * {@code true}) and
  * {@code completeInstance} (when it returns {@code true}) — are offered to
  * the {@link CrashPolicy} before and after the delegate call. A policy that
  * answers with a reason kills the node and throws
@@ -205,7 +207,8 @@ final class NodeStoreView implements InvocationHandler {
 
     /**
      * The event a write persists, if it is one the crash policy is offered:
-     * {@code appendEvent(event[, lease])}, {@code appendEventAndConsumeSignal(memo, lease, id)}
+     * {@code appendEvent(event[, lease])}, {@code appendEventReturningPayload(event, lease)},
+     * {@code appendEventAndConsumeSignal(memo, lease, id)}
      * and {@code completeInstance(terminal, event[, lease])}. A {@code false}
      * return from the latter two means nothing was written, so no "after".
      */
@@ -214,7 +217,7 @@ final class NodeStoreView implements InvocationHandler {
             return null;
         }
         return switch (method.getName()) {
-            case "appendEvent", "appendEventAndConsumeSignal" ->
+            case "appendEvent", "appendEventReturningPayload", "appendEventAndConsumeSignal" ->
                     args[0] instanceof WorkflowEvent e ? e : null;
             case "completeInstance" -> args.length > 1 && args[1] instanceof WorkflowEvent e ? e : null;
             default -> null;

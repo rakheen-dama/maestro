@@ -1,0 +1,99 @@
+package io.b2mash.maestro.core.engine;
+
+import io.b2mash.maestro.core.TestTerminalWait;
+import io.b2mash.maestro.core.annotation.DurableWorkflow;
+import io.b2mash.maestro.core.annotation.WorkflowMethod;
+import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.model.TimerStatus;
+import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.model.WorkflowTimer;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import tools.jackson.databind.json.JsonMapper;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.UUID;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+/**
+ * AUDIT-B 3.2 (throwaway repro). Two nodes share one store. The workflow runs
+ * on node A; the signal (and the timer fire) arrive on node B, as they do when
+ * B owns the Kafka partition or holds timer-poller leadership. Expected after
+ * the run finished on A: no wake permit left on B. Actual: one per delivery.
+ */
+class AuditB32WakePermitLeakTest {
+
+    private static final Duration RECHECK = Duration.ofMillis(100);
+
+    private VersionedInMemoryStore store;
+    private WorkflowExecutor nodeA;
+    private WorkflowExecutor nodeB;
+
+    @BeforeEach
+    void setUp() {
+        store = new VersionedInMemoryStore();
+        var serializer = new PayloadSerializer(JsonMapper.builder().build());
+        nodeA = new WorkflowExecutor(store, null, null, null, serializer, "svc",
+                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, Duration.ofSeconds(30), false,
+                Duration.ofSeconds(5), RECHECK);
+        nodeB = new WorkflowExecutor(store, null, null, null, serializer, "svc",
+                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, Duration.ofSeconds(30), false,
+                Duration.ofSeconds(5), RECHECK);
+    }
+
+    @AfterEach
+    void tearDown() {
+        nodeA.shutdown();
+        nodeB.shutdown();
+    }
+
+    @Test
+    void signalDeliveredOnNonOwningNode_leavesPermitAfterRunEnds() throws Exception {
+        var method = AwaitOnce.class.getMethod("run");
+        for (int i = 0; i < 50; i++) {
+            var id = "leak-" + i;
+            nodeA.startWorkflow(id, "AwaitOnce", "default", null, AwaitOnce::new, method);
+            TestTerminalWait.awaitStatus(store, id, WorkflowStatus.WAITING_SIGNAL, Duration.ofSeconds(5));
+            nodeB.deliverSignal(id, "go", "payload-" + i);    // B consumed the Kafka record
+            TestTerminalWait.awaitStatus(store, id, WorkflowStatus.COMPLETED, Duration.ofSeconds(5));
+        }
+        // Late duplicates for finished workflows, and signals for ids no run exists for.
+        nodeB.deliverSignal("leak-0", "go", "late-duplicate");
+        nodeB.deliverSignal("never-started", "go", "x");
+
+        System.out.println("AUDIT-B 3.2 node A pendingWakes=" + parkingLot(nodeA).pendingWakeCount()
+                + " node B pendingWakes=" + parkingLot(nodeB).pendingWakeCount());
+        assertEquals(0, parkingLot(nodeB).pendingWakeCount(),
+                "every run finished on node A; node B should hold no wake permits");
+    }
+
+    @Test
+    void sleepTimerFiredByNonOwningLeader_leavesPermitForever() throws Exception {
+        for (int i = 0; i < 50; i++) {
+            var row = new WorkflowTimer(UUID.randomUUID(), UUID.randomUUID(), "remote-" + i, "sleep-3",
+                    Instant.now(), TimerStatus.PENDING, Instant.now());
+            store.saveTimer(row);
+            nodeB.fireTimer(row.workflowId(), row.timerId(), row.id());   // B is the poller leader
+        }
+        System.out.println("AUDIT-B 3.2 timer: node B pendingWakes=" + parkingLot(nodeB).pendingWakeCount());
+        assertEquals(0, parkingLot(nodeB).pendingWakeCount(),
+                "none of these workflows runs on node B");
+    }
+
+    private static ParkingLot parkingLot(WorkflowExecutor executor) throws Exception {
+        var field = WorkflowExecutor.class.getDeclaredField("parkingLot");
+        field.setAccessible(true);
+        return (ParkingLot) field.get(executor);
+    }
+
+    @DurableWorkflow(name = "AwaitOnce")
+    public static class AwaitOnce {
+        @WorkflowMethod
+        public String run() {
+            return WorkflowContext.current().awaitSignal("go", String.class, Duration.ofSeconds(30));
+        }
+    }
+}

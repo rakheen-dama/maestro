@@ -51,7 +51,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * that the same is true for latency.
  *
  * <p>Issue 6: {@code enabled=false} (threaded in via the executor
- * constructor) must stop lifecycle publishing entirely, not just tolerate
+ * builder) must stop lifecycle publishing entirely, not just tolerate
  * failures from it.
  *
  * <p>Fix round 2 (QA Gate 5): {@code enabled=false} was only honoured by this
@@ -90,7 +90,9 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         var blockFor = Duration.ofSeconds(3);
         var messaging = new BlockingMessaging(blockFor);
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = new WorkflowExecutor(store, null, messaging, null, serializer, "test-service");
+        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .messaging(messaging)
+                .build();
 
         var latch = new CountDownLatch(1);
         var workflow = new ImmediateWorkflow(latch);
@@ -115,9 +117,10 @@ class WorkflowExecutorLifecycleEventPublishingTest {
     void lifecycleEventsDisabled_noPublishCalls() throws Exception {
         var messaging = new RecordingMessaging();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
-                false);
+        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .messaging(messaging)
+                .lifecycleEventsEnabled(false)
+                .build();
 
         var latch = new CountDownLatch(1);
         var workflow = new ImmediateWorkflow(latch);
@@ -145,7 +148,9 @@ class WorkflowExecutorLifecycleEventPublishingTest {
     void lifecycleEventsEnabled_byDefault() throws Exception {
         var messaging = new RecordingMessaging();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = new WorkflowExecutor(store, null, messaging, null, serializer, "test-service");
+        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .messaging(messaging)
+                .build();
 
         var latch = new CountDownLatch(1);
         var workflow = new ImmediateWorkflow(latch);
@@ -164,7 +169,9 @@ class WorkflowExecutorLifecycleEventPublishingTest {
     void shutdown_doesNotHangOnLifecyclePublisher() throws Exception {
         var messaging = new BlockingMessaging(Duration.ofSeconds(30));
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = new WorkflowExecutor(store, null, messaging, null, serializer, "test-service");
+        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .messaging(messaging)
+                .build();
 
         var latch = new CountDownLatch(1);
         var workflow = new ImmediateWorkflow(latch);
@@ -190,9 +197,10 @@ class WorkflowExecutorLifecycleEventPublishingTest {
     void lifecycleEventsDisabled_stopsActivityTimerAndSignalEventsToo() throws Exception {
         var messaging = new RecordingMessaging();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
-                false);
+        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .messaging(messaging)
+                .lifecycleEventsEnabled(false)
+                .build();
 
         // Activity proxies are not built by WorkflowExecutor — in production
         // ActivityStubBeanPostProcessor builds them independently, resolving its
@@ -244,9 +252,10 @@ class WorkflowExecutorLifecycleEventPublishingTest {
     void lifecycleEventsDisabled_stopsCompensationEventsToo() throws Exception {
         var messaging = new RecordingMessaging();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = new WorkflowExecutor(store, null, messaging, null, serializer, "test-service",
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
-                false);
+        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .messaging(messaging)
+                .lifecycleEventsEnabled(false)
+                .build();
 
         var workflow = new CompensatingWorkflow();
         var method = CompensatingWorkflow.class.getMethod("run", String.class);
@@ -269,7 +278,9 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         // level events (e.g. a typo in a signal/timer name that never fires).
         var messaging = new RecordingMessaging();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = new WorkflowExecutor(store, null, messaging, null, serializer, "test-service");
+        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .messaging(messaging)
+                .build();
 
         var gatedMessaging = GatedWorkflowMessaging.wrap(messaging, true);
         var activities = new ActivityProxyFactory().createProxy(
@@ -318,7 +329,9 @@ class WorkflowExecutorLifecycleEventPublishingTest {
     void lifecycleEventSink_publishesOffTheCallingThread() {
         var messaging = new RecordingMessaging();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = new WorkflowExecutor(store, null, messaging, null, serializer, "sink-service");
+        executor = WorkflowExecutor.builder(store, serializer, "sink-service")
+                .messaging(messaging)
+                .build();
 
         var sink = executor.lifecycleEventSink();
         var event = new WorkflowLifecycleEvent(UUID.randomUUID(), "wf-sink", "SinkWorkflow", "sink-service",
@@ -335,13 +348,14 @@ class WorkflowExecutorLifecycleEventPublishingTest {
     @DisplayName("lifecycleEventSink() is NOOP with no messaging, and NOOP when publishing is disabled")
     void lifecycleEventSink_isNoopWithoutMessagingOrWhenDisabled() {
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = new WorkflowExecutor(store, null, null, null, serializer, "test-service");
+        executor = WorkflowExecutor.builder(store, serializer, "test-service").build();
         assertSame(LifecycleEventSink.NOOP, executor.lifecycleEventSink(), "no messaging → NOOP");
         executor.shutdown();
 
-        executor = new WorkflowExecutor(store, null, new RecordingMessaging(), null, serializer, "test-service",
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
-                false);
+        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .messaging(new RecordingMessaging())
+                .lifecycleEventsEnabled(false)
+                .build();
         assertSame(LifecycleEventSink.NOOP, executor.lifecycleEventSink(), "enabled=false → NOOP");
     }
 
@@ -355,7 +369,9 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         // thread each event is actually published on.
         var messaging = new RecordingMessaging();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = new WorkflowExecutor(store, null, messaging, null, serializer, "sink-service");
+        executor = WorkflowExecutor.builder(store, serializer, "sink-service")
+                .messaging(messaging)
+                .build();
 
         // The production wiring: ActivityStubBeanPostProcessor hands the
         // executor's sink to the proxy, so ACTIVITY_* events take the same route.
@@ -402,7 +418,9 @@ class WorkflowExecutorLifecycleEventPublishingTest {
     void compensationEvents_publishOffThread_viaTheExecutorSink() throws Exception {
         var messaging = new RecordingMessaging();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = new WorkflowExecutor(store, null, messaging, null, serializer, "sink-service");
+        executor = WorkflowExecutor.builder(store, serializer, "sink-service")
+                .messaging(messaging)
+                .build();
 
         var workflow = new CompensatingWorkflow();
         var method = CompensatingWorkflow.class.getMethod("run", String.class);

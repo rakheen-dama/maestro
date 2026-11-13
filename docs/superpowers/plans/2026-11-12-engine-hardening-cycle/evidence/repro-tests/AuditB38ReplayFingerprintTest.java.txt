@@ -1,0 +1,145 @@
+package io.b2mash.maestro.test;
+
+import io.b2mash.maestro.core.annotation.Activity;
+import io.b2mash.maestro.core.annotation.ActivityStub;
+import io.b2mash.maestro.core.annotation.DurableWorkflow;
+import io.b2mash.maestro.core.annotation.WorkflowMethod;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.time.Duration;
+import java.time.OffsetDateTime;
+import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * AUDIT-B 3.8 (throwaway repro), end to end on the shipped test kit. Activity
+ * one returns a value; activity two takes it as an argument. The node crashes
+ * after both completed; recovery replays both. No code changed, no
+ * nondeterminism in the workflow — yet replay stands down, because the live
+ * run fingerprinted the RAW result and the replay fingerprints the
+ * Jackson round-tripped one.
+ */
+class AuditB38ReplayFingerprintTest {
+
+    private TestWorkflowEnvironment env;
+
+    @BeforeEach
+    void setUp() {
+        env = TestWorkflowEnvironment.create();
+        env.registerActivities(Booking.class, new BookingImpl());
+    }
+
+    @AfterEach
+    void tearDown() {
+        env.shutdown();
+    }
+
+    @Test
+    void offsetDateTimeResult_survivesRecovery() throws Exception {
+        var crash = env.crashAfter(2);
+        var handle = env.startWorkflow(SlotWorkflow.class, "order-1");
+        crash.awaitCrash(Duration.ofSeconds(10));
+        crash.recover();
+        Object status;
+        try {
+            status = handle.awaitTerminal(Duration.ofSeconds(5));
+        } catch (java.util.concurrent.TimeoutException e) {
+            status = handle.getStatus() + " (not terminal after 5s)";
+        }
+        System.out.println("AUDIT-B 3.8 OffsetDateTime: status=" + status + " standDowns=" + handle.standDowns());
+        assertTrue(handle.standDowns().isEmpty(), "replay of an unchanged workflow must not stand down");
+    }
+
+    @Test
+    void sortedSetResult_survivesRecovery() throws Exception {
+        var crash = env.crashAfter(2);
+        var handle = env.startWorkflow(TagsWorkflow.class, "order-2");
+        crash.awaitCrash(Duration.ofSeconds(10));
+        crash.recover();
+        Object status;
+        try {
+            status = handle.awaitTerminal(Duration.ofSeconds(5));
+        } catch (java.util.concurrent.TimeoutException e) {
+            status = handle.getStatus() + " (not terminal after 5s)";
+        }
+        System.out.println("AUDIT-B 3.8 TreeSet: status=" + status + " standDowns=" + handle.standDowns());
+        assertTrue(handle.standDowns().isEmpty(), "replay of an unchanged workflow must not stand down");
+    }
+
+    public record DeliverySlot(String id, OffsetDateTime start) { }
+
+    public record Allowed(Set<String> skus) { }
+
+    @Activity
+    public interface Booking {
+        DeliverySlot reserveSlot(String orderId);
+
+        String confirm(DeliverySlot slot);
+
+        Allowed allowedSkus(String orderId);
+
+        String pick(Allowed allowed);
+
+        String finish(String x);
+    }
+
+    public static final class BookingImpl implements Booking {
+        @Override
+        public DeliverySlot reserveSlot(String orderId) {
+            // e.g. a courier API answering in the warehouse's local offset
+            return new DeliverySlot("slot-7", OffsetDateTime.parse("2026-11-12T10:00:00+02:00"));
+        }
+
+        @Override
+        public String confirm(DeliverySlot slot) {
+            return "confirmed " + slot.id();
+        }
+
+        @Override
+        public Allowed allowedSkus(String orderId) {
+            return new Allowed(new TreeSet<>(List.of("sku-delta", "sku-alpha", "sku-charlie", "sku-bravo")));
+        }
+
+        @Override
+        public String pick(Allowed allowed) {
+            return "picked " + allowed.skus().size();
+        }
+
+        @Override
+        public String finish(String x) {
+            return x + " done";
+        }
+    }
+
+    @DurableWorkflow(name = "slot-workflow")
+    public static class SlotWorkflow {
+        @ActivityStub(startToCloseTimeout = "PT10S")
+        private Booking booking;
+
+        @WorkflowMethod
+        public String run(String orderId) {
+            var slot = booking.reserveSlot(orderId);
+            var confirmation = booking.confirm(slot);
+            return booking.finish(confirmation);
+        }
+    }
+
+    @DurableWorkflow(name = "tags-workflow")
+    public static class TagsWorkflow {
+        @ActivityStub(startToCloseTimeout = "PT10S")
+        private Booking booking;
+
+        @WorkflowMethod
+        public String run(String orderId) {
+            var allowed = booking.allowedSkus(orderId);
+            var picked = booking.pick(allowed);
+            return booking.finish(picked);
+        }
+    }
+}

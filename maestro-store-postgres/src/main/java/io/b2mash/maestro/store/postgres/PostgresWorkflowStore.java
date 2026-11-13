@@ -20,6 +20,9 @@ import java.sql.Types;
  *   <li>JSONB parameters via {@link PGobject} for native type handling.</li>
  *   <li>{@code FOR UPDATE SKIP LOCKED} for concurrent timer polling and for
  *       the retention purge's candidate rows.</li>
+ *   <li>{@code INSERT ... RETURNING payload} for
+ *       {@link #appendEventReturningPayload}, so a live result is the
+ *       {@code jsonb} form a replay reads.</li>
  * </ul>
  *
  * <p>Flyway migrations for the schema are in
@@ -85,6 +88,19 @@ public final class PostgresWorkflowStore extends AbstractJdbcWorkflowStore {
     @Override
     protected String fenceRowLockClause() {
         return " FOR SHARE";
+    }
+
+    /**
+     * Returns {@code true}: {@code jsonb} stores a normalised form — object
+     * keys shortest first then bytewise, numbers rewritten ({@code 1.0E7} is
+     * stored as {@code 10000000}) — so
+     * {@link #appendEventReturningPayload} must hand back what Postgres
+     * stored, not what was sent. The fenced event insert gains
+     * {@code RETURNING payload}; it stays one statement.
+     */
+    @Override
+    protected boolean returnsInsertedPayload() {
+        return true;
     }
 
     /**

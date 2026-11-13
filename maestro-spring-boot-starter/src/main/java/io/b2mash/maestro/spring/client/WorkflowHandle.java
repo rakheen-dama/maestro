@@ -189,7 +189,14 @@ public final class WorkflowHandle<R> {
         if (instance.status() != WorkflowStatus.COMPLETED) {
             return Optional.empty();
         }
-        return Optional.ofNullable(serializer.deserialize(instance.output(), resultType));
+        // "No value" is decided on the stored node, before deserializing: an
+        // Optional-family R reads a JSON null as its empty value, which
+        // ofNullable would otherwise wrap as Optional.of(Optional.empty()).
+        var output = instance.output();
+        if (output == null || output.isNull()) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(serializer.deserialize(output, resultType));
     }
 
     /**
