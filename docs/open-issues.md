@@ -784,6 +784,8 @@ claim it does.
 > `ActivityInvocationHandlerTest.lockHonoursCustomKeyPrefix` (asserts the
 > exact acquired key) and
 > `MaestroAutoConfigurationConfigSeamsTest.lockKeyPrefixReachesActivityInvocationHandler`.
+>
+> *Superseded (WP2, 3.10): the activity lock was removed.*
 
 **What's wrong.** `ActivityInvocationHandler` builds its lock key with a
 hardcoded literal:

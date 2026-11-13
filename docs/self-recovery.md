@@ -242,7 +242,7 @@ Recovery queries the `maestro_workflow_instance` table using the `idx_wf_instanc
 | Kafka rebalance | In-progress workflows continue. New tasks reroute to reassigned partitions. |
 | Postgres unavailable | Execution blocks until restored. No activity proceeds without persistence. |
 | Lock expired / NOTIFY lost | The running workflow continues (unique event index is the backstop); a peer may adopt the instance after the lock TTL. Signals stay persisted in Postgres; a lost cross-node wake degrades to the parked await's periodic store re-check (every 30s). |
-| Duplicate Kafka delivery | Activity lock (fast path) + unique constraint on `(workflow_instance_id, sequence_number)` (authoritative). |
+| Duplicate Kafka delivery | Signal message-id dedup (V9) + unique constraint: `saveSignalIfAbsent` keeps at most one signal row per `(workflow_id, signal_name, message_id)` (partial unique index `idx_wf_signal_message_id`); a signal without an id is not deduplicated. |
 
 The guiding principle: **Postgres is truth, locks are an optimisation, Kafka is transport.** The distributed lock and the `LISTEN/NOTIFY` wake live in the same Postgres database as the workflow state, so there is no second coordination service to lose; if a lock expires or a notification is lost, the unique event index and optimistic instance versioning remain the correctness backstop and signal wake-up degrades to the parked await's periodic store re-check. If Kafka rebalances, in-flight workflows are unaffected because their state lives in Postgres. The only hard dependency is Postgres -- and if Postgres is down, the correct behaviour is to wait.
 

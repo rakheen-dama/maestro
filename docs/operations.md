@@ -1209,7 +1209,7 @@ competes with the application's own. If Maestro has its own pool
 size it at **≥ max(`default-concurrency`, `default-activity-concurrency`) + 5**
 (25 at the defaults; add the same `max(...)` for every further queue that is
 busy at the same time). Both kinds of slot holder borrow connections: an
-activity slot's holder for the activity's dedup lock and outcome write, and a
+activity slot's holder for the activity's outcome write, and a
 workflow slot's holder that runs no activity, such as a run replaying its
 history or a parked run's wake re-check. The headroom covers the wake listener's one connection held for the
 application's lifetime, the short borrow of every `NOTIFY`, the lock renewer

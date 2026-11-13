@@ -56,9 +56,9 @@ replace the Postgres it started with.
   is promoted having **lost the last few hundred milliseconds of commits**.
 - **What is at stake:** rows the engine already believes exist vanish. A node
   that appended `ACTIVITY_COMPLETED` at seq 7 and moved on to seq 8 now runs
-  against a database where seq 7 is missing; the activity lock row, the
-  signal-consumed flag and the `lease_epoch` bump may all have been rolled
-  back. This is the one way INV-LOG can be violated *without* two writers.
+  against a database where seq 7 is missing; the signal-consumed flag and
+  the `lease_epoch` bump may both have been rolled back. This is the one way
+  INV-LOG can be violated *without* two writers.
 - **Expected engine behaviour (derive, then pin):**
   - The next fenced write from the live run either succeeds (its epoch row
     survived) or sees `lease_epoch` regressed. A regressed epoch is **lower**

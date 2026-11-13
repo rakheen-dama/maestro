@@ -463,7 +463,6 @@ performance optimization layer, not the source of truth -- the workflow tables a
 | Key Pattern (`lock_key`) | Table | Purpose | TTL |
 |---|---|---|---|
 | `maestro:lock:workflow:{workflowId}` | `maestro_distributed_lock` | Workflow instance lock | 30s (renewed every 10s) |
-| `maestro:lock:activity:{workflowId}:{seq}` | `maestro_distributed_lock` | Activity execution lock (fast-path dedup) | activity timeout + 10s |
 | `maestro:leader:timer-poller:{service}` | `maestro_leader_election` | Timer polling leader election | 15s |
 | `maestro_signal_wake_<service>_<hash>` | *(LISTEN/NOTIFY channel, one per service)* | Cross-node signal wake | N/A |
 
@@ -476,11 +475,12 @@ signals or timers. If a node crashes, the lock expires after 30 seconds,
 allowing another node's periodic recovery poller (`maestro.recovery.*`) to
 pick up the workflow.
 
-**Activity lock** -- Held around a single activity execution as a best-effort
-guard against concurrent duplicate execution; it doubles as the fast-path
-dedup key. The authoritative dedup remains the Postgres unique index on
-`(workflow_instance_id, sequence_number)` — a duplicate execution's persist
-loses and the stored result is returned instead.
+**No activity lock** -- There is no per-activity lock. Two runners execute a
+step concurrently only when both hold the same workflow: the window after a
+node lost its instance lock. Lease fencing (V6) rejects the stale runner's
+outcome append, so the adopting node runs the step again. Activities must be
+idempotent. A duplicate Kafka delivery is deduplicated by the signal's message
+id (V9), not by a lock.
 
 **Timer leader** -- Ensures only one node in the cluster polls for due timers.
 The 15-second TTL means leadership transfers quickly if the current leader

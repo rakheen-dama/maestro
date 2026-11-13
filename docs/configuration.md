@@ -478,7 +478,7 @@ that crashes the JVM is redelivered on restart until `max-attempts` is spent
 ## Lock Configuration
 
 Properties under `maestro.lock.*` configure the distributed locking layer used
-for workflow instance locks, activity deduplication, and timer leader election.
+for workflow instance locks and leader election (timer poller, retention sweeper).
 The lock is table-backed, in the same PostgreSQL database as the workflow store,
 and ships in `maestro-store-postgres` — there is no separate lock module and
 nothing extra to deploy.
@@ -486,7 +486,7 @@ nothing extra to deploy.
 | Property                        | Type       | Default          | Description                                                                                  |
 |---------------------------------|------------|------------------|----------------------------------------------------------------------------------------------|
 | `maestro.lock.type`             | `String`   | `"postgres"`     | Lock implementation. `postgres` is the only supported value; any other value (including the removed `valkey`) fails startup with a message naming the removal. |
-| `maestro.lock.key-prefix`       | `String`   | `"maestro:lock:"`| Prefix for all lock keys — the `lock_key` column of `maestro_distributed_lock`. Change this to isolate multiple environments that share a schema. Applies to the instance lock and the activity lock alike. |
+| `maestro.lock.key-prefix`       | `String`   | `"maestro:lock:"`| Prefix for all lock keys — the `lock_key` column of `maestro_distributed_lock`. Change this to isolate multiple environments that share a schema. |
 | `maestro.lock.ttl`              | `Duration` | `30s`            | Lock time-to-live. Locks are automatically renewed while the workflow is executing. If a node crashes, locks expire after this duration, enabling recovery by another node. |
 | `maestro.lock.cleanup-interval` | `Duration` | `10m`            | How often the lock cleaner deletes rows whose TTL expired more than a minute ago. Every node runs it (the delete is idempotent). Expired rows never block an acquire — `tryAcquire` treats an expired row as free — so the cleaner only bounds table growth. |
 
@@ -547,7 +547,7 @@ A run waiting for a slot holds its instance lock (so no other node adopts it)
 but has executed nothing; if the node begins shutting down before a slot frees,
 it stands down and stays recoverable. The same goes for a run waiting for an
 activity slot: the activity does not run. An activity slot is held from the
-activity's dedup lock through every retry attempt and backoff to its persisted
+activity's start through every retry attempt and backoff to its persisted
 outcome. Every listed limit must be `>= 1`, and naming a queue twice fails startup.
 
 Recovery does not wait for slots: it adopts every instance it can lock, and
@@ -757,10 +757,6 @@ timer poller runs on the elected leader only, so a timer fired (or cancelled)
 by a node that does not own the parked `workflow.sleep()` thread is observed
 via the sleeping node's periodic re-read of the durable timer row
 (`docs/open-issues.md` Issue 17).
-
-`maestro.lock.key-prefix` (see [Lock Configuration](#lock-configuration))
-now also applies to the activity execution lock, not just the instance
-lock — both honour the same configured prefix.
 
 ---
 
@@ -1141,14 +1137,12 @@ source so a dead-lettered record keeps its partition. With
 
 ## Lock Keys
 
-Maestro uses PostgreSQL tables for distributed locking, activity deduplication
-and leader election. The keys below are the `lock_key` values stored in
+Maestro uses PostgreSQL tables for distributed locking and leader election. The keys below are the `lock_key` values stored in
 `maestro_distributed_lock` and `maestro_leader_election`:
 
 | Key Pattern                                   | Table                       | Purpose                         | TTL               |
 |-----------------------------------------------|-----------------------------|-------------------------------- |--------------------|
 | `maestro:lock:workflow:{workflowId}`          | `maestro_distributed_lock`  | Workflow instance lock          | 30s (renewed every 10s) |
-| `maestro:lock:activity:{workflowId}:{seq}`    | `maestro_distributed_lock`  | Activity execution lock (fast-path dedup) | activity timeout + 10s |
 | `maestro:leader:timer-poller:{service}`       | `maestro_leader_election`   | Timer poller leader election    | 15s                |
 | `maestro:leader:retention:{service}`          | `maestro_leader_election`   | Retention sweeper leader election | 15s              |
 
@@ -1162,12 +1156,12 @@ including parked waits — and renewed every 10 seconds. If a node crashes, the
 lock expires after 30 seconds, allowing another node's recovery poller to pick
 up the workflow.
 
-The activity lock is a best-effort guard against concurrent duplicate execution
-and doubles as the fast-path dedup key. The authoritative dedup is the Postgres
-unique index on `(workflow_instance_id, sequence_number)` — but note that this
-deduplicates *persisted results*, not external side effects. If a lock expires
-or is lost mid-execution, an activity can run more than once, so activities
-must be idempotent (or use fencing/idempotency keys with external systems).
+There is no per-activity lock. Two runners execute a step concurrently only
+when both hold the same workflow: the window after a node lost its instance
+lock. Lease fencing (V6) rejects the stale runner's outcome append, so the
+adopting node runs the step again. Fencing bounds *persisted progress*, not
+external side effects. Activities must be idempotent. A duplicate Kafka
+delivery is deduplicated by the signal's message id (V9), not by a lock.
 
 The leader election keys ensure that only one node in the cluster runs the timer
 poller, and only one runs the retention sweeper's purge batches. They use a
