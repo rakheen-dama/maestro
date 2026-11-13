@@ -34,6 +34,15 @@ import java.util.function.Predicate;
  *   <li>{@code "{workflowId}:timer:{timerId}"} — waiting for a timer</li>
  * </ul>
  *
+ * <h2>Ownership</h2>
+ * <p>Every waiter and every permit records the workflow it belongs to, and the
+ * per-workflow operations — {@link #clearPending}, {@link #abandonWorkflow}
+ * and the terminate poison — match that id exactly. They never match a key by
+ * prefix: {@code "order:1:signal:go"} starts with {@code "order:"}, so a prefix
+ * match would let ending or terminating workflow {@code order} reach
+ * {@code order:1}. Production parks pass the workflow id with the key
+ * ({@link #park(String, String)}, {@link #parkWithTimeout(String, String, Duration)}).
+ *
  * <h2>Wake Permits</h2>
  * <p>A {@link #wake(String, String)} that finds no registered waiter stores a
  * <b>one-shot permit</b> — but only for a workflow that runs on this node, as
@@ -50,10 +59,12 @@ import java.util.function.Predicate;
  * {@code NOTIFY} or its own wake-recheck, and a workflow that runs nowhere yet
  * reads its durable signal or timer row before its first park. A permit
  * carries no payload — every park's caller re-reads the store — so it is a
- * key and a shared marker. Once the gate holds, every stored permit belongs to
+ * key and its owning workflow id. Once the gate holds, every stored permit belongs to
  * a run on this node and is dropped at that run's next park on the key, its
  * end ({@link #clearPending}), a terminate ({@link #abandonWorkflow}) or
- * {@link #shutdown()}.
+ * {@link #shutdown()}. Each wake stores a permit object of its own, so the
+ * re-check of a wake can only ever remove the permit that wake stored — never
+ * one a later wake stored for a new run of the same workflow id.
  *
  * <h2>Shutdown</h2>
  * <p>{@link #shutdown()} abandons every waiter with an
@@ -81,17 +92,30 @@ final class ParkingLot {
 
     private static final Logger logger = LoggerFactory.getLogger(ParkingLot.class);
 
-    /**
-     * Marker for a permit delivered with a {@code null} payload — and the
-     * value of every permit {@link #wake(String, String)} stores.
-     */
-    private static final Object NULL_PAYLOAD = new Object();
-
     /** Reason marker for a terminate that carried no operator-supplied reason. */
     private static final String NO_REASON = "";
 
-    private final ConcurrentHashMap<String, CompletableFuture<Object>> futures = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Object> pendingWakes = new ConcurrentHashMap<>();
+    /** A waiter registered at a key, and the workflow it belongs to. */
+    private record Waiter(String workflowId, CompletableFuture<Object> future) {}
+
+    /**
+     * A stored wake permit: the workflow it belongs to and the payload a park
+     * returns. Deliberately not a record — equality is identity, so
+     * {@code pendingWakes.remove(key, permit)} removes this permit and no
+     * other, however many permits carry the same owner and payload.
+     */
+    private static final class Permit {
+        final String workflowId;
+        final @Nullable Object payload;
+
+        Permit(String workflowId, @Nullable Object payload) {
+            this.workflowId = workflowId;
+            this.payload = payload;
+        }
+    }
+
+    private final ConcurrentHashMap<String, Waiter> futures = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Permit> pendingWakes = new ConcurrentHashMap<>();
 
     /**
      * Whether a workflow runs on this node — the executor's
@@ -106,7 +130,7 @@ final class ParkingLot {
      * {@link #shuttingDown} but scoped to one workflow, so a park that registers
      * just after {@link #abandonWorkflow} swept the lot throws immediately
      * instead of blocking out its timeout. Normally empty, so the common park
-     * path costs one {@code isEmpty()} check; entries are dropped by
+     * path costs one {@code get}; entries are dropped by
      * {@link #clearTerminated} when the run ends.
      */
     private final ConcurrentHashMap<String, String> terminatedWorkflows = new ConcurrentHashMap<>();
@@ -134,115 +158,142 @@ final class ParkingLot {
     }
 
     /**
-     * Parks the current virtual thread until {@link #unpark(String, Object)} is called.
-     *
-     * <p>Creates a {@link CompletableFuture}, registers it under the given key,
-     * and blocks on {@link CompletableFuture#join()}. The virtual thread yields
-     * its carrier thread while parked.
+     * Test seam: {@link #park(String, String)} with the workflow id taken to be
+     * the key's text before its first {@code ':'}. Production code passes the
+     * workflow id itself — an id may contain {@code ':'}.
      *
      * @param key the parking key (e.g., {@code "order-abc:signal:payment.result"})
-     * @return the payload delivered by {@link #unpark(String, Object)}, may be {@code null}
+     * @return the permit's payload ({@code null} for every production wake)
      * @throws ExecutorShutdownException if the executor is shutting down
      */
     @Nullable Object park(String key) {
-        var future = register(key);
+        return park(ownerOf(key), key);
+    }
+
+    /**
+     * Parks the current virtual thread until a wake reaches {@code key}.
+     *
+     * <p>Creates a {@link CompletableFuture}, registers it under the given key
+     * for {@code workflowId}, and blocks on {@link CompletableFuture#join()}.
+     * The virtual thread yields its carrier thread while parked.
+     *
+     * @param workflowId the business ID of the workflow parking
+     * @param key        the parking key, prefixed {@code workflowId + ":"}
+     * @return the payload of the wake: {@code null} for every
+     *         {@link #wake(String, String)}; only the {@link #unpark(String, Object)}
+     *         test seam delivers one
+     * @throws ExecutorShutdownException   if the executor is shutting down
+     * @throws WorkflowTerminatedException if the workflow is terminated
+     */
+    @Nullable Object park(String workflowId, String key) {
+        var waiter = register(workflowId, key);
         try {
-            // Consume a permit stored by an unpark that raced ahead of this
-            // park. Checked AFTER registering the future: an unpark running
-            // now either sees the future (completes it) or stored a permit
+            // Consume a permit stored by a wake that raced ahead of this
+            // park. Checked AFTER registering the waiter: a wake running
+            // now either sees the waiter (completes it) or stored a permit
             // before we registered (we consume it here) — never lost.
             var permit = pendingWakes.remove(key);
             if (permit != null) {
-                return unwrapPermit(permit);
+                return permit.payload;
             }
-            return future.join();
+            return waiter.future().join();
         } catch (CompletionException e) {
             throw rethrow(key, e);
         } finally {
-            futures.remove(key, future);
+            futures.remove(key, waiter);
         }
+    }
+
+    /**
+     * Test seam: {@link #parkWithTimeout(String, String, Duration)} with the
+     * workflow id taken to be the key's text before its first {@code ':'}.
+     *
+     * @param key     the parking key
+     * @param timeout maximum time to wait
+     * @return the permit's payload ({@code null} for every production wake)
+     * @throws TimeoutException          if the timeout elapses before a wake
+     * @throws ExecutorShutdownException if the executor is shutting down
+     */
+    @Nullable Object parkWithTimeout(String key, Duration timeout) throws TimeoutException {
+        return parkWithTimeout(ownerOf(key), key, timeout);
     }
 
     /**
      * Parks the current virtual thread with a timeout.
      *
-     * <p>Behaves like {@link #park(String)} but throws {@link TimeoutException}
-     * if the specified duration elapses before {@link #unpark(String, Object)} is called.
+     * <p>Behaves like {@link #park(String, String)} but throws
+     * {@link TimeoutException} if the specified duration elapses before a wake
+     * reaches {@code key}.
      *
-     * @param key     the parking key
-     * @param timeout maximum time to wait
-     * @return the payload delivered by unpark, may be {@code null}
-     * @throws TimeoutException          if the timeout elapses before unpark
-     * @throws ExecutorShutdownException if the executor is shutting down
+     * @param workflowId the business ID of the workflow parking
+     * @param key        the parking key, prefixed {@code workflowId + ":"}
+     * @param timeout    maximum time to wait
+     * @return the payload of the wake: {@code null} for every
+     *         {@link #wake(String, String)}
+     * @throws TimeoutException            if the timeout elapses before a wake
+     * @throws ExecutorShutdownException   if the executor is shutting down
+     * @throws WorkflowTerminatedException if the workflow is terminated
      */
-    @Nullable Object parkWithTimeout(String key, Duration timeout) throws TimeoutException {
-        var future = register(key);
+    @Nullable Object parkWithTimeout(String workflowId, String key, Duration timeout) throws TimeoutException {
+        var waiter = register(workflowId, key);
         try {
-            // See park(): consume a permit from an unpark that raced ahead
+            // See park(): consume a permit from a wake that raced ahead
             var permit = pendingWakes.remove(key);
             if (permit != null) {
-                return unwrapPermit(permit);
+                return permit.payload;
             }
-            return future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+            return waiter.future().get(timeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new CancellationException("Interrupted while parked at key: " + key);
         } catch (java.util.concurrent.ExecutionException e) {
             throw rethrow(key, e);
         } finally {
-            futures.remove(key, future);
+            futures.remove(key, waiter);
         }
+    }
+
+    /**
+     * The workflow id the single-argument test seams assume for a key: its
+     * text before the first {@code ':'}, or the whole key if it has none.
+     */
+    private static String ownerOf(String key) {
+        var colon = key.indexOf(':');
+        return colon < 0 ? key : key.substring(0, colon);
     }
 
     /**
      * Registers a waiter's future under the given key.
      *
-     * <p>The shutdown check happens <em>after</em> registration, mirroring the
-     * permit protocol: a concurrent {@link #shutdown()} either sees this future
-     * and completes it, or set the flag before we read it — never neither.
+     * <p>The shutdown and terminate checks happen <em>after</em> registration,
+     * mirroring the permit protocol: a concurrent {@link #shutdown()} or
+     * {@link #abandonWorkflow} either sees this waiter and completes it, or set
+     * its flag before we read it — never neither.
      *
-     * @param key the parking key
-     * @return the registered future
-     * @throws IllegalStateException     if the key is already occupied
-     * @throws ExecutorShutdownException if the executor is shutting down
+     * @param workflowId the workflow the waiter belongs to
+     * @param key        the parking key
+     * @return the registered waiter
+     * @throws IllegalStateException       if the key is already occupied
+     * @throws ExecutorShutdownException   if the executor is shutting down
+     * @throws WorkflowTerminatedException if the workflow is terminated
      */
-    private CompletableFuture<Object> register(String key) {
-        var future = new CompletableFuture<Object>();
-        var existing = futures.putIfAbsent(key, future);
+    private Waiter register(String workflowId, String key) {
+        var waiter = new Waiter(workflowId, new CompletableFuture<>());
+        var existing = futures.putIfAbsent(key, waiter);
         if (existing != null) {
             throw new IllegalStateException(
                     "Parking key '%s' already occupied — duplicate park call would orphan the existing waiter".formatted(key));
         }
         if (shuttingDown) {
-            futures.remove(key, future);
+            futures.remove(key, waiter);
             throw shutdownSignal(key);
         }
-        var terminated = terminatedSignal(key);
-        if (terminated != null) {
-            futures.remove(key, future);
-            throw terminated;
+        var reason = terminatedWorkflows.get(workflowId);
+        if (reason != null) {
+            futures.remove(key, waiter);
+            throw terminateSignal(workflowId, reason);
         }
-        return future;
-    }
-
-    /**
-     * Builds the terminate signal for a key whose workflow has been terminated,
-     * or returns {@code null} if it has not.
-     *
-     * <p>Short-circuits on the common empty case; the prefix scan only runs while
-     * some workflow on this node is mid-termination, which is at most as long as
-     * one run takes to unwind.
-     */
-    private @Nullable WorkflowTerminatedException terminatedSignal(String key) {
-        if (terminatedWorkflows.isEmpty()) {
-            return null;
-        }
-        for (var entry : terminatedWorkflows.entrySet()) {
-            if (key.startsWith(entry.getKey() + ":")) {
-                return terminateSignal(entry.getKey(), entry.getValue());
-            }
-        }
-        return null;
+        return waiter;
     }
 
     /**
@@ -300,35 +351,42 @@ final class ParkingLot {
      * <p>Thread-safe and non-blocking; may be called from any thread, including
      * a network event-loop thread.
      *
+     * <p>Each call stores a permit object of its own and step 4 removes only
+     * that object, so a wake whose re-check finds the run gone can never remove
+     * a permit a later wake stored for a new run of the same workflow id.
+     *
      * @param workflowId the business ID of the workflow the key belongs to
      * @param key        the parking key, prefixed {@code workflowId + ":"}
      */
     void wake(String workflowId, String key) {
-        // The log lines below carry no key: a key embeds the workflow id.
-        var future = futures.get(key);
-        if (future != null) {
-            future.complete(null);
-            logger.debug("Woke a parked waiter");
+        var waiter = futures.get(key);
+        if (waiter != null) {
+            waiter.future().complete(null);
+            logger.debug("Woke the waiter parked at key '{}'", key);
             return;
         }
         if (!runsHere.test(workflowId)) {
-            logger.debug("No parked waiter, and the workflow does not run on this node — no wake permit stored");
+            logger.debug("No waiter parked at key '{}', and the workflow does not run on this node — "
+                    + "no wake permit stored", key);
             return;
         }
-        storePermit(key, NULL_PAYLOAD);
+        var permit = new Permit(workflowId, null);
+        storePermit(key, permit);
         if (!runsHere.test(workflowId)) {
             // The run ended between the check above and the put: its
-            // clearPending may have run before the put, so drop the permit here.
-            pendingWakes.remove(key, NULL_PAYLOAD);
-            logger.debug("The run ended while its wake was being stored — wake permit dropped");
+            // clearPending may have run before the put, so drop the permit
+            // here — this wake's own permit, and no other.
+            pendingWakes.remove(key, permit);
+            logger.debug("The run ended while the wake for key '{}' was being stored — wake permit dropped", key);
         } else {
-            logger.debug("No parked waiter yet — stored a wake permit for a run on this node");
+            logger.debug("No waiter parked at key '{}' yet — stored a wake permit for a run on this node", key);
         }
     }
 
     /**
-     * Ungated test seam: stores a permit whatever the predicate says.
-     * Production code calls {@link #wake(String, String)}.
+     * Ungated test seam: stores a permit whatever the predicate says, owned by
+     * the key's text before its first {@code ':'}. Production code calls
+     * {@link #wake(String, String)}.
      *
      * <p>Completes the {@link CompletableFuture} associated with the key,
      * causing the parked virtual thread to resume with the given payload. If no
@@ -340,12 +398,12 @@ final class ParkingLot {
      * @param payload the result to deliver to the parked thread, may be {@code null}
      */
     void unpark(String key, @Nullable Object payload) {
-        var future = futures.get(key);
-        if (future != null) {
-            future.complete(payload);
+        var waiter = futures.get(key);
+        if (waiter != null) {
+            waiter.future().complete(payload);
             logger.debug("Unparked workflow at key '{}'", key);
         } else {
-            storePermit(key, payload != null ? payload : NULL_PAYLOAD);
+            storePermit(key, new Permit(ownerOf(key), payload));
             logger.debug("No parked workflow at key '{}' — stored wake permit", key);
         }
     }
@@ -357,13 +415,13 @@ final class ParkingLot {
      * may already have consumed the permit itself; {@code remove()} makes the
      * hand-off exactly-once).
      */
-    private void storePermit(String key, Object permit) {
+    private void storePermit(String key, Permit permit) {
         pendingWakes.put(key, permit);
-        var racedFuture = futures.get(key);
-        if (racedFuture != null) {
+        var racedWaiter = futures.get(key);
+        if (racedWaiter != null) {
             var raced = pendingWakes.remove(key);
             if (raced != null) {
-                racedFuture.complete(unwrapPermit(raced));
+                racedWaiter.future().complete(raced.payload);
             }
         }
     }
@@ -394,8 +452,8 @@ final class ParkingLot {
      */
     void shutdown() {
         shuttingDown = true;
-        futures.forEach((key, future) -> {
-            if (future.completeExceptionally(shutdownSignal(key))) {
+        futures.forEach((key, waiter) -> {
+            if (waiter.future().completeExceptionally(shutdownSignal(key))) {
                 logger.debug("Abandoned park at key '{}' — executor is shutting down", key);
             }
         });
@@ -421,19 +479,22 @@ final class ParkingLot {
      * <p>The poison is dropped by {@link #clearTerminated(String)} once the run
      * has unwound, so a later run of the same {@code workflowId} can park again.
      *
+     * <p>Matches {@code workflowId} exactly: the waiters, permits and later
+     * parks of a workflow whose id merely starts with {@code workflowId + ":"}
+     * are left alone.
+     *
      * @param workflowId the workflow whose parks are abandoned
      * @param reason     the operator-supplied termination reason, or {@code null}
      */
     void abandonWorkflow(String workflowId, @Nullable String reason) {
         terminatedWorkflows.put(workflowId, reason != null ? reason : NO_REASON);
-        var prefix = workflowId + ":";
-        futures.forEach((key, future) -> {
-            if (key.startsWith(prefix)
-                    && future.completeExceptionally(terminateSignal(workflowId, reason))) {
+        futures.forEach((key, waiter) -> {
+            if (waiter.workflowId().equals(workflowId)
+                    && waiter.future().completeExceptionally(terminateSignal(workflowId, reason))) {
                 logger.debug("Abandoned park at key '{}' — workflow was terminated", key);
             }
         });
-        pendingWakes.keySet().removeIf(key -> key.startsWith(prefix));
+        clearPending(workflowId);
     }
 
     /**
@@ -472,15 +533,15 @@ final class ParkingLot {
     }
 
     /**
-     * Removes any stored wake permits for a workflow. Called when a workflow
-     * reaches a terminal state so orphaned permits (e.g. from duplicate
-     * signal deliveries) cannot accumulate or leak into a future run.
+     * Removes any stored wake permits for a workflow. Called when a run ends
+     * so orphaned permits (e.g. from duplicate signal deliveries) cannot
+     * accumulate or leak into a future run. Matches {@code workflowId} exactly,
+     * never as a key prefix.
      *
-     * @param workflowId the workflow ID prefix to match
+     * @param workflowId the workflow whose permits are removed
      */
     void clearPending(String workflowId) {
-        var prefix = workflowId + ":";
-        pendingWakes.keySet().removeIf(key -> key.startsWith(prefix));
+        pendingWakes.values().removeIf(permit -> permit.workflowId.equals(workflowId));
     }
 
     /**
@@ -491,10 +552,6 @@ final class ParkingLot {
      */
     int pendingWakeCount() {
         return pendingWakes.size();
-    }
-
-    private static @Nullable Object unwrapPermit(Object permit) {
-        return permit == NULL_PAYLOAD ? null : permit;
     }
 
     /**

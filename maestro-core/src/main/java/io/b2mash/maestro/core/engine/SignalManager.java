@@ -1011,7 +1011,7 @@ final class SignalManager {
             // over-hold permanent, deadlocking concurrency=1 whenever a branch
             // waits on a signal produced by another run of the same queue.
             governor.parked(ctx.workflowId(), () -> {
-                parkingLot.parkWithTimeout(parkKey, chunk);
+                parkingLot.parkWithTimeout(ctx.workflowId(), parkKey, chunk);
                 return null;
             });
             woken = true;

@@ -2427,10 +2427,15 @@ public final class WorkflowExecutor {
             // Remove-then-release: a concurrent recovery attempt in the gap
             // still sees the lock held and skips — retried by the next poll
             runningWorkflows.remove(ctx.workflowId());
-            instanceLockManager.release(ctx.workflowId());
             // Drop orphaned wake permits (e.g. duplicate signal deliveries
-            // that arrived after the last await) now that the run is over
+            // that arrived after the last await) now that the run is over —
+            // BEFORE the release: once the lock is free a new run of this id
+            // can launch and be given a permit, which a later clearPending
+            // would erase. Here, after the removal above, any wake that stores
+            // a permit fails its re-check (the run is gone) and drops it, and
+            // no new run can be registered until the release below.
             parkingLot.clearPending(ctx.workflowId());
+            instanceLockManager.release(ctx.workflowId());
             // Drop the sticky terminate poison: this run is over, so a future
             // run of the same workflowId must be able to park again
             parkingLot.clearTerminated(ctx.workflowId());
