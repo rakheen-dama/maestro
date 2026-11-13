@@ -105,21 +105,11 @@ import java.util.HashMap;
                 "org.springframework.boot.micrometer.tracing.autoconfigure.NoopTracerAutoConfiguration",
                 "org.springframework.boot.micrometer.tracing.opentelemetry.autoconfigure.OpenTelemetryTracingAutoConfiguration",
                 "org.springframework.boot.micrometer.tracing.brave.autoconfigure.BraveAutoConfiguration"
-        },
-        // Maestro's typed producer/consumer factory beans must register before
-        // Boot's KafkaAutoConfiguration evaluates its own @ConditionalOnMissingBean
-        // (ProducerFactory/ConsumerFactory) conditions, so Boot's type-conditioned
-        // beans back off in favour of Maestro's engine-owned ones — a suppression
-        // that used to work only by alphabetical accident between the two package
-        // names, now pinned explicitly. This is deliberate, not a bug: Maestro
-        // needs a single byte[]-valued producer/consumer pair for its own topics,
-        // not Boot's Object-typed general-purpose ones. Do NOT add `afterName` on
-        // KafkaAutoConfiguration instead — that would let Boot's typed beans
-        // register too and the context would fail with
-        // NoUniqueBeanDefinitionException. Boot's bound KafkaProperties is
-        // consumed at *instantiation* time (as a constructor-injected parameter),
-        // which this declaration ordering does not affect.
-        beforeName = "org.springframework.boot.kafka.autoconfigure.KafkaAutoConfiguration")
+        })
+// No ordering against Boot's KafkaAutoConfiguration: Maestro's Kafka beans are
+// not default candidates, so Boot's type-conditioned Kafka beans register
+// whichever configuration runs first
+// (KafkaCoexistenceContextTest.bootsBeansCoexistWhicheverAutoConfigurationRunsFirst).
 @ConditionalOnClass(KafkaTemplate.class)
 // Audit F8: maestro.enabled=false is documented as the master kill-switch
 // (see MaestroAutoConfiguration), but this class previously had no direct
