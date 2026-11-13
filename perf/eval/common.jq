@@ -189,10 +189,13 @@ def background_check($bg; $replicas):
       else $p end);
 
 # Every pg_stat_statements window a scenario measured: the background
-# (idle) window, .window and .windows[]. Malformed entries are skipped here;
-# background_check reports them.
+# (idle) window, .window, .windows[] and .auxWindows[] (windows a scenario
+# measures besides its judged ones, e.g. Scenario 3's seed and release
+# windows: they are held to the same completeness and sweep rules).
+# Malformed entries are skipped here; background_check reports them.
 def pgss_windows($m):
-  ([($m.background | if type == "object" then .window else null end), $m.window] + ($m.windows // []))
+  ([($m.background | if type == "object" then .window else null end), $m.window]
+   + ($m.windows // []) + ($m.auxWindows // []))
   | map(select(type == "object"));
 
 # Gross and net engine statements per completed workflow for one load window.
@@ -514,6 +517,7 @@ def duration_secs:
 #  before the first window) and no predicted pass k >= 1. Either makes the
 #  window untrustworthy.
 #
+# Every window: background, .window, .windows[] and .auxWindows[].
 # INVALID on any of those, and when it cannot tell: no node, a node that
 # does not report an interval or its start/report time, a window without
 # sweepCalls or with a timestamp it cannot parse.
@@ -531,6 +535,7 @@ def named_windows($m):
   [{name: "background", w: ($m.background | if type == "object" then .window else null end)},
    {name: "window", w: $m.window}]
   + ($m.windows // [] | to_entries | map({name: "windows[\(.key)]", w: .value}))
+  + ($m.auxWindows // [] | to_entries | map({name: "auxWindows[\(.key)]", w: .value}))
   | map(select(.w | type == "object"));
 def sweeps_problems_and_value($id; $m):
   ($id.nodes // [] | map({container, start: (.jvmStartMillis | if type == "number" then . / 1000 else null end),
@@ -606,6 +611,18 @@ def sweeps_check($id; $m):
         | "every measured window's sweeps are accounted for: no signal-janitor or retention statement in any window, none predicted; lock-cleaner calls as predicted from the reported intervals"
           + (if ($lc | length) > 0 then " (subtracted exactly: \($lc | join(", ")))" else " (none in any window)" end)
       else $r.problems | join("; ") end);
+
+# Contention thresholds shared by the scenarios that judge contention (S1,
+# S3): a node CPU average at or above cpu_saturation (process_cpu_usage or
+# system_cpu_usage; on JDK 25 both are container-scoped), and the host's
+# 1-minute load average per CPU above host_load_per_cpu_max. Why these
+# values: perf/eval/s1-throughput.jq, "Contention".
+def cpu_saturation: 0.9;
+def host_load_per_cpu_max: 2.0;
+# The host's 1-minute load per CPU of each well-formed host_load record.
+def load_per_cpu($records):
+  [$records[]? | select(type == "object" and (.load1 | isnum) and (.hostCpus | isnum) and .hostCpus > 0)
+   | .load1 / .hostCpus | round2];
 
 def dirty_tree_check($id):
   advisory_guarded("advisory.dirtyTree";

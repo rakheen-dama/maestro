@@ -64,6 +64,14 @@ jq -r '
       "|---|---|---|---|---|---|---|---|---|---|---|",
       (.[] | "| \(.offeredPerSec) | \(.arrivalPerSec | cell) | \(.completionsInWindowPerSec | cell) (\(.completionsInHoldPerSec // "n/a" | cell)) | \(.sustained) | \(.backlogAtEnd | cell) | \(.p50Ms | cell) / \(.p95Ms | cell) | \(.slotsUsed.workflowMax // "n/a" | cell) / \(.slotsUsed.workflowAvg // "n/a" | if type == "number" then (. * 10 | round / 10) else . end | cell) | \(.slotHoldMs // "n/a" | cell) (\(.engineOverheadMs // "n/a" | cell)) | \(.hikari.pendingMax // "n/a" | cell) / \(.hikari.activeMax // "n/a" | cell) | \(.nodeCpu.processAvg // "n/a" | if type == "number" then (. * 100 | round | tostring) + " %" else . end) / \(.nodeCpu.systemAvg // "n/a" | if type == "number" then (. * 100 | round | tostring) + " %" else . end) | \(.statements.net | cell) |")
       else empty end),
+    (.measurements.plateauTable // null | if type == "array" and length > 0 then
+      "",
+      "## Plateaus",
+      "",
+      "| parked P | time to park s | window s | stmts / parked / min (net) | per 30 s (net) | gross / parked / min | recheck reads / parked / interval | renewal stmts / pass | recovery pages / pass | heldKeys / pass | other calls | heap avg MiB | live threads max | workflow slots max | probe p50 / p95 ms |",
+      "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+      (.[] | "| \(.P) | \(.timeToParkSecs | cell) | \(.windowSecs | cell) | \(.perParkedCallsPerMin | cell) | \(.perParkedCallsPer30s | cell) | \(.grossPerParkedPerMin | cell) | \(.recheckReadsPerParkedPerInterval | cell) | \(.renewalStatementsPerPass | cell) | \(.recoveryPagesPerPass | cell) | \(.heldKeysPerPass | cell) | \(.otherCalls | cell) | \(.heapUsedAvgMiB | cell) | \(.liveThreadsMax | cell) | \(.workflowSlotsMax | cell) | \(.probeP50Ms | cell) / \(.probeP95Ms | cell) |")
+      else empty end),
     "",
     "## Checks",
     "",

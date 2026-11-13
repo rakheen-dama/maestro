@@ -22,8 +22,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * The controller's own wiring, without a running engine: the signal endpoint
  * rejects out-of-bounds input with {@code 400 {"error"}} before it touches the
  * client (whose collaborators are {@code null} here, so reaching it would throw),
- * and {@code /perf/info} reports the timer poll interval and the sweep
- * intervals from the bound properties rather than constants.
+ * and {@code /perf/info} reports the timer poll interval, the lock TTL and the
+ * sweep intervals from the bound properties rather than constants.
  */
 class PerfControllerTest {
 
@@ -62,6 +62,12 @@ class PerfControllerTest {
     void infoReportsTheBoundTimerPollInterval() {
         assertEquals("PT2S", controller(Map.of("maestro.timer.poll-interval", "2s")).info().timerPollInterval());
         assertEquals("PT5S", controller(Map.of()).info().timerPollInterval());
+    }
+
+    @Test
+    void infoReportsTheBoundLockTtl() {
+        assertEquals("PT30S", controller(Map.of()).info().lockTtl());
+        assertEquals("PT45S", controller(Map.of("maestro.lock.ttl", "45s")).info().lockTtl());
     }
 
     @Test

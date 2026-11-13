@@ -150,6 +150,7 @@ public class PerfController {
                 // from the same Environment key with the same duration syntax;
                 // MaestroProperties is that key's binding.
                 properties.getLock().cleanupInterval().toString(),
+                properties.getLock().ttl().toString(),
                 properties.getSignal().janitorInterval().toString(),
                 properties.getRetention().enabled(),
                 properties.getRetention().interval().toString(),

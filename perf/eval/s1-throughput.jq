@@ -215,10 +215,8 @@ def backlog_slack_secs: 1;
 def balanced_fraction: 0.05;
 def contention_ratio: 1.15;
 def contention_min_slots: 4;
-def cpu_saturation: 0.9;
 def littles_law_floor: 0.9;
 def start_slow_ms: 1000;
-def host_load_per_cpu_max: 2.0;
 def reference_margin_ms: 40;
 
 # Engine overhead on the robust basis (see the header): the ceiling level's
@@ -361,8 +359,7 @@ $identity[0] as $id
                                  ([($m.levelRows // [])[] | select(.level == $ceilingRow.level)] | first);
                                  $slots; $activityMs) catch null end) as $hw
 | ($m.hostLoad // null) as $hl
-| ([($hl.scenarioStart // null), ($hl.afterDrain // null)] | map(select(type == "object" and (.load1 | isnum) and (.hostCpus | isnum) and .hostCpus > 0)
-   | .load1 / .hostCpus | round2)) as $loadPerCpu
+| load_per_cpu([($hl.scenarioStart // null), ($hl.afterDrain // null)]) as $loadPerCpu
 | ( if $ceilingRow == null or ($refMs | isnum | not) then null
     else
       [$levels[] | select(.level <= $ceilingRow.level or (($modelCap | isnum) and .offeredPerSec < $modelCap))] as $judged

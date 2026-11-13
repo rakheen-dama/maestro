@@ -96,47 +96,6 @@ s1_sample() {
     | jq -sc 'if length == 2 then (.[0] | del(.top)) + .[1] else error("expected 2 JSON rows, got \(length)") end'
 }
 
-# The host's load averages as the OS reports them (macOS vm.loadavg, Linux
-# /proc/loadavg): a contention indicator for the shared machine, recorded at
-# the scenario's start, at the load's start and after the drain.
-s1_host_load() {
-  local raw
-  raw=$(sysctl -n vm.loadavg 2>/dev/null || cat /proc/loadavg 2>/dev/null || true)
-  jq -nc --arg raw "$raw" --argjson cpus "$(getconf _NPROCESSORS_ONLN)" --argjson t "$(date +%s)" \
-    '($raw | [scan("[0-9]+[.][0-9]+")] | map(tonumber)) as $l
-     | {at: $t, raw: $raw, load1: ($l[0] // null), load5: ($l[1] // null), load15: ($l[2] // null), hostCpus: $cpus}'
-}
-
-# CPU of this run's containers (this compose project only, read-only) as
-# `docker stats --no-stream` reports it: percent of ONE CPU, so up to 100 x
-# the CPUs a container may use. One JSON line {at, cpuPercent: {name: %}},
-# name = the container name without the project prefix ("node-1",
-# "postgres-1"; a `compose run` container's "-run-<id>" is dropped: "k6").
-s1_container_stats() {
-  local ids
-  ids=$(docker ps -q --filter "label=com.docker.compose.project=${COMPOSE_PROJECT}")
-  [[ -n "$ids" ]] || return 0
-  # shellcheck disable=SC2086 # one argument per container id
-  docker stats --no-stream --format '{{.Name}}\t{{.CPUPerc}}' $ids 2>/dev/null \
-    | jq -Rsc --argjson t "$(date +%s)" --arg p "${COMPOSE_PROJECT}-" '
-        [split("\n")[] | select(length > 0) | split("\t")
-         | {key: (.[0] | ltrimstr($p) | sub("-run-[0-9a-f]+$"; "")),
-            value: (.[1] | rtrimstr("%") | tonumber? // null)}]
-        | {at: $t, cpuPercent: from_entries}'
-}
-
-# One Prometheus instant query at <epoch>; prints its single value as a JSON
-# number, or null (no series, NaN/Inf, or the query failed).
-# s1_prom <query> <epoch>
-s1_prom() {
-  dc exec -T curl curl -fsS -m 30 -G http://prometheus:9090/api/v1/query \
-    --data-urlencode "query=$1" --data-urlencode "time=$2" </dev/null 2>>"${RESULTS}/harness.log" \
-    | jq -c 'if .status == "success" and (.data.result | length) > 0
-             then (.data.result[0].value[1] | if test("^[-+]?[0-9.]+([eE][-+]?[0-9]+)?$") then tonumber else null end)
-             else null end' 2>/dev/null \
-    || printf 'null'
-}
-
 # The Prometheus view of one level window: slot usage (WP11 gauge), the
 # Hikari pool, and the WP11 duration timer's quantiles. A series the engine
 # does not export (an engine older than WP11) is null: the evaluator reports
@@ -152,21 +111,21 @@ s1_level_prom() {
   local pcpu='max(process_cpu_usage)' scpu='max(system_cpu_usage)' sload='max(system_load_average_1m)'
   jq -nc \
     --argjson rangeSecs "${range%s}" --argjson at "$at" \
-    --argjson swMax "$(s1_prom "max_over_time(${slotsW}[${range}:5s])" "$at")" \
-    --argjson swAvg "$(s1_prom "avg_over_time(${slotsW}[${range}:5s])" "$at")" \
-    --argjson saMax "$(s1_prom "max_over_time(${slotsA}[${range}:5s])" "$at")" \
-    --argjson saAvg "$(s1_prom "avg_over_time(${slotsA}[${range}:5s])" "$at")" \
-    --argjson actMax "$(s1_prom "max_over_time(${act}[${range}:5s])" "$at")" \
-    --argjson actAvg "$(s1_prom "avg_over_time(${act}[${range}:5s])" "$at")" \
-    --argjson pendMax "$(s1_prom "max_over_time(${pend}[${range}:5s])" "$at")" \
-    --argjson pendAvg "$(s1_prom "avg_over_time(${pend}[${range}:5s])" "$at")" \
-    --argjson d50 "$(s1_prom "histogram_quantile(0.5, ${bucket})" "$at")" \
-    --argjson d95 "$(s1_prom "histogram_quantile(0.95, ${bucket})" "$at")" \
-    --argjson pcAvg "$(s1_prom "avg_over_time(${pcpu}[${range}:5s])" "$at")" \
-    --argjson pcMax "$(s1_prom "max_over_time(${pcpu}[${range}:5s])" "$at")" \
-    --argjson scAvg "$(s1_prom "avg_over_time(${scpu}[${range}:5s])" "$at")" \
-    --argjson scMax "$(s1_prom "max_over_time(${scpu}[${range}:5s])" "$at")" \
-    --argjson slAvg "$(s1_prom "avg_over_time(${sload}[${range}:5s])" "$at")" \
+    --argjson swMax "$(prom_instant "max_over_time(${slotsW}[${range}:5s])" "$at")" \
+    --argjson swAvg "$(prom_instant "avg_over_time(${slotsW}[${range}:5s])" "$at")" \
+    --argjson saMax "$(prom_instant "max_over_time(${slotsA}[${range}:5s])" "$at")" \
+    --argjson saAvg "$(prom_instant "avg_over_time(${slotsA}[${range}:5s])" "$at")" \
+    --argjson actMax "$(prom_instant "max_over_time(${act}[${range}:5s])" "$at")" \
+    --argjson actAvg "$(prom_instant "avg_over_time(${act}[${range}:5s])" "$at")" \
+    --argjson pendMax "$(prom_instant "max_over_time(${pend}[${range}:5s])" "$at")" \
+    --argjson pendAvg "$(prom_instant "avg_over_time(${pend}[${range}:5s])" "$at")" \
+    --argjson d50 "$(prom_instant "histogram_quantile(0.5, ${bucket})" "$at")" \
+    --argjson d95 "$(prom_instant "histogram_quantile(0.95, ${bucket})" "$at")" \
+    --argjson pcAvg "$(prom_instant "avg_over_time(${pcpu}[${range}:5s])" "$at")" \
+    --argjson pcMax "$(prom_instant "max_over_time(${pcpu}[${range}:5s])" "$at")" \
+    --argjson scAvg "$(prom_instant "avg_over_time(${scpu}[${range}:5s])" "$at")" \
+    --argjson scMax "$(prom_instant "max_over_time(${scpu}[${range}:5s])" "$at")" \
+    --argjson slAvg "$(prom_instant "avg_over_time(${sload}[${range}:5s])" "$at")" \
     '{rangeSecs: $rangeSecs, at: $at,
       slotsUsed: {workflowMax: $swMax, workflowAvg: $swAvg, activityMax: $saMax, activityAvg: $saAvg},
       hikari: {activeMax: $actMax, activeAvg: $actAvg, pendingMax: $pendMax, pendingAvg: $pendAvg},
@@ -208,7 +167,7 @@ scenario_run() {
   log "s1: plan $(jq -c '{levels, rampSecs, holdSecs, preAllocatedVUs, maxVUs, drainTimeoutSecs}' <<<"$plan")"
 
   local host_start host_load_start host_end
-  host_start=$(s1_host_load)
+  host_start=$(host_load)
   log "s1: host load at start $(jq -c '{load1, load5, load15, hostCpus}' <<<"$host_start")"
   local slots warm_vus warm_count
   slots=$(jq -r '.nodes[0].workerDefaultConcurrency' "${RESULTS}/identity.json")
@@ -247,12 +206,12 @@ scenario_run() {
     set +eE
     trap - ERR EXIT INT TERM
     while [[ ! -e "$stop" ]] && kill -0 "$driver" 2>/dev/null && (($(date +%s) < deadline)); do
-      s1_container_stats >>"$cstats" 2>>"${RESULTS}/harness.log"
+      container_stats >>"$cstats" 2>>"${RESULTS}/harness.log"
       sleep "$S1_SAMPLE_SECS"
     done
   ) &
   cstats_sampler=$!
-  host_load_start=$(s1_host_load)
+  host_load_start=$(host_load)
   log "s1: host load at load start $(jq -c '{load1, load5, load15}' <<<"$host_load_start")"
 
   k6_run s1 start-ramp.js "${k6env[@]}"
@@ -269,7 +228,7 @@ scenario_run() {
   touch "$stop"
   wait "$sampler" || true
   wait "$cstats_sampler" || true
-  host_end=$(s1_host_load)
+  host_end=$(host_load)
   rm -f "$stop"
   # The closing sample, taken after the drain, so the last level is bracketed.
   s1_sample "$prefix" >>"$samples" 2>>"${RESULTS}/harness.log" || log "WARN: s1 closing sample failed"
@@ -293,7 +252,7 @@ scenario_run() {
   last_we=$(date +%s)
   abandoned=null
   if [[ -n "$first_ws" ]]; then
-    abandoned=$(s1_prom "sum(increase(maestro_run_abandoned_total[$(jq -rn --argjson a "$first_ws" --argjson b "$last_we" '$b - $a | ceil')s]))" "$last_we")
+    abandoned=$(prom_instant "sum(increase(maestro_run_abandoned_total[$(jq -rn --argjson a "$first_ws" --argjson b "$last_we" '$b - $a | ceil')s]))" "$last_we")
   fi
   # The duration timer's largest finite bucket: a quantile that lands on it
   # is clipped (the true value is at least that), never a measurement.

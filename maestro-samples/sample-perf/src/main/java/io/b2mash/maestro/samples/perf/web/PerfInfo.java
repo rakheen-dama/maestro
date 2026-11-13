@@ -36,6 +36,10 @@ import java.util.List;
  *                                         lock cleaner's period; its first pass is one interval after
  *                                         the scheduler starts (the harness accounts for its passes in
  *                                         every measured statement window)
+ * @param lockTtl                          {@code maestro.lock.ttl} as bound, ISO-8601 — the instance-lock
+ *                                         TTL; the engine renews every held instance lock every
+ *                                         {@code ttl / 3} (the harness predicts the renewal passes in a
+ *                                         measured statement window from it)
  * @param signalJanitorInterval            {@code maestro.signal.janitor-interval} as bound, ISO-8601 —
  *                                         the signal janitor sweeps at startup and then every interval
  * @param retentionEnabled                 {@code maestro.retention.enabled} as bound
@@ -65,6 +69,7 @@ public record PerfInfo(
         String timerPollInterval,
         int hikariMaximumPoolSize,
         String lockCleanupInterval,
+        String lockTtl,
         String signalJanitorInterval,
         boolean retentionEnabled,
         String retentionInterval,

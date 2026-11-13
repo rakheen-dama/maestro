@@ -312,6 +312,11 @@ warm_up() {
 # their much longer intervals fall due, the lock cleaner, signal janitor and
 # retention sweeper. Prints {"ticks", "timerPollSecs", "recoveryPollSecs",
 # "idleSecs", "window": <pgss-window>}.
+# With <idle-secs> (Scenario 3: a window that is also a whole number of
+# wake-recheck and recovery-poll intervals) the window is that long instead;
+# it must be a whole number of timer-poll ticks, at least 2, or the harness
+# stops (exit 3) before measuring anything.
+# measure_background [<idle-secs>]
 measure_background() {
   local node timer recovery ticks idle window
   node=$(jq -c '.nodes[0]' "${RESULTS}/identity.json")
@@ -319,7 +324,13 @@ measure_background() {
     || die "node 1 reports no timerPollInterval"
   recovery=$(iso_secs "$(jq -r '.recoveryPollInterval // empty' <<<"$node")") \
     || die "node 1 reports no recoveryPollInterval"
-  ticks=$(jq -rn --argjson t "$timer" --argjson r "$recovery" '[2, (($r / $t) | ceil)] | max')
+  if [[ -n "${1:-}" ]]; then
+    ticks=$(jq -rn --argjson t "$timer" --argjson i "$1" \
+      'if ($i / $t) == (($i / $t) | floor) and ($i / $t) >= 2 then $i / $t else empty end')
+    [[ -n "$ticks" ]] || die "background: an idle window of $1 s is not a whole number (>= 2) of ${timer} s timer-poll ticks"
+  else
+    ticks=$(jq -rn --argjson t "$timer" --argjson r "$recovery" '[2, (($r / $t) | ceil)] | max')
+  fi
   idle=$(jq -rn --argjson t "$timer" --argjson n "$ticks" '$t * $n')
   log "background: idle window of ${ticks} timer-poll ticks (${timer} s each) = ${idle} s"
   psql_json pgss-reset >/dev/null
@@ -328,4 +339,46 @@ measure_background() {
   log "background: $(jq -c '{windowSecs, maestroCalls, maestroCallsTopLevel, maestroStatements}' <<<"$window")"
   jq -nc --argjson n "$ticks" --argjson t "$timer" --argjson r "$recovery" --argjson i "$idle" \
     --argjson w "$window" '{ticks: $n, timerPollSecs: $t, recoveryPollSecs: $r, idleSecs: $i, window: $w}'
+}
+
+# The host's load averages as the OS reports them (macOS vm.loadavg, Linux
+# /proc/loadavg): a contention indicator for the shared machine (S1 records it
+# at the scenario's start, at the load's start and after the drain; S3 at
+# the start, at every window and after the release).
+host_load() {
+  local raw
+  raw=$(sysctl -n vm.loadavg 2>/dev/null || cat /proc/loadavg 2>/dev/null || true)
+  jq -nc --arg raw "$raw" --argjson cpus "$(getconf _NPROCESSORS_ONLN)" --argjson t "$(date +%s)" \
+    '($raw | [scan("[0-9]+[.][0-9]+")] | map(tonumber)) as $l
+     | {at: $t, raw: $raw, load1: ($l[0] // null), load5: ($l[1] // null), load15: ($l[2] // null), hostCpus: $cpus}'
+}
+
+# CPU of this run's containers (this compose project only, read-only) as
+# `docker stats --no-stream` reports it: percent of ONE CPU, so up to 100 x
+# the CPUs a container may use. One JSON line {at, cpuPercent: {name: %}},
+# name = the container name without the project prefix ("node-1",
+# "postgres-1"; a `compose run` container's "-run-<id>" is dropped: "k6").
+container_stats() {
+  local ids
+  ids=$(docker ps -q --filter "label=com.docker.compose.project=${COMPOSE_PROJECT}")
+  [[ -n "$ids" ]] || return 0
+  # shellcheck disable=SC2086 # one argument per container id
+  docker stats --no-stream --format '{{.Name}}\t{{.CPUPerc}}' $ids 2>/dev/null \
+    | jq -Rsc --argjson t "$(date +%s)" --arg p "${COMPOSE_PROJECT}-" '
+        [split("\n")[] | select(length > 0) | split("\t")
+         | {key: (.[0] | ltrimstr($p) | sub("-run-[0-9a-f]+$"; "")),
+            value: (.[1] | rtrimstr("%") | tonumber? // null)}]
+        | {at: $t, cpuPercent: from_entries}'
+}
+
+# One Prometheus instant query at <epoch>; prints its single value as a JSON
+# number, or null (no series, NaN/Inf, or the query failed).
+# prom_instant <query> <epoch>
+prom_instant() {
+  dc exec -T curl curl -fsS -m 30 -G http://prometheus:9090/api/v1/query \
+    --data-urlencode "query=$1" --data-urlencode "time=$2" </dev/null 2>>"${RESULTS}/harness.log" \
+    | jq -c 'if .status == "success" and (.data.result | length) > 0
+             then (.data.result[0].value[1] | if test("^[-+]?[0-9.]+([eE][-+]?[0-9]+)?$") then tonumber else null end)
+             else null end' 2>/dev/null \
+    || printf 'null'
 }
