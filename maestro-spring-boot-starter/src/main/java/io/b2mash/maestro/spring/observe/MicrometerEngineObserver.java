@@ -33,6 +33,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <tr><td>{@code maestro.workflow.compensated}</td><td>Counter</td><td>workflow</td><td>{@link #workflowCompensating}</td></tr>
  *   <tr><td>{@code maestro.workflow.terminated}</td><td>Counter</td><td>workflow</td><td>{@link #workflowTerminated}</td></tr>
  *   <tr><td>{@code maestro.activity.duration}</td><td>Timer</td><td>workflow, activity, outcome</td><td>{@link #activityCompleted}/{@link #activityFailed} (live only)</td></tr>
+ *   <tr><td>{@code maestro.activity.result.unreadable}</td><td>Counter</td><td>workflow, activity</td><td>{@link #activityResultUnreadable} (live only)</td></tr>
  *   <tr><td>{@code maestro.signal.consumed}</td><td>Counter</td><td>workflow, signal</td><td>{@link #signalConsumed} (live only)</td></tr>
  *   <tr><td>{@code maestro.signal.duplicates}</td><td>Counter</td><td>workflow, signal</td><td>{@link #signalDuplicateSuppressed}</td></tr>
  *   <tr><td>{@code maestro.timer.fired}</td><td>Counter</td><td>workflow</td><td>{@link #timerFired} (live only)</td></tr>
@@ -142,6 +143,22 @@ public final class MicrometerEngineObserver implements EngineObserver {
         }
         record("maestro.activity.duration", duration,
                 TAG_WORKFLOW, a.workflowType(), TAG_ACTIVITY, a.activityName(), TAG_OUTCOME, "failed");
+    }
+
+    /**
+     * Counts a live activity result that was recorded but either cannot be
+     * read back as its declared type (WP1 D9; a recovery of the run will stand
+     * it down as {@code unknown_event_payload}) or reads back as another class
+     * than the object the activity returned ({@code exceptionType} is
+     * {@link EngineObserver#READ_BACK_TYPE_MISMATCH}; a replay hands workflow
+     * code the read-back class). Either way the run continued with the
+     * activity's own object. One counter for both: the cause is not a tag. The
+     * engine fires this live only, so there is no replay flag.
+     */
+    @Override
+    public void activityResultUnreadable(ActivityInfo a, String exceptionType) {
+        // exceptionType is intentionally not tagged — open-ended cardinality, as for workflowFailed.
+        increment("maestro.activity.result.unreadable", TAG_WORKFLOW, a.workflowType(), TAG_ACTIVITY, a.activityName());
     }
 
     @Override

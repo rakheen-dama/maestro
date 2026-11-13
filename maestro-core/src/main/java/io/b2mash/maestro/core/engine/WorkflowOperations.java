@@ -145,7 +145,23 @@ public sealed interface WorkflowOperations permits DefaultWorkflowOperations {
      * <p>Workflow code must use this instead of {@code Instant.now()} or
      * {@code LocalDateTime.now()} to maintain determinism across replays.
      *
-     * @return the current time (live) or the stored time (replay)
+     * <p>The first call at a sequence records the clock's value; every call
+     * at that sequence — the live one included — returns the recorded value
+     * as the store reads it back, so the live run and every replay see the
+     * same instant. Under the default mapper that is the clock value to the
+     * nanosecond; a mapper that writes epoch milliseconds truncates it, on the
+     * live run too ({@code docs/pitfalls.md}, rule 12).
+     *
+     * <p>A mapper that cannot read back its own timestamp is the exception:
+     * if it throws, or reads back an instant more than a second from the one
+     * recorded (epoch milliseconds written while integer timestamps are read
+     * as seconds), the live call returns the clock value and logs it, and a
+     * replay gets what that mapper reads (or stands down if it throws) — live
+     * and replay then differ.
+     *
+     * @return the clock value as the store reads it back, identical live and
+     *         on replay; the clock value itself, live, under a mapper that
+     *         cannot read back its own timestamps
      */
     Instant currentTime();
 

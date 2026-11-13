@@ -114,6 +114,24 @@ class MicrometerEngineObserverTest {
     }
 
     @Test
+    @DisplayName("maestro.activity.result.unreadable — Counter, tags exactly workflow/activity, never exceptionType")
+    void activityResultUnreadableCountsByWorkflowAndActivity() {
+        var activity = new ActivityInfo("wf-1", "OrderWorkflow", "Pay.card", 3);
+
+        observer.activityResultUnreadable(activity, "x.Y");
+        observer.activityResultUnreadable(activity, "x.Y");
+
+        var counter = registry.get("maestro.activity.result.unreadable")
+                .tag("workflow", "OrderWorkflow")
+                .tag("activity", "Pay.card")
+                .counter();
+        assertThat(counter.count()).isEqualTo(2.0);
+        assertThat(counter.getId().getTags())
+                .extracting(tag -> tag.getKey() + "=" + tag.getValue())
+                .containsExactlyInAnyOrder("workflow=OrderWorkflow", "activity=Pay.card");
+    }
+
+    @Test
     @DisplayName("maestro.signal.consumed — Counter, tags workflow/signal, live only")
     void signalConsumed() {
         var signal = new SignalInfo("wf-1", "OrderWorkflow", "payment-approved", null);

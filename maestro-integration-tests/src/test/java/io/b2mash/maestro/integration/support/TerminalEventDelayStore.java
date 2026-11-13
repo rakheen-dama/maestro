@@ -105,6 +105,11 @@ public final class TerminalEventDelayStore implements WorkflowStore {
     }
 
     @Override
+    public tools.jackson.databind.@Nullable JsonNode appendEventReturningPayload(WorkflowEvent event, RunLease lease) {
+        return delegate.appendEventReturningPayload(event, lease);
+    }
+
+    @Override
     public void updateInstance(WorkflowInstance instance, RunLease lease) {
         delegate.updateInstance(instance, lease);
     }

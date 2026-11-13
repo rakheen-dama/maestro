@@ -65,6 +65,7 @@ public final class MaestroEngineHarness implements AutoCloseable {
     private final RetryExecutor retryExecutor = new RetryExecutor();
     private final EngineObserver observer;
     private final String lockKeyPrefix;
+    private final boolean verifyArguments;
     private final Map<Class<?>, Object> activityImpls = new ConcurrentHashMap<>();
     private final Map<String, WorkflowRegistration> registrations = new ConcurrentHashMap<>();
 
@@ -75,6 +76,7 @@ public final class MaestroEngineHarness implements AutoCloseable {
         this.messaging = builder.messaging;
         this.observer = builder.observer != null ? builder.observer : EngineObserver.NOOP;
         this.lockKeyPrefix = builder.lockKeyPrefix;
+        this.verifyArguments = builder.verifyArguments;
         // Everything the harness builder leaves unset takes WorkflowExecutor.Builder's default.
         var executorBuilder = WorkflowExecutor.builder(builder.store, this.serializer, builder.serviceName)
                 .distributedLock(builder.lock)
@@ -359,7 +361,8 @@ public final class MaestroEngineHarness implements AutoCloseable {
                     lockKeyPrefix,
                     observer,
                     executor.taskQueueGovernor(),
-                    executor.lifecycleEventSink());
+                    executor.lifecycleEventSink(),
+                    verifyArguments);
             try {
                 field.setAccessible(true);
                 field.set(workflowImpl, proxy);
@@ -383,6 +386,7 @@ public final class MaestroEngineHarness implements AutoCloseable {
         private @Nullable Duration wakeRecheckInterval;
         private @Nullable EngineObserver observer;
         private Map<String, TaskQueueLimits> taskQueueLimits = Map.of();
+        private boolean verifyArguments = true;
 
         private Builder(WorkflowStore store, ObjectMapper objectMapper) {
             this.store = store;
@@ -466,6 +470,18 @@ public final class MaestroEngineHarness implements AutoCloseable {
          */
         public Builder taskQueueLimits(Map<String, TaskQueueLimits> taskQueueLimits) {
             this.taskQueueLimits = Map.copyOf(taskQueueLimits);
+            return this;
+        }
+
+        /**
+         * @param verifyArguments whether a replayed activity call compares its
+         *                        arguments' fingerprint with the recorded one and
+         *                        stands down on a difference
+         *                        ({@code maestro.replay.verify-arguments}); the
+         *                        default {@code true} is the starter's default
+         */
+        public Builder verifyArguments(boolean verifyArguments) {
+            this.verifyArguments = verifyArguments;
             return this;
         }
 

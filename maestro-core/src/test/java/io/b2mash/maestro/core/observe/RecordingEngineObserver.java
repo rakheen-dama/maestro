@@ -21,6 +21,7 @@ public final class RecordingEngineObserver implements EngineObserver {
     public record ActivityCompletion(ActivityInfo info, Duration duration, boolean replayed) {}
     public record ActivityFailure(ActivityInfo info, Duration duration,
                                   String exceptionType, boolean replayed) {}
+    public record UnreadableResult(ActivityInfo info, String exceptionType) {}
     public record SignalConsumption(SignalInfo info, boolean replayed) {}
     public record TimerCallback(TimerInfo info, boolean replayed) {}
     public record ParkEvent(WorkflowInfo info, ParkKind kind) {}
@@ -43,6 +44,7 @@ public final class RecordingEngineObserver implements EngineObserver {
     private final List<ActivityInfo> activityStarted = new CopyOnWriteArrayList<>();
     private final List<ActivityCompletion> activityCompleted = new CopyOnWriteArrayList<>();
     private final List<ActivityFailure> activityFailed = new CopyOnWriteArrayList<>();
+    private final List<UnreadableResult> unreadableResults = new CopyOnWriteArrayList<>();
     private final List<SignalInfo> signalPersisted = new CopyOnWriteArrayList<>();
     private final List<SignalConsumption> signalConsumed = new CopyOnWriteArrayList<>();
     private final List<SignalInfo> signalDuplicates = new CopyOnWriteArrayList<>();
@@ -124,6 +126,12 @@ public final class RecordingEngineObserver implements EngineObserver {
                                String exceptionType, boolean replayed) {
         record("activityFailed", a, duration, exceptionType, replayed);
         activityFailed.add(new ActivityFailure(a, duration, exceptionType, replayed));
+    }
+
+    @Override
+    public void activityResultUnreadable(ActivityInfo a, String exceptionType) {
+        record("activityResultUnreadable", a, exceptionType);
+        unreadableResults.add(new UnreadableResult(a, exceptionType));
     }
 
     @Override
@@ -220,6 +228,7 @@ public final class RecordingEngineObserver implements EngineObserver {
     public List<ActivityInfo> activityStarted() { return List.copyOf(activityStarted); }
     public List<ActivityCompletion> activityCompleted() { return List.copyOf(activityCompleted); }
     public List<ActivityFailure> activityFailed() { return List.copyOf(activityFailed); }
+    public List<UnreadableResult> unreadableResults() { return List.copyOf(unreadableResults); }
     public List<SignalInfo> signalPersisted() { return List.copyOf(signalPersisted); }
     public List<SignalConsumption> signalConsumed() { return List.copyOf(signalConsumed); }
     public List<SignalInfo> signalDuplicates() { return List.copyOf(signalDuplicates); }

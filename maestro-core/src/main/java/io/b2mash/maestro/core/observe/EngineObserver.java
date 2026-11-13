@@ -125,6 +125,50 @@ public interface EngineObserver {
     default void activityFailed(ActivityInfo a, Duration duration,
                                 String exceptionType, boolean replayed) {}
 
+    /**
+     * The {@code exceptionType} {@link #activityResultUnreadable} carries when
+     * a live result <em>was</em> read back, but as another class than the
+     * object the activity returned.
+     */
+    String READ_BACK_TYPE_MISMATCH = "maestro:read-back-type-mismatch";
+
+    /**
+     * A live activity's result was persisted, and either cannot be read back
+     * as the method's declared return type, or reads back as another class
+     * than the object the activity returned. Either way the run continues with
+     * the object the activity returned, and the live run and a replay of this
+     * step will not agree:
+     * <ul>
+     *   <li><b>Cannot be read back</b> ({@code exceptionType} is the
+     *       deserialization root cause's class name): a replay of this step
+     *       will stand the run down as {@code unknown_event_payload}, so every
+     *       call is a leading indicator of a stand-down at the run's next
+     *       recovery.</li>
+     *   <li><b>Reads back as another class</b> ({@code exceptionType} is
+     *       {@link #READ_BACK_TYPE_MISMATCH}) — a subtype under a declared
+     *       supertype, a value under {@code Object} or a type variable, a
+     *       {@code Long} under {@code Number}: a replay of this step hands
+     *       workflow code the read-back class instead. A later recorded step
+     *       whose arguments depend on the difference stands the recovered run
+     *       down as {@code nondeterministic_history}; workflow code that
+     *       branches on it can also fail or complete differently.</li>
+     * </ul>
+     * Only the top-level class is compared, never the elements of a
+     * collection or map, and a container that reads back as another
+     * container of the same kind (both a {@code List}, a {@code Set}, a
+     * {@code Queue} or a {@code Map}) is not a class difference.
+     *
+     * <p>Fired live only, on the workflow thread, after the outcome append and
+     * before {@link #activityCompleted}. Never fired on replay.
+     *
+     * @param a             the activity whose result could not be read back as
+     *                      what it returned
+     * @param exceptionType fully-qualified class name of the deserialization
+     *                      root cause, or {@link #READ_BACK_TYPE_MISMATCH}; never
+     *                      use it as a metric tag
+     */
+    default void activityResultUnreadable(ActivityInfo a, String exceptionType) {}
+
     // ── Signals ───────────────────────────────────────────────────────
 
     /** A signal row was durably persisted (delivery side, any node). */

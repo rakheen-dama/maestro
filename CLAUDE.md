@@ -13,14 +13,14 @@ Read these before making architectural decisions:
 - `docs/maestro-architecture.md` — System architecture, diagrams, failure modes
 - `docs/observability.md` — Meter catalog, span topology, Kafka trace-propagation contract
 - `docs/operations.md` — Multi-instance behaviour; versioning + mixed-version deploy playbook
-- `docs/pitfalls.md` — The eleven workflow-author rules (saga throws, `causedBy`, idempotency, determinism, owning-node queries, sequence budget, versioning, per-run fields, signal ids, control-flow `Error`s, no same-queue waits in activities)
+- `docs/pitfalls.md` — The twelve workflow-author rules (saga throws, `causedBy`, idempotency, determinism, owning-node queries, sequence budget, versioning, per-run fields, signal ids, control-flow `Error`s, no same-queue waits in activities, results arrive as the store returns them)
 
 ## Core Design: Hybrid Memoization
 
 1. Workflow method runs on a **Java 25 virtual thread**.
 2. Activity calls intercepted by a **proxy**. Proxy checks Postgres for stored result at current **sequence number**.
 3. **Replay (found):** Return stored result instantly — no execution.
-4. **Live (not found):** Execute activity, persist result, return it.
+4. **Live (not found):** Execute activity, persist result, return it **as read back from the persisted payload** (deserialized into the method's declared return type, exactly as a replay reads it — not the activity's own object). Three exceptions return the activity's own object and still differ on replay (`docs/pitfalls.md` rule 12): a result that cannot be read back (stands down on replay), one that reads back as another class (the type valve: supertype/`Object`/type-variable declarations; a same-kind container — both `List`, `Set`, `Queue` or `Map` — is not a difference), and a `Future`/`CompletionStage` return type (never read back live). The first two are reported via `EngineObserver.activityResultUnreadable` and `maestro.activity.result.unreadable`.
 5. **Recovery:** Re-invoke workflow method. Completed steps replay instantly. Resumes from first uncompleted step.
 
 **Determinism constraint:** Code between activity calls must be deterministic. No `Math.random()`, `LocalDateTime.now()`, `UUID.randomUUID()`, or direct I/O. Use `workflow.currentTime()`, `workflow.randomUUID()`.
@@ -89,6 +89,7 @@ public interface WorkflowStore {
     boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent); // atomic terminal write (CAS + event in one transaction)
 
     void appendEvent(WorkflowEvent event);
+    default @Nullable JsonNode appendEventReturningPayload(WorkflowEvent event, RunLease lease); // the payload as stored (Postgres: INSERT … RETURNING); a live activity returns what replay reads; a store decorator must forward it (the default returns the payload sent, not the jsonb form)
     Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int seq);
     List<WorkflowEvent> getEvents(UUID instanceId);
 

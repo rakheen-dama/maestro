@@ -70,10 +70,13 @@ import java.util.concurrent.atomic.AtomicInteger;
  *       the clock-window constants below) never do; only the pins on what
  *       this build appends may.</li>
  *   <li>WP1 adopts the dormant {@code upgrade-fixture-wp1} runs with
- *       {@code node(Seeds.WP1_SERVICE, …)}. On {@code cbf5a2a},
- *       {@code seed-wp1-offset} and {@code seed-wp1-set} are expected to stand
- *       down (3.8). A fix must not turn that stand-down into {@code FAILED}
- *       (anti-goal 1).</li>
+ *       {@code node(Seeds.WP1_SERVICE, …)}. Each parked on {@code go} before
+ *       its consumer activity ran, so no recorded step depends on the first
+ *       result and none stands down: they complete on this build, each
+ *       consumer receiving the first result as it reads back (the exact
+ *       decimal, the stamp in UTC). WP1 pins this, and that this build writes
+ *       the bytes {@code cbf5a2a} wrote, in
+ *       {@code SeededHistoryReplayFidelityIT}.</li>
  *   <li>WP3 calls {@code node.retry(id, SeedFailingWorkflow.class)} or
  *       {@code node.retry(id, SeedSagaWorkflow.class)} on the {@code FAILED}
  *       ids. It may first re-register

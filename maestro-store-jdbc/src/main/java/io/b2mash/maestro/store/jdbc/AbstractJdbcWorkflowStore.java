@@ -24,6 +24,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectReader;
+import tools.jackson.databind.cfg.JsonNodeFeature;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -49,6 +51,62 @@ import java.util.stream.Collectors;
  * ({@code tools.jackson}). Database-specific subclasses override protected
  * hook methods to provide optimized SQL where needed.
  *
+ * <h2>Exact decimals</h2>
+ * <p>Every payload column — event {@code payload}, instance {@code input} and
+ * {@code output}, signal {@code payload} — is parsed into a tree whose
+ * decimals are {@code DecimalNode}s holding the column's digits and scale,
+ * never the nearest {@code double}.
+ * <ul>
+ *   <li><b>Typed decimal targets are exact.</b> A {@code BigDecimal} (top level,
+ *       field, element or typed map value), and a {@code java.time} value read
+ *       from a number ({@code Instant}, {@code OffsetDateTime},
+ *       {@code ZonedDateTime}, {@code Duration}), gets the stored value. Before,
+ *       it read the {@code double} the column was parsed into: rounded when the
+ *       decimal has more digits than a {@code double} holds
+ *       ({@code 9.000000000000001} read as {@code 9.000000000000002}), and with
+ *       its trailing zeros dropped at any length ({@code 10.50} read as
+ *       {@code 10.5}).</li>
+ *   <li><b>What is written.</b> The bytes written for a payload the caller hands
+ *       the store are unchanged: the configured mapper renders it exactly as
+ *       before. What changed is a row the store's caller re-writes after reading
+ *       it: every instance status write (park, resume, adoption, retry,
+ *       {@code COMPENSATING}, completion, termination) re-reads the instance and
+ *       writes its {@code input} and {@code output} back from the parsed tree, so
+ *       those columns now keep their decimals exactly where they used to be
+ *       rounded through {@code double} on the first such write. Two caveats: an
+ *       input an older build already rewrote stays rounded, and reads and
+ *       replays as the rounded value it holds, as before; and in a mixed fleet
+ *       an older node rounds the row again whenever it writes it.</li>
+ *   <li><b>Everything else reads as before.</b> {@code PayloadSerializer} reads
+ *       the tree with the mapper's own features, so under a default mapper an
+ *       untyped {@code Object}, {@code Map<String, Object>} or
+ *       {@code List<Object>} position still gets a {@code Double}, a
+ *       {@code JsonNode} target still gets a {@code DoubleNode}, and
+ *       {@code double}, {@code float} and integer targets get the same values,
+ *       except a {@code float} target reading a stored {@code double} that lies
+ *       exactly halfway between two floats (now rounded once, from the text).
+ *       A mapper whose own trees already hold decimals (either
+ *       {@code USE_BIG_DECIMAL_FOR_FLOATS} feature) is used unchanged, except
+ *       that with {@code STRIP_TRAILING_BIGDECIMAL_ZEROES} also on an untyped
+ *       integral decimal such as {@code 2.0} reads as an {@code Integer}.</li>
+ *   <li><b>Mixed versions.</b> An older node replays these decimals, and
+ *       {@code java.time} values read from numbers, lossily, as it always has; a
+ *       node of this build replays them exactly. Scale alone does not change an
+ *       activity's argument fingerprint (it hashes a decimal's
+ *       {@code stripTrailingZeros().toPlainString()}), but a run whose later
+ *       recorded step consumed a lossily replayed decimal or {@code java.time}
+ *       value in a precision- or scale-sensitive way ({@code toString()},
+ *       {@code equals}, {@code scale()}, {@code divide} with rounding, a
+ *       sub-microsecond comparison) stands down on this build as
+ *       {@code nondeterministic_history};
+ *       {@code maestro.replay.verify-arguments=false} lets it continue. A
+ *       replayed value that differs can also steer workflow code into a
+ *       {@code throw} or another branch before the next recorded step, which
+ *       fails or completes the run differently with no stand-down. A
+ *       {@code SIGNAL_RECEIVED} memo copies the signal row as read, so it now
+ *       records the exact decimal.</li>
+ * </ul>
+ *
  * <h2>Subclass Hooks</h2>
  * <ul>
  *   <li>{@link #getDueTimersSql()} — <b>abstract</b>, must provide row-level
@@ -63,6 +121,9 @@ import java.util.stream.Collectors;
  *       returns JSON in a non-string format.</li>
  *   <li>{@link #fenceRowLockClause()} — override to lock the instance row the
  *       fenced {@code INSERT ... SELECT} checked (Postgres: {@code FOR SHARE}).</li>
+ *   <li>{@link #returnsInsertedPayload()} — override to {@code true} when the
+ *       database normalises what it stores and can return it from the insert
+ *       ({@code INSERT ... RETURNING payload}; Postgres {@code jsonb}).</li>
  * </ul>
  *
  * <h2>Lease fencing</h2>
@@ -130,6 +191,9 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     private final DataSource dataSource;
     private final JdbcStoreConfiguration config;
 
+    /** Parses every payload column ({@link #payloadReader(ObjectMapper)}); writing uses the mapper itself. */
+    private final ObjectReader payloadReader;
+
     /**
      * Creates a new JDBC workflow store.
      *
@@ -140,6 +204,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     protected AbstractJdbcWorkflowStore(DataSource dataSource, JdbcStoreConfiguration config) {
         this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
         this.config = Objects.requireNonNull(config, "config");
+        this.payloadReader = payloadReader(config.objectMapper());
     }
 
     // ── Subclass hooks ────────────────────────────────────────────────────
@@ -227,8 +292,10 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     /**
      * Reads a JSON value from a {@link ResultSet} column.
      *
-     * <p>Default implementation reads a string and parses it with Jackson.
-     * Override if the database returns JSON in a non-string format.
+     * <p>Default implementation reads a string and parses it with Jackson,
+     * keeping decimals exact (class Javadoc, "Exact decimals"). Override if the
+     * database returns JSON in a non-string format; an override that parses
+     * the value itself must keep decimals exact too.
      *
      * @param rs     the result set
      * @param column the column name
@@ -642,6 +709,136 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The write is the one {@link #appendEvent(WorkflowEvent, RunLease)}
+     * makes: one fenced {@code INSERT ... SELECT}, the same parameters, the
+     * same conflict and fence handling — zero rows is a
+     * {@link FencedWriteException}, a unique violation a
+     * {@link DuplicateEventException}, any other {@link SQLException}
+     * {@link #storeFault classified} exactly as there. What is returned:
+     * <ul>
+     *   <li>With {@link #returnsInsertedPayload()} on, the statement carries
+     *       {@code " RETURNING payload"} and runs with {@code executeQuery} —
+     *       still one statement — and the returned column is parsed by
+     *       {@link #getJsonValue}, the very parse {@code getEventBySequence}
+     *       applies to that column, so this and a later read are equal by
+     *       construction.</li>
+     *   <li>With the hook off, the payload's text round trip: the text
+     *       {@link #setJsonParameter} writes, parsed by the reader
+     *       {@link #getJsonValue} uses — what a text column hands back.</li>
+     * </ul>
+     * A stored form the parser rejects ({@link SerializationException})
+     * returns {@code event.payload()} and is logged at DEBUG: the row is
+     * written, and a later read of it fails exactly as it would have anyway.
+     */
+    @Override
+    public @Nullable JsonNode appendEventReturningPayload(WorkflowEvent event, RunLease lease) {
+        Objects.requireNonNull(event, "event");
+        Objects.requireNonNull(lease, "lease");
+        if (!returnsInsertedPayload()) {
+            appendEvent(event, lease);
+            return textRoundTrip(event);
+        }
+        requireNotUnknown(event);
+
+        Inserted inserted;
+        try (var conn = dataSource.getConnection()) {
+            inserted = insertEventReturningPayload(conn, event, lease);
+        } catch (SQLException e) {
+            if (UNIQUE_VIOLATION.equals(e.getSQLState())) {
+                var ex = new DuplicateEventException(event.workflowInstanceId(),
+                        event.sequenceNumber());
+                ex.initCause(e);
+                throw ex;
+            }
+            throw storeFault("Update failed: " + insertEventSql(true) + RETURNING_PAYLOAD, e);
+        }
+        if (inserted == null) {
+            throw new FencedWriteException(lease.instanceId(), lease.epoch(), "appendEvent");
+        }
+        return inserted.payload();
+    }
+
+    /**
+     * Whether the database can return the inserted {@code payload} from the
+     * event {@code INSERT} itself ({@code INSERT ... RETURNING payload}), so
+     * {@link #appendEventReturningPayload} returns the stored form rather than
+     * a text round trip of the payload it sent. The default is {@code false}:
+     * correct for a store that keeps payloads as text, because a text column
+     * reads back exactly the text written. A store that normalises what it
+     * stores — Postgres {@code jsonb} reorders keys and rewrites numbers —
+     * must return {@code true}, as must one that overrides
+     * {@link #getJsonValue} to read a non-text form.
+     *
+     * <p>Return {@code true} only for a database and driver that run the
+     * fenced {@code INSERT ... SELECT ... RETURNING payload} through
+     * {@code executeQuery} and hand back a result set holding one row when the
+     * row was inserted and <em>zero rows</em> when the lease predicate
+     * rejected the write (zero rows is how the fence is detected). Without
+     * that, the engine's event appends break, never silently: a database that
+     * rejects the clause fails every one as a store fault (the run latches
+     * {@code STORE_UNAVAILABLE} and is abandoned for recovery, which meets the
+     * same fault); a driver that runs the insert but returns no result set
+     * fails it as a store fault <em>after</em> the row committed, so the
+     * engine's retry meets that row as a {@link DuplicateEventException} and
+     * the run stands down.
+     *
+     * @return {@code true} to append {@code " RETURNING payload"} to the
+     *         fenced event insert
+     */
+    protected boolean returnsInsertedPayload() {
+        return false;
+    }
+
+    private static final String RETURNING_PAYLOAD = " RETURNING payload";
+
+    /** A row the {@code RETURNING} insert wrote, with its payload as the store reads it. */
+    private record Inserted(@Nullable JsonNode payload) {}
+
+    /**
+     * The fenced event insert with {@code RETURNING payload}, as one
+     * {@code executeQuery}.
+     *
+     * @return the inserted row, or {@code null} when the lease is stale (no row)
+     */
+    private @Nullable Inserted insertEventReturningPayload(Connection conn, WorkflowEvent event, RunLease lease)
+            throws SQLException {
+        try (var ps = conn.prepareStatement(insertEventSql(true) + RETURNING_PAYLOAD)) {
+            bindEvent(ps, event, lease);
+            try (var rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    return null;
+                }
+                try {
+                    return new Inserted(getJsonValue(rs, "payload"));
+                } catch (SerializationException unparseable) {
+                    log.debug("Stored payload of (instance={}, seq={}) cannot be parsed back; returning the "
+                                    + "payload that was sent: {}", event.workflowInstanceId(),
+                            event.sequenceNumber(), unparseable.toString());
+                    return new Inserted(event.payload());
+                }
+            }
+        }
+    }
+
+    /** What a text column hands back for {@code event}'s payload (see {@link #appendEventReturningPayload}). */
+    private @Nullable JsonNode textRoundTrip(WorkflowEvent event) {
+        var payload = event.payload();
+        if (payload == null || payload.isNull()) {
+            return null;            // written as SQL NULL, read back as null
+        }
+        try {
+            return parseJsonNode(toJsonString(payload));
+        } catch (SerializationException unparseable) {
+            log.debug("Payload of (instance={}, seq={}) does not survive a text round trip; returning the "
+                            + "payload that was sent: {}", event.workflowInstanceId(), event.sequenceNumber(),
+                    unparseable.toString());
+            return payload;
+        }
+    }
+
     private void requireNotUnknown(WorkflowEvent event) {
         if (event.eventType() == EventType.UNKNOWN) {
             // The sentinel is how the READ path represents a type this build
@@ -683,19 +880,24 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      */
     private int insertEvent(Connection conn, WorkflowEvent event, @Nullable RunLease lease) throws SQLException {
         try (var ps = conn.prepareStatement(insertEventSql(lease != null))) {
-            ps.setObject(1, event.id());
-            ps.setObject(2, event.workflowInstanceId());
-            ps.setInt(3, event.sequenceNumber());
-            ps.setString(4, event.eventType().name());
-            setNullableString(ps, 5, event.stepName());
-            setJsonParameter(ps, 6, event.payload());
-            ps.setTimestamp(7, Timestamp.from(event.createdAt()));
-            setNullableString(ps, 8, event.argsHash());
-            if (lease != null) {
-                ps.setObject(9, lease.instanceId());
-                ps.setLong(10, lease.epoch());
-            }
+            bindEvent(ps, event, lease);
             return ps.executeUpdate();
+        }
+    }
+
+    /** Binds the event insert's parameters — and, fenced, the lease's — in {@link #insertEventSql} order. */
+    private void bindEvent(PreparedStatement ps, WorkflowEvent event, @Nullable RunLease lease) throws SQLException {
+        ps.setObject(1, event.id());
+        ps.setObject(2, event.workflowInstanceId());
+        ps.setInt(3, event.sequenceNumber());
+        ps.setString(4, event.eventType().name());
+        setNullableString(ps, 5, event.stepName());
+        setJsonParameter(ps, 6, event.payload());
+        ps.setTimestamp(7, Timestamp.from(event.createdAt()));
+        setNullableString(ps, 8, event.argsHash());
+        if (lease != null) {
+            ps.setObject(9, lease.instanceId());
+            ps.setLong(10, lease.epoch());
         }
     }
 
@@ -1678,10 +1880,32 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
     private JsonNode parseJsonNode(String json) {
         try {
-            return objectMapper().readTree(json);
+            return payloadReader.readTree(json);
         } catch (Exception e) {
             throw new SerializationException("Failed to parse JSON", e);
         }
+    }
+
+    /**
+     * The reader every payload column is parsed with: the mapper's own, made to
+     * keep each decimal exact (class Javadoc, "Exact decimals"). A mapper whose
+     * own trees already hold {@code DecimalNode}s is used as it is, trailing-zero
+     * stripping included, so its trees do not change. Any other mapper gets
+     * {@link JsonNodeFeature#USE_BIG_DECIMAL_FOR_FLOATS} (which, unlike
+     * {@code DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS}, also overrides
+     * a mapper that turned the node feature off) with
+     * {@link JsonNodeFeature#STRIP_TRAILING_BIGDECIMAL_ZEROES} off: stripping
+     * {@code 2.0} to {@code 2} would turn an untyped {@code Double} into an
+     * {@code Integer}. Whether the mapper's trees hold decimals is asked of the
+     * mapper, not re-derived from its features.
+     */
+    private static ObjectReader payloadReader(ObjectMapper mapper) {
+        var own = mapper.reader();
+        if (own.readTree("0.10").isBigDecimal()) {
+            return own;
+        }
+        return own.with(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+                .without(JsonNodeFeature.STRIP_TRAILING_BIGDECIMAL_ZEROES);
     }
 
     // ── Parameter helpers ─────────────────────────────────────────────────
