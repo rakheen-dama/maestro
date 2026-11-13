@@ -2,6 +2,20 @@
 
 ## Unreleased — Postgres + Kafka only
 
+### Changed — Spring Boot's Kafka beans now coexist with Maestro's (3.4, D5)
+
+**What was wrong.** Maestro's `maestroKafkaTemplate`, `maestroKafkaProducerFactory` and `maestroKafkaConsumerFactory` were ordinary by-type candidates, registered ahead of Spring Boot's `KafkaAutoConfiguration`, so Boot's type-conditioned Kafka beans backed off:
+
+- A service with no Kafka beans of its own had no `kafkaTemplate`, `kafkaProducerFactory` or `kafkaConsumerFactory`. `spring.kafka.template.*`, a `ProducerListener`, a `RecordMessageConverter` and Boot's factory customizers reached nothing.
+- A service that injected `KafkaTemplate<String, MyDto>` failed to start with `NoSuchBeanDefinitionException: No qualifying bean of type 'org.springframework.kafka.core.KafkaTemplate<java.lang.String, …>' available`. So did one that declared its own template over an injected `ProducerFactory<String, MyDto>`.
+- Setting `spring.kafka.producer.transaction-id-prefix` failed startup: Boot built `kafkaTransactionManager` over Maestro's factory, which is not transaction-capable, and the context failed with `java.lang.IllegalArgumentException: The 'ProducerFactory' must support transactions`.
+
+**What changes.** Maestro's three Kafka beans are `@Bean(defaultCandidate = false)`, and Maestro injects them only by qualifier, through the constants in the new `io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans` (`TEMPLATE`, `PRODUCER_FACTORY`, `CONSUMER_FACTORY`). `KafkaMessagingAutoConfiguration` no longer orders itself before `KafkaAutoConfiguration`. Boot's `kafkaTemplate`, `kafkaProducerFactory`, `kafkaConsumerFactory` and, with a `transaction-id-prefix`, `kafkaTransactionManager` (over Boot's transactional factory) register beside Maestro's, whichever configuration runs first, and `spring.kafka.*` configures them. The engine still holds exactly Maestro's beans, and its producer is never transactional. A host that declares its own Kafka beans, or replaces an engine bean by name, keeps working. Pinned by `KafkaCoexistenceContextTest`. See [Configuration § Kafka Client Configuration](configuration.md#kafka-client-configuration).
+
+**Breaking:** an unqualified `KafkaTemplate<String, byte[]>`, `ProducerFactory<String, byte[]>` or `ConsumerFactory<String, byte[]>` injection point now receives Boot's bean, not Maestro's. Add `@Qualifier(MaestroKafkaBeans.TEMPLATE)` (or `PRODUCER_FACTORY`, `CONSUMER_FACTORY`). A replacement bean declared under an engine bean's name keeps working; declare it with `defaultCandidate = false` to keep Boot's bean of that type.
+
+**The wire is unchanged.** The engine's producer and consumer keep their serializers, `acks=all` and group ids.
+
 ### Fixed — stored workflow input lost decimal digits; a live activity call returns what its replay returns (3.8, D7, D9, C1)
 
 **Stored workflow input and output were rounded in the database.** The JDBC store parsed every non-integer number in a payload column as a `double`, and every instance status write (a park, an adoption, a retry, the compensation and completion writes, a terminate) re-reads the instance and writes its `input` and `output` back from that parsed tree. A workflow input holding a non-integer number was therefore rounded in `maestro_workflow_instance.input` at the run's first park: `{"big": 12345678901234567890.123456789, "amount": 10.50}` became `{"big": 12345678901234567000, "amount": 10.5}`. Every recovery and retry of the run then started from the rounded input. A status write now writes back the exact text it read, so a non-integer number in `input` or `output` survives parks, adoptions, retries, compensation, completion and terminate unchanged.

@@ -1035,26 +1035,35 @@ Override with `spring.kafka.consumer.auto-offset-reset`,
 `spring.kafka.consumer.properties.allow.auto.create.topics` and
 `spring.kafka.producer.properties.max.block.ms` respectively.
 
-Boot's own `kafkaTemplate` / `kafkaProducerFactory` / `kafkaConsumerFactory`
-beans are **deliberately suppressed**: `KafkaMessagingAutoConfiguration`
-registers before `KafkaAutoConfiguration` and satisfies
-`ConditionalOnMissingBean(KafkaTemplate.class)`, so Boot's typed,
-`Object`-valued beans never get created. This is intentional, not a bug —
-Maestro needs exactly one `String`/`byte[]`-typed producer/consumer pair for
-its own topics, and letting Boot's beans coexist would leave two
-`KafkaTemplate`s of overlapping type in the context.
+**Your own Kafka traffic uses Spring Boot's beans.** Maestro's three Kafka
+beans (`maestroKafkaTemplate`, `maestroKafkaProducerFactory`,
+`maestroKafkaConsumerFactory`) are not default candidates
+(`@Bean(defaultCandidate = false)`). Spring Boot's `kafkaTemplate`,
+`kafkaProducerFactory` and `kafkaConsumerFactory` therefore exist beside them,
+built from the same `spring.kafka.*` properties, and an injection point that
+names only a type gets Boot's bean. Pinned by
+`KafkaCoexistenceContextTest` (`maestro-messaging-kafka`).
 
-A service that also needs Kafka for its own application traffic has two
-options:
-
-- **Different value type (the common case).** Define your own `KafkaTemplate`
-  bean under a bean name other than `maestroKafkaTemplate` — e.g. one typed
-  `KafkaTemplate<String, YourDto>` with its own `ProducerFactory`. It still
-  reads `spring.kafka.producer.*` for its own settings; only the engine's
-  forced invariants above are specific to `maestroKafkaTemplate`.
-- **Same `byte[]` traffic.** Inject and reuse `maestroKafkaTemplate` /
-  `maestroKafkaProducerFactory` directly rather than standing up a second
-  client.
+- **Your own traffic.** Inject Boot's `KafkaTemplate<String, YourDto>` (set
+  `spring.kafka.producer.value-serializer` for it), or declare your own
+  `ProducerFactory` / `KafkaTemplate` / `ConsumerFactory` beans, exactly as in
+  a service without Maestro. Boot's beans back off for yours as they always
+  do; the engine is unaffected.
+- **Reusing the engine's `byte[]` template.** Inject it with its qualifier:
+  `@Qualifier(MaestroKafkaBeans.TEMPLATE) KafkaTemplate<String, byte[]>`
+  (`io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans`; also
+  `PRODUCER_FACTORY` and `CONSUMER_FACTORY`). Without the qualifier you get
+  Boot's template, whose default value serializer is `StringSerializer`.
+- **Replacing an engine bean.** Declare a bean with its name and
+  `defaultCandidate = false`, e.g.
+  `@Bean(name = MaestroKafkaBeans.TEMPLATE, defaultCandidate = false)`; the
+  engine uses it and Boot's bean of that type still exists. A plain `@Bean`
+  of that name also replaces it, but then Boot's bean of that type backs off
+  and your unqualified injection points get yours.
+- **`spring.kafka.producer.*` now configures two producer factories**, Boot's
+  and the engine's (which then forces its invariants above). Each creates its
+  Kafka producer on first send, so Boot's opens no connection unless you send
+  through it (traced).
 
 **Plain `@KafkaListener` consumers.** The suppression above only removes
 Boot's *typed* `String`/`byte[]` beans — it does not touch Boot's own
@@ -1075,16 +1084,21 @@ and `verification-gateway-service` samples follow — each keeps its plain
 `application.yml`, with a comment explaining why removing them (on the
 mistaken belief that Maestro's invariants cover them) breaks that listener.
 
-**Two `spring.kafka.template.*` properties that read but do nothing for
-Maestro's own template.** `spring.kafka.template.default-topic` binds and
-appears in `/actuator/configprops`, but `maestroKafkaTemplate`'s send calls
-always name an explicit topic, so it is never consulted. Kafka producer
-transactions (`spring.kafka.producer.transaction-id-prefix` and friends) are
-also quietly unsupported — Boot's `kafkaTransactionManager` never exists in a
-Maestro context, since `maestroKafkaProducerFactory` is not
-transaction-capable. Both are ordinary, honoured settings for a *second*,
-user-defined `KafkaTemplate` (the "different value type" option above); only
-`maestroKafkaTemplate` ignores them.
+**`spring.kafka.template.default-topic` does nothing for Maestro's own
+template.** `maestroKafkaTemplate`'s send calls always name an explicit topic,
+so it is never consulted. Boot's `kafkaTemplate`, which now exists, honours
+it (traced).
+
+**Kafka producer transactions.** Before this release, setting
+`spring.kafka.producer.transaction-id-prefix` failed startup: Boot built its
+`kafkaTransactionManager` over `maestroKafkaProducerFactory`, which is not
+transaction-capable, and the context failed with
+`java.lang.IllegalArgumentException: The 'ProducerFactory' must support transactions`.
+Now `kafkaTransactionManager` is built over Boot's transactional
+`kafkaProducerFactory`, for your own traffic. The engine's producer is never
+transactional (`maestroKafkaProducerFactory.transactionCapable()` and
+`maestroKafkaTemplate.isTransactional()` are `false`). Pinned by
+`KafkaCoexistenceContextTest.aTransactionIdPrefix_givesBootsTransactionManagerOverBootsFactory`.
 
 Observation (Micrometer spans on send/receive) on `maestroKafkaTemplate` and
 the `@MaestroSignalListener` consumer containers defaults **on** when
