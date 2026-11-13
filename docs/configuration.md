@@ -29,7 +29,7 @@ sensible defaults and can be left unset for local development.
 **`maestro.enabled=false` disables every Maestro auto-configuration in the
 application**, not just the core engine: `maestro-messaging-kafka`,
 `maestro-store-postgres` (store, lock and the LISTEN/NOTIFY wake listener),
-`maestro-admin-client`, and the health/observability
+and the health/observability
 auto-configurations all carry the same `@ConditionalOnProperty(maestro.enabled)`
 gate as the core `MaestroAutoConfiguration`, so flipping this one flag backs
 every module off cleanly rather than leaving, say, a `LISTEN` connection

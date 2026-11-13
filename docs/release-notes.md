@@ -24,6 +24,13 @@
 
 **The wire is unchanged.** The engine's producer and consumer keep their serializers, `acks=all` and group ids. Against a real broker, beside a host template configured for JSON, the engine writes exactly its own envelope bytes and a dead-lettered `@MaestroSignalListener` record keeps its original bytes (`KafkaCoexistenceRoundTripTest`).
 
+### Removed — the unused AdminEventPublisher bean
+
+`maestro-admin-client` no longer contributes auto-configuration: `AdminClientAutoConfiguration`, its `adminEventPublisher` bean and `AdminClientProperties` are deleted. Nothing ever called the bean; a service's lifecycle events are published by the engine's `WorkflowMessaging` (`maestro-messaging-kafka`). The bean injected the engine's `KafkaTemplate<String, byte[]>` by type, so with Maestro's Kafka beans no longer default candidates (above) it would have received Spring Boot's template instead. Pinned by `AdminClientContributesNoAutoConfigurationTest`.
+
+- The `AdminEventPublisher` class remains, as a plain class nobody auto-configures, for manual use.
+- A service needs no `maestro-admin-client` dependency to feed the dashboard; `docs/admin.md` § Enabling Event Publishing in Services no longer asks for one. In a Maestro service, `maestro.admin.events.enabled` and `maestro.admin.events.topic` keep binding through the starter's `MaestroProperties`, unchanged. In an application with `maestro-admin-client` but without the Maestro starter, nothing binds `maestro.admin.events.*` any more: those properties are now ignored.
+
 ### Fixed — stored workflow input lost decimal digits; a live activity call returns what its replay returns (3.8, D7, D9, C1)
 
 **Stored workflow input and output were rounded in the database.** The JDBC store parsed every non-integer number in a payload column as a `double`, and every instance status write (a park, an adoption, a retry, the compensation and completion writes, a terminate) re-reads the instance and writes its `input` and `output` back from that parsed tree. A workflow input holding a non-integer number was therefore rounded in `maestro_workflow_instance.input` at the run's first park: `{"big": 12345678901234567890.123456789, "amount": 10.50}` became `{"big": 12345678901234567000, "amount": 10.5}`. Every recovery and retry of the run then started from the rounded input. A status write now writes back the exact text it read, so a non-integer number in `input` or `output` survives parks, adoptions, retries, compensation, completion and terminate unchanged.

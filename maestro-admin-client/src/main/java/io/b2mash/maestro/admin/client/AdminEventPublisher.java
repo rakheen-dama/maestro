@@ -14,6 +14,14 @@ import tools.jackson.databind.ObjectMapper;
  * configurable Kafka topic. Events are keyed by {@code workflowId} to guarantee
  * per-workflow ordering within a topic partition.
  *
+ * <p><b>Not auto-configured.</b> Nothing registers this class as a bean, and
+ * a Maestro service does not need it: the engine publishes its lifecycle
+ * events itself, through its {@code WorkflowMessaging}
+ * ({@code maestro-messaging-kafka}), when {@code maestro.admin.events.enabled}
+ * is {@code true}. Construct it yourself only to publish events from code of
+ * your own, and hand it a template whose value serializer accepts
+ * {@code byte[]}.
+ *
  * <h2>Failure Handling</h2>
  * <p>Publishing is <b>fire-and-forget</b>: all exceptions are caught and logged at
  * {@code WARN} level. Lifecycle event failures must never interrupt workflow execution.
@@ -23,7 +31,6 @@ import tools.jackson.databind.ObjectMapper;
  * {@link ObjectMapper} are both thread-safe, and this class holds no mutable state.
  *
  * @see WorkflowLifecycleEvent
- * @see AdminClientAutoConfiguration
  */
 @NullMarked
 public class AdminEventPublisher {
