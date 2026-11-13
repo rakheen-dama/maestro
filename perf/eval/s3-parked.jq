@@ -41,9 +41,24 @@
 #   relativeAllowance = s3_relative_allowance below; its justification is
 #   recorded here from the cold local runs that pass this evaluator.
 #
-# relativeAllowance evidence (one node, signal mode, local profile, cold,
-# clean tree; perParkedCallsPerMin at P = 2000, unrounded):
-#   (filled from the runs; see s3_relative_allowance)
+# relativeAllowance = 0.02, from measurements: three cold local runs, one
+# node, signal mode, clean tree, that PASS this evaluator (r20261113t025114z
+# after the crossNode fix, its raw record unchanged; r20261113t030358z;
+# r20261113t031512z); perParkedCallsPerMin, unrounded:
+#   P = 1000: 6.01703 / 6.01651 / 6.01715
+#   P = 2000: 6.01608 / 6.01411 / 6.01528   (the gated figure)
+# a spread of 0.0020 at P = 2000 (0.03 %). All three were on a contended
+# host (advisory.contention: load average up to 9.24, 3.0 and 10.75 per CPU)
+# and the figure did not move with it: the statement count of a parked
+# population is set by its intervals, not by host speed. 0.02 is a band of
+# +/- 0.12 statements per parked run per minute (+/- 2 %): far above the
+# observed spread, and far below the smallest real regression, one more read
+# per re-check (+2 per minute, +33 %), or renewal per lock instead of per 500
+# (+6 per minute). What could move it without a code change: a re-check
+# period stretched by slow reads or a slot wait (2 % = 0.6 s per 30 s cycle;
+# not observed: re-check reads per parked run per interval 2.9986-2.9996).
+# The 25 % tolerance cap does not bind: tolerancePerMin at P = 2000 is
+# 3 x 1 / 2000 x 60 / 120 = 0.00075.
 #
 # ── Decomposition (advisory.decomposition) ─────────────────────────────────
 # Per plateau window the engine's top-level calls are attributed by statement
