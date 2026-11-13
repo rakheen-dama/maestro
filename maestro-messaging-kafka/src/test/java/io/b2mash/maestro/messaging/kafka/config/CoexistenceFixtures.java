@@ -1,7 +1,9 @@
 package io.b2mash.maestro.messaging.kafka.config;
 
+import io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans;
 import io.b2mash.maestro.spring.config.MaestroProperties;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.context.annotation.UserConfigurations;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.kafka.autoconfigure.KafkaAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -15,8 +17,11 @@ import org.springframework.kafka.listener.MessageListenerContainer;
 import org.springframework.test.util.ReflectionTestUtils;
 import tools.jackson.databind.ObjectMapper;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Shared fixtures for the tests that pin how Spring Boot's Kafka beans and
@@ -71,6 +76,42 @@ public final class CoexistenceFixtures {
                         "maestro.service-name=coexist",
                         "spring.kafka.bootstrap-servers=localhost:1",
                         "maestro.messaging.topics.verify-on-startup=off");
+    }
+
+    /**
+     * The same context as {@link #coexistenceRunner()}, but with Spring Boot's
+     * {@code KafkaAutoConfiguration} evaluated FIRST: {@code UserConfigurations}
+     * keep their declared order, where {@code AutoConfigurations} sorts
+     * Maestro's configuration first (alphabetically, with no declared relation).
+     * Use {@link #assertBootEvaluatedFirst} to prove the order really held.
+     *
+     * @return a fresh runner
+     */
+    public static ApplicationContextRunner bootFirstRunner() {
+        return new ApplicationContextRunner()
+                .withConfiguration(UserConfigurations.of(
+                        KafkaAutoConfiguration.class,
+                        KafkaMessagingAutoConfiguration.class))
+                .withUserConfiguration(PropertiesConfiguration.class)
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withPropertyValues(
+                        "maestro.service-name=coexist",
+                        "spring.kafka.bootstrap-servers=localhost:1",
+                        "maestro.messaging.topics.verify-on-startup=off");
+    }
+
+    /**
+     * Asserts that Boot's configuration was evaluated before Maestro's: Boot's
+     * {@code kafkaTemplate} definition precedes {@code maestroKafkaTemplate}.
+     *
+     * @param ctx a started context from {@link #bootFirstRunner()}
+     */
+    public static void assertBootEvaluatedFirst(ApplicationContext ctx) {
+        var names = List.of(ctx.getBeanDefinitionNames());
+        assertThat(names.indexOf("kafkaTemplate"))
+                .as("this context really evaluated Boot's configuration first")
+                .isNotNegative()
+                .isLessThan(names.indexOf(MaestroKafkaBeans.TEMPLATE));
     }
 
     /**

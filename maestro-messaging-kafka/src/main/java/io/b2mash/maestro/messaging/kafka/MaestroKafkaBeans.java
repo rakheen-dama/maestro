@@ -16,10 +16,20 @@ package io.b2mash.maestro.messaging.kafka;
  * }</pre>
  *
  * <p>Replace one by declaring a bean with the same name, with
- * {@code defaultCandidate = false} so Boot's bean of that type still
- * registers. A plain {@code @Bean} of that name also replaces it, but then
- * Boot's bean of the same type backs off and the host's unqualified injection
- * points receive the replacement.
+ * {@code defaultCandidate = false}:
+ * <ul>
+ *   <li>{@link #PRODUCER_FACTORY}: {@code defaultCandidate = false} is
+ *       <b>required</b>. A plain {@code @Bean} of that name makes Boot's
+ *       {@code kafkaProducerFactory} back off while Boot's
+ *       {@code kafkaTemplate} still registers, and startup fails with
+ *       {@code NoSuchBeanDefinitionException: No qualifying bean of type
+ *       'org.springframework.kafka.core.ProducerFactory<java.lang.Object, java.lang.Object>'}.</li>
+ *   <li>{@link #TEMPLATE} and {@link #CONSUMER_FACTORY}: recommended. A plain
+ *       {@code @Bean} of that name also replaces the engine's, but Boot's
+ *       {@code kafkaTemplate} (respectively {@code kafkaConsumerFactory}) then
+ *       backs off and the host's unqualified injection points of that type
+ *       receive the replacement.</li>
+ * </ul>
  *
  * <p><b>Thread safety:</b> constants only.
  */

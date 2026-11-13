@@ -4,7 +4,6 @@ import io.b2mash.maestro.messaging.kafka.KafkaWorkflowMessaging;
 import io.b2mash.maestro.messaging.kafka.config.CoexistenceFixtures.HostDto;
 import io.b2mash.maestro.messaging.kafka.config.CoexistenceFixtures.HostDtoSender;
 import io.b2mash.maestro.messaging.kafka.config.CoexistenceFixtures.HostSenderConfiguration;
-import io.b2mash.maestro.messaging.kafka.config.CoexistenceFixtures.PropertiesConfiguration;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
@@ -13,10 +12,10 @@ import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.context.annotation.UserConfigurations;
-import org.springframework.boot.kafka.autoconfigure.KafkaAutoConfiguration;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.springframework.boot.test.context.assertj.AssertableApplicationContext;
-import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.core.ConsumerFactory;
@@ -27,14 +26,17 @@ import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.support.serializer.JacksonJsonDeserializer;
 import org.springframework.kafka.support.serializer.JacksonJsonSerializer;
 import org.springframework.kafka.transaction.KafkaTransactionManager;
-import tools.jackson.databind.ObjectMapper;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Stream;
 
 import static io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans.CONSUMER_FACTORY;
 import static io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans.PRODUCER_FACTORY;
 import static io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans.TEMPLATE;
+import static io.b2mash.maestro.messaging.kafka.config.CoexistenceFixtures.assertBootEvaluatedFirst;
+import static io.b2mash.maestro.messaging.kafka.config.CoexistenceFixtures.bootFirstRunner;
 import static io.b2mash.maestro.messaging.kafka.config.CoexistenceFixtures.coexistenceRunner;
 import static io.b2mash.maestro.messaging.kafka.config.CoexistenceFixtures.producerConfig;
 import static org.apache.kafka.clients.producer.ProducerConfig.ACKS_CONFIG;
@@ -134,15 +136,14 @@ class KafkaCoexistenceContextTest {
 
     @Test
     void aTransactionIdPrefix_givesBootsTransactionManagerOverBootsFactory() {
-        coexistenceRunner().withPropertyValues("spring.kafka.producer.transaction-id-prefix=tx-").run(ctx -> {
+        // Maestro's configuration first (AutoConfigurations, alphabetical) ...
+        coexistenceRunner().withPropertyValues("spring.kafka.producer.transaction-id-prefix=tx-")
+                .run(KafkaCoexistenceContextTest::assertBootsTransactionManagerAndANonTransactionalEngine);
+        // ... and Boot's first (UserConfigurations keep their order).
+        bootFirstRunner().withPropertyValues("spring.kafka.producer.transaction-id-prefix=tx-").run(ctx -> {
             assertThat(ctx).hasNotFailed();
-            var tm = ctx.getBean("kafkaTransactionManager", KafkaTransactionManager.class);
-            assertThat(tm.getProducerFactory()).isSameAs(ctx.getBean("kafkaProducerFactory"));
-            assertThat(tm.getProducerFactory().transactionCapable()).isTrue();
-            assertThat(ctx.getBean(PRODUCER_FACTORY, ProducerFactory.class).transactionCapable())
-                    .as("the engine's producer is never transactional")
-                    .isFalse();
-            assertThat(ctx.getBean(TEMPLATE, KafkaTemplate.class).isTransactional()).isFalse();
+            assertBootEvaluatedFirst(ctx);
+            assertBootsTransactionManagerAndANonTransactionalEngine(ctx);
         });
     }
 
@@ -151,25 +152,103 @@ class KafkaCoexistenceContextTest {
         // UserConfigurations keep their declared order, so Boot's conditions are
         // evaluated first here; AutoConfigurations (every other test) sorts Maestro
         // first, alphabetically.
-        new ApplicationContextRunner()
-                .withConfiguration(UserConfigurations.of(
-                        KafkaAutoConfiguration.class,
-                        KafkaMessagingAutoConfiguration.class))
-                .withUserConfiguration(PropertiesConfiguration.class)
-                .withBean(ObjectMapper.class, ObjectMapper::new)
-                .withPropertyValues(
-                        "maestro.service-name=coexist",
-                        "spring.kafka.bootstrap-servers=localhost:1",
-                        "maestro.messaging.topics.verify-on-startup=off")
-                .run(ctx -> {
-                    assertThat(ctx).hasNotFailed();
-                    var names = List.of(ctx.getBeanDefinitionNames());
-                    assertThat(names.indexOf("kafkaTemplate"))
-                            .as("this context really evaluated Boot's configuration first")
-                            .isNotNegative()
-                            .isLessThan(names.indexOf(TEMPLATE));
-                    assertBootAndMaestroCoexist(ctx);
-                });
+        bootFirstRunner().run(ctx -> {
+            assertThat(ctx).hasNotFailed();
+            assertBootEvaluatedFirst(ctx);
+            assertBootAndMaestroCoexist(ctx);
+        });
+    }
+
+    /**
+     * One replacement of one engine bean, declared under its name, and what is
+     * observed: whether the context starts, and which of Boot's three Kafka
+     * beans then exist.
+     */
+    record Replacement(String bean, String form, Class<?> configuration, boolean starts, Set<String> bootBeans) {
+        @Override
+        public String toString() {
+            return bean + " as " + form;
+        }
+    }
+
+    static Stream<Replacement> replacements() {
+        var all = Set.of("kafkaTemplate", "kafkaProducerFactory", "kafkaConsumerFactory");
+        return Stream.of(
+                // A plain producer-factory replacement makes Boot's kafkaProducerFactory back
+                // off, while Boot's kafkaTemplate (Maestro's template is not a default
+                // candidate) still registers and finds no ProducerFactory<Object, Object>.
+                new Replacement(PRODUCER_FACTORY, "plain @Bean", PlainProducerFactoryReplacement.class,
+                        false, Set.of()),
+                new Replacement(PRODUCER_FACTORY, "@Bean(defaultCandidate = false)",
+                        NonDefaultCandidateProducerFactoryReplacement.class, true, all),
+                new Replacement(TEMPLATE, "plain @Bean", PlainTemplateReplacement.class,
+                        true, Set.of("kafkaProducerFactory", "kafkaConsumerFactory")),
+                new Replacement(TEMPLATE, "@Bean(defaultCandidate = false)",
+                        NonDefaultCandidateTemplateReplacement.class, true, all),
+                new Replacement(CONSUMER_FACTORY, "plain @Bean", PlainConsumerFactoryReplacement.class,
+                        true, Set.of("kafkaTemplate", "kafkaProducerFactory")),
+                new Replacement(CONSUMER_FACTORY, "@Bean(defaultCandidate = false)",
+                        NonDefaultCandidateConsumerFactoryReplacement.class, true, all));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("replacements")
+    void replacingAnEngineBeanByName_matrix(Replacement r) {
+        coexistenceRunner().withUserConfiguration(r.configuration()).run(ctx -> {
+            if (!r.starts()) {
+                assertThat(ctx).hasFailed();
+                assertThat(rootCause(ctx.getStartupFailure()))
+                        .isInstanceOf(NoSuchBeanDefinitionException.class)
+                        .hasMessageContaining("No qualifying bean of type "
+                                + "'org.springframework.kafka.core.ProducerFactory<java.lang.Object, java.lang.Object>'");
+                // Surfaces through KafkaAnnotationDrivenConfiguration's constructor, which
+                // takes Boot's kafkaTemplate.
+                assertThat(ctx.getStartupFailure())
+                        .hasStackTraceContaining("Error creating bean with name 'kafkaTemplate' defined in "
+                                + "org.springframework.boot.kafka.autoconfigure.KafkaAutoConfiguration");
+                return;
+            }
+            assertThat(ctx).hasNotFailed();
+            var replacement = ctx.getBean(r.bean());
+            assertThat(replacement).as("the host's bean, not Maestro's").isSameAs(hostInstance(r.configuration()));
+            var engine = ctx.getBean(KafkaWorkflowMessaging.class);
+            var engineTemplate = (KafkaTemplate<?, ?>) getField(engine, "kafkaTemplate");
+            assertThat(engineTemplate).isSameAs(ctx.getBean(TEMPLATE));
+            if (!r.bean().equals(TEMPLATE)) {
+                // A replacement template brings its own factory; otherwise Maestro's
+                // template is over the (possibly replaced) engine producer factory.
+                assertThat(engineTemplate.getProducerFactory()).isSameAs(ctx.getBean(PRODUCER_FACTORY));
+            }
+            assertThat(getField(engine, "consumerFactory")).isSameAs(ctx.getBean(CONSUMER_FACTORY));
+            for (var boot : List.of("kafkaTemplate", "kafkaProducerFactory", "kafkaConsumerFactory")) {
+                assertThat(ctx.containsBean(boot))
+                        .as("Boot's %s present", boot)
+                        .isEqualTo(r.bootBeans().contains(boot));
+            }
+        });
+    }
+
+    private static Object hostInstance(Class<?> configuration) {
+        return getField(configuration, "INSTANCE");
+    }
+
+    private static Throwable rootCause(Throwable t) {
+        var cause = t;
+        while (cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        return cause;
+    }
+
+    private static void assertBootsTransactionManagerAndANonTransactionalEngine(AssertableApplicationContext ctx) {
+        assertThat(ctx).hasNotFailed();
+        var tm = ctx.getBean("kafkaTransactionManager", KafkaTransactionManager.class);
+        assertThat(tm.getProducerFactory()).isSameAs(ctx.getBean("kafkaProducerFactory"));
+        assertThat(tm.getProducerFactory().transactionCapable()).isTrue();
+        assertThat(ctx.getBean(PRODUCER_FACTORY, ProducerFactory.class).transactionCapable())
+                .as("the engine's producer is never transactional")
+                .isFalse();
+        assertThat(ctx.getBean(TEMPLATE, KafkaTemplate.class).isTransactional()).isFalse();
     }
 
     private static void assertBootAndMaestroCoexist(AssertableApplicationContext ctx) {
@@ -210,6 +289,13 @@ class KafkaCoexistenceContextTest {
                 ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:1",
                 ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class,
                 ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class));
+    }
+
+    private static DefaultKafkaConsumerFactory<String, byte[]> byteArrayConsumerFactory() {
+        return new DefaultKafkaConsumerFactory<>(Map.of(
+                ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:1",
+                ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class,
+                ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class));
     }
 
     private static KafkaTemplate<String, byte[]> markedByteArrayTemplate() {
@@ -255,9 +341,11 @@ class KafkaCoexistenceContextTest {
     @Configuration(proxyBeanMethods = false)
     static class NonDefaultCandidateTemplateReplacement {
 
+        static final KafkaTemplate<String, byte[]> INSTANCE = markedByteArrayTemplate();
+
         @Bean(name = TEMPLATE, defaultCandidate = false)
         KafkaTemplate<String, byte[]> replacement() {
-            return markedByteArrayTemplate();
+            return INSTANCE;
         }
     }
 
@@ -265,9 +353,47 @@ class KafkaCoexistenceContextTest {
     @Configuration(proxyBeanMethods = false)
     static class PlainTemplateReplacement {
 
+        static final KafkaTemplate<String, byte[]> INSTANCE = markedByteArrayTemplate();
+
         @Bean(name = TEMPLATE)
         KafkaTemplate<String, byte[]> replacement() {
-            return markedByteArrayTemplate();
+            return INSTANCE;
+        }
+    }
+
+    /** Replaces Maestro's producer factory by name with a plain {@code @Bean} (a default candidate). */
+    @Configuration(proxyBeanMethods = false)
+    static class PlainProducerFactoryReplacement {
+
+        static final ProducerFactory<String, byte[]> INSTANCE = byteArrayProducerFactory();
+
+        @Bean(name = PRODUCER_FACTORY)
+        ProducerFactory<String, byte[]> replacement() {
+            return INSTANCE;
+        }
+    }
+
+    /** Replaces Maestro's producer factory by name, the documented way: not a default candidate. */
+    @Configuration(proxyBeanMethods = false)
+    static class NonDefaultCandidateProducerFactoryReplacement {
+
+        static final ProducerFactory<String, byte[]> INSTANCE = byteArrayProducerFactory();
+
+        @Bean(name = PRODUCER_FACTORY, defaultCandidate = false)
+        ProducerFactory<String, byte[]> replacement() {
+            return INSTANCE;
+        }
+    }
+
+    /** Replaces Maestro's consumer factory by name, the documented way: not a default candidate. */
+    @Configuration(proxyBeanMethods = false)
+    static class NonDefaultCandidateConsumerFactoryReplacement {
+
+        static final ConsumerFactory<String, byte[]> INSTANCE = byteArrayConsumerFactory();
+
+        @Bean(name = CONSUMER_FACTORY, defaultCandidate = false)
+        ConsumerFactory<String, byte[]> replacement() {
+            return INSTANCE;
         }
     }
 
@@ -275,10 +401,7 @@ class KafkaCoexistenceContextTest {
     @Configuration(proxyBeanMethods = false)
     static class PlainConsumerFactoryReplacement {
 
-        static final ConsumerFactory<String, byte[]> INSTANCE = new DefaultKafkaConsumerFactory<>(Map.of(
-                ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:1",
-                ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class,
-                ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class));
+        static final ConsumerFactory<String, byte[]> INSTANCE = byteArrayConsumerFactory();
 
         @Bean(name = CONSUMER_FACTORY)
         ConsumerFactory<String, byte[]> replacement() {

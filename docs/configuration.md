@@ -1057,9 +1057,19 @@ names only a type gets Boot's bean. Pinned by
 - **Replacing an engine bean.** Declare a bean with its name and
   `defaultCandidate = false`, e.g.
   `@Bean(name = MaestroKafkaBeans.TEMPLATE, defaultCandidate = false)`; the
-  engine uses it and Boot's bean of that type still exists. A plain `@Bean`
-  of that name also replaces it, but then Boot's bean of that type backs off
-  and your unqualified injection points get yours.
+  engine uses it and Boot's three Kafka beans still exist.
+  - For `maestroKafkaProducerFactory`, `defaultCandidate = false` is
+    **required**. A plain `@Bean` of that name makes Boot's
+    `kafkaProducerFactory` back off while Boot's `kafkaTemplate` still
+    registers, and startup fails with
+    `NoSuchBeanDefinitionException: No qualifying bean of type 'org.springframework.kafka.core.ProducerFactory<java.lang.Object, java.lang.Object>'`.
+  - For `maestroKafkaTemplate` and `maestroKafkaConsumerFactory` it is
+    recommended. A plain `@Bean` of that name also replaces the engine's, but
+    Boot's `kafkaTemplate` (respectively `kafkaConsumerFactory`) then backs
+    off and your unqualified injection points of that type get yours.
+
+  Each combination is pinned by
+  `KafkaCoexistenceContextTest.replacingAnEngineBeanByName_matrix`.
 - **`spring.kafka.producer.*` now configures two producer factories**, Boot's
   and the engine's (which then forces its invariants above). Each creates its
   Kafka producer on first send, so Boot's opens no connection unless you send

@@ -138,7 +138,8 @@ public class KafkaMessagingAutoConfiguration {
      *
      * <p>Not a default candidate: inject with
      * {@code @Qualifier(MaestroKafkaBeans.PRODUCER_FACTORY)}; replace by
-     * declaring a bean of this name.
+     * declaring a bean of this name with {@code defaultCandidate = false}
+     * (required for this bean; see {@link MaestroKafkaBeans}).
      *
      * @param kafkaProperties   Boot's bound {@code spring.kafka.*}
      * @param connectionDetails overrides the bootstrap servers when present
@@ -175,7 +176,8 @@ public class KafkaMessagingAutoConfiguration {
      *
      * <p>Not a default candidate: inject with
      * {@code @Qualifier(MaestroKafkaBeans.TEMPLATE)}; replace by declaring a
-     * bean of this name.
+     * bean of this name, preferably with {@code defaultCandidate = false}
+     * (see {@link MaestroKafkaBeans}).
      *
      * @param maestroKafkaProducerFactory the engine's producer factory
      * @param tracePropagation            present when tracing is wired; turns observation on by default
@@ -224,7 +226,8 @@ public class KafkaMessagingAutoConfiguration {
      *
      * <p>Not a default candidate: inject with
      * {@code @Qualifier(MaestroKafkaBeans.CONSUMER_FACTORY)}; replace by
-     * declaring a bean of this name.
+     * declaring a bean of this name, preferably with
+     * {@code defaultCandidate = false} (see {@link MaestroKafkaBeans}).
      *
      * @param kafkaProperties   Boot's bound {@code spring.kafka.*}
      * @param connectionDetails overrides the bootstrap servers when present
