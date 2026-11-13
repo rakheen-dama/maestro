@@ -69,6 +69,12 @@
 #                   timer row), 2 per parked sleep (status, timer row), every
 #                   wakeRecheckSecs
 #   lock renewal    ceil(H / 500) UPDATE ... unnest per node every lockTtl / 3
+#                   (the renewer sleeps, then renews: the effective period is
+#                   lockTtl / 3 + the pass's own duration, ceil(H / 500) x the
+#                   statement's mean time from pg_stat_statements; passes are
+#                   counted at that period. Full run r20261113t034332z: 34-37
+#                   ms per 500-lock UPDATE, 10.37 s at H = 5000, 10.69 s at
+#                   10000, so 29 and 28 passes per 300 s, not 30)
 #   recovery pages  floor(A / 200) + 1 page reads per node every recoveryPollSecs
 #   heldKeys        at most 1 per non-empty page (<= ceil(A / 200)) per pass
 #   lock acquires   0 (no orphans while every node is healthy)
@@ -196,11 +202,24 @@ $identity[0] as $id
            documentedPer: $readsPerRecheck,
            documentedCalls: (if ($nRecheck | isnum) then $readsPerRecheck * $P * $nRecheck | round2 else null end),
            matches: (if ($recheckPer | isnum) then (($recheckPer - $readsPerRecheck) | fabs) <= recheck_match_fraction * $readsPerRecheck else null end)}),
-         (row("lockRenewal"; $k.renew + $k.renewOne; $nRenew; $renewDocPerPass;
-              "statements per renewal pass (all \($replicas) node(s); every \($renewSecs) s)"; 1)
-          + {perLockPerMin: (if $w.windowSecs > 0 then ($k.renew + $k.renewOne) / $P / ($w.windowSecs / 60) | round4 else null end),
+         # The renewer sleeps lockTtl / 3 and THEN renews (traced:
+         # WorkflowInstanceLockManager.renewLoop), so a pass's own duration
+         # lengthens the period: effective period = renewSecs + ceil(H / 500)
+         # x the statement's mean execution time (pg_stat_statements
+         # totalMs / calls). The match is judged at that effective period;
+         # the nominal per-pass figure is kept beside it.
+         ((($c.lockRenewAll.totalMs // null) as $ms
+           | if ($ms | isnum) and $k.renew > 0 then $ms / $k.renew else null end) as $stmtMs
+          | (if ($stmtMs | isnum) and ($renewSecs | isnum) then $renewSecs + ceil_div($H; renew_chunk) * $stmtMs / 1000 else null end) as $effPeriod
+          | (if ($effPeriod | isnum) then $w.windowSecs / $effPeriod else $nRenew end) as $effPasses
+          | row("lockRenewal"; $k.renew + $k.renewOne; $effPasses; $renewDocPerPass;
+                "statements per renewal pass (all \($replicas) node(s); every \($renewSecs) s + the pass's own duration)"; 1)
+          + {perNominalPass: (if ($nRenew | isnum) and $nRenew > 0 then ($k.renew + $k.renewOne) / $nRenew | round4 else null end),
+             statementMeanMs: ($stmtMs | if isnum then round4 else . end),
+             effectivePeriodSecs: ($effPeriod | if isnum then round4 else . end),
+             perLockPerMin: (if $w.windowSecs > 0 then ($k.renew + $k.renewOne) / $P / ($w.windowSecs / 60) | round4 else null end),
              singleRenewCalls: $k.renewOne,
-             note: "documented ceil(H / \(renew_chunk)) per node per pass, H = \($H) locks per node: NOT linear per run (one statement covers up to \(renew_chunk) locks)"}),
+             note: "documented ceil(H / \(renew_chunk)) per node per pass, H = \($H) locks per node: NOT linear per run (one statement covers up to \(renew_chunk) locks); passes counted at the effective period (renewSecs + the pass's measured duration)"}),
          (row("recoveryPages"; $k.page; (if ($nRecovery | isnum) then $nRecovery * $replicas else null end); $pagesDocPerPass;
               "page reads per recovery pass per node (every \($recoverySecs) s)"; 1)
           + {note: "documented floor(A / \(recovery_page_size)) + 1 per pass, A = \($A) active rows of the service; every node scans all of them"}),

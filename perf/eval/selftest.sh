@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Evaluator self-test:
 #   perf/eval/selftest.sh <a PASSING smoke result dir> [<a PASSING s1-throughput result dir>]
-#                         [<a PASSING s3-parked result dir>]
+#                         [<a PASSING local 1-replica s3-parked result dir>]
 # With the second argument it also runs the Scenario 1 cases (ceiling and
 # "sustains", the WP11 meters degrading to "not available", the statement
 # gate's baseline matching, warm-up size, levels, correctness); with the
@@ -662,6 +662,12 @@ fi
 # ── Scenario 3 (s3-parked) ──────────────────────────────────────────────────
 if [[ -n "$s3src" ]]; then
   [[ "$(jq -r .scenario "${s3src}/identity.json")" == s3-parked ]] || { echo "selftest: ${s3src} is not an s3-parked run"; exit 1; }
+  # The cases are written for a PASSING local run at one replica in signal
+  # mode whose plateau windows hold nothing but the parked population (other
+  # = 0): profile, replica count, slot limit and per-node arithmetic are
+  # assumed by several of them.
+  [[ "$(jq -r '"\(.profile) \(.config.replicas)"' "${s3src}/identity.json")" == "local 1" ]] \
+    || { echo "selftest: ${s3src} is not a local, 1-replica s3-parked run"; exit 1; }
   # s3_eval <case> <measurements filter> [<identity filter>] [<baseline json>]
   s3_eval() {
     local dir="${work}/$1" base=""
@@ -823,6 +829,14 @@ if [[ -n "$s3src" ]]; then
   expect "s3: heldKeys reads at 1 replica: advisory.decomposition" WARN "$(s3st "$out" advisory.decomposition)"
   out=$(s3_eval s3-dec-renew "${last_plateau} as \$i | .windows[\$i].components.lockRenewAll.calls *= 500")
   expect "s3: one renewal statement per lock (pre-renewAll behaviour): advisory.decomposition" WARN "$(s3st "$out" advisory.decomposition)"
+  # Renewal is judged at its effective period (lockTtl / 3 + the pass's own
+  # duration, from the statement's mean time): 40 calls at 500 ms each is
+  # exactly 4 statements per pass over the 12 s periods a 120 s window holds;
+  # the same 40 calls without a duration are 4 short of every nominal pass.
+  out=$(s3_eval s3-dec-renew-slow "${last_plateau} as \$i | .windows[\$i].components.lockRenewAll = {calls: (.windows[\$i].P / 500 * 10), totalMs: (.windows[\$i].P / 500 * 10 * 500), entries: 1}")
+  expect "s3: renewal passes stretched by a 500 ms statement, calls as the effective period predicts: advisory.decomposition" PASS "$(s3st "$out" advisory.decomposition)"
+  out=$(s3_eval s3-dec-renew-short "${last_plateau} as \$i | .windows[\$i].components.lockRenewAll = {calls: (.windows[\$i].P / 500 * 10), totalMs: 0, entries: 1}")
+  expect "s3: the same renewal calls with no pass duration to explain them: advisory.decomposition" WARN "$(s3st "$out" advisory.decomposition)"
   out=$(s3_eval s3-dec-old-engine '.windows |= map(del(.components))')
   expect "s3: no component attribution (older harness record): advisory.decomposition" WARN "$(s3st "$out" advisory.decomposition)"
   expect "s3: no component attribution: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"

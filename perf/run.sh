@@ -7,6 +7,7 @@
 # Env:  PERF_ADMIN_EVENTS (true|false, default true)  PERF_KEEP_UP=1 (skip the
 #       final down -v)  PERF_ENGINE_REF (free-text label)  PERF_NODE_HEAP /
 #       PERF_NODE_CPUS / PERF_NODE_MEM (node container sizing)
+#       PERF_PARK_MODE (s3-parked: signal | sleep, default signal)
 #       Test-only overrides: PERF_EXPECT_COMMIT, PERF_K6_VUS, PERF_K6_MAX_VUS,
 #       PERF_WARMUP_TIMEOUT / PERF_WARMUP_ACTIVITY_MILLIS (force an unfinished
 #       warm-up: validity.warmup INVALID). The run lock's
