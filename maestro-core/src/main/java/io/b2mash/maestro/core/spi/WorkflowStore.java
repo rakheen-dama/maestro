@@ -874,6 +874,27 @@ public interface WorkflowStore {
     }
 
     /**
+     * Returns the store's current time, by its own clock — the clock
+     * {@link #getDueTimers(int)} compares with. Used only by the engine's
+     * clock-skew check, which every node's timer poller runs at start and then
+     * every ten minutes and which logs a {@code WARN} when this node's clock
+     * differs from the store's by more than a second (finding 3.7).
+     *
+     * <p>The default, {@link Optional#empty()}, means the store has no clock
+     * of its own; no check runs then. The Postgres store returns
+     * {@code SELECT now()}. A decorating store should forward it to its
+     * delegate; one that does not only silences the check.
+     *
+     * @return the store's current time, or empty if it has no clock
+     * @throws io.b2mash.maestro.core.exception.StoreUnavailableException if the
+     *         store cannot be reached — like any other read, it may throw what
+     *         a read throws
+     */
+    default Optional<Instant> storeTime() {
+        return Optional.empty();
+    }
+
+    /**
      * Looks up a workflow's timer by its logical timer ID, whatever its status.
      *
      * <p>This is the only way to read a timer that is no longer <em>due</em>.

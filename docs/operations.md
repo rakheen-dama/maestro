@@ -112,7 +112,9 @@ workflows; only one is the elected `TimerPoller` leader
 (`maestro:leader:timer-poller:{service}`, 15s TTL). The elected leader is
 `kill -9`'d while a workflow *not owned by the leader* is mid-sleep on the
 surviving node. The durable timer must still fire and the workflow must
-progress, bounded by leader-TTL + poll-interval + wake-recheck.
+progress, bounded by leader-TTL + poll-interval + wake-recheck. The leader's
+own clock does not decide when a timer fires: due timers are compared with the
+database clock (§13 has the skew check).
 
 | Lock backend | Observed failover latency | Bound |
 |---|---|---|
@@ -1172,6 +1174,7 @@ P = workflows parked on this node):
 | Recovery pass — lock reads | at most 1 `heldKeys` read of `maestro_distributed_lock` per non-empty page, ≤ ⌈A / 200⌉ | same pass |
 | Recovery pass — lock acquisitions | 1 `tryAcquire` per instance that is neither running on this node nor reported held by another (normally only orphans: a parked workflow's run keeps its lock) | same pass |
 | Parked-workflow wake re-check | 2 reads per parked `sleep()` (instance status, timer row), 3 per parked `awaitSignal()` (status, signals, deadline row): 2P–3P reads | `maestro.signal.wake-recheck-interval` = **30 s** (unchanged by this cycle) |
+| Clock-skew check | 1 `SELECT now()` | at timer-poller start, then every **10 min** |
 
 Worked example (arithmetic): a node holding 2,000 parked workflows of a
 service with 10,000 active instances spread over five nodes renews them with

@@ -621,6 +621,8 @@ delay between a timer becoming due and the workflow resuming.
 
 Due timers are compared with the store's clock: on Postgres the poller selects `PENDING` rows with `fire_at <= now()`, so the poller leader's own clock no longer moves when a timer fires. A timer's `fire_at`, and an `awaitSignal` deadline, are still computed from the clock of the node that schedules them, so a node whose clock is off arms its deadlines off by the same amount (see the clock-skew `WARN` below). A store without a clock of its own (the in-memory test store, a custom store) is polled with the poller's clock, as before.
 
+Each node compares its clock with the database's when its timer poller starts and every 10 minutes (one `SELECT now()`), and logs a `WARN` from `ClockSkewCheck` when they differ by more than 1 s, naming the direction and how early or late its deadlines fire. A store without a clock of its own is not checked.
+
 ---
 
 ## Recovery Configuration

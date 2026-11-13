@@ -108,6 +108,35 @@ class PostgresDatabaseClockTest extends PostgresTestSupport {
         }
     }
 
+    @Test
+    void storeTimeIsReadFromTheDatabase() throws Exception {
+        var a = store.storeTime().orElseThrow();
+        var b = selectNow();
+        assertFalse(b.isBefore(a), a + " then " + b);
+        assertTrue(Duration.between(a, b).compareTo(Duration.ofSeconds(5)) < 0, a + " then " + b);
+    }
+
+    /**
+     * {@code storeTime()} is the database's clock, not this JVM's: inside a
+     * transaction opened earlier it reads that transaction's {@code now()}.
+     */
+    @Test
+    void storeTimeIsTheDatabaseClockEvenWhenItLagsThisJvm() throws Exception {
+        try (var lagging = dataSource.getConnection()) {
+            lagging.setAutoCommit(false);
+            var transactionNow = selectNow(lagging);
+            while (Instant.now().isBefore(transactionNow.plusMillis(1500))) {
+                Thread.sleep(50);
+            }
+            try {
+                assertEquals(transactionNow,
+                        new PostgresWorkflowStore(onlyConnection(lagging), objectMapper).storeTime().orElseThrow());
+            } finally {
+                lagging.rollback();
+            }
+        }
+    }
+
     // ── Mixed-version fleets ───────────────────────────────────────────
 
     /**

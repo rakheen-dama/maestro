@@ -2,6 +2,8 @@ package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.model.TimerStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.spi.DistributedLock;
+import io.b2mash.maestro.core.spi.LockHandle;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
@@ -9,8 +11,10 @@ import tools.jackson.databind.json.JsonMapper;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -65,6 +69,29 @@ class TimerPollerDatabaseClockTest {
         assertFalse(store.polls.contains("caller-clock"), store.polls.toString());
     }
 
+    /**
+     * Finding 3.7, the skew WARN: every node arms deadlines, so every node's
+     * poller checks its clock against the store's — leader or not — once at
+     * start and then only every {@link ClockSkewCheck#INTERVAL}.
+     */
+    @Test
+    void everyNodesPollerReadsTheStoreClockOnStartEvenWhenItIsNotTheLeader() throws Exception {
+        var store = new ClockRecordingStore();
+        executor = WorkflowExecutor.builder(store, serializer, "svc").build();
+        poller = new TimerPoller(store, executor, new NeverLeaderLock(), "svc", Duration.ofMillis(50), 10);
+        var started = System.nanoTime();
+        poller.start();
+        var deadline = started + Duration.ofSeconds(2).toNanos();
+        var atLeast = started + Duration.ofSeconds(1).toNanos();
+        while (System.nanoTime() < deadline
+                && (store.clockReads.get() == 0 || System.nanoTime() < atLeast)) {
+            Thread.sleep(10);
+        }
+        poller.stop();
+
+        assertEquals(1, store.clockReads.get(), "one check at start, the next only after ClockSkewCheck.INTERVAL");
+    }
+
     @Test
     void aStoreWithoutAClockIsPolledOnTheCallersClock() {
         var store = new VersionedInMemoryStore();
@@ -83,9 +110,39 @@ class TimerPollerDatabaseClockTest {
         }
     }
 
-    /** Records which due-timer method the poller called. */
+    /** A lock under which this node never wins the timer-poller election. */
+    static final class NeverLeaderLock implements DistributedLock {
+        @Override
+        public Optional<LockHandle> tryAcquire(String key, Duration ttl) {
+            throw new UnsupportedOperationException("tryAcquire");
+        }
+
+        @Override
+        public void release(LockHandle handle) {
+            throw new UnsupportedOperationException("release");
+        }
+
+        @Override
+        public boolean renew(LockHandle handle, Duration ttl) {
+            throw new UnsupportedOperationException("renew");
+        }
+
+        @Override
+        public boolean trySetLeader(String electionKey, String candidateId, Duration ttl) {
+            return false;
+        }
+    }
+
+    /** Records which due-timer method the poller called, and its store-clock reads. */
     static final class ClockRecordingStore extends VersionedInMemoryStore {
         final List<String> polls = new CopyOnWriteArrayList<>();
+        final AtomicInteger clockReads = new AtomicInteger();
+
+        @Override
+        public Optional<Instant> storeTime() {
+            clockReads.incrementAndGet();
+            return Optional.of(Instant.now());
+        }
 
         @Override
         public List<WorkflowTimer> getDueTimers(Instant now, int batchSize) {

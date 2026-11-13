@@ -22,7 +22,8 @@ import java.sql.Types;
  *       the retention purge's candidate rows.</li>
  *   <li>Due timers compared with the database clock: {@link #getDueTimers(int)}
  *       selects {@code fire_at <= now()}, so the timer-poller leader's own
- *       clock does not decide when a timer fires.</li>
+ *       clock does not decide when a timer fires; {@link #storeTime()} reads
+ *       {@code SELECT now()} for every node's clock-skew check.</li>
  *   <li>{@code INSERT ... RETURNING payload} for
  *       {@link #appendEventReturningPayload}, so a live result is the
  *       {@code jsonb} form a replay reads.</li>
@@ -97,6 +98,15 @@ public final class PostgresWorkflowStore extends AbstractJdbcWorkflowStore {
                 + " ORDER BY fire_at ASC"
                 + " LIMIT ?"
                 + " FOR UPDATE SKIP LOCKED";
+    }
+
+    /**
+     * Returns {@code SELECT now()}: the clock {@link #getDueTimersByStoreClockSql()}
+     * compares with, for the clock-skew check.
+     */
+    @Override
+    protected String storeTimeSql() {
+        return "SELECT now()";
     }
 
     /**

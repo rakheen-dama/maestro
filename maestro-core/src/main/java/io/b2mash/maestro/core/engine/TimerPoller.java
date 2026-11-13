@@ -34,7 +34,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * does not decide when a timer fires. On a store without a clock of its own
  * (the in-memory test store, a custom store) it is this JVM's clock, as
  * before. A timer's {@code fireAt} itself is still armed by the node that
- * schedules it, on that node's clock.
+ * schedules it, on that node's clock; so every node, leader or not, runs a
+ * {@link ClockSkewCheck} at the top of each loop iteration (at start, then
+ * every {@link ClockSkewCheck#INTERVAL}) and logs a {@code WARN} when its clock
+ * is more than {@link ClockSkewCheck#WARN_ABOVE} off the store's.
  *
  * <h2>Idempotency</h2>
  * <p>Duplicate timer fires are handled safely:
@@ -67,6 +70,7 @@ final class TimerPoller {
     private final Duration pollInterval;
     private final int batchSize;
     private final String candidateId;
+    private final ClockSkewCheck skewCheck;
     private final AtomicBoolean started = new AtomicBoolean(false);
 
     private volatile boolean running;
@@ -109,6 +113,7 @@ final class TimerPoller {
         this.pollInterval = pollInterval;
         this.batchSize = batchSize;
         this.candidateId = UUID.randomUUID().toString();
+        this.skewCheck = new ClockSkewCheck(store);
     }
 
     /**
@@ -165,6 +170,10 @@ final class TimerPoller {
         logger.debug("Timer poller loop started on thread '{}'", Thread.currentThread().getName());
         while (running) {
             try {
+                // Every node, leader or not: every node arms deadlines (3.7).
+                // Never throws a RuntimeException; at most one store read per
+                // ClockSkewCheck.INTERVAL.
+                skewCheck.maybeCheck();
                 if (isLeader()) {
                     var fired = pollDueTimers();
                     if (fired > 0) {

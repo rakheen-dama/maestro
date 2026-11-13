@@ -1,5 +1,6 @@
 package io.b2mash.maestro.store.jdbc;
 
+import io.b2mash.maestro.core.exception.StoreUnavailableException;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
@@ -9,12 +10,17 @@ import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -48,15 +54,52 @@ class JdbcStoreClockTest {
         assertEquals(7, db.parameters.get(1));
     }
 
+    @Test
+    void storeTimeRunsTheHook() {
+        var fixed = Instant.parse("2026-11-13T10:00:00.123456Z");
+        var db = new ScriptedDb().row(OffsetDateTime.ofInstant(fixed, ZoneOffset.ofHours(2)));
+        var store = new Store(db.dataSource(), null, "STORE NOW");
+        assertEquals(Optional.of(fixed), store.storeTime());
+        assertEquals(List.of("STORE NOW"), db.sql);
+        assertEquals(List.of(), db.parameters);
+    }
+
+    @Test
+    void withoutTheHookStoreTimeIsEmptyAndRunsNoSql() {
+        var db = new ScriptedDb();
+        var store = new Store(db.dataSource(), null, null);
+        assertEquals(Optional.empty(), store.storeTime());
+        assertEquals(List.of(), db.sql);
+    }
+
+    @Test
+    void aStoreTimeSqlErrorIsTranslatedAsEveryReadIs() {
+        var db = new ScriptedDb().failing("08006");
+        var store = new Store(db.dataSource(), null, "STORE NOW");
+        var fault = assertThrows(StoreUnavailableException.class, store::storeTime);
+        assertEquals("08006", ((SQLException) fault.getCause()).getSQLState());
+    }
+
     // ── fixtures ──────────────────────────────────────────────────────────
 
     /** The abstract store with the store-clock hook set as given. */
     private static final class Store extends AbstractJdbcWorkflowStore {
         private final @Nullable String storeClockSql;
+        private final @Nullable String storeTimeSql;
 
         Store(DataSource dataSource, @Nullable String storeClockSql) {
+            this(dataSource, storeClockSql, null);
+        }
+
+        Store(DataSource dataSource, @Nullable String storeClockSql, @Nullable String storeTimeSql) {
             super(dataSource, JdbcStoreConfiguration.withDefaults(JsonMapper.builder().build()));
             this.storeClockSql = storeClockSql;
+            this.storeTimeSql = storeTimeSql;
+        }
+
+        @Override
+        protected @Nullable String storeTimeSql() {
+            return storeTimeSql;
         }
 
         @Override
@@ -72,12 +115,26 @@ class JdbcStoreClockTest {
 
     /**
      * A database that records each prepared statement's SQL and the values
-     * bound to it (in parameter order), and answers every query with no rows.
-     * Copied from {@code JdbcAppendEventReturningPayloadTest}'s, not shared.
+     * bound to it (in parameter order), and answers every query with no rows
+     * — or with one row whose every {@code getObject} is {@link #row}, or with
+     * a scripted SQL failure. Copied from
+     * {@code JdbcAppendEventReturningPayloadTest}'s, not shared.
      */
     private static final class ScriptedDb {
         final List<String> sql = new ArrayList<>();
         final List<Object> parameters = new ArrayList<>();
+        private @Nullable Object row;
+        private @Nullable String failState;
+
+        ScriptedDb row(Object value) {
+            this.row = value;
+            return this;
+        }
+
+        ScriptedDb failing(String sqlState) {
+            this.failState = sqlState;
+            return this;
+        }
 
         DataSource dataSource() {
             return (DataSource) Proxy.newProxyInstance(DataSource.class.getClassLoader(),
@@ -104,6 +161,9 @@ class JdbcStoreClockTest {
                     new Class<?>[]{PreparedStatement.class}, (p, m, a) -> {
                         switch (m.getName()) {
                             case "executeQuery" -> {
+                                if (failState != null) {
+                                    throw new SQLException("scripted failure", failState);
+                                }
                                 return resultSet();
                             }
                             case "close" -> {
@@ -121,9 +181,11 @@ class JdbcStoreClockTest {
         }
 
         private ResultSet resultSet() {
+            var remaining = new int[]{row != null ? 1 : 0};
             return (ResultSet) Proxy.newProxyInstance(ResultSet.class.getClassLoader(),
                     new Class<?>[]{ResultSet.class}, (p, m, a) -> switch (m.getName()) {
-                        case "next" -> false;
+                        case "next" -> remaining[0]-- > 0;
+                        case "getObject" -> row;
                         case "close" -> null;
                         default -> throw new UnsupportedOperationException(m.getName());
                     });
