@@ -122,7 +122,8 @@ public final class TestWorkflowEnvironment {
     private static final Logger logger = LoggerFactory.getLogger(TestWorkflowEnvironment.class);
     private static final String SERVICE_NAME = "maestro-test";
 
-    // The activity-proxy lock prefix must equal the executor's; everything else is the engine's default (WorkflowExecutor.Builder).
+    // The instance-lock key prefix (activity proxies take no lock since 3.10; `createProxy` still takes the
+    // argument, Issue N1); everything else is the engine's default (WorkflowExecutor.Builder).
     private static final String LOCK_KEY_PREFIX = "maestro:lock:";
 
     private final ControllableClock clock;

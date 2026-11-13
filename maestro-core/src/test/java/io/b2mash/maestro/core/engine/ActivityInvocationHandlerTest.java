@@ -432,7 +432,6 @@ class ActivityInvocationHandlerTest {
             assertEquals("append collision at sequence 1", thrown.detail());
         });
         assertEquals(1, calls.get(), "the second activity must not execute — the winner runs that side effect");
-        assertEquals(1, lock.acquiredKeys.size(), "no activity lock for the stood-down call");
         assertEquals(1, messaging.publishedEvents.stream()
                         .filter(e -> e.eventType() == LifecycleEventType.ACTIVITY_STARTED).count(),
                 "no ACTIVITY_STARTED for the stood-down call");
@@ -441,69 +440,12 @@ class ActivityInvocationHandlerTest {
         assertTrue(store.appendedEvents.isEmpty(), "the stale run persisted nothing");
     }
 
-    // ── Lock behavior tests ───────────────────────────────────────────
-
     @Test
-    @DisplayName("Lock: proceeds without lock when lock acquisition fails")
-    void lockAcquisitionFailure() {
-        lock.failAcquisition = true;
-        withContext(() -> {
-            var proxy = createProxy(GreetingActivities.class, new GreetingActivitiesImpl());
-
-            // Should still succeed — lock is optimization, not correctness
-            var result = proxy.greet("World");
-            assertEquals("Hello, World!", result.message());
-        });
-    }
-
-    @Test
-    @DisplayName("Lock: proceeds when lock backend throws exception")
-    void lockBackendError() {
-        lock.throwOnAcquire = true;
-        withContext(() -> {
-            var proxy = createProxy(GreetingActivities.class, new GreetingActivitiesImpl());
-
-            var result = proxy.greet("World");
-            assertEquals("Hello, World!", result.message());
-        });
-    }
-
-    @Test
-    @DisplayName("Lock: acquires and releases lock on success")
-    void lockLifecycle() {
-        withContext(() -> {
-            var proxy = createProxy(GreetingActivities.class, new GreetingActivitiesImpl());
-            proxy.greet("World");
-
-            assertEquals(1, lock.acquiredKeys.size());
-            assertTrue(lock.acquiredKeys.getFirst().contains("maestro:lock:activity:" + WORKFLOW_ID));
-            assertEquals(1, lock.releasedCount);
-        });
-    }
-
-    @Test
-    @DisplayName("Lock: releases lock even when activity fails")
-    void lockReleasedOnFailure() {
-        withContext(() -> {
-            var proxy = createProxy(GreetingActivities.class, new FailingActivities());
-
-            assertThrows(ActivityExecutionException.class, () -> proxy.greet("World"));
-            assertEquals(1, lock.releasedCount);
-        });
-    }
-
-    @Test
-    @DisplayName("Lock: honours a custom lock key prefix (maestro.lock.key-prefix)")
-    void lockHonoursCustomKeyPrefix() {
-        withContext(() -> {
-            var proxy = createProxyWithLockPrefix(
-                    GreetingActivities.class, new GreetingActivitiesImpl(), "custom:prefix:");
-            proxy.greet("World");
-
-            assertEquals(1, lock.acquiredKeys.size());
-            assertEquals("custom:prefix:activity:" + WORKFLOW_ID + ":1", lock.acquiredKeys.getFirst(),
-                    "the activity lock key must honour the configured prefix exactly like the instance lock");
-        });
+    @DisplayName("A live activity takes no lock (3.10)")
+    void liveActivityTakesNoLock() {
+        withContext(() -> createProxy(GreetingActivities.class, new GreetingActivitiesImpl()).greet("World"));
+        assertEquals(List.of(), lock.acquiredKeys, "a live activity takes no lock (3.10)");
+        assertEquals(0, lock.releasedCount);
     }
 
     // ── Messaging behavior tests ──────────────────────────────────────
@@ -808,14 +750,6 @@ class ActivityInvocationHandlerTest {
                 iface, impl, store, lock, null,
                 RetryPolicy.noRetry(), Duration.ofSeconds(30),
                 serializer, retryExecutor
-        );
-    }
-
-    private <T> T createProxyWithLockPrefix(Class<T> iface, T impl, String lockKeyPrefix) {
-        return factory.createProxy(
-                iface, impl, store, lock, messaging,
-                RetryPolicy.noRetry(), Duration.ofSeconds(30),
-                serializer, retryExecutor, lockKeyPrefix
         );
     }
 

@@ -64,7 +64,7 @@ import java.util.concurrent.locks.ReentrantLock;
  *
  * <h2>Activity slots</h2>
  * <p>An activity slot is held only around a <em>live</em> execution — from the
- * activity's dedup lock, through every retry attempt and backoff, to its
+ * activity's start, through every retry attempt and backoff, to its
  * persisted outcome. A replayed (memoized) step executes nothing and never
  * takes one.
  *

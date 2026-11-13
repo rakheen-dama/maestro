@@ -45,19 +45,17 @@ import java.util.List;
 public final class ActivityProxyFactory {
 
     /**
-     * Creates a memoizing proxy for the given activity interface, using the
-     * default activity lock key prefix ({@code maestro:lock:}) — the same
-     * default the instance lock uses.
+     * Creates a memoizing proxy for the given activity interface.
      *
      * @param <T>                 the activity interface type
      * @param activityInterface   the activity interface class (must be an interface)
      * @param activityImpl        the real implementation to delegate live calls to
      * @param store               the workflow store for memoization
-     * @param distributedLock     optional distributed lock for dedup optimization
+     * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
+     *                            so existing callers compile until {@code Issue N1}
      * @param messaging           optional messaging for lifecycle events
      * @param retryPolicy         retry policy for failed invocations
-     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
-     *                            base of the per-activity lock TTL
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live invocations
      * @return a proxy instance that implements {@code activityInterface}
@@ -80,24 +78,22 @@ public final class ActivityProxyFactory {
     }
 
     /**
-     * Creates a memoizing proxy for the given activity interface, with an
-     * explicit activity lock key prefix.
+     * Creates a memoizing proxy for the given activity interface that takes a
+     * (now ignored) lock key prefix.
      *
      * @param <T>                 the activity interface type
      * @param activityInterface   the activity interface class (must be an interface)
      * @param activityImpl        the real implementation to delegate live calls to
      * @param store               the workflow store for memoization
-     * @param distributedLock     optional distributed lock for dedup optimization
+     * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
+     *                            so existing callers compile until {@code Issue N1}
      * @param messaging           optional messaging for lifecycle events
      * @param retryPolicy         retry policy for failed invocations
-     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
-     *                            base of the per-activity lock TTL
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live invocations
-     * @param lockKeyPrefix       prefix for the per-activity distributed lock key
-     *                            (e.g. {@code maestro:lock:}) — the same prefix
-     *                            configured for the instance lock via
-     *                            {@code maestro.lock.key-prefix}
+     * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
+     *                            so existing callers compile until {@code Issue N1}
      * @return a proxy instance that implements {@code activityInterface}
      * @throws IllegalArgumentException if {@code activityInterface} is not an interface
      */
@@ -120,21 +116,21 @@ public final class ActivityProxyFactory {
 
     /**
      * Creates a memoizing proxy for the given activity interface, with an
-     * explicit activity lock key prefix and an {@link EngineObserver}.
+     * {@link EngineObserver}.
      *
      * @param <T>                 the activity interface type
      * @param activityInterface   the activity interface class (must be an interface)
      * @param activityImpl        the real implementation to delegate live calls to
      * @param store               the workflow store for memoization
-     * @param distributedLock     optional distributed lock for dedup optimization
+     * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
+     *                            so existing callers compile until {@code Issue N1}
      * @param messaging           optional messaging for lifecycle events
      * @param retryPolicy         retry policy for failed invocations
-     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
-     *                            base of the per-activity lock TTL
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live invocations
-     * @param lockKeyPrefix       prefix for the per-activity distributed lock key
-     *                            (e.g. {@code maestro:lock:})
+     * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
+     *                            so existing callers compile until {@code Issue N1}
      * @param observer            engine observation seam handed to the created
      *                            handler — see
      *                            {@link EngineObserver} for the callback contract;
@@ -162,22 +158,22 @@ public final class ActivityProxyFactory {
 
     /**
      * Creates a memoizing proxy for the given activity interface, with an
-     * explicit activity lock key prefix, an {@link EngineObserver} and the
+     * {@link EngineObserver} and the
      * {@link TaskQueueGovernor} that bounds live executions per task queue.
      *
      * @param <T>                 the activity interface type
      * @param activityInterface   the activity interface class (must be an interface)
      * @param activityImpl        the real implementation to delegate live calls to
      * @param store               the workflow store for memoization
-     * @param distributedLock     optional distributed lock for dedup optimization
+     * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
+     *                            so existing callers compile until {@code Issue N1}
      * @param messaging           optional messaging for lifecycle events
      * @param retryPolicy         retry policy for failed invocations
-     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
-     *                            base of the per-activity lock TTL
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live invocations
-     * @param lockKeyPrefix       prefix for the per-activity distributed lock key
-     *                            (e.g. {@code maestro:lock:})
+     * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
+     *                            so existing callers compile until {@code Issue N1}
      * @param observer            engine observation seam handed to the created
      *                            handler; never {@code null} (pass {@link EngineObserver#NOOP})
      * @param governor            bounds live executions per task queue
@@ -224,13 +220,14 @@ public final class ActivityProxyFactory {
      * @param activityInterface   the activity interface class (must be an interface)
      * @param activityImpl        the real implementation to delegate live calls to
      * @param store               the workflow store for memoization
-     * @param distributedLock     optional distributed lock for dedup optimization
+     * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
+     *                            so existing callers compile until {@code Issue N1}
      * @param retryPolicy         retry policy for failed invocations
-     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
-     *                            base of the per-activity lock TTL
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live invocations
-     * @param lockKeyPrefix       prefix for the per-activity distributed lock key
+     * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
+     *                            so existing callers compile until {@code Issue N1}
      * @param observer            engine observation seam; never {@code null}
      * @param governor            bounds live executions per task queue; pass
      *                            {@link TaskQueueGovernor#UNBOUNDED} for none
@@ -266,13 +263,14 @@ public final class ActivityProxyFactory {
      * @param activityInterface   the activity interface class (must be an interface)
      * @param activityImpl        the real implementation to delegate live calls to
      * @param store               the workflow store for memoization
-     * @param distributedLock     optional distributed lock for dedup optimization
+     * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
+     *                            so existing callers compile until {@code Issue N1}
      * @param retryPolicy         retry policy for failed invocations
-     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
-     *                            base of the per-activity lock TTL
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live invocations
-     * @param lockKeyPrefix       prefix for the per-activity distributed lock key
+     * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
+     *                            so existing callers compile until {@code Issue N1}
      * @param observer            engine observation seam; never {@code null}
      * @param governor            bounds live executions per task queue; pass
      *                            {@link TaskQueueGovernor#UNBOUNDED} for none
