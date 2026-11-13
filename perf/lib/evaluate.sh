@@ -2,8 +2,8 @@
 # Evaluates one run: perf/lib/evaluate.sh <resultsDir> <scenario> [baseline.json]
 #
 # Runs perf/eval/<scenario>.jq (which includes perf/eval/common.jq) over the
-# run's identity.json, measurements.json and the baseline (if the file
-# exists), writes result.json and summary.md into <resultsDir>, and prints
+# run's identity.json, measurements.json, prometheus.json (if present) and
+# the baseline (if the file exists), writes result.json and summary.md into <resultsDir>, and prints
 # the summary. The verdict is result.json's .verdict.
 set -Eeuo pipefail
 
@@ -17,6 +17,13 @@ if [[ -n "$baseline" && -f "$baseline" ]]; then
   args+=(--slurpfile baseline "$baseline")
 else
   args+=(--argjson baseline '[]')
+fi
+# The run's Prometheus range data (written by run.sh before evaluation), for
+# scenarios that use it (s1-throughput: the hold-window overhead basis).
+if [[ -s "${results}/prometheus.json" ]]; then
+  args+=(--slurpfile prometheus "${results}/prometheus.json")
+else
+  args+=(--argjson prometheus '[]')
 fi
 
 jq -n -L "${PERF_DIR}/eval" "${args[@]}" -f "${PERF_DIR}/eval/${scenario}.jq" >"${results}/result.json.tmp"

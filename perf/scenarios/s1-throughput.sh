@@ -34,30 +34,47 @@
 # contention, and for the statement gate's relative allowance and its
 # measured justification: four cold local runs that PASS the final
 # evaluator and are judged quiet, net statements per workflow 36.0028 /
-# 36.0032 / 36.0028 / 36.0030 (r20261112t210341z, r20261112t213818z,
-# r20261112t222511z, r20261112t223114z); allowance 0.02.
+# 36.0032 / 36.0028 / 36.0031 (r20261112t210341z and r20261112t213818z,
+# quiet on slot-hold time alone: no node CPU or host load was recorded for
+# them; r20261112t222511z and r20261112t223114z, quiet on every recorded
+# part); allowance 0.02.
 #
-# What this scenario measures. The ceiling is about 20 slots / the time a run
-# holds its workflow slot, and 250 ms of that hold is the sample's own
-# activity time (5 x 50 ms); measured on quiet runs the hold is 261-269 ms
-# with 19.0-19.8 of 20 slots busy, i.e. about 11-19 ms of engine overhead
-# per workflow, and the delivered ceiling is 70.6-73.1/s. Even with zero
-# overhead the slots cap it at 20 / 0.25 s = 80/s, so an engine change can
-# move this number only within roughly 72-80/s. It is good for: showing that the 20 workflow slots bind before the
-# Hikari pool of 10 does; pinning statements per workflow (the gate); and
-# measuring engine overhead per workflow (slot hold minus activity time,
-# ceiling.engineOverheadMsPerWorkflow). It is NOT a measure of engine
-# throughput headroom. Past the ceiling, throughput has been seen to fall
-# with slots pinned and hold time rising 9-13 % (full runs r20261112t211806z
-# and r20261112t214359z); the cause is NOT established (pool, node CPU and
-# host contention are all candidates) and needs a quiet host with node CPU
-# and GC recorded.
+# What this scenario measures. The ceiling = busy slots / (activity time +
+# engine overhead per workflow), and the activity time is the sample's own
+# 250 ms (5 x 50 ms). It is bounded ABOVE: 20 / 0.25 s = 80/s with zero
+# overhead. Engine overhead lowers it without limit: 13 ms -> 20 / 0.263 s
+# = 76/s; 13 + 100 ms -> 20 / 0.363 s = 55/s. Measured on the four valid
+# quiet runs over the ceiling level's hold window: all 20 slots busy in
+# every gauge sample (18.67-19.22 averaged over the whole level window,
+# ramp included), 72.5-75.0 completions/s, so a hold of 267-276 ms and an
+# engine overhead of 16.65 / 25.17 / 19.85 / 25.93 ms per workflow, each
+# +/- 1.4-3.9 ms within its run (ceiling.engineOverheadMsPerWorkflow,
+# .engineOverheadResolutionMs; +/- = 2 standard errors). Between runs on
+# this shared machine differences under about 10 ms are not meaningful, and
+# the delivered ceiling spread 70.6-73.1/s (2.5/s, about 9 ms of hold at
+# 72/s): so the scenario detects an engine-overhead REGRESSION of roughly
+# 10 ms per workflow or more here (less on a quiet dedicated host), and
+# cannot show an improvement beyond 80/s. It is good for: showing that the
+# 20 workflow slots bind before the Hikari pool of 10 does; pinning
+# statements per workflow (the gate); and measuring engine overhead per
+# workflow. It is NOT a measure of engine throughput headroom.
+# Past the ceiling, throughput was seen to fall 8-11 % at about 1.6 x the
+# ceiling's offered rate (73.7 -> 68.0/s and 70.1 -> 62.3/s at about 118
+# offered) with slots pinned and hold time up 9-13 % (269 -> 294 ms,
+# 285 -> 321 ms). That is an observation from ONE INVALID full-profile run
+# (r20261112t211806z, dropped iterations) and ONE contended one
+# (r20261112t214359z), to be reproduced on a quiet host; its cause is NOT
+# established (pool, node CPU and host contention are all candidates) and
+# needs node CPU and GC recorded.
 #
 # Recorded for contention (advisory.contention): node CPU per level from
 # Prometheus (process/system_cpu_usage, system_load_average_1m), the
 # containers' CPU from `docker stats` every ~7 s (k6, node, postgres; only
 # this compose project's containers, read-only) and the host's load average
-# at the scenario's start, at the load's start and after the drain.
+# at the scenario's start, at the load's start and after the drain. Blind
+# spots (see the jq header): uniform contention is caught only when it makes
+# the first level's p50 exceed 290 ms or the host load exceed 2 per CPU;
+# milder uniform contention reads quiet.
 #
 # Periodic sweeps: the load window of the full profile crosses the lock
 # cleaner's 10-minute marks; validity.sweeps (common.jq) accounts for them

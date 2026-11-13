@@ -37,23 +37,45 @@
 # completionsInHoldPerSec) and the ceiling also ceilingHoldPerSec.
 #
 # ── Slot-hold time, engine overhead, Little's law ─────────────────────────
-# slotHoldMs (per level, DERIVED) = average workflow slots in use (WP11
-# gauge, 5 s samples) / completionsInWindowPerSec: how long a run holds its
-# workflow slot. 250 ms of it is the sample's own activity time (5 x 50 ms
+# slotHoldMs (per level, DERIVED, coarse) = average workflow slots in use
+# (WP11 gauge, 5 s samples, whole level window) / completionsInWindowPerSec.
+# 250 ms of any hold is the sample's own activity time (5 x 50 ms
 # activityMillis); engineOverheadMs = slotHoldMs - activities x
-# activityMillis. Run-level engineOverheadMsPerWorkflow is taken at the
-# ceiling level, where the slots are nearly all busy and the gauge average is
-# least quantised. Measured on quiet runs: hold 261-269 ms with 19.0-19.8 of
-# 20 slots busy (engine overhead about 11-19 ms), so the slot bound is about
-# 20 / (0.25 s + 11-19 ms) = 74-77/s, and the delivered ceiling 70.6-73.1/s
-# (the slots are not quite all busy all the time).
-# This scenario therefore mostly measures the slot limit against the
-# sample's activity time: an engine change can move the ceiling only within
-# about 72-80/s (80 = 20 / 0.25 s, zero overhead). What it is good for: it
-# shows the 20 workflow slots bind before the pool of 10 does (pool pending 0
-# at the ceiling on a quiet host); it pins statements per workflow (the
-# gate); it measures engine overhead per workflow (hold minus activity time).
-# What it is NOT: a measure of engine throughput headroom.
+# activityMillis. These per-level figures are quantised (one gauge sample
+# moves them by ms) and the window includes the ramp, so the RUN-LEVEL
+# figure uses a robust basis instead:
+#   engineOverheadMsPerWorkflow = hold - activity time, hold = mean workflow
+#   slots in use / completion rate, both over the ceiling level's HOLD only:
+#   [t1, t2] = the first and last cumulative samples inside [ws + ramp, we];
+#   rate = completed(t2) - completed(t1) over t2 - t1; mean slots from the
+#   run's own prometheus.json series (5 s steps) inside [t1, t2]. At a
+#   saturated ceiling the slots are pinned at the limit (every gauge sample
+#   20 in all four quiet runs), so the gauge adds no noise.
+#   engineOverheadResolutionMs = 2 standard errors of the mean of the
+#   per-interval rates, in ms of hold (plus 1 / samples of a slot if the
+#   slots were not pinned): about 1.4-4 ms within a run on the quiet runs.
+#   Between quiet runs on this shared machine the figure spread more:
+#   16.65 / 25.17 / 19.85 / 25.93 ms (r20261112t210341z, r20261112t213818z,
+#   r20261112t222511z, r20261112t223114z), so differences under about 10 ms
+#   between runs are not meaningful here. Without prometheus.json the old
+#   whole-window figure is used and labelled so (resolution not stated).
+# The ceiling model: ceiling = busy slots / (activity time + overhead), at
+# most 20 / 0.25 s = 80/s (zero overhead): bounded ABOVE, not below. Engine
+# overhead lowers it without limit: 20 / (0.25 + 0.013) = 76/s at 13 ms,
+# 20 / (0.25 + 0.113) = 55/s at 13 + 100 ms. On the four quiet runs the
+# hold-window rate at the ceiling was 72.5-75.0/s and the overhead 16.7-25.9
+# ms, consistent with the model. So this scenario detects an overhead
+# REGRESSION of roughly 10 ms per workflow or more on this machine (the
+# between-run spread of both the overhead and the ceiling: 2.5/s of ceiling
+# is about 9 ms of hold at 72/s); a quiet dedicated host would tighten that
+# toward the within-run resolution. It cannot show an IMPROVEMENT beyond
+# 80/s. What it is good for: showing that the 20 workflow slots bind before
+# the pool of 10 does (pool pending 0 at the ceiling on a quiet host);
+# pinning statements per workflow (the gate); measuring engine overhead per
+# workflow. What it is NOT: a measure of engine throughput headroom.
+# Busy slots at the ceiling level in the four valid quiet runs: 18.67-19.22
+# averaged over the whole level window (ramp included), 20.0 in every hold
+# sample.
 # advisory.littlesLaw compares ceilingPerSec with an UNLOADED model cap,
 # slots / the first level's start-to-terminal p50 (rows; nothing queues
 # there, so the p50 is an upper-bound proxy for the unloaded hold time), and
@@ -61,26 +83,52 @@
 # contended host, or a limit other than the slots).
 #
 # ── Contention (advisory.contention) ───────────────────────────────────────
-# A PASSing run can carry host-contended numbers. The reference is the
-# first level's start-to-terminal p50 (rows: precise and unloaded). The run
-# is "contended" when, at any level AT OR BELOW the ceiling level (the level
-# of ceilingPerSec), slotHoldMs exceeds 1.15 x that reference, counting only
-# levels averaging >= 4 busy slots, or the node's CPU saturates there
-# (process_cpu_usage or system_cpu_usage averaging >= 0.9). Deviations from
-# the first wording of the rule, both forced by data: the first level's
+# A PASSing run can carry host-contended numbers. Four parts; any one makes
+# it WARN "contended", and the detail says which fired:
+#   holdTime    slotHoldMs > 1.15 x the reference (the first level's
+#               start-to-terminal p50, rows: precise and unloaded) at a
+#               JUDGED level averaging >= 4 busy slots. Judged = every level
+#               at or below the ceiling level (the level of ceilingPerSec)
+#               AND every level offered below the slot model's cap (slots /
+#               reference): the second set closes the escape where contention
+#               at the top drags the ceiling level down and the hurt level is
+#               no longer at or below it. On the recorded runs the union
+#               judges the same levels as before, so quiet runs stay quiet
+#               (0.86-1.06 x) and r20261112t214359z (L40 1.68 x, L60 1.26 x)
+#               and r20261112t204157z (L40 1.60 x) stay contended.
+#   nodeCpu     process_cpu_usage or system_cpu_usage averaging >= 0.9 at a
+#               judged level (on JDK 25 both are container-scoped, 2 CPUs).
+#   hostLoad    the host's 1-minute load average per CPU at the scenario's
+#               start or after the drain (measurements.hostLoad) > 2.0. The
+#               recorded quiet runs reached 1.21 (r20261112t222511z, start)
+#               and 0.81, so 1.0 would flag a quiet run; the starved run 2
+#               was at about 8.7 per CPU (uptime during the run, not
+#               recorded in it). It does NOT separate r20261112t214359z (about
+#               0.95 per CPU at its start, also only from uptime): the
+#               holdTime part catches that one. Runs without the record
+#               report this part as "not recorded".
+#   reference   the reference itself is slow: the first level's p50 > the
+#               sample's activity time (activities x activityMillis) + 40 ms.
+#               The recorded runs' first-level p50s are 275.6-281.5 ms (25.6-
+#               31.5 ms over 250), contended ones included, so 290 ms leaves
+#               8.5 ms over the slowest. This closes the UNIFORM-contention
+#               blind spot of holdTime (a host slow at every level, the first
+#               included, raises the reference with everything else and reads
+#               quiet). It also fires on an engine that got about 10 ms
+#               slower per workflow: the detail says "a contended host or a
+#               slower engine".
+# Remaining blind spot: uniform contention mild enough to keep the first
+# level's p50 under 290 ms and the load average under 2 per CPU. Deviations
+# from the first wording of the rule, forced by data: the first level's
 # DERIVED hold time is quantised (one or two busy slots in a 5 s gauge sample
 # read 200 or 400 ms against a true ~280 ms), hence the row p50 and the
-# 4-slot floor; and the starved run r20261112t204157z was contended AT its
-# ceiling level (L40: 446 ms, pool pending 4.3), hence "at or below". Above
-# the ceiling level the hold time rises with saturation itself and is not
-# judged. Measured: quiet runs stay within 0.98-1.06 x; r20261112t214359z
-# reads 464 / 349 ms at L40 / L60 (1.68 / 1.26 x). When it WARNs
-# "contended", advisory.ceiling and advisory.littlesLaw say "measured on a
-# contended host". Advisory only. Also recorded per level: node CPU
-# (process/system_cpu_usage, system_load_average_1m), the containers' CPU
-# from `docker stats` (k6, node, postgres; percent of one CPU) and the host's
-# load average at the scenario's start, at the load's start and after the
-# drain.
+# 4-slot floor; the starved run was contended AT its ceiling level, hence
+# "at or below". Above both the ceiling level and the cap the hold time rises
+# with saturation itself and is not judged. When it WARNs "contended",
+# advisory.ceiling and advisory.littlesLaw say "measured on a contended host".
+# Advisory only. Also recorded per level: node CPU (process/system_cpu_usage,
+# system_load_average_1m) and the containers' CPU from `docker stats` (k6,
+# node, postgres; percent of one CPU).
 #
 # ── What validity.plan proves ──────────────────────────────────────────────
 # start-ramp.js writes the plan it executed from its own profile table, in the
@@ -127,11 +175,14 @@
 # workflows each, net statements per completed workflow over the whole load
 # window (unrounded: (maestroCalls - lock-cleaner calls - background) /
 # completed):
-#   r20261112t210341z 36.0028 (228229 calls; VUs 50/200, before 4bf45b6)
-#   r20261112t213818z 36.0032 (228232 calls)
-#   r20261112t222511z 36.0028 (228229 calls; host load average 12.1 on 10
-#                              CPUs at its start)
-#   r20261112t223114z 36.0030 (228232 calls; host load 7.8)
+#   r20261112t210341z 36.0028 (228229 calls; VUs 50/200, before 4bf45b6;
+#                              quiet on slot-hold time ALONE: no node CPU
+#                              or host load recorded)
+#   r20261112t213818z 36.0032 (228232 calls; quiet on slot-hold time ALONE)
+#   r20261112t222511z 36.0028 (228229 calls; quiet on every part; host load
+#                              average 12.1 on 10 CPUs at its start)
+#   r20261112t223114z 36.0031 (228232 calls; quiet on every part; host load
+#                              7.8)
 # a spread of 0.0004 (0.001 %): the engine issued 228229 or 228232 calls for
 # the same 6337 workflows. The full profile's PASSing run r20261112t214359z
 # (contended) gave 36.0136 over 42974 workflows. Runs r20261112t203520z,
@@ -159,6 +210,40 @@ def contention_min_slots: 4;
 def cpu_saturation: 0.9;
 def littles_law_floor: 0.9;
 def start_slow_ms: 1000;
+def host_load_per_cpu_max: 2.0;
+def reference_margin_ms: 40;
+
+# Engine overhead on the robust basis (see the header): the ceiling level's
+# hold window, slots from prometheus.json, rate from the cumulative samples.
+def hold_window_overhead($m; $prom; $row; $slotLimit; $activityMs):
+  ($m.samples // [] | map(select(type == "object") | {t: (.snapshotAt | ts_secs), done: .completed})
+   | map(select((.t | isnum) and (.done | isnum))) | sort_by(.t)) as $smp
+  | (($row.windowStartEpoch // null) as $ws | if ($ws | isnum) and ($m.plan.rampSecs | isnum) then $ws + $m.plan.rampSecs else null end) as $a
+  | ($row.windowEndEpoch // null) as $b
+  | ([$smp[] | select(.t >= $a and .t <= $b)]) as $in
+  | ([$prom.queries[]? | select(.query == "maestro_taskqueue_slots_used") | .result[]?
+      | select(.metric.kind == "workflow") | .values[]?] | group_by(.[0])
+     | map({t: .[0][0], v: (map(.[1] | tonumber) | add)})) as $series
+  | if ($a | isnum | not) or ($b | isnum | not) or ($in | length) < 3 then null
+    else
+      ($in[0]) as $s1 | ($in[-1]) as $s2
+      | ([$series[] | select(.t >= $s1.t and .t <= $s2.t) | .v]) as $sv
+      | if ($sv | length) == 0 or ($s2.t <= $s1.t) or ($activityMs | isnum | not) then null
+        else
+          (($s2.done - $s1.done) / ($s2.t - $s1.t)) as $rate
+          | ($sv | add / length) as $avg
+          | ([range(1; $in | length) as $i | ($in[$i].done - $in[$i-1].done) / ($in[$i].t - $in[$i-1].t)]) as $rs
+          | ($rs | add / length) as $mu
+          | ((($rs | map((. - $mu) * (. - $mu)) | add) / (($rs | length) - 1)) | sqrt / (($rs | length) | sqrt)) as $se
+          | ($avg / $rate * 1000) as $hold
+          | (($sv | all(. == $slotLimit)) ) as $pinned
+          | {holdMs: ($hold | round2), overheadMs: ($hold - $activityMs | round2),
+             resolutionMs: ((2 * $se / $mu * $hold) + (if $pinned then 0 else 1 / ($sv | length) / $rate * 1000 end) | . * 10 | round / 10),
+             slotsAvg: ($avg | round2), slotsPinned: $pinned, gaugeSamples: ($sv | length),
+             ratePerSec: ($rate | round2), rateIntervals: ($rs | length), windowSecs: ($s2.t - $s1.t | round2),
+             basis: "hold window of L\($row.level): \($s2.t - $s1.t | round) s between cumulative samples, \($rs | length) rate intervals, \($sv | length) slot-gauge samples\(if $pinned then " all at the limit" else "" end)"}
+        end
+    end;
 
 # Iterations the plan's stage table implies (ramping-arrival-rate, linear
 # ramps, timeUnit 1 s).
@@ -260,9 +345,19 @@ $identity[0] as $id
    | map(. + {engineOverheadMs: (if (.slotHoldMs | isnum) and ($activityMs | isnum) then .slotHoldMs - $activityMs | round2 else null end)})) as $levels
 | ([$levels[] | select(.completionsInWindowPerSec | isnum)] | max_by(.completionsInWindowPerSec) // null) as $ceilingRow
 | ($levels[0].p50Ms // null) as $refMs
+| ((($m.workflowShape.activities // null) as $n | ($m.workflowShape.activityMillis // null) as $ms
+    | if ($n | isnum) and ($ms | isnum) then $n * $ms else null end)) as $activityMs
+| (if ($slots | isnum) and ($refMs | isnum) and $refMs > 0 then $slots / ($refMs / 1000) else null end) as $modelCap
+| (if $ceilingRow == null then null
+   else try hold_window_overhead($m; ($prometheus[0] // {});
+                                 ([($m.levelRows // [])[] | select(.level == $ceilingRow.level)] | first);
+                                 $slots; $activityMs) catch null end) as $hw
+| ($m.hostLoad // null) as $hl
+| ([($hl.scenarioStart // null), ($hl.afterDrain // null)] | map(select(type == "object" and (.load1 | isnum) and (.hostCpus | isnum) and .hostCpus > 0)
+   | .load1 / .hostCpus | round2)) as $loadPerCpu
 | ( if $ceilingRow == null or ($refMs | isnum | not) then null
     else
-      [$levels[] | select(.level <= $ceilingRow.level)] as $judged
+      [$levels[] | select(.level <= $ceilingRow.level or (($modelCap | isnum) and .offeredPerSec < $modelCap))] as $judged
       | ([$judged[] | select((.slotsUsed.workflowAvg | isnum) and .slotsUsed.workflowAvg >= contention_min_slots
                              and (.slotHoldMs | isnum))]) as $eligible
       | ([$judged[] | select(.nodeCpu != null and (((.nodeCpu.processAvg | isnum) and .nodeCpu.processAvg >= cpu_saturation)
@@ -272,7 +367,16 @@ $identity[0] as $id
          holdHot: [$eligible[] | select(.slotHoldMs > contention_ratio * $refMs) | .level],
          cpuHot: [$cpuHot[] | .level],
          cpuAvailable: any($judged[]; (.nodeCpu.processAvg | isnum)),
-         contended: (([$eligible[] | select(.slotHoldMs > contention_ratio * $refMs)] | length) > 0 or ($cpuHot | length) > 0)}
+         modelCapPerSec: ($modelCap | round2),
+         hostLoadPerCpu: (if $hl == null then "not recorded" else $loadPerCpu end),
+         hostLoadHot: (($loadPerCpu | length) > 0 and ($loadPerCpu | max) > host_load_per_cpu_max),
+         referenceSlow: (($activityMs | isnum) and $refMs > $activityMs + reference_margin_ms),
+         referenceLimitMs: (if ($activityMs | isnum) then $activityMs + reference_margin_ms else null end)}
+      | .fired = ([(if (.holdHot | length) > 0 then "holdTime" else null end),
+                   (if (.cpuHot | length) > 0 then "nodeCpu" else null end),
+                   (if .hostLoadHot then "hostLoad" else null end),
+                   (if .referenceSlow then "reference" else null end)] | map(select(. != null)))
+      | .contended = ((.fired | length) > 0)
     end ) as $contention
 | (if ($contention.contended // false) then "; measured on a contended host (advisory.contention)" else "" end) as $contNote
 | (reduce $levels[] as $l ({knee: null, broken: false};
@@ -286,7 +390,13 @@ $identity[0] as $id
    ceilingHoldPerSec: ([$levels[].completionsInHoldPerSec | select(isnum)] | max // null),
    slotHoldMsAtCeiling: ($ceilingRow.slotHoldMs // null),
    slotsAvgAtCeiling: ($ceilingRow.slotsUsed.workflowAvg // null),
-   engineOverheadMsPerWorkflow: ($ceilingRow.engineOverheadMs // null),
+   engineOverheadMsPerWorkflow: (if $hw != null then $hw.overheadMs else ($ceilingRow.engineOverheadMs // null) end),
+   engineOverheadResolutionMs: (if $hw != null then $hw.resolutionMs else null end),
+   engineOverheadBasis: (if $hw != null then $hw.basis
+                         elif ($ceilingRow.engineOverheadMs // null) != null then "whole level window, coarse (no prometheus.json slot series or too few samples): resolution not stated"
+                         else null end),
+   engineOverheadMsWholeWindow: ($ceilingRow.engineOverheadMs // null),
+   holdWindow: $hw,
    contended: (if $contention == null then null else $contention.contended end),
    saturatedLevels: [$levels[] | select($knee == null or .level > $knee) | .level],
    workflowSlots: $slots,
@@ -416,11 +526,17 @@ $identity[0] as $id
               {unloadedModelCapPerSec: ($cap | round2), workflowSlots: $slots, firstLevelP50Ms: $p50,
                ceilingPerSec: $c, ceilingLevel: $ceiling.ceilingLevel,
                slotHoldMsAtCeiling: $ceiling.slotHoldMsAtCeiling, slotsAvgAtCeiling: $ceiling.slotsAvgAtCeiling,
-               activityMsPerWorkflow: $actMs, engineOverheadMsPerWorkflow: $ceiling.engineOverheadMsPerWorkflow};
+               activityMsPerWorkflow: $actMs, engineOverheadMsPerWorkflow: $ceiling.engineOverheadMsPerWorkflow,
+               engineOverheadResolutionMs: $ceiling.engineOverheadResolutionMs, holdWindow: $hw};
               {ceilingPerSec: ">= \(littles_law_floor) x unloadedModelCapPerSec"};
               if ($cap | isnum | not) or ($c | isnum | not) then "the model cap could not be computed (no first-level p50, slot count or ceiling)"
               else
-                "measured: at L\($ceiling.ceilingLevel) the \($slots) workflow slots averaged \($ceiling.slotsAvgAtCeiling // "n/a") busy with a derived hold time of \($ceiling.slotHoldMsAtCeiling // "n/a") ms per run, of which \($actMs) ms is the sample's own activity time, so engine overhead is \($ceiling.engineOverheadMsPerWorkflow // "n/a") ms per workflow; the ceiling \($c)/s is the slot limit against that hold time. Unloaded model cap \($slots) / \($p50) ms (first-level start-to-terminal p50, a proxy for the unloaded hold) = \($cap | round2)/s"
+                (if $hw != null then
+                   "measured over the hold window of L\($ceiling.ceilingLevel): \($hw.slotsAvg) of \($slots) workflow slots busy\(if $hw.slotsPinned then " (pinned)" else "" end) at \($hw.ratePerSec) completions/s, a hold of \($hw.holdMs) ms per run, of which \($actMs) ms is the sample's own activity time, so engine overhead is \($hw.overheadMs) ms +/- \($hw.resolutionMs) ms per workflow (+/- = 2 standard errors within this run; between runs on a shared host differences under about 10 ms are not meaningful)"
+                 else
+                   "measured over the whole window of L\($ceiling.ceilingLevel) (coarse; no hold-window basis): \($ceiling.slotsAvgAtCeiling // "n/a") of \($slots) slots busy, derived hold \($ceiling.slotHoldMsAtCeiling // "n/a") ms, engine overhead \($ceiling.engineOverheadMsPerWorkflow // "n/a") ms per workflow (resolution not stated; differences under about 10 ms between runs are not meaningful)"
+                 end)
+                + "; the ceiling \($c)/s is bounded above by \($slots) / \($actMs) ms = \(if $actMs > 0 then $slots / ($actMs / 1000) | round2 else "n/a" end)/s and lowered by engine overhead. Unloaded model cap \($slots) / \($p50) ms (first-level start-to-terminal p50, a proxy for the unloaded hold) = \($cap | round2)/s"
                 + (if $ok then "; the measured ceiling is within \(littles_law_floor) x of it: the slots bound"
                    else "; the measured ceiling is BELOW \(littles_law_floor) x of it: the slots did not bind (a contended host, or another limit)" end)
                 + $contNote + " (an explanation, never a verdict)"
@@ -436,15 +552,20 @@ $identity[0] as $id
              nodeCpu: "process_cpu_usage and system_cpu_usage average < \(cpu_saturation) there"};
             if $contention == null then "not available: no ceiling level or first-level p50"
             elif $contention.contended then
-              "contended: " + ([
+              "contended (\($contention.fired | join(", "))): " + ([
                 (if ($contention.holdHot | length) > 0 then "slot-hold time above \(contention_ratio) x the \($contention.referenceMs) ms reference at L\($contention.holdHot | map(tostring) | join(", L"))" else null end),
-                (if ($contention.cpuHot | length) > 0 then "node CPU saturated at L\($contention.cpuHot | map(tostring) | join(", L"))" else null end)
-              ] | reasons) + "; the ceiling and sustained level of this run are host artefacts, not the engine's"
+                (if ($contention.cpuHot | length) > 0 then "node CPU saturated at L\($contention.cpuHot | map(tostring) | join(", L"))" else null end),
+                (if $contention.hostLoadHot then "host load average \($contention.hostLoadPerCpu | max) per CPU, above \(host_load_per_cpu_max)" else null end),
+                (if $contention.referenceSlow then "the first level's start-to-terminal p50 \($contention.referenceMs) ms exceeds the \($contention.referenceLimitMs) ms limit (activity time + \(reference_margin_ms) ms): uniformly slow, a contended host or a slower engine" else null end)
+              ] | reasons) + "; the ceiling and sustained level of this run are not the engine's alone"
             elif ($contention.judgedLevels | length) == 0 and ($contention.cpuAvailable | not) then
               "not available: no level at or below the ceiling has slot-gauge data with >= \(contention_min_slots) busy slots, and node CPU is not recorded"
             else
-              "quiet: slot-hold time within \(contention_ratio) x the \($contention.referenceMs) ms reference at every judged level (\([$contention.judgedLevels[] | "L\(.level) \(.ratio)x"] | join(", ")))"
+              "quiet: slot-hold time within \(contention_ratio) x the \($contention.referenceMs) ms reference at every judged level (\([$contention.judgedLevels[] | "L\(.level) \(.ratio)x"] | join(", "))); reference within \($contention.referenceLimitMs) ms"
               + (if $contention.cpuAvailable then ", node CPU below \(cpu_saturation)" else "; node CPU not available" end)
+              + (if ($contention.hostLoadPerCpu | type) == "string" then "; host load not recorded"
+                 elif ($contention.hostLoadPerCpu | length) == 0 then "; host load not recorded"
+                 else ", host load \($contention.hostLoadPerCpu | max) per CPU (<= \(host_load_per_cpu_max))" end)
               + (if any($levels[]; .containerCpu.k6 != null) then "" else "; k6 container CPU not available" end)
             end)),
     advisory_guarded("advisory.statementsPerLevel";

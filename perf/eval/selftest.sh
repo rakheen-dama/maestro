@@ -400,6 +400,11 @@ if [[ -n "$s1src" ]]; then
     mkdir -p "$dir"
     jq "${3:-.}" "${s1src}/identity.json" >"${dir}/identity.json"
     jq "$2" "${s1src}/measurements.json" >"${dir}/measurements.json"
+    # The run's Prometheus range data (the hold-window overhead basis), unless
+    # the case asks for it absent (S1_NO_PROM=1).
+    if [[ -s "${s1src}/prometheus.json" && "${S1_NO_PROM:-0}" != 1 ]]; then
+      cp "${s1src}/prometheus.json" "${dir}/prometheus.json"
+    fi
     if [[ -n "${4:-}" ]]; then
       printf '%s\n' "$4" >"${dir}/baseline.json"
       base="${dir}/baseline.json"
@@ -593,6 +598,42 @@ if [[ -n "$s1src" ]]; then
   expect "s1: k6 started 100 fewer iterations than the plan implies: validity.plan" INVALID "$(st "$out" validity.plan)"
   out=$(s1_eval s1-iterations-1 '(.k6[] | select(.phase == "s1") | .iterations) -= 1')
   expect "s1: one iteration short (rounding): validity.plan" PASS "$(st "$out" validity.plan)"
+  # Fix round 2: uniform contention (an absolute check on the reference, the
+  # host load), the ceiling-level shift, the overhead's robust basis and
+  # resolution.
+  contention_fired() { s1_field "$1" '.checks[] | select(.id == "advisory.contention") | .value.fired'; }
+  out=$(s1_eval s1-uniform-slow '.levelRows[0].p50Ms = 300')
+  expect "s1: first level's p50 300 ms (> activity time + 40 ms): advisory.contention" WARN "$(st "$out" advisory.contention)"
+  expect "s1: uniformly slow: the reference part fired" '["reference"]' "$(contention_fired s1-uniform-slow)"
+  expect "s1: uniformly slow: detail names both readings" yes \
+    "$(s1_field s1-uniform-slow '.checks[] | select(.id == "advisory.contention") | .detail' | grep -q 'a contended host or a slower engine' && echo yes || echo no)"
+  expect "s1: first level's p50 289 ms: no reference part" '[]' "$(s1_eval s1-ref-edge '.levelRows[0].p50Ms = 289' >/dev/null; contention_fired s1-ref-edge)"
+  out=$(s1_eval s1-hostload '.hostLoad.scenarioStart.load1 = 25')
+  expect "s1: host load 2.5 per CPU at the start: advisory.contention" WARN "$(st "$out" advisory.contention)"
+  expect "s1: host load: the hostLoad part fired" '["hostLoad"]' "$(contention_fired s1-hostload)"
+  out=$(s1_eval s1-hostload-edge '.hostLoad.scenarioStart.load1 = 20 | .hostLoad.afterDrain.load1 = 20')
+  expect "s1: host load exactly 2.0 per CPU: advisory.contention" PASS "$(st "$out" advisory.contention)"
+  out=$(s1_eval s1-hostload-none 'del(.hostLoad)')
+  expect "s1: host load not recorded: advisory.contention (no WARN from that part)" PASS "$(st "$out" advisory.contention)"
+  expect "s1: host load not recorded: says so" yes \
+    "$(s1_field s1-hostload-none '.checks[] | select(.id == "advisory.contention") | .detail' | grep -q 'host load not recorded' && echo yes || echo no)"
+  shift_ceiling='.levelRows[-1].completionsInWindowPerSec = 15 | .levelRows[2].completionsInWindowPerSec = 10'
+  out=$(s1_eval s1-shift "$shift_ceiling")
+  expect "s1: ceiling level dragged down to L$(jq '.plan.levels[1]' "${s1src}/measurements.json"); L$(jq '.plan.levels[2]' "${s1src}/measurements.json") (below the cap, above it) slow: advisory.contention" WARN "$(st "$out" advisory.contention)"
+  expect "s1: ceiling shift: the hurt level is judged" "[$(jq '.plan.levels[2]' "${s1src}/measurements.json")]" \
+    "$(s1_field s1-shift '.checks[] | select(.id == "advisory.contention") | .value.holdHot')"
+  expect "s1: overhead on the hold-window basis, with its resolution" "true" \
+    "$(s1_field s1-pass '.measurements.ceiling | (.engineOverheadMsPerWorkflow | type == "number") and (.engineOverheadResolutionMs | type == "number") and (.engineOverheadBasis | startswith("hold window"))')"
+  expect "s1: Little's-law detail prints the overhead with +/- and the between-run caveat" yes \
+    "$(s1_field s1-pass '.checks[] | select(.id == "advisory.littlesLaw") | .detail' | grep -q 'engine overhead is [-0-9.]* ms +/- [0-9.]* ms per workflow.*differences under about 10 ms are not meaningful' && echo yes || echo no)"
+  expect "s1: Little's-law detail: the ceiling is bounded above, not below" yes \
+    "$(s1_field s1-pass '.checks[] | select(.id == "advisory.littlesLaw") | .detail' | grep -q 'bounded above by 20 / 250 ms = 80/s and lowered by engine overhead' && echo yes || echo no)"
+  out=$(S1_NO_PROM=1 s1_eval s1-no-prom-json '.')
+  expect "s1: without prometheus.json: coarse whole-window basis, labelled, no resolution" "true" \
+    "$(s1_field s1-no-prom-json '.measurements.ceiling | (.engineOverheadBasis | startswith("whole level window")) and .engineOverheadResolutionMs == null')"
+  expect "s1: without prometheus.json: detail says resolution not stated" yes \
+    "$(s1_field s1-no-prom-json '.checks[] | select(.id == "advisory.littlesLaw") | .detail' | grep -q 'resolution not stated' && echo yes || echo no)"
+  expect "s1: without prometheus.json: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
   out=$(s1_eval s1-no-samples '.samples = []')
   expect "s1, no statement samples: advisory.statementsPerLevel" WARN "$(st "$out" advisory.statementsPerLevel)"
   expect "s1, no statement samples: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
