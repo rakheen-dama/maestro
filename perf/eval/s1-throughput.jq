@@ -61,18 +61,19 @@
 #   whole-window figure is used and labelled so (resolution not stated).
 # The ceiling model: ceiling = busy slots / (activity time + overhead), at
 # most 20 / 0.25 s = 80/s (zero overhead): bounded ABOVE, not below. Engine
-# overhead lowers it without limit: 20 / (0.25 + 0.013) = 76/s at 13 ms,
-# 20 / (0.25 + 0.113) = 55/s at 13 + 100 ms. On the four quiet runs the
-# hold-window rate at the ceiling was 72.5-75.0/s and the overhead 16.7-25.9
-# ms, consistent with the model. So this scenario detects an overhead
-# REGRESSION of roughly 10 ms per workflow or more on this machine (the
-# between-run spread of both the overhead and the ceiling: 2.5/s of ceiling
-# is about 9 ms of hold at 72/s); a quiet dedicated host would tighten that
-# toward the within-run resolution. It cannot show an IMPROVEMENT beyond
-# 80/s. What it is good for: showing that the 20 workflow slots bind before
-# the pool of 10 does (pool pending 0 at the ceiling on a quiet host);
-# pinning statements per workflow (the gate); measuring engine overhead per
-# workflow. What it is NOT: a measure of engine throughput headroom.
+# overhead lowers it without limit (model values): 20 / (0.25 + 0.020) =
+# 74.1/s at 20 ms, 20 / (0.25 + 0.120) = 54.1/s at 20 + 100 ms. On the four
+# quiet runs the hold-window rate at the ceiling was 72.5-75.0/s and the
+# overhead 16.7-25.9 ms, consistent with the model. So this scenario detects
+# an overhead REGRESSION of roughly 10 ms per workflow or more on this
+# machine (the between-run spread of both the overhead and the ceiling:
+# 2.5/s of ceiling is about 9 ms of hold at 72/s); a quiet dedicated host
+# would tighten that toward the within-run resolution. It cannot show an
+# IMPROVEMENT beyond 80/s. What it is good for: showing that the 20 workflow
+# slots bind before the pool of 10 does (pool pending 0 at the ceiling on a
+# quiet host); pinning statements per workflow (the gate); measuring engine
+# overhead per workflow. What it is NOT: a measure of engine throughput
+# headroom.
 # Busy slots at the ceiling level in the four valid quiet runs: 18.67-19.22
 # averaged over the whole level window (ramp included), 20.0 in every hold
 # sample.
@@ -94,7 +95,7 @@
 #               at the top drags the ceiling level down and the hurt level is
 #               no longer at or below it. On the recorded runs the union
 #               judges the same levels as before, so quiet runs stay quiet
-#               (0.86-1.06 x) and r20261112t214359z (L40 1.68 x, L60 1.26 x)
+#               (0.83-1.03 x) and r20261112t214359z (L40 1.68 x, L60 1.26 x)
 #               and r20261112t204157z (L40 1.60 x) stay contended.
 #   nodeCpu     process_cpu_usage or system_cpu_usage averaging >= 0.9 at a
 #               judged level (on JDK 25 both are container-scoped, 2 CPUs).
@@ -103,20 +104,27 @@
 #               recorded quiet runs reached 1.21 (r20261112t222511z, start)
 #               and 0.81, so 1.0 would flag a quiet run; the starved run 2
 #               was at about 8.7 per CPU (uptime during the run, not
-#               recorded in it). It does NOT separate r20261112t214359z (about
-#               0.95 per CPU at its start, also only from uptime): the
-#               holdTime part catches that one. Runs without the record
-#               report this part as "not recorded".
+#               recorded in it). No run is recorded between 1.21 per CPU (a
+#               quiet run) and about 8.7 per CPU (a contended run, observed
+#               outside the run directory), so where in that gap the
+#               threshold sits is a judgement. It does NOT separate
+#               r20261112t214359z (about 0.95 per CPU at its start, also
+#               only from uptime): the holdTime part catches that one. Runs
+#               without the record report this part as "not recorded".
 #   reference   the reference itself is slow: the first level's p50 > the
 #               sample's activity time (activities x activityMillis) + 40 ms.
 #               The recorded runs' first-level p50s are 275.6-281.5 ms (25.6-
 #               31.5 ms over 250), contended ones included, so 290 ms leaves
-#               8.5 ms over the slowest. This closes the UNIFORM-contention
+#               8.5 ms over the slowest. This narrows the UNIFORM-contention
 #               blind spot of holdTime (a host slow at every level, the first
 #               included, raises the reference with everything else and reads
-#               quiet). It also fires on an engine that got about 10 ms
-#               slower per workflow: the detail says "a contended host or a
-#               slower engine".
+#               quiet). This part has not fired on any recorded run: both
+#               known contended runs had an unremarkable first-level p50
+#               (278.9 and 276.3 ms) and were caught by holdTime, so it is a
+#               guard that is reasoned, not yet validated by a real case. It
+#               also fires on an engine that got about 10 ms slower per
+#               workflow: the detail says "a contended host or a slower
+#               engine".
 # Remaining blind spot: uniform contention mild enough to keep the first
 # level's p50 under 290 ms and the load average under 2 per CPU. Deviations
 # from the first wording of the rule, forced by data: the first level's

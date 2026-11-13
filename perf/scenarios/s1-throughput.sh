@@ -42,14 +42,15 @@
 # What this scenario measures. The ceiling = busy slots / (activity time +
 # engine overhead per workflow), and the activity time is the sample's own
 # 250 ms (5 x 50 ms). It is bounded ABOVE: 20 / 0.25 s = 80/s with zero
-# overhead. Engine overhead lowers it without limit: 13 ms -> 20 / 0.263 s
-# = 76/s; 13 + 100 ms -> 20 / 0.363 s = 55/s. Measured on the four valid
-# quiet runs over the ceiling level's hold window: all 20 slots busy in
-# every gauge sample (18.67-19.22 averaged over the whole level window,
-# ramp included), 72.5-75.0 completions/s, so a hold of 267-276 ms and an
-# engine overhead of 16.65 / 25.17 / 19.85 / 25.93 ms per workflow, each
-# +/- 1.4-3.9 ms within its run (ceiling.engineOverheadMsPerWorkflow,
-# .engineOverheadResolutionMs; +/- = 2 standard errors). Between runs on
+# overhead. Engine overhead lowers it without limit (model values): 20 ms
+# -> 20 / 0.270 s = 74.1/s; 20 + 100 ms -> 20 / 0.370 s = 54.1/s. Measured
+# on the four valid quiet runs over the ceiling level's hold window: all 20
+# slots busy in every gauge sample (18.67-19.22 averaged over the whole
+# level window, ramp included), 72.5-75.0 completions/s, so a hold of
+# 267-276 ms and an engine overhead of 16.65 / 25.17 / 19.85 / 25.93 ms
+# per workflow, each +/- 1.4-3.9 ms within its run
+# (ceiling.engineOverheadMsPerWorkflow, .engineOverheadResolutionMs; +/- =
+# 2 standard errors). Between runs on
 # this shared machine differences under about 10 ms are not meaningful, and
 # the delivered ceiling spread 70.6-73.1/s (2.5/s, about 9 ms of hold at
 # 72/s): so the scenario detects an engine-overhead REGRESSION of roughly
@@ -58,9 +59,10 @@
 # 20 workflow slots bind before the Hikari pool of 10 does; pinning
 # statements per workflow (the gate); and measuring engine overhead per
 # workflow. It is NOT a measure of engine throughput headroom.
-# Past the ceiling, throughput was seen to fall 8-11 % at about 1.6 x the
-# ceiling's offered rate (73.7 -> 68.0/s and 70.1 -> 62.3/s at about 118
-# offered) with slots pinned and hold time up 9-13 % (269 -> 294 ms,
+# Past the ceiling, throughput was seen to fall 8-11 % at about 118 offered
+# per second (the L120 level), 1.5 x the ceiling level's offered rate (L80)
+# and about 1.6-1.7 x the measured ceiling (73.7 -> 68.0/s and 70.1 ->
+# 62.3/s), with slots pinned and hold time up 9-13 % (269 -> 294 ms,
 # 285 -> 321 ms). That is an observation from ONE INVALID full-profile run
 # (r20261112t211806z, dropped iterations) and ONE contended one
 # (r20261112t214359z), to be reproduced on a quiet host; its cause is NOT
