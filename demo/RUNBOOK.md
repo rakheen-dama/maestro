@@ -983,8 +983,8 @@ propagation (Kafka).
 The `-Dspring.kafka.template.observation-enabled=true` and
 `-Dspring.kafka.listener.observation-enabled=true` flags you will see on the
 JVM command line are both effective now — the first reaches
-`maestroKafkaTemplate` (which the domain activities also inject, since it is
-the only `KafkaTemplate<String, byte[]>` bean in the context), the second
+`maestroKafkaTemplate` (which the domain activities also inject, with
+`@Qualifier(MaestroKafkaBeans.TEMPLATE)`), the second
 reaches Boot's listener-container factory as it always did. Kept explicit
 here so the demo's tracing does not depend on the tracing-active default;
 this is a documented library contract now, not a demo trick.
