@@ -1827,6 +1827,19 @@ public final class WorkflowExecutor {
     }
 
     /**
+     * Returns the number of wake permits this node holds — wakes that arrived
+     * for a workflow before it parked. A node-local gauge source, like
+     * {@link #parkedCount()}.
+     *
+     * <p><b>Thread safety:</b> thread-safe; reads a concurrent map's size.
+     *
+     * @return the number of wake permits in this executor's parking lot
+     */
+    public int wakePermitCount() {
+        return parkingLot.pendingWakeCount();
+    }
+
+    /**
      * Returns the governor that enforces this executor's per-task-queue
      * concurrency limits ({@code maestro.worker.task-queues}).
      *
