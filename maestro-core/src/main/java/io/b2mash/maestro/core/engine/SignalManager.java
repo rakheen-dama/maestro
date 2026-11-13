@@ -509,9 +509,9 @@ final class SignalManager {
             observer.signalDuplicateSuppressed(info);
         }
 
-        // Unpark if waiting locally
+        // Wake a local waiter; a permit only if this node runs the workflow
         var parkKey = workflowId + ":signal:" + signalName;
-        parkingLot.unpark(parkKey, signalPayload);
+        parkingLot.wake(workflowId, parkKey);
 
         // Notify other instances — best-effort, and never on this thread.
         if (signalNotifier != null) {
@@ -1140,7 +1140,7 @@ final class SignalManager {
     void onTimerTransition(String workflowId, String timerId) {
         var parkKey = awaitWakeKeys.get(workflowId + ":" + timerId);
         if (parkKey != null) {
-            parkingLot.unpark(parkKey, null);
+            parkingLot.wake(workflowId, parkKey);
         }
     }
 
@@ -1250,12 +1250,13 @@ final class SignalManager {
     /**
      * Cross-instance notification callback: unparks the local waiter, which
      * then re-reads the signal from the store. May run on a network event
-     * loop thread — must stay lightweight and non-blocking. Unparking an
-     * absent key (self-echo of a local delivery, or a waiter that already
-     * woke) is a no-op.
+     * loop thread — must stay lightweight and non-blocking. A notification
+     * for an absent key (self-echo of a local delivery, or a waiter that
+     * already woke) stores at most a permit while the run is still on this
+     * node, and nothing once it has ended (3.2).
      */
     private void onRemoteSignal(String workflowId, String signalName) {
-        parkingLot.unpark(workflowId + ":signal:" + signalName, null);
+        parkingLot.wake(workflowId, workflowId + ":signal:" + signalName);
     }
 
     // ── Orphan adoption ─────────────────────────────────────────────────

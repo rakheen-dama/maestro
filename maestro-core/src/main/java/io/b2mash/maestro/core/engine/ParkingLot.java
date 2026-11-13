@@ -13,6 +13,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Predicate;
 
 /**
  * Manages parked virtual threads for durable sleep and signal-await operations.
@@ -34,13 +35,25 @@ import java.util.concurrent.TimeoutException;
  * </ul>
  *
  * <h2>Wake Permits</h2>
- * <p>An {@link #unpark(String, Object)} that finds no registered waiter
- * stores a <b>one-shot permit</b> (latest payload wins) instead of being
- * lost; the next park on that key consumes it and returns immediately.
- * This closes the race where a wake source fires between a caller
- * announcing its intent to wait (e.g. status {@code WAITING_TIMER}) and
- * the park actually registering — without permits, a timer fired in that
- * window would never be re-fired and the workflow would stall.
+ * <p>A {@link #wake(String, String)} that finds no registered waiter stores a
+ * <b>one-shot permit</b> — but only for a workflow that runs on this node, as
+ * the {@code runsHere} predicate (the executor's running-workflow map) says,
+ * checked before the put and again after it. The next park on that key
+ * consumes the permit and returns immediately. This closes the race where a
+ * wake source fires between a run on this node announcing its intent to wait
+ * (e.g. status {@code WAITING_TIMER}) and the park actually registering —
+ * without permits, a timer fired in that window would never be re-fired and
+ * the workflow would stall until its wake-recheck interval.
+ *
+ * <p>A wake for a workflow that does not run here stores nothing (finding
+ * 3.2). No wake is lost by that: a waiter on another node is woken by
+ * {@code NOTIFY} or its own wake-recheck, and a workflow that runs nowhere yet
+ * reads its durable signal or timer row before its first park. A permit
+ * carries no payload — every park's caller re-reads the store — so it is a
+ * key and a shared marker. Once the gate holds, every stored permit belongs to
+ * a run on this node and is dropped at that run's next park on the key, its
+ * end ({@link #clearPending}), a terminate ({@link #abandonWorkflow}) or
+ * {@link #shutdown()}.
  *
  * <h2>Shutdown</h2>
  * <p>{@link #shutdown()} abandons every waiter with an
@@ -68,7 +81,10 @@ final class ParkingLot {
 
     private static final Logger logger = LoggerFactory.getLogger(ParkingLot.class);
 
-    /** Marker for a permit delivered with a {@code null} payload. */
+    /**
+     * Marker for a permit delivered with a {@code null} payload — and the
+     * value of every permit {@link #wake(String, String)} stores.
+     */
     private static final Object NULL_PAYLOAD = new Object();
 
     /** Reason marker for a terminate that carried no operator-supplied reason. */
@@ -76,6 +92,14 @@ final class ParkingLot {
 
     private final ConcurrentHashMap<String, CompletableFuture<Object>> futures = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Object> pendingWakes = new ConcurrentHashMap<>();
+
+    /**
+     * Whether a workflow runs on this node — the executor's
+     * {@code runningWorkflows::containsKey}. Must be thread-safe and
+     * non-blocking: {@link #wake(String, String)} calls it on whatever thread
+     * the wake arrives on.
+     */
+    private final Predicate<String> runsHere;
 
     /**
      * Sticky per-workflow terminate poison: {@code workflowId → reason}. Mirrors
@@ -88,6 +112,26 @@ final class ParkingLot {
     private final ConcurrentHashMap<String, String> terminatedWorkflows = new ConcurrentHashMap<>();
 
     private volatile boolean shuttingDown = false;
+
+    /**
+     * Builds a lot under which every workflow counts as running on this node,
+     * so every {@link #wake(String, String)} that finds no waiter stores a
+     * permit — for tests that build a lot or a {@code SignalManager} directly.
+     */
+    ParkingLot() {
+        this(workflowId -> true);
+    }
+
+    /**
+     * Builds a lot that stores a wake permit only for a workflow
+     * {@code runsHere} accepts.
+     *
+     * @param runsHere whether a workflow (by business ID) runs on this node;
+     *                 thread-safe and non-blocking
+     */
+    ParkingLot(Predicate<String> runsHere) {
+        this.runsHere = runsHere;
+    }
 
     /**
      * Parks the current virtual thread until {@link #unpark(String, Object)} is called.
@@ -231,14 +275,66 @@ final class ParkingLot {
     }
 
     /**
-     * Unparks a virtual thread that is waiting at the given key.
+     * Wakes the waiter parked at {@code key}, or stores a one-shot permit for
+     * it — only if {@code workflowId} runs on this node. The production wake
+     * path: every signal delivery, cross-node notification, timer fire or
+     * cancel and await-deadline transition comes through here.
+     *
+     * <ol>
+     *   <li>A waiter registered at {@code key} is completed with {@code null},
+     *       whatever {@code runsHere} says: only the node running the workflow
+     *       registers one.</li>
+     *   <li>Otherwise, if the workflow does not run here, nothing is stored. The
+     *       wake is not lost: the signal or timer row is already durable, and
+     *       the node that runs (or will run) the workflow reads it before it
+     *       parks, or is woken by {@code NOTIFY} or its wake-recheck.</li>
+     *   <li>Otherwise a permit is stored and handed to a park that registered
+     *       meanwhile.</li>
+     *   <li>{@code runsHere} is asked again. A run that ended between the first
+     *       check and the put may already have passed its own permit cleanup,
+     *       so the permit is removed here; a run still registered at this
+     *       check removes it itself when it ends (its registration is dropped
+     *       before its cleanup runs).</li>
+     * </ol>
+     *
+     * <p>Thread-safe and non-blocking; may be called from any thread, including
+     * a network event-loop thread.
+     *
+     * @param workflowId the business ID of the workflow the key belongs to
+     * @param key        the parking key, prefixed {@code workflowId + ":"}
+     */
+    void wake(String workflowId, String key) {
+        // The log lines below carry no key: a key embeds the workflow id.
+        var future = futures.get(key);
+        if (future != null) {
+            future.complete(null);
+            logger.debug("Woke a parked waiter");
+            return;
+        }
+        if (!runsHere.test(workflowId)) {
+            logger.debug("No parked waiter, and the workflow does not run on this node — no wake permit stored");
+            return;
+        }
+        storePermit(key, NULL_PAYLOAD);
+        if (!runsHere.test(workflowId)) {
+            // The run ended between the check above and the put: its
+            // clearPending may have run before the put, so drop the permit here.
+            pendingWakes.remove(key, NULL_PAYLOAD);
+            logger.debug("The run ended while its wake was being stored — wake permit dropped");
+        } else {
+            logger.debug("No parked waiter yet — stored a wake permit for a run on this node");
+        }
+    }
+
+    /**
+     * Ungated test seam: stores a permit whatever the predicate says.
+     * Production code calls {@link #wake(String, String)}.
      *
      * <p>Completes the {@link CompletableFuture} associated with the key,
-     * causing the parked virtual thread to resume with the given payload.
-     *
-     * <p>If no thread is currently parked at this key, a one-shot permit is
-     * stored (latest payload wins) so the wake is not lost if a park is
-     * racing to register — the next park on this key returns immediately.
+     * causing the parked virtual thread to resume with the given payload. If no
+     * thread is currently parked at this key, a one-shot permit is stored
+     * (latest payload wins) — the next park on this key returns immediately
+     * with that payload.
      *
      * @param key     the parking key
      * @param payload the result to deliver to the parked thread, may be {@code null}
@@ -249,19 +345,26 @@ final class ParkingLot {
             future.complete(payload);
             logger.debug("Unparked workflow at key '{}'", key);
         } else {
-            pendingWakes.put(key, payload != null ? payload : NULL_PAYLOAD);
-            // Close the reverse race: a park may have registered its future
-            // after our lookup above but before the permit was stored — if
-            // so, hand the wake to it now (it may already have consumed the
-            // permit itself; remove() makes the hand-off exactly-once).
-            var racedFuture = futures.get(key);
-            if (racedFuture != null) {
-                var permit = pendingWakes.remove(key);
-                if (permit != null) {
-                    racedFuture.complete(unwrapPermit(permit));
-                }
-            }
+            storePermit(key, payload != null ? payload : NULL_PAYLOAD);
             logger.debug("No parked workflow at key '{}' — stored wake permit", key);
+        }
+    }
+
+    /**
+     * Stores a permit at {@code key} (latest wins), then closes the reverse
+     * race: a park may have registered its future after the caller's lookup
+     * but before the permit was stored — if so, hand the wake to it now (it
+     * may already have consumed the permit itself; {@code remove()} makes the
+     * hand-off exactly-once).
+     */
+    private void storePermit(String key, Object permit) {
+        pendingWakes.put(key, permit);
+        var racedFuture = futures.get(key);
+        if (racedFuture != null) {
+            var raced = pendingWakes.remove(key);
+            if (raced != null) {
+                racedFuture.complete(unwrapPermit(raced));
+            }
         }
     }
 
@@ -381,7 +484,8 @@ final class ParkingLot {
     }
 
     /**
-     * Returns the number of stored wake permits. Primarily for testing.
+     * Returns the number of stored wake permits — the source of the
+     * {@code maestro.wake.permits} gauge, and read by tests.
      *
      * @return the number of pending-wake entries
      */

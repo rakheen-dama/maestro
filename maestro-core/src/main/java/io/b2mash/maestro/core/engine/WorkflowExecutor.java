@@ -234,7 +234,10 @@ public final class WorkflowExecutor {
         this.signalNotifier = signalNotifier;
         this.serializer = serializer;
         this.serviceName = serviceName;
-        this.parkingLot = new ParkingLot();
+        // Assigned before the lot, which reads it: a wake that finds no parked
+        // waiter stores a permit only for a workflow running on this node (3.2).
+        this.runningWorkflows = new ConcurrentHashMap<>();
+        this.parkingLot = new ParkingLot(runningWorkflows::containsKey);
         this.taskQueueGovernor = taskQueueLimits.isEmpty() && defaultTaskQueueLimits == null
                 ? TaskQueueGovernor.UNBOUNDED
                 : new TaskQueueGovernor(taskQueueLimits, defaultTaskQueueLimits);
@@ -255,7 +258,6 @@ public final class WorkflowExecutor {
         this.queryRegistry = new QueryRegistry();
         this.shutdownTimeout = shutdownTimeout;
         this.wakeRecheckInterval = wakeRecheckInterval;
-        this.runningWorkflows = new ConcurrentHashMap<>();
         this.shuttingDown = new AtomicBoolean(false);
         // Proactive stand-down (Issue 11): a run whose instance lock was lost
         // is marked stale now, so it stops at its next stop point — live
@@ -889,7 +891,8 @@ public final class WorkflowExecutor {
      * Fires a timer, resuming a sleeping workflow.
      *
      * <p>Called by the timer poller when a due timer is found. Marks the
-     * timer as fired in the store and unparks the workflow's virtual thread.
+     * timer as fired in the store and unparks the workflow's virtual thread,
+     * and stores a permit only when the workflow runs here.
      * The store transition is persisted before unparking to prevent the
      * timer poller from redelivering.
      *
@@ -984,13 +987,15 @@ public final class WorkflowExecutor {
      * await parks on its signal key and is woken through
      * {@link SignalManager#onTimerTransition}. Unparking the {@code :timer:}
      * key for an await would only store a one-shot permit nobody ever
-     * consumes, so it is skipped.
+     * consumes, so it is skipped. A sleep's wake stores a permit only when the
+     * workflow runs on this node (3.2): a sleep parked elsewhere re-reads its
+     * row every wake-recheck interval.
      */
     private void wakeTimerWaiter(String workflowId, String timerId) {
         if (timerId.startsWith(SignalManager.TIMER_ID_PREFIX)) {
             signalManager.onTimerTransition(workflowId, timerId);
         } else {
-            parkingLot.unpark(workflowId + ":timer:" + timerId, null);
+            parkingLot.wake(workflowId, workflowId + ":timer:" + timerId);
         }
     }
 
@@ -2151,6 +2156,9 @@ public final class WorkflowExecutor {
         } catch (RuntimeException | Error e) {
             if (running != null) {
                 runningWorkflows.remove(instance.workflowId(), running);
+                // A wake that saw this run registered may have stored a permit;
+                // no run will park on it now (3.2).
+                parkingLot.clearPending(instance.workflowId());
             }
             instanceLockManager.release(instance.workflowId());
             throw e;

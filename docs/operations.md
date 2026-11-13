@@ -213,7 +213,10 @@ notification hand-offs in flight and drops the excess, logged at `DEBUG`. A
 dropped or failed notification costs latency (one recheck interval), never a
 signal. While failures persist, the outage `WARN` repeats every 5 minutes. The
 cross-node *timer* wake described above has no notify path and always rides
-the recheck interval.
+the recheck interval. A wake that reaches a node not running the workflow (a
+Kafka-consumed signal, a timer the leader fires for a workflow owned elsewhere)
+stores nothing there: the durable row is the wake, and the owner is woken by
+`NOTIFY` or its re-check.
 
 ---
 

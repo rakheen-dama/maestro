@@ -162,6 +162,11 @@ default, which would report `NaN` once the builder went out of scope.
 - `maestro.wake.permits` is the size of `ParkingLot`'s permit map, keyed by
   parking key: a wake (a signal, a timer fire or cancel, a cross-node
   notification) that reached this node when nobody was parked on that key yet.
+  Since 3.2 a permit is stored only for a workflow running on this node, and it
+  is dropped when that run parks, ends, is terminated or the node shuts down,
+  so the value stays near zero; one that grows with signal or timer throughput
+  is a regression. Tests show this: `WakePermitLocalityTest`,
+  `ParkingLotWakeGateTest`.
 
 **These are node-local, in-JVM values.** They are not store-derived, they do not
 survive a restart, and they say nothing about workflows owned by other nodes.

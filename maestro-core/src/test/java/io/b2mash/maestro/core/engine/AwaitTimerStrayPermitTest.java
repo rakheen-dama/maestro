@@ -22,8 +22,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * signal key and is woken through {@code SignalManager.onTimerTransition} — so
  * the {@code :timer:} unpark only stored a permit nobody consumes, one per
  * poller-fired await timeout, until the workflow finished. A {@code sleep-*}
- * row still gets its {@code :timer:} unpark (and so its permit when nobody is
- * parked yet): that is the sleep's real wake path.
+ * row still gets its {@code :timer:} wake, which stores a permit only when the
+ * workflow runs on this node (3.2); {@code WakePermitLocalityTest} pins that
+ * wake reaching a local sleep that has not parked yet.
  */
 @DisplayName("await-signal-* timer transitions leave no stray :timer: wake permit")
 class AwaitTimerStrayPermitTest {
@@ -69,13 +70,16 @@ class AwaitTimerStrayPermitTest {
     }
 
     @Test
-    @DisplayName("fireTimer on a sleep-* row still unparks its :timer: key (a permit when nobody is parked yet)")
-    void fireSleepTimer_stillUnparksTheTimerKey() {
+    @DisplayName("fireTimer on a sleep-* row of a workflow not running here stores no permit")
+    void fireSleepTimer_forAWorkflowNotRunningHere_storesNoPermit() {
         var row = pendingRow("sleep-3");
 
         executor.fireTimer("wf-permit", row.timerId(), row.id());
 
-        assertEquals(1, parkingLot.pendingWakeCount(), "the sleep's wake path is unchanged");
+        assertEquals(TimerStatus.FIRED, store.findTimer(row.workflowInstanceId(), row.timerId())
+                .orElseThrow().status());
+        assertEquals(0, parkingLot.pendingWakeCount(),
+                "nobody on this node will park on it — the owner re-reads the FIRED row");
     }
 
     private WorkflowTimer pendingRow(String timerId) {
